@@ -111,6 +111,13 @@ const ROW_HEADER = [
 const shortSource = (source: string): string =>
   /\/blob\/([0-9a-f]{12})/.exec(source)?.[1] ?? source;
 
+// Whether a refresh that kept `kept` priced models, where the table had `previous`, is a real read.
+// A real refresh moves a handful of rows; an empty or truncated source file loses most of them, and
+// writing that would have the weekly job propose removing every model it lost.
+export function plausibleRefresh(kept: number, previous: number): boolean {
+  return kept > 0 && kept >= previous / 2;
+}
+
 export function diffModelPrices(
   oldTable: PriceTable,
   newTable: PriceTable,
@@ -173,9 +180,12 @@ export function diffModelPrices(
     );
   }
 
-  const mark = (k: string) => (defaultKeys.has(k) ? " (default)" : "");
+  // A default's row is told in the table above and nowhere else, so each model appears once.
+  const changedRest = changed.filter((c) => !defaultKeys.has(c.key));
+  const addedRest = added.filter((k) => !defaultKeys.has(k));
+  const removedRest = removed.filter((k) => !defaultKeys.has(k));
 
-  if (changed.length > 0) {
+  if (changedRest.length > 0) {
     lines.push(
       "",
       "## Changed",
@@ -183,21 +193,21 @@ export function diffModelPrices(
       "| Model | Rate | Old | New |",
       "| --- | --- | --- | --- |",
     );
-    for (const c of changed) {
+    for (const c of changedRest) {
       for (const r of c.changes) {
         lines.push(
-          `| \`${c.key}\`${mark(c.key)} | ${r.rate} | ${usd(r.old)} | ${usd(r.new)} |`,
+          `| \`${c.key}\` | ${r.rate} | ${usd(r.old)} | ${usd(r.new)} |`,
         );
       }
     }
   }
-  if (added.length > 0) {
+  if (addedRest.length > 0) {
     lines.push("", "## Added", "", ...ROW_HEADER);
-    for (const k of added) {
-      lines.push(`| \`${k}\`${mark(k)} | ${rowCells(b[k] as Entry)} |`);
+    for (const k of addedRest) {
+      lines.push(`| \`${k}\` | ${rowCells(b[k] as Entry)} |`);
     }
   }
-  if (removed.length > 0) {
+  if (removedRest.length > 0) {
     lines.push(
       "",
       "## Removed",
@@ -206,8 +216,8 @@ export function diffModelPrices(
       "",
       ...ROW_HEADER,
     );
-    for (const k of removed) {
-      lines.push(`| \`${k}\`${mark(k)} | ${rowCells(a[k] as Entry)} |`);
+    for (const k of removedRest) {
+      lines.push(`| \`${k}\` | ${rowCells(a[k] as Entry)} |`);
     }
   }
 

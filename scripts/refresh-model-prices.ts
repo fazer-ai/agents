@@ -9,6 +9,8 @@
 // rates a ledger row can use, in USD per MILLION tokens so a reviewer can hold them against the
 // vendor's page. A rate above a context threshold (OpenAI's >272K, Gemini's >200K) is kept as a tier.
 
+import { plausibleRefresh } from "./diff-model-prices";
+
 const REPO = "BerriAI/litellm";
 const FILE = "model_prices_and_context_window.json";
 const OUT = "src/modules/pricing/model-prices.json";
@@ -102,6 +104,22 @@ for (const [key, e] of Object.entries(table)) {
     });
   models[key] = tiers.length > 0 ? { ...base, tiers } : base;
 }
+
+// A source that answers 200 with a truncated or empty file would otherwise write a table with most
+// models gone, and the weekly job would propose removing them. A real refresh moves a handful of
+// rows; losing more than half of them is a broken read, not a price change.
+const previous = Object.keys(
+  (
+    (await Bun.file(OUT)
+      .json()
+      .catch(() => ({}))) as { models?: Record<string, unknown> }
+  ).models ?? {},
+).length;
+const kept = Object.keys(models).length;
+if (!plausibleRefresh(kept, previous))
+  throw new Error(
+    `the LiteLLM table gave ${kept} priced models where the current table has ${previous}: refusing to write it`,
+  );
 
 const readAt = new Date().toISOString().slice(0, 10);
 const sorted = Object.fromEntries(

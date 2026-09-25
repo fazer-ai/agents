@@ -3,6 +3,7 @@ import {
   BODY_LIMIT,
   diffModelPrices,
   type PriceTable,
+  plausibleRefresh,
 } from "@/../scripts/diff-model-prices";
 
 // Issue #869: the body of the pull request the weekly price refresh opens. What a reviewer has to
@@ -38,6 +39,7 @@ const OLD = table(SHA_OLD, "2026-09-18", {
   "gemini/gemini-y": { input: 0.3, cachedInput: 0.03, output: 2.5 },
   "deepseek-chat": { input: 0.28, cachedInput: 0.028, output: 0.42 },
   "old-model": { input: 5, output: 15 },
+  "moved-model": { input: 2, output: 4 },
   "steady-model": { input: 0.5, output: 1.5 },
 });
 
@@ -62,6 +64,7 @@ describe("diffModelPrices", () => {
     "gemini/gemini-y": { input: 0.3, cachedInput: 0.03, output: 2.5 },
     "deepseek-chat": { input: 0.28, cachedInput: 0.028, output: 0.42 },
     "new-model": { input: 3, cachedInput: 0.3, output: 9 },
+    "moved-model": { input: 2.5, output: 4 },
     "steady-model": { input: 0.5, output: 1.5 },
   });
   const diff = diffModelPrices(OLD, NEW, DEFAULTS);
@@ -72,19 +75,29 @@ describe("diffModelPrices", () => {
     expect(md).toContain(
       "litellm@aaaaaaaaaaaa (2026-09-18) to litellm@bbbbbbbbbbbb (2026-09-25)",
     );
-    expect(md).toContain("1 changed, 1 added, 1 removed.");
+    expect(md).toContain("2 changed, 1 added, 1 removed.");
   });
 
-  test("every changed rate is a row with its old and new price, tiers included", () => {
-    expect(md).toContain("| `gpt-x` (default) | input | $1 | $1.25 |");
-    // A rate the row did not carry before reads as going from none to a price.
-    expect(md).toContain("| `gpt-x` (default) | cache write | none | $1.5 |");
-    expect(md).toContain(
-      "| `gpt-x` (default) | input above 272K | $2 | $2.5 |",
+  test("every changed rate is a row with its old and new price", () => {
+    const changedSection = md.slice(
+      md.indexOf("## Changed"),
+      md.indexOf("## Added"),
     );
+    expect(changedSection).toContain("| `moved-model` | input | $2 | $2.5 |");
     // Only what moved: the unchanged output rate and the untouched model stay out of the table.
-    expect(md).not.toContain("| `gpt-x` (default) | output |");
+    expect(changedSection).not.toContain("| `moved-model` | output |");
     expect(md).not.toContain("steady-model");
+  });
+
+  // A default's row is told once, in the defaults table, with every rate that moved (tiers and a
+  // rate that went from none to a price included), and not again under Changed.
+  test("each model appears once: a default is told in its own table only", () => {
+    expect(md.split("`gpt-x`").length - 1).toBe(2);
+    const changedSection = md.slice(
+      md.indexOf("## Changed"),
+      md.indexOf("## Added"),
+    );
+    expect(changedSection).not.toContain("gpt-x");
   });
 
   test("an added model lists its rates, and a removed one the rates it had", () => {
@@ -128,9 +141,7 @@ describe("diffModelPrices", () => {
     expect(lost).toContain(
       "| google | `gemini-y` | `gemini/gemini-y` | **removed**: its calls lose their price |",
     );
-    expect(lost).toContain(
-      "| `gemini/gemini-y` (default) | $0.3 | $0.03 | none | $2.5 | none |",
-    );
+    expect(lost).not.toContain("## Removed");
 
     const found = diffModelPrices(
       table(SHA_OLD, "2026-09-18", { "steady-model": { input: 1, output: 2 } }),
@@ -188,4 +199,16 @@ test("an added model's long-context tier lists its cache rates too", () => {
   expect(md).toContain(
     "above 200K: input $2, cached input $0.5, cache write $2.5, output $8",
   );
+});
+
+// A source that answers 200 with an empty or truncated file must not become a table with every
+// model removed (verification of #869).
+test("a refresh that lost most of the table is refused", () => {
+  expect(plausibleRefresh(0, 665)).toBe(false);
+  expect(plausibleRefresh(300, 665)).toBe(false);
+  expect(plausibleRefresh(660, 665)).toBe(true);
+  expect(plausibleRefresh(700, 665)).toBe(true);
+  // The very first read has nothing to compare with, but still needs a model.
+  expect(plausibleRefresh(10, 0)).toBe(true);
+  expect(plausibleRefresh(0, 0)).toBe(false);
 });

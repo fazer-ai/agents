@@ -11,7 +11,10 @@ import type { ApiErrorPayload } from "@/client/lib/types";
 type ValidationState = "validating" | "valid" | "invalid";
 
 // An invitation waiting in this tab while its invitee signs in (the token never goes back on a URL,
-// for the same history / Referer hygiene the page strips it for). Read once and cleared.
+// for the same history / Referer hygiene the page strips it for). It stays parked until the
+// invitation is accepted or turns out to be invalid: signing in can end in a full reload (the
+// selector recovery after /auth/me), and a token cleared on the first read would be gone by then
+// (review round 7).
 const PARKED_INVITE_KEY = "@app:parked-invite";
 
 function parkInviteToken(token: string): void {
@@ -22,13 +25,19 @@ function parkInviteToken(token: string): void {
   }
 }
 
-function takeParkedInviteToken(): string | null {
+function readParkedInviteToken(): string | null {
   try {
-    const token = sessionStorage.getItem(PARKED_INVITE_KEY);
-    sessionStorage.removeItem(PARKED_INVITE_KEY);
-    return token;
+    return sessionStorage.getItem(PARKED_INVITE_KEY);
   } catch {
     return null;
+  }
+}
+
+function clearParkedInvite(): void {
+  try {
+    sessionStorage.removeItem(PARKED_INVITE_KEY);
+  } catch {
+    // Nothing parked that could be read either.
   }
 }
 
@@ -47,7 +56,7 @@ export function AcceptInvitePage() {
   const { user, login, logout } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const [token] = useState(
-    () => searchParams.get("token") ?? takeParkedInviteToken() ?? "",
+    () => searchParams.get("token") ?? readParkedInviteToken() ?? "",
   );
   const [state, setState] = useState<ValidationState>("validating");
   const [email, setEmail] = useState("");
@@ -76,6 +85,7 @@ export function AcceptInvitePage() {
       .then(({ data, error: apiError }) => {
         if (!active) return;
         if (apiError || !data?.invite) {
+          clearParkedInvite();
           setState("invalid");
           return;
         }
@@ -121,6 +131,7 @@ export function AcceptInvitePage() {
         return;
       }
       if (data?.user) {
+        clearParkedInvite();
         // Open the console on the tenant just joined, which for a person with other tenants is not
         // necessarily their default.
         setActiveTenantId(data.user.tenantId);

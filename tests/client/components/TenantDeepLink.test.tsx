@@ -41,6 +41,7 @@ let role = "SUPER_ADMIN";
 let userTenantId: string | null = null;
 // The memberships a person's session carries (issue #756); empty for the fleet and a one-tenant user.
 let userTenants: { id: string; name: string; role: string }[] | undefined = [];
+let refreshes = 0;
 const realFetch = globalThis.fetch;
 const reloads: number[] = [];
 
@@ -70,6 +71,9 @@ mock.module("@/client/contexts/AuthContext", () => ({
   useAuth: () => ({
     user: { id: "1", role, tenantId: userTenantId, tenants: userTenants },
     loading: false,
+    refresh: async () => {
+      refreshes += 1;
+    },
   }),
 }));
 
@@ -417,6 +421,23 @@ describe("TenantDeepLink", () => {
     await waitFor(() => {
       expect(shows("conversations")).toBe(true);
     });
+  });
+
+  // Review round 7: the login's own refresh is one attempt, so the wait asks again rather than hold a
+  // spinner for an update nobody scheduled.
+  test("while it waits for the session, it keeps asking for it", async () => {
+    role = "AGENT";
+    userTenantId = "10";
+    userTenants = undefined;
+    refreshes = 0;
+    renderAdminRouteAt("");
+    await waitFor(
+      () => {
+        expect(refreshes).toBeGreaterThanOrEqual(1);
+      },
+      { timeout: 3_000 },
+    );
+    expect(shows("conversations")).toBe(false);
   });
 
   test("a link to a tenant where the person is an agent still meets the admin gate", async () => {

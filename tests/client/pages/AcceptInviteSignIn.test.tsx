@@ -21,6 +21,7 @@ import { withI18n } from "@/tests/utils/i18n";
 const PARKED = "@app:parked-invite";
 const realFetch = globalThis.fetch;
 const inviteQueries: string[] = [];
+const accepted: string[] = [];
 
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input instanceof Request ? input.url : input);
@@ -31,6 +32,15 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     return new Response(
       JSON.stringify({
         invite: { email: "g@x.test", role: "AGENT", existingAccount: true },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }
+  if (url.includes("/auth/accept-invite")) {
+    accepted.push(JSON.parse(String(init?.body ?? "{}")).token ?? "");
+    return new Response(
+      JSON.stringify({
+        user: { id: "9", email: "g@x.test", role: "AGENT", tenantId: "20" },
       }),
       { status: 200, headers: { "content-type": "application/json" } },
     );
@@ -54,6 +64,12 @@ mock.module("@/client/contexts/AuthContext", () => ({
 }));
 
 const { AcceptInvitePage } = await import("@/client/pages/AcceptInvitePage");
+// Accepting from a running session reloads onto the joined tenant; the test only needs it not to.
+const realLocation = window.location;
+Object.defineProperty(window, "location", {
+  configurable: true,
+  value: { ...window.location, assign: () => {} },
+});
 const { ThemeProvider } = await import("@/client/contexts/ThemeContext");
 
 let seenPath = "";
@@ -84,12 +100,17 @@ describe("accepting an invitation by signing in", () => {
     cleanup();
     sessionStorage.removeItem(PARKED);
     inviteQueries.length = 0;
+    accepted.length = 0;
     signedInAs = null;
     logoutAnswer = true;
     logouts = 0;
   });
   afterAll(() => {
     globalThis.fetch = realFetch;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: realLocation,
+    });
   });
 
   test("parks the invitation in the tab and goes to sign in, with no token on the URL", async () => {
@@ -106,13 +127,23 @@ describe("accepting an invitation by signing in", () => {
     expect(sessionStorage.getItem(PARKED)).toBe("tok-756");
   });
 
-  test("back on the page, the parked invitation is read once and cleared", async () => {
+  // Review round 7: it stays parked through whatever reloads the sign-in takes, and goes only once the
+  // invitation is accepted.
+  test("back on the page, the parked invitation is read and kept until it is accepted", async () => {
     sessionStorage.setItem(PARKED, "tok-756");
+    signedInAs = { email: "g@x.test" };
     renderAt("/accept-invite");
     await waitFor(() => {
       expect(inviteQueries.join(",")).toBe("tok-756");
     });
-    expect(sessionStorage.getItem(PARKED)).toBeNull();
+    expect(sessionStorage.getItem(PARKED)).toBe("tok-756");
+    fireEvent.click(await screen.findByText("Join"));
+    await waitFor(() => {
+      expect(accepted.join(",")).toBe("tok-756");
+    });
+    await waitFor(() => {
+      expect(sessionStorage.getItem(PARKED)).toBeNull();
+    });
   });
 
   // Signed in as somebody else, the login page would bounce straight back: that session ends first,

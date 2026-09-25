@@ -1,5 +1,5 @@
 import { Loader2 } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import { Navigate, useLocation } from "react-router";
 import { Layout } from "@/client/components/Layout";
 import { TenantDeepLink } from "@/client/components/TenantDeepLink";
@@ -50,11 +50,7 @@ export function ProtectedRoute({
     // lands would send an administrator of the selected or linked tenant away and lose the page they
     // asked for (review rounds 3 and 6).
     if (user.tenants === undefined) {
-      return (
-        <div className="flex min-h-dvh items-center justify-center bg-bg-primary">
-          <Loader2 className="h-6 w-6 animate-spin text-text-secondary" />
-        </div>
-      );
+      return <SessionPending />;
     }
     if (!switchesToAdministeredTenant(requested, user)) {
       return <Navigate to="/conversations" replace />;
@@ -79,5 +75,27 @@ function switchesToAdministeredTenant(
   if (!requested || requested === user.tenantId) return false;
   return (user.tenants ?? []).some(
     (m) => m.id === requested && isAdminRole(m.role),
+  );
+}
+
+// How often the wait below asks `/auth/me` again. Exported for the test.
+export const SESSION_RETRY_MS = 2_000;
+
+// The wait for `/auth/me` after a fresh login. The login's own refresh is ONE attempt, so a blip there
+// would otherwise leave this spinner up for good (review round 7): it asks again until the session
+// arrives, and unmounts as soon as it does (or sends the visitor to /login if the answer is "signed
+// out", through the `!user` branch above).
+function SessionPending() {
+  const { refresh } = useAuth();
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void refresh();
+    }, SESSION_RETRY_MS);
+    return () => clearInterval(timer);
+  }, [refresh]);
+  return (
+    <div className="flex min-h-dvh items-center justify-center bg-bg-primary">
+      <Loader2 className="h-6 w-6 animate-spin text-text-secondary" />
+    </div>
   );
 }

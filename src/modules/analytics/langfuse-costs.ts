@@ -5,8 +5,13 @@ import {
   environmentForSource,
   resolveLangfuseConfig,
 } from "@/graph/observability";
-import type { UsageSource } from "@/graph/usage";
+import { type UsageSource, usdOrNull } from "@/graph/usage";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  type CostCheck,
+  compareModelCosts,
+  type LocalModelCost,
+} from "./cost-divergence";
 
 // Real LLM cost from Langfuse (which maintains an up-to-date price table and calculates cost
 // per actual usage). Tokens and calls stay local in LlmUsage for KPI calculations; only cost
@@ -26,7 +31,15 @@ export type LangfuseCosts =
       // Deep link straight to the tenant's project (item 6): `${baseUrl}/project/${id}`. Best-effort
       // — omitted when the project id couldn't be resolved, so the dashboard falls back to baseUrl.
       projectUrl?: string;
+      // The local ledger's cost per model against `byModel` (issue #868), over the same tenant,
+      // period and environments. Absent when the ledger could not be read: the check did not run,
+      // which is not the same as having passed.
+      costCheck?: CostCheck;
     };
+
+// The two environments every trace of ours carries, and the two ledger sources they stand for. One
+// list for both books, so "All" means the same calls on each side of the comparison.
+const OUR_SOURCES: readonly UsageSource[] = ["inbox", "playground"];
 
 // The Langfuse keys are project-scoped, so GET /api/public/projects returns exactly the one project
 // they belong to. Cache the id per (baseUrl + publicKey) so we don't pay an extra round-trip on
@@ -129,10 +142,7 @@ function costFilters(
     : {
         column: "environment",
         operator: "any of",
-        value: [
-          environmentForSource("inbox"),
-          environmentForSource("playground"),
-        ],
+        value: OUR_SOURCES.map((s) => environmentForSource(s)),
         type: "stringOptions",
       };
   return [
@@ -140,6 +150,43 @@ function costFilters(
     { column: "type", operator: "=", value: "GENERATION", type: "string" },
     { column: "userId", operator: "=", value: tenantSlug, type: "string" },
   ];
+}
+
+// The ledger's side of the comparison: what each model cost by the local price table, over the
+// Langfuse query's own window and sources. Never throws: a ledger that cannot be read leaves the
+// check out of the answer rather than taking the Langfuse figures down with it.
+async function localCostByModel(
+  base: PrismaClient,
+  ctx: TenantContext,
+  from: Date,
+  to: Date,
+  source: UsageSource | undefined,
+): Promise<LocalModelCost[] | null> {
+  try {
+    const groups = await runScopedOn(base, ctx, (db) =>
+      db.llmUsage.groupBy({
+        by: ["model"],
+        where: {
+          createdAt: { gte: from, lte: to },
+          source: source ?? { in: [...OUR_SOURCES] },
+        },
+        _count: { _all: true, costUsd: true },
+        _sum: { costUsd: true },
+      }),
+    );
+    return groups.map((g) => ({
+      model: g.model,
+      calls: g._count._all,
+      pricedCalls: g._count.costUsd,
+      costUsd: usdOrNull(g._sum.costUsd) ?? 0,
+    }));
+  } catch (err) {
+    logger.warn(
+      { err, tenantId: ctx.tenantId },
+      "local cost by model failed; the cost check is left out",
+    );
+    return null;
+  }
 }
 
 export async function getLangfuseCosts(
@@ -167,10 +214,10 @@ export async function getLangfuseCosts(
   }
 
   const apiBase = cfg.baseUrl ?? "https://cloud.langfuse.com";
-  const fromTimestamp = (
-    filter.since ?? new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)
-  ).toISOString();
-  const toTimestamp = new Date().toISOString();
+  const from = filter.since ?? new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+  const to = new Date();
+  const fromTimestamp = from.toISOString();
+  const toTimestamp = to.toISOString();
 
   const baseQuery = {
     view: "observations",
@@ -183,7 +230,7 @@ export async function getLangfuseCosts(
   try {
     // projectId resolution runs concurrently; it's internally best-effort (never throws) so it can't
     // fail the cost fetch, and it's cached after the first load (no extra round-trip thereafter).
-    const [dailyRows, modelRows, projectId] = await Promise.all([
+    const [dailyRows, modelRows, projectId, local] = await Promise.all([
       fetchMetrics(
         apiBase,
         cfg.publicKey,
@@ -206,6 +253,7 @@ export async function getLangfuseCosts(
         fetchFn,
       ),
       resolveLangfuseProjectId(apiBase, cfg.publicKey, cfg.secretKey, fetchFn),
+      localCostByModel(base, ctx, from, to, filter.source),
     ]);
 
     const days = dailyRows
@@ -235,6 +283,7 @@ export async function getLangfuseCosts(
       byModel,
       baseUrl: apiBase,
       projectUrl: projectId ? `${apiBase}/project/${projectId}` : undefined,
+      costCheck: local ? compareModelCosts(local, byModel) : undefined,
     };
   } catch (err) {
     logger.warn({ err, tenantId: ctx.tenantId }, "langfuse cost fetch failed");

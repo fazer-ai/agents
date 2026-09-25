@@ -42,12 +42,14 @@ import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
 import { MAX_DB_ID } from "@/lib/db-id";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import {
   EmptyThenReplyModel,
+  FailingModel,
   guardrailModel,
   HandoffDeclaredSilenceModel,
   HandoffThenReplyModel,
@@ -1723,6 +1725,77 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(closing.sentMessageIds).toEqual(s.noteIds);
     // The label still applies: it is how the operator triages what the bot left behind.
     expect(s.labelSets).toEqual([["follow-up"]]);
+  });
+
+  test("a turn a gate stopped before the model closes on no line (#855, review round 2)", async () => {
+    await seedConv(9667, null);
+    const s = stub();
+    let modelCalls = 0;
+    const client = {
+      ...(await s.makeClient()),
+      // A person took the conversation: the live probe stops the turn before any model call.
+      getConversation: async (c: number) => ({
+        id: c,
+        status: "open",
+        meta: { assignee: { id: 5, type: "user" } },
+        last_activity_at: Math.floor(Date.now() / 1000),
+      }),
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9667`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      requireLiveBotOwnership: true,
+      base: appDb,
+      deps: {
+        makeModel: () => {
+          modelCalls += 1;
+          return new NudgeSkipModel("needs_human") as never;
+        },
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).not.toBe("sent");
+    expect(modelCalls).toBe(0);
+    await settleFlowEvents();
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:9667`,
+      },
+      select: { detail: true },
+    });
+    expect(
+      rows.filter(
+        (r) =>
+          typeof (r.detail as { turnMs?: unknown } | null)?.turnMs === "number",
+      ),
+    ).toEqual([]);
+  });
+
+  test("a turn whose generation failed still closes on its line, naming nothing (#855, review round 2)", async () => {
+    await seedConv(9668, null);
+    const s = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9668`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new FailingModel(new Error("model down")) as never,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    }).catch(() => {});
+    expect(s.messages).toEqual([]);
+    expect(s.noteIds).toEqual([]);
+    const closing = await closingLine(9668);
+    expect(typeof closing.turnMs).toBe("number");
+    expect(closing.sentMessageIds).toBeUndefined();
   });
 
   test("a follow-up whose hand-over failed still does not close the conversation", async () => {

@@ -889,6 +889,9 @@ async function runTurnBody(
 ): Promise<RunAgentTurnOutcome> {
   // The turn's wall time starts here, before the config is read (issue #855).
   const turnStartedAt = performance.now();
+  // Whether the turn got as far as a model: the closing line is owed to a turn that did, or to one
+  // that left a message, and not to one a gate stopped first (issue #855, review round 2).
+  let reachedModel = false;
   // Every real send in this function is one statement after an ask on this. The default is what a
   // turn with nothing to be exclusive about wants: send.
   const askClaim = params.claimBeforeSend ?? (async () => true);
@@ -2182,6 +2185,7 @@ async function runTurnBody(
     // silent (send nothing). Anything short of a trip proceeds as normal — including a screening
     // that could not run, which is the fail-open half of the policy.
     const inGuard = await runGuardrail("input", text);
+    if (inGuard.kind !== "not-run") reachedModel = true;
     // Asked on the way OUT of the screening, not only before the send it may lead to. The verdict
     // costs a model call, and its silent branch returns "blocked" — a word that says the burst was
     // consumed, so the watermark advances. A run the command called off during that call would be
@@ -2349,6 +2353,7 @@ async function runTurnBody(
         );
       }
     };
+    reachedModel = true;
     const result = await withFlowStage(
       flow,
       "generate",
@@ -3131,24 +3136,25 @@ async function runTurnBody(
     // messages it created, so the conversation screen can hang what the turn spent on the turn's own
     // last bubble. The answer above rides on it only when the silence tool asked.
     const sentMessageIds = recorded.sentIds();
-    emitFlowEvent(flow, {
-      stage: "generate",
-      level: "info",
-      status: "ok",
-      detail: {
-        turnMs: Math.round(performance.now() - turnStartedAt),
-        ...(sentMessageIds.length > 0 ? { sentMessageIds } : {}),
-        ...(silenceAsked
-          ? {
-              turnDelivered: turnReachedTheCustomer({
-                balloons: deliveredBalloons,
-                attachment: sentAttachment,
-                spokeOutsideTheReply: turnState.spokeOutsideTheReply,
-              }),
-            }
-          : {}),
-      },
-    });
+    if (reachedModel || sentMessageIds.length > 0)
+      emitFlowEvent(flow, {
+        stage: "generate",
+        level: "info",
+        status: "ok",
+        detail: {
+          turnMs: Math.round(performance.now() - turnStartedAt),
+          ...(sentMessageIds.length > 0 ? { sentMessageIds } : {}),
+          ...(silenceAsked
+            ? {
+                turnDelivered: turnReachedTheCustomer({
+                  balloons: deliveredBalloons,
+                  attachment: sentAttachment,
+                  spokeOutsideTheReply: turnState.spokeOutsideTheReply,
+                }),
+              }
+            : {}),
+        },
+      });
     status.finished(deliveredBalloons);
     // Last, so nothing above is skipped by it.
     // biome-ignore lint/correctness/noUnsafeFinally: the throw replaces the settling outcome on purpose

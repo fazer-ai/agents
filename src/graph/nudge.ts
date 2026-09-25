@@ -444,6 +444,9 @@ interface NudgeClosing {
   sentIds: () => number[];
   // The outcome line (`markFollowUp`) was written, and it carries the same two fields.
   written: boolean;
+  // The turn reached the model. Before that, a gate that stops the turn (stale, not owned, a refused
+  // contact) ran nothing and owes no line, unless it left a message (review round 2).
+  generating: boolean;
 }
 
 // EVERY PROACTIVE TURN CLOSES ON ONE LINE (issue #855, review round 1). The outcome line carries the
@@ -459,12 +462,17 @@ export async function runAgentNudge(
     flow: null,
     sentIds: () => [],
     written: false,
+    generating: false,
   };
   try {
     return await runAgentNudgeBody(params, closing, turnStartedAt);
   } finally {
-    if (closing.flow && !closing.written) {
-      const sentMessageIds = closing.sentIds();
+    const sentMessageIds = closing.sentIds();
+    if (
+      closing.flow &&
+      !closing.written &&
+      (closing.generating || sentMessageIds.length > 0)
+    ) {
       emitFlowEvent(closing.flow, {
         stage: "generate",
         level: "info",
@@ -2162,6 +2170,7 @@ async function runAgentNudgeBody(
           ).values as { messages?: BaseMessage[] } | undefined
         )?.messages ?? [],
       );
+    closing.generating = true;
     result = await graph
       .invoke(
         {

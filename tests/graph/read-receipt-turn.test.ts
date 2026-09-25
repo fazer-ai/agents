@@ -13,7 +13,9 @@ import {
   type ChatwootClient,
 } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { seedChatwootInstance } from "../utils/chatwoot";
+import { flowLogRows } from "../utils/flowlog";
 
 // The blue tick on the contact's phone, end to end. The client unit tests cover the request shape;
 // only a real turn shows the two things that matter here.
@@ -462,6 +464,20 @@ describe.skipIf(!dbUp)("the WhatsApp read receipt of a turn", () => {
     expect(receipts).toEqual([]);
     expect(sent).toEqual([]);
     expect(outcome).toBe("stale");
+    // Nor a closing line (issue #855, review round 2): it ran no model and created nothing.
+    await settleFlowEvents();
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: convId },
+    });
+    const lines = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv.id, stage: "generate" },
+      select: { detail: true },
+    });
+    expect(
+      lines.filter(
+        (r) => typeof (r.detail as { turnMs?: unknown })?.turnMs === "number",
+      ),
+    ).toEqual([]);
   });
 
   // The control for the one above: the same call shape with a fence that says yes still ticks, so

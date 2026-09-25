@@ -2394,6 +2394,31 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(silent.end.detail.sentMessageIds).toEqual(
       creates.slice(quiet).map(([, id]) => id),
     );
+
+    // A turn that ran the model and has no id to name still closes on its line (review round 2): the
+    // model was billed, so the screen has spend to place. An empty reply leaves a note, answered here
+    // without an id, so nothing is recorded.
+    await seedConversation(98554, null);
+    const idless = {
+      sendMessage: async () => ({}),
+      sendPrivateNote: async () => ({}),
+      toggleStatus: async () => ({}),
+    } as unknown as ChatwootClient;
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98554 }),
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        makeClient: async () => idless,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    await awaitAllCallbacks();
+    const empty = await endLine(98554);
+    expect(empty.end.detail.sentMessageIds).toBeUndefined();
   });
 
   test("silêncio decidido e transferência depois: o fato do turno diz que saiu mensagem", async () => {

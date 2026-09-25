@@ -24,6 +24,8 @@ export interface LocalModelCost {
   calls: number;
   // Calls whose row carried a price; the rest are null in `cost_usd` and are not in `costUsd`.
   pricedCalls: number;
+  // Of those, the calls priced by this tenant's own price for the model (issue #865), not by the table.
+  ownPricedCalls?: number;
   costUsd: number;
 }
 
@@ -35,8 +37,11 @@ export interface LangfuseModelCost {
 
 // `match`: both figures agree within the thresholds. `diverges`: they do not. `incomplete`: some of
 // the model's local calls have no price, so the local figure is a floor and comparing it would flag
-// a gap the price table never claimed to cover; it is neither a pass nor a divergence.
-export type CostComparisonStatus = "match" | "diverges" | "incomplete";
+// a gap the price table never claimed to cover; it is neither a pass nor a divergence. `own`: some of
+// them were priced by the tenant's own price (issue #865), which is what the card tells the operator
+// to set when this account pays what neither table knows; judging that figure against Langfuse's
+// table would keep flagging the model after the operator did exactly that.
+export type CostComparisonStatus = "match" | "diverges" | "incomplete" | "own";
 
 export interface CostComparison {
   // The ledger's name for the model (the id the agent is configured with). For a group of ledger
@@ -105,8 +110,10 @@ export function judgeCosts(
   langfuseUsd: number,
   calls: number,
   pricedCalls: number,
+  ownPricedCalls = 0,
 ): CostComparisonStatus {
   if (pricedCalls < calls) return "incomplete";
+  if (ownPricedCalls > 0) return "own";
   const gapCents = Math.round(Math.abs(localUsd - langfuseUsd) * 100);
   const largerCents = Math.round(Math.max(localUsd, langfuseUsd) * 100);
   if (gapCents < Math.round(COST_DIVERGENCE_FLOOR_USD * 100)) return "match";
@@ -188,6 +195,10 @@ export function compareModelCosts(
     const localUsd = rows.reduce((a, r) => a + r.costUsd, 0);
     const calls = rows.reduce((a, r) => a + r.calls, 0);
     const pricedCalls = rows.reduce((a, r) => a + r.pricedCalls, 0);
+    const ownPricedCalls = rows.reduce(
+      (a, r) => a + (r.ownPricedCalls ?? 0),
+      0,
+    );
     models.push({
       model: ledgerModels[0] as string,
       ledgerModels,
@@ -196,7 +207,7 @@ export function compareModelCosts(
       langfuseUsd: m.usd,
       calls,
       localUnpricedCalls: calls - pricedCalls,
-      status: judgeCosts(localUsd, m.usd, calls, pricedCalls),
+      status: judgeCosts(localUsd, m.usd, calls, pricedCalls, ownPricedCalls),
     });
   }
   models.sort(

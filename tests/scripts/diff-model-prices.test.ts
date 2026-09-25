@@ -3,8 +3,8 @@ import {
   BODY_LIMIT,
   diffModelPrices,
   type PriceTable,
-  plausibleRefresh,
 } from "@/../scripts/diff-model-prices";
+import { plausibleRefresh } from "@/../scripts/refresh-guard";
 
 // Issue #869: the body of the pull request the weekly price refresh opens. What a reviewer has to
 // see is which rates moved, which rows appeared and which went away, with the provider defaults

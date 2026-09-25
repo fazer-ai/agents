@@ -9,7 +9,7 @@
 // rates a ledger row can use, in USD per MILLION tokens so a reviewer can hold them against the
 // vendor's page. A rate above a context threshold (OpenAI's >272K, Gemini's >200K) is kept as a tier.
 
-import { plausibleRefresh } from "./diff-model-prices";
+import { plausibleRefresh } from "./refresh-guard";
 
 const REPO = "BerriAI/litellm";
 const FILE = "model_prices_and_context_window.json";

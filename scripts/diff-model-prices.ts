@@ -82,16 +82,6 @@ function rateChanges(a: Entry | undefined, b: Entry | undefined): RateChange[] {
     .map((l) => ({ rate: l, old: fa.get(l), new: fb.get(l) }));
 }
 
-// The row a provider's default is priced from, found the way the runtime finds it: the first of the
-// provider's candidate keys the table carries.
-function resolveKey(
-  provider: string,
-  model: string,
-  models: Record<string, Entry>,
-): string | undefined {
-  return tableKeys(provider, model).find((k) => k in models);
-}
-
 const rateList = (entry: Rates): string =>
   RATE_FIELDS.map(([f, label]) => `${label} ${usd(entry[f])}`).join(", ");
 
@@ -148,44 +138,27 @@ export function diffModelPrices(
     `The price table was read again from LiteLLM: litellm@${shortSource(oldTable.source)} (${oldTable.readAt}) to litellm@${shortSource(newTable.source)} (${newTable.readAt}). Rates are USD per million tokens.`,
     "",
     `${changed.length} changed, ${added.length} added, ${removed.length} removed.`,
-    "",
-    "## Provider defaults",
-    "",
-    "What an agent that never picked a model is billed at (`src/graph/model-defaults.ts`).",
-    "",
-    "| Provider | Model | Row | What changed |",
-    "| --- | --- | --- | --- |",
   ];
+  // Every row a provider's default could be priced from, the way the runtime looks it up, in
+  // either table: a default's row is marked where it appears and listed first in each section, so
+  // it stands out and each model is still told exactly once.
   const defaultKeys = new Set<string>();
   for (const [provider, model] of Object.entries(defaults)) {
     if (!model) continue;
-    const before = resolveKey(provider, model, a);
-    const after = resolveKey(provider, model, b);
-    const key = after ?? before;
-    let what: string;
-    if (!before && !after) what = "not in the table, so never priced";
-    else if (!after) what = `**removed**: its calls lose their price`;
-    else if (!before) what = `**added**: ${rateList(b[after] as Entry)}`;
-    else {
-      const ch = rateChanges(a[before], b[after]);
-      what =
-        ch.length === 0
-          ? "unchanged"
-          : `**${ch.map((c) => `${c.rate} ${usd(c.old)} to ${usd(c.new)}`).join(", ")}**`;
-    }
-    if (before) defaultKeys.add(before);
-    if (after) defaultKeys.add(after);
-    lines.push(
-      `| ${provider} | \`${model}\` | ${key ? `\`${key}\`` : "none"} | ${what} |`,
-    );
+    for (const k of tableKeys(provider, model))
+      if (k in a || k in b) defaultKeys.add(k);
   }
+  const mark = (k: string) => (defaultKeys.has(k) ? " (default)" : "");
+  const defaultsFirst = (x: string, y: string) =>
+    Number(defaultKeys.has(y)) - Number(defaultKeys.has(x)) ||
+    x.localeCompare(y);
+  if (defaultKeys.size > 0)
+    lines.push(
+      "",
+      "Rows marked (default) are what an agent that never picked a model is billed at (`src/graph/model-defaults.ts`).",
+    );
 
-  // A default's row is told in the table above and nowhere else, so each model appears once.
-  const changedRest = changed.filter((c) => !defaultKeys.has(c.key));
-  const addedRest = added.filter((k) => !defaultKeys.has(k));
-  const removedRest = removed.filter((k) => !defaultKeys.has(k));
-
-  if (changedRest.length > 0) {
+  if (changed.length > 0) {
     lines.push(
       "",
       "## Changed",
@@ -193,31 +166,31 @@ export function diffModelPrices(
       "| Model | Rate | Old | New |",
       "| --- | --- | --- | --- |",
     );
-    for (const c of changedRest) {
+    for (const c of [...changed].sort((x, y) => defaultsFirst(x.key, y.key))) {
       for (const r of c.changes) {
         lines.push(
-          `| \`${c.key}\` | ${r.rate} | ${usd(r.old)} | ${usd(r.new)} |`,
+          `| \`${c.key}\`${mark(c.key)} | ${r.rate} | ${usd(r.old)} | ${usd(r.new)} |`,
         );
       }
     }
   }
-  if (addedRest.length > 0) {
+  if (added.length > 0) {
     lines.push("", "## Added", "", ...ROW_HEADER);
-    for (const k of addedRest) {
-      lines.push(`| \`${k}\` | ${rowCells(b[k] as Entry)} |`);
+    for (const k of [...added].sort(defaultsFirst)) {
+      lines.push(`| \`${k}\`${mark(k)} | ${rowCells(b[k] as Entry)} |`);
     }
   }
-  if (removedRest.length > 0) {
+  if (removed.length > 0) {
     lines.push(
       "",
       "## Removed",
       "",
-      "A call to one of these is priced as unknown (no cost) from the moment this merges.",
+      "A call to one of these is priced as unknown (no cost) from the moment this merges, unless another row of the same model is added above.",
       "",
       ...ROW_HEADER,
     );
-    for (const k of removedRest) {
-      lines.push(`| \`${k}\` | ${rowCells(a[k] as Entry)} |`);
+    for (const k of [...removed].sort(defaultsFirst)) {
+      lines.push(`| \`${k}\`${mark(k)} | ${rowCells(a[k] as Entry)} |`);
     }
   }
 

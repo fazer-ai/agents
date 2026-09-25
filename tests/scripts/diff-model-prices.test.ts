@@ -91,13 +91,66 @@ describe("diffModelPrices", () => {
 
   // A default's row is told once, in the defaults table, with every rate that moved (tiers and a
   // rate that went from none to a price included), and not again under Changed.
-  test("each model appears once: a default is told in its own table only", () => {
-    expect(md.split("`gpt-x`").length - 1).toBe(2);
+
+  // A default stands out where it appears (marked, listed first) and is still told exactly once,
+  // with every rate that moved, tiers and a rate that went from none to a price included.
+  test("a default is marked and listed first, and each model appears once", () => {
     const changedSection = md.slice(
       md.indexOf("## Changed"),
       md.indexOf("## Added"),
     );
-    expect(changedSection).not.toContain("gpt-x");
+    expect(changedSection).toContain(
+      "| `gpt-x` (default) | input | $1 | $1.25 |",
+    );
+    expect(changedSection).toContain(
+      "| `gpt-x` (default) | cache write | none | $1.5 |",
+    );
+    expect(changedSection).toContain(
+      "| `gpt-x` (default) | input above 272K | $2 | $2.5 |",
+    );
+    expect(changedSection.indexOf("gpt-x")).toBeLessThan(
+      changedSection.indexOf("moved-model"),
+    );
+    for (const name of ["`gpt-x`", "`new-model`", "`old-model`"])
+      expect(md.split(name).length - 1).toBeGreaterThan(0);
+    // One row per changed rate, one row per added or removed model, and nothing else names them.
+    expect(md.split("`new-model`").length - 1).toBe(1);
+    expect(md.split("`old-model`").length - 1).toBe(1);
+    expect(md).toContain("Rows marked (default) are what an agent");
+    expect(md).not.toContain("## Provider defaults");
+  });
+
+  // A default's row that goes away, or moves to another key of the same model, is told as the
+  // rows it was, with all its rates (review round 3).
+  test("a default whose row disappears or changes key keeps every rate in the summary", () => {
+    const moved = diffModelPrices(
+      table(SHA_OLD, "2026-09-18", {
+        "deepseek-chat": { input: 0.28, cachedInput: 0.028, output: 0.42 },
+        "gpt-x": {
+          input: 1,
+          output: 8,
+          tiers: [{ above: 272_000, input: 2, cachedInput: 0.2, output: 12 }],
+        },
+      }),
+      table(SHA_NEW, "2026-09-25", {
+        "deepseek/deepseek-chat": {
+          input: 0.28,
+          cachedInput: 0.028,
+          output: 0.42,
+        },
+      }),
+      DEFAULTS,
+    ).markdown;
+    const added = moved.slice(
+      moved.indexOf("## Added"),
+      moved.indexOf("## Removed"),
+    );
+    const removed = moved.slice(moved.indexOf("## Removed"));
+    expect(added).toContain("| `deepseek/deepseek-chat` (default) | $0.28 |");
+    expect(removed).toContain("| `deepseek-chat` (default) | $0.28 |");
+    expect(removed).toContain(
+      "above 272K: input $2, cached input $0.2, cache write none, output $12",
+    );
   });
 
   test("an added model lists its rates, and a removed one the rates it had", () => {
@@ -106,56 +159,6 @@ describe("diffModelPrices", () => {
     const removed = md.slice(md.indexOf("## Removed"));
     expect(removed).toContain(
       "| `old-model` | $5 | none | none | $15 | none |",
-    );
-  });
-
-  test("the provider defaults come first, each with what happened to its row", () => {
-    const defaults = md.indexOf("## Provider defaults");
-    expect(defaults).toBeGreaterThan(-1);
-    expect(defaults).toBeLessThan(md.indexOf("## Changed"));
-    expect(md.indexOf("## Changed")).toBeLessThan(md.indexOf("## Added"));
-    expect(md.indexOf("## Added")).toBeLessThan(md.indexOf("## Removed"));
-
-    const section = md.slice(defaults, md.indexOf("## Changed"));
-    expect(section).toContain(
-      "| openai | `gpt-x` | `gpt-x` | **input $1 to $1.25, cache write none to $1.5, input above 272K $2 to $2.5** |",
-    );
-    // Found the way the runtime finds it: Google's rows carry the `gemini/` prefix.
-    expect(section).toContain(
-      "| google | `gemini-y` | `gemini/gemini-y` | unchanged |",
-    );
-    expect(section).toContain(
-      "| deepseek | `deepseek-chat` | `deepseek-chat` | unchanged |",
-    );
-    // openai-compatible has no default model and no price to report.
-    expect(section).not.toContain("openai-compatible");
-  });
-
-  test("a default whose row appears or disappears is called out as such", () => {
-    const gone = table(SHA_NEW, "2026-09-25", {
-      ...structuredClone(OLD.models),
-      "gemini/gemini-y": undefined as never,
-    });
-    delete gone.models["gemini/gemini-y"];
-    const lost = diffModelPrices(OLD, gone, DEFAULTS).markdown;
-    expect(lost).toContain(
-      "| google | `gemini-y` | `gemini/gemini-y` | **removed**: its calls lose their price |",
-    );
-    expect(lost).not.toContain("## Removed");
-
-    const found = diffModelPrices(
-      table(SHA_OLD, "2026-09-18", { "steady-model": { input: 1, output: 2 } }),
-      table(SHA_NEW, "2026-09-25", {
-        "steady-model": { input: 1, output: 2 },
-        "gpt-x": { input: 1, output: 8 },
-      }),
-      DEFAULTS,
-    ).markdown;
-    expect(found).toContain(
-      "| openai | `gpt-x` | `gpt-x` | **added**: input $1, cached input none, cache write none, output $8 |",
-    );
-    expect(found).toContain(
-      "| google | `gemini-y` | none | not in the table, so never priced |",
     );
   });
 

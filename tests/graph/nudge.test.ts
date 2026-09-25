@@ -808,13 +808,18 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       origin: "followup",
       messageId: 77002,
       step: 1,
+      // Issue #855: every message the turn created, and how long it took.
+      sentMessageIds: [77002],
     });
+    expect(typeof line?.turnMs).toBe("number");
     expect(line).not.toHaveProperty("integrationInstanceId");
   });
 
   test("an event that only left a note records no message to badge", async () => {
     await seedConv(8463, "User");
     const s = stub();
+    (s.client as unknown as Record<string, unknown>).sendPrivateNote =
+      async () => ({ id: 77003 });
     const outcome = await runAgentNudge({
       tenantId,
       threadId: `${tenantId}:${instanceId}:8463`,
@@ -837,6 +842,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     const line = await originLine(8463);
     expect(line).toMatchObject({ origin: "event", outcome: "noted" });
     expect(line).not.toHaveProperty("messageId");
+    // Issue #855: the note is still a message the turn created, and the screen hangs its usage there.
+    expect(line).toMatchObject({ sentMessageIds: [77003] });
   });
 
   // The other half of the #454 cause fix. A follow-up must ALWAYS have a way to say nothing: the

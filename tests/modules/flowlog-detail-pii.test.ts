@@ -632,10 +632,18 @@ describe.skipIf(!dbUp)(
           },
         }),
       ).rejects.toThrow();
-      const rows = await turnRows(9605, ["generate"]);
+      // Waited for by the line that carries the failure: the turn also closes on a `generate` line of
+      // its own (issue #855), and the writes are not awaited, so either can land first.
+      let rows = await turnRows(9605, ["generate"]);
+      for (let i = 0; i < 200 && !rows.some((r) => r.errorMessage); i++) {
+        await new Promise((r) => setTimeout(r, 20));
+        rows = await turnRows(9605, ["generate"]);
+      }
       expectNoMarkers(rows, [NAME, PHONE, ATTR, ASKED]);
       // The line still has to be worth reading: a status is what an operator acts on.
-      const generate = rows.find((r) => r.stage === "generate");
+      const generate = rows.find(
+        (r) => r.stage === "generate" && r.errorMessage != null,
+      );
       expect(generate?.errorMessage).toContain("400");
 
       const deliveries = await alertsFor(channel.id);

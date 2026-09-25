@@ -2142,6 +2142,9 @@ model LlmUsage {
   // (issue #839). Null for rows from before the column and for a call no turn owns. The playground
   // groups a reopened session's calls by it, so each message gets back the line it had live.
   turnId              String?  @map("turn_id")
+  // How long the call took, in milliseconds, as the capture measured it (issue #855). Null for rows
+  // from before the column and for a call nothing timed.
+  durationMs          Int?     @map("duration_ms")
   createdAt           DateTime @default(now()) @map("created_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)

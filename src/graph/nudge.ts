@@ -22,6 +22,7 @@ import {
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import { recordSends } from "@/modules/chatwoot/record-sends";
 import { withAuthContextSection } from "@/modules/contact-auth/context";
 import {
   authorizeContact,
@@ -440,6 +441,8 @@ export function renderNudge(
 export async function runAgentNudge(
   params: RunAgentNudgeParams,
 ): Promise<RunAgentNudgeOutcome> {
+  // The turn's wall time starts here (issue #855).
+  const turnStartedAt = performance.now();
   const base = params.base ?? basePrisma;
   const parsed = parseThreadId(params.threadId);
   // Defense-in-depth: the thread must belong to the dispatching tenant (the checkpointer is not
@@ -650,6 +653,8 @@ export async function runAgentNudge(
     const id = (res as { id?: unknown } | null)?.id;
     if (typeof id === "number" && Number.isSafeInteger(id)) sentMessageId = id;
   };
+  // What the client below noted, once it exists. Before it does, the turn has created nothing.
+  let sentIds: () => number[] = () => [];
   const markFollowUp = (outcome: RunAgentNudgeOutcome): void => {
     const origin = nudgeOrigin(params.nudge);
     emitFlowEvent(flow, {
@@ -662,6 +667,10 @@ export async function runAgentNudge(
         origin,
         // Set only by a send that reached the customer, so a note or a silence carries none.
         ...(sentMessageId !== null ? { messageId: sentMessageId } : {}),
+        // Every message the turn created, the note included, and how long it took (issue #855): what
+        // the conversation screen hangs the turn's usage on.
+        ...(sentIds().length > 0 ? { sentMessageIds: sentIds() } : {}),
+        turnMs: Math.round(performance.now() - turnStartedAt),
         ...(origin === "event" && params.nudge.integrationInstanceId
           ? { integrationInstanceId: params.nudge.integrationInstanceId }
           : {}),
@@ -671,11 +680,17 @@ export async function runAgentNudge(
 
   // 2. Client + tools (network, outside the tx). The bot token is the persona's, so the proactive
   // message is attributed to this persona's Agent Bot in Chatwoot.
-  const client = await loadChatwootClient(tenantId, instanceId, {
-    base,
-    makeClient: params.deps?.makeClient,
-    botToken: cfg.agentBotToken ?? undefined,
-  });
+  //
+  // Wrapped so the turn knows every message it created, notes included (issue #855).
+  const recorded = recordSends(
+    await loadChatwootClient(tenantId, instanceId, {
+      base,
+      makeClient: params.deps?.makeClient,
+      botToken: cfg.agentBotToken ?? undefined,
+    }),
+  );
+  const client = recorded.client;
+  sentIds = recorded.sentIds;
 
   // NOTE: Live-ownership probe (the opt-in requireLiveBotOwnership path): fetch the REAL
   // conversation from Chatwoot, reconcile the mirror with what came back (the GET is fresher than

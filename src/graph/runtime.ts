@@ -35,6 +35,7 @@ import {
   isIncomingMessage,
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
+import { recordSends } from "@/modules/chatwoot/record-sends";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import type { AuthContext } from "@/modules/contact-auth/check";
@@ -886,6 +887,8 @@ function channelCanReadReceipt(channelType: string | null): boolean {
 async function runTurnBody(
   params: RunTurnBodyParams,
 ): Promise<RunAgentTurnOutcome> {
+  // The turn's wall time starts here, before the config is read (issue #855).
+  const turnStartedAt = performance.now();
   // Every real send in this function is one statement after an ask on this. The default is what a
   // turn with nothing to be exclusive about wants: send.
   const askClaim = params.claimBeforeSend ?? (async () => true);
@@ -943,11 +946,16 @@ async function runTurnBody(
 
   // Load the client + tools (network, outside the tx). The bot token is the PERSONA's, so replies are
   // attributed to this persona's Agent Bot in Chatwoot.
-  const client = await loadChatwootClient(tenantId, instanceId, {
-    base,
-    makeClient: params.deps?.makeClient,
-    botToken: loaded.agentBotToken ?? undefined,
-  });
+  //
+  // Wrapped so the turn knows which messages it created, whoever sent them (issue #855).
+  const recorded = recordSends(
+    await loadChatwootClient(tenantId, instanceId, {
+      base,
+      makeClient: params.deps?.makeClient,
+      botToken: loaded.agentBotToken ?? undefined,
+    }),
+  );
+  const client = recorded.client;
 
   // The question, and it is asked AT each outward write rather than somewhere upstream of it. Four
   // review rounds found the same defect in four different places, and every one of them was an ask
@@ -3118,20 +3126,29 @@ async function runTurnBody(
     // stamp is what the turn had committed to at that instant. A reservation released by a failed
     // download, or a queue the declared silence dropped, are both a commitment that never landed;
     // here there is nothing left to guess about.
-    if (silenceAsked) {
-      emitFlowEvent(flow, {
-        stage: "generate",
-        level: "info",
-        status: "ok",
-        detail: {
-          turnDelivered: turnReachedTheCustomer({
-            balloons: deliveredBalloons,
-            attachment: sentAttachment,
-            spokeOutsideTheReply: turnState.spokeOutsideTheReply,
-          }),
-        },
-      });
-    }
+    //
+    // THE SAME LINE CLOSES EVERY TURN (issue #855), with how long the turn took and the ids of the
+    // messages it created, so the conversation screen can hang what the turn spent on the turn's own
+    // last bubble. The answer above rides on it only when the silence tool asked.
+    const sentMessageIds = recorded.sentIds();
+    emitFlowEvent(flow, {
+      stage: "generate",
+      level: "info",
+      status: "ok",
+      detail: {
+        turnMs: Math.round(performance.now() - turnStartedAt),
+        ...(sentMessageIds.length > 0 ? { sentMessageIds } : {}),
+        ...(silenceAsked
+          ? {
+              turnDelivered: turnReachedTheCustomer({
+                balloons: deliveredBalloons,
+                attachment: sentAttachment,
+                spokeOutsideTheReply: turnState.spokeOutsideTheReply,
+              }),
+            }
+          : {}),
+      },
+    });
     status.finished(deliveredBalloons);
     // Last, so nothing above is skipped by it.
     // biome-ignore lint/correctness/noUnsafeFinally: the throw replaces the settling outcome on purpose

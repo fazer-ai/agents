@@ -112,6 +112,29 @@ describe("which bubble a proactive turn badges", () => {
     expect(tl.followUpBadges.get("m-41")?.step).toBe(2);
   });
 
+  // Review round 1: during the deploy a conversation holds both kinds of line, and an older one's
+  // time guess must not take the bubble a newer recorded line names.
+  test("an old line's guess cannot take the bubble a recorded line names", async () => {
+    const tl = buildTimeline(
+      [msg(80, T0 + 60_000), msg(81, T0 + 120_000)],
+      [
+        entry({ id: "old", kind: "followup", originRecorded: false }),
+        entry({
+          id: "rec",
+          kind: "event",
+          messageId: 80,
+          integrationName: "ERP",
+          at: new Date(T0 + 55_000).toISOString(),
+        }),
+      ],
+      3,
+    );
+    expect(tl.followUpBadges.get("m-80")?.kind).toBe("event");
+    // The old line guesses the next free bubble in its window instead.
+    expect(tl.followUpBadges.get("m-81")?.kind).toBe("followup");
+    expect(markers(tl)).toEqual([]);
+  });
+
   test("only the inactivity sequence anchors the 'complete' line", async () => {
     const tl = buildTimeline(
       [msg(60, T0 + 1_000), msg(61, T0 + 2_000)],

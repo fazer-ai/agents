@@ -90,6 +90,15 @@ export function buildTimeline(
   const sortedFollowUps = [...followUpEntries].sort(
     (a, b) => Date.parse(a.at) - Date.parse(b.at),
   );
+  // Every id a recorded entry names is reserved before an old line guesses (review round 1). During
+  // the deploy that brings this in, a conversation holds both kinds, and an old line's time window
+  // could otherwise take the bubble a newer recorded line names: the event's own message would read
+  // "Follow-up" and the event would fall to a marker.
+  const reserved = new Set(
+    followUpEntries.flatMap((e) =>
+      e.originRecorded && e.messageId != null ? [e.messageId] : [],
+    ),
+  );
   for (const f of sortedFollowUps) {
     let bestIdx = -1;
     if (f.originRecorded) {
@@ -104,6 +113,7 @@ export function buildTimeline(
         if (claimed.has(i)) continue;
         const m = messages[i];
         if (m?.messageType !== 1 || m.createdAt == null) continue;
+        if (m.id != null && reserved.has(m.id)) continue;
         const mAt = m.createdAt * 1000;
         // The reply lands at or shortly after the generate log (small back-tolerance for clock skew).
         if (mAt >= fAt - 5_000 && mAt <= fAt + 300_000) {

@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
-import { recordSends, SENT_IDS_CAP } from "@/modules/chatwoot/record-sends";
+import {
+  noteLandedMessage,
+  recordSends,
+  SENT_IDS_CAP,
+} from "@/modules/chatwoot/record-sends";
 
 // Issue #855: a turn knows which messages it created, noted where Chatwoot hands their ids back. The
 // rule is on the client, so whoever sends (the reply, a tool, the handoff's closing line) is covered.
@@ -75,6 +79,15 @@ describe("the messages a turn created", () => {
     };
     await expect(client.sendMessage(1, "a")).rejects.toThrow("chatwoot 500");
     expect(sentIds()).toEqual([]);
+  });
+
+  test("a message a read-back confirmed is noted once, and only on a recorded client", async () => {
+    const { fake, client, sentIds } = wrap();
+    await client.sendMessage(1, "a");
+    noteLandedMessage(client, 555);
+    noteLandedMessage(client, 555);
+    noteLandedMessage(fake as unknown as ChatwootClient, 777);
+    expect(sentIds()).toEqual([100, 555]);
   });
 
   test("the list is bounded", async () => {

@@ -389,6 +389,7 @@ function statusClient(opts: { failOn?: string } = {}) {
 function stub() {
   const messages: Array<[number, string]> = [];
   const notes: Array<[number, string]> = [];
+  const noteIds: number[] = [];
   const labelSets: string[][] = [];
   const resolved: number[] = [];
   // What each status call asked for, beside `resolved`, which only names the conversation.
@@ -408,7 +409,10 @@ function stub() {
     sendPrivateNote: async (c: number, t: string) => {
       notes.push([c, t]);
       order.push("note");
-      return {};
+      // Chatwoot answers a create with the row it made (issue #855).
+      const id = 88_000 + notes.length;
+      noteIds.push(id);
+      return { id };
     },
     getConversationLabels: async () => currentLabels,
     setConversationLabels: async (_c: number, labels: string[]) => {
@@ -433,6 +437,7 @@ function stub() {
     client,
     messages,
     notes,
+    noteIds,
     labelSets,
     resolved,
     statuses,
@@ -440,6 +445,27 @@ function stub() {
     order,
     makeClient: async () => client,
   };
+}
+
+// The line a proactive turn closed on (issue #855): the one carrying `turnMs`. Polled, because the
+// write is not awaited.
+async function closingLine(convId: number): Promise<Record<string, unknown>> {
+  for (let i = 0; i < 100; i++) {
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+      },
+      select: { detail: true },
+    });
+    const hit = rows
+      .map((r) => r.detail as Record<string, unknown> | null)
+      .find((d) => typeof d?.turnMs === "number");
+    if (hit) return hit;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`conversation ${convId} never closed its turn`);
 }
 
 async function seedConv(
@@ -1690,6 +1716,11 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.messages).toEqual([]);
     expect(s.statuses).toEqual([[9661, "open"]]);
     expect(s.notes).toEqual([[9661, skipHandoverNote("needs_human", null)]]);
+    // Issue #855 (review round 1): a silent turn writes no outcome line, and still closes on one,
+    // naming the note it left.
+    const closing = await closingLine(9661);
+    expect(typeof closing.turnMs).toBe("number");
+    expect(closing.sentMessageIds).toEqual(s.noteIds);
     // The label still applies: it is how the operator triages what the bot left behind.
     expect(s.labelSets).toEqual([["follow-up"]]);
   });

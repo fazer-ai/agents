@@ -4,6 +4,7 @@ import {
   type ChatwootClient,
   ChatwootMissingTokenError,
 } from "@/modules/chatwoot/client";
+import { recordSends } from "@/modules/chatwoot/record-sends";
 import {
   deliverReply,
   readSplitConfig,
@@ -386,6 +387,27 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     // match already makes an older message unable to answer, so a loop that kept paging would
     // return the same verdict and only spend reads.
     expect(calls.getMessages).toBe(2);
+  });
+
+  // Issue #855: a balloon whose create response was lost but which the read-back found is still one
+  // of the turn's messages, and the turn's closing line names it with the others, in order.
+  test("a balloon the read-back found is noted among the turn's messages", async () => {
+    const rec = { sent: [] as string[], typing: [] as boolean[] };
+    const recorded = recordSends(
+      failingStub(rec, (_c, n) => n === 2, {
+        storeOnFailure: (n) => n === 2,
+      }),
+    );
+    const out = await deliverReply(
+      recorded.client,
+      1,
+      three,
+      { ...SPLIT_DEFAULTS, enabled: true },
+      noSleep,
+    );
+    expect(out.delivered).toBe(3);
+    // 100 is the customer's "oi"; the three balloons are 101, 102 (response lost) and 103.
+    expect(recorded.sentIds()).toEqual([101, 102, 103]);
   });
 
   // The other side of that rule, so the pagination cannot be "always page until something matches":

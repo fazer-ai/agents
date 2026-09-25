@@ -22,6 +22,18 @@ const CREATES = [
 // A turn that sends more than this is a runaway, and the line it is written on is bounded.
 export const SENT_IDS_CAP = 50;
 
+// The clients `recordSends` built, with how to note a message on each. Keyed by the wrapper itself,
+// so whoever holds the turn's client can report a message it CONFIRMED rather than created.
+const noters = new WeakMap<object, (id: unknown) => void>();
+
+// A message the turn's client did create even though the create did not say so: its response was
+// lost, and a read-back found it by the id the send carried (`findLandedMessage`, issue #499). The
+// message is on the customer's screen, so it is one of the turn's. A client that is not a recorded
+// one ignores it.
+export function noteLandedMessage(client: ChatwootClient, id: number): void {
+  noters.get(client)?.({ id });
+}
+
 export interface RecordedClient {
   client: ChatwootClient;
   // The ids Chatwoot returned, in the order the creates RETURNED.
@@ -35,6 +47,7 @@ export function recordSends(client: ChatwootClient): RecordedClient {
     if (
       typeof id === "number" &&
       Number.isSafeInteger(id) &&
+      !ids.includes(id) &&
       ids.length < SENT_IDS_CAP
     ) {
       ids.push(id);
@@ -56,5 +69,6 @@ export function recordSends(client: ChatwootClient): RecordedClient {
       };
     },
   });
+  noters.set(recorded, note);
   return { client: recorded, sentIds: () => [...ids] };
 }

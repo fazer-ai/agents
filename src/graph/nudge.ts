@@ -438,11 +438,51 @@ export function renderNudge(
   return parts.join("\n");
 }
 
+// What the closing line needs from inside the turn, filled in once the turn has a client.
+interface NudgeClosing {
+  flow: FlowContext | null;
+  sentIds: () => number[];
+  // The outcome line (`markFollowUp`) was written, and it carries the same two fields.
+  written: boolean;
+}
+
+// EVERY PROACTIVE TURN CLOSES ON ONE LINE (issue #855, review round 1). The outcome line carries the
+// messages the turn created and its time, but only the outcomes that reach it: a turn that decided
+// on silence can still hand the conversation over with a note, and a generation that failed can
+// still deliver a promised handoff line before it throws. Written here, around the whole turn, for
+// whichever way it ended without that line, so no message the turn created goes unnamed.
 export async function runAgentNudge(
   params: RunAgentNudgeParams,
 ): Promise<RunAgentNudgeOutcome> {
-  // The turn's wall time starts here (issue #855).
   const turnStartedAt = performance.now();
+  const closing: NudgeClosing = {
+    flow: null,
+    sentIds: () => [],
+    written: false,
+  };
+  try {
+    return await runAgentNudgeBody(params, closing, turnStartedAt);
+  } finally {
+    if (closing.flow && !closing.written) {
+      const sentMessageIds = closing.sentIds();
+      emitFlowEvent(closing.flow, {
+        stage: "generate",
+        level: "info",
+        status: "ok",
+        detail: {
+          turnMs: Math.round(performance.now() - turnStartedAt),
+          ...(sentMessageIds.length > 0 ? { sentMessageIds } : {}),
+        },
+      });
+    }
+  }
+}
+
+async function runAgentNudgeBody(
+  params: RunAgentNudgeParams,
+  closing: NudgeClosing,
+  turnStartedAt: number,
+): Promise<RunAgentNudgeOutcome> {
   const base = params.base ?? basePrisma;
   const parsed = parseThreadId(params.threadId);
   // Defense-in-depth: the thread must belong to the dispatching tenant (the checkpointer is not
@@ -656,6 +696,7 @@ export async function runAgentNudge(
   // What the client below noted, once it exists. Before it does, the turn has created nothing.
   let sentIds: () => number[] = () => [];
   const markFollowUp = (outcome: RunAgentNudgeOutcome): void => {
+    closing.written = true;
     const origin = nudgeOrigin(params.nudge);
     emitFlowEvent(flow, {
       stage: "generate",
@@ -691,6 +732,8 @@ export async function runAgentNudge(
   );
   const client = recorded.client;
   sentIds = recorded.sentIds;
+  closing.flow = flow;
+  closing.sentIds = recorded.sentIds;
 
   // NOTE: Live-ownership probe (the opt-in requireLiveBotOwnership path): fetch the REAL
   // conversation from Chatwoot, reconcile the mirror with what came back (the GET is fresher than

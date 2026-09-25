@@ -105,6 +105,23 @@ describe("emailBodyImageUrlsFrom", () => {
     ).toBe(false);
   });
 
+  test("the src attribute is read as HTML writes it: unquoted, and never a data-src", () => {
+    const rel = "/rails/active_storage/blobs/redirect/u--v/photo.png";
+    const ca = {
+      email: {
+        html_content: {
+          full: [
+            `<img src=${rel}>`,
+            `<img data-src="https://cdn.shop.example/p.png" src="${BLOB}">`,
+            `<img alt="a > b src=${BLOB2}" src='${BLOB2}'>`,
+            `<img data-src="${BLOB2}x" alt="only a placeholder">`,
+          ].join(""),
+        },
+      },
+    };
+    expect(emailBodyImageUrlsFrom(ca)).toEqual([rel, BLOB, BLOB2]);
+  });
+
   test("the same blob in both bodies is one image", () => {
     const ca = {
       email: {

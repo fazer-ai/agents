@@ -12,7 +12,13 @@
 // path starting at `/rails/active_storage/` is kept as written: it is relative to the Chatwoot host,
 // where the dashboard renders it, and whoever downloads resolves it against the instance's address.
 
-const IMG_SRC = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
+// An `<img>` tag whose attributes may hold a quoted `>`, and the attributes inside it one at a time,
+// as HTML tokenizes them: a value is double-quoted, single-quoted or bare, and `data-src`, or a
+// `src=` inside another attribute's value, is not the `src`. A quote left open runs to the end of
+// the body, as a browser reads it, so a body full of them costs one pass, not one per tag.
+const IMG_TAG = /<img\b((?:[^>"']|"[^"]*"?|'[^']*'?)*)>?/gi;
+const ATTRIBUTE =
+  /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"?|'([^']*)'?|([^\s"'=<>`]+)))?/g;
 const BLOB_PATH = "/rails/active_storage/";
 
 // Whether a URL, once parsed and normalized (`..`, `%2e%2e`), still names a path under Active
@@ -36,6 +42,13 @@ function bodyOf(email: Record<string, unknown>, key: string): string {
   return typeof full === "string" ? full : "";
 }
 
+function srcOf(attributes: string): string {
+  for (const a of attributes.matchAll(ATTRIBUTE)) {
+    if (a[1]?.toLowerCase() === "src") return a[2] ?? a[3] ?? a[4] ?? "";
+  }
+  return "";
+}
+
 export function emailBodyImageUrlsFrom(
   contentAttributes: Record<string, unknown> | null | undefined,
 ): string[] {
@@ -48,8 +61,10 @@ export function emailBodyImageUrlsFrom(
     bodyOf(email, "html_content"),
     bodyOf(email, "text_content"),
   ]) {
-    for (const m of body.matchAll(IMG_SRC)) {
-      const src = (m[1] ?? m[2] ?? "").trim().replace(/&amp;/g, "&");
+    for (const tag of body.matchAll(IMG_TAG)) {
+      const src = srcOf(tag[1] ?? "")
+        .trim()
+        .replace(/&amp;/g, "&");
       const absolute = /^https?:\/\//i.test(src) && inActiveStorage(src);
       const relative =
         src.startsWith(BLOB_PATH) && inActiveStorage(src, "http://relative");

@@ -22,6 +22,7 @@ import {
   tenantDeepLinkAction,
 } from "@/client/lib/tenantDeepLink";
 import { suppressUnloadPrompt } from "@/client/lib/unsavedGuard";
+import { useSessionRetry } from "@/client/lib/useSessionRetry";
 import { SWITCH_TENANT_PARAM } from "@/lib/console-params";
 
 // Applies the `?switchTenant=<id>` a console link carries (`src/modules/mcp/console-links.ts`).
@@ -86,6 +87,12 @@ export function TenantDeepLink({ children }: { children: ReactNode }) {
           : user.tenantId === null
             ? { kind: "unknown" }
             : { kind: "tenant", tenantId: user.tenantId };
+
+  // Waiting on the membership list a fresh login's `/auth/me` brings: ask again rather than hold the
+  // gate for a refresh nobody scheduled (review round 8).
+  useSessionRetry(
+    !!requested && !!user && !isSuperAdmin && user.tenants === undefined,
+  );
 
   const action = tenantDeepLinkAction({
     requested,

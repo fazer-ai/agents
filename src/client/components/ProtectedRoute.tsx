@@ -1,10 +1,11 @@
 import { Loader2 } from "lucide-react";
-import { type ReactNode, useEffect } from "react";
+import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router";
 import { Layout } from "@/client/components/Layout";
 import { TenantDeepLink } from "@/client/components/TenantDeepLink";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { isAdminRole } from "@/client/lib/roles";
+import { useSessionRetry } from "@/client/lib/useSessionRetry";
 import { SWITCH_TENANT_PARAM } from "@/lib/console-params";
 
 interface ProtectedRouteProps {
@@ -78,21 +79,11 @@ function switchesToAdministeredTenant(
   );
 }
 
-// How often the wait below asks `/auth/me` again. Exported for the test.
-export const SESSION_RETRY_MS = 2_000;
-
-// The wait for `/auth/me` after a fresh login. The login's own refresh is ONE attempt, so a blip there
-// would otherwise leave this spinner up for good (review round 7): it asks again until the session
-// arrives, and unmounts as soon as it does (or sends the visitor to /login if the answer is "signed
-// out", through the `!user` branch above).
+// The wait for `/auth/me` after a fresh login, asking again until the session arrives
+// (`useSessionRetry`). It unmounts as soon as it does, or sends the visitor to /login through the
+// `!user` branch above if the answer is "signed out".
 function SessionPending() {
-  const { refresh } = useAuth();
-  useEffect(() => {
-    const timer = setInterval(() => {
-      void refresh();
-    }, SESSION_RETRY_MS);
-    return () => clearInterval(timer);
-  }, [refresh]);
+  useSessionRetry(true);
   return (
     <div className="flex min-h-dvh items-center justify-center bg-bg-primary">
       <Loader2 className="h-6 w-6 animate-spin text-text-secondary" />

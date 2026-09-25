@@ -442,6 +442,35 @@ describe.skipIf(!dbUp)("a person with several tenants", () => {
     });
   });
 
+  // Review round 8: a fleet administrator's session has no tenant, and the answer still names the one
+  // the invitation joined, which the console opens on.
+  test("a fleet administrator accepting an invitation is told which tenant it joined", async () => {
+    const fleetEmail = `${tag}-fleet@x.test`;
+    const fleet = await person(fleetEmail, []);
+    await suDb.user.update({
+      where: { id: fleet },
+      data: { isSuperAdmin: true },
+    });
+    const { createInvite } = await import(
+      "@/api/features/invitations/invitation.service"
+    );
+    const { token } = await createInvite(
+      { tenantId: null, userId: personId, role: "SUPER_ADMIN" },
+      { tenantId: outside, email: fleetEmail, role: "AGENT" },
+      suDb,
+    );
+    const res = await server.handle(
+      req("/auth/accept-invite", {
+        method: "POST",
+        body: JSON.stringify({ token, password: PASSWORD }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.user.tenantId).toBeNull();
+    expect(body.joinedTenantId).toBe(outside.toString());
+  });
+
   // The password is optional on the wire only because an existing account proves itself another way.
   // A NEW account still needs one, of the usual length.
   test("an invitation for a new account without a password is refused", async () => {

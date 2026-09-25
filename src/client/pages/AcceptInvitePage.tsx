@@ -134,7 +134,7 @@ export function AcceptInvitePage() {
         clearParkedInvite();
         // Open the console on the tenant just joined, which for a person with other tenants is not
         // necessarily their default.
-        setActiveTenantId(data.user.tenantId);
+        setActiveTenantId(data.joinedTenantId);
         if (user) {
           // A session was already running, built for another tenant: reload onto the new one.
           window.location.assign("/");

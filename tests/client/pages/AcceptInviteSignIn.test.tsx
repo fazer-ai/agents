@@ -40,7 +40,13 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     accepted.push(JSON.parse(String(init?.body ?? "{}")).token ?? "");
     return new Response(
       JSON.stringify({
-        user: { id: "9", email: "g@x.test", role: "AGENT", tenantId: "20" },
+        user: {
+          id: "9",
+          email: "g@x.test",
+          role: "SUPER_ADMIN",
+          tenantId: null,
+        },
+        joinedTenantId: "20",
       }),
       { status: 200, headers: { "content-type": "application/json" } },
     );
@@ -144,6 +150,10 @@ describe("accepting an invitation by signing in", () => {
     await waitFor(() => {
       expect(sessionStorage.getItem(PARKED)).toBeNull();
     });
+    // A fleet administrator's session names no tenant; the console opens on the one just joined.
+    expect(sessionStorage.getItem("@app:active-tenant")).toBe("20");
+    sessionStorage.removeItem("@app:active-tenant");
+    localStorage.removeItem("@app:active-tenant");
   });
 
   // Signed in as somebody else, the login page would bounce straight back: that session ends first,

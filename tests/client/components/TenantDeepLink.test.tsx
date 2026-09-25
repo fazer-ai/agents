@@ -352,6 +352,23 @@ describe("TenantDeepLink", () => {
     expect(seenSearch).toBe("?switchTenant=20");
   });
 
+  // Review round 8: a tenant administrator's deep link waits in the gate, not the admin check, and
+  // that wait asks for the session again too.
+  test("a deep link waiting for the membership list keeps asking for it", async () => {
+    role = "TENANT_ADMIN";
+    userTenantId = "10";
+    userTenants = undefined;
+    refreshes = 0;
+    renderAt("?switchTenant=20");
+    await waitFor(
+      () => {
+        expect(refreshes).toBeGreaterThanOrEqual(1);
+      },
+      { timeout: 3_000 },
+    );
+    expect(shows("panel")).toBe(false);
+  });
+
   test("right after login, the admin gate waits for the membership list", async () => {
     role = "AGENT";
     userTenantId = "10";

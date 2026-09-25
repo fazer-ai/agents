@@ -344,7 +344,7 @@ const AUTH_USER_SELECT = {
 export async function acceptInvite(
   params: AcceptInviteParams,
   base: PrismaClient = basePrisma,
-): Promise<AuthUser> {
+): Promise<AuthUser & { joinedTenantId: bigint }> {
   const tokenHash = hashToken(params.token);
   const invite = await base.invitation.findUnique({
     where: { tokenHash },
@@ -421,6 +421,16 @@ export async function acceptInvite(
   });
   const session = sessionUserOf(row);
   if (!session) throw new InviteInvalidError();
-  if (session.role === "SUPER_ADMIN") return session;
-  return { ...session, tenantId: invite.tenantId, role: invite.role };
+  // `joinedTenantId` is where the invitation LEADS, apart from the session's own scope: a fleet
+  // administrator's session has no tenant (null), and the console still has to open on the one they
+  // just joined (review round 8).
+  if (session.role === "SUPER_ADMIN") {
+    return { ...session, joinedTenantId: invite.tenantId };
+  }
+  return {
+    ...session,
+    tenantId: invite.tenantId,
+    role: invite.role,
+    joinedTenantId: invite.tenantId,
+  };
 }

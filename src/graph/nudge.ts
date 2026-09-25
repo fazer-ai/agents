@@ -70,6 +70,7 @@ import {
   nudgeMessage,
   turnWasCalledOff,
 } from "./markers";
+import { nudgeOrigin } from "./nudge-origin";
 import { type OwnershipVerdict, withOwnershipFence } from "./ownership-fence";
 import {
   type AgentConfig,
@@ -164,6 +165,10 @@ export interface AgentNudge {
   // would share a window. The inbound dispatcher passes the delivery row's id, which is exactly one
   // occasion — a redelivery of that same row is the same occasion, and gets the same key on purpose.
   occasionId?: string;
+  // The inbound integration instance whose event this is (issue #846), set by the inbound dispatcher
+  // and by nothing else. Recorded on the flow line so the conversation can name the integration that
+  // spoke; never rendered to the model.
+  integrationInstanceId?: string;
 }
 
 // WHICH SCHEDULED OCCASION A REFUSAL BELONGS TO. The `over` line is one per occasion, and the retry
@@ -636,7 +641,17 @@ export async function runAgentNudge(
       );
     }
   };
+  // The Chatwoot id of the message this turn put in front of the customer (a message or a template,
+  // never a note), so the conversation badges THAT bubble (issue #846). It used to pick the first
+  // outgoing message within five minutes of the line, which is a guess: a nudge that only left a note
+  // lent its badge to whatever ordinary reply came next.
+  let sentMessageId: number | null = null;
+  const keepSentId = (res: unknown): void => {
+    const id = (res as { id?: unknown } | null)?.id;
+    if (typeof id === "number" && Number.isSafeInteger(id)) sentMessageId = id;
+  };
   const markFollowUp = (outcome: RunAgentNudgeOutcome): void => {
+    const origin = nudgeOrigin(params.nudge);
     emitFlowEvent(flow, {
       stage: "generate",
       status: "ok",
@@ -644,6 +659,12 @@ export async function runAgentNudge(
         trigger: params.nudge.source,
         outcome,
         ...(params.nudge.step != null ? { step: params.nudge.step } : {}),
+        origin,
+        // Set only by a send that reached the customer, so a note or a silence carries none.
+        ...(sentMessageId !== null ? { messageId: sentMessageId } : {}),
+        ...(origin === "event" && params.nudge.integrationInstanceId
+          ? { integrationInstanceId: params.nudge.integrationInstanceId }
+          : {}),
       },
     });
   };
@@ -1611,7 +1632,7 @@ export async function runAgentNudge(
       if (!(await stillWanted())) return "stale";
       if (sendModeNow() !== "freeform") return await noteOutsideWindow();
       delivered = true;
-      await client.sendMessage(conversationId, sign(line2));
+      keepSentId(await client.sendMessage(conversationId, sign(line2)));
       await recordProactiveSpeech();
       logger.info(
         "agentNudge handed off: conv=%s source=%s",
@@ -2559,7 +2580,7 @@ export async function runAgentNudge(
     // lost to that rejection — on the handoff path, permanently.
     if (canMessagePost && sendModeNow() === "freeform") {
       delivered = true;
-      await client.sendMessage(conversationId, sign(screened));
+      keepSentId(await client.sendMessage(conversationId, sign(screened)));
       await recordProactiveSpeech();
       logger.info(
         "agentNudge messaged: conv=%s source=%s",
@@ -2583,7 +2604,7 @@ export async function runAgentNudge(
       );
       if (payload) {
         delivered = true;
-        await client.sendTemplate(conversationId, payload);
+        keepSentId(await client.sendTemplate(conversationId, payload));
         await recordProactiveSpeech();
         logger.info(
           "agentNudge templated (outside 24h window): conv=%s source=%s template=%s",

@@ -4,7 +4,9 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { modelConfigSchema } from "@/graph/model-config";
 import { createChatModel } from "@/graph/models";
+import { isNudgeOrigin } from "@/graph/nudge-origin";
 import { loadAgentConfig } from "@/graph/prepare";
+import { parseDbId } from "@/lib/db-id";
 import {
   AppError,
   ConflictError,
@@ -476,11 +478,22 @@ export interface ConversationDetail {
 }
 
 // A compact, PII-free activity marker drawn inline in the conversation timeline. Derived from the
-// ExecutionLog: a tool call (kind "tool"), a proactive follow-up send (kind "followup"), or an
-// appointment reminder send (kind "reminder").
+// ExecutionLog: a tool call (kind "tool") or a proactive turn, by where it came from: an inactivity
+// follow-up ("followup"), an appointment reminder ("reminder"), a channel-redirect follow-up
+// ("redirect"), or an inbound integration's event ("event", issue #846).
 export interface ConversationTrailEntry {
   id: string;
-  kind: "tool" | "followup" | "reminder";
+  kind: "tool" | "followup" | "reminder" | "redirect" | "event";
+  // Proactive rows only: whether the origin above was RECORDED by the turn (true) or inferred from
+  // the nudge source, for a line written before #846 (false). The screen matches only a recorded
+  // row by `messageId`; an inferred one keeps the time-window match it always had. null on tools.
+  originRecorded: boolean | null;
+  // Proactive rows only: the Chatwoot id of the message the turn sent the customer, or null when it
+  // sent none (a note, a silence) or the line predates #846.
+  messageId: number | null;
+  // "event" rows only: the name of the integration that spoke, null when the line names no instance
+  // or the instance no longer exists (the screen then says "External event").
+  integrationName: string | null;
   // tool → the tool's name; followup/reminder → the nudge source (e.g. "followup").
   name: string | null;
   status: string | null;
@@ -1472,6 +1485,30 @@ export async function getConversationDetail(
     if (into.has(r.turnId)) continue;
     into.set(r.turnId, d.turnDelivered);
   }
+  // The integrations "event" rows name, resolved in one read under the tenant's scope. An instance
+  // deleted since, or one of another tenant, is simply absent and the row falls back to no name.
+  const instanceIds = [
+    ...new Set(
+      trailRows.flatMap((r) => {
+        const d = (r.detail ?? null) as Record<string, unknown> | null;
+        const raw =
+          r.stage === "generate" && typeof d?.integrationInstanceId === "string"
+            ? parseDbId(d.integrationInstanceId)
+            : null;
+        return raw === null ? [] : [raw];
+      }),
+    ),
+  ];
+  const instanceNames = new Map<string, string>();
+  if (instanceIds.length > 0) {
+    const found = await runScopedOn(base, ctx, (db) =>
+      db.integrationInstance.findMany({
+        where: { id: { in: instanceIds } },
+        select: { id: true, name: true },
+      }),
+    );
+    for (const f of found) instanceNames.set(String(f.id), f.name);
+  }
   const trail: ConversationTrailEntry[] = [];
   for (const r of trailRows) {
     const detail = (r.detail ?? null) as Record<string, unknown> | null;
@@ -1495,6 +1532,9 @@ export async function getConversationDetail(
         // silence tool's line and by no other, so a row without one keeps null: the fact is about
         // the turn, and the claim is the silence marker's alone to make.
         errorMessage: r.status === "error" ? r.errorMessage : null,
+        originRecorded: null,
+        messageId: null,
+        integrationName: null,
         turnDelivered:
           typeof detail?.turnDelivered === "boolean"
             ? (finalByTurn.get(r.turnId) ??
@@ -1508,10 +1548,25 @@ export async function getConversationDetail(
       detail &&
       typeof detail.trigger === "string"
     ) {
+      const recorded = isNudgeOrigin(detail.origin) ? detail.origin : null;
+      const kind: ConversationTrailEntry["kind"] =
+        recorded ??
+        // A line written before #846 carries no origin, and keeps the inference it always had.
+        (detail.trigger === "appointment_reminder" ? "reminder" : "followup");
       trail.push({
         id: String(r.id),
-        kind:
-          detail.trigger === "appointment_reminder" ? "reminder" : "followup",
+        kind,
+        originRecorded: recorded !== null,
+        messageId:
+          recorded !== null &&
+          typeof detail.messageId === "number" &&
+          Number.isSafeInteger(detail.messageId)
+            ? detail.messageId
+            : null,
+        integrationName:
+          kind === "event" && typeof detail.integrationInstanceId === "string"
+            ? (instanceNames.get(detail.integrationInstanceId) ?? null)
+            : null,
         name: detail.trigger,
         status: r.status,
         durationMs: r.durationMs,

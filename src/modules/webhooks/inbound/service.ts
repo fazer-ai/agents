@@ -453,11 +453,14 @@ function buildNudge(
   // distinct deliveries would otherwise describe themselves identically and the second, refused by
   // the spend ceiling inside the first's window, would lose its flow line and its alert.
   deliveryId: bigint,
+  // Which instance spoke, so the conversation can name it (issue #846).
+  integrationInstanceId: bigint,
 ): AgentNudge {
   return {
     source,
     kind: "agent_nudge",
     occasionId: `delivery:${deliveryId}`,
+    integrationInstanceId: String(integrationInstanceId),
     status: asString(payload.status) ?? null,
     value: typeof payload.value === "number" ? payload.value : null,
     currency: asString(payload.currency) ?? null,
@@ -619,6 +622,7 @@ export async function processInboundDelivery(
               source,
               instanceConfig,
               params.deliveryId,
+              delivery.integrationInstanceId,
             ),
           };
         }
@@ -654,7 +658,13 @@ export async function processInboundDelivery(
           kind: "nudge",
           threadId,
           deliverToResolved: generic,
-          nudge: buildNudge(payload, source, instanceConfig, params.deliveryId),
+          nudge: buildNudge(
+            payload,
+            source,
+            instanceConfig,
+            params.deliveryId,
+            delivery.integrationInstanceId,
+          ),
         };
       }
 

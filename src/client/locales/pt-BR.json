@@ -585,7 +585,10 @@
     "error": "Não foi possível carregar a conversa.",
     "followUp": {
       "badge": "Follow-up",
+      "badgeEvent": "Evento: {{name}}",
+      "badgeEventUnnamed": "Evento externo",
       "badgeN": "Follow-up {{step}}/{{total}}",
+      "badgeRedirect": "Follow-up de redirecionamento",
       "cadenceFirst": "após {{delay}} de silêncio",
       "cadenceNext": "{{delay}} após a anterior",
       "closedToday": "Fechado hoje ({{label}})",
@@ -663,8 +666,11 @@
     "trail": {
       "args": "Argumentos",
       "error": "Erro",
+      "eventHandled": "Evento: {{name}}",
+      "eventHandledUnnamed": "Evento externo",
       "followUpSent": "Follow-up enviado",
       "followUpSentN": "Follow-up {{step}} enviado",
+      "redirectSent": "Follow-up de redirecionamento enviado",
       "reminderSent": "Lembrete enviado",
       "result": "Resultado",
       "tool": "Usou uma ferramenta"

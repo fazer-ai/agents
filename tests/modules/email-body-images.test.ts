@@ -122,6 +122,33 @@ describe("emailBodyImageUrlsFrom", () => {
     expect(emailBodyImageUrlsFrom(ca)).toEqual([rel, BLOB, BLOB2]);
   });
 
+  test("the host check never sends a body image down from https to http", () => {
+    const path = "/rails/active_storage/blobs/redirect/s/a.png";
+    expect(
+      servedBy(`http://chat.example.com${path}`, "https://chat.example.com"),
+    ).toBe(false);
+    expect(
+      servedBy(`https://chat.example.com${path}`, "https://chat.example.com"),
+    ).toBe(true);
+    // An instance reached over plain HTTP inside its network still reads what the dashboard serves.
+    expect(
+      servedBy(`https://chat.example.com${path}`, "http://chat.example.com"),
+    ).toBe(true);
+  });
+
+  test("one blob named by different URLs is one image", () => {
+    const rel = "/rails/active_storage/blobs/redirect/same--sig/a.png";
+    const ca = {
+      email: {
+        html_content: {
+          full: `<img src="${rel}"><img src="https://chat.example.com${rel}?v=2">`,
+        },
+        text_content: { full: `<img src="https://chat.example.com${rel}">` },
+      },
+    };
+    expect(emailBodyImageUrlsFrom(ca)).toEqual([rel]);
+  });
+
   test("the same blob in both bodies is one image", () => {
     const ca = {
       email: {

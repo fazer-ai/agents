@@ -57,6 +57,7 @@ export function emailBodyImageUrlsFrom(
     : null;
   if (!email) return [];
   const out: string[] = [];
+  const seen = new Set<string>();
   for (const body of [
     bodyOf(email, "html_content"),
     bodyOf(email, "text_content"),
@@ -69,7 +70,12 @@ export function emailBodyImageUrlsFrom(
       const relative =
         src.startsWith(BLOB_PATH) && inActiveStorage(src, "http://relative");
       if (!absolute && !relative) continue;
-      if (!out.includes(src)) out.push(src);
+      // One blob is one image, however many URLs name it (a query, relative or absolute): each copy
+      // would cost a provider call and a slot under the cap.
+      const key = blobKeyOf(src);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(src);
     }
   }
   return out;
@@ -103,10 +109,14 @@ export function onChatwootHost(url: string, baseUrl: string): string {
 
 // Whether a body image is this Chatwoot's: on its host, and still under Active Storage once
 // normalized. A remote image in quoted HTML was never uploaded by anyone in the conversation, and is
-// not fetched.
+// not fetched. Nor is an `http:` URL for an `https:` instance: the downloader sends the admin token
+// to its own host, and would send it in the clear.
 export function servedBy(url: string, baseUrl: string): boolean {
   try {
-    return new URL(url).host === new URL(baseUrl).host && inActiveStorage(url);
+    const u = new URL(url);
+    const base = new URL(baseUrl);
+    const downgrade = base.protocol === "https:" && u.protocol !== "https:";
+    return u.host === base.host && !downgrade && inActiveStorage(url);
   } catch {
     return false;
   }

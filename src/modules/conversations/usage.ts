@@ -1,6 +1,6 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
-import type { TurnUsage } from "@/graph/usage";
+import { emptyTurnUsage, type TurnUsage } from "@/graph/usage";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 
 // WHAT A CONVERSATION HAS SPENT, from the usage ledger (issue #853): the total the conversation
@@ -27,7 +27,7 @@ export interface ConversationTurnUsage {
 export interface ConversationUsage {
   total: TurnUsage;
   // Newest turns, oldest first. Capped: the screen pages its messages in from the newest, and a line
-  // for a turn whose messages are not loaded has nowhere to sit.
+  // for a turn whose messages are not loaded has nowhere to sit. The total is never capped.
   turns: ConversationTurnUsage[];
 }
 
@@ -39,53 +39,43 @@ export async function getConversationUsage(
   base: PrismaClient = basePrisma,
 ): Promise<ConversationUsage> {
   const tenantId = ctx.tenantId as bigint;
-  const where = { tenantId, conversationId, source: "inbox" } as const;
-  const sums = {
-    promptTokens: true,
-    cachedReadTokens: true,
-    cacheCreationTokens: true,
-    completionTokens: true,
-  } as const;
-  const { agg, groups } = await runScopedOn(base, ctx, async (db) => ({
-    agg: await db.llmUsage.aggregate({
-      where,
-      _count: { _all: true },
-      _sum: sums,
-    }),
-    groups: await db.llmUsage.groupBy({
+  // ONE statement, grouped by turn, and the total is the sum of its groups (the turnless rows are
+  // the group whose key is null). Two reads, even in one transaction, run at READ COMMITTED and can
+  // each see a different set of rows while a turn is writing its own: the lines would then add up
+  // to more than the header (review round 1). A conversation's turn count is its message count, so
+  // reading every group costs no more than the thread itself.
+  const groups = await runScopedOn(base, ctx, (db) =>
+    db.llmUsage.groupBy({
       by: ["turnId"],
-      where: { ...where, turnId: { not: null } },
+      where: { tenantId, conversationId, source: "inbox" },
       _count: { _all: true },
-      _sum: sums,
+      _sum: {
+        promptTokens: true,
+        cachedReadTokens: true,
+        cacheCreationTokens: true,
+        completionTokens: true,
+      },
       _max: { createdAt: true },
-      orderBy: { _max: { createdAt: "desc" } },
-      take: CONVERSATION_USAGE_TURN_CAP,
     }),
-  }));
+  );
+  const total = emptyTurnUsage();
   const turns: ConversationTurnUsage[] = [];
   for (const g of groups) {
+    const usage: TurnUsage = {
+      calls: g._count._all,
+      promptTokens: g._sum.promptTokens ?? 0,
+      cachedReadTokens: g._sum.cachedReadTokens ?? 0,
+      cacheCreationTokens: g._sum.cacheCreationTokens ?? 0,
+      completionTokens: g._sum.completionTokens ?? 0,
+    };
+    total.calls += usage.calls;
+    total.promptTokens += usage.promptTokens;
+    total.cachedReadTokens += usage.cachedReadTokens;
+    total.cacheCreationTokens += usage.cacheCreationTokens;
+    total.completionTokens += usage.completionTokens;
     if (!g.turnId || !g._max.createdAt) continue;
-    turns.push({
-      turnId: g.turnId,
-      at: g._max.createdAt.toISOString(),
-      usage: {
-        calls: g._count._all,
-        promptTokens: g._sum.promptTokens ?? 0,
-        cachedReadTokens: g._sum.cachedReadTokens ?? 0,
-        cacheCreationTokens: g._sum.cacheCreationTokens ?? 0,
-        completionTokens: g._sum.completionTokens ?? 0,
-      },
-    });
+    turns.push({ turnId: g.turnId, at: g._max.createdAt.toISOString(), usage });
   }
-  turns.reverse();
-  return {
-    total: {
-      calls: agg._count._all,
-      promptTokens: agg._sum.promptTokens ?? 0,
-      cachedReadTokens: agg._sum.cachedReadTokens ?? 0,
-      cacheCreationTokens: agg._sum.cacheCreationTokens ?? 0,
-      completionTokens: agg._sum.completionTokens ?? 0,
-    },
-    turns,
-  };
+  turns.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  return { total, turns: turns.slice(-CONVERSATION_USAGE_TURN_CAP) };
 }

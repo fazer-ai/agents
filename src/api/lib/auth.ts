@@ -5,8 +5,13 @@ import { translate } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
 import prisma from "@/api/lib/prisma";
 import config from "@/config";
-import { ServiceUnavailableError } from "@/lib/errors";
+import { parseDbId } from "@/lib/db-id";
+import {
+  ServiceUnavailableError,
+  TenantSelectorRefusedError,
+} from "@/lib/errors";
 import { roleAtLeast } from "@/lib/tenancy";
+import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
 import { verifyApiKey } from "@/modules/api-keys/verify";
 
 const COOKIE_NAME = "fazerai_auth_token";
@@ -27,11 +32,17 @@ export interface JWTPayload {
 
 export interface AuthUser {
   id: bigint;
+  // The tenant THIS request runs under and the role the person holds there (issue #756): chosen among
+  // their memberships by `X-Tenant-Id` (src/lib/tenancy/membership.ts). SUPER_ADMIN: null tenant,
+  // and the selector is honored downstream by the tenancy boundary as before.
   tenantId: bigint | null;
   email: string;
   name: string | null;
   role: UserRole;
   googleId: string | null;
+  // Every tenant the person belongs to, for the session payload's selector. Absent on an API key,
+  // which is bound to one tenant and has no person behind it.
+  memberships?: Membership[];
   // Set when the principal resolved from a Bearer API key (vs the cookie session). Lets the
   // tenancy boundary tag audit rows as actorType "api_key".
   isApiKey?: boolean;
@@ -107,6 +118,23 @@ export const authPlugin = new Elysia({ name: "auth" })
       cookie[COOKIE_NAME]?.remove();
       cookie[LEGACY_COOKIE_NAME]?.remove();
     },
+    // WHICH PERSON the session cookie names, and nothing else: no tenant selector, no membership, no
+    // API key. For the one operation where the session is only proof of identity (accepting an
+    // invitation into the account it names), a stale selector must not turn that proof into "signed
+    // out" (review round 5 on #756).
+    async getSessionUserId(): Promise<bigint | null> {
+      const token =
+        cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
+      if (!token || typeof token !== "string") return null;
+      try {
+        const payload = (await jwt.verify(token)) as JWTPayload | false;
+        return payload && typeof payload.userId === "string"
+          ? parseDbId(payload.userId)
+          : null;
+      } catch {
+        return null;
+      }
+    },
     async getAuthUser(): Promise<AuthUser | null> {
       let token = cookie[COOKIE_NAME]?.value;
       if (!token || typeof token !== "string") {
@@ -149,24 +177,34 @@ export const authPlugin = new Elysia({ name: "auth" })
       }
 
       // NOTE: re-resolve role+tenant from the DB on every request (legacy/stale
-      // tokens never grant elevated access; a moved/demoted user loses it at once).
+      // tokens never grant elevated access; a moved/demoted user loses it at once), from the
+      // person's memberships and the tenant this request selected.
       // A DB failure HERE is a TRANSIENT infrastructure problem (the pool
       // reconnecting during a dev hot-reload, a brief outage), NOT proof the
       // session is invalid. Throw 503 so the request is retryable instead of
       // returning a null user the client can't tell apart from a real logout
       // (which would bounce the operator to /login on every blip, and close any
       // WebSocket with the auth-lost code). The client retries /me at boot.
-      let user: AuthUser | null;
+      let row: {
+        id: bigint;
+        email: string;
+        name: string | null;
+        googleId: string | null;
+        isSuperAdmin: boolean;
+        memberships: Membership[];
+      } | null;
       try {
-        user = await prisma.user.findUnique({
+        row = await prisma.user.findUnique({
           where: { id: userId },
           select: {
             id: true,
-            tenantId: true,
             email: true,
             name: true,
-            role: true,
             googleId: true,
+            isSuperAdmin: true,
+            memberships: {
+              select: { tenantId: true, role: true, createdAt: true },
+            },
           },
         });
       } catch (error) {
@@ -177,16 +215,22 @@ export const authPlugin = new Elysia({ name: "auth" })
         throw new ServiceUnavailableError();
       }
 
-      if (!user) return null;
+      if (!row) return null;
+      const { isSuperAdmin, memberships, ...person } = row;
 
-      // NOTE: fail-closed. A non-SUPER_ADMIN must always carry a tenant; a row that
-      // somehow lacks one (or a forged/legacy token shape) is treated as unauthenticated
-      // rather than degraded to a tenant-less session.
-      if (user.role !== "SUPER_ADMIN" && user.tenantId === null) {
-        return null;
+      if (isSuperAdmin) {
+        return { ...person, tenantId: null, role: "SUPER_ADMIN", memberships };
       }
 
-      return user;
+      // NOTE: fail-closed. A person with no membership has no tenant to run under, and is treated as
+      // unauthenticated rather than degraded to a tenant-less session. A selector outside their
+      // memberships is refused with the id it named, so the console drops it (issue #756).
+      const current = resolveMembership(memberships, headers["x-tenant-id"]);
+      if (current === null) return null;
+      if ("rejected" in current) {
+        throw new TenantSelectorRefusedError(current.rejected);
+      }
+      return { ...person, ...current, memberships };
     },
   }))
   .macro({

@@ -862,7 +862,7 @@
           "Auth"
         ],
         "summary": "Validate invitation token",
-        "description": "Validates an invitation token and returns the invited email and role to pre-fill the accept form. Returns a generic 404 for any missing, expired, or used token.",
+        "description": "Validates an invitation token and returns the invited email and role to pre-fill the accept form, and whether that email already has an account (then the form asks for its current password instead of a new one). Returns a generic 404 for any missing, expired, or used token.",
         "security": [],
         "parameters": [
           {
@@ -966,7 +966,7 @@
           "Auth"
         ],
         "summary": "Accept invitation",
-        "description": "Consumes an invitation token to create the user (tenant and role bound to the invite row) and logs it in. Bypasses signup gates by design. Returns 410 for an invalid or expired invite and 409 if the email is already in use.",
+        "description": "Consumes an invitation token to join the invitee to the tenant (tenant and role bound to the invite row) and logs them in. An email with no account gets one created with the given password; an email that already has one gets the membership added, proven by the session or the account's current password (401 otherwise). Bypasses signup gates by design. Returns 410 for an invalid or expired invite and 409 if the person already belongs to the tenant.",
         "security": [],
         "requestBody": {
           "required": true,
@@ -975,8 +975,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "token",
-                  "password"
+                  "token"
                 ],
                 "properties": {
                   "token": {
@@ -986,9 +985,9 @@
                     "type": "string"
                   },
                   "password": {
-                    "minLength": 8,
+                    "minLength": 1,
                     "maxLength": 256,
-                    "description": "Password for the new account (minimum 8 characters).",
+                    "description": "Password for the new account (minimum 8 characters), or the current password of the account the invited email already has. Omit only when signed in as that account.",
                     "type": "string"
                   },
                   "name": {
@@ -1003,8 +1002,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "token",
-                  "password"
+                  "token"
                 ],
                 "properties": {
                   "token": {
@@ -1014,9 +1012,9 @@
                     "type": "string"
                   },
                   "password": {
-                    "minLength": 8,
+                    "minLength": 1,
                     "maxLength": 256,
-                    "description": "Password for the new account (minimum 8 characters).",
+                    "description": "Password for the new account (minimum 8 characters), or the current password of the account the invited email already has. Omit only when signed in as that account.",
                     "type": "string"
                   },
                   "name": {
@@ -1031,8 +1029,7 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "token",
-                  "password"
+                  "token"
                 ],
                 "properties": {
                   "token": {
@@ -1042,9 +1039,9 @@
                     "type": "string"
                   },
                   "password": {
-                    "minLength": 8,
+                    "minLength": 1,
                     "maxLength": 256,
-                    "description": "Password for the new account (minimum 8 characters).",
+                    "description": "Password for the new account (minimum 8 characters), or the current password of the account the invited email already has. Omit only when signed in as that account.",
                     "type": "string"
                   },
                   "name": {
@@ -1064,6 +1061,32 @@
               "application/json": {
                 "schema": {
                   "description": "Bad request — validation failed or the input was malformed.",
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "field": {
+                      "type": "string"
+                    },
+                    "turnId": {
+                      "description": "The playground turn this refusal ended, for its lines on the Logs page (source=playground).",
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "Unauthorized — missing or invalid credentials.",
                   "type": "object",
                   "required": [
                     "error"
@@ -1861,7 +1884,7 @@
           "Admin"
         ],
         "summary": "Update user role",
-        "description": "Change a user's role within the caller's tenant scope. Demoting a fleet administrator must name the tenant they join. Refuses (409) to demote the last administrator of a scope.",
+        "description": "Change the role a user holds in a tenant. A tenant administrator re-roles members of their own tenant; the fleet names the tenant (or the user's only one). Demoting a fleet administrator is explicit (`demoteFleet`) and must name the tenant they join. Refuses (409) to demote the last administrator of a scope.",
         "parameters": [
           {
             "name": "id",
@@ -1902,8 +1925,12 @@
                     ]
                   },
                   "tenantId": {
-                    "description": "Tenant the user joins (BigInt string). REQUIRED when demoting a fleet administrator, who belongs to no tenant and cannot be stored without one; refused for anybody else.",
+                    "description": "Tenant the role applies to (BigInt string). A person holds a role per tenant, so the fleet names which membership to re-role (optional when the person has only one), and demoting a fleet administrator names the tenant they join (required). A tenant administrator may only name their own tenant.",
                     "type": "string"
+                  },
+                  "demoteFleet": {
+                    "description": "SUPER_ADMIN only: take the fleet role away and give the person the named tenant's membership with `role`. Without it, the write re-roles a membership and never touches the fleet role.",
+                    "type": "boolean"
                   }
                 }
               }
@@ -1923,8 +1950,12 @@
                     ]
                   },
                   "tenantId": {
-                    "description": "Tenant the user joins (BigInt string). REQUIRED when demoting a fleet administrator, who belongs to no tenant and cannot be stored without one; refused for anybody else.",
+                    "description": "Tenant the role applies to (BigInt string). A person holds a role per tenant, so the fleet names which membership to re-role (optional when the person has only one), and demoting a fleet administrator names the tenant they join (required). A tenant administrator may only name their own tenant.",
                     "type": "string"
+                  },
+                  "demoteFleet": {
+                    "description": "SUPER_ADMIN only: take the fleet role away and give the person the named tenant's membership with `role`. Without it, the write re-roles a membership and never touches the fleet role.",
+                    "type": "boolean"
                   }
                 }
               }
@@ -1944,8 +1975,12 @@
                     ]
                   },
                   "tenantId": {
-                    "description": "Tenant the user joins (BigInt string). REQUIRED when demoting a fleet administrator, who belongs to no tenant and cannot be stored without one; refused for anybody else.",
+                    "description": "Tenant the role applies to (BigInt string). A person holds a role per tenant, so the fleet names which membership to re-role (optional when the person has only one), and demoting a fleet administrator names the tenant they join (required). A tenant administrator may only name their own tenant.",
                     "type": "string"
+                  },
+                  "demoteFleet": {
+                    "description": "SUPER_ADMIN only: take the fleet role away and give the person the named tenant's membership with `role`. Without it, the write re-roles a membership and never touches the fleet role.",
+                    "type": "boolean"
                   }
                 }
               }
@@ -2119,7 +2154,7 @@
           "Admin"
         ],
         "summary": "Delete user",
-        "description": "Permanently delete a user within the caller's tenant scope. Requires the acting admin's password for a session (a Bearer API key needs none); cannot delete yourself or the last admin.",
+        "description": "Remove a user. A tenant administrator removes the user from their own tenant (the account is deleted only when it was the user's last tenant); the fleet deletes the account. Requires the acting admin's password for a session (a Bearer API key needs none); cannot delete yourself or the last admin.",
         "parameters": [
           {
             "name": "id",

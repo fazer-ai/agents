@@ -1,12 +1,18 @@
 {
   "acceptInvite": {
+    "currentPassword": "Senha atual",
+    "existingSubtitle": "Este e-mail já tem uma conta. Digite a senha dela para adicionar este tenant a ela.",
     "failed": "Não foi possível aceitar o convite",
     "invalid": "Este link de convite é inválido ou expirou.",
     "invalidTitle": "Convite indisponível",
+    "join": "Confirmar",
     "namePlaceholder": "Opcional",
+    "signedInSubtitle": "Você entrou com este e-mail. Confirme para adicionar este tenant à sua conta.",
+    "signInInstead": "Entrar nesta conta (inclusive com Google)",
     "submit": "Ativar conta",
     "submitting": "Ativando…",
     "subtitle": "Defina uma senha para ativar sua conta.",
+    "switchAccount": "Sair e entrar nesta conta (inclusive com Google)",
     "title": "Aceite seu convite",
     "toLogin": "Ir para o login",
     "validating": "Validando convite…"
@@ -36,6 +42,9 @@
     "noUsers": "Nenhum usuário encontrado",
     "promote": "Promover",
     "promoteTooltip": "Promover a Admin",
+    "removeUser": "Remover do tenant",
+    "removeUserDone": "Usuário removido do tenant.",
+    "removeUserWarning": "Isto remove {{email}} deste tenant e retira o acesso da pessoa a ele. A conta e os outros tenants a que a pessoa pertence continuam.",
     "role": "Função",
     "roleUpdated": "Função atualizada para {{role}}",
     "roleUpdateFailed": "Falha ao atualizar função",

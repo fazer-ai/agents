@@ -19,10 +19,22 @@ const mockUser = {
   googleId: null as string | null,
 };
 
+// The row the session lookup reads: the person, with their one membership (issue #756).
+const mockPersonRow = {
+  id: mockUser.id,
+  email: mockUser.email,
+  name: mockUser.name,
+  googleId: mockUser.googleId,
+  isSuperAdmin: false,
+  memberships: [
+    { tenantId: BigInt(1), role: "AGENT" as const, createdAt: new Date(0) },
+  ],
+};
+
 const mockPrisma = {
   user: {
     findUnique: mock(
-      (): Promise<typeof mockUser | null> => Promise.resolve(null),
+      (): Promise<typeof mockPersonRow | null> => Promise.resolve(null),
     ),
   },
 };
@@ -201,7 +213,7 @@ describe("authPlugin", () => {
       }
 
       test("resolves a session sent under the current cookie name", async () => {
-        mockPrisma.user.findUnique.mockResolvedValueOnce(mockUser);
+        mockPrisma.user.findUnique.mockResolvedValueOnce(mockPersonRow);
         const token = await mintToken();
         const res = await readerApp().handle(
           new BunRequest("http://localhost/whoami", {
@@ -212,7 +224,7 @@ describe("authPlugin", () => {
       });
 
       test("resolves a session sent under the pre-rename cookie name", async () => {
-        mockPrisma.user.findUnique.mockResolvedValueOnce(mockUser);
+        mockPrisma.user.findUnique.mockResolvedValueOnce(mockPersonRow);
         const token = await mintToken();
         const res = await readerApp().handle(
           new BunRequest("http://localhost/whoami", {
@@ -223,7 +235,7 @@ describe("authPlugin", () => {
       });
 
       test("prefers the current name when both cookies are present", async () => {
-        mockPrisma.user.findUnique.mockResolvedValueOnce(mockUser);
+        mockPrisma.user.findUnique.mockResolvedValueOnce(mockPersonRow);
         const token = await mintToken();
         const res = await readerApp().handle(
           new BunRequest("http://localhost/whoami", {
@@ -237,7 +249,7 @@ describe("authPlugin", () => {
       });
 
       test("migrates a legacy cookie in place: rewrites it, clears the old name", async () => {
-        mockPrisma.user.findUnique.mockResolvedValueOnce(mockUser);
+        mockPrisma.user.findUnique.mockResolvedValueOnce(mockPersonRow);
         const token = await mintToken();
         // happy-dom strips `Set-Cookie` off the Response, so assert on Elysia's cookie jar —
         // the exact state it serializes into the header.

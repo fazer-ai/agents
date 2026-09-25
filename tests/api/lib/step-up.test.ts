@@ -146,14 +146,17 @@ describe("requireSession", () => {
 });
 
 // The rule has one implementation. A route that spells `verifyPassword(` itself has decided, on
-// its own, whether a key may pass — and it decided the old way, against the creator's row. The two
-// legitimate callers are the definition and the login route, where a password IS the credential.
+// its own, whether a key may pass — and it decided the old way, against the creator's row. The
+// legitimate callers are the definition, and the two places where a password IS the credential and
+// no session exists yet: the login route, and accepting an invitation into an account that already
+// exists (issue #756), which proves the account is the invitee's.
 describe("every step-up goes through confirmStepUp", () => {
-  test("verifyPassword( is called from the login route and the helper only", async () => {
+  test("verifyPassword( is called from the login paths and the helper only", async () => {
     const found = await countInSrc(/\bverifyPassword\(/g);
     const allowed = new Set([
       "src/api/features/auth/auth.service.ts",
       "src/api/features/auth/auth.controller.ts",
+      "src/api/features/invitations/invitation.service.ts",
       "src/api/lib/step-up.ts",
     ]);
     const strays = Object.keys(found).filter((f) => !allowed.has(f));

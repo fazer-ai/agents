@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { AppError } from "@/lib/errors";
+import { roleIn } from "@/lib/tenancy/role-in";
 import { mcpResourceId } from "./metadata";
 import { issueAccessToken } from "./tokens";
 
@@ -93,18 +94,15 @@ async function issuePair(
     familyId: string;
   },
 ): Promise<TokenResponse> {
-  // Re-resolve the user's CURRENT role (a code/refresh issued before a role change must not grant
-  // stale privileges).
-  const user = await base.user.findUnique({
-    where: { id: args.userId },
-    select: { role: true, tenantId: true },
-  });
-  if (!user) throw new AppError("user no longer exists", 400);
+  // Re-resolve the user's CURRENT role in the tenant the grant is for (a code/refresh issued before a
+  // role change, or before the person left that tenant, must not grant stale privileges).
+  const role = await roleIn(base, args.userId, args.tenantId);
+  if (role === null) throw new AppError("user no longer exists", 400);
   const access = await issueAccessToken({
     clientId: args.clientId,
     userId: args.userId,
     tenantId: args.tenantId,
-    role: user.role,
+    role,
     scopes: args.scopes,
     resource: args.resource,
     base,

@@ -12,6 +12,7 @@ import {
   revokeInvite,
 } from "@/api/features/invitations/invitation.service";
 import type { TenantContext } from "@/lib/tenancy";
+import { personData } from "@/tests/utils/person";
 
 // Invitation security invariants need a real Postgres (CAS single-use, the (tenant,email) unique
 // index, the role<>SUPER_ADMIN CHECK, cross-tenant scoping). Skips when the DB is unavailable.
@@ -71,7 +72,7 @@ describe.skipIf(!dbUp)("invitation service (DB)", () => {
         `DELETE FROM invitations WHERE tenant_id = ${tid}`,
       );
       await suDb.$executeRawUnsafe(
-        `DELETE FROM users WHERE tenant_id = ${tid}`,
+        `DELETE FROM users WHERE id IN (SELECT user_id FROM tenant_users WHERE tenant_id = ${tid})`,
       );
       await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tid}`);
     }
@@ -173,12 +174,12 @@ describe.skipIf(!dbUp)("invitation service (DB)", () => {
 
   test("createInvite refuses an email already in the tenant", async () => {
     await suDb.user.create({
-      data: {
+      data: personData({
         tenantId: tenantA,
         email: "taken@x.com",
         passwordHash: "x",
         role: "AGENT",
-      },
+      }),
     });
     expect(
       createInvite(

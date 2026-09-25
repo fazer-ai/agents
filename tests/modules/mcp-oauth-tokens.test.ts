@@ -9,6 +9,7 @@ import {
   revokeAccessToken,
   verifyAccessToken,
 } from "@/modules/mcp/oauth/tokens";
+import { personData } from "@/tests/utils/person";
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -37,12 +38,12 @@ describe.skipIf(!dbUp)("mcp oauth access tokens", () => {
     });
     tenantId = t.id;
     const u = await suDb.user.create({
-      data: {
+      data: personData({
         tenantId,
         email: `mcp-${process.pid}@example.com`,
         role: "TENANT_ADMIN",
         passwordHash: "x", // satisfies the users_auth_method_check constraint
-      },
+      }),
     });
     userId = u.id;
   });
@@ -182,13 +183,42 @@ describe.skipIf(!dbUp)("mcp oauth access tokens", () => {
     const { token } = await issue();
     expect(await verifyAccessToken(token, suDb)).not.toBeNull();
     await suDb.$executeRawUnsafe(
-      `UPDATE users SET role = 'AGENT' WHERE id = ${userId}`,
+      `UPDATE tenant_users SET role = 'AGENT' WHERE user_id = ${userId}`,
     );
     expect(await verifyAccessToken(token, suDb)).toBeNull();
     // restore for other tests
     await suDb.$executeRawUnsafe(
-      `UPDATE users SET role = 'TENANT_ADMIN' WHERE id = ${userId}`,
+      `UPDATE tenant_users SET role = 'TENANT_ADMIN' WHERE user_id = ${userId}`,
     );
+  });
+
+  // Issue #756: the token was issued for ONE tenant, and the role it carries is the one held there.
+  // Leaving that tenant invalidates it even while the person keeps a membership elsewhere with the
+  // same role.
+  test("leaving the token's tenant invalidates it, whatever the person holds elsewhere", async () => {
+    const other = await suDb.tenant.create({
+      data: { name: "McpT2", slug: `mcp2-${process.pid}` },
+    });
+    try {
+      await suDb.tenantUser.create({
+        data: { tenantId: other.id, userId, role: "TENANT_ADMIN" },
+      });
+      const { token } = await issue();
+      expect(await verifyAccessToken(token, suDb)).not.toBeNull();
+      await suDb.tenantUser.delete({
+        where: { tenantId_userId: { tenantId, userId } },
+      });
+      expect(await verifyAccessToken(token, suDb)).toBeNull();
+    } finally {
+      await suDb.tenantUser.upsert({
+        where: { tenantId_userId: { tenantId, userId } },
+        create: { tenantId, userId, role: "TENANT_ADMIN" },
+        update: {},
+      });
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${other.id}`,
+      );
+    }
   });
 
   test("an expired persisted token is rejected even with a valid signature", async () => {

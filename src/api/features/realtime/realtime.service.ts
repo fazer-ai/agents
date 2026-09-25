@@ -2,6 +2,7 @@ import type { UserRole } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { realtimeConfig } from "@/api/lib/realtime";
 import { authorize, resolveRequestTenantContext } from "@/lib/tenancy";
+import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
 
 // NOTE: In-process state. Single-instance servers (the template default)
 // are fine. If this template ever scales horizontally (multiple Bun
@@ -322,8 +323,11 @@ export type EventsTenantResolution =
 
 // NOTE: The WS analogue of the REST X-Tenant-Id rule, reusing the exact same
 // resolution + cross-tenant gate so the two transports cannot diverge:
-//   • a tenant-bound user (TENANT_ADMIN/AGENT) is LOCKED to their own tenant —
-//     any selector they pass is ignored and flagged as an anomaly (no leak);
+//   • a person with memberships picks among them with `?tenantId=`, exactly as the
+//     header does on REST (issue #756): a selector outside their memberships is
+//     DENIED, never exchanged for another tenant; no selector streams their default;
+//   • a principal bound to one tenant (an API key) is LOCKED to it — any selector
+//     it passes is ignored and flagged as an anomaly (no leak);
 //   • a SUPER_ADMIN FOLLOWS the active tenant passed as `?tenantId=` (the same
 //     selector the header switcher persists), authorized for any target;
 //   • a SUPER_ADMIN with no/invalid selector resolves to "no-tenant" — there is
@@ -331,9 +335,23 @@ export type EventsTenantResolution =
 // Pure (no Elysia, no I/O) so the security-critical decision is unit-tested
 // directly, mirroring resolveRequestTenantContext.
 export function resolveEventsTenant(
-  user: { id: bigint; tenantId: bigint | null; role: UserRole },
+  user: {
+    id: bigint;
+    tenantId: bigint | null;
+    role: UserRole;
+    memberships?: readonly Membership[];
+  },
   selectorTenantId: string | undefined,
 ): EventsTenantResolution {
+  // The upgrade request carries no X-Tenant-Id, so the session resolved to the person's default
+  // membership; the selector this socket names is resolved here against all of them.
+  if (user.role !== "SUPER_ADMIN" && user.memberships) {
+    const picked = resolveMembership(user.memberships, selectorTenantId);
+    if (picked === null || "rejected" in picked) {
+      return { status: "denied", anomaly: false };
+    }
+    user = { ...user, tenantId: picked.tenantId, role: picked.role };
+  }
   const { context, anomaly } = resolveRequestTenantContext(
     user,
     selectorTenantId,

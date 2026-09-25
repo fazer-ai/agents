@@ -39,6 +39,9 @@ let tenantsFails = false;
 let tenantsCalls = 0;
 let role = "SUPER_ADMIN";
 let userTenantId: string | null = null;
+// The memberships a person's session carries (issue #756); empty for the fleet and a one-tenant user.
+let userTenants: { id: string; name: string; role: string }[] | undefined = [];
+let refreshes = 0;
 const realFetch = globalThis.fetch;
 const reloads: number[] = [];
 
@@ -66,12 +69,16 @@ function installFetchStub() {
 
 mock.module("@/client/contexts/AuthContext", () => ({
   useAuth: () => ({
-    user: { id: "1", role, tenantId: userTenantId },
+    user: { id: "1", role, tenantId: userTenantId, tenants: userTenants },
     loading: false,
+    refresh: async () => {
+      refreshes += 1;
+    },
   }),
 }));
 
 const { TenantDeepLink } = await import("@/client/components/TenantDeepLink");
+const { ProtectedRoute } = await import("@/client/components/ProtectedRoute");
 
 let seenSearch = "";
 function SearchProbe() {
@@ -101,6 +108,30 @@ function renderAt(search: string) {
   );
 }
 
+// The same link through the route shell an admin page actually sits behind, with its admin gate.
+function renderAdminRouteAt(search: string) {
+  return render(
+    withI18n(
+      <MemoryRouter initialEntries={[`/resources/vault${search}`]}>
+        <ToastProvider>
+          <SearchProbe />
+          <Routes>
+            <Route
+              path="/resources/vault"
+              element={
+                <ProtectedRoute requireAdmin>
+                  <div>panel</div>
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/conversations" element={<div>conversations</div>} />
+          </Routes>
+        </ToastProvider>
+      </MemoryRouter>,
+    ),
+  );
+}
+
 const shows = (s: string) => document.body.textContent?.includes(s) === true;
 
 describe("TenantDeepLink", () => {
@@ -110,12 +141,15 @@ describe("TenantDeepLink", () => {
     tenantsCalls = 0;
     role = "SUPER_ADMIN";
     userTenantId = null;
+    userTenants = [];
     tenantsGate = null;
     tenantsFails = false;
     tenantsPayload = [
       { id: "10", name: "A" },
       { id: "20", name: "B" },
     ];
+    // The tab's selection and the default a new tab starts from (src/client/lib/activeTenant.ts).
+    sessionStorage.removeItem(KEY);
     localStorage.setItem(KEY, "10");
     installFetchStub();
     Object.defineProperty(window, "location", {
@@ -125,6 +159,7 @@ describe("TenantDeepLink", () => {
   });
   afterEach(() => {
     cleanup();
+    sessionStorage.removeItem(KEY);
     localStorage.removeItem(KEY);
   });
   afterAll(() => {
@@ -259,12 +294,182 @@ describe("TenantDeepLink", () => {
   test("a tenant-scoped session is judged by its own tenant, not by a stale stored selection", async () => {
     role = "TENANT_ADMIN";
     userTenantId = "10";
+    sessionStorage.removeItem(KEY);
     localStorage.setItem(KEY, "20");
     renderAt("?switchTenant=20");
     await waitFor(() => {
       expect(shows("cannot open")).toBe(true);
     });
     expect(reloads.length).toBe(0);
+  });
+
+  // Issue #756: a person who belongs to several tenants follows a link to another of THEIRS the same
+  // way the fleet follows one, from the list the session carries, without reading the fleet list.
+  test("a person with several tenants follows a link to another of theirs", async () => {
+    role = "AGENT";
+    userTenantId = "10";
+    userTenants = [
+      { id: "10", name: "A", role: "AGENT" },
+      { id: "20", name: "B", role: "TENANT_ADMIN" },
+    ];
+    renderAt("?switchTenant=20");
+    await waitFor(() => {
+      expect(reloads.length).toBe(1);
+    });
+    expect(localStorage.getItem(KEY)).toBe("20");
+    expect(tenantsCalls).toBe(0);
+  });
+
+  // Review round 2: the admin gate reads the role held in the ACTIVE tenant, so it must not answer
+  // before the link has switched to the tenant where the person IS an administrator.
+  test("a link to an admin page in a tenant the person administers switches before the admin gate", async () => {
+    role = "AGENT";
+    userTenantId = "10";
+    userTenants = [
+      { id: "10", name: "A", role: "AGENT" },
+      { id: "20", name: "B", role: "TENANT_ADMIN" },
+    ];
+    renderAdminRouteAt("?switchTenant=20");
+    await waitFor(() => {
+      expect(reloads.length).toBe(1);
+    });
+    expect(localStorage.getItem(KEY)).toBe("20");
+    expect(shows("conversations")).toBe(false);
+  });
+
+  // Review round 3: a fresh login answers with the default membership's role and no list; `/auth/me`
+  // brings the list a moment later. The admin gate waits for it rather than lose the link.
+  // Review round 4: before `/auth/me` brings the list, a person is not known to be tenant-bound, so a
+  // link to another of their tenants holds the gate instead of refusing it on the wrong tenant's page.
+  test("right after login, a link to another tenant waits for the membership list", async () => {
+    role = "TENANT_ADMIN";
+    userTenantId = "10";
+    userTenants = undefined;
+    renderAt("?switchTenant=20");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(shows("panel")).toBe(false);
+    expect(reloads.length).toBe(0);
+    expect(seenSearch).toBe("?switchTenant=20");
+  });
+
+  // Review round 8: a tenant administrator's deep link waits in the gate, not the admin check, and
+  // that wait asks for the session again too.
+  test("a deep link waiting for the membership list keeps asking for it", async () => {
+    role = "TENANT_ADMIN";
+    userTenantId = "10";
+    userTenants = undefined;
+    refreshes = 0;
+    renderAt("?switchTenant=20");
+    await waitFor(
+      () => {
+        expect(refreshes).toBeGreaterThanOrEqual(1);
+      },
+      { timeout: 3_000 },
+    );
+    expect(shows("panel")).toBe(false);
+  });
+
+  test("right after login, the admin gate waits for the membership list", async () => {
+    role = "AGENT";
+    userTenantId = "10";
+    userTenants = undefined;
+    const view = renderAdminRouteAt("?switchTenant=20");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(shows("conversations")).toBe(false);
+    expect(reloads.length).toBe(0);
+    userTenants = [
+      { id: "10", name: "A", role: "AGENT" },
+      { id: "20", name: "B", role: "TENANT_ADMIN" },
+    ];
+    view.rerender(
+      withI18n(
+        <MemoryRouter initialEntries={["/resources/vault?switchTenant=20"]}>
+          <ToastProvider>
+            <Routes>
+              <Route
+                path="/resources/vault"
+                element={
+                  <ProtectedRoute requireAdmin>
+                    <div>panel</div>
+                  </ProtectedRoute>
+                }
+              />
+              <Route path="/conversations" element={<div>conversations</div>} />
+            </Routes>
+          </ToastProvider>
+        </MemoryRouter>,
+      ),
+    );
+    await waitFor(() => {
+      expect(reloads.length).toBe(1);
+    });
+    expect(localStorage.getItem(KEY)).toBe("20");
+  });
+
+  // Review round 6: the same wait with no link at all. The role a fresh login answers is the default
+  // membership's, and the tab may have another tenant selected where the person is an administrator.
+  test("right after login, an admin page waits for the session before sending anybody away", async () => {
+    role = "AGENT";
+    userTenantId = "10";
+    userTenants = undefined;
+    const view = renderAdminRouteAt("");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(shows("conversations")).toBe(false);
+    userTenants = [{ id: "10", name: "A", role: "AGENT" }];
+    view.rerender(
+      withI18n(
+        <MemoryRouter initialEntries={["/resources/vault"]}>
+          <ToastProvider>
+            <Routes>
+              <Route
+                path="/resources/vault"
+                element={
+                  <ProtectedRoute requireAdmin>
+                    <div>panel</div>
+                  </ProtectedRoute>
+                }
+              />
+              <Route path="/conversations" element={<div>conversations</div>} />
+            </Routes>
+          </ToastProvider>
+        </MemoryRouter>,
+      ),
+    );
+    await waitFor(() => {
+      expect(shows("conversations")).toBe(true);
+    });
+  });
+
+  // Review round 7: the login's own refresh is one attempt, so the wait asks again rather than hold a
+  // spinner for an update nobody scheduled.
+  test("while it waits for the session, it keeps asking for it", async () => {
+    role = "AGENT";
+    userTenantId = "10";
+    userTenants = undefined;
+    refreshes = 0;
+    renderAdminRouteAt("");
+    await waitFor(
+      () => {
+        expect(refreshes).toBeGreaterThanOrEqual(1);
+      },
+      { timeout: 3_000 },
+    );
+    expect(shows("conversations")).toBe(false);
+  });
+
+  test("a link to a tenant where the person is an agent still meets the admin gate", async () => {
+    role = "AGENT";
+    userTenantId = "20";
+    userTenants = [
+      { id: "10", name: "A", role: "AGENT" },
+      { id: "20", name: "B", role: "AGENT" },
+    ];
+    renderAdminRouteAt("?switchTenant=10");
+    await waitFor(() => {
+      expect(shows("conversations")).toBe(true);
+    });
+    expect(reloads.length).toBe(0);
+    expect(shows("panel")).toBe(false);
   });
 
   // ── the list could not be read ──

@@ -8,6 +8,7 @@ import {
   UserNotInScopeError,
 } from "@/api/features/admin/admin.service";
 import type { TenantContext } from "@/lib/tenancy";
+import { personData } from "@/tests/utils/person";
 
 // The caller, as the principal the delete now records itself under (#400): its tenant is the scope
 // the target has to fall inside, and its user is the one the self-delete guard compares against.
@@ -61,12 +62,12 @@ describe.skipIf(!dbUp)("deleteUser (guards)", () => {
     const mk = (email: string, role: "TENANT_ADMIN" | "AGENT") =>
       suDb.user.create({
         // passwordHash satisfies the users_auth_method_check (a user needs an auth method).
-        data: {
+        data: personData({
           tenantId,
           email: `${email}-${process.pid}@x.test`,
           role,
           passwordHash: "x",
-        },
+        }),
         select: { id: true },
       });
     admin1 = (await mk("a1", "TENANT_ADMIN")).id;
@@ -76,7 +77,7 @@ describe.skipIf(!dbUp)("deleteUser (guards)", () => {
 
   afterAll(async () => {
     await suDb.$executeRawUnsafe(
-      `DELETE FROM users WHERE tenant_id IN (${tenantId}, ${otherTenantId})`,
+      `DELETE FROM users WHERE id IN (SELECT user_id FROM tenant_users WHERE tenant_id IN (${tenantId}, ${otherTenantId}))`,
     );
     await suDb.$executeRawUnsafe(
       `DELETE FROM tenants WHERE id IN (${tenantId}, ${otherTenantId})`,

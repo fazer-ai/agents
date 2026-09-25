@@ -8,6 +8,7 @@ import {
   refreshAccessToken,
 } from "@/modules/mcp/oauth/grant";
 import { verifyAccessToken } from "@/modules/mcp/oauth/tokens";
+import { personData } from "@/tests/utils/person";
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -54,12 +55,12 @@ describe.skipIf(!dbUp)("mcp oauth grant (PKCE + refresh rotation)", () => {
     });
     tenantId = t.id;
     const u = await suDb.user.create({
-      data: {
+      data: personData({
         tenantId,
         email: `grant-${process.pid}@example.com`,
         role: "TENANT_ADMIN",
         passwordHash: "x",
-      },
+      }),
     });
     userId = u.id;
   });

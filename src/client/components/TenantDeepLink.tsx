@@ -22,6 +22,7 @@ import {
   tenantDeepLinkAction,
 } from "@/client/lib/tenantDeepLink";
 import { suppressUnloadPrompt } from "@/client/lib/unsavedGuard";
+import { useSessionRetry } from "@/client/lib/useSessionRetry";
 import { SWITCH_TENANT_PARAM } from "@/lib/console-params";
 
 // Applies the `?switchTenant=<id>` a console link carries (`src/modules/mcp/console-links.ts`).
@@ -64,8 +65,10 @@ export function TenantDeepLink({ children }: { children: ReactNode }) {
   const [reported, setReported] = useState(false);
 
   // A SUPER_ADMIN is fleet-level and carries no tenant of its own (`tenantId` is null for exactly
-  // that role); anyone else is pinned to theirs. Falling back to "loading" while the session itself
-  // is still resolving keeps the gate shut rather than guessing at a scope.
+  // that role). A person who belongs to several tenants chooses among them the same way, from the
+  // list the session already carries (issue #756); anyone else is pinned to theirs. Falling back to
+  // "loading" while the session itself is still resolving keeps the gate shut rather than guessing.
+  const memberships = user?.tenants ?? [];
   const scope: TenantScope = !user
     ? { kind: "loading" }
     : isSuperAdmin
@@ -74,9 +77,22 @@ export function TenantDeepLink({ children }: { children: ReactNode }) {
         : accessible === null
           ? { kind: "unknown" }
           : { kind: "fleet", accessible }
-      : user.tenantId === null
-        ? { kind: "unknown" }
-        : { kind: "tenant", tenantId: user.tenantId };
+      : user.tenants === undefined
+        ? // A fresh login answers before `/auth/me` brings the membership list; read as "no other
+          // tenant", a link to one would be refused and the wrong tenant's page mounted (review
+          // round 4). If the list never arrives the gate stays shut, which is the safe side.
+          { kind: "loading" }
+        : memberships.length > 1
+          ? { kind: "fleet", accessible: memberships.map((m) => m.id) }
+          : user.tenantId === null
+            ? { kind: "unknown" }
+            : { kind: "tenant", tenantId: user.tenantId };
+
+  // Waiting on the membership list a fresh login's `/auth/me` brings: ask again rather than hold the
+  // gate for a refresh nobody scheduled (review round 8).
+  useSessionRetry(
+    !!requested && !!user && !isSuperAdmin && user.tenants === undefined,
+  );
 
   const action = tenantDeepLinkAction({
     requested,

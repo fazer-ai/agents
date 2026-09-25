@@ -1,4 +1,5 @@
 import { Elysia, t } from "elysia";
+import type { UserRole } from "@/../generated/prisma/client";
 import { authPlugin } from "@/api/lib/auth";
 import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
@@ -6,7 +7,7 @@ import { doc, errors, htmlResponse } from "@/api/lib/openapi";
 import basePrisma from "@/api/lib/prisma";
 import { tenancyPlugin } from "@/api/middlewares/tenancy";
 import config from "@/config";
-import { requireDbId } from "@/lib/db-id";
+import { parseDbId, requireDbId } from "@/lib/db-id";
 import { ForbiddenError, NotFoundError } from "@/lib/errors";
 import { instanceIdentity } from "@/lib/instance";
 import {
@@ -15,6 +16,7 @@ import {
   runScopedOn,
   type TenantContext,
 } from "@/lib/tenancy";
+import { roleInTenant } from "@/lib/tenancy/membership";
 import {
   buildMcpAuthorizeUrl,
   buildMcpState,
@@ -333,11 +335,14 @@ export const oauthMcpCallbackController = new Elysia({
         if (state.userId !== String(user.id)) {
           return htmlError(401, "state_user_mismatch", origin);
         }
-        const sameTenant =
-          user.tenantId !== null && String(user.tenantId) === state.tenantId;
+        // The role held in the STATE's tenant, not the callback request's: this navigation carries no
+        // tenant selector, so the session runs under the person's default membership, which need not
+        // be the tenant the flow was started from (issue #756).
+        const stateTenantId = parseDbId(state.tenantId);
+        const roleThere =
+          stateTenantId === null ? null : roleInTenant(user, stateTenantId);
         const authorized =
-          user.role === "SUPER_ADMIN" ||
-          (sameTenant && roleAtLeast(user.role, "TENANT_ADMIN"));
+          roleThere !== null && roleAtLeast(roleThere, "TENANT_ADMIN");
         if (!authorized) {
           return htmlError(401, "not_authorized", origin);
         }
@@ -396,7 +401,7 @@ export const oauthMcpCallbackController = new Elysia({
           {
             tenantId: requireDbId(state.tenantId),
             userId: user.id,
-            role: user.role,
+            role: roleThere as UserRole,
           },
           entryId,
           merged,

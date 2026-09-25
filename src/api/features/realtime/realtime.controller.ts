@@ -255,7 +255,7 @@ export const realtimeController = new Elysia({
       tenantId: t.Optional(
         t.String({
           description:
-            "Tenant id (BigInt string) selector; honored only for SUPER_ADMIN, ignored otherwise.",
+            "Tenant id (BigInt string) selector: any tenant for a SUPER_ADMIN, one of the person's memberships otherwise (refused outside them); ignored for an API key.",
         }),
       ),
     }),

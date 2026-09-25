@@ -5,6 +5,7 @@ import { PrismaClient, type UserRole } from "@/../generated/prisma/client";
 import { hashPassword } from "@/api/features/auth/auth.service";
 import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
+import { personData } from "@/tests/utils/person";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // The actor family's trail, driven through the console's own doors (issue #400).
@@ -216,7 +217,7 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
       for (const id of [tenantA, tenantB]) {
         if (id) {
           await su.$executeRawUnsafe(
-            `DELETE FROM users WHERE tenant_id = ${id}`,
+            `DELETE FROM users WHERE id IN (SELECT user_id FROM tenant_users WHERE tenant_id = ${id})`,
           );
           await su.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${id}`);
         }
@@ -228,12 +229,12 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
 
   async function seedUser(of: bigint, role: UserRole = "AGENT") {
     return await (su as PrismaClient).user.create({
-      data: {
+      data: personData({
         tenantId: of,
         email: `t${uniq()}@aud400.test`,
         passwordHash: "x",
         role,
-      },
+      }),
       select: { id: true, email: true },
     });
   }
@@ -284,14 +285,16 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
       // A sentence, not the sentence: which one depends on the reader's locale, and what this test
       // is about is that the refusal was MAPPED at all — unmapped, it leaves as a 500 with none.
       expect(typeof (await res.json()).error).toBe("string");
-      const after = await (su as PrismaClient).user.findUnique({
-        where: { id: onlyAdmin.id },
+      const after = await (su as PrismaClient).tenantUser.findUnique({
+        where: {
+          tenantId_userId: { tenantId: lonely.id, userId: onlyAdmin.id },
+        },
         select: { role: true },
       });
       expect(after?.role).toBe("TENANT_ADMIN");
     } finally {
       await (su as PrismaClient).$executeRawUnsafe(
-        `DELETE FROM users WHERE tenant_id = ${lonely.id}`,
+        `DELETE FROM users WHERE id IN (SELECT user_id FROM tenant_users WHERE tenant_id = ${lonely.id})`,
       );
       await (su as PrismaClient).$executeRawUnsafe(
         `DELETE FROM tenants WHERE id = ${lonely.id}`,
@@ -312,12 +315,12 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
     });
     const mkFleet = async (tag: string) =>
       await (su as PrismaClient).user.create({
-        data: {
+        data: personData({
           tenantId: null,
           email: `f534-${process.pid}-${tag}@aud400.test`,
           role: "SUPER_ADMIN",
           passwordHash: "x",
-        },
+        }),
         select: { id: true },
       });
     const keep = await mkFleet("keep");
@@ -326,7 +329,7 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
       const refused = await server.handle(
         req(`/admin/users/${target.id}/role`, {
           method: "PATCH",
-          body: JSON.stringify({ role: "AGENT" }),
+          body: JSON.stringify({ role: "AGENT", demoteFleet: true }),
         }),
       );
       expect(refused.status).toBe(422);
@@ -335,15 +338,25 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
       const moved = await server.handle(
         req(`/admin/users/${target.id}/role`, {
           method: "PATCH",
-          body: JSON.stringify({ role: "AGENT", tenantId: tenantA.toString() }),
+          body: JSON.stringify({
+            role: "AGENT",
+            tenantId: tenantA.toString(),
+            demoteFleet: true,
+          }),
         }),
       );
       expect(moved.status).toBe(200);
       const row = await (su as PrismaClient).user.findUnique({
         where: { id: target.id },
-        select: { role: true, tenantId: true },
+        select: {
+          isSuperAdmin: true,
+          memberships: { select: { role: true, tenantId: true } },
+        },
       });
-      expect(row).toEqual({ role: "AGENT", tenantId: tenantA });
+      expect(row).toEqual({
+        isSuperAdmin: false,
+        memberships: [{ role: "AGENT", tenantId: tenantA }],
+      });
     } finally {
       await (su as PrismaClient).$executeRawUnsafe(
         `DELETE FROM users WHERE id IN (${keep.id},${target.id})`,

@@ -9,6 +9,7 @@ import {
 } from "bun:test";
 import config from "@/config";
 import {
+  asPersonRow,
   mockCreate,
   mockFindFirst,
   mockFindUnique,
@@ -190,7 +191,11 @@ describe("google.service", () => {
 
       const result = await upsertGoogleUser(baseProfile);
 
-      expect(result).toEqual(existing);
+      // The session user: the person, running under their membership (issue #756).
+      expect(result).toEqual({
+        ...existing,
+        memberships: asPersonRow(existing).memberships,
+      });
       expect(mockFindFirst).not.toHaveBeenCalled();
       expect(mockCreate).not.toHaveBeenCalled();
       expect(mockUpdate).not.toHaveBeenCalled();
@@ -327,8 +332,8 @@ describe("google.service", () => {
             email: "user@example.com",
             googleId: "google-sub-123",
             name: "Jane Doe",
-            tenantId: BigInt(1),
-            role: "AGENT",
+            // The person and their first membership, in one statement (issue #756).
+            memberships: { create: { tenantId: BigInt(1), role: "AGENT" } },
           },
         }),
       );
@@ -377,7 +382,11 @@ describe("google.service", () => {
 
         expect(mockCreate).toHaveBeenCalledWith(
           expect.objectContaining({
-            data: expect.objectContaining({ role: "TENANT_ADMIN" }),
+            data: expect.objectContaining({
+              memberships: {
+                create: expect.objectContaining({ role: "TENANT_ADMIN" }),
+              },
+            }),
           }),
         );
       } finally {
@@ -418,7 +427,10 @@ describe("google.service", () => {
 
       const result = await upsertGoogleUser(baseProfile);
 
-      expect(result).toEqual(created);
+      expect(result).toEqual({
+        ...created,
+        memberships: asPersonRow(created).memberships,
+      });
       expect(mockFindUnique).toHaveBeenCalledTimes(2);
     });
 

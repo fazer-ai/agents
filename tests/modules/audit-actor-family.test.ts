@@ -17,6 +17,7 @@ import {
 import { disconnectClient } from "@/modules/mcp/oauth/connections";
 import { upsertApproval } from "@/modules/mcp/oauth/consent";
 import { issueAccessToken } from "@/modules/mcp/oauth/tokens";
+import { personData } from "@/tests/utils/person";
 
 // THE ACTOR FAMILY (issue #400): revoking a token, changing a role, inviting a user.
 //
@@ -152,7 +153,7 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
     for (const id of [tenantId, otherTenantId]) {
       if (id) {
         await suDb.$executeRawUnsafe(
-          `DELETE FROM users WHERE tenant_id = ${id}`,
+          `DELETE FROM users WHERE id IN (SELECT user_id FROM tenant_users WHERE tenant_id = ${id})`,
         );
         await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${id}`);
       }
@@ -181,12 +182,12 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
     role: "AGENT" | "TENANT_ADMIN" | "SUPER_ADMIN" = "AGENT",
   ) {
     return await suDb.user.create({
-      data: {
+      data: personData({
         tenantId: of,
         email: `u${uniq()}@aud400.test`,
         passwordHash: "x",
         role,
-      },
+      }),
       select: { id: true, email: true },
     });
   }
@@ -472,7 +473,11 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
       ),
     ).rejects.toThrow();
     expect(
-      (await suDb.user.findFirstOrThrow({ where: { id: outsider.id } })).role,
+      (
+        await suDb.tenantUser.findFirstOrThrow({
+          where: { userId: outsider.id },
+        })
+      ).role,
     ).toBe("AGENT");
   });
 
@@ -542,12 +547,12 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
 
   test("a SUPER_ADMIN's deletion is fleet-level, because they belong to no tenant", async () => {
     await suDb.user.create({
-      data: {
+      data: personData({
         tenantId: null,
         email: `keep${uniq()}@aud400.test`,
         passwordHash: "x",
         role: "SUPER_ADMIN",
-      },
+      }),
     });
     const doomed = await newUser(null, "SUPER_ADMIN");
     await clearAudit();

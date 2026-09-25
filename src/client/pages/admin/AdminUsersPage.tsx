@@ -181,10 +181,13 @@ export function AdminUsersPage() {
       return;
     }
     const newRole = isAdminRole(user.role) ? "AGENT" : "TENANT_ADMIN";
+    // The role is held per tenant (issue #756): in the fleet view a person has a row per membership,
+    // and the write names the one this row is. A tenant admin's write is fenced to their tenant.
     const { data, error } = await api.api.admin
       .users({ id: user.id })
       .role.patch({
         role: newRole,
+        ...(isSuperAdmin && user.tenantId ? { tenantId: user.tenantId } : {}),
       });
 
     if (error) {
@@ -199,7 +202,9 @@ export function AdminUsersPage() {
     if (data?.user) {
       setUsers((prev) =>
         prev.map((u) =>
-          u.id === user.id ? { ...u, role: data.user.role } : u,
+          u.id === user.id && u.tenantId === user.tenantId
+            ? { ...u, role: data.user.role }
+            : u,
         ),
       );
       showToast(
@@ -212,21 +217,32 @@ export function AdminUsersPage() {
     }
   };
 
-  // Irreversible: deletes the user (step-up password). The server refuses self-delete / last-admin
-  // and returns a localized message, surfaced in the toast.
+  // Irreversible (step-up password). The server refuses self-delete / last-admin and returns a
+  // localized message, surfaced in the toast. The fleet deletes the ACCOUNT; a tenant admin removes
+  // the person from their tenant, and their account and other tenants stay (issue #756).
   function openDeleteUser(user: AdminUser) {
     deleteUserModal.open({
-      title: t("admin.deleteUser", "Delete user"),
-      warning: t(
-        "admin.deleteUserWarning",
-        "This permanently deletes {{email}} and revokes their access. It cannot be undone.",
-        { email: user.email },
-      ),
+      title: isSuperAdmin
+        ? t("admin.deleteUser", "Delete user")
+        : t("admin.removeUser", "Remove from tenant"),
+      warning: isSuperAdmin
+        ? t(
+            "admin.deleteUserWarning",
+            "This permanently deletes {{email}} and revokes their access. It cannot be undone.",
+            { email: user.email },
+          )
+        : t(
+            "admin.removeUserWarning",
+            "This removes {{email}} from this tenant and revokes their access to it. Their account and any other tenants they belong to are kept.",
+            { email: user.email },
+          ),
       confirmPhrase: user.email,
       confirmLabel: t("admin.deleteUserConfirm", "Type {{email}} to confirm", {
         email: user.email,
       }),
-      actionLabel: t("admin.deleteUser", "Delete user"),
+      actionLabel: isSuperAdmin
+        ? t("admin.deleteUser", "Delete user")
+        : t("admin.removeUser", "Remove from tenant"),
       onConfirm: async (password) => {
         const { error } = await api.api.admin
           .users({ id: user.id })
@@ -239,7 +255,12 @@ export function AdminUsersPage() {
           );
           throw error;
         }
-        showToast(t("admin.deleteUserDone", "User deleted."), "success");
+        showToast(
+          isSuperAdmin
+            ? t("admin.deleteUserDone", "User deleted.")
+            : t("admin.removeUserDone", "User removed from the tenant."),
+          "success",
+        );
         setUsers((prev) => prev.filter((u) => u.id !== user.id));
         fetchStats();
       },
@@ -428,7 +449,7 @@ export function AdminUsersPage() {
                           : t("admin.promoteTooltip", "Promote to Admin");
                       return (
                         <tr
-                          key={user.id}
+                          key={`${user.id}:${user.tenantId ?? "fleet"}`}
                           className="border-border/50 border-b hover:bg-bg-tertiary/50"
                         >
                           <td className="px-2 py-3 text-text-primary">
@@ -500,7 +521,12 @@ export function AdminUsersPage() {
                                         "admin.cannotDeleteSelf",
                                         "You cannot delete yourself",
                                       )
-                                    : t("admin.deleteUser", "Delete user")
+                                    : isSuperAdmin
+                                      ? t("admin.deleteUser", "Delete user")
+                                      : t(
+                                          "admin.removeUser",
+                                          "Remove from tenant",
+                                        )
                                 }
                                 side="top"
                               >
@@ -517,10 +543,14 @@ export function AdminUsersPage() {
                                         isSelf,
                                     },
                                   )}
-                                  aria-label={t(
-                                    "admin.deleteUser",
-                                    "Delete user",
-                                  )}
+                                  aria-label={
+                                    isSuperAdmin
+                                      ? t("admin.deleteUser", "Delete user")
+                                      : t(
+                                          "admin.removeUser",
+                                          "Remove from tenant",
+                                        )
+                                  }
                                 >
                                   <Trash2
                                     className="h-3 w-3"

@@ -50,7 +50,7 @@ export function DemoteFleetAdminModal({
     try {
       const { error: apiError } = await api.api.admin
         .users({ id: target.id })
-        .role.patch({ role: "AGENT", tenantId });
+        .role.patch({ role: "AGENT", tenantId, demoteFleet: true });
       if (apiError) {
         setError(
           apiErrorMessage(apiError) ||

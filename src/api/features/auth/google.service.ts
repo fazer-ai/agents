@@ -3,8 +3,10 @@ import {
   createGoogleUser,
   getUserByEmail,
   getUserByGoogleId,
+  isAdminAnywhere,
   isEmailDomainAllowed,
   linkGoogleIdToUser,
+  requireSessionUser,
   resolveDefaultTenantId,
 } from "@/api/features/auth/auth.service";
 import { isSetupRequired } from "@/api/features/auth/setup.service";
@@ -95,7 +97,7 @@ export async function upsertGoogleUser(
 ): Promise<AuthUser> {
   const byGoogleId = await getUserByGoogleId(profile.sub);
   if (byGoogleId) {
-    return byGoogleId;
+    return requireSessionUser(byGoogleId);
   }
 
   // NOTE: Reject unverified Google emails before any account creation or
@@ -120,7 +122,9 @@ export async function upsertGoogleUser(
     // email_verified=true for that address (e.g. a Workspace admin or insider) take over
     // the account. Require at least one password login to prove inbox control before
     // Google linking becomes available for elevated accounts.
-    if (byEmail.role !== "AGENT" && byEmail.lastLoginAt === null) {
+    // An account is elevated if it is SUPER_ADMIN or administers ANY tenant (issue #756): the block
+    // protects the account, and one account now carries every membership.
+    if (isAdminAnywhere(byEmail) && byEmail.lastLoginAt === null) {
       throw new GoogleAdminLinkBlockedError();
     }
     const linked = await linkGoogleIdToUser(byEmail.id, profile.sub);
@@ -162,7 +166,7 @@ export async function upsertGoogleUser(
     });
   } catch (error) {
     const existing = await getUserByGoogleId(profile.sub);
-    if (existing) return existing;
+    if (existing) return requireSessionUser(existing);
     throw error;
   }
 }

@@ -10,7 +10,12 @@ import {
 } from "@/graph/observability";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import type { FlowContext } from "@/modules/flowlog/service";
-import { callCostUsd } from "@/modules/pricing/price";
+import {
+  cachedPriceOverrides,
+  type PriceOverridesBlock,
+  readPriceOverrides,
+} from "@/modules/pricing/overrides";
+import { type PricedTokens, priceCall } from "@/modules/pricing/price";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 
@@ -63,6 +68,8 @@ export interface UsageRow {
   durationMs: number | null;
   // What the call cost in USD, from the price table (issue #863). Null when the table could not price it.
   costUsd: number | null;
+  // What priced it: the table (`litellm@<commit>`) or the tenant's own price (issue #865).
+  priceTable: string;
 }
 
 export type UsagePersist = (row: UsageRow) => Promise<void>;
@@ -92,6 +99,9 @@ export interface TurnUsage {
   // names the current table's date only when this is zero, since a reopened turn keeps the figure
   // its own table gave it.
   olderTablePricedCalls: number;
+  // Of the priced calls, how many the tenant's own prices priced rather than the table (issue #865),
+  // so the popover can say where its figure came from.
+  tenantPricedCalls: number;
 }
 
 export function emptyTurnUsage(): TurnUsage {
@@ -105,6 +115,7 @@ export function emptyTurnUsage(): TurnUsage {
     costUsd: 0,
     unpricedCalls: 0,
     olderTablePricedCalls: 0,
+    tenantPricedCalls: 0,
   };
 }
 
@@ -155,6 +166,7 @@ export function addUsageGroup(
   into.costUsd += g.costUsd ?? 0;
   into.unpricedCalls += g.calls - g.pricedCalls;
   if (isOlderTable(g.priceTable)) into.olderTablePricedCalls += g.pricedCalls;
+  if (isTenantPrice(g.priceTable)) into.tenantPricedCalls += g.pricedCalls;
   const node = usageNode(g.node);
   into.byNode[node] = (into.byNode[node] ?? 0) + g.calls;
 }
@@ -207,6 +219,7 @@ export async function sumTurnUsage<T>(
         unpricedCalls: after.unpricedCalls - before.unpricedCalls,
         olderTablePricedCalls:
           after.olderTablePricedCalls - before.olderTablePricedCalls,
+        tenantPricedCalls: after.tenantPricedCalls - before.tenantPricedCalls,
         byNode: Object.fromEntries(
           Object.entries(after.byNode)
             .map(([n, c]) => [n, c - (before.byNode[n] ?? 0)] as const)
@@ -237,7 +250,10 @@ function noteTurnUsage(row: UsageRow): void {
   sink.usage.cacheCreationTokens += row.cacheCreationTokens;
   sink.usage.completionTokens += row.completionTokens;
   if (row.costUsd === null) sink.usage.unpricedCalls += 1;
-  else sink.usage.costUsd += row.costUsd;
+  else {
+    sink.usage.costUsd += row.costUsd;
+    if (isTenantPrice(row.priceTable)) sink.usage.tenantPricedCalls += 1;
+  }
   const node = usageNode(row.node);
   sink.usage.byNode[node] = (sink.usage.byNode[node] ?? 0) + 1;
 }
@@ -279,6 +295,45 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
+export function isTenantPrice(priceTable: string | null | undefined): boolean {
+  return priceTable?.startsWith("tenant-override@") ?? false;
+}
+
+// The price of one call as this tenant pays it (issues #863, #865): its own price for the provider
+// and model when it saved one, the table's otherwise. An unreadable settings row prices from the
+// table and says so in the log; pricing never fails the capture it belongs to.
+async function priceRow(
+  tenantId: bigint,
+  provider: string,
+  model: string,
+  tokens: PricedTokens,
+  base: PrismaClient | undefined,
+): Promise<{ costUsd: number | null; priceTable: string }> {
+  let overrides: PriceOverridesBlock | null = null;
+  try {
+    overrides = await cachedPriceOverrides(tenantId, () =>
+      runScopedOn(base ?? basePrisma, sysCtx(tenantId), async (db) => {
+        const t = await db.tenant.findUnique({
+          where: { id: tenantId },
+          select: { settings: true },
+        });
+        const settings = t?.settings;
+        return readPriceOverrides(
+          typeof settings === "object" && settings !== null
+            ? (settings as Record<string, unknown>)
+            : {},
+        );
+      }),
+    );
+  } catch (err) {
+    logger.warn(
+      { err, tenantId: String(tenantId) },
+      "usage: tenant prices unreadable, pricing from the table",
+    );
+  }
+  return priceCall(provider, model, tokens, new Date(), overrides);
+}
+
 // Default sink: a short scoped tx (no network) appending the row. tenant_id is re-pinned by the
 // $extends override; passing it here keeps the intent explicit.
 export function defaultUsagePersist(
@@ -304,7 +359,7 @@ export function defaultUsagePersist(
           durationMs:
             row.durationMs === null ? undefined : Math.round(row.durationMs),
           costUsd: row.costUsd ?? undefined,
-          priceTable: PRICE_TABLE_VERSION,
+          priceTable: row.priceTable,
         },
       });
       // Fleet event (the subscriber consolidates). Same scoped tx as the row; allowlisted
@@ -503,7 +558,8 @@ export async function recordDirectUsage(
     cachedReadTokens: row.cachedReadTokens ?? 0,
     cacheCreationTokens: row.cacheCreationTokens ?? 0,
     durationMs: row.durationMs ?? null,
-    costUsd: callCostUsd(
+    ...(await priceRow(
+      attr.tenantId,
       row.provider,
       row.model,
       {
@@ -512,8 +568,8 @@ export async function recordDirectUsage(
         cacheCreationTokens: row.cacheCreationTokens ?? 0,
         completionTokens: row.completionTokens,
       },
-      new Date(),
-    ),
+      attr.base,
+    )),
   };
   noteTurnUsage(usageRow);
   try {
@@ -583,6 +639,7 @@ export class UsageCapture extends BaseCallbackHandler {
   private readonly node: string | null;
   private readonly source: UsageSource;
   private readonly persist: UsagePersist;
+  private readonly base: PrismaClient | undefined;
 
   constructor(params: UsageCaptureParams) {
     super();
@@ -597,6 +654,7 @@ export class UsageCapture extends BaseCallbackHandler {
     this.node = params.node ?? null;
     this.source = params.source ?? "inbox";
     this.persist = params.persist ?? defaultUsagePersist(params.base);
+    this.base = params.base;
   }
 
   // Which model each in-flight run is on, when the caller said. Keyed by runId rather than held as
@@ -670,7 +728,8 @@ export class UsageCapture extends BaseCallbackHandler {
       cachedReadTokens,
       cacheCreationTokens,
       durationMs,
-      costUsd: callCostUsd(
+      ...(await priceRow(
+        this.tenantId,
         provider,
         model,
         {
@@ -679,8 +738,8 @@ export class UsageCapture extends BaseCallbackHandler {
           cacheCreationTokens,
           completionTokens,
         },
-        new Date(),
-      ),
+        this.base,
+      )),
     };
     noteTurnUsage(row);
     try {

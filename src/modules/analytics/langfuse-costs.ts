@@ -163,21 +163,31 @@ async function localCostByModel(
   source: UsageSource | undefined,
 ): Promise<LocalModelCost[] | null> {
   try {
-    const groups = await runScopedOn(base, ctx, (db) =>
-      db.llmUsage.groupBy({
-        by: ["model"],
-        where: {
-          createdAt: { gte: from, lte: to },
-          source: source ?? { in: [...OUR_SOURCES] },
-        },
-        _count: { _all: true, costUsd: true },
-        _sum: { costUsd: true },
-      }),
+    const where = {
+      createdAt: { gte: from, lte: to },
+      source: source ?? { in: [...OUR_SOURCES] },
+    };
+    const [groups, own] = await runScopedOn(base, ctx, (db) =>
+      Promise.all([
+        db.llmUsage.groupBy({
+          by: ["model"],
+          where,
+          _count: { _all: true, costUsd: true },
+          _sum: { costUsd: true },
+        }),
+        db.llmUsage.groupBy({
+          by: ["model"],
+          where: { ...where, priceTable: { startsWith: "tenant-override@" } },
+          _count: { _all: true },
+        }),
+      ]),
     );
+    const ownByModel = new Map(own.map((g) => [g.model, g._count._all]));
     return groups.map((g) => ({
       model: g.model,
       calls: g._count._all,
       pricedCalls: g._count.costUsd,
+      ownPricedCalls: ownByModel.get(g.model) ?? 0,
       costUsd: usdOrNull(g._sum.costUsd) ?? 0,
     }));
   } catch (err) {

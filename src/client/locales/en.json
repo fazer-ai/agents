@@ -2464,6 +2464,24 @@
       "sessionTitle": "This session's usage"
     }
   },
+  "priceOverrides": {
+    "add": "Add price",
+    "cachedInput": "Cached input",
+    "cacheWrite": "Cache write",
+    "description": "The cost the console shows comes from public list prices. If this account pays something else for a model (a negotiated discount, Azure or Bedrock, its own server), write what it pays here, in USD per million tokens. An empty cache rate is charged at the input rate. It applies from the next call; calls already made keep their price.",
+    "empty": "No prices of this account's own: every call is priced from the list.",
+    "input": "Input",
+    "model": "Model",
+    "modelPlaceholder": "model id",
+    "optionalRate": "{{label}} (optional)",
+    "output": "Output",
+    "provider": "Provider",
+    "remove": "Remove row {{n}}",
+    "save": "Save prices",
+    "saved": "Prices saved.",
+    "saveError": "Could not save the prices.",
+    "title": "Model prices"
+  },
   "resources": {
     "deleteRefsWarning_one": "{{count}} agent uses this and will stop working if you delete it.",
     "deleteRefsWarning_other": "{{count}} agents use this and will stop working if you delete it.",
@@ -2612,7 +2630,10 @@
     "callsTitle_other": "{{count}} model calls",
     "costLabel": "Model calls",
     "costSource": "Estimated from the price table of {{date}}; may differ slightly from the dashboard",
+    "costSourceMixed": "From this tenant's own prices and the price table of {{date}}",
+    "costSourceMixedOlder": "From this tenant's own prices and the price tables in force when the calls were made",
     "costSourceOlder": "Estimated from the price tables in force when the calls were made; may differ slightly from the dashboard",
+    "costSourceTenant": "From this tenant's own prices",
     "costTitle": "Cost",
     "detailLabel": "Usage detail",
     "figure": "{{input}} input tokens",

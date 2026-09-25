@@ -247,6 +247,7 @@ export const ROUTE_COVERAGE: Record<string, Coverage> = {
   "PUT /v1/tenant-settings/langfuse": { tool: "tenant_settings_update" },
   "GET /v1/tenant-settings/spend-ceiling/usage": { gap: "spend-ceiling usage" },
   "PUT /v1/tenant-settings/spend-ceiling": { gap: "set the spend ceiling" },
+  "PUT /v1/tenant-settings/price-overrides": { tool: "tenant_settings_update" },
   "POST /v1/tenant-settings/langfuse/test": {
     gap: "probe the Langfuse credential",
   },

@@ -7,6 +7,13 @@ import { AppError } from "@/lib/errors";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { auditMutation } from "@/modules/audit/service";
 import { unprintableProblem } from "@/modules/documents/printable";
+import {
+  forgetPriceOverrides,
+  type PriceOverride,
+  type PriceOverridesBlock,
+  priceOverridesSchema,
+  readPriceOverrides,
+} from "@/modules/pricing/overrides";
 import { syncTenantSpendPoll } from "@/modules/spend-ceiling/arm";
 import {
   readSpendCeilingConfig,
@@ -169,6 +176,7 @@ export interface TenantSettingsDto {
   langfuse: LangfuseSettings;
   company: CompanySettings;
   spendCeiling: SpendCeilingConfig;
+  priceOverrides: PriceOverridesBlock;
 }
 
 export async function getTenantSettings(
@@ -186,6 +194,8 @@ export async function getTenantSettings(
       // to show the operator the numbers the gate will actually apply, and a second parser here
       // would be a second answer to that question the day one of them clamps differently.
       spendCeiling: readSpendCeilingConfig(raw),
+      // The runtime's reader too, for the same reason: what the console lists is what prices a call.
+      priceOverrides: readPriceOverrides(raw),
     };
   });
 }
@@ -226,11 +236,12 @@ async function patchBlock<
     | LangfuseSettings
     | CompanySettings
     | SpendCeilingStored
-    | SpendCeilingLegacyStored,
+    | SpendCeilingLegacyStored
+    | PriceOverridesBlock,
 >(
   ctx: TenantContext,
   base: PrismaClient,
-  key: "embedding" | "langfuse" | "company" | "spendCeiling",
+  key: "embedding" | "langfuse" | "company" | "spendCeiling" | "priceOverrides",
   // Handed BOTH states, the one being replaced and the one replacing it, so a block can report what
   // MOVED without carrying what it holds. The company profile is the block that needs the
   // difference: see `sides` below for the shape the other three use.
@@ -660,4 +671,57 @@ export async function updateSpendCeiling(
   // when it is off (issue #426). Best-effort inside, so it never fails the save.
   await syncTenantSpendPoll(requireTenantId(ctx), base);
   return readSpendCeilingConfig({ spendCeiling: next });
+}
+
+// The tenant's own prices (issue #865). The whole list is replaced on every save: it is edited as a
+// table on one screen, and a partial patch of a list has no key to merge on but the pair itself.
+//
+// Validated here and not only at the route: two rows for the same provider and model would leave
+// "which one priced this call" to list order, so the save refuses them with the row that repeats.
+// The write's validation, shared by the console's route and the MCP tool (a preview included), so
+// both refuse the same list with the same message.
+export function parsePriceOverrides(overrides: unknown): PriceOverride[] {
+  const parsed = priceOverridesSchema.safeParse(overrides);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    const row = typeof issue?.path[0] === "number" ? issue.path[0] + 1 : 1;
+    // The field too, so a caller that sent several rates learns which one was refused.
+    const field = issue?.path.slice(1).join(".");
+    const reason = `${field ? `${field}: ` : ""}${issue?.message ?? "invalid"}`;
+    throw new AppError(
+      `price row ${row} is not valid: ${reason}`,
+      422,
+      "errors.invalidPriceOverride",
+      { row, reason },
+      "priceOverrides",
+    );
+  }
+  return parsed.data;
+}
+
+export async function updatePriceOverrides(
+  ctx: TenantContext,
+  overrides: PriceOverride[],
+  base: PrismaClient = basePrisma,
+): Promise<PriceOverridesBlock> {
+  const list = parsePriceOverrides(overrides);
+  const block = await patchBlock(
+    ctx,
+    base,
+    "priceOverrides",
+    {
+      action: "tenant_settings.price_overrides_set",
+      target: "tenant_settings:priceOverrides",
+      // The prices themselves: they decide every cost figure the tenant reads, none is a secret, and
+      // "somebody changed a price" is unanswerable without from what to what.
+      project: sides((raw) => readPriceOverrides(raw).overrides),
+    },
+    (): PriceOverridesBlock => ({
+      overrides: list,
+      updatedAt: new Date().toISOString(),
+    }),
+  );
+  // The capture caches the list per tenant; the next priced call reads the one just saved.
+  forgetPriceOverrides(requireTenantId(ctx));
+  return block;
 }

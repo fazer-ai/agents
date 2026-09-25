@@ -18,6 +18,11 @@ import {
   readCompanyLogo,
   setCompanyLogo,
 } from "@/modules/documents/company";
+import {
+  PRICE_OVERRIDE_PROVIDERS,
+  PRICE_OVERRIDE_RATE_MAX,
+  PRICE_OVERRIDES_MAX,
+} from "@/modules/pricing/overrides";
 import { spendCeilingUsage } from "@/modules/spend-ceiling/service";
 import {
   SPEND_CEILING_NOTICE_COOLDOWN_MAX_SECONDS,
@@ -28,6 +33,7 @@ import {
   updateCompanySettings,
   updateEmbeddingSettings,
   updateLangfuse,
+  updatePriceOverrides,
   updateSpendCeiling,
 } from "@/modules/tenant-settings/service";
 
@@ -48,6 +54,15 @@ function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   return ctx;
 }
 
+// translate('errors.invalidPriceOverride', 'Price row {{row}} is not valid: {{reason}}')
+function rateField(what: string) {
+  return t.Number({
+    minimum: 0,
+    maximum: PRICE_OVERRIDE_RATE_MAX,
+    description: `USD per million tokens: ${what}`,
+  });
+}
+
 export const tenantSettingsController = new Elysia({
   prefix: "/v1/tenant-settings",
   tags: ["Settings"],
@@ -56,13 +71,14 @@ export const tenantSettingsController = new Elysia({
   .get(
     "/",
     async ({ tenantContext }) => {
-      const { embedding, langfuse, company, spendCeiling } =
+      const { embedding, langfuse, company, spendCeiling, priceOverrides } =
         await getTenantSettings(ctxOrThrow(tenantContext));
       return {
         instance: instanceIdentity,
         embedding,
         company,
         spendCeiling,
+        priceOverrides,
         langfuse: {
           enabled: langfuse.enabled,
           credentialRef: langfuse.credentialRef,
@@ -251,6 +267,48 @@ export const tenantSettingsController = new Elysia({
       detail: doc(
         "Update token-ceiling settings",
         "Updates the tenant's monthly spend ceiling.",
+      ),
+      response: errors(400, 401, 403, 404, 422),
+    },
+  )
+  .put(
+    "/price-overrides",
+    async ({ tenantContext, body }) => {
+      const priceOverrides = await updatePriceOverrides(
+        ctxOrThrow(tenantContext),
+        body.overrides,
+      );
+      return { instance: instanceIdentity, priceOverrides };
+    },
+    {
+      requireRole: "TENANT_ADMIN",
+      body: t.Object({
+        overrides: t.Array(
+          t.Object({
+            provider: t.UnionEnum([...PRICE_OVERRIDE_PROVIDERS], {
+              description:
+                "The model's provider, as the agent's model config names it.",
+            }),
+            model: t.String({
+              maxLength: 200,
+              description:
+                "The model id as the provider names it. Empty only for a single-model openai-compatible server.",
+            }),
+            input: rateField("Input tokens not served from the cache."),
+            output: rateField("Output tokens, reasoning included."),
+            cachedInput: t.Optional(
+              rateField("Input tokens served from the provider's cache."),
+            ),
+            cacheWrite: t.Optional(
+              rateField("Input tokens written to the provider's cache."),
+            ),
+          }),
+          { maxItems: PRICE_OVERRIDES_MAX },
+        ),
+      }),
+      detail: doc(
+        "Replace the tenant's model prices",
+        "Replaces the tenant's own prices for model calls (USD per million tokens). A call whose provider and model match one is priced with it instead of the price table, from the next call on; rows already written keep their price.",
       ),
       response: errors(400, 401, 403, 404, 422),
     },

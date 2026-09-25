@@ -369,6 +369,66 @@ describe.skipIf(!dbUp)("getLangfuseCosts (DB)", () => {
       expect(result.costCheck?.onlyInLangfuse).toEqual(["langfuse-only"]);
     });
 
+    test("a model the tenant priced itself is not flagged, however far it is from Langfuse", async () => {
+      const at = new Date(Date.now() - 60 * 60 * 1000);
+      await suDb.llmUsage.createMany({
+        data: [
+          {
+            model: "own-priced",
+            priceTable: "tenant-override@2026-09-25T00:00:00.000Z",
+            costUsd: 20,
+          },
+          {
+            model: "own-priced",
+            priceTable: "litellm@e106dbd8ba9b",
+            costUsd: 1,
+          },
+          {
+            model: "table-priced",
+            priceTable: "litellm@e106dbd8ba9b",
+            costUsd: 21,
+          },
+        ].map((r) => ({ tenantId, source: "inbox", createdAt: at, ...r })),
+      });
+      try {
+        const result = await getLangfuseCosts(
+          ctx(),
+          { since: new Date(Date.now() - DAY), source: "inbox" },
+          appDb,
+          makeFetch([
+            { data: [] },
+            {
+              data: [
+                ...langfuseModels,
+                { providedModelName: "own-priced", sum_totalCost: "2" },
+                { providedModelName: "table-priced", sum_totalCost: "2" },
+              ],
+            },
+          ]),
+        );
+        if (result.status !== "ok") throw new Error(result.status);
+        const own = result.costCheck?.models.find(
+          (m) => m.model === "own-priced",
+        );
+        // $21 against $2 would diverge; one call on the tenant's own price makes it `own`.
+        expect(own).toMatchObject({
+          localUsd: 21,
+          langfuseUsd: 2,
+          status: "own",
+        });
+        // The same gap priced by the table alone still diverges: the count is per model, and only
+        // the tenant's own stamp counts.
+        expect(
+          result.costCheck?.models.find((m) => m.model === "table-priced")
+            ?.status,
+        ).toBe("diverges");
+      } finally {
+        await suDb.$executeRawUnsafe(
+          `DELETE FROM llm_usage WHERE tenant_id = ${tenantId} AND model IN ('own-priced', 'table-priced')`,
+        );
+      }
+    });
+
     test("no since: the window is the Langfuse query's default, which reaches the older call", async () => {
       const result = await getLangfuseCosts(
         ctx(),

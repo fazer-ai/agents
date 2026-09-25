@@ -20,6 +20,8 @@ export type TokenUsage = {
   unpricedCalls: number;
   // Of the priced calls, how many a table older than the one in the tree priced.
   olderTablePricedCalls: number;
+  // Of the priced calls, how many the tenant's own prices priced (issue #865).
+  tenantPricedCalls: number;
 };
 
 // How long a turn took and how much of that was spent waiting on a model. Either can be unknown: the
@@ -98,6 +100,8 @@ export interface UsageDetail {
   // The day the price table was read, so a reader can tell how old the rates behind the figure are;
   // null when some calls were priced by an older table, whose date the ledger does not keep.
   priceTableDate: string | null;
+  // Where the priced calls' prices came from: the table, the tenant's own prices, or both.
+  priceSource: "table" | "tenant" | "mixed";
 }
 
 // Dollars to the precision a turn needs: a turn costs fractions of a cent, and "$0.00" would read as
@@ -155,6 +159,12 @@ export function usageDetail(
         ? formatUsd(locale, usage.costUsd)
         : null,
     unpriced: usage.unpricedCalls,
+    priceSource:
+      usage.tenantPricedCalls === 0
+        ? "table"
+        : usage.tenantPricedCalls >= usage.calls - usage.unpricedCalls
+          ? "tenant"
+          : "mixed",
     // Noon UTC, so the calendar day is the same in every timezone the console runs in.
     priceTableDate:
       usage.olderTablePricedCalls > 0
@@ -273,16 +283,30 @@ function UsageDetailCard({ title, d }: { title: string; d: UsageDetail }) {
           </p>
         )}
         <p className="text-[11px] text-text-muted">
-          {d.priceTableDate === null
-            ? t(
-                "tokenUsage.costSourceOlder",
-                "Estimated from the price tables in force when the calls were made; may differ slightly from the dashboard",
-              )
-            : t(
-                "tokenUsage.costSource",
-                "Estimated from the price table of {{date}}; may differ slightly from the dashboard",
-                { date: d.priceTableDate },
-              )}
+          {d.priceSource === "tenant" &&
+            t("tokenUsage.costSourceTenant", "From this tenant's own prices")}
+          {d.priceSource === "mixed" &&
+            (d.priceTableDate === null
+              ? t(
+                  "tokenUsage.costSourceMixedOlder",
+                  "From this tenant's own prices and the price tables in force when the calls were made",
+                )
+              : t(
+                  "tokenUsage.costSourceMixed",
+                  "From this tenant's own prices and the price table of {{date}}",
+                  { date: d.priceTableDate },
+                ))}
+          {d.priceSource === "table" &&
+            (d.priceTableDate === null
+              ? t(
+                  "tokenUsage.costSourceOlder",
+                  "Estimated from the price tables in force when the calls were made; may differ slightly from the dashboard",
+                )
+              : t(
+                  "tokenUsage.costSource",
+                  "Estimated from the price table of {{date}}; may differ slightly from the dashboard",
+                  { date: d.priceTableDate },
+                ))}
         </p>
       </Section>
       {(d.turn || d.model) && (

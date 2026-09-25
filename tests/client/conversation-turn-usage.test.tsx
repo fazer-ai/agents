@@ -72,6 +72,7 @@ function turn(
       costUsd: 0,
       unpricedCalls: 2,
       olderTablePricedCalls: 0,
+      tenantPricedCalls: 0,
     },
   };
 }
@@ -209,6 +210,39 @@ describe("the figure itself", () => {
     expect(detail).not.toContain("price table of");
   });
 
+  // Issue #865: the line under the figure says whose prices it used.
+  test("a figure priced by the tenant's own prices says so, and a mixed one names both", async () => {
+    await inLanguage(
+      "en",
+      <UsageFigure usage={{ ...priced(0.25, 0), tenantPricedCalls: 2 }} />,
+    );
+    const own = open();
+    expect(own).toContain("From this tenant's own prices");
+    expect(own).not.toContain("price table of");
+    cleanup();
+    await inLanguage(
+      "en",
+      <UsageFigure usage={{ ...priced(0.25, 0), tenantPricedCalls: 1 }} />,
+    );
+    expect(open()).toContain(
+      "From this tenant's own prices and the price table of",
+    );
+    cleanup();
+    await inLanguage(
+      "en",
+      <UsageFigure
+        usage={{
+          ...priced(0.25, 0),
+          tenantPricedCalls: 1,
+          olderTablePricedCalls: 1,
+        }}
+      />,
+    );
+    expect(open()).toContain(
+      "From this tenant's own prices and the price tables in force when the calls were made",
+    );
+  });
+
   test("a total with no call renders nothing, not a zero", async () => {
     await inLanguage(
       "en",
@@ -223,6 +257,7 @@ describe("the figure itself", () => {
           costUsd: 0,
           unpricedCalls: 0,
           olderTablePricedCalls: 0,
+          tenantPricedCalls: 0,
         }}
         label="Tokens"
       />,

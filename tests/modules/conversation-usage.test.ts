@@ -253,6 +253,7 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
       costUsd: 0,
       unpricedCalls: 6,
       olderTablePricedCalls: 0,
+      tenantPricedCalls: 0,
     });
     expect(usage.turns).toEqual([
       {
@@ -269,6 +270,7 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
           costUsd: 0,
           unpricedCalls: 3,
           olderTablePricedCalls: 0,
+          tenantPricedCalls: 0,
         },
         // No closing line was written for these seeded turns, and no call was timed.
         messageIds: [],
@@ -288,6 +290,7 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
           costUsd: 0,
           unpricedCalls: 2,
           olderTablePricedCalls: 0,
+          tenantPricedCalls: 0,
         },
         messageIds: [],
         turnMs: null,

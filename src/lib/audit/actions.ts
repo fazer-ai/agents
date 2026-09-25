@@ -119,6 +119,7 @@ export const AUDIT_ACTIONS = [
   "tenant_settings.company_set",
   "tenant_settings.embedding_set",
   "tenant_settings.langfuse_set",
+  "tenant_settings.price_overrides_set",
   "tenant_settings.spend_ceiling_set",
   "tool.create",
   "tool.delete",

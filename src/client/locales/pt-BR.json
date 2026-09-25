@@ -2530,6 +2530,24 @@
       "sessionTitle": "Consumo desta sessão"
     }
   },
+  "priceOverrides": {
+    "add": "Adicionar preço",
+    "cachedInput": "Entrada do cache",
+    "cacheWrite": "Escrita no cache",
+    "description": "O custo que o console mostra vem dos preços públicos de tabela. Se esta conta paga outro valor por um modelo (desconto negociado, Azure ou Bedrock, servidor próprio), escreva aqui o que ela paga, em dólares por milhão de tokens. Uma tarifa de cache vazia é cobrada pela tarifa de entrada. Vale a partir da próxima chamada; as chamadas já feitas mantêm o preço delas.",
+    "empty": "Nenhum preço próprio desta conta: toda chamada é precificada pela tabela.",
+    "input": "Entrada",
+    "model": "Modelo",
+    "modelPlaceholder": "id do modelo",
+    "optionalRate": "{{label}} (opcional)",
+    "output": "Saída",
+    "provider": "Fornecedor",
+    "remove": "Remover a linha {{n}}",
+    "save": "Salvar preços",
+    "saved": "Preços salvos.",
+    "saveError": "Não foi possível salvar os preços.",
+    "title": "Preços dos modelos"
+  },
   "resources": {
     "deleteRefsWarning_zero": "{{count}} agentes usam isto e vão parar de funcionar se você excluir.",
     "deleteRefsWarning_one": "{{count}} agente usa isto e vai parar de funcionar se você excluir.",
@@ -2684,7 +2702,10 @@
     "callsTitle_other": "{{count}} chamadas ao modelo",
     "costLabel": "Chamadas ao modelo",
     "costSource": "Estimado pela tabela de preços de {{date}}; pode diferir um pouco do painel",
+    "costSourceMixed": "Pelos preços próprios deste tenant e pela tabela de preços de {{date}}",
+    "costSourceMixedOlder": "Pelos preços próprios deste tenant e pelas tabelas de preços vigentes quando as chamadas foram feitas",
     "costSourceOlder": "Estimado pelas tabelas de preços vigentes quando as chamadas foram feitas; pode diferir um pouco do painel",
+    "costSourceTenant": "Pelos preços próprios deste tenant",
     "costTitle": "Custo",
     "detailLabel": "Detalhe do consumo",
     "figure": "{{input}} tokens de entrada",

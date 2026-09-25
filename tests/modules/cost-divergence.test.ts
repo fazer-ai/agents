@@ -45,6 +45,15 @@ describe("the thresholds", () => {
     expect(judgeCosts(1.09, 0.1, 1, 1)).toBe("match");
   });
 
+  test("a model priced by the tenant's own price is not judged against Langfuse's table", () => {
+    // What the card tells the operator to do when the account pays a price neither table knows:
+    // after it, the local figure is that price, and flagging it would never clear.
+    expect(judgeCosts(10, 2, 5, 5, 1)).toBe("own");
+    expect(judgeCosts(10, 2, 5, 5, 0)).toBe("diverges");
+    // An unpriced call still makes it incomplete first.
+    expect(judgeCosts(10, 2, 5, 4, 1)).toBe("incomplete");
+  });
+
   test("one unpriced local call makes the model incomplete, never a verdict", () => {
     expect(judgeCosts(1, 50, 4, 3)).toBe("incomplete");
     expect(judgeCosts(50, 50, 4, 3)).toBe("incomplete");

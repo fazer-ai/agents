@@ -127,6 +127,7 @@
     "invalidModelConfig": "The model configuration must be an object.",
     "invalidModelConfigDetail": "The model configuration is not valid: {{reason}}",
     "invalidPassword": "Incorrect password",
+    "invalidPriceOverride": "Price row {{row}} is not valid: {{reason}}",
     "invalidQueryParam": "Invalid value for {{param}}",
     "invalidRequest": "The request is not valid.",
     "invalidRequestValue": "The value sent in {{field}} is not valid.",

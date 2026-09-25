@@ -29,8 +29,10 @@ import {
   assertEmbeddingCredentialUsable,
   assertLangfuseCredentialUsable,
   getTenantSettings,
+  parsePriceOverrides,
   updateEmbeddingSettings,
   updateLangfuse,
+  updatePriceOverrides,
 } from "@/modules/tenant-settings/service";
 import {
   assertVaultEntryCreatable,
@@ -429,7 +431,29 @@ export interface TenantSettingsUpdateArgs {
     send_content?: boolean;
     debug?: boolean;
   };
+  // The tenant's own model prices (issue #865): the WHOLE list, which replaces the saved one.
+  price_overrides?: McpPriceOverride[];
   dry_run?: boolean;
+}
+
+export interface McpPriceOverride {
+  provider: string;
+  model: string;
+  input: number;
+  output: number;
+  cached_input?: number;
+  cache_write?: number;
+}
+
+function priceOverridesFromMcp(list: McpPriceOverride[]): unknown[] {
+  return list.map((o) => ({
+    provider: o.provider,
+    model: o.model,
+    input: o.input,
+    output: o.output,
+    ...(o.cached_input === undefined ? {} : { cachedInput: o.cached_input }),
+    ...(o.cache_write === undefined ? {} : { cacheWrite: o.cache_write }),
+  }));
 }
 
 export async function tenantSettingsUpdate(
@@ -440,8 +464,14 @@ export async function tenantSettingsUpdate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  if (args.embedding === undefined && args.langfuse === undefined) {
-    return err("no updatable blocks provided (embedding, langfuse)");
+  if (
+    args.embedding === undefined &&
+    args.langfuse === undefined &&
+    args.price_overrides === undefined
+  ) {
+    return err(
+      "no updatable blocks provided (embedding, langfuse, price_overrides)",
+    );
   }
 
   // Resolve credential NAMES → vault:<id> (null clears; undefined leaves untouched).
@@ -483,6 +513,12 @@ export async function tenantSettingsUpdate(
 
   const target = "tenant_settings";
   try {
+    // Parsed before any block is written, so an invalid list refuses the whole call instead of
+    // landing after the other blocks already did.
+    const prices =
+      args.price_overrides === undefined
+        ? undefined
+        : parsePriceOverrides(priceOverridesFromMcp(args.price_overrides));
     if (args.dry_run !== false) {
       // NOTE: the core's own KIND question, which resolving the ref above does not answer — a
       // `vault:<id>` names an entry of any kind, and this preview said "will wire" for one whose
@@ -510,6 +546,7 @@ export async function tenantSettingsUpdate(
                   sendContent: args.langfuse.send_content,
                   debug: args.langfuse.debug,
                 },
+          priceOverrides: prices,
         },
       });
     }
@@ -528,6 +565,9 @@ export async function tenantSettingsUpdate(
         base,
       );
     }
+    if (prices !== undefined) {
+      await updatePriceOverrides(ctx, prices, base);
+    }
     const after = await getTenantSettings(ctx, base);
     // NOTE: each block writer above records its own row, so a call touching both leaves TWO where
     // this tool used to leave one summarizing both. Same shape the console has always produced.
@@ -545,6 +585,7 @@ export async function tenantSettingsUpdate(
       settings: {
         embedding: { ...after.embedding, credentialRef: embName },
         langfuse: { ...after.langfuse, credentialRef: lfName },
+        priceOverrides: after.priceOverrides,
       },
     });
   } catch (e) {

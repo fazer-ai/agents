@@ -44,7 +44,9 @@ export interface PricedTokens {
 // Where a provider's model lives in the table. The table is keyed the way LiteLLM routes, so the same
 // model id means different rows for different providers: Google's AI Studio rows carry `gemini/`, and
 // OpenRouter's carry `openrouter/` in front of the vendor-prefixed id OpenRouter itself uses.
-function tableKeys(provider: string, model: string): string[] {
+// Exported for scripts/diff-model-prices.ts, which has to find the provider defaults' rows the same
+// way the runtime does (issue #869).
+export function tableKeys(provider: string, model: string): string[] {
   switch (provider) {
     // A fine-tuned OpenAI id carries the organization and a suffix after the base
     // (`ft:gpt-4o-mini-2024-07-18:acme:support:abc123`), and the table lists the fine-tuning rates

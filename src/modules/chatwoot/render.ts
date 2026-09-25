@@ -177,6 +177,8 @@ export function renderInboundMessage(
       ? `<anexos-nao-lidos quantidade="${pulados}">não foi possível ler; se a resposta depender deles, peça ao cliente que reenvie o que falta</anexos-nao-lidos>`
       : "";
   let body: string;
+  // Whether a branch below already told the model a file could not be read.
+  let pediuReenvio = false;
   if (types.has("audio")) {
     const tr = cleanTranscription(m.transcribedText ?? text);
     body = tr
@@ -212,6 +214,7 @@ export function renderInboundMessage(
     // por `startsWith` para remontar o anexo na tela do operador, e uma reescrita da frase inteira
     // quebraria aquele lado em silêncio. Cercado em `tests/modules/chatwoot-render.test.ts`.
     body = withText(IMAGEM_ILEGIVEL);
+    pediuReenvio = true;
   } else if (m.location) {
     // NOTE: A WhatsApp location pin: surfaced as attributes (mirroring the reaction marker) so the
     // model reads the coordinates and forwards them as ordinary tool arguments (issue #45). A pin
@@ -236,6 +239,7 @@ export function renderInboundMessage(
       ? ` chamado '${m.attachmentName.trim()}'`
       : "";
     body = `<usuário enviou um arquivo do tipo '${ty}'${named}; não foi possível extrair o conteúdo>`;
+    pediuReenvio = true;
   } else if (subject) {
     // The subject is the whole message. An email whose body is empty or a client footer is NOT a
     // blank message, and the branch below would have dropped the turn with the request in it.
@@ -254,9 +258,9 @@ export function renderInboundMessage(
   // noise the model has to reconcile. The case this exists for is the PARTIAL one: some files read,
   // others over the cap or unreadable, where the extraction that succeeded would otherwise make the
   // message look complete (PR #692 review, rounds 1 and 3).
-  // Or when no attachment marker was emitted at all: an image in an email body has no attachment
-  // type, so a failed one would otherwise leave no trace beside the text (issue #864).
-  if (naoLidos && (imageDescription || extractedText || types.size === 0))
+  // Or when that marker was NOT emitted: an image in an email body has no attachment type, so beside
+  // text, an audio or a pin a failed one would otherwise leave no trace (issue #864).
+  if (naoLidos && (imageDescription || extractedText || !pediuReenvio))
     body = body ? `${body}\n${naoLidos}` : naoLidos;
 
   if (m.inReplyTo != null && ctx.resolveQuoted) {

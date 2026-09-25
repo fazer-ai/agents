@@ -665,6 +665,45 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     expect(r?.attachmentsUnread ?? 0).toBe(0);
   });
 
+  test("an ornament past the cap is not named as an unread file", async () => {
+    await setVision(true);
+    const signature = blob(93, "assinatura.png");
+    const out = await reengage(
+      1018,
+      {
+        content: "Tudo",
+        content_attributes: emailBag({ html: `<img src="${signature}">` }),
+        attachments: Array.from({ length: 8 }, (_, i) => ({
+          id: 300 + i,
+          file_type: "image",
+          data_url: blob(100 + i, `c${i}.png`),
+        })),
+      } as never,
+      { sizes: { [signature]: [144, 144] } },
+    );
+    expect(provider.calls).toBe(8);
+    // Downloaded to classify, never sent to the provider.
+    expect(out.downloads).toContain(signature);
+    expect(out.turn).not.toContain(unreadMarker(1));
+  });
+
+  test("a failed body image is named beside an audio note too", async () => {
+    await setVision(true);
+    const broken = blob(94);
+    const out = await reengage(
+      1019,
+      {
+        content: "",
+        content_attributes: emailBag({ html: `<img src="${broken}">` }),
+        attachments: [
+          { id: 400, file_type: "audio", data_url: blob(95, "nota.ogg") },
+        ],
+      } as never,
+      { fail: new Set([broken]) },
+    );
+    expect(out.turn).toContain(unreadMarker(1));
+  });
+
   test("a message whose body has no Chatwoot blob costs nothing", async () => {
     await setVision(true);
     const out = await reengage(1004, {

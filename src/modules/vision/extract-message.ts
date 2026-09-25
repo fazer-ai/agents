@@ -24,6 +24,7 @@ import { chatwootBaseUrl } from "@/modules/chatwoot/instance";
 import type { FlowContext } from "@/modules/flowlog/service";
 import {
   BODY_IMAGE_IGNORED,
+  classifyBodyImage,
   type ExtractInboundParams,
   extractBodyImage,
   extractInboundFile,
@@ -189,7 +190,25 @@ export async function extractMessageVisuals(params: {
     extraidos.push(...lidos);
     vagas = lidos.filter((e) => e.r === BODY_IMAGE_IGNORED).length;
   }
-  sobraram += corpo.length;
+  // O que passou do teto é baixado só para saber se é ornamento, sem ir ao provedor: um logotipo de
+  // assinatura depois de oito fotos não é arquivo a pedir de novo.
+  const alemDoTeto = await Promise.all(
+    corpo.map((visual) =>
+      classifyBodyImage({
+        tenantId,
+        instanceId,
+        conversationId: params.conversationId,
+        messageId,
+        dataUrl: visual.dataUrl,
+        cfg: params.cfg,
+        base: params.base,
+        flow: params.flow,
+        deps: params.deps,
+        stashAnnotation: false,
+      }).catch(() => null),
+    ),
+  );
+  sobraram += alemDoTeto.filter((r) => r !== BODY_IMAGE_IGNORED).length;
 
   const imagens: string[] = [];
   const documentos: string[] = [];

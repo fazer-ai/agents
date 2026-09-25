@@ -319,19 +319,42 @@ export async function extractInboundFile(
   params: ExtractInboundParams,
 ): Promise<ExtractResult | null> {
   const r = await extractInbound(params);
-  return r === BODY_IMAGE_IGNORED ? null : r;
+  return r === BODY_IMAGE_IGNORED || r === BODY_IMAGE_OVER_CAP ? null : r;
 }
 
 // An image Chatwoot's mailbox kept inside the email body instead of making it an attachment (#864).
 export function extractBodyImage(
   params: Omit<ExtractInboundParams, "attachmentId">,
 ): Promise<ExtractResult | null | typeof BODY_IMAGE_IGNORED> {
-  return extractInbound({ ...params, attachmentId: null, bodyImage: true });
+  return extractInbound({
+    ...params,
+    attachmentId: null,
+    bodyImage: true,
+  }) as Promise<ExtractResult | null | typeof BODY_IMAGE_IGNORED>;
+}
+
+// A body image past the per-message cap, downloaded only to know whether it is an ornament: it is
+// never sent to the provider, and what is not an ornament is what the model is told was not read.
+export const BODY_IMAGE_OVER_CAP = "over_cap" as const;
+export function classifyBodyImage(
+  params: Omit<ExtractInboundParams, "attachmentId">,
+): Promise<null | typeof BODY_IMAGE_IGNORED | typeof BODY_IMAGE_OVER_CAP> {
+  return extractInbound({
+    ...params,
+    attachmentId: null,
+    bodyImage: true,
+    classifyOnly: true,
+  }) as Promise<null | typeof BODY_IMAGE_IGNORED | typeof BODY_IMAGE_OVER_CAP>;
 }
 
 async function extractInbound(
-  params: ExtractInboundParams & { bodyImage?: boolean },
-): Promise<ExtractResult | null | typeof BODY_IMAGE_IGNORED> {
+  params: ExtractInboundParams & {
+    bodyImage?: boolean;
+    classifyOnly?: boolean;
+  },
+): Promise<
+  ExtractResult | null | typeof BODY_IMAGE_IGNORED | typeof BODY_IMAGE_OVER_CAP
+> {
   const { cfg } = params;
   const base = params.base ?? basePrisma;
 
@@ -411,6 +434,7 @@ async function extractInbound(
   if (params.bodyImage && kind === "image" && isDecorativeImage(bytes))
     return BODY_IMAGE_IGNORED;
   if (!kind) return skip("unsupported_mime"); // unsupported mime → marker
+  if (params.classifyOnly) return BODY_IMAGE_OVER_CAP;
   // The ENDPOINT decides, not the provider name: the same base URL that the call below posts to is
   // what has to be known to read a PDF (see ./document-support).
   if (

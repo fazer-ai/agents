@@ -2586,6 +2586,10 @@
     "cacheWriteLabel": "Cache write",
     "callsTitle_one": "{{count}} model call",
     "callsTitle_other": "{{count}} model calls",
+    "costLabel": "Model calls",
+    "costSource": "Estimated from the price table of {{date}}; may differ slightly from the dashboard",
+    "costSourceOlder": "Estimated from the price tables in force when the calls were made; may differ slightly from the dashboard",
+    "costTitle": "Cost",
     "detailLabel": "Usage detail",
     "figure": "{{input}} input tokens",
     "inputLabel": "Input",
@@ -2600,13 +2604,16 @@
       "ttsNormalize": "rewrite for speech",
       "vision": "image or document read"
     },
+    "noPrice": "no price",
     "outputLabel": "Output",
     "stepCalls_one": "{{count}} call",
     "stepCalls_other": "{{count}} calls",
     "timeTitle": "Time",
     "tokens": "Tokens used",
     "turnLabel": "Turn",
-    "turnTitle": "This turn's usage"
+    "turnTitle": "This turn's usage",
+    "unpricedCalls_one": "{{count}} call with no price is not in it",
+    "unpricedCalls_other": "{{count}} calls with no price are not in it"
   },
   "toolpackTools": {
     "argNote": {

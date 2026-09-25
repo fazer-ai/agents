@@ -510,6 +510,7 @@ export async function extractInboundFile(
   // function before anything could record it.
   if (params.flow && extracted.usage) {
     await recordDirectUsage(params.flow, {
+      provider: cfg.provider,
       model: cfg.model || provider.defaultModel,
       node: "vision",
       ...extracted.usage,
@@ -696,6 +697,7 @@ export async function extractPlaygroundFile(
     });
     if (params.flow && extracted.usage) {
       await recordDirectUsage(params.flow, {
+        provider: cfg.provider,
         model: cfg.model || provider.defaultModel,
         node: "vision",
         ...extracted.usage,

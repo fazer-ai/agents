@@ -56,6 +56,7 @@ describe.skipIf(!dbUp)("a direct call's duration (issue #855)", () => {
       base: appDb,
     };
     await recordDirectUsage(flow, {
+      provider: "test-provider",
       model: "vision-model",
       node: "vision",
       promptTokens: 10,
@@ -63,6 +64,7 @@ describe.skipIf(!dbUp)("a direct call's duration (issue #855)", () => {
       durationMs: 1234.6,
     });
     await recordDirectUsage(flow, {
+      provider: "test-provider",
       model: "vision-model",
       node: "vision",
       promptTokens: 11,

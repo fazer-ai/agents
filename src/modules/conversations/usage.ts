@@ -1,6 +1,11 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
-import { addUsageGroup, emptyTurnUsage, type TurnUsage } from "@/graph/usage";
+import {
+  addUsageGroup,
+  emptyTurnUsage,
+  type TurnUsage,
+  usdOrNull,
+} from "@/graph/usage";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 
 // WHAT A CONVERSATION HAS SPENT, from the usage ledger (issue #853): the total the conversation
@@ -54,14 +59,15 @@ export async function getConversationUsage(
   // count is its message count, so reading every group costs no more than the thread itself.
   const groups = await runScopedOn(base, ctx, (db) =>
     db.llmUsage.groupBy({
-      by: ["turnId", "node"],
+      by: ["turnId", "node", "priceTable"],
       where: { tenantId, conversationId, source: "inbox" },
-      _count: { _all: true, durationMs: true },
+      _count: { _all: true, durationMs: true, costUsd: true },
       _sum: {
         promptTokens: true,
         cachedReadTokens: true,
         cacheCreationTokens: true,
         completionTokens: true,
+        costUsd: true,
         durationMs: true,
       },
       _max: { createdAt: true },
@@ -80,6 +86,9 @@ export async function getConversationUsage(
       cachedReadTokens: g._sum.cachedReadTokens,
       cacheCreationTokens: g._sum.cacheCreationTokens,
       completionTokens: g._sum.completionTokens,
+      costUsd: usdOrNull(g._sum.costUsd),
+      pricedCalls: g._count.costUsd,
+      priceTable: g.priceTable,
     };
     addUsageGroup(total, group);
     if (!g.turnId || !g._max.createdAt) continue;

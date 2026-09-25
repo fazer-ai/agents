@@ -186,6 +186,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
   const usage = () =>
     new UsageCapture({
       ...usageAttribution(p.flow),
+      provider: gr.provider,
       model: gr.model,
       node: "guardrail",
       persist: p.persistUsage,

@@ -1871,7 +1871,7 @@ export async function runObserve(
               tenantId,
               threadId,
               node: "observer",
-              model: cfg.mc.model,
+              billedModel: cfg.mc,
               conversationId: conv?.id ?? null,
               source: "inbox",
               turnId,

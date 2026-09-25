@@ -258,6 +258,12 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       completionTokens: AGENT_SPEND.output + JUDGE_SPEND.output,
       // Issue #858: which step made each call.
       byNode: { agent: 1, guardrail: 1 },
+      // Issue #863: the agent's call at gpt-4o-mini's published rates ($0.15 input, $0.075 cached,
+      // $0.60 output per million), the cached share at the cache rate and only the rest at the full
+      // one. The judge's model is made up, so the table cannot price it, and it is counted, not zeroed.
+      costUsd: expect.closeTo((176 * 0.15 + 1024 * 0.075 + 80 * 0.6) / 1e6, 12),
+      unpricedCalls: 1,
+      olderTablePricedCalls: 0,
     });
     // The cached share is a PART of the input, not added to it.
     expect(r.usage.promptTokens).toBe(1500);
@@ -304,6 +310,9 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       completionTokens:
         first.usage.completionTokens + second.usage.completionTokens,
       byNode: { agent: 2, guardrail: 1 },
+      costUsd: first.usage.costUsd + second.usage.costUsd,
+      unpricedCalls: first.usage.unpricedCalls + second.usage.unpricedCalls,
+      olderTablePricedCalls: 0,
     });
   });
 
@@ -345,6 +354,10 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       cacheCreationTokens: 0,
       completionTokens: 30,
       byNode: { vision: 1 },
+      // The image read is written outside the model callbacks and is priced all the same (#863).
+      costUsd: expect.closeTo((400 * 0.15 + 30 * 0.6) / 1e6, 12),
+      unpricedCalls: 0,
+      olderTablePricedCalls: 0,
     });
     expect((await ledger(read.threadId)).map((x) => x.node)).toEqual([
       "vision",
@@ -536,6 +549,9 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       completionTokens:
         read.usage.completionTokens + turn.usage.completionTokens,
       byNode: { vision: 1, agent: 1 },
+      costUsd: read.usage.costUsd + turn.usage.costUsd,
+      unpricedCalls: read.usage.unpricedCalls + turn.usage.unpricedCalls,
+      olderTablePricedCalls: 0,
     });
     expect(two?.usage).toEqual(replay.usage);
   });
@@ -648,6 +664,7 @@ describe("sumTurnUsage", () => {
     new UsageCapture({
       tenantId: 1n,
       threadId,
+      provider: "test-provider",
       model: "m",
       source: "playground",
       persist: async (row) => {
@@ -689,6 +706,9 @@ describe("sumTurnUsage", () => {
       promptTokens: 10,
       completionTokens: 1,
       byNode: { agent: 1 },
+      costUsd: 0,
+      unpricedCalls: 1,
+      olderTablePricedCalls: 0,
     });
     // Every row is still written: the sum observes the ledger, it does not gate it.
     expect(rows).toHaveLength(3);
@@ -712,6 +732,9 @@ describe("sumTurnUsage", () => {
       completionTokens: 2,
       // The inner sum's share of the steps too, not the outer counter's.
       byNode: { agent: 1 },
+      costUsd: 0,
+      unpricedCalls: 1,
+      olderTablePricedCalls: 0,
     });
     expect(outer.usage).toEqual({
       ...emptyTurnUsage(),
@@ -719,6 +742,9 @@ describe("sumTurnUsage", () => {
       promptTokens: 12,
       completionTokens: 3,
       byNode: { agent: 2 },
+      costUsd: 0,
+      unpricedCalls: 2,
+      olderTablePricedCalls: 0,
     });
   });
 

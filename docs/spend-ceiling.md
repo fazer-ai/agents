@@ -18,8 +18,9 @@ ignored it, so a token on a small model and a token on a frontier model, one to 
 magnitude apart in price, moved the ceiling by the same amount. The number the operator typed did
 not track the invoice it exists to bound, and no arithmetic on their side could recover it.
 
-Cost in this codebase comes from **Langfuse** (`src/modules/analytics/langfuse-costs.ts`), which
-keeps the price table. The ceiling is therefore denominated in **USD as Langfuse costs the month's
+The ceiling's cost comes from **Langfuse** (`src/modules/analytics/langfuse-costs.ts`), which
+keeps the price table. (The per-call `llm_usage.cost_usd` the usage popover shows is priced locally,
+see `docs/playground.md`; the ceiling does not read it.) The ceiling is therefore denominated in **USD as Langfuse costs the month's
 generations**, and the accepted trade is that it is enforceable only where Langfuse is configured
 for the tenant (`langfuse.enabled` plus a `langfuse` vault credential with valid keys, see
 `resolveLangfuseConfig`); an install without it keeps no ceiling, and the console says so. "Configured"

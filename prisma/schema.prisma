@@ -2145,6 +2145,13 @@ model LlmUsage {
   // How long the call took, in milliseconds, as the capture measured it (issue #855). Null for rows
   // from before the column and for a call nothing timed.
   durationMs          Int?     @map("duration_ms")
+  // What the call cost in USD, priced from the price table when the row was written (issue #863).
+  // Null for a call the table could not price and for rows from before the column: never zero,
+  // which would enter every total silently.
+  costUsd             Decimal? @map("cost_usd") @db.Decimal(18, 10)
+  // Which price table was in force when the row was written (`litellm@<commit>`), so a table found
+  // wrong later can be corrected on exactly the rows it priced. Null on rows from before the column.
+  priceTable          String?  @map("price_table")
   createdAt           DateTime @default(now()) @map("created_at")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)

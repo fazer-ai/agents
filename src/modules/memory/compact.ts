@@ -576,7 +576,7 @@ export async function runCompaction(
         // The model that ACTUALLY ran, not the agent's: this row is what the cost break-down reads,
         // and naming the agent's model here would file the summariser's spend under a model that
         // never saw the transcript.
-        model: mc.model,
+        billedModel: mc,
         source: "inbox",
         base,
       }),

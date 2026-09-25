@@ -27,7 +27,10 @@ import {
   runModelCall,
 } from "@/graph/model-limit";
 import { countMessageTokens } from "@/graph/token-count";
-import { USAGE_MODEL_METADATA_KEY } from "@/graph/usage";
+import {
+  USAGE_MODEL_METADATA_KEY,
+  USAGE_PROVIDER_METADATA_KEY,
+} from "@/graph/usage";
 import { calledOffToolResult } from "./markers";
 import { SKIP_REPLY_TOOL, skipReplyRan } from "./silence";
 
@@ -850,7 +853,10 @@ export function buildAgentGraph({
                 // Metadata rather than callbacks, and measured: metadata MERGES with the turn's and
                 // reaches the handlers it already had, while `callbacks` replaces them — which
                 // would have billed this call to the primary's name or dropped the Langfuse trace.
-                metadata: { [USAGE_MODEL_METADATA_KEY]: fallback.modelId },
+                metadata: {
+                  [USAGE_MODEL_METADATA_KEY]: fallback.modelId,
+                  [USAGE_PROVIDER_METADATA_KEY]: fallback.provider,
+                },
               });
             },
           }

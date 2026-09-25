@@ -2656,6 +2656,10 @@
     "callsTitle_one": "{{count}} chamada ao modelo",
     "callsTitle_many": "{{count}} chamadas ao modelo",
     "callsTitle_other": "{{count}} chamadas ao modelo",
+    "costLabel": "Chamadas ao modelo",
+    "costSource": "Estimado pela tabela de preços de {{date}}; pode diferir um pouco do painel",
+    "costSourceOlder": "Estimado pelas tabelas de preços vigentes quando as chamadas foram feitas; pode diferir um pouco do painel",
+    "costTitle": "Custo",
     "detailLabel": "Detalhe do consumo",
     "figure": "{{input}} tokens de entrada",
     "inputLabel": "Entrada",
@@ -2670,6 +2674,7 @@
       "ttsNormalize": "reescrita para voz",
       "vision": "leitura de imagem ou documento"
     },
+    "noPrice": "sem preço",
     "outputLabel": "Saída",
     "stepCalls_zero": "{{count}} chamadas",
     "stepCalls_one": "{{count}} chamada",
@@ -2678,7 +2683,11 @@
     "timeTitle": "Tempo",
     "tokens": "Tokens consumidos",
     "turnLabel": "Turno",
-    "turnTitle": "Consumo deste turno"
+    "turnTitle": "Consumo deste turno",
+    "unpricedCalls_zero": "{{count}} chamadas sem preço ficaram de fora",
+    "unpricedCalls_one": "{{count}} chamada sem preço ficou de fora",
+    "unpricedCalls_many": "{{count}} chamadas sem preço ficaram de fora",
+    "unpricedCalls_other": "{{count}} chamadas sem preço ficaram de fora"
   },
   "toolpackTools": {
     "argNote": {

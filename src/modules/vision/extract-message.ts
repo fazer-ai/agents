@@ -19,7 +19,11 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
-import { onChatwootHost, servedBy } from "@/modules/chatwoot/email-body-images";
+import {
+  onChatwootHost,
+  oneByBlob,
+  servedBy,
+} from "@/modules/chatwoot/email-body-images";
 import { chatwootBaseUrl } from "@/modules/chatwoot/instance";
 import type { FlowContext } from "@/modules/flowlog/service";
 import {
@@ -88,9 +92,11 @@ async function doProprioChatwoot(
       params.instanceId,
       params.base,
     );
-    return corpo
+    const doHost = corpo
       .map((v) => ({ ...v, dataUrl: onChatwootHost(v.dataUrl, baseUrl) }))
       .filter((v) => servedBy(v.dataUrl, baseUrl));
+    const um = new Set(oneByBlob(doHost.map((v) => v.dataUrl)));
+    return doHost.filter((v) => um.delete(v.dataUrl));
   } catch (err) {
     logger.warn(
       "vision: body images skipped, the instance base URL was not read: %s",

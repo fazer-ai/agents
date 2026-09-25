@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   bodyImagesBesides,
   emailBodyImageUrlsFrom,
+  oneByBlob,
   servedBy,
 } from "@/modules/chatwoot/email-body-images";
 import {
@@ -136,17 +137,16 @@ describe("emailBodyImageUrlsFrom", () => {
     ).toBe(true);
   });
 
-  test("one blob named by different URLs is one image", () => {
+  test("one blob named by different URLs is one image, once the host has been checked", () => {
     const rel = "/rails/active_storage/blobs/redirect/same--sig/a.png";
-    const ca = {
-      email: {
-        html_content: {
-          full: `<img src="${rel}"><img src="https://chat.example.com${rel}?v=2">`,
-        },
-        text_content: { full: `<img src="https://chat.example.com${rel}">` },
-      },
-    };
-    expect(emailBodyImageUrlsFrom(ca)).toEqual([rel]);
+    const host = "https://chat.example.com";
+    expect(
+      oneByBlob([
+        `${host}${rel}`,
+        `${host}${rel}?v=2`,
+        `${host}${rel.replace("a.png", "b.png")}`,
+      ]),
+    ).toEqual([`${host}${rel}`]);
   });
 
   test("the same blob in both bodies is one image", () => {

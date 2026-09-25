@@ -70,11 +70,10 @@ export function emailBodyImageUrlsFrom(
       const relative =
         src.startsWith(BLOB_PATH) && inActiveStorage(src, "http://relative");
       if (!absolute && !relative) continue;
-      // One blob is one image, however many URLs name it (a query, relative or absolute): each copy
-      // would cost a provider call and a slot under the cap.
-      const key = blobKeyOf(src);
-      if (seen.has(key)) continue;
-      seen.add(key);
+      // The same blob under another URL is kept here: which of them is this Chatwoot's is only
+      // known against the instance, and `oneByBlob` picks one after that check.
+      if (seen.has(src)) continue;
+      seen.add(src);
       out.push(src);
     }
   }
@@ -89,6 +88,19 @@ function blobKeyOf(url: string): string {
       url,
     );
   return m?.[1] ?? url;
+}
+
+// One URL per blob, the first of each: the same blob named by a different query, or relative and
+// absolute, would cost a provider call and a slot under the cap for each copy. Run it on URLs that
+// already passed the host check, or an unusable copy could hide the usable one.
+export function oneByBlob(urls: string[]): string[] {
+  const seen = new Set<string>();
+  return urls.filter((u) => {
+    const key = blobKeyOf(u);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // The body images that are not ALSO one of the message's real attachments: a body can reference a

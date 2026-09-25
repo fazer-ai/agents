@@ -611,6 +611,20 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     expect(provider.calls).toBe(0);
   });
 
+  test("a blob named first over http and then over https is read once, from the https URL", async () => {
+    await setVision(true);
+    const path = "/rails/active_storage/blobs/redirect/sig42--x/print.png";
+    const insecure = `${HOST.replace("https:", "http:")}${path}`;
+    const out = await reengage(1042, {
+      content: "Segue",
+      content_attributes: emailBag({
+        html: `<p>Segue</p><img src="${insecure}"><img src="${HOST}${path}"><img src="${HOST}${path}?v=2">`,
+      }),
+    });
+    expect(out.downloads).toEqual([`${HOST}${path}`]);
+    expect(provider.calls).toBe(1);
+  });
+
   test("a remote body image is not counted as unread when the attachments fill the cap", async () => {
     await setVision(true);
     const out = await reengage(1014, {

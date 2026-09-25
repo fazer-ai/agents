@@ -89,9 +89,6 @@ describe("diffModelPrices", () => {
     expect(md).not.toContain("steady-model");
   });
 
-  // A default's row is told once, in the defaults table, with every rate that moved (tiers and a
-  // rate that went from none to a price included), and not again under Changed.
-
   // A default stands out where it appears (marked, listed first) and is still told exactly once,
   // with every rate that moved, tiers and a rate that went from none to a price included.
   test("a default is marked and listed first, and each model appears once", () => {
@@ -206,9 +203,28 @@ test("an added model's long-context tier lists its cache rates too", () => {
 
 // A source that answers 200 with an empty or truncated file must not become a table with every
 // model removed (verification of #869).
+test("a default sorts ahead of a model whose name comes first", () => {
+  const md = diffModelPrices(
+    table(SHA_OLD, "2026-09-18", {
+      "aa-model": { input: 1, output: 2 },
+      "zz-default": { input: 1, output: 2 },
+    }),
+    table(SHA_NEW, "2026-09-25", {
+      "aa-model": { input: 1.5, output: 2 },
+      "zz-default": { input: 1.5, output: 2 },
+    }),
+    { openai: "zz-default" },
+  ).markdown;
+  expect(md.indexOf("`zz-default` (default)")).toBeGreaterThan(-1);
+  expect(md.indexOf("`zz-default`")).toBeLessThan(md.indexOf("`aa-model`"));
+});
+
 test("a refresh that lost most of the table is refused", () => {
   expect(plausibleRefresh(0, 665)).toBe(false);
   expect(plausibleRefresh(300, 665)).toBe(false);
+  // Exactly half is kept; one model fewer is not.
+  expect(plausibleRefresh(5, 10)).toBe(true);
+  expect(plausibleRefresh(4, 10)).toBe(false);
   expect(plausibleRefresh(660, 665)).toBe(true);
   expect(plausibleRefresh(700, 665)).toBe(true);
   // The very first read has nothing to compare with, but still needs a model.

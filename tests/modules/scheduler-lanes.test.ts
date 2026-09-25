@@ -106,6 +106,8 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   OBSERVE: "observe",
   MEDIA_TEXT_FALLBACK: "shared",
   KNOWLEDGE_SOURCE_SYNC: "shared",
+  INBOUND_SWEEP: "shared",
+  INBOUND_REDISPATCH: "shared",
 };
 
 // Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only
@@ -142,6 +144,9 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   OBSERVE: true,
   MEDIA_TEXT_FALLBACK: false,
   KNOWLEDGE_SOURCE_SYNC: false,
+  INBOUND_SWEEP: false,
+  // It can run the agent's nudge turn.
+  INBOUND_REDISPATCH: true,
 };
 
 // Same discipline again, and both of these maps were added by the change that introduced
@@ -179,6 +184,9 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   OBSERVE: false,
   MEDIA_TEXT_FALLBACK: true,
   KNOWLEDGE_SOURCE_SYNC: false,
+  INBOUND_SWEEP: false,
+  // One per stranded delivery.
+  INBOUND_REDISPATCH: true,
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
@@ -206,6 +214,9 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   OBSERVE: false,
   MEDIA_TEXT_FALLBACK: false,
   KNOWLEDGE_SOURCE_SYNC: false,
+  INBOUND_SWEEP: false,
+  // Armed `once`: the kept row is what stops the same attempt being armed again.
+  INBOUND_REDISPATCH: false,
 };
 
 // Written out ON PURPOSE, like the tables above: derived, it would mirror whatever the source says.
@@ -239,6 +250,10 @@ const EXPECTED_DEATH_LEVEL: Record<
   OBSERVE: "warn",
   MEDIA_TEXT_FALLBACK: "error",
   KNOWLEDGE_SOURCE_SYNC: "warn",
+  // A sweep's death is every later strand going unretried (issue #817).
+  INBOUND_SWEEP: "error",
+  // Nothing announced this loss before the job died: the sender holds a 2xx and the row says nothing.
+  INBOUND_REDISPATCH: "error",
 };
 
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];

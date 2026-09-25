@@ -36,8 +36,30 @@ import {
 
 // A PROCESSING row older than this is presumed stranded by a crash and may be reclaimed (normal
 // processing completes within seconds of receipt). Attempts are capped to stop poison loops.
-const PROCESSING_STALE_MS = 5 * 60_000;
+export const PROCESSING_STALE_MS = 5 * 60_000;
 const MAX_PROCESS_ATTEMPTS = 5;
+// How long one dispatch may run before its nudge turn is told to stop, when the caller brings no
+// deadline of its own (the route, which runs it detached after the ack). SHORTER than the window
+// above, and that ordering is the whole point (issue #817, review round 3): once the inbound sweep
+// exists, a claim older than PROCESSING_STALE_MS is taken back and dispatched again, so a turn still
+// running past it would deliver beside its own retry. The thread wait before generation can alone
+// take about five minutes. Stopping at four leaves a minute for the abort to land and the row to be
+// marked, and matches the scheduler's own deadline under the same window (jobDeadlineMs).
+export const DISPATCH_DEADLINE_MS = 4 * 60_000;
+
+// WHAT "NO LONGER RUNNING" MEANS for a PROCESSING row. Two readers ask it and must not disagree: the
+// claim below, which may take such a row, and the inbound sweep (./sweep.ts), which arms a re-dispatch
+// for it (issue #817) and restates this rule in SQL because its query is a join Prisma cannot write.
+// A sweep with a looser measure would arm jobs the claim then refuses; a stricter one would leave rows
+// the claim would take. Change one, change both: tests/modules/inbound-sweep.test.ts drives the sweep
+// through both halves (a stale claim and an unstamped one) and a fresh claim it must leave alone.
+export function staleClaim(now: number = Date.now()) {
+  const staleCutoff = new Date(now - PROCESSING_STALE_MS);
+  return [
+    { claimedAt: { lt: staleCutoff } },
+    { claimedAt: null, receivedAt: { lt: staleCutoff } },
+  ] as const;
+}
 
 // What an identity field is allowed to be, and it is a REFUSAL rather than a truncation: cutting an
 // identity is the same lossy-identity defect as repairing one. Measured against this database, a
@@ -415,6 +437,10 @@ export interface ProcessParams {
   tenantId: bigint;
   base?: PrismaClient;
   deps?: ProcessDeps;
+  // The deadline of the scheduler job running this, when one is (the inbound sweep's re-dispatch,
+  // issue #817). Handed to the nudge turn so a run past its deadline stops instead of finishing
+  // beside the retry the sweep may arm once the claim goes stale. The route passes none.
+  signal?: AbortSignal;
 }
 
 function buildNudge(
@@ -480,9 +506,8 @@ export async function processInboundDelivery(
       // CAS: claim PENDING, OR reclaim a PROCESSING row stranded by a crash (its effect never
       // committed — only agent_nudge leaves a window between Phase A and Phase B; DB-only kinds
       // commit effect+PROCESSED atomically). `attempts` bounds poison redeliveries: past the cap
-      // the row is marked FAILED instead of looping. (A periodic sweeper is added with the
-      // scheduler; until then a redelivery reclaims a stranded row.)
-      const staleCutoff = new Date(Date.now() - PROCESSING_STALE_MS);
+      // the row is marked FAILED instead of looping. Besides a redelivery from the sender, the
+      // inbound sweep (./sweep.ts) is what brings a stranded row back here (issue #817).
       // NOTE: staleness is measured from the CURRENT claim, not from the delivery's receipt. That
       // distinction is the whole of it: `receivedAt` is stamped once and a claim never refreshes
       // it, so five minutes after a webhook arrives the row is permanently "stale" by that measure
@@ -499,10 +524,7 @@ export async function processInboundDelivery(
       // judged no worse than it is today, and a row the new code claimed is judged correctly. It
       // stops being reachable once every replica stamps, and it is what makes this one release
       // instead of the two an expand/contract would need.
-      const stale = [
-        { claimedAt: { lt: staleCutoff } },
-        { claimedAt: null, receivedAt: { lt: staleCutoff } },
-      ] as const;
+      const stale = staleClaim();
       const claimed = await db.inboundDelivery.updateMany({
         where: {
           id: params.deliveryId,
@@ -684,13 +706,13 @@ export async function processInboundDelivery(
   // catch above says so in the log. The ceiling additionally writes an `error` flow line, which
   // pages the alert channels, so a refusal here is the most visible of the three.
   //
-  // Making a refused nudge RECOVERABLE is a real gap and a separate change: this module has no
-  // driver that re-runs a delivery (`processInboundDelivery` is called only by the inbound route,
-  // detached, and we ack 200 before Phase B, so no provider redelivers), and the conversion barrier
-  // means a redelivery that did arrive would take the `done` path instead of re-running the nudge.
-  // It needs a scheduler kind of its own — which would fix the throw case too, and that is the
-  // larger half of the same hole.
+  // Making a refused nudge RECOVERABLE is a real gap and a separate change. The inbound sweep
+  // (./sweep.ts, issue #817) re-runs a delivery that never FINISHED, but this one did: the row is
+  // PROCESSED below whatever the nudge did, so nothing re-reads it, and the conversion barrier means
+  // a redelivery that did arrive would take the `done` path instead of re-running the nudge.
   const runNudge = params.deps?.runNudge ?? runAgentNudge;
+  // Armed from here, right after the claim committed, which is the instant the stale window started.
+  const signal = params.signal ?? AbortSignal.timeout(DISPATCH_DEADLINE_MS);
   try {
     await runNudge({
       tenantId: params.tenantId,
@@ -699,6 +721,7 @@ export async function processInboundDelivery(
       deliverToResolved: plan.deliverToResolved,
       base,
       deps: params.deps?.runtime,
+      signal,
     });
   } catch (err) {
     logger.warn(

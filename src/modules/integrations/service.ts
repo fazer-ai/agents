@@ -21,6 +21,7 @@ import {
   generateRouteToken,
   hashRouteToken,
 } from "@/modules/webhooks/inbound/route-token";
+import { ensureInboundSweep } from "@/modules/webhooks/inbound/sweep";
 import { CATALOG, getCatalogEntry } from "./catalog";
 import type { CatalogEntry } from "./types";
 
@@ -286,6 +287,17 @@ export async function createIntegrationInstance(
     });
     return row;
   });
+  // The first inbound instance is the moment a tenant can start stranding deliveries, and the boot
+  // arm only reaches tenants that had one then (issue #817). After the commit, and best-effort: the
+  // instance exists either way, and the next boot arms the sweep if this did not.
+  if (minted) {
+    await ensureInboundSweep(tenantId, base).catch((err) =>
+      logger.warn(
+        { tenantId: String(tenantId), err },
+        "inbound sweep arm failed on integration create; next boot arms it",
+      ),
+    );
+  }
   return { id: created.id, routeToken: minted?.token ?? null };
 }
 

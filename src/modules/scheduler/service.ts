@@ -80,7 +80,9 @@ export type SchedulerJobKind =
   | "SPEND_CEILING_POLL"
   | "OBSERVE"
   | "MEDIA_TEXT_FALLBACK"
-  | "KNOWLEDGE_SOURCE_SYNC";
+  | "KNOWLEDGE_SOURCE_SYNC"
+  | "INBOUND_SWEEP"
+  | "INBOUND_REDISPATCH";
 
 export interface ClaimedJob {
   id: bigint;
@@ -247,8 +249,10 @@ export async function upsertJobRows(
   params: {
     tenantId: bigint;
     kind: SchedulerJobKind;
-    // Not "once": the set-based statement re-arms on conflict, and no caller arms once-only rows in bulk.
-    rearm: Exclude<Rearm, "once">;
+    // "once" inserts what is missing and leaves every existing row exactly as it is, the set-based
+    // form of the single-row `once` (issue #817: the inbound sweep arms up to a batch of re-dispatches
+    // in one pass, inside a transaction with a five-second budget).
+    rearm: Rearm;
     runAt: Date;
     rows: { dedupeKey: string; payload: Record<string, unknown> }[];
   },
@@ -275,7 +279,10 @@ export async function upsertJobRows(
            now(),
            now()
       FROM unnest(${keys}::text[], ${payloads}::text[]) AS t(dedupe_key, payload)
-    ON CONFLICT (tenant_id, kind, dedupe_key) DO UPDATE
+    ${
+      params.rearm === "once"
+        ? Prisma.sql`ON CONFLICT (tenant_id, kind, dedupe_key) DO NOTHING`
+        : Prisma.sql`ON CONFLICT (tenant_id, kind, dedupe_key) DO UPDATE
        SET run_at = EXCLUDED.run_at,
            status = 'PENDING'::"SchedulerJobStatus",
            last_error = NULL,
@@ -285,7 +292,8 @@ export async function upsertJobRows(
            -- than left behind from a previous arming.
            payload_secret = NULL,
            attempts = ${params.rearm === "new-work" ? Prisma.sql`0` : Prisma.sql`scheduler_jobs.attempts`},
-           updated_at = now()`;
+           updated_at = now()`
+    }`;
 }
 
 // One live row per (tenant, kind, dedupeKey): a re-enqueue re-arms run_at and resets to PENDING.

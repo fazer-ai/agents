@@ -74,6 +74,8 @@ enum SchedulerJobKind {
   OBSERVE
   MEDIA_TEXT_FALLBACK
   KNOWLEDGE_SOURCE_SYNC
+  INBOUND_SWEEP
+  INBOUND_REDISPATCH
 }
 
 enum SchedulerJobStatus {

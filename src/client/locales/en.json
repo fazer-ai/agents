@@ -8,6 +8,7 @@
     "join": "Join",
     "namePlaceholder": "Optional",
     "signedInSubtitle": "You are signed in with this email. Join to add this tenant to your account.",
+    "signInInstead": "Sign in to this account instead (Google included)",
     "submit": "Activate account",
     "submitting": "Activating…",
     "subtitle": "Set a password to activate your account.",

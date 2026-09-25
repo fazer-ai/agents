@@ -335,6 +335,19 @@ describe("TenantDeepLink", () => {
 
   // Review round 3: a fresh login answers with the default membership's role and no list; `/auth/me`
   // brings the list a moment later. The admin gate waits for it rather than lose the link.
+  // Review round 4: before `/auth/me` brings the list, a person is not known to be tenant-bound, so a
+  // link to another of their tenants holds the gate instead of refusing it on the wrong tenant's page.
+  test("right after login, a link to another tenant waits for the membership list", async () => {
+    role = "TENANT_ADMIN";
+    userTenantId = "10";
+    userTenants = undefined;
+    renderAt("?switchTenant=20");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(shows("panel")).toBe(false);
+    expect(reloads.length).toBe(0);
+    expect(seenSearch).toBe("?switchTenant=20");
+  });
+
   test("right after login, the admin gate waits for the membership list", async () => {
     role = "AGENT";
     userTenantId = "10";

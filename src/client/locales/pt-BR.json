@@ -8,6 +8,7 @@
     "join": "Confirmar",
     "namePlaceholder": "Opcional",
     "signedInSubtitle": "Você entrou com este e-mail. Confirme para adicionar este tenant à sua conta.",
+    "signInInstead": "Entrar nesta conta (inclusive com Google)",
     "submit": "Ativar conta",
     "submitting": "Ativando…",
     "subtitle": "Defina uma senha para ativar sua conta.",

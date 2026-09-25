@@ -76,11 +76,16 @@ export function TenantDeepLink({ children }: { children: ReactNode }) {
         : accessible === null
           ? { kind: "unknown" }
           : { kind: "fleet", accessible }
-      : memberships.length > 1
-        ? { kind: "fleet", accessible: memberships.map((m) => m.id) }
-        : user.tenantId === null
-          ? { kind: "unknown" }
-          : { kind: "tenant", tenantId: user.tenantId };
+      : user.tenants === undefined
+        ? // A fresh login answers before `/auth/me` brings the membership list; read as "no other
+          // tenant", a link to one would be refused and the wrong tenant's page mounted (review
+          // round 4). If the list never arrives the gate stays shut, which is the safe side.
+          { kind: "loading" }
+        : memberships.length > 1
+          ? { kind: "fleet", accessible: memberships.map((m) => m.id) }
+          : user.tenantId === null
+            ? { kind: "unknown" }
+            : { kind: "tenant", tenantId: user.tenantId };
 
   const action = tenantDeepLinkAction({
     requested,

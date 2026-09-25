@@ -51,16 +51,24 @@ SELECT "tenant_id", "id", "role", "created_at", CURRENT_TIMESTAMP
  WHERE "tenant_id" IS NOT NULL;
 
 -- ── One person per email ──
--- The row that stays is the one that logged in last (the owner's decision on #756): its password is the
--- one the person used most recently. A row that never logged in loses to one that did; `id` breaks the
--- remaining ties so the choice does not depend on the planner.
+-- An email shared by several rows is NOT proof that they are one person: under the old model a tenant
+-- administrator could invite any address into their own tenant and set its password on acceptance
+-- (review round 4). So the row that stays is the one whose claim to the address is strongest, and it
+-- inherits no credential and no authority from the others:
+--   1. the fleet row, which only the fleet can create;
+--   2. then a row with a Google identity, whose address Google verified;
+--   3. then the one that logged in last (the owner's decision on #756), whose password is the one the
+--      person used most recently. A row that never logged in loses to one that did.
+-- `id` breaks the remaining ties so the choice does not depend on the planner. Every merge is written
+-- to the audit trail below, which is where an operator reviews them.
 CREATE TEMP TABLE "user_merge" ON COMMIT DROP AS
 SELECT "id" AS "dup_id", "keeper_id"
   FROM (
     SELECT "id",
            first_value("id") OVER (
              PARTITION BY lower("email")
-             ORDER BY "last_login_at" DESC NULLS LAST, "id"
+             ORDER BY "is_super_admin" DESC, ("google_id" IS NOT NULL) DESC,
+                      "last_login_at" DESC NULLS LAST, "id"
            ) AS "keeper_id"
       FROM "users"
   ) ranked
@@ -77,25 +85,14 @@ BEGIN
       FROM "user_merge" m JOIN "users" k ON k."id" = m."keeper_id"
      GROUP BY lower(k."email"), k."id"
   LOOP
-    RAISE NOTICE 'tenant_users: merged users % into user % (%), keeping the password of its most recent login', r."dups", r."keeper_id", r."email";
+    RAISE NOTICE 'tenant_users: merged users % into user % (%); their passwords were dropped', r."dups", r."keeper_id", r."email";
   END LOOP;
 END $$;
 
--- The person keeps everything any of their rows had: super-admin authority, and a credential the kept
--- row lacks (a Google-only row merged with a password row keeps both ways in).
-UPDATE "users" k
-   SET "is_super_admin" = k."is_super_admin" OR agg."any_super",
-       "password_hash" = COALESCE(k."password_hash", agg."password_hash")
-  FROM (
-    SELECT m."keeper_id",
-           bool_or(d."is_super_admin") AS "any_super",
-           (array_agg(d."password_hash" ORDER BY d."last_login_at" DESC NULLS LAST, d."id")
-              FILTER (WHERE d."password_hash" IS NOT NULL))[1] AS "password_hash"
-      FROM "user_merge" m JOIN "users" d ON d."id" = m."dup_id"
-     GROUP BY m."keeper_id"
-  ) agg
- WHERE k."id" = agg."keeper_id";
-
+-- The kept row keeps its own password, and a merged row's password is dropped rather than copied: a
+-- merged row may be somebody else's, and its password would then open the kept person's account. A
+-- merged row's Google identity DOES move to a kept row that lacks one (below), because Google verified
+-- that it belongs to the address.
 -- `google_id` is unique, so the kept row takes it only once the merged row is gone (at the end of the
 -- merge, below). Nulling it on the merged row first is not an option: a Google-only row would then
 -- hold no credential at all, and `users_auth_method_check` aborts the whole file (review round 2).

@@ -170,8 +170,8 @@ async function seed(c: Client): Promise<Ids> {
     "g-ana",
     "2026-06-01",
   );
-  // Bia: neither row ever logged in, so the tie goes to the older row; the Google identity lives on
-  // the row that goes, and has to survive the merge.
+  // Bia: neither row ever logged in. The Google row stays, because Google verified the address, and
+  // the password row's password is NOT carried over: that row could have been anybody's.
   await user("biaA", ids.A as string, "bia@x.test", "AGENT", "p1", null, null);
   await user(
     "biaB",
@@ -182,7 +182,8 @@ async function seed(c: Client): Promise<Ids> {
     "g-bia",
     null,
   );
-  // Root: a fleet administrator who also had a tenant row, which logged in more recently.
+  // Root: a fleet administrator who also had a tenant row, Google-only, which logged in more recently.
+  // The fleet row stays anyway: only the fleet can create one, and a tenant row could be anybody's.
   await user(
     "rootFleet",
     null,
@@ -197,8 +198,8 @@ async function seed(c: Client): Promise<Ids> {
     ids.A as string,
     "root@x.test",
     "AGENT",
-    "hRA",
     null,
+    "g-root",
     "2026-02-01",
   );
   // Cai: THREE rows. The two that go both approved a client the one that stays never did, which is
@@ -336,7 +337,7 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
     }
   });
 
-  test("one person per email, keeping the password of the most recent login", async () => {
+  test("one person per email, kept by the strongest claim to it and inheriting no password", async () => {
     const { failed, ids, c } = await migrate(sql);
     expect(failed).toBeNull();
     expect(await people(c)).toEqual([
@@ -349,9 +350,10 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
         memberships: "A:AGENT,B:TENANT_ADMIN",
       },
       {
-        id: ids.biaA as string,
+        // The Google row wins over the password row, whose password does not come along.
+        id: ids.biaB as string,
         email: "bia@x.test",
-        password_hash: "p1",
+        password_hash: null,
         google_id: "g-bia",
         is_super_admin: false,
         memberships: "A:AGENT,B:AGENT",
@@ -365,10 +367,10 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
         memberships: "A:AGENT,B:AGENT,C:AGENT",
       },
       {
-        id: ids.rootA as string,
+        id: ids.rootFleet as string,
         email: "root@x.test",
-        password_hash: "hRA",
-        google_id: null,
+        password_hash: "hR",
+        google_id: "g-root",
         is_super_admin: true,
         memberships: "A:AGENT",
       },
@@ -454,8 +456,8 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
     expect(new Set(rows.map((r) => r.target))).toEqual(
       new Set([
         `user:${ids.anaB}`,
-        `user:${ids.biaA}`,
-        `user:${ids.rootA}`,
+        `user:${ids.biaB}`,
+        `user:${ids.rootFleet}`,
         `user:${ids.caiA}`,
       ]),
     );
@@ -467,8 +469,10 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
     const merged = notices.filter((n) => n.startsWith("tenant_users: merged"));
     expect(merged).toHaveLength(4);
     expect(merged.join("\n")).toContain(`into user ${ids.anaB} (ana@x.test)`);
-    expect(merged.join("\n")).toContain(`into user ${ids.biaA} (bia@x.test)`);
-    expect(merged.join("\n")).toContain(`into user ${ids.rootA} (root@x.test)`);
+    expect(merged.join("\n")).toContain(`into user ${ids.biaB} (bia@x.test)`);
+    expect(merged.join("\n")).toContain(
+      `into user ${ids.rootFleet} (root@x.test)`,
+    );
     expect(merged.join("\n")).toContain(`into user ${ids.caiA} (cai@x.test)`);
   });
 

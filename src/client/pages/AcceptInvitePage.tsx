@@ -10,6 +10,28 @@ import type { ApiErrorPayload } from "@/client/lib/types";
 
 type ValidationState = "validating" | "valid" | "invalid";
 
+// An invitation waiting in this tab while its invitee signs in (the token never goes back on a URL,
+// for the same history / Referer hygiene the page strips it for). Read once and cleared.
+const PARKED_INVITE_KEY = "@app:parked-invite";
+
+function parkInviteToken(token: string): void {
+  try {
+    sessionStorage.setItem(PARKED_INVITE_KEY, token);
+  } catch {
+    // Storage unavailable: signing in still works, the invitation link just has to be reopened.
+  }
+}
+
+function takeParkedInviteToken(): string | null {
+  try {
+    const token = sessionStorage.getItem(PARKED_INVITE_KEY);
+    sessionStorage.removeItem(PARKED_INVITE_KEY);
+    return token;
+  } catch {
+    return null;
+  }
+}
+
 // Public invite-acceptance page. Modeled on SetupPage: capture ?token, strip it from the URL, validate
 // it to pre-fill the (read-only) email, then join + auto-login. tenant + role are bound server-side to
 // the invite. Three shapes, because one person is one account across tenants (issue #756):
@@ -24,7 +46,9 @@ export function AcceptInvitePage() {
   const navigate = useNavigate();
   const { user, login } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [token] = useState(() => searchParams.get("token") ?? "");
+  const [token] = useState(
+    () => searchParams.get("token") ?? takeParkedInviteToken() ?? "",
+  );
   const [state, setState] = useState<ValidationState>("validating");
   const [email, setEmail] = useState("");
   const [existingAccount, setExistingAccount] = useState(false);
@@ -275,6 +299,23 @@ export function AcceptInvitePage() {
                   disabled={loading}
                   placeholder="••••••••"
                 />
+                {/* An account that signs in with Google has no password to enter here. Signing in
+                    first proves the account the same way, and the invitation waits in this tab. */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    parkInviteToken(token);
+                    navigate(
+                      `/login?redirect=${encodeURIComponent("/accept-invite")}`,
+                    );
+                  }}
+                  className="mt-2 text-accent text-sm hover:underline"
+                >
+                  {t(
+                    "acceptInvite.signInInstead",
+                    "Sign in to this account instead (Google included)",
+                  )}
+                </button>
               </div>
             )}
 

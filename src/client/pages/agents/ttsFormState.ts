@@ -5,7 +5,9 @@ import type {
   NormalizeOverrides,
 } from "@/modules/tts/normalize-model";
 import {
+  clampSpeakableLimit,
   clampVoiceSetting,
+  readSpeakableLimits,
   readVoiceSettings,
   TTS_CHECK_MODES,
   TTS_DEFAULTS,
@@ -55,6 +57,13 @@ export interface TtsFormState {
   // The audio check for this agent (issue #802). "" = the instance's default, which is stored as
   // null so saving the tab never pins the agent to whatever the instance says today.
   checkMode: TtsCheckMode | "";
+  // When a reply goes as text instead of audio (issue #856): the switch, then the limits. Hydrated
+  // through the runtime's reader, so the limits show the defaults an agent gets when it turns the
+  // switch on; "" = that criterion off, stored as null (absent would bring the default back).
+  textInstead: boolean;
+  textOverChars: string;
+  textOverListItems: string;
+  textOverNumbers: string;
 }
 
 function str(v: unknown): string {
@@ -84,6 +93,7 @@ export function readTtsFormState(block: unknown): TtsFormState {
   // send audio, and saves the same string straight back.
   const mode = str(tt.mode);
   const provider = str(tt.provider);
+  const limits = readSpeakableLimits(tt);
   return {
     mode: mode && TTS_MODES.includes(mode as TtsMode) ? mode : "never",
     provider:
@@ -108,6 +118,10 @@ export function readTtsFormState(block: unknown): TtsFormState {
     checkMode: TTS_CHECK_MODES.includes(str(tt.checkMode) as TtsCheckMode)
       ? (str(tt.checkMode) as TtsCheckMode)
       : "",
+    textInstead: limits.textInstead,
+    textOverChars: num(limits.textOverChars),
+    textOverListItems: num(limits.textOverListItems),
+    textOverNumbers: num(limits.textOverNumbers),
   };
 }
 
@@ -137,6 +151,19 @@ export function ttsSettingsFrom(tts: TtsFormState): Record<string, unknown> {
     speed: clampVoiceSetting("speed", numOrNull(tts.speed)),
     speakerBoost: tts.speakerBoost,
     checkMode: tts.checkMode || null,
+    textInstead: tts.textInstead,
+    textOverChars: clampSpeakableLimit(
+      "textOverChars",
+      numOrNull(tts.textOverChars),
+    ),
+    textOverListItems: clampSpeakableLimit(
+      "textOverListItems",
+      numOrNull(tts.textOverListItems),
+    ),
+    textOverNumbers: clampSpeakableLimit(
+      "textOverNumbers",
+      numOrNull(tts.textOverNumbers),
+    ),
   };
 }
 

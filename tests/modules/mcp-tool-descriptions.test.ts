@@ -268,7 +268,13 @@ const SETTINGS_DESC_CEILING = 2_000;
 // RAISED for issue #802 by `tts.checkMode`, the audio check an agent can pick for itself: a nullable
 // enum of three, 136 characters. Trimmed first, by 22: the description says only what null means.
 // Re-measured on the tree that ships: 26,190.
-const SETTINGS_SCHEMA_CEILING = 26_205;
+//
+// RAISED for issue #856 by `tts.textInstead`, the switch that sends a reply built to be read as text
+// instead of a voice note, and `textOverChars`, `textOverListItems` and `textOverNumbers`, its
+// limits: a boolean and three nullable numbers, 548 characters. Trimmed first, by 41: each
+// description is the band, the default and what null means, since the reader clamps and a caller
+// cannot see either off the type. Re-measured on the tree that ships: 26,738.
+const SETTINGS_SCHEMA_CEILING = 26_753;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -688,6 +694,10 @@ describe("MCP tool descriptions", () => {
   // 31,401 and 61,355 with it, so 31,416 and 61,371 with the same 15 and 16. The one description
   // that names it says only what the schema cannot (the lines are still logged); the update tool's
   // description does not repeat it.
+  //
+  // SCHEMA RAISED by `tts.textInstead` and its three `textOver*` limits (#856), the same 548
+  // characters as the settings ceiling above: this tree measures 61,903, so 61,919 with the same 16.
+  // No description changed.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -697,7 +707,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_416);
-    expect(schema).toBeLessThanOrEqual(61_371);
+    expect(schema).toBeLessThanOrEqual(61_919);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

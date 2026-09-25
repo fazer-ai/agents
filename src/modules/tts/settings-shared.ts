@@ -74,6 +74,66 @@ export interface TtsConfig extends TtsVoiceSettings {
   // Honoured only while the deployment has a detector (`TTS_CHECK_URL`): with none there is nothing
   // to call, whatever the agent says.
   checkMode: TtsCheckMode | null;
+  // Whether a reply built to be read goes as TEXT even though it would have been audio (issue #856).
+  // OFF by default, so an agent keeps speaking every reply until its operator turns this on. When
+  // on, the limits below decide: past this many characters of speech, with this many list items,
+  // with this many money values or long numbers. Each is the smallest value that sends text, and
+  // null turns that criterion off. Flat, for the mergeBehaviorSettings reason above. See
+  // modules/tts/speakable.ts.
+  textInstead: boolean;
+  textOverChars: number | null;
+  textOverListItems: number | null;
+  textOverNumbers: number | null;
+}
+
+// The limits a reply is measured against before it is synthesized (issue #856), set from what was
+// measured: of 27 production voice replies reviewed by hand, 17 were better as text, 13 for length
+// past ~450 characters, 8 for a list of 3+ items, 6 for 3+ money values or long numbers. They apply
+// once `textInstead` is on, and each can then be turned off on its own.
+export const SPEAKABLE_DEFAULTS = {
+  textOverChars: 450,
+  textOverListItems: 3,
+  textOverNumbers: 3,
+} as const satisfies Pick<
+  TtsConfig,
+  "textOverChars" | "textOverListItems" | "textOverNumbers"
+>;
+
+// Clamped rather than rejected, like the voice knobs: a limit below these floors would send nearly
+// every reply as text, which is `mode: "never"` with extra steps.
+export const SPEAKABLE_RANGES = {
+  textOverChars: [80, 4000],
+  textOverListItems: [2, 50],
+  textOverNumbers: [2, 50],
+} as const;
+
+export function clampSpeakableLimit(
+  knob: keyof typeof SPEAKABLE_RANGES,
+  value: unknown,
+): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  const [min, max] = SPEAKABLE_RANGES[knob];
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+// The switch and the limits (issue #856). The switch is on only when stored as `true`, so an agent
+// saved before it existed keeps speaking. For a limit, absent is the default and null is OFF: the
+// two have to stay apart, because an operator who turns the switch on without touching the limits
+// should get them, and one who cleared a field asked for that criterion to stop. Anything else
+// unreadable is the default. Shared with the editor, which hydrates its fields through it so the
+// screen shows what the runtime applies.
+export function readSpeakableLimits(bag: Record<string, unknown>) {
+  const read = (knob: keyof typeof SPEAKABLE_DEFAULTS) => {
+    const v = bag[knob];
+    if (v === null) return null;
+    return clampSpeakableLimit(knob, v) ?? SPEAKABLE_DEFAULTS[knob];
+  };
+  return {
+    textInstead: bag.textInstead === true,
+    textOverChars: read("textOverChars"),
+    textOverListItems: read("textOverListItems"),
+    textOverNumbers: read("textOverNumbers"),
+  };
 }
 
 export const TTS_DEFAULTS: TtsConfig = {
@@ -89,6 +149,8 @@ export const TTS_DEFAULTS: TtsConfig = {
   normalizeCredentialRef: null,
   normalizeBaseURL: null,
   checkMode: null,
+  textInstead: false,
+  ...SPEAKABLE_DEFAULTS,
   ...VOICE_SETTINGS_DEFAULTS,
 };
 

@@ -38,6 +38,10 @@ const SAVED = {
   speed: 1.5,
   speakerBoost: false,
   checkMode: "enforce",
+  textInstead: true,
+  textOverChars: 600,
+  textOverListItems: null,
+  textOverNumbers: 5,
 };
 
 describe("agent editor TTS round-trip", () => {
@@ -52,6 +56,32 @@ describe("agent editor TTS round-trip", () => {
         ttsSettingsFrom(readTtsFormState({ checkMode: m })).checkMode,
       ).toBe(m);
     }
+  });
+
+  // Issue #856: an agent saved before the limits existed shows the defaults it runs on, a cleared
+  // field is stored as null (off), never dropped (absent would bring the default back), and a typed
+  // value outside the band is stored at its end, as the runtime reads it.
+  test("the text-instead-of-audio limits: defaults shown, cleared means off, out of band clamped", () => {
+    const fresh = readTtsFormState({ mode: "mirror" });
+    expect(fresh.textInstead).toBe(false);
+    expect(ttsSettingsFrom(fresh).textInstead).toBe(false);
+    expect([
+      fresh.textOverChars,
+      fresh.textOverListItems,
+      fresh.textOverNumbers,
+    ]).toEqual(["450", "3", "3"]);
+    const out = ttsSettingsFrom({
+      ...fresh,
+      textOverChars: "",
+      textOverListItems: "1",
+      textOverNumbers: " 7 ",
+    });
+    expect([
+      out.textOverChars,
+      out.textOverListItems,
+      out.textOverNumbers,
+    ]).toEqual([null, 2, 7]);
+    expect(readTtsFormState(out).textOverChars).toBe("");
   });
 
   test("an agent's saved block survives load → save unchanged", () => {

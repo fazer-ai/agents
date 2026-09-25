@@ -2608,6 +2608,91 @@ export function BehaviorTab({
                     ))}
                   </Select>
                 </FormField>
+                {/* Issue #856: a reply built to be read goes as text even when audio is on. */}
+                <div className="flex flex-col gap-3">
+                  <SwitchField
+                    checked={tts.textInstead}
+                    onCheckedChange={(v) => setTts({ ...tts, textInstead: v })}
+                    label={t(
+                      "editor.ttsTextInstead",
+                      "Send long or list-like replies as text",
+                    )}
+                    help={t(
+                      "editor.ttsTextInsteadHelp",
+                      "A price table or a list of steps is hard to follow by ear. With this on, a reply past any of the limits below goes as a text message instead of a voice note. Leave a limit empty to turn that check off.",
+                    )}
+                  />
+                  {tts.textInstead && (
+                    <div className="grid gap-4 sm:grid-cols-3">
+                      <FormField
+                        label={t(
+                          "editor.ttsTextOverChars",
+                          "Longer than (characters)",
+                        )}
+                        description={t(
+                          "editor.ttsTextOverCharsHint",
+                          "Links do not count (80-4000).",
+                        )}
+                      >
+                        <Input
+                          type="number"
+                          min={80}
+                          max={4000}
+                          step={10}
+                          value={tts.textOverChars}
+                          onChange={(e) =>
+                            setTts({ ...tts, textOverChars: e.target.value })
+                          }
+                        />
+                      </FormField>
+                      <FormField
+                        label={t(
+                          "editor.ttsTextOverListItems",
+                          "List items, from",
+                        )}
+                        description={t(
+                          "editor.ttsTextOverListItemsHint",
+                          "Bullets, numbered steps or table rows (2-50).",
+                        )}
+                      >
+                        <Input
+                          type="number"
+                          min={2}
+                          max={50}
+                          step={1}
+                          value={tts.textOverListItems}
+                          onChange={(e) =>
+                            setTts({
+                              ...tts,
+                              textOverListItems: e.target.value,
+                            })
+                          }
+                        />
+                      </FormField>
+                      <FormField
+                        label={t(
+                          "editor.ttsTextOverNumbers",
+                          "Prices or long numbers, from",
+                        )}
+                        description={t(
+                          "editor.ttsTextOverNumbersHint",
+                          "Money values, or numbers of 4+ digits (2-50).",
+                        )}
+                      >
+                        <Input
+                          type="number"
+                          min={2}
+                          max={50}
+                          step={1}
+                          value={tts.textOverNumbers}
+                          onChange={(e) =>
+                            setTts({ ...tts, textOverNumbers: e.target.value })
+                          }
+                        />
+                      </FormField>
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </Section>

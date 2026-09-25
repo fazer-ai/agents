@@ -75,7 +75,7 @@ import { assertPlaygroundSpendCeiling } from "@/modules/spend-ceiling/service";
 import { transcribePlaygroundAudio } from "@/modules/stt/service";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
-import { planSpokenReply } from "@/modules/tts/spoken";
+import { logTextInsteadOfAudio, planAudioReply } from "@/modules/tts/speakable";
 import { extractPlaygroundFile } from "@/modules/vision/service";
 import { readVisionConfig } from "@/modules/vision/settings";
 import {
@@ -1033,18 +1033,20 @@ async function runPlaygroundTurnOnce(
   // TTS reply: the agent's mode decides (mirror/preference), or the manual toggle forces it. Audio
   // is best-effort — synthesis failure falls back to the text reply.
   let ttsMediaId: string | undefined;
-  // The same plan production delivers by (issue #787): the operator hears no URL or e-mail, and a
-  // reply that is only the introduction of its link gets no audio. The items stay in `reply`.
-  const spoken = planSpokenReply(reply ?? "");
-  const wantAudio =
+  // The same plan production delivers by (issues #787, #856): the operator hears no URL or e-mail,
+  // and a reply that is only the introduction of its link, or one built to be read (too long, a
+  // list, a run of prices), gets no audio. The items stay in `reply`.
+  const spoken = planAudioReply(reply ?? "", loaded.ttsConfig);
+  const audioAsked =
     !!reply &&
-    !spoken.textOnly &&
     (params.forceAudio ||
       shouldReplyWithAudio(
         loaded.ttsConfig.mode,
         params.userSentAudio ?? false,
         loaded.contactVoiceReply,
       ));
+  if (audioAsked) logTextInsteadOfAudio(flow, spoken);
+  const wantAudio = audioAsked && !spoken.textOnly;
   if (wantAudio) {
     try {
       const tts = await synthesizeReply({

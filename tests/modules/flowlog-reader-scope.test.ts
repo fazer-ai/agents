@@ -209,8 +209,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   // #855, review round 2: a withdrawn turn closes on no line.
   "tests/graph/read-receipt-turn.test.ts": 1,
   // #726: dois leitores novos, o carimbo provisorio da linha de `skip_reply` e a ausencia do fato do
-  // turno num turno que nao decidiu silencio.
-  "tests/graph/runtime.test.ts": 25,
+  // turno num turno que nao decidiu silencio. #856: mais um, a linha `tts` da resposta que foi como
+  // texto em vez de audio, escopada por tenant e conversa.
+  "tests/graph/runtime.test.ts": 26,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/skip-handover.test.ts": 1,
   // #726: the helper that runs one tool call end to end, plus the case that asks WHEN the turn's

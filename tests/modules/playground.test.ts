@@ -420,6 +420,66 @@ describe.skipIf(!dbUp)("playground", () => {
     expect(r.ttsMediaId).toBeUndefined();
   });
 
+  // Issue #856: the playground asks the same plan, so a reply built to be read goes as text there too
+  // once the agent turned the switch on, and is spoken while it is off.
+  test("a price table gets no audio in the playground once the agent sends such replies as text (#856)", async () => {
+    const table =
+      "Os valores ficam assim:\n- Cadeira: R$ 300,00\n- Bronze: R$ 550,00\n- Ouro: R$ 770,00";
+    const turn = async () => {
+      const spoken: string[] = [];
+      const ttsFetch = (async (_url: unknown, init?: RequestInit) => {
+        spoken.push(String(init?.body ?? ""));
+        return new Response(new ArrayBuffer(16), {
+          status: 200,
+          headers: { "content-type": "audio/ogg" },
+        });
+      }) as unknown as typeof fetch;
+      const r = await runPlaygroundTurn({
+        ctx: ctx(tenantId),
+        agentId: agentAudio,
+        message: "oi",
+        forceAudio: true,
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new UsageReportingModel([
+              table,
+              "falado",
+            ]) as unknown as BaseChatModel,
+          checkpointer: new MemorySaver(),
+          ttsFetch,
+        },
+      });
+      return { r, spoken };
+    };
+    const off = await turn();
+    expect(off.spoken).toHaveLength(1);
+    const agent = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentAudio },
+      select: { settings: true },
+    });
+    const settings = agent.settings as {
+      tts: Record<string, string | boolean>;
+    };
+    await suDb.agent.update({
+      where: { id: agentAudio },
+      data: {
+        settings: { ...settings, tts: { ...settings.tts, textInstead: true } },
+      },
+    });
+    try {
+      const on = await turn();
+      expect(on.r.reply).toBe(table);
+      expect(on.spoken).toEqual([]);
+      expect(on.r.ttsMediaId).toBeUndefined();
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentAudio },
+        data: { settings },
+      });
+    }
+  });
+
   // Issue #755: the playground dates what the operator types with the instant it says it was
   // written, so a session shows the history the way a real turn would send it.
   test("the operator's message is kept with the instant it was written", async () => {

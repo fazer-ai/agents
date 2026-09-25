@@ -1,6 +1,7 @@
 import { TTS_PROVIDER_NAMES } from "./providers";
 
 import {
+  readSpeakableLimits,
   readVoiceSettings,
   TTS_CHECK_MODES,
   TTS_DEFAULTS,
@@ -63,6 +64,7 @@ export function readTtsConfig(settings: unknown): TtsConfig {
     checkMode: TTS_CHECK_MODES.includes(str(bag.checkMode) as TtsCheckMode)
       ? (str(bag.checkMode) as TtsCheckMode)
       : null,
+    ...readSpeakableLimits(bag),
     ...readVoiceSettings(bag),
   };
 }

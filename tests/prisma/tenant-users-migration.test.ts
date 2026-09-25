@@ -10,13 +10,16 @@ import { Client } from "pg";
 // one. Only what the file names is created, with the constraint and index names the baseline gave
 // them, since the file drops them by name. RUN STATEMENT BY STATEMENT, as Prisma runs it: a
 // multi-statement string would be wrapped in an implicit transaction and prove nothing about the
-// file's own (.claude/rules/prisma.md, #555).
+// file's own (.claude/rules/prisma.md, #555). AS THE TABLES' OWNER, not as a superuser: a superuser
+// passes every row-level policy, FORCE or not, and the owner the deploy runs as does not, so a write
+// to a FORCE-RLS table that forgot to lift it would decide over zero rows here too.
 
 const MIGRATION = "prisma/migrations/20260925000000_tenant_users/migration.sql";
 const sql = await Bun.file(MIGRATION).text();
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const PROBE_DB = `fazerai_tenant_users_${process.pid}`;
+const PROBE_OWNER = `fazerai_tenant_users_owner_${process.pid}`;
 let dbUp = false;
 let su: Client | undefined;
 if (suUrl) {
@@ -24,6 +27,8 @@ if (suUrl) {
     su = new Client({ connectionString: suUrl });
     await su.connect();
     await su.query("SELECT 1");
+    await su.query(`DROP ROLE IF EXISTS ${PROBE_OWNER}`);
+    await su.query(`CREATE ROLE ${PROBE_OWNER} NOLOGIN`);
     dbUp = true;
   } catch {
     dbUp = false;
@@ -70,7 +75,24 @@ const OLD_SHAPE = `
     id bigserial PRIMARY KEY, user_id bigint NOT NULL, client_id text NOT NULL,
     UNIQUE (user_id, client_id)
   );
+  CREATE TABLE api_keys (id bigserial PRIMARY KEY, tenant_id bigint, created_by_user_id bigint);
+  CREATE TABLE audit_logs (
+    id bigserial PRIMARY KEY, tenant_id bigint, actor_id bigint,
+    actor_type text NOT NULL DEFAULT 'user', action text NOT NULL, target text,
+    "before" jsonb, "after" jsonb, created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
 `;
+
+// The two FORCE-RLS tables the file writes to, locked down the way the baseline does, after the seed.
+const LOCK_DOWN = ["api_keys", "audit_logs"]
+  .map(
+    (t) => `
+  ALTER TABLE ${t} ENABLE ROW LEVEL SECURITY;
+  ALTER TABLE ${t} FORCE ROW LEVEL SECURITY;
+  CREATE POLICY tenant_isolation ON ${t}
+    USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::bigint);`,
+  )
+  .join("\n");
 
 // Comment lines out, then cut on semicolons outside a literal and outside a `$$` body.
 function statementsOf(text: string): string[] {
@@ -111,6 +133,7 @@ async function seed(c: Client): Promise<Ids> {
   };
   await one("A", "INSERT INTO tenants (name) VALUES ('A')", []);
   await one("B", "INSERT INTO tenants (name) VALUES ('B')", []);
+  await one("C", "INSERT INTO tenants (name) VALUES ('C')", []);
   const user = (
     key: string,
     tenant: string | null,
@@ -176,6 +199,35 @@ async function seed(c: Client): Promise<Ids> {
     null,
     "2026-02-01",
   );
+  // Cai: THREE rows. The two that go both approved a client the one that stays never did, which is
+  // the collision a per-pair de-duplication misses (review round 1).
+  await user(
+    "caiA",
+    ids.A as string,
+    "cai@x.test",
+    "AGENT",
+    "c1",
+    null,
+    "2026-07-01",
+  );
+  await user(
+    "caiB",
+    ids.B as string,
+    "cai@x.test",
+    "AGENT",
+    "c2",
+    null,
+    "2026-02-01",
+  );
+  await user(
+    "caiC",
+    ids.C as string,
+    "cai@x.test",
+    "AGENT",
+    "c3",
+    null,
+    "2026-03-01",
+  );
   // Solo: one tenant, nothing to merge.
   await user("solo", ids.A as string, "solo@x.test", "AGENT", "hS", null, null);
 
@@ -202,6 +254,15 @@ async function seed(c: Client): Promise<Ids> {
     "INSERT INTO mcp_oauth_client_approvals (user_id, client_id) VALUES ($1, 'c1'), ($2, 'c1'), ($1, 'c2')",
     [ids.anaA, ids.anaB],
   );
+  await c.query(
+    "INSERT INTO mcp_oauth_client_approvals (user_id, client_id) VALUES ($1, 'c9'), ($2, 'c9')",
+    [ids.caiB, ids.caiC],
+  );
+  // A key minted by the row that goes, and one by the row that stays.
+  await c.query(
+    "INSERT INTO api_keys (tenant_id, created_by_user_id) VALUES ($1, $2), ($3, $4)",
+    [ids.A, ids.anaA, ids.B, ids.anaB],
+  );
   return ids;
 }
 
@@ -227,8 +288,11 @@ async function migrate(text: string): Promise<Outcome> {
   previous = c;
   const notices: string[] = [];
   c.on("notice", (n) => notices.push(n.message ?? ""));
+  await c.query(`ALTER SCHEMA public OWNER TO ${PROBE_OWNER}`);
+  await c.query(`SET ROLE ${PROBE_OWNER}`);
   await c.query(OLD_SHAPE);
   const ids = await seed(c);
+  await c.query(LOCK_DOWN);
   let failed: string | null = null;
   try {
     for (const statement of statementsOf(text)) await c.query(statement);
@@ -236,6 +300,8 @@ async function migrate(text: string): Promise<Outcome> {
     failed = (e as Error).message;
     await c.query("ROLLBACK").catch(() => {});
   }
+  // The assertions read every row, whatever the policy says.
+  await c.query("RESET ROLE");
   return { failed, notices, ids, c };
 }
 
@@ -263,6 +329,7 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
     await previous?.end().catch(() => {});
     if (su) {
       await su.query(`DROP DATABASE IF EXISTS ${PROBE_DB} WITH (FORCE)`);
+      await su.query(`DROP ROLE IF EXISTS ${PROBE_OWNER}`);
       await su.end();
     }
   });
@@ -286,6 +353,14 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
         google_id: "g-bia",
         is_super_admin: false,
         memberships: "A:AGENT,B:AGENT",
+      },
+      {
+        id: ids.caiA as string,
+        email: "cai@x.test",
+        password_hash: "c1",
+        google_id: null,
+        is_super_admin: false,
+        memberships: "A:AGENT,B:AGENT,C:AGENT",
       },
       {
         id: ids.rootA as string,
@@ -334,26 +409,109 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
     expect(approvals).toEqual([
       { user_id: ids.anaB as string, client_id: "c1" },
       { user_id: ids.anaB as string, client_id: "c2" },
+      { user_id: ids.caiA as string, client_id: "c9" },
     ]);
+    // An API key's creator answers the step-up for a key minted before it had its own, so a key made
+    // by the row that went is now the person's. The table is FORCE-RLS, and stays so.
+    expect(await col("api_keys", "created_by_user_id")).toEqual([
+      ids.anaB as string,
+      ids.anaB as string,
+    ]);
+    const forced = (
+      await c.query<{ relname: string; f: boolean }>(
+        "SELECT relname, relforcerowsecurity AS f FROM pg_class WHERE relname IN ('api_keys', 'audit_logs') ORDER BY relname",
+      )
+    ).rows;
+    expect(forced).toEqual([
+      { relname: "api_keys", f: true },
+      { relname: "audit_logs", f: true },
+    ]);
+  });
+
+  // `prisma migrate deploy` does not print a NOTICE, so the record the operator can find is the
+  // audit trail: one row in the fleet trail and one in each tenant the person now belongs to.
+  test("every merge is written to the audit trail, and nothing else is", async () => {
+    const { ids, c } = await migrate(sql);
+    const rows = (
+      await c.query<{
+        tenant: string | null;
+        target: string;
+        before: unknown;
+        after: unknown;
+      }>(
+        `SELECT t.name AS tenant, a.target, a."before", a."after"
+           FROM audit_logs a LEFT JOIN tenants t ON t.id = a.tenant_id
+          WHERE a.action = 'user.merged_by_upgrade' AND a.actor_type = 'system' AND a.actor_id IS NULL
+          ORDER BY a.target, t.name NULLS FIRST`,
+      )
+    ).rows;
+    const ana = rows.filter((r) => r.target === `user:${ids.anaB}`);
+    expect(ana.map((r) => r.tenant)).toEqual([null, "A", "B"]);
+    expect(ana[0]?.before).toEqual({ userIds: [ids.anaA] });
+    expect(ana[0]?.after).toEqual({ userId: ids.anaB, email: "ana@x.test" });
+    expect(new Set(rows.map((r) => r.target))).toEqual(
+      new Set([
+        `user:${ids.anaB}`,
+        `user:${ids.biaA}`,
+        `user:${ids.rootA}`,
+        `user:${ids.caiA}`,
+      ]),
+    );
+    expect(JSON.stringify(rows)).not.toContain("solo@x.test");
   });
 
   test("the deploy log names every merge", async () => {
     const { notices, ids } = await migrate(sql);
     const merged = notices.filter((n) => n.startsWith("tenant_users: merged"));
-    expect(merged).toHaveLength(3);
+    expect(merged).toHaveLength(4);
     expect(merged.join("\n")).toContain(`into user ${ids.anaB} (ana@x.test)`);
     expect(merged.join("\n")).toContain(`into user ${ids.biaA} (bia@x.test)`);
     expect(merged.join("\n")).toContain(`into user ${ids.rootA} (root@x.test)`);
+    expect(merged.join("\n")).toContain(`into user ${ids.caiA} (cai@x.test)`);
   });
 
-  test("the old shape is gone, and the new one refuses what it has to", async () => {
+  test("the old columns stay for the previous image, and bind nothing any more", async () => {
     const { ids, c } = await migrate(sql);
+    // The previous image names both on every cookie request during the deploy, so they stay one
+    // release, holding what they held (.claude/rules/prisma.md, "Dropping a column").
     const cols = (
       await c.query<{ column_name: string }>(
-        "SELECT column_name FROM information_schema.columns WHERE table_name = 'users' AND column_name IN ('tenant_id', 'role')",
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'users' AND column_name IN ('tenant_id', 'role') ORDER BY column_name",
       )
-    ).rows;
-    expect(cols).toEqual([]);
+    ).rows.map((r) => r.column_name);
+    expect(cols).toEqual(["role", "tenant_id"]);
+    const frozen = (
+      await c.query<{ tenant_id: string; role: string }>(
+        "SELECT tenant_id::text, role::text FROM users WHERE id = $1",
+        [ids.anaB],
+      )
+    ).rows[0];
+    expect(frozen).toEqual({
+      tenant_id: ids.B as string,
+      role: "TENANT_ADMIN",
+    });
+    // A row the new image writes carries neither, and the constraint that tied them is gone.
+    await c.query(
+      "INSERT INTO users (email, password_hash, updated_at) VALUES ('new@x.test', 'x', now())",
+    );
+    // And the foreign key's cascade is gone: deleting the tenant an old row pointed at takes the
+    // membership, never the PERSON with every other membership.
+    await c.query("DELETE FROM tenants WHERE id = $1", [ids.B]);
+    expect(
+      (await c.query("SELECT id FROM users WHERE id = $1", [ids.anaB])).rows,
+    ).toHaveLength(1);
+    expect(
+      (
+        await c.query<{ n: string }>(
+          "SELECT count(*)::text AS n FROM tenant_users WHERE user_id = $1",
+          [ids.anaB],
+        )
+      ).rows[0]?.n,
+    ).toBe("1");
+  });
+
+  test("the new shape refuses what it has to", async () => {
+    const { ids, c } = await migrate(sql);
     // One person per email across the install, whatever the case.
     await expect(
       c.query(
@@ -388,7 +546,7 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
     const { failed, c } = await migrate(broken);
     expect(failed).toContain("division by zero");
     const rows = (await c.query("SELECT id FROM users")).rows;
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(10);
     const table = (await c.query("SELECT to_regclass('tenant_users') AS t"))
       .rows[0]?.t;
     expect(table).toBeNull();

@@ -504,12 +504,19 @@ async function setMembershipRole(
 // fleet admin to whatever tab they had open.
 //
 // A tenant administrator re-roles the person's membership in their own tenant. The fleet re-roles
-// the membership `params.tenantId` names (or the only one the person has), and demoting a fleet
-// administrator takes the fleet role away and gives them that membership (issue #756).
+// the membership `params.tenantId` names (or the only one the person has), and `demoteFleet` takes
+// the fleet role away and gives the person that membership (issue #756).
 export async function updateUserRole(
   ctx: TenantContext,
   userId: bigint,
-  params: { role: ManageableRole; tenantId?: bigint | null },
+  params: {
+    role: ManageableRole;
+    tenantId?: bigint | null;
+    // Taking the FLEET role away, as opposed to re-roling one of the person's memberships. Explicit,
+    // because a fleet administrator can also hold memberships (a merged account, or one invited into
+    // a tenant), and an edit of such a membership must never double as a demotion (review round 1).
+    demoteFleet?: boolean;
+  },
   base: PrismaClient = prisma,
 ): Promise<UserRow> {
   const { role } = params;
@@ -536,7 +543,7 @@ export async function updateUserRole(
       if (!peek) {
         throw new UserNotInScopeError();
       }
-      if (!peek.isSuperAdmin) {
+      if (!params.demoteFleet) {
         const named =
           params.tenantId ??
           (peek.memberships.length === 1
@@ -545,11 +552,10 @@ export async function updateUserRole(
         if (named === null) {
           throw new TenantRequiredError();
         }
-        const user = await setMembershipRole(db, ctx, named, userId, role);
-        // Promoted to the fleet while this ran: the membership's role changed under a role the
-        // person no longer answers to as such, so the write starts over and takes the right path.
-        if (await superRow(db, userId)) throw new ScopeMovedError();
-        return user;
+        return setMembershipRole(db, ctx, named, userId, role);
+      }
+      if (!peek.isSuperAdmin) {
+        throw new UserNotInScopeError();
       }
       const joining = await tenantToJoin(db, params);
       await lockAdminScopes(db, [null, joining]);
@@ -557,6 +563,13 @@ export async function updateUserRole(
       const before = await superRow(db, userId);
       if (!before) throw new ScopeMovedError();
       await assertScopeKeepsAnAdmin(db, null, userId);
+      // The person may already administer the tenant they land in, and replacing that membership's
+      // role is a demotion THERE too: the tenant keeps an administrator or the write is refused, the
+      // same invariant `setMembershipRole` holds (review round 1). Its scope lock is already held.
+      const already = await memberRow(db, joining, userId);
+      if (already?.role === "TENANT_ADMIN" && role !== "TENANT_ADMIN") {
+        await assertScopeKeepsAnAdmin(db, joining, userId);
+      }
       await db.user.update({
         where: { id: userId },
         data: { isSuperAdmin: false },

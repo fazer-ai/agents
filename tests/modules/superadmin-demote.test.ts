@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import {
   deleteUser,
+  LastAdminError,
   TenantNotChangeableError,
   TenantNotFoundError,
   TenantRequiredError,
@@ -126,7 +127,12 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     const keep = await fleetAdmin("keep");
     const target = await fleetAdmin("target");
     await expect(
-      updateUserRole(fleet(keep.id), target.id, { role: "AGENT" }, appDb),
+      updateUserRole(
+        fleet(keep.id),
+        target.id,
+        { role: "AGENT", demoteFleet: true },
+        appDb,
+      ),
     ).rejects.toBeInstanceOf(TenantRequiredError);
     expect(await rowOf(target.id)).toEqual(fleetRow);
   });
@@ -139,7 +145,7 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     const after = await updateUserRole(
       fleet(keep.id),
       target.id,
-      { role: "AGENT", tenantId: home },
+      { role: "AGENT", tenantId: home, demoteFleet: true },
       appDb,
     );
     expect(after.role).toBe("AGENT");
@@ -157,7 +163,7 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
       updateUserRole(
         fleet(keep.id),
         target.id,
-        { role: "AGENT", tenantId: 9_999_999_999n },
+        { role: "AGENT", tenantId: 9_999_999_999n, demoteFleet: true },
         appDb,
       ),
     ).rejects.toBeInstanceOf(TenantNotFoundError);
@@ -176,7 +182,7 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     await updateUserRole(
       fleet(keep.id),
       target.id,
-      { role: "TENANT_ADMIN", tenantId: home },
+      { role: "TENANT_ADMIN", tenantId: home, demoteFleet: true },
       appDb,
     );
     expect(await rowOf(target.id)).toEqual({
@@ -195,7 +201,7 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     await updateUserRole(
       fleet(keep.id),
       target.id,
-      { role: "AGENT", tenantId: home },
+      { role: "AGENT", tenantId: home, demoteFleet: true },
       appDb,
     );
     const rows = await suDb.auditLog.findMany({
@@ -411,6 +417,78 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     expect(await rowOf(member.id)).toEqual({
       isSuperAdmin: false,
       memberships: [{ tenantId: home, role: "AGENT" }],
+    });
+  });
+  // Review round 1: the person may already ADMINISTER the tenant they land in, alone. Replacing that
+  // membership's role is a demotion there too, and the tenant keeps an administrator or nothing moves.
+  test("a demotion that would leave the destination tenant without an administrator is refused", async () => {
+    const keep = await fleetAdmin("keep8");
+    const target = await fleetAdmin("lone");
+    const home = await tenant("lone");
+    await suDb.tenantUser.create({
+      data: { tenantId: home, userId: target.id, role: "TENANT_ADMIN" },
+    });
+    await expect(
+      updateUserRole(
+        fleet(keep.id),
+        target.id,
+        { role: "AGENT", tenantId: home, demoteFleet: true },
+        appDb,
+      ),
+    ).rejects.toBeInstanceOf(LastAdminError);
+    expect(await rowOf(target.id)).toEqual({
+      isSuperAdmin: true,
+      memberships: [{ tenantId: home, role: "TENANT_ADMIN" }],
+    });
+  });
+
+  // Review round 1: a fleet administrator who also holds a membership shows that membership as its
+  // own row in the fleet view, and re-roling it is a MEMBERSHIP edit. It must never double as taking
+  // the fleet role away.
+  test("editing a fleet administrator's membership leaves the fleet role alone", async () => {
+    const keep = await fleetAdmin("keep9");
+    const target = await fleetAdmin("both");
+    const home = await tenant("both");
+    await suDb.tenantUser.create({
+      data: { tenantId: home, userId: target.id, role: "AGENT" },
+    });
+    await updateUserRole(
+      fleet(keep.id),
+      target.id,
+      { role: "TENANT_ADMIN", tenantId: home },
+      appDb,
+    );
+    expect(await rowOf(target.id)).toEqual({
+      isSuperAdmin: true,
+      memberships: [{ tenantId: home, role: "TENANT_ADMIN" }],
+    });
+  });
+
+  // And the demotion names a fleet administrator, or it finds nobody to demote.
+  test("a fleet demotion of somebody outside the fleet finds nobody", async () => {
+    const home = await tenant("plain");
+    seq += 1;
+    const member = await suDb.user.create({
+      data: personData({
+        tenantId: home,
+        email: `sd-${process.pid}-${seq}-plain@x.test`,
+        role: "TENANT_ADMIN",
+        passwordHash: "x",
+      }),
+      select: { id: true },
+    });
+    users.push(member.id);
+    await expect(
+      updateUserRole(
+        fleet(9_999_998n),
+        member.id,
+        { role: "AGENT", tenantId: home, demoteFleet: true },
+        appDb,
+      ),
+    ).rejects.toBeInstanceOf(UserNotInScopeError);
+    expect(await rowOf(member.id)).toEqual({
+      isSuperAdmin: false,
+      memberships: [{ tenantId: home, role: "TENANT_ADMIN" }],
     });
   });
 });

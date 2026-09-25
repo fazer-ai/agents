@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { PrismaPg } from "@prisma/adapter-pg";
+import { emailEquals } from "@/lib/email-match";
 import { roleAtLeast } from "@/lib/roles";
 import { PrismaClient, type UserRole } from "../generated/prisma/client";
 
@@ -87,7 +88,7 @@ async function main() {
     const roleLabel = `${role}${tenant ? ` (tenant ${tenant.id})` : ""}`;
 
     const user = await prisma.user.findFirst({
-      where: { email: { equals: email, mode: "insensitive" } },
+      where: { email: emailEquals(email) },
       select: {
         id: true,
         isSuperAdmin: true,

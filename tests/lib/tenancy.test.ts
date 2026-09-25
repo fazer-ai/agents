@@ -185,7 +185,11 @@ describe("every model with a tenant_id is accounted for", () => {
   test("it is registered, or named here with a reason", () => {
     const schema = readFileSync("prisma/schema.prisma", "utf8");
     const withTenantId = [...schema.matchAll(/^model (\w+) \{([\s\S]*?)^\}/gm)]
-      .filter(([, , body]) => /^\s*tenantId\s+BigInt/m.test(body ?? ""))
+      // A field the client ignores (`@ignore`) is not one it can read or write, and the registry governs
+      // the client: `users.tenant_id` is kept one release frozen that way (issue #756).
+      .filter(([, , body]) =>
+        /^\s*tenantId\s+BigInt(?![^\n]*@ignore)/m.test(body ?? ""),
+      )
       .map(([, name]) => name as string);
     // A sweep that finds nothing is a broken sweep, not a clean repo.
     expect(withTenantId.length).toBeGreaterThan(20);

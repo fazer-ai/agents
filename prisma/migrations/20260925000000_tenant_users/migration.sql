@@ -12,9 +12,10 @@
 -- `duplicate_table` on its first statement. `.claude/rules/prisma.md` (#555): Prisma runs the file
 -- outside a transaction unless the file opens one.
 --
--- No table this file touches carries row-level security: `users`, `invitations` and `mcp_oauth_*` are
--- global by design (baseline migration), and `tenant_users` joins them for the same reason. The
--- session reads a person's memberships before any tenant is chosen.
+-- `users`, `invitations` and `mcp_oauth_*` carry no row-level security, global by design (baseline
+-- migration), and `tenant_users` joins them for the same reason: the session reads a person's
+-- memberships before any tenant is chosen. The two FORCE-RLS tables this file writes, `api_keys` and
+-- `audit_logs`, have the FORCE lifted around their own statements and restored before COMMIT.
 BEGIN;
 
 -- ── Memberships ──
@@ -65,8 +66,9 @@ SELECT "id" AS "dup_id", "keeper_id"
   ) ranked
  WHERE "id" <> "keeper_id";
 
--- The merged rows are named in the deploy log, which is where an operator looks when someone reports
--- that their other password stopped working.
+-- The merged rows are named in the deploy log for whoever runs the file by hand. `prisma migrate
+-- deploy` does not print a NOTICE, so the record an operator can actually find is the audit trail
+-- written further down, once the memberships have moved.
 DO $$
 DECLARE r record;
 BEGIN
@@ -112,11 +114,18 @@ UPDATE "tenant_users" t SET "user_id" = m."keeper_id"
   FROM "user_merge" m WHERE t."user_id" = m."dup_id";
 
 -- What else names a user by id. These are loose columns (no foreign key), so a deleted row would
--- leave them pointing at nobody: an invitation's inviter, and the MCP connections the person
+-- leave them pointing at nobody: an invitation's inviter, an API key's creator (who answers the
+-- step-up for a key minted before it had one of its own), and the MCP connections the person
 -- authorized, which keep working because the kept person holds the same membership the token was
--- issued under. A client approved from both rows keeps one approval.
+-- issued under.
 UPDATE "invitations" i SET "invited_by_id" = m."keeper_id"
   FROM "user_merge" m WHERE i."invited_by_id" = m."dup_id";
+-- `api_keys` is FORCE-RLS, and its owner, which runs this file, is subject to the tenant policy: without
+-- lifting it the UPDATE decides over zero rows and reports success. Restored in the same transaction.
+ALTER TABLE "api_keys" NO FORCE ROW LEVEL SECURITY;
+UPDATE "api_keys" x SET "created_by_user_id" = m."keeper_id"
+  FROM "user_merge" m WHERE x."created_by_user_id" = m."dup_id";
+ALTER TABLE "api_keys" FORCE ROW LEVEL SECURITY;
 UPDATE "mcp_oauth_authorization_codes" x SET "user_id" = m."keeper_id"
   FROM "user_merge" m WHERE x."user_id" = m."dup_id";
 UPDATE "mcp_oauth_access_tokens" x SET "user_id" = m."keeper_id"
@@ -125,28 +134,63 @@ UPDATE "mcp_oauth_refresh_tokens" x SET "user_id" = m."keeper_id"
   FROM "user_merge" m WHERE x."user_id" = m."dup_id";
 UPDATE "mcp_oauth_pending_authorizations" x SET "user_id" = m."keeper_id"
   FROM "user_merge" m WHERE x."user_id" = m."dup_id";
+-- One approval per (person, client) survives, decided over the WHOLE merge group: two merged rows can
+-- both have approved a client the kept row never did (review round 1). The kept person's own approval
+-- wins, then the oldest.
 DELETE FROM "mcp_oauth_client_approvals" a
- USING "user_merge" m
- WHERE a."user_id" = m."dup_id"
-   AND EXISTS (
-     SELECT 1 FROM "mcp_oauth_client_approvals" b
-      WHERE b."user_id" = m."keeper_id" AND b."client_id" = a."client_id"
-   );
+ USING (
+   SELECT x."id",
+          row_number() OVER (
+            PARTITION BY COALESCE(m."keeper_id", x."user_id"), x."client_id"
+            ORDER BY (m."keeper_id" IS NULL) DESC, x."id"
+          ) AS "rn"
+     FROM "mcp_oauth_client_approvals" x
+     LEFT JOIN "user_merge" m ON m."dup_id" = x."user_id"
+ ) ranked
+ WHERE a."id" = ranked."id" AND ranked."rn" > 1;
 UPDATE "mcp_oauth_client_approvals" x SET "user_id" = m."keeper_id"
   FROM "user_merge" m WHERE x."user_id" = m."dup_id";
 
--- The audit trail is NOT rewritten: it records which row acted, at the time, and history stays as it
--- was written.
+-- Each merge is written to the audit trail, where an operator answers "my other password stopped
+-- working": one row in the fleet trail and one in every tenant the person now belongs to, naming the
+-- rows that went and the one that stayed. Filed by the system, like the upgrade renames before it
+-- (`tool.renamed_by_upgrade`). `audit_logs` is FORCE-RLS for the same reason as `api_keys` above.
+ALTER TABLE "audit_logs" NO FORCE ROW LEVEL SECURITY;
+INSERT INTO "audit_logs" ("tenant_id", "actor_id", "actor_type", "action", "target", "before", "after", "created_at")
+SELECT scope."tenant_id", NULL, 'system', 'user.merged_by_upgrade', 'user:' || g."keeper_id",
+       jsonb_build_object('userIds', g."dup_ids"),
+       jsonb_build_object('userId', g."keeper_id"::text, 'email', g."email"),
+       NOW()
+  FROM (
+    SELECT m."keeper_id", lower(k."email") AS "email",
+           jsonb_agg(m."dup_id"::text ORDER BY m."dup_id") AS "dup_ids"
+      FROM "user_merge" m JOIN "users" k ON k."id" = m."keeper_id"
+     GROUP BY m."keeper_id", lower(k."email")
+  ) g
+  CROSS JOIN LATERAL (
+    SELECT NULL::bigint AS "tenant_id"
+    UNION ALL
+    SELECT t."tenant_id" FROM "tenant_users" t WHERE t."user_id" = g."keeper_id"
+  ) scope;
+ALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;
+
+-- Nothing else in the audit trail is rewritten: it records which row acted, at the time, and history
+-- stays as it was written.
 DELETE FROM "users" WHERE "id" IN (SELECT "dup_id" FROM "user_merge");
 
--- ── The old shape goes ──
+-- ── The old shape stops binding ──
+-- The previous image keeps serving until the new one replaces it, and every cookie request it answers
+-- names `users.tenant_id` and `users.role`. The two COLUMNS therefore stay for one release, frozen at
+-- what they held here and ignored by this image's client (`@ignore` in the schema); the release after
+-- drops them (.claude/rules/prisma.md, "Dropping a column"). What goes now is everything that would
+-- make them bind: the CHECK tying role to tenant, the per-tenant email indexes, and the foreign key,
+-- whose cascade would otherwise delete a PERSON, with every other membership, when the tenant their
+-- old row pointed at is deleted.
 ALTER TABLE "users" DROP CONSTRAINT "users_role_tenant_check";
 DROP INDEX "users_tenant_email_key";
 DROP INDEX "users_superadmin_email_key";
 DROP INDEX "users_tenant_id_idx";
 ALTER TABLE "users" DROP CONSTRAINT "users_tenant_id_fkey";
-ALTER TABLE "users" DROP COLUMN "tenant_id";
-ALTER TABLE "users" DROP COLUMN "role";
 
 -- One person per email, across the install, whatever the case.
 CREATE UNIQUE INDEX "users_email_key" ON "users" (lower("email"));

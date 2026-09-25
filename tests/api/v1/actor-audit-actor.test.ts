@@ -329,7 +329,7 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
       const refused = await server.handle(
         req(`/admin/users/${target.id}/role`, {
           method: "PATCH",
-          body: JSON.stringify({ role: "AGENT" }),
+          body: JSON.stringify({ role: "AGENT", demoteFleet: true }),
         }),
       );
       expect(refused.status).toBe(422);
@@ -338,7 +338,11 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
       const moved = await server.handle(
         req(`/admin/users/${target.id}/role`, {
           method: "PATCH",
-          body: JSON.stringify({ role: "AGENT", tenantId: tenantA.toString() }),
+          body: JSON.stringify({
+            role: "AGENT",
+            tenantId: tenantA.toString(),
+            demoteFleet: true,
+          }),
         }),
       );
       expect(moved.status).toBe(200);

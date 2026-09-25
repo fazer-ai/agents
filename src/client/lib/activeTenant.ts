@@ -29,6 +29,36 @@ export function getActiveTenantId(): string | null {
   return inherited;
 }
 
+// Pins the tenant THIS TAB is running under without making it the next tab's default. For a person
+// whose session resolved their default membership with no selection stored: until the tab holds that
+// id, it keeps inheriting the shared default, and a choice made in another tab would move this tab's
+// next request to another tenant under a page built for the first one (review round 1, #756).
+export function pinTabTenantId(id: string): void {
+  const tab = tabStore();
+  if (tab && tab.getItem(KEY) === null) tab.setItem(KEY, id);
+}
+
+// What the tab does with the tenant a fresh session reports, a function rather than inline in the
+// AuthProvider so the rule can be tested (the provider is module-mocked across the client suite).
+//
+// A SUPER_ADMIN gets the fleet's first tenant as a default, only when nothing is selected, so the
+// console opens on a real tenant instead of an empty dashboard and a deliberate switch is never
+// overridden. A person's session ran under the membership the server resolved, and this tab keeps it,
+// so a choice made in another tab cannot move it (issue #756).
+export function adoptSessionTenant(
+  user: { role: string; tenantId: string | null } | null,
+  defaultTenantId: string | null,
+): void {
+  if (!user) return;
+  if (user.role === "SUPER_ADMIN") {
+    if (defaultTenantId && getActiveTenantId() === null) {
+      setActiveTenantId(defaultTenantId);
+    }
+    return;
+  }
+  if (user.tenantId) pinTabTenantId(user.tenantId);
+}
+
 export function setActiveTenantId(id: string | null): void {
   for (const store of [tabStore(), sharedStore()]) {
     if (!store) continue;

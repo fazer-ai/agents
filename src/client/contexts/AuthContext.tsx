@@ -9,8 +9,8 @@ import {
 } from "react";
 import { Logo } from "@/client/components/Logo";
 import {
+  adoptSessionTenant,
   getActiveTenantId,
-  setActiveTenantId,
 } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
 import { performLogout } from "@/client/lib/logout";
@@ -117,17 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // state clears any stale signed-in client state. The boot path is
         // unaffected (user defaults to null), but refresh() relies on this.
         applyUser(data.user ?? null);
-        // NOTE: Seed the SUPER_ADMIN's active-tenant selector on first login/reload so the console
-        // opens on a real tenant instead of an empty dashboard. Only fill a NULL selection (never
-        // override a deliberate switch). `defaultTenantId` is the first accessible tenant (the one
-        // created at /setup on a fresh install); non-super users ignore the selector entirely.
-        if (
-          data.user?.role === "SUPER_ADMIN" &&
-          data.defaultTenantId &&
-          getActiveTenantId() === null
-        ) {
-          setActiveTenantId(data.defaultTenantId);
-        }
+        adoptSessionTenant(data.user ?? null, data.defaultTenantId ?? null);
         const next: AuthProviders = {};
         if (
           data.providers &&

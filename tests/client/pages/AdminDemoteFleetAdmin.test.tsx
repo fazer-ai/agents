@@ -161,7 +161,10 @@ describe("demoting from the users tab", () => {
       expect(patches.length).toBe(1);
     });
     expect(JSON.stringify(patches[0])).toBe(
-      JSON.stringify({ id: "10", body: { role: "AGENT", tenantId: "42" } }),
+      JSON.stringify({
+        id: "10",
+        body: { role: "AGENT", tenantId: "42", demoteFleet: true },
+      }),
     );
   });
 
@@ -174,7 +177,10 @@ describe("demoting from the users tab", () => {
       expect(patches.length).toBe(1);
     });
     expect(JSON.stringify(patches[0])).toBe(
-      JSON.stringify({ id: "11", body: { role: "AGENT", tenantId: "42" } }),
+      JSON.stringify({
+        id: "11",
+        body: { role: "AGENT", tenantId: "42" },
+      }),
     );
     expect(screen.queryAllByRole("dialog").length).toBe(0);
   });

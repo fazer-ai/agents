@@ -2,6 +2,7 @@ import type { UserRole } from "@/../generated/prisma/client";
 import type { AuthUser } from "@/api/lib/auth";
 import prisma from "@/api/lib/prisma";
 import config from "@/config";
+import { emailEquals } from "@/lib/email-match";
 import { asSuperAdmin, runScoped } from "@/lib/tenancy";
 import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
 
@@ -102,10 +103,11 @@ export function isAdminAnywhere(row: {
 
 export async function getUserByEmail(email: string) {
   // NOTE: `findFirst` over a case-insensitive match is still exact: the email is unique across the
-  // install, case folded (`users_email_key` on lower(email), issue #756). Before, it was unique per
-  // tenant and this read picked one of a person's rows with no order at all.
+  // install, case folded (`users_email_key` on lower(email), issue #756), and `emailEquals` keeps
+  // `_`/`%` literal. Before, it was unique per tenant and this read picked one of a person's rows with
+  // no order at all.
   return prisma.user.findFirst({
-    where: { email: { equals: email.trim(), mode: "insensitive" } },
+    where: { email: emailEquals(email) },
     select: {
       ...AUTH_USER_SELECT,
       passwordHash: true,

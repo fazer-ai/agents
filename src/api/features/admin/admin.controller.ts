@@ -201,6 +201,7 @@ export const adminController = new Elysia({
         const updated = await updateUserRole(actorOf(user), targetId, {
           role: body.role,
           tenantId: optionalDbId(body.tenantId),
+          demoteFleet: body.demoteFleet === true,
         });
         return {
           user: {
@@ -281,10 +282,16 @@ export const adminController = new Elysia({
               "Tenant the role applies to (BigInt string). A person holds a role per tenant, so the fleet names which membership to re-role (optional when the person has only one), and demoting a fleet administrator names the tenant they join (required). A tenant administrator may only name their own tenant.",
           }),
         ),
+        demoteFleet: t.Optional(
+          t.Boolean({
+            description:
+              "SUPER_ADMIN only: take the fleet role away and give the person the named tenant's membership with `role`. Without it, the write re-roles a membership and never touches the fleet role.",
+          }),
+        ),
       }),
       detail: doc(
         "Update user role",
-        "Change the role a user holds in a tenant. A tenant administrator re-roles members of their own tenant; the fleet names the tenant (or the user's only one), and demoting a fleet administrator must name the tenant they join. Refuses (409) to demote the last administrator of a scope.",
+        "Change the role a user holds in a tenant. A tenant administrator re-roles members of their own tenant; the fleet names the tenant (or the user's only one). Demoting a fleet administrator is explicit (`demoteFleet`) and must name the tenant they join. Refuses (409) to demote the last administrator of a scope.",
       ),
       response: errors(400, 401, 403, 404, 409, 422),
     },

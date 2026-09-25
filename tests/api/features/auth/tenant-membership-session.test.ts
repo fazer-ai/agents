@@ -435,6 +435,53 @@ describe.skipIf(!dbUp)("a person with several tenants", () => {
     ).toBe(0);
   });
 
+  // Review round 1: the email is compared case-insensitively, and Prisma renders that as ILIKE, where
+  // `_` and `%` are wildcards. Unescaped, an invitation to `a_b@` resolved to the account `axb@`, and
+  // its acceptance then added the membership to THAT account; the login matched it too.
+  test("an address is matched literally, never as a pattern", async () => {
+    const holder = await person(`${tag}-axb@x.test`, [[first, "AGENT"]]);
+    const wanted = `${tag}-a_b@x.test`;
+    const { createInvite } = await import(
+      "@/api/features/invitations/invitation.service"
+    );
+    const { token } = await createInvite(
+      { tenantId: null, userId: personId, role: "SUPER_ADMIN" },
+      { tenantId: outside, email: wanted, role: "AGENT" },
+      suDb,
+    );
+    const page = await server.handle(
+      req(`/auth/invite?token=${encodeURIComponent(token)}`),
+    );
+    expect((await page.json()).invite.existingAccount).toBe(false);
+    for (const email of [wanted, `${tag}-a%@x.test`]) {
+      const login = await server.handle(
+        req("/auth/login", {
+          method: "POST",
+          body: JSON.stringify({ email, password: PASSWORD }),
+        }),
+      );
+      expect(login.status).toBe(401);
+    }
+    const res = await server.handle(
+      req("/auth/accept-invite", {
+        method: "POST",
+        body: JSON.stringify({ token, password: "a-new-password-756" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    const created = await suDb.user.findMany({
+      where: { email: wanted },
+      select: { id: true },
+    });
+    expect(created).toHaveLength(1);
+    people.push((created[0] as { id: bigint }).id);
+    expect(
+      await suDb.tenantUser.count({
+        where: { userId: holder, tenantId: outside },
+      }),
+    ).toBe(0);
+  });
+
   // /authorize is a navigation with no selector, so it parks the request under the person's default
   // membership; the console tab that answers the consent may have another tenant selected. The
   // decision acts where the request was parked, as long as the person still belongs there.

@@ -8,6 +8,7 @@ import {
 } from "@/api/features/auth/auth.service";
 import type { AuthUser } from "@/api/lib/auth";
 import basePrisma from "@/api/lib/prisma";
+import { emailEquals } from "@/lib/email-match";
 import { asPrincipalOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutationOn } from "@/modules/audit/service";
 
@@ -96,7 +97,7 @@ async function emailExistsInTenant(
   const existing = await base.tenantUser.findFirst({
     where: {
       tenantId,
-      user: { email: { equals: email.trim(), mode: "insensitive" } },
+      user: { email: emailEquals(email) },
     },
     select: { id: true },
   });
@@ -304,7 +305,7 @@ export async function findValidInviteByToken(
   });
   if (!row || inviteStatus(row) !== "pending") return null;
   const account = await base.user.findFirst({
-    where: { email: { equals: row.email, mode: "insensitive" } },
+    where: { email: emailEquals(row.email) },
     select: { id: true },
   });
   return {
@@ -364,7 +365,7 @@ export async function acceptInvite(
     throw new InviteEmailInUseError();
   }
   const account = await base.user.findFirst({
-    where: { email: { equals: invite.email, mode: "insensitive" } },
+    where: { email: emailEquals(invite.email) },
     select: { id: true, passwordHash: true },
   });
   if (account) {

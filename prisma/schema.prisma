@@ -211,6 +211,10 @@ model User {
   name         String?
   isSuperAdmin Boolean   @default(false) @map("is_super_admin")
   lastLoginAt  DateTime? @map("last_login_at")
+  // The pre-#756 shape, frozen by its migration and kept one release so the previous image can still
+  // serve during the deploy. Ignored by this client; the next release drops both columns.
+  tenantId     BigInt?   @map("tenant_id") @ignore
+  role         UserRole  @default(AGENT) @ignore
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 

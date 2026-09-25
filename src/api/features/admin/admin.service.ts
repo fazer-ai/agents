@@ -455,6 +455,29 @@ async function adminScopesOf(
   ];
 }
 
+// Every scope a person's deletion touches: the fleet when they are a SUPER_ADMIN, and every tenant
+// they belong to, administrator or not. The deletion takes all of them and not only the ones the
+// person administers, because a membership that is AGENT at the first read can be promoted, and the
+// tenant's previous administrator demoted, before the cascade takes it (review round 2): holding the
+// tenant's scope makes both of those writes wait for the deletion and then read it.
+async function personScopesOf(
+  db: ScopedDb,
+  userId: bigint,
+): Promise<(bigint | null)[] | null> {
+  const person = await db.user.findUnique({
+    where: { id: userId },
+    select: {
+      isSuperAdmin: true,
+      memberships: { select: { tenantId: true } },
+    },
+  });
+  if (!person) return null;
+  return [
+    ...(person.isSuperAdmin ? [null] : []),
+    ...person.memberships.map((m) => m.tenantId),
+  ];
+}
+
 // Re-role one membership. Shared by the tenant administrator (their own tenant) and the fleet
 // (whichever membership it names), under the tenant's scope lock and the membership's row lock.
 async function setMembershipRole(
@@ -645,18 +668,20 @@ export async function deleteUser(
       // NOTE: the scope locks first and the row second, for the reason `lockAdminScopes` gives.
       // Taking them rather than counting under the target's own row lock is what stops two deletes
       // aimed at different administrators from each reading the other as remaining.
-      const peeked = await adminScopesOf(db, userId);
+      const peeked = await personScopesOf(db, userId);
       if (peeked === null) {
         throw new UserNotInScopeError();
       }
       await lockAdminScopes(db, peeked);
+      // The person's row lock also holds off a new membership: inserting one takes a key-share lock
+      // on this row through the foreign key, so the set read below cannot grow before the cascade.
       await lockPerson(db, userId);
-      const scopes = await adminScopesOf(db, userId);
-      if (scopes === null) {
+      const touched = await personScopesOf(db, userId);
+      if (touched === null) {
         throw new UserNotInScopeError();
       }
-      assertScopesHeld(peeked, scopes);
-      for (const scope of scopes) {
+      assertScopesHeld(peeked, touched);
+      for (const scope of (await adminScopesOf(db, userId)) ?? []) {
         await assertScopeKeepsAnAdmin(db, scope, userId);
       }
       // What the person was, read under the lock: one row per membership, and the fleet row.

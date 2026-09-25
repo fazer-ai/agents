@@ -74,6 +74,7 @@ mock.module("@/client/contexts/AuthContext", () => ({
 }));
 
 const { TenantDeepLink } = await import("@/client/components/TenantDeepLink");
+const { ProtectedRoute } = await import("@/client/components/ProtectedRoute");
 
 let seenSearch = "";
 function SearchProbe() {
@@ -96,6 +97,30 @@ function renderAt(search: string) {
                 </TenantDeepLink>
               }
             />
+          </Routes>
+        </ToastProvider>
+      </MemoryRouter>,
+    ),
+  );
+}
+
+// The same link through the route shell an admin page actually sits behind, with its admin gate.
+function renderAdminRouteAt(search: string) {
+  return render(
+    withI18n(
+      <MemoryRouter initialEntries={[`/resources/vault${search}`]}>
+        <ToastProvider>
+          <SearchProbe />
+          <Routes>
+            <Route
+              path="/resources/vault"
+              element={
+                <ProtectedRoute requireAdmin>
+                  <div>panel</div>
+                </ProtectedRoute>
+              }
+            />
+            <Route path="/conversations" element={<div>conversations</div>} />
           </Routes>
         </ToastProvider>
       </MemoryRouter>,
@@ -289,6 +314,38 @@ describe("TenantDeepLink", () => {
     });
     expect(localStorage.getItem(KEY)).toBe("20");
     expect(tenantsCalls).toBe(0);
+  });
+
+  // Review round 2: the admin gate reads the role held in the ACTIVE tenant, so it must not answer
+  // before the link has switched to the tenant where the person IS an administrator.
+  test("a link to an admin page in a tenant the person administers switches before the admin gate", async () => {
+    role = "AGENT";
+    userTenantId = "10";
+    userTenants = [
+      { id: "10", name: "A", role: "AGENT" },
+      { id: "20", name: "B", role: "TENANT_ADMIN" },
+    ];
+    renderAdminRouteAt("?switchTenant=20");
+    await waitFor(() => {
+      expect(reloads.length).toBe(1);
+    });
+    expect(localStorage.getItem(KEY)).toBe("20");
+    expect(shows("conversations")).toBe(false);
+  });
+
+  test("a link to a tenant where the person is an agent still meets the admin gate", async () => {
+    role = "AGENT";
+    userTenantId = "20";
+    userTenants = [
+      { id: "10", name: "A", role: "AGENT" },
+      { id: "20", name: "B", role: "AGENT" },
+    ];
+    renderAdminRouteAt("?switchTenant=10");
+    await waitFor(() => {
+      expect(shows("conversations")).toBe(true);
+    });
+    expect(reloads.length).toBe(0);
+    expect(shows("panel")).toBe(false);
   });
 
   // ── the list could not be read ──

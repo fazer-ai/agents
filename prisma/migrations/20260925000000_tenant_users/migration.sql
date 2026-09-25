@@ -96,17 +96,15 @@ UPDATE "users" k
   ) agg
  WHERE k."id" = agg."keeper_id";
 
--- `google_id` is unique, so it is freed on the merged row before the kept row takes it.
+-- `google_id` is unique, so the kept row takes it only once the merged row is gone (at the end of the
+-- merge, below). Nulling it on the merged row first is not an option: a Google-only row would then
+-- hold no credential at all, and `users_auth_method_check` aborts the whole file (review round 2).
 CREATE TEMP TABLE "google_move" ON COMMIT DROP AS
 SELECT DISTINCT ON (m."keeper_id") m."keeper_id", d."google_id"
   FROM "user_merge" m JOIN "users" d ON d."id" = m."dup_id"
   JOIN "users" k ON k."id" = m."keeper_id"
  WHERE d."google_id" IS NOT NULL AND k."google_id" IS NULL
  ORDER BY m."keeper_id", d."last_login_at" DESC NULLS LAST, d."id";
-UPDATE "users" SET "google_id" = NULL
- WHERE "id" IN (SELECT "dup_id" FROM "user_merge") AND "google_id" IS NOT NULL;
-UPDATE "users" k SET "google_id" = g."google_id"
-  FROM "google_move" g WHERE k."id" = g."keeper_id";
 
 -- Memberships move to the person. The old per-tenant email index guaranteed at most one row per
 -- (tenant, email), so two rows of one person never shared a tenant and this cannot collide.
@@ -177,6 +175,8 @@ ALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;
 -- Nothing else in the audit trail is rewritten: it records which row acted, at the time, and history
 -- stays as it was written.
 DELETE FROM "users" WHERE "id" IN (SELECT "dup_id" FROM "user_merge");
+UPDATE "users" k SET "google_id" = g."google_id"
+  FROM "google_move" g WHERE k."id" = g."keeper_id";
 
 -- ── The old shape stops binding ──
 -- The previous image keeps serving until the new one replaces it, and every cookie request it answers

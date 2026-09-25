@@ -491,4 +491,56 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
       memberships: [{ tenantId: home, role: "TENANT_ADMIN" }],
     });
   });
+  // Review round 2: the fleet deleting a person takes the scope of EVERY tenant they belong to, not
+  // only the ones they administer. An AGENT membership read at the start can be promoted, and the
+  // tenant's previous administrator demoted, before the cascade takes it; holding the tenant's scope
+  // is what makes those writes wait and then read the deletion. Proved by where the delete WAITS.
+  test("deleting a person waits for the scope of a tenant they only work in", async () => {
+    const home = await tenant("agentonly");
+    seq += 1;
+    const member = await suDb.user.create({
+      data: personData({
+        tenantId: home,
+        email: `sd-${process.pid}-${seq}-agentonly@x.test`,
+        role: "AGENT",
+        passwordHash: "x",
+      }),
+      select: { id: true },
+    });
+    users.push(member.id);
+    const holder = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl as string }),
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let ready!: (pid: number) => void;
+    const holderPid = new Promise<number>((r) => {
+      ready = r;
+    });
+    const held = holder
+      .$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(
+            `SELECT pg_advisory_xact_lock(hashtext('admin-scope:${home}')::bigint)`,
+          );
+          const [row] = await tx.$queryRaw<Array<{ pid: number }>>`
+            SELECT pg_backend_pid()::int AS pid`;
+          ready(row?.pid ?? 0);
+          await gate;
+        },
+        { timeout: 30_000, maxWait: 30_000 },
+      )
+      .then(() => holder.$disconnect());
+    const pid = await holderPid;
+    const removing = deleteUser(fleet(9_999_998n), member.id, appDb).catch(
+      (e: Error) => e,
+    );
+    expect(await waitUntilBlocked(suDb, pid, 1)).toBeGreaterThanOrEqual(0);
+    release();
+    await held;
+    expect(await removing).toBeUndefined();
+    expect(await rowOf(member.id)).toBeNull();
+  }, 30_000);
 });

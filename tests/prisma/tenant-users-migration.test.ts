@@ -58,6 +58,8 @@ const OLD_SHAPE = `
     CONSTRAINT users_pkey PRIMARY KEY (id)
   );
   CREATE UNIQUE INDEX users_google_id_key ON users (google_id);
+  ALTER TABLE users ADD CONSTRAINT users_auth_method_check
+    CHECK (password_hash IS NOT NULL OR google_id IS NOT NULL);
   CREATE INDEX users_tenant_id_idx ON users (tenant_id);
   ALTER TABLE users ADD CONSTRAINT users_tenant_id_fkey FOREIGN KEY (tenant_id)
     REFERENCES tenants (id) ON DELETE CASCADE ON UPDATE CASCADE;

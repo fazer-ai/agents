@@ -704,6 +704,14 @@ describe("MCP tool descriptions", () => {
   // Measured 31,416 and 61,371 before, 31,503 and 61,392 with it; on top of #856 the schema ceiling
   // is 61,940, the same 21 over its 61,919. The reindex description names the flag and why a base
   // would need it; `knowledge_document_update` says a title change re-embeds too.
+  //
+  // SCHEMA RAISED by `price_overrides` on `tenant_settings_update` (#865): the issue asks for the
+  // tenant's own model prices to be writable over MCP like its other settings. Measured 61,371
+  // before and 61,727 with it, 59 of them the one line that says the rates are USD per million
+  // tokens and that the list replaces the saved one (a client sending per-token rates, or one row
+  // meaning "update this one", would silently misprice or delete). The provider is a plain string
+  // (the service refuses an unknown one with the same message as the REST route); descriptions are
+  // unchanged. On top of #856 and #857 this tree measures 62,312, so 62,328 with the same 16.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -713,7 +721,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_503);
-    expect(schema).toBeLessThanOrEqual(61_940);
+    expect(schema).toBeLessThanOrEqual(62_328);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

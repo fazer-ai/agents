@@ -47,6 +47,15 @@ export const priceOverridesSchema = z
   .superRefine((list, ctx) => {
     const seen = new Set<string>();
     list.forEach((o, i) => {
+      // Only a single-model `openai-compatible` server is called with no model name; any other
+      // provider's calls name one, so an empty model would match nothing and save a price that
+      // never applies.
+      if (o.model === "" && o.provider !== "openai-compatible")
+        ctx.addIssue({
+          code: "custom",
+          path: [i, "model"],
+          message: "a model name is required for this provider",
+        });
       const key = overrideKey(o.provider, o.model);
       if (seen.has(key))
         ctx.addIssue({

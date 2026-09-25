@@ -3080,7 +3080,8 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
               }),
             )
             .max(PRICE_OVERRIDES_MAX)
-            .optional(),
+            .optional()
+            .describe("USD per 1M tokens; replaces the saved list"),
           dry_run: z.boolean().optional(),
         },
       },

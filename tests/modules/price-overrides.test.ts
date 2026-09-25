@@ -135,6 +135,19 @@ describe("the stored list", () => {
     expect(r.error?.issues[0]?.path).toEqual([1, "model"]);
   });
 
+  test("the write refuses an empty model except for an openai-compatible server", () => {
+    const r = priceOverridesSchema.safeParse([
+      { provider: "openai", model: "", input: 1, output: 1 },
+    ]);
+    expect(r.success).toBe(false);
+    expect(r.error?.issues[0]?.path).toEqual([0, "model"]);
+    expect(
+      priceOverridesSchema.safeParse([
+        { provider: "openai-compatible", model: "", input: 1, output: 1 },
+      ]).success,
+    ).toBe(true);
+  });
+
   test("the write refuses a negative or absurd rate", () => {
     for (const input of [-1, 10_001, Number.NaN]) {
       expect(

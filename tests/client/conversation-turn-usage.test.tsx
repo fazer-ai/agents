@@ -71,6 +71,7 @@ function turn(
       byNode: { agent: 1, guardrail: 1 },
       costUsd: 0,
       unpricedCalls: 2,
+      olderTablePricedCalls: 0,
     },
   };
 }
@@ -195,6 +196,19 @@ describe("the figure itself", () => {
     expect(detail).toContain("2 chamadas sem preço ficaram de fora");
   });
 
+  // A figure an older table priced is not dated with today's table.
+  test("a figure with calls an older table priced does not carry the current table's date", async () => {
+    await inLanguage(
+      "en",
+      <UsageFigure usage={{ ...priced(0.25, 0), olderTablePricedCalls: 1 }} />,
+    );
+    const detail = open();
+    expect(detail).toContain(
+      "Estimated from the price tables in force when the calls were made",
+    );
+    expect(detail).not.toContain("price table of");
+  });
+
   test("a total with no call renders nothing, not a zero", async () => {
     await inLanguage(
       "en",
@@ -208,6 +222,7 @@ describe("the figure itself", () => {
           byNode: {},
           costUsd: 0,
           unpricedCalls: 0,
+          olderTablePricedCalls: 0,
         }}
         label="Tokens"
       />,

@@ -2588,6 +2588,7 @@
     "callsTitle_other": "{{count}} model calls",
     "costLabel": "Model calls",
     "costSource": "Estimated from the price table of {{date}}; may differ slightly from the dashboard",
+    "costSourceOlder": "Estimated from the price tables in force when the calls were made; may differ slightly from the dashboard",
     "costTitle": "Cost",
     "detailLabel": "Usage detail",
     "figure": "{{input}} input tokens",

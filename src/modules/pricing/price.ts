@@ -40,7 +40,13 @@ export interface PricedTokens {
 // OpenRouter's carry `openrouter/` in front of the vendor-prefixed id OpenRouter itself uses.
 function tableKeys(provider: string, model: string): string[] {
   switch (provider) {
+    // A fine-tuned OpenAI id carries the organization and a suffix after the base
+    // (`ft:gpt-4o-mini-2024-07-18:acme:support:abc123`), and the table lists the fine-tuning rates
+    // under the base alone (`ft:gpt-4o-mini-2024-07-18`), since an organization's ids are never in it.
     case "openai":
+      return model.startsWith("ft:") && model.split(":").length > 2
+        ? [model, `ft:${model.split(":")[1]}`]
+        : [model];
     case "anthropic":
       return [model];
     case "deepseek":

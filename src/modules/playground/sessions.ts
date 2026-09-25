@@ -483,7 +483,7 @@ async function usageByTurn(
   const tenantId = ctx.tenantId as bigint;
   const groups = await runScopedOn(base, ctx, (db) =>
     db.llmUsage.groupBy({
-      by: ["turnId", "node"],
+      by: ["turnId", "node", "priceTable"],
       where: {
         tenantId,
         threadId,
@@ -513,6 +513,7 @@ async function usageByTurn(
       completionTokens: g._sum.completionTokens,
       costUsd: usdOrNull(g._sum.costUsd),
       pricedCalls: g._count.costUsd,
+      priceTable: g.priceTable,
     });
     out.set(g.turnId, usage);
   }
@@ -683,7 +684,7 @@ export async function getPlaygroundSessionUsage(
   // Grouped by step, so the session total names its calls the way each turn does (issue #858).
   const groups = await runScopedOn(base, ctx, (db) =>
     db.llmUsage.groupBy({
-      by: ["node"],
+      by: ["node", "priceTable"],
       where: { tenantId, threadId, source: "playground" },
       _count: { _all: true, costUsd: true },
       _sum: {
@@ -706,6 +707,7 @@ export async function getPlaygroundSessionUsage(
       completionTokens: g._sum.completionTokens,
       costUsd: usdOrNull(g._sum.costUsd),
       pricedCalls: g._count.costUsd,
+      priceTable: g.priceTable,
     });
   }
   return usage;

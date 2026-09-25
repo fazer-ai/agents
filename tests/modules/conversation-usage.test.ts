@@ -4,6 +4,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import type { TenantContext } from "@/lib/tenancy";
 import { getConversationDetail } from "@/modules/conversations/service";
 import { CONVERSATION_USAGE_TURN_CAP } from "@/modules/conversations/usage";
+import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Issue #853: the conversation screen shows what the conversation has spent (header) and what each
@@ -77,6 +78,8 @@ interface Row {
   tenant?: bigint;
   // The price the capture wrote (issue #863); absent is a row it could not price.
   cost?: string;
+  // The table that priced it; absent is the one in the tree now when a cost is given.
+  priceTable?: string;
 }
 
 async function bill(r: Row) {
@@ -93,6 +96,8 @@ async function bill(r: Row) {
       cacheCreationTokens: r.written ?? 0,
       completionTokens: r.output,
       costUsd: r.cost,
+      priceTable:
+        r.priceTable ?? (r.cost === undefined ? null : PRICE_TABLE_VERSION),
       createdAt: new Date(r.at),
     },
   });
@@ -247,6 +252,7 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
       },
       costUsd: 0,
       unpricedCalls: 6,
+      olderTablePricedCalls: 0,
     });
     expect(usage.turns).toEqual([
       {
@@ -262,6 +268,7 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
           byNode: { agent: 1, guardrail: 1, vision: 1 },
           costUsd: 0,
           unpricedCalls: 3,
+          olderTablePricedCalls: 0,
         },
         // No closing line was written for these seeded turns, and no call was timed.
         messageIds: [],
@@ -280,6 +287,7 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
           byNode: { agent: 1, tts_normalize: 1 },
           costUsd: 0,
           unpricedCalls: 2,
+          olderTablePricedCalls: 0,
         },
         messageIds: [],
         turnMs: null,
@@ -395,6 +403,34 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
     // Nothing priced is a zero SUM with every call counted as unpriced, which the screen reads as
     // "no price", never as $0.
     expect(byTurn.tU).toEqual([0, 1]);
+  });
+
+  // A reopened turn keeps the figure its own table gave it, so the screen must not put today's
+  // table date on it: the readers count the calls an older table priced.
+  test("calls an older price table priced are counted apart from the current table's", async () => {
+    const conv = await newConversation();
+    const base = { conversationId: conv.id, input: 100, output: 10 };
+    await bill({
+      ...base,
+      turnId: "tOld",
+      node: "agent",
+      cost: "0.01",
+      priceTable: "litellm@000000000old",
+      at: "2026-09-25T15:00:00Z",
+    });
+    await bill({
+      ...base,
+      turnId: "tNew",
+      node: "agent",
+      cost: "0.02",
+      at: "2026-09-25T15:01:00Z",
+    });
+    const usage = await usageOf(conv.id);
+    expect(usage.total.olderTablePricedCalls).toBe(1);
+    const byTurn = Object.fromEntries(
+      usage.turns.map((t) => [t.turnId, t.usage.olderTablePricedCalls]),
+    );
+    expect(byTurn).toEqual({ tOld: 1, tNew: 0 });
   });
 
   test("the observer's calls are billed to the conversation it watched", async () => {

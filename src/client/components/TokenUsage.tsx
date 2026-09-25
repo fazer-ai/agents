@@ -18,6 +18,8 @@ export type TokenUsage = {
   // USD over the calls the price table could price, and how many it could not (issue #863).
   costUsd: number;
   unpricedCalls: number;
+  // Of the priced calls, how many a table older than the one in the tree priced.
+  olderTablePricedCalls: number;
 };
 
 // How long a turn took and how much of that was spent waiting on a model. Either can be unknown: the
@@ -93,8 +95,9 @@ export interface UsageDetail {
   // a zero. `unpriced` is how many calls the figure leaves out.
   cost: string | null;
   unpriced: number;
-  // The day the price table was read, so a reader can tell how old the rates behind the figure are.
-  priceTableDate: string;
+  // The day the price table was read, so a reader can tell how old the rates behind the figure are;
+  // null when some calls were priced by an older table, whose date the ledger does not keep.
+  priceTableDate: string | null;
 }
 
 // Dollars to the precision a turn needs: a turn costs fractions of a cent, and "$0.00" would read as
@@ -153,9 +156,12 @@ export function usageDetail(
         : null,
     unpriced: usage.unpricedCalls,
     // Noon UTC, so the calendar day is the same in every timezone the console runs in.
-    priceTableDate: new Intl.DateTimeFormat(locale, {
-      dateStyle: "short",
-    }).format(new Date(`${PRICE_TABLE_READ_AT}T12:00:00Z`)),
+    priceTableDate:
+      usage.olderTablePricedCalls > 0
+        ? null
+        : new Intl.DateTimeFormat(locale, {
+            dateStyle: "short",
+          }).format(new Date(`${PRICE_TABLE_READ_AT}T12:00:00Z`)),
   };
 }
 
@@ -267,11 +273,16 @@ function UsageDetailCard({ title, d }: { title: string; d: UsageDetail }) {
           </p>
         )}
         <p className="text-[11px] text-text-muted">
-          {t(
-            "tokenUsage.costSource",
-            "Estimated from the price table of {{date}}; may differ slightly from the dashboard",
-            { date: d.priceTableDate },
-          )}
+          {d.priceTableDate === null
+            ? t(
+                "tokenUsage.costSourceOlder",
+                "Estimated from the price tables in force when the calls were made; may differ slightly from the dashboard",
+              )
+            : t(
+                "tokenUsage.costSource",
+                "Estimated from the price table of {{date}}; may differ slightly from the dashboard",
+                { date: d.priceTableDate },
+              )}
         </p>
       </Section>
       {(d.turn || d.model) && (

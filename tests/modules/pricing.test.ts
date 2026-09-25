@@ -135,6 +135,27 @@ describe("a call's cost", () => {
     }
   });
 
+  // An organization's fine-tuned id is never in the table; its base's fine-tuning rates are.
+  test("a fine-tuned OpenAI model is priced at its base's fine-tuning rates", () => {
+    expect(
+      callCostUsd(
+        "openai",
+        "ft:gpt-4o-mini-2024-07-18:acme:support:abc123",
+        tokens(1_000, 100),
+        WEEKDAY_OFF,
+      ),
+    ).toBeCloseTo((1_000 * 0.3 + 100 * 1.2) / 1e6, 12);
+    // A base with no fine-tuning row is still no price.
+    expect(
+      callCostUsd(
+        "openai",
+        "ft:not-a-model:acme::x",
+        tokens(1_000, 100),
+        WEEKDAY_OFF,
+      ),
+    ).toBeNull();
+  });
+
   test("what the table cannot price is null, never zero", () => {
     expect(
       callCostUsd("openai", "not-a-model", tokens(1_000, 100), WEEKDAY_OFF),

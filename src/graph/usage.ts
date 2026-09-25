@@ -88,6 +88,10 @@ export interface TurnUsage {
   // with unpriced calls is a floor, and the screens say so rather than show it as the whole.
   costUsd: number;
   unpricedCalls: number;
+  // Of the priced calls, how many a price table OLDER than the one in the tree priced. The popover
+  // names the current table's date only when this is zero, since a reopened turn keeps the figure
+  // its own table gave it.
+  olderTablePricedCalls: number;
 }
 
 export function emptyTurnUsage(): TurnUsage {
@@ -100,6 +104,7 @@ export function emptyTurnUsage(): TurnUsage {
     byNode: {},
     costUsd: 0,
     unpricedCalls: 0,
+    olderTablePricedCalls: 0,
   };
 }
 
@@ -117,6 +122,15 @@ export function usdOrNull(d: { toString(): string } | null): number | null {
 
 // One ledger group (a `groupBy` bucket) added into a running usage, so every reader folds rows the
 // same way.
+// A row some price table priced, and not the table in the tree now (issue #863).
+export function isOlderTable(priceTable: string | null | undefined): boolean {
+  return (
+    typeof priceTable === "string" &&
+    priceTable.startsWith("litellm@") &&
+    priceTable !== PRICE_TABLE_VERSION
+  );
+}
+
 export function addUsageGroup(
   into: TurnUsage,
   g: {
@@ -129,6 +143,8 @@ export function addUsageGroup(
     // The group's summed cost and how many of its rows carried one (`_count` of the column).
     costUsd: number | null;
     pricedCalls: number;
+    // The table that priced the group's rows, when the reader groups by it.
+    priceTable?: string | null;
   },
 ): void {
   into.calls += g.calls;
@@ -138,6 +154,7 @@ export function addUsageGroup(
   into.completionTokens += g.completionTokens ?? 0;
   into.costUsd += g.costUsd ?? 0;
   into.unpricedCalls += g.calls - g.pricedCalls;
+  if (isOlderTable(g.priceTable)) into.olderTablePricedCalls += g.pricedCalls;
   const node = usageNode(g.node);
   into.byNode[node] = (into.byNode[node] ?? 0) + g.calls;
 }
@@ -188,6 +205,8 @@ export async function sumTurnUsage<T>(
         completionTokens: after.completionTokens - before.completionTokens,
         costUsd: after.costUsd - before.costUsd,
         unpricedCalls: after.unpricedCalls - before.unpricedCalls,
+        olderTablePricedCalls:
+          after.olderTablePricedCalls - before.olderTablePricedCalls,
         byNode: Object.fromEntries(
           Object.entries(after.byNode)
             .map(([n, c]) => [n, c - (before.byNode[n] ?? 0)] as const)

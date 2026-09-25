@@ -1129,6 +1129,16 @@ export class ChatwootClient {
   // targets are not re-validated (TOCTOU) — the data_url comes from the HMAC-authenticated webhook
   // of the tenant's own Chatwoot, the same trust as every other call to this instance.
   // `opts.retryOnMissing` retries a 404 on the backoff above (the file-not-written-yet race).
+  // Whether this URL points at this Chatwoot, by host, the same comparison `downloadAttachment`
+  // makes before sending the admin token. An email body image is read only when it does (#864).
+  servesUrl(url: string): boolean {
+    try {
+      return new URL(url).host === new URL(this.config.baseUrl).host;
+    } catch {
+      return false;
+    }
+  }
+
   async downloadAttachment(
     dataUrl: string,
     opts: AttachmentDownloadOptions = {},

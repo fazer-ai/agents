@@ -20,7 +20,12 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
 import type { FlowContext } from "@/modules/flowlog/service";
-import { type ExtractInboundParams, extractInboundFile } from "./service";
+import {
+  BODY_IMAGE_IGNORED,
+  type ExtractInboundParams,
+  extractBodyImage,
+  extractInboundFile,
+} from "./service";
 import type { VisionConfig } from "./settings";
 
 // Quantos anexos de uma mensagem podem custar uma EXTRAÇÃO NOVA. A média medida numa caixa de
@@ -31,7 +36,8 @@ export const VISION_MAX_ATTACHMENTS = 8;
 
 // Um anexo visual (imagem ou documento) com o que já se sabe dele.
 export interface VisualAttachment {
-  id: number;
+  // Null for an image Chatwoot's mailbox kept inside the email body (#864): no attachment row.
+  id: number | null;
   dataUrl: string;
   name: string | null;
   // O que uma passagem anterior já extraiu DESTE anexo, quando o write-back da meta chegou.
@@ -87,6 +93,25 @@ export async function extractMessageVisuals(params: {
   );
   const sobraram = todos.length - visuais.length;
 
+  const extrair = (visual: VisualAttachment) => {
+    const comum = {
+      tenantId,
+      instanceId,
+      conversationId: params.conversationId,
+      messageId,
+      dataUrl: visual.dataUrl,
+      cfg: params.cfg,
+      base: params.base,
+      flow: params.flow,
+      deps: params.deps,
+      // O agregado é stashado uma vez depois do laço; ver a nota lá embaixo.
+      stashAnnotation: false,
+    };
+    return visual.id === null
+      ? extractBodyImage(comum)
+      : extractInboundFile({ ...comum, attachmentId: visual.id });
+  };
+
   // EM PARALELO, porque o orçamento por arquivo é de 20s para imagem e 60s para documento: cinco
   // deles em série é um turno que ninguém espera, cinco de uma vez custam um.
   const extraidos = await Promise.all(
@@ -104,20 +129,7 @@ export async function extractMessageVisuals(params: {
                   text: visual.extractedText ?? "",
                 } as const),
           })
-        : extractInboundFile({
-            tenantId,
-            instanceId,
-            conversationId: params.conversationId,
-            messageId,
-            attachmentId: visual.id,
-            dataUrl: visual.dataUrl,
-            cfg: params.cfg,
-            base: params.base,
-            flow: params.flow,
-            deps: params.deps,
-            // O agregado é stashado uma vez depois do laço; ver a nota lá embaixo.
-            stashAnnotation: false,
-          })
+        : extrair(visual)
             // Um arquivo ilegível não pode custar os outros: a extração é best-effort por anexo.
             .catch((err) => {
               logger.warn(
@@ -135,7 +147,12 @@ export async function extractMessageVisuals(params: {
   const imagens: string[] = [];
   const documentos: string[] = [];
   let falharam = 0;
-  for (const { nome, r } of extraidos) {
+  // Ornamento do corpo do e-mail, ou imagem que não é deste Chatwoot: não foi enviada pelo cliente,
+  // então não é lida, não rotula as outras e não entra na contagem de não lidos (#864).
+  const doCliente = extraidos.flatMap(({ nome, r }) =>
+    r === BODY_IMAGE_IGNORED ? [] : [{ nome, r }],
+  );
+  for (const { nome, r } of doCliente) {
     // Arquivo que não deu para ler NÃO é arquivo que não foi enviado. Contado junto com os que
     // passaram do teto porque o movimento do modelo é o mesmo: nomear o que falta e pedir de novo.
     if (!r) {
@@ -143,7 +160,7 @@ export async function extractMessageVisuals(params: {
       continue;
     }
     (r.kind === "image" ? imagens : documentos).push(
-      rotulado(nome, r.text, extraidos.length),
+      rotulado(nome, r.text, doCliente.length),
     );
   }
 

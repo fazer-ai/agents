@@ -85,6 +85,9 @@ export interface NormalizedChatwootMessage {
   // NOTE: The email's Subject header (issue #598), from `content_attributes.email.subject`. Only a
   // mailbox writes that bag, so its presence is the channel gate. Null on every other channel.
   emailSubject?: string | null;
+  // Chatwoot blob URLs of the images a mailbox kept inside the email body instead of attaching them
+  // (issue #864). Empty on every other channel.
+  emailBodyImages?: string[];
   // content_attributes.imported. Set by the history importer on a backfilled row.
   imported?: boolean;
   // content_attributes.external_error: what the CHANNEL said when it failed to deliver this message,

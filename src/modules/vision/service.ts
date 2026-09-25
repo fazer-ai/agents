@@ -19,6 +19,7 @@ import {
 } from "@/modules/spend-ceiling/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 import { MediaSourceMismatchError, runMediaConverter } from "./convert";
+import { isDecorativeImage } from "./decorative";
 import { visionAcceptsDocuments } from "./document-support";
 import { normalizeMediaType, planImageConversion } from "./media-conversion";
 import {
@@ -188,7 +189,8 @@ export interface ExtractInboundParams {
   instanceId: bigint;
   conversationId: number;
   messageId: number;
-  attachmentId: number;
+  // Null for an image kept inside an email body (#864): there is no attachment to write back to.
+  attachmentId: number | null;
   dataUrl: string;
   cfg: VisionConfig;
   base?: PrismaClient;
@@ -307,9 +309,28 @@ async function convertForProvider(args: {
   }
 }
 
+// What an email body image comes back as when it is not the customer's: an ornament (a signature
+// icon, the logo of a quoted email) or a URL that is not this Chatwoot's. Not a failure, so it is
+// neither extracted nor counted among the files the model is told were not read (#864).
+export const BODY_IMAGE_IGNORED = "ignored" as const;
+
 export async function extractInboundFile(
   params: ExtractInboundParams,
 ): Promise<ExtractResult | null> {
+  const r = await extractInbound(params);
+  return r === BODY_IMAGE_IGNORED ? null : r;
+}
+
+// An image Chatwoot's mailbox kept inside the email body instead of making it an attachment (#864).
+export function extractBodyImage(
+  params: Omit<ExtractInboundParams, "attachmentId">,
+): Promise<ExtractResult | null | typeof BODY_IMAGE_IGNORED> {
+  return extractInbound({ ...params, attachmentId: null, bodyImage: true });
+}
+
+async function extractInbound(
+  params: ExtractInboundParams & { bodyImage?: boolean },
+): Promise<ExtractResult | null | typeof BODY_IMAGE_IGNORED> {
   const { cfg } = params;
   const base = params.base ?? basePrisma;
 
@@ -362,6 +383,9 @@ export async function extractInboundFile(
     base,
     makeClient: params.deps?.makeClient,
   });
+  // A remote image in quoted HTML was never uploaded by anyone in this conversation: not fetched.
+  if (params.bodyImage && !client.servesUrl(params.dataUrl))
+    return BODY_IMAGE_IGNORED;
   // Mirrors STT: the download is outside the span below, so surface its failure as a `vision` line
   // instead of letting it vanish, and absorb Chatwoot's write race on a freshly-posted attachment.
   let bytes: ArrayBuffer;
@@ -384,6 +408,8 @@ export async function extractInboundFile(
     throw err;
   }
   const kind = visionKindForMime(contentType);
+  if (params.bodyImage && (kind !== "image" || isDecorativeImage(bytes)))
+    return BODY_IMAGE_IGNORED;
   if (!kind) return skip("unsupported_mime"); // unsupported mime → marker
   // The ENDPOINT decides, not the provider name: the same base URL that the call below posts to is
   // what has to be known to read a PDF (see ./document-support).
@@ -533,31 +559,32 @@ export async function extractInboundFile(
 
   // NOTE: Write back so the debounce re-fetch (and human agents) see it. Best-effort; surfaced on
   // the flow log so a meta that never lands is visible to the operator.
-  try {
-    await client.updateAttachmentMeta(
-      params.conversationId,
-      params.messageId,
-      params.attachmentId,
-      { [metaKeyFor(kind)]: text },
-    );
-  } catch (e) {
-    if (params.flow) {
-      emitFlowEvent(params.flow, {
-        stage: "vision",
-        level: "warn",
-        status: "error",
-        provider: cfg.provider,
-        detail: { step: "write_back" },
-        errorMessage: e instanceof Error ? e.message : String(e),
-      });
+  if (params.attachmentId !== null)
+    try {
+      await client.updateAttachmentMeta(
+        params.conversationId,
+        params.messageId,
+        params.attachmentId,
+        { [metaKeyFor(kind)]: text },
+      );
+    } catch (e) {
+      if (params.flow) {
+        emitFlowEvent(params.flow, {
+          stage: "vision",
+          level: "warn",
+          status: "error",
+          provider: cfg.provider,
+          detail: { step: "write_back" },
+          errorMessage: e instanceof Error ? e.message : String(e),
+        });
+      }
+      logger.warn(
+        "vision: write-back failed (conv=%s msg=%d): %s",
+        String(params.conversationId),
+        params.messageId,
+        e instanceof Error ? e.message : String(e),
+      );
     }
-    logger.warn(
-      "vision: write-back failed (conv=%s msg=%d): %s",
-      String(params.conversationId),
-      params.messageId,
-      e instanceof Error ? e.message : String(e),
-    );
-  }
   return { kind, text };
 }
 

@@ -1,7 +1,9 @@
 import type { VisualAttachment } from "@/modules/vision/extract-message";
 import { CHATWOOT_SEND_ID_KEY } from "./constants";
+import { bodyImagesBesides, emailBodyImageUrlsFrom } from "./email-body-images";
 import {
   activityTypeFrom,
+  bodyImageVisuals,
   chatwootTimestamp,
   emailSubjectFrom,
   firstLocationAttachment,
@@ -247,6 +249,23 @@ function visualsFrom(attachments: unknown): VisualAttachment[] {
   return out;
 }
 
+// The attachments, then the images the mailbox kept in the email body (issue #864).
+function visualsWithBody(
+  attachments: unknown,
+  ca: Record<string, unknown> | null,
+): VisualAttachment[] {
+  const anexos = visualsFrom(attachments);
+  return [
+    ...anexos,
+    ...bodyImageVisuals(
+      bodyImagesBesides(
+        emailBodyImageUrlsFrom(ca),
+        anexos.map((v) => v.dataUrl),
+      ),
+    ),
+  ];
+}
+
 function attachmentTypesFrom(attachments: unknown): string[] {
   if (!Array.isArray(attachments)) return [];
   const out: string[] = [];
@@ -302,7 +321,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       imageDescription: metaJoinedFrom(item.attachments, "image_description"),
       extractedText: metaJoinedFrom(item.attachments, "extracted_text"),
       attachmentName: fileNameFrom(item.attachments),
-      visuals: visualsFrom(item.attachments),
+      visuals: visualsWithBody(item.attachments, ca),
       location: locationFrom(item.attachments),
       inReplyTo: ca ? num(ca.in_reply_to) : null,
       isReaction: ca?.is_reaction === true,

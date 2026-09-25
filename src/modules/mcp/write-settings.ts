@@ -29,8 +29,10 @@ import {
   assertEmbeddingCredentialUsable,
   assertLangfuseCredentialUsable,
   getTenantSettings,
+  parsePriceOverrides,
   updateEmbeddingSettings,
   updateLangfuse,
+  updatePriceOverrides,
 } from "@/modules/tenant-settings/service";
 import {
   assertVaultEntryCreatable,
@@ -429,7 +431,29 @@ export interface TenantSettingsUpdateArgs {
     send_content?: boolean;
     debug?: boolean;
   };
+  // The tenant's own model prices (issue #865): the WHOLE list, which replaces the saved one.
+  price_overrides?: McpPriceOverride[];
   dry_run?: boolean;
+}
+
+export interface McpPriceOverride {
+  provider: string;
+  model: string;
+  input: number;
+  output: number;
+  cached_input?: number;
+  cache_write?: number;
+}
+
+function priceOverridesFromMcp(list: McpPriceOverride[]): unknown[] {
+  return list.map((o) => ({
+    provider: o.provider,
+    model: o.model,
+    input: o.input,
+    output: o.output,
+    ...(o.cached_input === undefined ? {} : { cachedInput: o.cached_input }),
+    ...(o.cache_write === undefined ? {} : { cacheWrite: o.cache_write }),
+  }));
 }
 
 export async function tenantSettingsUpdate(
@@ -440,8 +464,14 @@ export async function tenantSettingsUpdate(
   const base = deps.base ?? basePrisma;
   const ctx = gate(principal);
   if ("ok" in ctx) return ctx;
-  if (args.embedding === undefined && args.langfuse === undefined) {
-    return err("no updatable blocks provided (embedding, langfuse)");
+  if (
+    args.embedding === undefined &&
+    args.langfuse === undefined &&
+    args.price_overrides === undefined
+  ) {
+    return err(
+      "no updatable blocks provided (embedding, langfuse, price_overrides)",
+    );
   }
 
   // Resolve credential NAMES → vault:<id> (null clears; undefined leaves untouched).
@@ -493,6 +523,10 @@ export async function tenantSettingsUpdate(
       if (typeof langfuseRef === "string") {
         await assertLangfuseCredentialUsable(ctx, langfuseRef, base);
       }
+      const proposedPrices =
+        args.price_overrides === undefined
+          ? undefined
+          : parsePriceOverrides(priceOverridesFromMcp(args.price_overrides));
       return ok({
         dryRun: true,
         target,
@@ -510,6 +544,7 @@ export async function tenantSettingsUpdate(
                   sendContent: args.langfuse.send_content,
                   debug: args.langfuse.debug,
                 },
+          priceOverrides: proposedPrices,
         },
       });
     }
@@ -525,6 +560,13 @@ export async function tenantSettingsUpdate(
           sendContent: args.langfuse.send_content,
           debug: args.langfuse.debug,
         },
+        base,
+      );
+    }
+    if (args.price_overrides !== undefined) {
+      await updatePriceOverrides(
+        ctx,
+        parsePriceOverrides(priceOverridesFromMcp(args.price_overrides)),
         base,
       );
     }
@@ -545,6 +587,7 @@ export async function tenantSettingsUpdate(
       settings: {
         embedding: { ...after.embedding, credentialRef: embName },
         langfuse: { ...after.langfuse, credentialRef: lfName },
+        priceOverrides: after.priceOverrides,
       },
     });
   } catch (e) {

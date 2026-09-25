@@ -159,6 +159,7 @@ export const inputSchemaArg = z.preprocess((value, ctx) => {
   return value;
 }, z.record(z.string(), z.unknown()).optional());
 
+import { PRICE_OVERRIDES_MAX } from "@/modules/pricing/overrides";
 import {
   knowledgeApprove,
   knowledgeCreate,
@@ -184,6 +185,7 @@ import {
   experimentDelete,
   experimentUpdate,
   langfuseConnect,
+  type McpPriceOverride,
   tenantSettingsUpdate,
 } from "./write-settings";
 import {
@@ -3066,6 +3068,19 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
               debug: z.boolean().optional(),
             })
             .optional(),
+          price_overrides: z
+            .array(
+              z.object({
+                provider: z.string(),
+                model: z.string(),
+                input: z.number(),
+                output: z.number(),
+                cached_input: z.number().optional(),
+                cache_write: z.number().optional(),
+              }),
+            )
+            .max(PRICE_OVERRIDES_MAX)
+            .optional(),
           dry_run: z.boolean().optional(),
         },
       },
@@ -3078,6 +3093,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
             send_content?: boolean;
             debug?: boolean;
           };
+          price_overrides?: McpPriceOverride[];
           dry_run?: boolean;
         },
         eff,

@@ -47,6 +47,7 @@ const TURN: PlaygroundUsage = {
   costUsd: 0,
   unpricedCalls: 2,
   olderTablePricedCalls: 0,
+  tenantPricedCalls: 0,
 };
 
 describe("the figure on screen", () => {
@@ -217,6 +218,7 @@ describe("the turn keeps its usage", () => {
       costUsd: 0,
       unpricedCalls: 4,
       olderTablePricedCalls: 0,
+      tenantPricedCalls: 0,
     });
   });
 });

@@ -1,4 +1,10 @@
 import table from "./model-prices.json";
+import {
+  findOverride,
+  overridePriceTable,
+  type PriceOverridesBlock,
+} from "./overrides";
+import { PRICE_TABLE_VERSION } from "./version";
 
 // WHAT ONE MODEL CALL COST, in USD, from the price table in this folder (issue #863). Priced when the
 // ledger row is written, from that row's own token counts, so a turn's cost is known the moment the
@@ -89,6 +95,38 @@ export function callCostUsd(
 ): number | null {
   const entry = modelRates(provider, model);
   if (!entry) return null;
+  return costAt(entry, tokens, provider === "deepseek" && deepseekOffPeak(at));
+}
+
+// WHAT PRICED THE CALL, and at how much: the tenant's own price when it has one for this provider and
+// model (issue #865), the table otherwise. The row records the answer in `price_table`, so a price
+// found wrong later can be corrected on exactly the rows it wrote. A tenant's price is taken as
+// stated: no long-context tier and no DeepSeek off-peak discount, because it is what the tenant
+// says it pays.
+export function priceCall(
+  provider: string,
+  model: string,
+  tokens: PricedTokens,
+  at: Date,
+  overrides: PriceOverridesBlock | null,
+): { costUsd: number | null; priceTable: string } {
+  const own = overrides ? findOverride(overrides, provider, model) : null;
+  if (own && overrides)
+    return {
+      costUsd: costAt(own, tokens, false),
+      priceTable: overridePriceTable(overrides),
+    };
+  return {
+    costUsd: callCostUsd(provider, model, tokens, at),
+    priceTable: PRICE_TABLE_VERSION,
+  };
+}
+
+function costAt(
+  entry: Entry,
+  tokens: PricedTokens,
+  halfPrice: boolean,
+): number | null {
   // The tier is chosen by the call's whole input, which is how the vendors state the threshold.
   const tier =
     entry.tiers
@@ -106,6 +144,5 @@ export function callCostUsd(
     read * (tier.cachedInput ?? 0) +
     write * (tier.cacheWrite ?? 0) +
     tokens.completionTokens * tier.output;
-  const factor = provider === "deepseek" && deepseekOffPeak(at) ? 0.5 : 1;
-  return (perMillion / 1e6) * factor;
+  return (perMillion / 1e6) * (halfPrice ? 0.5 : 1);
 }

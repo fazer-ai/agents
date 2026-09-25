@@ -13,6 +13,7 @@ import {
 import { ServiceLogo } from "@/client/components/icons/ServiceLogo";
 import { useFieldRefusal } from "@/client/hooks/useFieldRefusal";
 import { api } from "@/client/lib/api";
+import { PriceOverridesCard } from "./PriceOverridesCard";
 import { SpendCeilingCard } from "./SpendCeilingCard";
 
 type Settings = NonNullable<
@@ -62,6 +63,9 @@ export function AdvancedPanel() {
   const [spendCeiling, setSpendCeiling] = useState<
     Settings["spendCeiling"] | null
   >(null);
+  const [priceOverrides, setPriceOverrides] = useState<
+    Settings["priceOverrides"] | null
+  >(null);
 
   const apply = useCallback((s: Settings) => {
     setEmbCredential(s.embedding.credentialRef ?? "");
@@ -70,6 +74,7 @@ export function AdvancedPanel() {
     setLfSendContent(s.langfuse.sendContent);
     setLfDebug(s.langfuse.debug);
     setSpendCeiling(s.spendCeiling);
+    setPriceOverrides(s.priceOverrides);
   }, []);
 
   const load = useCallback(async () => {
@@ -159,6 +164,12 @@ export function AdvancedPanel() {
             value={spendCeiling}
             onSaved={setSpendCeiling}
             reloadKey={lfVersion}
+          />
+        )}
+        {priceOverrides && (
+          <PriceOverridesCard
+            value={priceOverrides}
+            onSaved={setPriceOverrides}
           />
         )}
         <Card className="flex flex-col gap-4">

@@ -893,6 +893,8 @@ export async function tenantSettingsGet(
       settings: {
         embedding: { ...settings.embedding, credentialRef: embeddingRef },
         langfuse: { ...settings.langfuse, credentialRef: langfuseRef },
+        // The tenant's own model prices (issue #865), USD per million tokens.
+        priceOverrides: settings.priceOverrides,
       },
     });
   } catch (e) {

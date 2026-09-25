@@ -264,6 +264,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       costUsd: expect.closeTo((176 * 0.15 + 1024 * 0.075 + 80 * 0.6) / 1e6, 12),
       unpricedCalls: 1,
       olderTablePricedCalls: 0,
+      tenantPricedCalls: 0,
     });
     // The cached share is a PART of the input, not added to it.
     expect(r.usage.promptTokens).toBe(1500);
@@ -313,6 +314,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       costUsd: first.usage.costUsd + second.usage.costUsd,
       unpricedCalls: first.usage.unpricedCalls + second.usage.unpricedCalls,
       olderTablePricedCalls: 0,
+      tenantPricedCalls: 0,
     });
   });
 
@@ -358,6 +360,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       costUsd: expect.closeTo((400 * 0.15 + 30 * 0.6) / 1e6, 12),
       unpricedCalls: 0,
       olderTablePricedCalls: 0,
+      tenantPricedCalls: 0,
     });
     expect((await ledger(read.threadId)).map((x) => x.node)).toEqual([
       "vision",
@@ -552,6 +555,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       costUsd: read.usage.costUsd + turn.usage.costUsd,
       unpricedCalls: read.usage.unpricedCalls + turn.usage.unpricedCalls,
       olderTablePricedCalls: 0,
+      tenantPricedCalls: 0,
     });
     expect(two?.usage).toEqual(replay.usage);
   });
@@ -709,6 +713,7 @@ describe("sumTurnUsage", () => {
       costUsd: 0,
       unpricedCalls: 1,
       olderTablePricedCalls: 0,
+      tenantPricedCalls: 0,
     });
     // Every row is still written: the sum observes the ledger, it does not gate it.
     expect(rows).toHaveLength(3);
@@ -735,6 +740,7 @@ describe("sumTurnUsage", () => {
       costUsd: 0,
       unpricedCalls: 1,
       olderTablePricedCalls: 0,
+      tenantPricedCalls: 0,
     });
     expect(outer.usage).toEqual({
       ...emptyTurnUsage(),
@@ -745,6 +751,7 @@ describe("sumTurnUsage", () => {
       costUsd: 0,
       unpricedCalls: 2,
       olderTablePricedCalls: 0,
+      tenantPricedCalls: 0,
     });
   });
 

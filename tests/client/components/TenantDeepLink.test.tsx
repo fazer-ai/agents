@@ -40,7 +40,7 @@ let tenantsCalls = 0;
 let role = "SUPER_ADMIN";
 let userTenantId: string | null = null;
 // The memberships a person's session carries (issue #756); empty for the fleet and a one-tenant user.
-let userTenants: { id: string; name: string; role: string }[] = [];
+let userTenants: { id: string; name: string; role: string }[] | undefined = [];
 const realFetch = globalThis.fetch;
 const reloads: number[] = [];
 
@@ -331,6 +331,45 @@ describe("TenantDeepLink", () => {
     });
     expect(localStorage.getItem(KEY)).toBe("20");
     expect(shows("conversations")).toBe(false);
+  });
+
+  // Review round 3: a fresh login answers with the default membership's role and no list; `/auth/me`
+  // brings the list a moment later. The admin gate waits for it rather than lose the link.
+  test("right after login, the admin gate waits for the membership list", async () => {
+    role = "AGENT";
+    userTenantId = "10";
+    userTenants = undefined;
+    const view = renderAdminRouteAt("?switchTenant=20");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(shows("conversations")).toBe(false);
+    expect(reloads.length).toBe(0);
+    userTenants = [
+      { id: "10", name: "A", role: "AGENT" },
+      { id: "20", name: "B", role: "TENANT_ADMIN" },
+    ];
+    view.rerender(
+      withI18n(
+        <MemoryRouter initialEntries={["/resources/vault?switchTenant=20"]}>
+          <ToastProvider>
+            <Routes>
+              <Route
+                path="/resources/vault"
+                element={
+                  <ProtectedRoute requireAdmin>
+                    <div>panel</div>
+                  </ProtectedRoute>
+                }
+              />
+              <Route path="/conversations" element={<div>conversations</div>} />
+            </Routes>
+          </ToastProvider>
+        </MemoryRouter>,
+      ),
+    );
+    await waitFor(() => {
+      expect(reloads.length).toBe(1);
+    });
+    expect(localStorage.getItem(KEY)).toBe("20");
   });
 
   test("a link to a tenant where the person is an agent still meets the admin gate", async () => {

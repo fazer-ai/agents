@@ -643,6 +643,13 @@ export async function deleteUser(
       if (!target) {
         throw new UserNotInScopeError();
       }
+      // And the PERSON, because whether the account goes with this membership depends on the others:
+      // two administrators removing a person's last two memberships from different tenants hold no
+      // lock in common, and each would read the other's membership as still there, leaving an account
+      // with nowhere to enter (review round 3). Serialised here, the second reads the first's commit.
+      // Only once the scoped read found them HERE: the row is global, and locking it first would let
+      // a tenant administrator hold another tenant's person for the length of a request (#498).
+      await lockPerson(db, userId);
       if (target.role === "TENANT_ADMIN") {
         await assertScopeKeepsAnAdmin(db, callerTenantId, userId);
       }

@@ -543,4 +543,64 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     expect(await removing).toBeUndefined();
     expect(await rowOf(member.id)).toBeNull();
   }, 30_000);
+  // Review round 3: two administrators removing a person's last two memberships from different
+  // tenants. The other removal is held open, having deleted its membership and taken the person;
+  // this one has to wait for it, and then read that the account has nowhere left to enter.
+  test("removing the last two memberships from two tenants takes the account with the second", async () => {
+    const first = await tenant("lastA");
+    const second = await tenant("lastB");
+    seq += 1;
+    const person = await suDb.user.create({
+      data: personData({
+        tenantId: first,
+        email: `sd-${process.pid}-${seq}-lasttwo@x.test`,
+        role: "AGENT",
+        passwordHash: "x",
+      }),
+      select: { id: true },
+    });
+    users.push(person.id);
+    await suDb.tenantUser.create({
+      data: { tenantId: second, userId: person.id, role: "AGENT" },
+    });
+    const other = new PrismaClient({
+      adapter: new PrismaPg({ connectionString: suUrl as string }),
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let ready!: (pid: number) => void;
+    const otherPid = new Promise<number>((r) => {
+      ready = r;
+    });
+    const held = other
+      .$transaction(
+        async (tx) => {
+          await tx.$executeRawUnsafe(
+            `DELETE FROM tenant_users WHERE tenant_id = ${second} AND user_id = ${person.id}`,
+          );
+          await tx.$executeRawUnsafe(
+            `SELECT id FROM users WHERE id = ${person.id} FOR UPDATE`,
+          );
+          const [row] = await tx.$queryRaw<Array<{ pid: number }>>`
+            SELECT pg_backend_pid()::int AS pid`;
+          ready(row?.pid ?? 0);
+          await gate;
+        },
+        { timeout: 30_000, maxWait: 30_000 },
+      )
+      .then(() => other.$disconnect());
+    const pid = await otherPid;
+    const removing = deleteUser(
+      tenantAdmin(first, 9_999_997n),
+      person.id,
+      appDb,
+    ).catch((e: Error) => e);
+    expect(await waitUntilBlocked(suDb, pid, 1)).toBeGreaterThanOrEqual(0);
+    release();
+    await held;
+    expect(await removing).toBeUndefined();
+    expect(await rowOf(person.id)).toBeNull();
+  }, 30_000);
 });

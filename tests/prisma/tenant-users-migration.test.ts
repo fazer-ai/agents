@@ -512,6 +512,62 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
     ).toBe("1");
   });
 
+  // Review round 3: a rollout that migrates while the previous image still serves leaves it writing the
+  // old shape. What it writes reaches the new one, so nobody it invites is locked out and no role
+  // change it makes is lost.
+  test("the previous image's writes reach the memberships while the columns exist", async () => {
+    const { ids, c } = await migrate(sql);
+    const membership = async (userId: string) =>
+      (
+        await c.query<{ tenant: string; role: string }>(
+          `SELECT t.name AS tenant, m.role::text AS role FROM tenant_users m
+             JOIN tenants t ON t.id = m.tenant_id WHERE m.user_id = $1 ORDER BY t.name`,
+          [userId],
+        )
+      ).rows;
+    // An invitation it accepts: a row with a tenant and a role, and nothing else.
+    const invited = (
+      await c.query<{ id: string }>(
+        `INSERT INTO users (tenant_id, email, role, password_hash, updated_at)
+         VALUES ($1, 'late@x.test', 'AGENT', 'x', now()) RETURNING id::text`,
+        [ids.B],
+      )
+    ).rows[0]?.id as string;
+    expect(await membership(invited)).toEqual([{ tenant: "B", role: "AGENT" }]);
+    // A role change it makes in the tenant the row names.
+    await c.query("UPDATE users SET role = 'TENANT_ADMIN' WHERE id = $1", [
+      invited,
+    ]);
+    expect(await membership(invited)).toEqual([
+      { tenant: "B", role: "TENANT_ADMIN" },
+    ]);
+    // Its fleet demotion: the person leaves the fleet and lands in the tenant it names.
+    const fleet = (
+      await c.query<{ id: string }>(
+        `INSERT INTO users (email, role, password_hash, is_super_admin, updated_at)
+         VALUES ('fleet@x.test', 'SUPER_ADMIN', 'x', true, now()) RETURNING id::text`,
+      )
+    ).rows[0]?.id as string;
+    await c.query(
+      "UPDATE users SET role = 'AGENT', tenant_id = $2 WHERE id = $1",
+      [fleet, ids.B],
+    );
+    const demoted = (
+      await c.query<{ s: boolean }>(
+        "SELECT is_super_admin AS s FROM users WHERE id = $1",
+        [fleet],
+      )
+    ).rows[0]?.s;
+    expect(demoted).toBe(false);
+    expect(await membership(fleet)).toEqual([{ tenant: "B", role: "AGENT" }]);
+    // A write of this image names neither column and fires nothing.
+    await c.query("UPDATE users SET name = 'x' WHERE id = $1", [ids.anaB]);
+    expect(await membership(ids.anaB as string)).toEqual([
+      { tenant: "A", role: "AGENT" },
+      { tenant: "B", role: "TENANT_ADMIN" },
+    ]);
+  });
+
   test("the new shape refuses what it has to", async () => {
     const { ids, c } = await migrate(sql);
     // One person per email across the install, whatever the case.

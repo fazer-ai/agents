@@ -192,6 +192,36 @@ DROP INDEX "users_superadmin_email_key";
 DROP INDEX "users_tenant_id_idx";
 ALTER TABLE "users" DROP CONSTRAINT "users_tenant_id_fkey";
 
+-- ── The previous image, until it exits ──
+-- `docs/deploy.md` asks for the old process to be stopped before this file runs. A rollout done the
+-- other way round leaves it WRITING the old shape for a while: an invitation it accepts inserts a
+-- `users` row with `tenant_id` and `role` and no membership, and a role change it makes updates
+-- `users.role`. Read by this image, the first is a person locked out and the second a change that
+-- never happened (review round 3). These triggers mirror those writes onto the new shape while the
+-- columns exist. This image never writes either column (`@ignore`), so nothing it does fires them.
+-- The release that drops the columns drops the triggers with them.
+CREATE FUNCTION "users_legacy_role_sync"() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'UPDATE' AND NEW."role" IS DISTINCT FROM OLD."role" THEN
+    UPDATE "users" SET "is_super_admin" = (NEW."role" = 'SUPER_ADMIN') WHERE "id" = NEW."id";
+  END IF;
+  IF NEW."tenant_id" IS NOT NULL AND NEW."role" <> 'SUPER_ADMIN' THEN
+    INSERT INTO "tenant_users" ("tenant_id", "user_id", "role", "updated_at")
+    VALUES (NEW."tenant_id", NEW."id", NEW."role", CURRENT_TIMESTAMP)
+    ON CONFLICT ("tenant_id", "user_id")
+    DO UPDATE SET "role" = EXCLUDED."role", "updated_at" = CURRENT_TIMESTAMP;
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER "users_legacy_insert_sync" AFTER INSERT ON "users"
+  FOR EACH ROW WHEN (NEW."tenant_id" IS NOT NULL)
+  EXECUTE FUNCTION "users_legacy_role_sync"();
+CREATE TRIGGER "users_legacy_update_sync" AFTER UPDATE OF "role", "tenant_id" ON "users"
+  FOR EACH ROW WHEN (NEW."role" IS DISTINCT FROM OLD."role" OR NEW."tenant_id" IS DISTINCT FROM OLD."tenant_id")
+  EXECUTE FUNCTION "users_legacy_role_sync"();
+
 -- One person per email, across the install, whatever the case.
 CREATE UNIQUE INDEX "users_email_key" ON "users" (lower("email"));
 

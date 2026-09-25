@@ -41,15 +41,23 @@ export function ProtectedRoute({
   // tenant, so a link to another tenant where the person IS an administrator goes through to the
   // switch below, and meets this gate again after the reload with the role held there (issue #756,
   // review round 2).
-  if (
-    requireAdmin &&
-    !isAdminRole(user.role) &&
-    !switchesToAdministeredTenant(
-      new URLSearchParams(location.search).get(SWITCH_TENANT_PARAM),
-      user,
-    )
-  ) {
-    return <Navigate to="/conversations" replace />;
+  if (requireAdmin && !isAdminRole(user.role)) {
+    const requested = new URLSearchParams(location.search).get(
+      SWITCH_TENANT_PARAM,
+    );
+    // A fresh login answers with the default membership's role and no membership list; `/auth/me`
+    // brings the list a moment later. Deciding before it lands would send an administrator of the
+    // linked tenant away and lose the link (review round 3).
+    if (requested && user.tenants === undefined) {
+      return (
+        <div className="flex min-h-dvh items-center justify-center bg-bg-primary">
+          <Loader2 className="h-6 w-6 animate-spin text-text-secondary" />
+        </div>
+      );
+    }
+    if (!switchesToAdministeredTenant(requested, user)) {
+      return <Navigate to="/conversations" replace />;
+    }
   }
 
   // A console link can name the tenant it belongs to. Applying that is the app shell's job, not any

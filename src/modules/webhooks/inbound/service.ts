@@ -38,6 +38,14 @@ import {
 // processing completes within seconds of receipt). Attempts are capped to stop poison loops.
 export const PROCESSING_STALE_MS = 5 * 60_000;
 const MAX_PROCESS_ATTEMPTS = 5;
+// How long one dispatch may run before its nudge turn is told to stop, when the caller brings no
+// deadline of its own (the route, which runs it detached after the ack). SHORTER than the window
+// above, and that ordering is the whole point (issue #817, review round 3): once the inbound sweep
+// exists, a claim older than PROCESSING_STALE_MS is taken back and dispatched again, so a turn still
+// running past it would deliver beside its own retry. The thread wait before generation can alone
+// take about five minutes. Stopping at four leaves a minute for the abort to land and the row to be
+// marked, and matches the scheduler's own deadline under the same window (jobDeadlineMs).
+export const DISPATCH_DEADLINE_MS = 4 * 60_000;
 
 // WHAT "NO LONGER RUNNING" MEANS for a PROCESSING row. Two readers ask it and must not disagree: the
 // claim below, which may take such a row, and the inbound sweep (./sweep.ts), which arms a re-dispatch
@@ -703,6 +711,8 @@ export async function processInboundDelivery(
   // PROCESSED below whatever the nudge did, so nothing re-reads it, and the conversion barrier means
   // a redelivery that did arrive would take the `done` path instead of re-running the nudge.
   const runNudge = params.deps?.runNudge ?? runAgentNudge;
+  // Armed from here, right after the claim committed, which is the instant the stale window started.
+  const signal = params.signal ?? AbortSignal.timeout(DISPATCH_DEADLINE_MS);
   try {
     await runNudge({
       tenantId: params.tenantId,
@@ -711,7 +721,7 @@ export async function processInboundDelivery(
       deliverToResolved: plan.deliverToResolved,
       base,
       deps: params.deps?.runtime,
-      signal: params.signal,
+      signal,
     });
   } catch (err) {
     logger.warn(

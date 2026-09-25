@@ -31,6 +31,8 @@ import {
 } from "@/modules/tool-definitions/service";
 import { DEFAULT_SIGNATURE_HEADER } from "@/modules/webhooks/inbound/auth";
 import {
+  DISPATCH_DEADLINE_MS,
+  PROCESSING_STALE_MS,
   processInboundDelivery,
   receiveInbound,
 } from "@/modules/webhooks/inbound/service";
@@ -525,6 +527,39 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
       },
     });
     expect(seen).toBe(controller.signal);
+  });
+
+  // Review round 3: the route runs this detached with no deadline, and once the sweep exists a claim
+  // older than the stale window is dispatched again. So a caller that brings no signal gets one, and it
+  // fires BEFORE the claim can go stale.
+  test("with no caller deadline the nudge still gets one, shorter than the stale window", async () => {
+    expect(DISPATCH_DEADLINE_MS).toBeLessThan(PROCESSING_STALE_MS);
+    const minted = await ensureConversationRef({
+      tenantId,
+      integrationInstanceId: genericId,
+      threadId: THREAD(),
+      base: appDb,
+    });
+    if (!minted.ok) throw new Error("mint");
+    const r = await post(genericRoute, {
+      event_id: "ev-default-deadline-817",
+      conversation_ref: minted.ref,
+      text: "prazo",
+    });
+    let seen: AbortSignal | undefined;
+    await processInboundDelivery({
+      deliveryId: r.deliveryId as bigint,
+      tenantId,
+      base: appDb,
+      deps: {
+        runNudge: async (args) => {
+          seen = args.signal;
+          return "messaged";
+        },
+      },
+    });
+    expect(seen).toBeInstanceOf(AbortSignal);
+    expect(seen?.aborted).toBe(false);
   });
 
   test("a payment carrying a conversation ref as its reference credits and nudges nothing", async () => {

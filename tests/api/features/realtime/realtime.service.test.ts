@@ -479,6 +479,46 @@ describe("realtime.service", () => {
       role: "AGENT" as const,
     };
 
+    // Issue #756: a person with several memberships picks the stream the same way the REST header
+    // picks the request's tenant. The upgrade carries no header, so the session arrives resolved to
+    // the person's default, and the socket's own selector decides among ALL their memberships.
+    const member = {
+      id: BigInt(3),
+      tenantId: BigInt(7),
+      role: "AGENT" as const,
+      memberships: [
+        { tenantId: BigInt(7), role: "AGENT" as const, createdAt: new Date(0) },
+        {
+          tenantId: BigInt(8),
+          role: "TENANT_ADMIN" as const,
+          createdAt: new Date(1),
+        },
+      ],
+    };
+
+    test("a member streams the membership the selector names", () => {
+      expect(resolveEventsTenant(member, "8")).toEqual({
+        status: "subscribe",
+        tenantId: BigInt(8),
+        anomaly: false,
+      });
+    });
+
+    test("a member naming a tenant outside their memberships is denied, not given another", () => {
+      expect(resolveEventsTenant(member, "9")).toEqual({
+        status: "denied",
+        anomaly: false,
+      });
+    });
+
+    test("a member without a selector streams their default membership", () => {
+      expect(resolveEventsTenant(member, undefined)).toEqual({
+        status: "subscribe",
+        tenantId: BigInt(7),
+        anomaly: false,
+      });
+    });
+
     test("SUPER_ADMIN follows the selected active tenant", () => {
       const r = resolveEventsTenant(superAdmin, "9");
       expect(r).toEqual({

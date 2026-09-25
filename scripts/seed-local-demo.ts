@@ -32,27 +32,24 @@ async function main() {
     cost: 10,
   });
   const existing = await prisma.user.findFirst({
-    where: {
-      email: { equals: EMAIL, mode: "insensitive" },
-      tenantId: tenant.id,
-    },
+    where: { email: { equals: EMAIL, mode: "insensitive" } },
+    select: { id: true },
   });
-  if (existing) {
-    await prisma.user.update({
-      where: { id: existing.id },
-      data: { role: "TENANT_ADMIN", passwordHash, tenantId: tenant.id },
-    });
-  } else {
-    await prisma.user.create({
-      data: {
-        email: EMAIL,
-        passwordHash,
-        role: "TENANT_ADMIN",
-        tenantId: tenant.id,
-        name: "Admin Demo",
-      },
-    });
-  }
+  const person = existing
+    ? await prisma.user.update({
+        where: { id: existing.id },
+        data: { passwordHash },
+        select: { id: true },
+      })
+    : await prisma.user.create({
+        data: { email: EMAIL, passwordHash, name: "Admin Demo" },
+        select: { id: true },
+      });
+  await prisma.tenantUser.upsert({
+    where: { tenantId_userId: { tenantId: tenant.id, userId: person.id } },
+    update: { role: "TENANT_ADMIN" },
+    create: { tenantId: tenant.id, userId: person.id, role: "TENANT_ADMIN" },
+  });
 
   const deployment = await prisma.chatwootDeployment.upsert({
     where: { tenantId: tenant.id },

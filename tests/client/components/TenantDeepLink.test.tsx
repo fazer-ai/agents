@@ -39,6 +39,8 @@ let tenantsFails = false;
 let tenantsCalls = 0;
 let role = "SUPER_ADMIN";
 let userTenantId: string | null = null;
+// The memberships a person's session carries (issue #756); empty for the fleet and a one-tenant user.
+let userTenants: { id: string; name: string; role: string }[] = [];
 const realFetch = globalThis.fetch;
 const reloads: number[] = [];
 
@@ -66,7 +68,7 @@ function installFetchStub() {
 
 mock.module("@/client/contexts/AuthContext", () => ({
   useAuth: () => ({
-    user: { id: "1", role, tenantId: userTenantId },
+    user: { id: "1", role, tenantId: userTenantId, tenants: userTenants },
     loading: false,
   }),
 }));
@@ -110,12 +112,15 @@ describe("TenantDeepLink", () => {
     tenantsCalls = 0;
     role = "SUPER_ADMIN";
     userTenantId = null;
+    userTenants = [];
     tenantsGate = null;
     tenantsFails = false;
     tenantsPayload = [
       { id: "10", name: "A" },
       { id: "20", name: "B" },
     ];
+    // The tab's selection and the default a new tab starts from (src/client/lib/activeTenant.ts).
+    sessionStorage.removeItem(KEY);
     localStorage.setItem(KEY, "10");
     installFetchStub();
     Object.defineProperty(window, "location", {
@@ -125,6 +130,7 @@ describe("TenantDeepLink", () => {
   });
   afterEach(() => {
     cleanup();
+    sessionStorage.removeItem(KEY);
     localStorage.removeItem(KEY);
   });
   afterAll(() => {
@@ -259,12 +265,30 @@ describe("TenantDeepLink", () => {
   test("a tenant-scoped session is judged by its own tenant, not by a stale stored selection", async () => {
     role = "TENANT_ADMIN";
     userTenantId = "10";
+    sessionStorage.removeItem(KEY);
     localStorage.setItem(KEY, "20");
     renderAt("?switchTenant=20");
     await waitFor(() => {
       expect(shows("cannot open")).toBe(true);
     });
     expect(reloads.length).toBe(0);
+  });
+
+  // Issue #756: a person who belongs to several tenants follows a link to another of THEIRS the same
+  // way the fleet follows one, from the list the session carries, without reading the fleet list.
+  test("a person with several tenants follows a link to another of theirs", async () => {
+    role = "AGENT";
+    userTenantId = "10";
+    userTenants = [
+      { id: "10", name: "A", role: "AGENT" },
+      { id: "20", name: "B", role: "TENANT_ADMIN" },
+    ];
+    renderAt("?switchTenant=20");
+    await waitFor(() => {
+      expect(reloads.length).toBe(1);
+    });
+    expect(localStorage.getItem(KEY)).toBe("20");
+    expect(tenantsCalls).toBe(0);
   });
 
   // ── the list could not be read ──

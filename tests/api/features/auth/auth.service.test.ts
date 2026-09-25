@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import config from "@/config";
 import {
+  asPersonRow,
   mockCount,
   mockCreate,
   mockFindFirst,
@@ -41,7 +42,8 @@ describe("auth.service", () => {
 
       const result = await getUserByEmail("test@example.com");
 
-      expect(result).toEqual(mockUser);
+      // The person, as the schema stores them since issue #756 (tests/utils/prisma-mock.ts).
+      expect(result).toEqual(asPersonRow(mockUser));
       expect(mockFindFirst).toHaveBeenCalledTimes(1);
     });
 
@@ -60,14 +62,17 @@ describe("auth.service", () => {
 
       expect(mockFindFirst).toHaveBeenCalledWith({
         where: { email: { equals: "TEST@EXAMPLE.COM", mode: "insensitive" } },
+        // The person and every membership (issue #756).
         select: {
           id: true,
-          tenantId: true,
           email: true,
           name: true,
-          role: true,
-          passwordHash: true,
           googleId: true,
+          isSuperAdmin: true,
+          memberships: {
+            select: { tenantId: true, role: true, createdAt: true },
+          },
+          passwordHash: true,
           lastLoginAt: true,
         },
       });
@@ -85,14 +90,17 @@ describe("auth.service", () => {
         BigInt(1),
       );
 
-      expect(result).toEqual(createdUser);
+      expect(result).toEqual({
+        ...createdUser,
+        memberships: asPersonRow(createdUser).memberships,
+      });
+      // The person and their first membership, in one statement (issue #756).
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           data: {
             email: "new@example.com",
             passwordHash: "hashedPassword",
-            tenantId: BigInt(1),
-            role: "AGENT",
+            memberships: { create: { tenantId: BigInt(1), role: "AGENT" } },
           },
         }),
       );
@@ -109,8 +117,7 @@ describe("auth.service", () => {
             data: {
               email: "founder@mycompany.io",
               passwordHash: "hashedPassword",
-              tenantId: BigInt(1),
-              role: "AGENT",
+              memberships: { create: { tenantId: BigInt(1), role: "AGENT" } },
             },
           }),
         );
@@ -126,11 +133,13 @@ describe("auth.service", () => {
         expect.objectContaining({
           select: {
             id: true,
-            tenantId: true,
             email: true,
             name: true,
-            role: true,
             googleId: true,
+            isSuperAdmin: true,
+            memberships: {
+              select: { tenantId: true, role: true, createdAt: true },
+            },
           },
         }),
       );
@@ -163,8 +172,7 @@ describe("auth.service", () => {
             email: "boss@example.com",
             passwordHash: "hashedPassword",
             name: "Boss",
-            role: "SUPER_ADMIN",
-            tenantId: null,
+            isSuperAdmin: true,
             // NOTE: stamped so the bootstrap admin is not blocked from Google
             // linking (never-logged-in elevated guard in google.service).
             lastLoginAt: expect.any(Date),

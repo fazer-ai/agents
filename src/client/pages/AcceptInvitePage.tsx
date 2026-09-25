@@ -1,18 +1,23 @@
 import { Loader2 } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { Button, Input, Logo } from "@/client/components";
 import { useAuth } from "@/client/contexts/AuthContext";
+import { setActiveTenantId } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
 import type { ApiErrorPayload } from "@/client/lib/types";
 
 type ValidationState = "validating" | "valid" | "invalid";
 
-// Public invite-acceptance page (no auth — the invitee has no account yet). Modeled on SetupPage:
-// capture ?token, strip it from the URL, validate it to pre-fill the (read-only) email, then create
-// the account + auto-login. tenant + role are bound server-side to the invite; the form only sets
-// name + password.
+// Public invite-acceptance page. Modeled on SetupPage: capture ?token, strip it from the URL, validate
+// it to pre-fill the (read-only) email, then join + auto-login. tenant + role are bound server-side to
+// the invite. Three shapes, because one person is one account across tenants (issue #756):
+//   - the email has no account yet: set a name and a password, and the account is created;
+//   - the email has an account and this browser is signed in as it: one click joins the tenant;
+//   - the email has an account and this browser is not signed in as it: its CURRENT password proves
+//     it, and nothing about the account changes besides the new membership.
+// Either way the console then opens on the tenant just joined.
 // biome-ignore lint/plugin/require-page-container: auth page renders its own centered layout outside <Layout>, so <PageContainer> does not apply
 export function AcceptInvitePage() {
   const { t } = useTranslation();
@@ -22,6 +27,7 @@ export function AcceptInvitePage() {
   const [token] = useState(() => searchParams.get("token") ?? "");
   const [state, setState] = useState<ValidationState>("validating");
   const [email, setEmail] = useState("");
+  const [existingAccount, setExistingAccount] = useState(false);
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -50,6 +56,7 @@ export function AcceptInvitePage() {
           return;
         }
         setEmail(data.invite.email);
+        setExistingAccount(data.invite.existingAccount);
         setState("valid");
       })
       .catch(() => {
@@ -60,13 +67,15 @@ export function AcceptInvitePage() {
     };
   }, [token]);
 
-  if (user) return <Navigate to="/" replace />;
+  const signedInAsInvitee =
+    user !== null && user.email.toLowerCase() === email.toLowerCase();
+  const joinsExisting = existingAccount || signedInAsInvitee;
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (inFlightRef.current) return;
     setError("");
-    if (password !== confirmPassword) {
+    if (!joinsExisting && password !== confirmPassword) {
       setError(t("auth.passwordsNoMatch", "Passwords do not match"));
       return;
     }
@@ -75,7 +84,11 @@ export function AcceptInvitePage() {
     try {
       const { data, error: apiError } = await api.api.auth[
         "accept-invite"
-      ].post({ token, password, name: name.trim() || undefined });
+      ].post({
+        token,
+        password: signedInAsInvitee ? undefined : password,
+        name: joinsExisting ? undefined : name.trim() || undefined,
+      });
       if (apiError) {
         setError(
           (apiError.value as ApiErrorPayload)?.error ||
@@ -84,6 +97,14 @@ export function AcceptInvitePage() {
         return;
       }
       if (data?.user) {
+        // Open the console on the tenant just joined, which for a person with other tenants is not
+        // necessarily their default.
+        setActiveTenantId(data.user.tenantId);
+        if (user) {
+          // A session was already running, built for another tenant: reload onto the new one.
+          window.location.assign("/");
+          return;
+        }
         login(data.user);
         navigate("/");
       }
@@ -139,10 +160,20 @@ export function AcceptInvitePage() {
                 {t("acceptInvite.title", "Accept your invitation")}
               </h1>
               <p className="mt-1 text-sm text-text-secondary">
-                {t(
-                  "acceptInvite.subtitle",
-                  "Set a password to activate your account.",
-                )}
+                {signedInAsInvitee
+                  ? t(
+                      "acceptInvite.signedInSubtitle",
+                      "You are signed in with this email. Join to add this tenant to your account.",
+                    )
+                  : existingAccount
+                    ? t(
+                        "acceptInvite.existingSubtitle",
+                        "This email already has an account. Enter its password to add this tenant to it.",
+                      )
+                    : t(
+                        "acceptInvite.subtitle",
+                        "Set a password to activate your account.",
+                      )}
               </p>
             </div>
 
@@ -162,66 +193,90 @@ export function AcceptInvitePage() {
               <Input id="email" type="email" value={email} disabled readOnly />
             </div>
 
-            <div>
-              <label
-                htmlFor="name"
-                className="mb-1 block font-medium text-sm text-text-primary"
-              >
-                {t("common.name", "Name")}
-              </label>
-              <Input
-                id="name"
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                disabled={loading}
-                placeholder={t("acceptInvite.namePlaceholder", "Optional")}
-              />
-            </div>
+            {!joinsExisting && (
+              <>
+                <div>
+                  <label
+                    htmlFor="name"
+                    className="mb-1 block font-medium text-sm text-text-primary"
+                  >
+                    {t("common.name", "Name")}
+                  </label>
+                  <Input
+                    id="name"
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    disabled={loading}
+                    placeholder={t("acceptInvite.namePlaceholder", "Optional")}
+                  />
+                </div>
 
-            <div>
-              <label
-                htmlFor="password"
-                className="mb-1 block font-medium text-sm text-text-primary"
-              >
-                {t("auth.password", "Password")}
-              </label>
-              <Input
-                id="password"
-                type="password"
-                showPasswordToggle
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-                minLength={8}
-                disabled={loading}
-                placeholder="••••••••"
-                helperText={t(
-                  "auth.passwordMinLength",
-                  "Must be at least 8 characters",
-                )}
-              />
-            </div>
+                <div>
+                  <label
+                    htmlFor="password"
+                    className="mb-1 block font-medium text-sm text-text-primary"
+                  >
+                    {t("auth.password", "Password")}
+                  </label>
+                  <Input
+                    id="password"
+                    type="password"
+                    showPasswordToggle
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                    minLength={8}
+                    disabled={loading}
+                    placeholder="••••••••"
+                    helperText={t(
+                      "auth.passwordMinLength",
+                      "Must be at least 8 characters",
+                    )}
+                  />
+                </div>
 
-            <div>
-              <label
-                htmlFor="confirmPassword"
-                className="mb-1 block font-medium text-sm text-text-primary"
-              >
-                {t("auth.confirmPassword", "Confirm Password")}
-              </label>
-              <Input
-                id="confirmPassword"
-                type="password"
-                showPasswordToggle
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-                required
-                minLength={8}
-                disabled={loading}
-                placeholder="••••••••"
-              />
-            </div>
+                <div>
+                  <label
+                    htmlFor="confirmPassword"
+                    className="mb-1 block font-medium text-sm text-text-primary"
+                  >
+                    {t("auth.confirmPassword", "Confirm Password")}
+                  </label>
+                  <Input
+                    id="confirmPassword"
+                    type="password"
+                    showPasswordToggle
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    required
+                    minLength={8}
+                    disabled={loading}
+                    placeholder="••••••••"
+                  />
+                </div>
+              </>
+            )}
+            {existingAccount && !signedInAsInvitee && (
+              <div>
+                <label
+                  htmlFor="password"
+                  className="mb-1 block font-medium text-sm text-text-primary"
+                >
+                  {t("acceptInvite.currentPassword", "Current password")}
+                </label>
+                <Input
+                  id="password"
+                  type="password"
+                  showPasswordToggle
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  disabled={loading}
+                  placeholder="••••••••"
+                />
+              </div>
+            )}
 
             <Button
               type="submit"
@@ -231,7 +286,9 @@ export function AcceptInvitePage() {
             >
               {loading
                 ? t("acceptInvite.submitting", "Activating…")
-                : t("acceptInvite.submit", "Activate account")}
+                : joinsExisting
+                  ? t("acceptInvite.join", "Join")
+                  : t("acceptInvite.submit", "Activate account")}
             </Button>
           </form>
         )}

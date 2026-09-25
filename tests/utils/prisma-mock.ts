@@ -67,12 +67,48 @@ function applyDefaultPrismaMockImplementations() {
 
 applyDefaultPrismaMockImplementations();
 
+// THE ENTITY KEEPS THE SESSION'S SHAPE, one tenant and one role, because that is what every test
+// states ("an admin of tenant 1", "a fleet administrator"). The schema stores it as a PERSON with a
+// membership per tenant (issue #756), so the reads the code makes are answered in that shape: the
+// fleet role becomes `isSuperAdmin`, and a tenant role becomes the one membership. The mock functions
+// themselves stay what the tests configure and assert on.
+export interface MockPersonRow
+  extends Omit<MockUserEntity, "role" | "tenantId"> {
+  isSuperAdmin: boolean;
+  memberships: { tenantId: bigint; role: UserRole; createdAt: Date }[];
+}
+
+export function asPersonRow(entity: MockUserEntity): MockPersonRow;
+export function asPersonRow(
+  entity: MockUserEntity | null | undefined,
+): MockPersonRow | null | undefined;
+export function asPersonRow(
+  entity: MockUserEntity | null | undefined,
+): MockPersonRow | null | undefined {
+  if (!entity) return entity;
+  const { tenantId, role, ...person } = entity;
+  const isSuperAdmin = role === "SUPER_ADMIN";
+  return {
+    ...person,
+    isSuperAdmin,
+    memberships:
+      isSuperAdmin || tenantId === null
+        ? []
+        : [{ tenantId, role, createdAt: entity.createdAt }],
+  };
+}
+
+const personRead =
+  <A extends unknown[]>(fn: (...args: A) => Promise<MockUser>) =>
+  async (...args: A) =>
+    asPersonRow(await fn(...args));
+
 interface PrismaMockClient {
   user: {
-    findFirst: typeof mockFindFirst;
-    findUnique: typeof mockFindUnique;
-    create: typeof mockCreate;
-    update: typeof mockUpdate;
+    findFirst: (...args: unknown[]) => Promise<unknown>;
+    findUnique: (...args: unknown[]) => Promise<unknown>;
+    create: (...args: unknown[]) => Promise<unknown>;
+    update: (...args: unknown[]) => Promise<unknown>;
     updateMany: typeof mockUpdateMany;
     count: typeof mockCount;
   };
@@ -88,10 +124,14 @@ interface PrismaMockClient {
 
 export const prismaMock: PrismaMockClient = {
   user: {
-    findFirst: mockFindFirst,
-    findUnique: mockFindUnique,
-    create: mockCreate,
-    update: mockUpdate,
+    findFirst: personRead(
+      mockFindFirst as (...a: unknown[]) => Promise<MockUser>,
+    ),
+    findUnique: personRead(
+      mockFindUnique as (...a: unknown[]) => Promise<MockUser>,
+    ),
+    create: personRead(mockCreate as (...a: unknown[]) => Promise<MockUser>),
+    update: personRead(mockUpdate as (...a: unknown[]) => Promise<MockUser>),
     updateMany: mockUpdateMany,
     count: mockCount,
   },

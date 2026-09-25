@@ -3,6 +3,7 @@ import { jwtVerify, SignJWT } from "jose";
 import type { PrismaClient, UserRole } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
+import { roleIn } from "@/lib/tenancy/role-in";
 import type { ApiKeyPrincipal } from "@/modules/api-keys/verify";
 import { mcpResourceId } from "./metadata";
 
@@ -123,15 +124,10 @@ export async function verifyAccessToken(
   if (!row || row.revokedAt) return null; // denylist / unknown jti
   if (row.expiresAt.getTime() < Date.now()) return null;
 
-  // Re-resolve the user: any change since issuance (role, tenant, deletion) invalidates the token.
-  const user = await base.user.findUnique({
-    where: { id: row.userId },
-    select: { role: true, tenantId: true },
-  });
-  if (!user) return null;
-  const sameTenant =
-    (user.tenantId?.toString() ?? null) === (row.tenantId?.toString() ?? null);
-  if (user.role !== row.role || !sameTenant) return null;
+  // Re-resolve the user: any change since issuance (role in that tenant, leaving it, deletion)
+  // invalidates the token.
+  const role = await roleIn(base, row.userId, row.tenantId);
+  if (role === null || role !== row.role) return null;
 
   return {
     userId: row.userId,

@@ -23,7 +23,6 @@ import {
   CannotDeleteSelfError,
   ConcurrentMoveError,
   deleteUser,
-  EmailTakenInTenantError,
   getAdminStats,
   getUsers,
   LastAdminError,
@@ -42,8 +41,9 @@ function acceptUrl(token: string): string {
 
 // The principal these writes act as, built from the SESSION and never from the tenancy plugin.
 //
-// `tenantId` is the caller's HOME tenant, which for a SUPER_ADMIN is null (fleet-wide reach) — the
-// same scope `resolveScope(user, undefined)` already resolves for the reads. Mounting `tenancyPlugin`
+// `tenantId` is the tenant the caller's session runs under — their selected membership, resolved
+// against what they belong to in `getAuthUser` (issue #756) — and null for a SUPER_ADMIN (fleet-wide
+// reach), the same scope `resolveScope(user, undefined)` already resolves for the reads. Mounting `tenancyPlugin`
 // here would hand these routes the `X-Tenant-Id` SELECTOR instead, and a fleet admin with a tenant
 // open in one tab would silently lose the ability to re-role anyone outside it. `actorType` is what
 // that plugin does supply elsewhere, so it is supplied here: without it a Bearer API key's writes
@@ -196,8 +196,8 @@ export const adminController = new Elysia({
         };
       }
       try {
-        // A SUPER_ADMIN may re-role across tenants (own tenant is null → unscoped updateMany);
-        // a TENANT_ADMIN is fenced to its own tenant.
+        // A SUPER_ADMIN may re-role across tenants (tenant null → any membership); a TENANT_ADMIN
+        // is fenced to the tenant their session runs under.
         const updated = await updateUserRole(actorOf(user), targetId, {
           role: body.role,
           tenantId: optionalDbId(body.tenantId),
@@ -228,7 +228,7 @@ export const adminController = new Elysia({
           return {
             error: translate(
               "errors.demoteNeedsTenant",
-              "Choose the tenant this administrator will belong to",
+              "Choose the tenant this role change applies to",
             ),
           };
         }
@@ -237,7 +237,7 @@ export const adminController = new Elysia({
           return {
             error: translate(
               "errors.roleChangeCannotMoveTenant",
-              "Only a fleet administrator's demotion can name a tenant",
+              "A tenant administrator's role change cannot name another tenant",
             ),
           };
         }
@@ -245,15 +245,6 @@ export const adminController = new Elysia({
           set.status = 404;
           return {
             error: translate("errors.tenantNotFound", "Tenant not found"),
-          };
-        }
-        if (error instanceof EmailTakenInTenantError) {
-          set.status = 409;
-          return {
-            error: translate(
-              "errors.emailTakenInTenant",
-              "That tenant already has a user with this email",
-            ),
           };
         }
         // The same invariant the delete answers with a 409, on the write that reduces the scope's
@@ -287,18 +278,18 @@ export const adminController = new Elysia({
         tenantId: t.Optional(
           t.String({
             description:
-              "Tenant the user joins (BigInt string). REQUIRED when demoting a fleet administrator, who belongs to no tenant and cannot be stored without one; refused for anybody else.",
+              "Tenant the role applies to (BigInt string). A person holds a role per tenant, so the fleet names which membership to re-role (optional when the person has only one), and demoting a fleet administrator names the tenant they join (required). A tenant administrator may only name their own tenant.",
           }),
         ),
       }),
       detail: doc(
         "Update user role",
-        "Change a user's role within the caller's tenant scope. Demoting a fleet administrator must name the tenant they join. Refuses (409) to demote the last administrator of a scope.",
+        "Change the role a user holds in a tenant. A tenant administrator re-roles members of their own tenant; the fleet names the tenant (or the user's only one), and demoting a fleet administrator must name the tenant they join. Refuses (409) to demote the last administrator of a scope.",
       ),
       response: errors(400, 401, 403, 404, 409, 422),
     },
   )
-  // Permanently delete a user (within the caller's tenant scope). Step-up (`confirmStepUp`): the
+  // Remove a user: from the caller's tenant for a tenant admin, the whole account for the fleet. Step-up (`confirmStepUp`): the
   // acting admin re-enters their password; a Bearer key answers by itself. Refuses to delete yourself
   // or the last admin of a scope.
   .delete(
@@ -350,7 +341,7 @@ export const adminController = new Elysia({
       }),
       detail: doc(
         "Delete user",
-        "Permanently delete a user within the caller's tenant scope. Requires the acting admin's password for a session (a Bearer API key needs none); cannot delete yourself or the last admin.",
+        "Remove a user. A tenant administrator removes the user from their own tenant (the account is deleted only when it was the user's last tenant); the fleet deletes the account. Requires the acting admin's password for a session (a Bearer API key needs none); cannot delete yourself or the last admin.",
       ),
       response: errors(400, 401, 403, 404, 409, 422),
     },

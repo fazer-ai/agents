@@ -21,6 +21,7 @@ import {
   scopesForRole,
   verifyAccessToken,
 } from "@/modules/mcp/oauth/tokens";
+import { personData } from "@/tests/utils/person";
 
 // The fleet principal these SUPER_ADMIN-only functions now take. It is what names the actor on the
 // row each of them appends (#400); the rows themselves are asserted in
@@ -97,13 +98,13 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
     tenantA = a.id;
     tenantB = b.id;
     const u = await su.user.create({
-      data: {
+      data: personData({
         email: `ma-user-${process.pid}@test.local`,
         // A check constraint requires an auth method; the value is never used (we never log in).
         passwordHash: "test-only-hash",
         role: "TENANT_ADMIN",
         tenantId: tenantA,
-      },
+      }),
     });
     userA = u.id;
   });
@@ -135,7 +136,9 @@ describe.skipIf(!dbUp)("mcp admin service", () => {
         await su.$executeRawUnsafe(
           `DELETE FROM audit_logs WHERE tenant_id = ${id}`,
         );
-        await su.$executeRawUnsafe(`DELETE FROM users WHERE tenant_id = ${id}`);
+        await su.$executeRawUnsafe(
+          `DELETE FROM users WHERE id IN (SELECT user_id FROM tenant_users WHERE tenant_id = ${id})`,
+        );
         await su.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${id}`);
       }
     }

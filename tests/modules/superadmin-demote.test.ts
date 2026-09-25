@@ -3,24 +3,30 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import {
   deleteUser,
-  EmailTakenInTenantError,
   TenantNotChangeableError,
   TenantNotFoundError,
   TenantRequiredError,
+  UserNotInScopeError,
   updateUserRole,
 } from "@/api/features/admin/admin.service";
 import type { TenantContext } from "@/lib/tenancy";
+import { personData } from "@/tests/utils/person";
 import { waitUntilBlocked } from "@/tests/utils/pg-waits";
 
-// A fleet administrator belongs to NO tenant and everybody else belongs to one — `users_role_tenant_check`
-// says so — which makes "demote this super admin" a transition that cannot be stored unless the write
-// also says where the person lands. It used to be attempted anyway, and the operator got the check
-// constraint back as a 500 (#534). Every refusal here is one the DATABASE would have made, asked
-// earlier and in the operator's terms.
+// A fleet administrator needs no membership, and everybody else enters through one: taking the fleet
+// role away therefore has to say which tenant the person keeps working in, or it leaves an account
+// with nowhere to enter. It used to be attempted anyway, and the operator got a check constraint back
+// as a 500 (#534). Since issue #756 the role is held PER MEMBERSHIP, so the fleet also has to say
+// which membership it re-roles when the person has more than one.
 const fleet = (userId: bigint): TenantContext => ({
   tenantId: null,
   userId,
   role: "SUPER_ADMIN",
+});
+const tenantAdmin = (tenantId: bigint, userId: bigint): TenantContext => ({
+  tenantId,
+  userId,
+  role: "TENANT_ADMIN",
 });
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -59,7 +65,12 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     seq += 1;
     const email = `sd-${process.pid}-${seq}-${tag}@x.test`;
     const row = await suDb.user.create({
-      data: { tenantId: null, email, role: "SUPER_ADMIN", passwordHash: "x" },
+      data: personData({
+        tenantId: null,
+        email,
+        role: "SUPER_ADMIN",
+        passwordHash: "x",
+      }),
       select: { id: true },
     });
     users.push(row.id);
@@ -76,11 +87,21 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     return t.id;
   }
 
-  const rowOf = (id: bigint) =>
-    suDb.user.findUnique({
+  // The person as the schema holds them: the fleet role, and the memberships with their roles.
+  const rowOf = async (id: bigint) => {
+    const u = await suDb.user.findUnique({
       where: { id },
-      select: { role: true, tenantId: true },
+      select: {
+        isSuperAdmin: true,
+        memberships: {
+          select: { tenantId: true, role: true },
+          orderBy: { tenantId: "asc" },
+        },
+      },
     });
+    return u;
+  };
+  const fleetRow = { isSuperAdmin: true, memberships: [] };
 
   afterAll(async () => {
     if (users.length > 0) {
@@ -92,9 +113,6 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
       const list = tenants.join(",");
       await suDb.$executeRawUnsafe(
         `DELETE FROM audit_logs WHERE tenant_id IN (${list})`,
-      );
-      await suDb.$executeRawUnsafe(
-        `DELETE FROM users WHERE tenant_id IN (${list})`,
       );
       await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id IN (${list})`);
     }
@@ -110,14 +128,10 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     await expect(
       updateUserRole(fleet(keep.id), target.id, { role: "AGENT" }, appDb),
     ).rejects.toBeInstanceOf(TenantRequiredError);
-    expect(await rowOf(target.id)).toEqual({
-      role: "SUPER_ADMIN",
-      tenantId: null,
-    });
+    expect(await rowOf(target.id)).toEqual(fleetRow);
   });
 
-  // The transition itself, which nothing could express before: role and tenant move together, in one
-  // statement, because the constraint reads both columns of the new row at once.
+  // The transition itself: the fleet role goes and the membership arrives in the same transaction.
   test("a demotion that names a tenant moves the person into it", async () => {
     const keep = await fleetAdmin("keep2");
     const target = await fleetAdmin("moved");
@@ -130,7 +144,10 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     );
     expect(after.role).toBe("AGENT");
     expect(after.tenantId).toBe(home);
-    expect(await rowOf(target.id)).toEqual({ role: "AGENT", tenantId: home });
+    expect(await rowOf(target.id)).toEqual({
+      isSuperAdmin: false,
+      memberships: [{ tenantId: home, role: "AGENT" }],
+    });
   });
 
   test("a tenant that does not exist is refused before the write", async () => {
@@ -144,78 +161,28 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
         appDb,
       ),
     ).rejects.toBeInstanceOf(TenantNotFoundError);
-    expect(await rowOf(target.id)).toEqual({
-      role: "SUPER_ADMIN",
-      tenantId: null,
-    });
+    expect(await rowOf(target.id)).toEqual(fleetRow);
   });
 
-  // `users_tenant_email_key` is on `lower(email)`, so the clash this has to catch is the one that
-  // differs only in case — the shape a comparison written with `equals` alone would let through.
-  test("an address already used in that tenant is refused, case-insensitively", async () => {
+  // A fleet administrator who already belongs to the tenant (two rows of one person merged by the
+  // #756 migration keep both) ends with ONE membership there, carrying the role the demotion names.
+  test("a demotion into a tenant the person already belongs to keeps one membership", async () => {
     const keep = await fleetAdmin("keep4");
-    const target = await fleetAdmin("clash");
-    const home = await tenant("taken");
-    const squatter = await suDb.user.create({
-      data: {
-        tenantId: home,
-        email: target.email.toUpperCase(),
-        role: "AGENT",
-        passwordHash: "x",
-      },
-      select: { id: true },
+    const target = await fleetAdmin("member");
+    const home = await tenant("already");
+    await suDb.tenantUser.create({
+      data: { tenantId: home, userId: target.id, role: "AGENT" },
     });
-    users.push(squatter.id);
-    await expect(
-      updateUserRole(
-        fleet(keep.id),
-        target.id,
-        { role: "AGENT", tenantId: home },
-        appDb,
-      ),
-    ).rejects.toBeInstanceOf(EmailTakenInTenantError);
-    expect(await rowOf(target.id)).toEqual({
-      role: "SUPER_ADMIN",
-      tenantId: null,
-    });
-  });
-
-  // The clash test above and this one are the same comparison from its two sides. `lower(email)` is
-  // what the index compares, and what Prisma's `mode: "insensitive"` compares is a PATTERN: measured,
-  // `a_b@…` matches a stored `axb@…` under ILIKE, so an address with an underscore in it would have
-  // been refused a move nothing was wrong with.
-  test("an address that merely looks like a pattern does not block the move", async () => {
-    const keep = await fleetAdmin("keep5");
-    const home = await tenant("wildcard");
-    seq += 1;
-    const stem = `sd-${process.pid}-${seq}`;
-    const target = await suDb.user.create({
-      data: {
-        tenantId: null,
-        email: `${stem}-a_b@x.test`,
-        role: "SUPER_ADMIN",
-        passwordHash: "x",
-      },
-      select: { id: true },
-    });
-    users.push(target.id);
-    const lookalike = await suDb.user.create({
-      data: {
-        tenantId: home,
-        email: `${stem}-axb@x.test`,
-        role: "AGENT",
-        passwordHash: "x",
-      },
-      select: { id: true },
-    });
-    users.push(lookalike.id);
-    const after = await updateUserRole(
+    await updateUserRole(
       fleet(keep.id),
       target.id,
-      { role: "AGENT", tenantId: home },
+      { role: "TENANT_ADMIN", tenantId: home },
       appDb,
     );
-    expect(after.tenantId).toBe(home);
+    expect(await rowOf(target.id)).toEqual({
+      isSuperAdmin: false,
+      memberships: [{ tenantId: home, role: "TENANT_ADMIN" }],
+    });
   });
 
   // Where the row about this person goes. `docs/api-and-fleet.md`: a row about a person joins the
@@ -238,11 +205,11 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     expect(rows.map((r) => r.tenantId)).toEqual([home]);
   });
 
-  // The lock this family takes is chosen from an unlocked read, and THIS PR is what made that read
-  // able to go stale: before it, nothing wrote `users.tenant_id` after creation. A write that starts
-  // while a demotion is uncommitted therefore queues on the FLEET scope and wakes up holding it while
-  // the target now lives in a tenant — and its guard would then count that tenant's administrators
-  // under a lock covering somebody else's scope, which is how two removals in one tenant both commit.
+  // The locks this family takes are chosen from an unlocked read, and a demotion makes that read stale:
+  // a write that starts while one is uncommitted queues on the FLEET scope and wakes up holding it
+  // while the target now administers a tenant — and its guard would then count that tenant's
+  // administrators under a lock covering somebody else's scope, which is how two removals in one
+  // tenant both commit.
   //
   // Proved by where the write WAITS, not by timing: the second holder owns the destination scope's
   // advisory lock, so a write that re-reads its scope has to park on it, and one that kept the stale
@@ -252,12 +219,12 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     const target = await fleetAdmin("mover");
     const home = await tenant("lands");
     const resident = await suDb.user.create({
-      data: {
+      data: personData({
         tenantId: home,
         email: `sd-${process.pid}-resident@x.test`,
         role: "TENANT_ADMIN",
         passwordHash: "x",
-      },
+      }),
       select: { id: true },
     });
     users.push(resident.id);
@@ -278,7 +245,11 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
       .$transaction(
         async (tx) => {
           await tx.$executeRawUnsafe(
-            `UPDATE users SET role = 'TENANT_ADMIN', tenant_id = ${home} WHERE id = ${target.id}`,
+            `UPDATE users SET is_super_admin = false WHERE id = ${target.id}`,
+          );
+          await tx.$executeRawUnsafe(
+            `INSERT INTO tenant_users (tenant_id, user_id, role, updated_at)
+             VALUES (${home}, ${target.id}, 'TENANT_ADMIN', now())`,
           );
           const [row] = await tx.$queryRaw<Array<{ pid: number }>>`
             SELECT pg_backend_pid()::int AS pid`;
@@ -335,25 +306,25 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     expect(await removing).toBeUndefined();
     expect(await rowOf(target.id)).toBeNull();
     expect(await rowOf(resident.id)).toEqual({
-      role: "TENANT_ADMIN",
-      tenantId: home,
+      isSuperAdmin: false,
+      memberships: [{ tenantId: home, role: "TENANT_ADMIN" }],
     });
   }, 30_000);
 
-  // The field means one thing, and it is not "move this person": for somebody who already belongs to
-  // a tenant, a role change says nothing about which one, and accepting it here would make this
-  // endpoint a transfer nobody reviewed.
-  test("naming a tenant for anybody else is refused", async () => {
+  // The field names a MEMBERSHIP, and it is not "move this person": naming a tenant the person does not
+  // belong to finds nobody there to re-role, and accepting it would make this endpoint a transfer
+  // nobody reviewed.
+  test("the fleet naming a tenant the person does not belong to finds nobody", async () => {
     const home = await tenant("stay");
     const elsewhere = await tenant("elsewhere");
     seq += 1;
     const member = await suDb.user.create({
-      data: {
+      data: personData({
         tenantId: home,
         email: `sd-${process.pid}-${seq}-member@x.test`,
         role: "AGENT",
         passwordHash: "x",
-      },
+      }),
       select: { id: true },
     });
     users.push(member.id);
@@ -364,7 +335,82 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
         { role: "TENANT_ADMIN", tenantId: elsewhere },
         appDb,
       ),
+    ).rejects.toBeInstanceOf(UserNotInScopeError);
+    expect(await rowOf(member.id)).toEqual({
+      isSuperAdmin: false,
+      memberships: [{ tenantId: home, role: "AGENT" }],
+    });
+  });
+
+  // A person in two tenants holds two roles, so the fleet has to say which one it changes, and only
+  // that one moves. With a single membership there is nothing to choose and nothing to name.
+  test("the fleet re-roles the membership it names, and must name one when there are two", async () => {
+    const first = await tenant("first");
+    const second = await tenant("second");
+    seq += 1;
+    const person = await suDb.user.create({
+      data: personData({
+        tenantId: first,
+        email: `sd-${process.pid}-${seq}-two@x.test`,
+        role: "AGENT",
+        passwordHash: "x",
+      }),
+      select: { id: true },
+    });
+    users.push(person.id);
+    await suDb.tenantUser.create({
+      data: { tenantId: second, userId: person.id, role: "AGENT" },
+    });
+    await expect(
+      updateUserRole(
+        fleet(9_999_998n),
+        person.id,
+        { role: "TENANT_ADMIN" },
+        appDb,
+      ),
+    ).rejects.toBeInstanceOf(TenantRequiredError);
+    await updateUserRole(
+      fleet(9_999_998n),
+      person.id,
+      { role: "TENANT_ADMIN", tenantId: second },
+      appDb,
+    );
+    expect(await rowOf(person.id)).toEqual({
+      isSuperAdmin: false,
+      memberships: [
+        { tenantId: first, role: "AGENT" },
+        { tenantId: second, role: "TENANT_ADMIN" },
+      ],
+    });
+  });
+
+  // A tenant administrator's write is fenced to the tenant their session runs under, and naming
+  // another is refused rather than read as a move.
+  test("a tenant administrator naming another tenant is refused", async () => {
+    const home = await tenant("own");
+    const elsewhere = await tenant("other");
+    seq += 1;
+    const member = await suDb.user.create({
+      data: personData({
+        tenantId: home,
+        email: `sd-${process.pid}-${seq}-fenced@x.test`,
+        role: "AGENT",
+        passwordHash: "x",
+      }),
+      select: { id: true },
+    });
+    users.push(member.id);
+    await expect(
+      updateUserRole(
+        tenantAdmin(home, 9_999_997n),
+        member.id,
+        { role: "TENANT_ADMIN", tenantId: elsewhere },
+        appDb,
+      ),
     ).rejects.toBeInstanceOf(TenantNotChangeableError);
-    expect(await rowOf(member.id)).toEqual({ role: "AGENT", tenantId: home });
+    expect(await rowOf(member.id)).toEqual({
+      isSuperAdmin: false,
+      memberships: [{ tenantId: home, role: "AGENT" }],
+    });
   });
 });

@@ -11,7 +11,8 @@ import { IS_FREE } from "@/client/lib/env";
 import { reloadOntoSafeRoute } from "@/client/lib/tenantSwitch";
 import { cn } from "@/client/lib/utils";
 
-// Dedicated SUPER_ADMIN target-tenant picker mounted in the header (NOT inside the user menu).
+// Dedicated target-tenant picker mounted in the header (NOT inside the user menu): the SUPER_ADMIN's
+// over the whole fleet, and a person's over their memberships.
 // Switching sets the persisted X-Tenant-Id and does a FULL reload — the simplest TOCTOU-safe
 // switch (a single source of truth after reload: the header, AuthContext, branding and every
 // cache are rebuilt for the new tenant, with no in-flight request capturing the old one).
@@ -19,12 +20,39 @@ const itemCls =
   "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary";
 
 export function TenantSwitcher() {
+  // Mounted only for a SUPER_ADMIN (TenantIndicator), so the list is always this component's to read.
+  const { tenants, activeId } = useTenantList(true);
+  return <TenantPicker tenants={tenants} activeId={activeId} canCreate />;
+}
+
+// The same picker for a PERSON with several memberships (issue #756): their tenants come on the
+// session (`/auth/me`), the active one is the tenant the session runs under, and there is nothing to
+// create. Choosing one is the same persisted X-Tenant-Id and the same full reload.
+export function MembershipSwitcher({
+  tenants,
+  activeId,
+}: {
+  tenants: { id: string; name: string }[];
+  activeId: string | null;
+}) {
+  return (
+    <TenantPicker tenants={tenants} activeId={activeId} canCreate={false} />
+  );
+}
+
+function TenantPicker({
+  tenants,
+  activeId,
+  canCreate,
+}: {
+  tenants: { id: string; name: string }[];
+  activeId: string | null;
+  canCreate: boolean;
+}) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const confirmLeave = useConfirmLeave();
   const upgrade = useModalController();
-  // Mounted only for a SUPER_ADMIN (TenantIndicator), so the list is always this component's to read.
-  const { tenants, activeId } = useTenantList(true);
   const active = activeId ?? "";
 
   // The fallback label now only ever means what it says. A stored id the list does not have is
@@ -101,28 +129,32 @@ export function TenantSwitcher() {
                 })}
               </DropdownMenuPrimitive.RadioGroup>
             )}
-            <DropdownMenuPrimitive.Separator className="my-1 h-px bg-border" />
-            <DropdownMenuPrimitive.Item
-              className={cn(itemCls, "text-text-secondary")}
-              onSelect={() =>
-                // Free ships the same picker as Pro, but "create" opens the upgrade CTA instead of the
-                // create page. The modal is hosted at the component root (below), OUTSIDE this menu, so
-                // it survives the dropdown closing on select.
-                IS_FREE
-                  ? upgrade.open()
-                  : confirmLeave(() => navigate("/admin/tenants?create=1"))
-              }
-            >
-              <Plus className="h-4 w-4 shrink-0" aria-hidden="true" />
-              <span className="flex-1 truncate">
-                {t("tenant.create", "Create tenant")}
-              </span>
-            </DropdownMenuPrimitive.Item>
+            {canCreate && (
+              <>
+                <DropdownMenuPrimitive.Separator className="my-1 h-px bg-border" />
+                <DropdownMenuPrimitive.Item
+                  className={cn(itemCls, "text-text-secondary")}
+                  onSelect={() =>
+                    // Free ships the same picker as Pro, but "create" opens the upgrade CTA instead of the
+                    // create page. The modal is hosted at the component root (below), OUTSIDE this menu, so
+                    // it survives the dropdown closing on select.
+                    IS_FREE
+                      ? upgrade.open()
+                      : confirmLeave(() => navigate("/admin/tenants?create=1"))
+                  }
+                >
+                  <Plus className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span className="flex-1 truncate">
+                    {t("tenant.create", "Create tenant")}
+                  </span>
+                </DropdownMenuPrimitive.Item>
+              </>
+            )}
           </DropdownMenuPrimitive.Content>
         </DropdownMenuPrimitive.Portal>
       </DropdownMenuPrimitive.Root>
       {/* Free-only: hosts the upgrade modal opened by the "create" item above. Renders null in Pro. */}
-      <ProGate feature="multiTenant" controller={upgrade} />
+      {canCreate && <ProGate feature="multiTenant" controller={upgrade} />}
     </>
   );
 }

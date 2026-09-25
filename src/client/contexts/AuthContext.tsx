@@ -23,7 +23,8 @@ export interface User {
   name: string | null;
   role: string;
   // NOTE: null only for SUPER_ADMIN (cross-tenant). Used by the UI to scope per-tenant
-  // concerns (branding, realtime topic).
+  // concerns (branding, realtime topic). For everyone else it is the tenant THIS session runs
+  // under: the membership the console selected, or the person's default (issue #756).
   tenantId: string | null;
   // The tenant's display name (header chip). Only /auth/me returns it; login/signup/accept
   // responses omit it (optional here), and login() backfills it via a /me refresh. Null for
@@ -33,6 +34,9 @@ export interface User {
   // it; drives the settings change-password form vs the "you sign in with Google" note. Optional
   // because login/signup/accept responses omit it (backfilled by the /me refresh).
   hasPassword?: boolean;
+  // Every tenant the person belongs to, with the role held there (issue #756). Only /auth/me returns
+  // it; more than one puts the membership switcher in the header. Empty for the SUPER_ADMIN.
+  tenants?: { id: string; name: string; role: string }[];
 }
 
 export interface GoogleAuthProvider {

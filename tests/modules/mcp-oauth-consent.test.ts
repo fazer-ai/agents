@@ -11,6 +11,7 @@ import {
   issueConsentCsrf,
   upsertApproval,
 } from "@/modules/mcp/oauth/consent";
+import { personData } from "@/tests/utils/person";
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -66,12 +67,12 @@ describe.skipIf(!dbUp)("mcp oauth consent (pending + approvals)", () => {
     });
     tenantId = t.id;
     const u = await suDb.user.create({
-      data: {
+      data: personData({
         tenantId,
         email: `consent-${process.pid}@example.com`,
         role: "TENANT_ADMIN",
         passwordHash: "x",
-      },
+      }),
     });
     userId = u.id;
   });

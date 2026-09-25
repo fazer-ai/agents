@@ -1,7 +1,11 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { PrismaClient, UserRole } from "@/../generated/prisma/client";
 import type { ManageableRole } from "@/api/features/admin/admin.service";
-import { hashPassword } from "@/api/features/auth/auth.service";
+import {
+  hashPassword,
+  sessionUserOf,
+  verifyPassword,
+} from "@/api/features/auth/auth.service";
 import type { AuthUser } from "@/api/lib/auth";
 import basePrisma from "@/api/lib/prisma";
 import { asPrincipalOn, type TenantContext } from "@/lib/tenancy";
@@ -63,13 +67,37 @@ export class InviteNotFoundError extends Error {
   }
 }
 
+// The invitee ALREADY has an account and did not prove it is theirs: neither signed in as that person
+// nor the account's current password. An invitation joins an existing account to the tenant (issue
+// #756), and whoever holds the link must not be able to take that account over with it.
+export class InviteAccountProofError extends Error {
+  constructor() {
+    super("Sign in to the invited account, or give its current password");
+    this.name = "InviteAccountProofError";
+  }
+}
+
+// A NEW account needs a password (the existing-account path proves itself another way, so the field
+// is optional on the wire).
+export class InvitePasswordRequiredError extends Error {
+  constructor() {
+    super("A password is required to create the account");
+    this.name = "InvitePasswordRequiredError";
+  }
+}
+
+// Whether the person behind `email` already belongs to `tenantId`. The email is unique across the
+// install (issue #756), so this is one person and the question is their membership.
 async function emailExistsInTenant(
-  base: Pick<PrismaClient, "user">,
+  base: Pick<PrismaClient, "tenantUser">,
   email: string,
   tenantId: bigint,
 ): Promise<boolean> {
-  const existing = await base.user.findFirst({
-    where: { email: { equals: email.trim(), mode: "insensitive" }, tenantId },
+  const existing = await base.tenantUser.findFirst({
+    where: {
+      tenantId,
+      user: { email: { equals: email.trim(), mode: "insensitive" } },
+    },
     select: { id: true },
   });
   return existing !== null;
@@ -259,6 +287,9 @@ export async function revokeInvite(
 export interface ValidatedInvite {
   email: string;
   role: UserRole;
+  // Whether the invited email already has an account, so the accept page asks for that account's
+  // password instead of a new one. Only the holder of the (secret) link learns it.
+  existingAccount: boolean;
 }
 
 // Pre-fill lookup for the accept page. Returns null (generic) for missing/consumed/expired so the
@@ -272,27 +303,43 @@ export async function findValidInviteByToken(
     select: { email: true, role: true, consumedAt: true, expiresAt: true },
   });
   if (!row || inviteStatus(row) !== "pending") return null;
-  return { email: row.email, role: row.role };
+  const account = await base.user.findFirst({
+    where: { email: { equals: row.email, mode: "insensitive" } },
+    select: { id: true },
+  });
+  return {
+    email: row.email,
+    role: row.role,
+    existingAccount: account !== null,
+  };
 }
 
 export interface AcceptInviteParams {
   token: string;
-  password: string;
+  password?: string;
   name?: string | null;
+  // The person signed in on this browser, when there is one. An existing account accepts by being
+  // signed in as itself, or by its current password.
+  sessionUserId?: bigint | null;
 }
 
 const AUTH_USER_SELECT = {
   id: true,
-  tenantId: true,
   email: true,
   name: true,
-  role: true,
   googleId: true,
+  isSuperAdmin: true,
+  memberships: { select: { tenantId: true, role: true, createdAt: true } },
 } as const;
 
-// Consumes an invite and creates the user. tenantId + role come from the ROW (never the request).
-// Single-use via CAS consume in the same transaction as the user insert; the (tenant, lower(email))
-// unique index is the DB backstop against a duplicate account.
+// Consumes an invite and makes the invitee a member. tenantId + role come from the ROW (never the
+// request). Single-use via CAS consume in the same transaction as the write.
+//
+// One person per email (issue #756): when the email already has an account, the invitation adds a
+// MEMBERSHIP to it and changes nothing else about the account (not its password, not its name).
+// Otherwise it creates the account with its first membership. The (tenant, user) unique index is the
+// DB backstop against joining twice. The session it answers runs under the invited tenant, which is
+// where the person just asked to go.
 export async function acceptInvite(
   params: AcceptInviteParams,
   base: PrismaClient = basePrisma,
@@ -305,6 +352,7 @@ export async function acceptInvite(
       tenantId: true,
       email: true,
       role: true,
+      invitedById: true,
       consumedAt: true,
       expiresAt: true,
     },
@@ -315,26 +363,63 @@ export async function acceptInvite(
   if (await emailExistsInTenant(base, invite.email, invite.tenantId)) {
     throw new InviteEmailInUseError();
   }
-  const passwordHash = await hashPassword(params.password);
+  const account = await base.user.findFirst({
+    where: { email: { equals: invite.email, mode: "insensitive" } },
+    select: { id: true, passwordHash: true },
+  });
+  if (account) {
+    const signedInAsIt = params.sessionUserId === account.id;
+    const knowsPassword =
+      !signedInAsIt &&
+      account.passwordHash !== null &&
+      typeof params.password === "string" &&
+      (await verifyPassword(params.password, account.passwordHash));
+    if (!signedInAsIt && !knowsPassword) {
+      throw new InviteAccountProofError();
+    }
+  } else if (!params.password || params.password.length < 8) {
+    throw new InvitePasswordRequiredError();
+  }
+  const passwordHash =
+    account || !params.password ? null : await hashPassword(params.password);
 
-  return base.$transaction(async (tx) => {
+  const row = await base.$transaction(async (tx) => {
     // CAS consume: a concurrent/replayed accept sees count 0 and is rejected (single-use).
     const consumed = await tx.invitation.updateMany({
       where: { id: invite.id, consumedAt: null },
       data: { consumedAt: new Date() },
     });
     if (consumed.count === 0) throw new InviteInvalidError();
+    const membership = {
+      tenantId: invite.tenantId,
+      role: invite.role,
+      invitedById: invite.invitedById,
+    };
+    if (account) {
+      await tx.tenantUser.create({
+        data: { ...membership, userId: account.id },
+      });
+      return tx.user.update({
+        where: { id: account.id },
+        // Accept signs the person in; stamp lastLoginAt as a login would.
+        data: { lastLoginAt: new Date() },
+        select: AUTH_USER_SELECT,
+      });
+    }
     return tx.user.create({
       data: {
         email: invite.email,
         passwordHash,
         name: params.name?.trim() || null,
-        tenantId: invite.tenantId,
-        role: invite.role,
+        memberships: { create: membership },
         // Accept auto-logs-in; stamp lastLoginAt so the Google-link block doesn't trip later.
         lastLoginAt: new Date(),
       },
       select: AUTH_USER_SELECT,
     });
   });
+  const session = sessionUserOf(row);
+  if (!session) throw new InviteInvalidError();
+  if (session.role === "SUPER_ADMIN") return session;
+  return { ...session, tenantId: invite.tenantId, role: invite.role };
 }

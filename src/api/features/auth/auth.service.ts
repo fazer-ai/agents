@@ -3,6 +3,7 @@ import type { AuthUser } from "@/api/lib/auth";
 import prisma from "@/api/lib/prisma";
 import config from "@/config";
 import { asSuperAdmin, runScoped } from "@/lib/tenancy";
+import { type Membership, resolveMembership } from "@/lib/tenancy/membership";
 
 function emailDomainMatches(email: string, domains: string[]): boolean {
   if (domains.length === 0) return false;
@@ -37,22 +38,77 @@ export function getSignupRoleForEmail(
     : "AGENT";
 }
 
+// A person and the tenants they belong to (issue #756): one user per email, a membership per tenant.
 const AUTH_USER_SELECT = {
   id: true,
-  tenantId: true,
   email: true,
   name: true,
-  role: true,
   googleId: true,
+  isSuperAdmin: true,
+  memberships: {
+    select: { tenantId: true, role: true, createdAt: true },
+  },
 } as const;
 
+type PersonRow = {
+  id: bigint;
+  email: string;
+  name: string | null;
+  googleId: string | null;
+  isSuperAdmin: boolean;
+  memberships: Membership[];
+};
+
+// The session shape of a person as a login answers it, before the console has chosen a tenant: the
+// SUPER_ADMIN is tenant-less, anyone else runs under their default membership (the oldest, per
+// src/lib/tenancy/membership.ts). Null for a person with no membership, who has no tenant to enter;
+// `getAuthUser` refuses the same person on every request, so a login that let them through would
+// only set a cookie that authenticates nothing.
+export function sessionUserOf(row: PersonRow): AuthUser | null {
+  const { isSuperAdmin, memberships, ...person } = row;
+  if (isSuperAdmin) {
+    return { ...person, tenantId: null, role: "SUPER_ADMIN", memberships };
+  }
+  const current = resolveMembership(memberships, undefined);
+  if (current === null || "rejected" in current) return null;
+  return { ...person, ...current, memberships };
+}
+
+// A person who authenticated but belongs to no tenant (and is not a SUPER_ADMIN). The login answers it
+// like bad credentials: there is nothing to enter, and a distinct answer would only tell a guesser
+// that the password was right.
+export class NoMembershipError extends Error {
+  constructor() {
+    super("The account belongs to no tenant");
+    this.name = "NoMembershipError";
+  }
+}
+
+export function requireSessionUser(row: PersonRow): AuthUser {
+  const user = sessionUserOf(row);
+  if (!user) throw new NoMembershipError();
+  return user;
+}
+
+// Whether the person holds an administrative role anywhere: SUPER_ADMIN, or TENANT_ADMIN in at least
+// one tenant. Read where an account's power, not one membership's, is what matters (the Google-link
+// block in google.service.ts).
+export function isAdminAnywhere(row: {
+  isSuperAdmin: boolean;
+  memberships: readonly { role: UserRole }[];
+}): boolean {
+  return row.isSuperAdmin || row.memberships.some((m) => m.role !== "AGENT");
+}
+
 export async function getUserByEmail(email: string) {
+  // NOTE: `findFirst` over a case-insensitive match is still exact: the email is unique across the
+  // install, case folded (`users_email_key` on lower(email), issue #756). Before, it was unique per
+  // tenant and this read picked one of a person's rows with no order at all.
   return prisma.user.findFirst({
     where: { email: { equals: email.trim(), mode: "insensitive" } },
     select: {
       ...AUTH_USER_SELECT,
       passwordHash: true,
-      googleId: true,
       lastLoginAt: true,
     },
   });
@@ -67,31 +123,32 @@ export async function getUserById(id: bigint) {
   });
 }
 
-export async function getUserByGoogleId(
-  googleId: string,
-): Promise<AuthUser | null> {
+export async function getUserByGoogleId(googleId: string) {
   return prisma.user.findUnique({
     where: { googleId },
-    select: AUTH_USER_SELECT,
+    select: { ...AUTH_USER_SELECT, lastLoginAt: true },
   });
 }
 
 // NOTE: public signup users are always AGENT and must belong to a tenant; the caller
-// resolves which tenant (see resolveDefaultTenantId).
+// resolves which tenant (see resolveDefaultTenantId). The person and their membership are created
+// together, so a signup never leaves a user with nowhere to enter.
 export async function createUser(
   email: string,
   passwordHash: string,
   tenantId: bigint,
 ): Promise<AuthUser> {
-  return prisma.user.create({
+  const row = await prisma.user.create({
     data: {
       email: email.trim().toLowerCase(),
       passwordHash,
-      tenantId,
-      role: getSignupRoleForEmail(email, false),
+      memberships: {
+        create: { tenantId, role: getSignupRoleForEmail(email, false) },
+      },
     },
     select: AUTH_USER_SELECT,
   });
+  return sessionUserOf(row) as AuthUser;
 }
 
 export class SetupAlreadyCompleteError extends Error {
@@ -121,7 +178,7 @@ export function slugifyCompany(name: string): string {
   return slug || "default";
 }
 
-// NOTE: First-run bootstrap. Creates the SUPER_ADMIN (tenant_id NULL — fleet-level) and the initial
+// NOTE: First-run bootstrap. Creates the SUPER_ADMIN (no membership — fleet-level) and the initial
 // Tenant (named after the operator's company, Chatwoot-style onboarding — no more hardcoded
 // "Default"), inside one transaction under asSuperAdmin (the Tenant INSERT needs the fleet role so
 // RLS WITH CHECK passes). The advisory lock + count re-check make it idempotent across replicas.
@@ -149,13 +206,12 @@ export async function createInitialAdmin(params: {
       select: { id: true },
     });
 
-    const user = await tx.user.create({
+    const row = await tx.user.create({
       data: {
         email: params.email.trim().toLowerCase(),
         passwordHash: params.passwordHash,
         name: params.name,
-        role: "SUPER_ADMIN",
-        tenantId: null,
+        isSuperAdmin: true,
         // NOTE: setup auto-logs-in the operator, who already proved control (setup token
         // + just-set password). Stamp lastLoginAt so this account is not caught by the
         // never-logged-in Google-link block in google.service.
@@ -163,7 +219,7 @@ export async function createInitialAdmin(params: {
       },
       select: AUTH_USER_SELECT,
     });
-    return { user, tenantId: tenant.id };
+    return { user: sessionUserOf(row) as AuthUser, tenantId: tenant.id };
   });
 }
 
@@ -185,16 +241,21 @@ export async function createGoogleUser(params: {
   name: string | null;
   tenantId: bigint;
 }): Promise<AuthUser> {
-  return prisma.user.create({
+  const row = await prisma.user.create({
     data: {
       email: params.email.trim().toLowerCase(),
       googleId: params.googleId,
       name: params.name,
-      tenantId: params.tenantId,
-      role: getSignupRoleForEmail(params.email, true),
+      memberships: {
+        create: {
+          tenantId: params.tenantId,
+          role: getSignupRoleForEmail(params.email, true),
+        },
+      },
     },
     select: AUTH_USER_SELECT,
   });
+  return sessionUserOf(row) as AuthUser;
 }
 
 // NOTE: Conditional update on `googleId: null` closes a TOCTOU race where two
@@ -216,11 +277,12 @@ export async function linkGoogleIdToUser(
       select: AUTH_USER_SELECT,
     });
     if (refetched?.googleId === googleId) {
-      return refetched;
+      return sessionUserOf(refetched);
     }
     return null;
   }
-  return getUserByGoogleId(googleId);
+  const linked = await getUserByGoogleId(googleId);
+  return linked ? sessionUserOf(linked) : null;
 }
 
 // NOTE: a password change was attempted on an account that has no local password (e.g. a
@@ -289,8 +351,8 @@ export async function updateLastLogin(userId: bigint) {
 
 // The tenant's display name for the authenticated user (header chip / context). Scoped read:
 // `tenants` is under RLS, so the GUC must be set (runScoped) — a bare read returns no row. Only
-// called for a non-SUPER_ADMIN (who always has a tenantId); SUPER_ADMIN shows the selected tenant
-// instead, resolved client-side from the tenant list.
+// called for a non-SUPER_ADMIN (whose session always runs under a membership); SUPER_ADMIN shows the
+// selected tenant instead, resolved client-side from the tenant list.
 export async function getTenantName(tenantId: bigint): Promise<string | null> {
   const tenant = await runScoped(
     { tenantId, userId: null, role: "TENANT_ADMIN" },
@@ -298,4 +360,24 @@ export async function getTenantName(tenantId: bigint): Promise<string | null> {
       db.tenant.findFirst({ where: { id: tenantId }, select: { name: true } }),
   );
   return tenant?.name ?? null;
+}
+
+// The tenants behind a person's memberships, named, oldest first (the order `resolveMembership`
+// defaults by), for the console's selector. One scoped read per membership: `tenants` is under RLS
+// and a person belongs to a handful at most. A membership whose tenant cannot be read is left out
+// rather than shown nameless.
+export async function listMembershipTenants(
+  memberships: readonly Membership[],
+): Promise<{ tenantId: bigint; name: string; role: UserRole }[]> {
+  const ordered = [...memberships].sort(
+    (a, b) =>
+      a.createdAt.getTime() - b.createdAt.getTime() ||
+      (a.tenantId < b.tenantId ? -1 : a.tenantId > b.tenantId ? 1 : 0),
+  );
+  const out: { tenantId: bigint; name: string; role: UserRole }[] = [];
+  for (const m of ordered) {
+    const name = await getTenantName(m.tenantId);
+    if (name !== null) out.push({ tenantId: m.tenantId, name, role: m.role });
+  }
+  return out;
 }

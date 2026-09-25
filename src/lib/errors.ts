@@ -119,6 +119,20 @@ export class ActiveTenantNotFoundError extends NotFoundError {
   }
 }
 
+// NOTE: the tenant selector a MEMBER sent names a tenant they do not belong to (issue #756). A person
+// with several memberships picks one per request with `X-Tenant-Id`; a selector outside them is
+// refused, never swapped for another membership, because silently landing in the wrong tenant is the
+// defect #756 opened on. It carries the rejected id for the same reason `ActiveTenantNotFoundError`
+// does: the console holding it drops the selection and reloads (src/api/lib/refusal.ts). A tenant that
+// does not exist gets this same answer, so the refusal says nothing about which ids exist.
+export class TenantSelectorRefusedError extends ForbiddenError {
+  readonly rejectedTenantId: string;
+  constructor(tenantId: string) {
+    super("Forbidden", "errors.forbidden");
+    this.rejectedTenantId = tenantId;
+  }
+}
+
 // NOTE: uniform 401 for the inbound receptor. An unknown/disabled route token and a bad
 // auth signature must look identical (same status, same body) so the response never reveals
 // which token strings are live.

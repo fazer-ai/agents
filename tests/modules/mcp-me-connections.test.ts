@@ -11,6 +11,7 @@ import {
   issueAccessToken,
   verifyAccessToken,
 } from "@/modules/mcp/oauth/tokens";
+import { personData } from "@/tests/utils/person";
 
 // Self-service connections module (oauth/connections.ts): a user lists/disconnects only their OWN MCP
 // apps. Fences everything by userId on the GLOBAL mcp_oauth_* tables. Real-DB harness (skips if down).
@@ -55,20 +56,20 @@ describe.skipIf(!dbUp)("mcp self-service connections", () => {
     });
     tenantA = tA.id;
     const uA = await su.user.create({
-      data: {
+      data: personData({
         email: `mc-a-${process.pid}@test.local`,
         passwordHash: "x",
         role: "TENANT_ADMIN",
         tenantId: tenantA,
-      },
+      }),
     });
     const uB = await su.user.create({
-      data: {
+      data: personData({
         email: `mc-b-${process.pid}@test.local`,
         passwordHash: "x",
         role: "TENANT_ADMIN",
         tenantId: tenantA,
-      },
+      }),
     });
     userA = uA.id;
     userB = uB.id;
@@ -101,7 +102,7 @@ describe.skipIf(!dbUp)("mcp self-service connections", () => {
       );
       if (tenantA) {
         await su.$executeRawUnsafe(
-          `DELETE FROM users WHERE tenant_id = ${tenantA}`,
+          `DELETE FROM users WHERE id IN (SELECT user_id FROM tenant_users WHERE tenant_id = ${tenantA})`,
         );
         await su.$executeRawUnsafe(`DELETE FROM tenants WHERE id = ${tenantA}`);
       }

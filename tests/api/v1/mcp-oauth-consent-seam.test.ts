@@ -4,6 +4,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { SignJWT } from "jose";
 import { PrismaClient, type UserRole } from "@/../generated/prisma/client";
 import config from "@/config";
+import { personData } from "@/tests/utils/person";
 
 // The consent DECISION, driven through its own door (#497).
 //
@@ -172,13 +173,13 @@ describe.skipIf(!dbUp)(
       tenantId = t.id;
       const { hashPassword } = await import("@/api/features/auth/auth.service");
       await suDb.user.create({
-        data: {
+        data: personData({
           id: USER_ID,
           tenantId,
           email: `p${USER_ID}@seam497.test`,
           passwordHash: await hashPassword(PASSWORD),
           role: "TENANT_ADMIN",
-        },
+        }),
       });
       await suDb.mcpOAuthClient.create({
         data: {
@@ -314,7 +315,7 @@ describe.skipIf(!dbUp)(
         role: "SUPER_ADMIN",
       });
       await suDb.$executeRawUnsafe(
-        `UPDATE users SET role = 'SUPER_ADMIN', tenant_id = NULL WHERE id = ${USER_ID}`,
+        `UPDATE users SET is_super_admin = true WHERE id = ${USER_ID}`,
       );
       const { requestId, csrf } = await pending(null);
       const res = await server.handle(
@@ -325,7 +326,7 @@ describe.skipIf(!dbUp)(
         }),
       );
       await suDb.$executeRawUnsafe(
-        `UPDATE users SET role = 'TENANT_ADMIN', tenant_id = ${tenantId} WHERE id = ${USER_ID}`,
+        `UPDATE users SET is_super_admin = false WHERE id = ${USER_ID}`,
       );
       cookie = previous;
       expect(res.status).toBe(200);

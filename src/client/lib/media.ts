@@ -1,8 +1,8 @@
 import { getActiveTenantId } from "@/client/lib/activeTenant";
 import { recoverFromRejectedSelector } from "@/client/lib/tenantSelectorRecovery";
 
-// Fetches a same-origin media blob (the playground media endpoint) carrying the SUPER_ADMIN's
-// active-tenant selector. Native <img>/<audio>/<a> requests omit the X-Tenant-Id header, so for a
+// Fetches a same-origin media blob (the playground media endpoint) carrying the active-tenant
+// selector (the SUPER_ADMIN's, or a person's chosen membership). Native <img>/<audio>/<a> requests omit the X-Tenant-Id header, so for a
 // SUPER_ADMIN (whose tenant is resolved ONLY from that header) the media endpoint would resolve a
 // null tenant and reply "A target tenant is required". The Eden client adds the header on every API
 // call (src/client/lib/api.ts); this mirrors it for the raw fetches that load media bytes.

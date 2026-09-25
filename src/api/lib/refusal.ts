@@ -1,6 +1,10 @@
 import { getLocaleFromHeader, translateWithLocale } from "@/api/lib/i18n";
 import { REJECTED_TENANT_SELECTOR_HEADER } from "@/lib/console-params";
-import { ActiveTenantNotFoundError, type AppError } from "@/lib/errors";
+import {
+  ActiveTenantNotFoundError,
+  type AppError,
+  TenantSelectorRefusedError,
+} from "@/lib/errors";
 
 // What a refusal ANSWERS. One place, because the two halves of it are decided by different things
 // and get confused for each other otherwise: the sentence is written for whoever is reading, in the
@@ -63,9 +67,11 @@ export function refusalBody(
 
 // The other half of what a refusal answers, and the reason it is a separate function: the body is
 // what the OPERATOR reads and this is what the CLIENT acts on before anything reads the body at all.
-// Empty for every refusal but one, so `Response.json` keeps setting its own content type.
+// Empty for every refusal but the two that refuse a tenant selector, so `Response.json` keeps setting
+// its own content type.
 export function refusalHeaders(error: AppError): Record<string, string> {
-  return error instanceof ActiveTenantNotFoundError
+  return error instanceof ActiveTenantNotFoundError ||
+    error instanceof TenantSelectorRefusedError
     ? { [REJECTED_TENANT_SELECTOR_HEADER]: error.rejectedTenantId }
     : {};
 }

@@ -7,6 +7,7 @@ import {
   updateUserRole,
 } from "@/api/features/admin/admin.service";
 import type { TenantContext } from "@/lib/tenancy";
+import { personData } from "@/tests/utils/person";
 import { waitUntilBlocked } from "@/tests/utils/pg-waits";
 
 // The invariant is "a scope keeps somebody who can administer it", and #496 is about WHERE it is
@@ -62,12 +63,12 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
     const mk = async (role: "TENANT_ADMIN" | "AGENT", n: number) =>
       (
         await suDb.user.create({
-          data: {
+          data: personData({
             tenantId: t.id,
             email: `la-${process.pid}-${seq}-${role}-${n}@x.test`,
             role,
             passwordHash: "x",
-          },
+          }),
           select: { id: true },
         })
       ).id;
@@ -83,12 +84,12 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
   const fleetIds: bigint[] = [];
   async function fleetAdmin(n: number): Promise<bigint> {
     const row = await suDb.user.create({
-      data: {
+      data: personData({
         tenantId: null,
         email: `la-fleet-${process.pid}-${n}@x.test`,
         role: "SUPER_ADMIN",
         passwordHash: "x",
-      },
+      }),
       select: { id: true },
     });
     fleetIds.push(row.id);
@@ -96,7 +97,7 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
   }
 
   const adminsOf = (tenantId: bigint) =>
-    suDb.user.count({ where: { tenantId, role: "TENANT_ADMIN" } });
+    suDb.tenantUser.count({ where: { tenantId, role: "TENANT_ADMIN" } });
 
   interface Holder {
     pid: number;
@@ -121,6 +122,11 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
     const done = conn
       .$transaction(
         async (tx) => {
+          // The person rows AND their memberships: a tenant administrator's writes lock the
+          // membership (issue #756), the fleet's lock the person.
+          await tx.$queryRawUnsafe(
+            `SELECT id FROM tenant_users WHERE user_id IN (${ids.join(",")}) ORDER BY id FOR UPDATE`,
+          );
           await tx.$queryRawUnsafe(
             `SELECT id FROM users WHERE id IN (${ids.join(",")}) ORDER BY id FOR UPDATE`,
           );
@@ -147,7 +153,7 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
         `DELETE FROM audit_logs WHERE tenant_id IN (${list})`,
       );
       await suDb.$executeRawUnsafe(
-        `DELETE FROM users WHERE tenant_id IN (${list})`,
+        `DELETE FROM users WHERE id IN (SELECT user_id FROM tenant_users WHERE tenant_id IN (${list}))`,
       );
       await suDb.$executeRawUnsafe(`DELETE FROM tenants WHERE id IN (${list})`);
     }
@@ -222,17 +228,24 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
       new URL("../../src/api/features/admin/admin.service.ts", import.meta.url),
     ).text();
     const code = src.replace(/^\s*\/\/.*$/gm, "");
-    for (const fn of ["updateUserRole", "deleteUser"]) {
-      const start = code.indexOf(`export async function ${fn}(`);
-      const body = code.slice(start, code.indexOf("\nexport ", start + 1));
-      const scopeLock = body.indexOf("lockAdminScope(");
-      const rowLock = body.indexOf("lockUserInScope(");
-      expect(scopeLock).toBeGreaterThan(-1);
-      expect(rowLock).toBeGreaterThan(scopeLock);
+    // Every path through a writer is one scope-lock call followed by its row locks: S = the scope
+    // locks, R = a row lock (the membership for a tenant administrator, the person for the fleet).
+    // A row lock ahead of a scope lock, or a second scope lock after a row lock on the same path, is
+    // the shape that brings the cycle back.
+    for (const fn of ["setMembershipRole", "updateUserRole", "deleteUser"]) {
+      const start = code.search(new RegExp(`async function ${fn}\\(`));
+      expect(start).toBeGreaterThan(-1);
+      const rest = code.slice(start + 1);
+      const end = rest.search(/\n(export )?(async )?function /);
+      const body = end === -1 ? rest : rest.slice(0, end);
+      const locks = [
+        ...body.matchAll(/lockAdminScopes\(|lockMembership\(|lockPerson\(/g),
+      ]
+        .map((m) => (m[0].startsWith("lockAdminScopes") ? "S" : "R"))
+        .join("");
+      // updateUserRole's tenant path delegates to setMembershipRole; its fleet path locks on its own.
+      expect(locks).toMatch(/^(SR+)+$/);
     }
-    // And nothing takes the scope lock a second time, which is the shape that would put a scope
-    // lock after a row lock and bring the cycle back.
-    expect(code.match(/await lockAdminScope\(/g) ?? []).toHaveLength(2);
   });
 
   // Run two writers so they read the scope at the same instant, and PROVE they did: both are parked

@@ -10,9 +10,12 @@ import {
   hashPassword,
   IncorrectPasswordError,
   isEmailDomainAllowed,
+  listMembershipTenants,
+  NoMembershipError,
   NoPasswordSetError,
   resolveDefaultTenantId,
   SetupAlreadyCompleteError,
+  sessionUserOf,
   updateLastLogin,
   verifyPassword,
 } from "@/api/features/auth/auth.service";
@@ -35,8 +38,10 @@ import {
 import {
   acceptInvite,
   findValidInviteByToken,
+  InviteAccountProofError,
   InviteEmailInUseError,
   InviteInvalidError,
+  InvitePasswordRequiredError,
 } from "@/api/features/invitations/invitation.service";
 import { authPlugin } from "@/api/lib/auth";
 import { translate } from "@/api/lib/i18n";
@@ -263,8 +268,8 @@ const baseAuthController = new Elysia({
     async ({ body, set, setAuthCookie }) => {
       const { email, password } = body;
 
-      const user = await getUserByEmail(email);
-      if (!user?.passwordHash) {
+      const row = await getUserByEmail(email);
+      if (!row?.passwordHash) {
         set.status = 401;
         return {
           error: translate(
@@ -274,8 +279,11 @@ const baseAuthController = new Elysia({
         };
       }
 
-      const isValidPassword = await verifyPassword(password, user.passwordHash);
-      if (!isValidPassword) {
+      const isValidPassword = await verifyPassword(password, row.passwordHash);
+      // NOTE: a person with no tenant to enter gets the same answer as a wrong password, after the
+      // password is checked: a distinct one would confirm the password to whoever guessed it.
+      const user = isValidPassword ? sessionUserOf(row) : null;
+      if (!user) {
         set.status = 401;
         return {
           error: translate(
@@ -338,9 +346,9 @@ const baseAuthController = new Elysia({
           ? await getTenantName(user.tenantId)
           : null;
 
-      // NOTE: Only the SUPER_ADMIN (tenantId null) drives a client-side active-tenant selector; for
-      // everyone else the tenant is fixed on the row. Hand back the first accessible tenant so the
-      // client can seed the selector on first login/reload instead of dead-ending on an empty state.
+      // NOTE: the SUPER_ADMIN (tenantId null) has no membership to default to. Hand back the first
+      // accessible tenant so the client can seed the selector on first login/reload instead of
+      // dead-ending on an empty state. A member always runs under a membership, so needs no seed.
       const defaultTenantId =
         user && user.role === "SUPER_ADMIN" && user.tenantId === null
           ? await resolveDefaultTenantId()
@@ -349,6 +357,14 @@ const baseAuthController = new Elysia({
       // Whether the account can change its password locally (false for Google-only users) — drives the
       // settings form vs the "you sign in with Google" note.
       const hasPassword = user ? await getUserHasPassword(user.id) : false;
+
+      // Every tenant the person belongs to, with the role held there (issue #756). The console shows
+      // its tenant selector when there is more than one; `tenantId` above is the one this request ran
+      // under. Empty for the SUPER_ADMIN, who picks from the whole tenant list instead.
+      const tenants =
+        user?.memberships && user.role !== "SUPER_ADMIN"
+          ? await listMembershipTenants(user.memberships)
+          : [];
 
       return {
         user: user
@@ -361,6 +377,11 @@ const baseAuthController = new Elysia({
                 user.tenantId === null ? null : user.tenantId.toString(),
               tenantName,
               hasPassword,
+              tenants: tenants.map((m) => ({
+                id: m.tenantId.toString(),
+                name: m.name,
+                role: m.role,
+              })),
             }
           : null,
         providers,
@@ -476,7 +497,13 @@ const baseAuthController = new Elysia({
           ),
         };
       }
-      return { invite: { email: invite.email, role: invite.role } };
+      return {
+        invite: {
+          email: invite.email,
+          role: invite.role,
+          existingAccount: invite.existingAccount,
+        },
+      };
     },
     {
       query: t.Object({
@@ -489,27 +516,53 @@ const baseAuthController = new Elysia({
       detail: {
         ...doc(
           "Validate invitation token",
-          "Validates an invitation token and returns the invited email and role to pre-fill the accept form. Returns a generic 404 for any missing, expired, or used token.",
+          "Validates an invitation token and returns the invited email and role to pre-fill the accept form, and whether that email already has an account (then the form asks for its current password instead of a new one). Returns a generic 404 for any missing, expired, or used token.",
         ),
         security: [],
       },
       response: errors(400, 404, 422),
     },
   )
-  // Consume the invite: create the user (tenant + role bound to the invite row, never the
-  // request) and auto-login. Bypasses SIGNUP_ENABLED / ALLOWED_SIGNUP_DOMAINS BY DESIGN — an
+  // Consume the invite: join the invitee to the tenant (tenant + role bound to the invite row, never
+  // the request) and auto-login. An email that already has an account gets a membership added to it,
+  // proven by being signed in as that account or by its current password (issue #756); otherwise the
+  // account is created. Bypasses SIGNUP_ENABLED / ALLOWED_SIGNUP_DOMAINS BY DESIGN — an
   // invite is explicit authorization by an admin, like the /setup operator bypass.
   .post(
     "/accept-invite",
-    async ({ body, set, setAuthCookie }) => {
+    async ({ body, set, setAuthCookie, getAuthUser }) => {
       let user: Awaited<ReturnType<typeof acceptInvite>>;
       try {
+        // A signed-in session only matters as proof of WHICH person it is; a stale tenant selector
+        // it carries is no reason to refuse the invitation.
+        const session = await getAuthUser().catch(() => null);
         user = await acceptInvite({
           token: body.token,
           password: body.password,
           name: body.name?.trim() || null,
+          sessionUserId: session && !session.isApiKey ? session.id : null,
         });
       } catch (error) {
+        if (error instanceof InviteAccountProofError) {
+          set.status = 401;
+          return {
+            error: translate(
+              "errors.inviteAccountProof",
+              "This email already has an account: enter its current password",
+            ),
+            field: "password",
+          };
+        }
+        if (error instanceof InvitePasswordRequiredError) {
+          set.status = 422;
+          return {
+            error: translate(
+              "errors.invitePasswordRequired",
+              "Choose a password with at least 8 characters",
+            ),
+            field: "password",
+          };
+        }
         if (error instanceof InviteInvalidError) {
           set.status = 410;
           return {
@@ -550,11 +603,14 @@ const baseAuthController = new Elysia({
           maxLength: 256,
           description: "Opaque invitation token from the invite link.",
         }),
-        password: t.String({
-          minLength: 8,
-          maxLength: 256,
-          description: "Password for the new account (minimum 8 characters).",
-        }),
+        password: t.Optional(
+          t.String({
+            minLength: 1,
+            maxLength: 256,
+            description:
+              "Password for the new account (minimum 8 characters), or the current password of the account the invited email already has. Omit only when signed in as that account.",
+          }),
+        ),
         name: t.Optional(
           t.String({
             maxLength: 200,
@@ -565,11 +621,11 @@ const baseAuthController = new Elysia({
       detail: {
         ...doc(
           "Accept invitation",
-          "Consumes an invitation token to create the user (tenant and role bound to the invite row) and logs it in. Bypasses signup gates by design. Returns 410 for an invalid or expired invite and 409 if the email is already in use.",
+          "Consumes an invitation token to join the invitee to the tenant (tenant and role bound to the invite row) and logs them in. An email with no account gets one created with the given password; an email that already has one gets the membership added, proven by the session or the account's current password (401 otherwise). Bypasses signup gates by design. Returns 410 for an invalid or expired invite and 409 if the person already belongs to the tenant.",
         ),
         security: [],
       },
-      response: errors(400, 409, 410, 422),
+      response: errors(400, 401, 409, 410, 422),
     },
   )
   .post(
@@ -640,13 +696,14 @@ const googleAuthController = baseAuthController.post(
         };
       }
       // NOTE: GoogleEmailNotVerifiedError, GoogleIdMismatchError,
-      // GoogleAdminLinkBlockedError, and jose's JWT/JWS verification failures
+      // GoogleAdminLinkBlockedError, NoMembershipError, and jose's JWT/JWS verification failures
       // all map to a generic 401 so we don't leak whether an account exists,
       // how it is linked, or that it has elevated privileges.
       if (
         error instanceof GoogleEmailNotVerifiedError ||
         error instanceof GoogleIdMismatchError ||
         error instanceof GoogleAdminLinkBlockedError ||
+        error instanceof NoMembershipError ||
         error instanceof jose.errors.JOSEError
       ) {
         logger.warn({ error }, "Google sign-in rejected");

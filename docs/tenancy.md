@@ -17,7 +17,8 @@ Everything lives under [`@/lib/tenancy`](../src/lib/tenancy):
 
 - `runScoped(ctx, fn)` — runs `fn(db)` in a tenant-scoped transaction. `db` is a branded `ScopedDb`; only the provider can produce one, so passing the base `prisma` into a service that expects a `ScopedDb` does not type-check. `create`/`createMany`/`upsert` auto-inject `tenant_id` (and override any caller-supplied value). Throws `TenantTargetRequiredError` if `ctx.tenantId` is null.
 - `asSuperAdmin(fn)` — audited fleet/cross-tenant path. Becomes the fleet role for the length of the transaction (`set_config('role', …, true)`, which resets on commit and on rollback), and that role is what every table's `fleet_super_admin` policy is written `TO` — so RLS allows every row (incl. `tenant_id NULL` audit rows and creating new tenants). Only call when the principal is `SUPER_ADMIN`.
-- `resolveRequestTenantContext(user, headerTenantId)` — pure resolution of the request `TenantContext`. `X-Tenant-Id` is honored **only** for `SUPER_ADMIN` (who has no home tenant and selects a target per request); for anyone else it is forgeable and ignored — a mismatch is flagged as an anomaly to log, never accepted.
+- `resolveMembership(memberships, headerTenantId)` ([`membership.ts`](../src/lib/tenancy/membership.ts)) — which of a PERSON's memberships a request runs under (issue #756). `getAuthUser` calls it: a selector naming a membership runs under it with the role held there, a selector outside them is **refused** (`403`, the rejected id in `X-Tenant-Id-Invalid` so the console drops it) and never exchanged for another tenant, and no selector runs under the oldest membership.
+- `resolveRequestTenantContext(user, headerTenantId)` — pure resolution of the request `TenantContext`. For `SUPER_ADMIN` (who has no membership and selects a target per request) the header picks any tenant. A person's selector was already resolved against their memberships above. For a principal bound to one tenant (an API key) it is forgeable and ignored — a mismatch is flagged as an anomaly to log, never accepted.
 - `roleAtLeast` / `isAdminRole` — role hierarchy `SUPER_ADMIN > TENANT_ADMIN > AGENT` (the rank itself lives in the pure [`@/lib/roles`](../src/lib/roles.ts), shared with the React client and CLI scripts). Gate by rank, never by `!== "AGENT"`.
 
 The Elysia boundary is [`tenancyPlugin`](../src/api/middlewares/tenancy.ts): it derives `tenantContext` from the authenticated user + `X-Tenant-Id`. Handlers/services then pass it to `runScoped`/`asSuperAdmin`.
@@ -83,14 +84,20 @@ Two consequences worth knowing before touching this:
 
 `tenants` is keyed by `id`; `audit_logs` allows `tenant_id NULL` rows only through the fleet policy
 (never leaked to a tenant — `tenant_id = <value>` is never TRUE for a NULL row, and a missing GUC
-yields NULL, which is not TRUE either). The `users` and `mcp_oauth_*` tables are **global identity
-tables, NOT under tenant RLS** — they are read before a tenant context exists, so isolation there is
-by explicit `tenant_id` filtering + the `authorize()` gate (see
+yields NULL, which is not TRUE either). The `users`, `tenant_users` and `mcp_oauth_*` tables are
+**global identity tables, NOT under tenant RLS** — they are read before a tenant context exists, so
+isolation there is by explicit `tenant_id` filtering + the `authorize()` gate (see
 [`admin.service.ts`](../src/api/features/admin/admin.service.ts)).
 
 ## Roles & first-run
 
-`UserRole` is `SUPER_ADMIN | TENANT_ADMIN | AGENT`. A CHECK constraint enforces "`SUPER_ADMIN` ⟺ `tenant_id IS NULL`" — on `users`, and since #308 on `api_keys` too, so a fleet-scoped API key is the same shape as a SUPER_ADMIN user and resolves to the same kind of principal (no home tenant, `X-Tenant-Id` honoured per request; see [`api-and-fleet.md`](api-and-fleet.md) → API keys). The first account is created via `/setup` as `SUPER_ADMIN` (tenant_id NULL) together with an initial `Tenant`, inside one `asSuperAdmin` transaction with an advisory lock + count re-check. `bun set-admin` promotes to `TENANT_ADMIN` of the first tenant (or `SUPER_ADMIN` when no tenant exists yet).
+`UserRole` is `SUPER_ADMIN | TENANT_ADMIN | AGENT`.
+
+**A person is one user, and the tenants they work in are memberships** (issue #756, Chatwoot's `users` + `account_users`). `users` holds the person: the email is unique across the install (case-insensitive, `users_email_key` on `lower(email)`) and there is one password. `tenant_users` holds one row per (tenant, person) with the role held THERE, so the same person can be `TENANT_ADMIN` in one tenant and `AGENT` in another; a CHECK keeps `SUPER_ADMIN` out of it. `SUPER_ADMIN` is a property of the person (`users.is_super_admin`), needs no membership and reaches every tenant. The session re-reads the person and their memberships on every request and runs under the one the `X-Tenant-Id` selector names (above); the console shows a tenant switcher to anyone with more than one.
+
+Who may do what to a person follows from that split. A tenant administrator manages MEMBERSHIPS of their own tenant: they change the role held there and remove the person from the tenant (the account goes with its last membership, since it has nowhere left to enter). The account itself (name, email, password, deletion, the other tenants) is the person's and the `SUPER_ADMIN`'s, so an administrator of one tenant cannot take over the account somebody uses in another. An invitation to an email that already has an account adds a membership to it, proven by being signed in as that account or by its current password, and changes nothing else about it.
+
+Since #308 `api_keys` carries a CHECK "`SUPER_ADMIN` ⟺ `tenant_id IS NULL`", so a fleet-scoped API key resolves to the same kind of principal as a SUPER_ADMIN user (no tenant, `X-Tenant-Id` honoured per request; see [`api-and-fleet.md`](api-and-fleet.md) → API keys). The first account is created via `/setup` as `SUPER_ADMIN` together with an initial `Tenant`, inside one `asSuperAdmin` transaction with an advisory lock + count re-check. `bun set-admin` makes the person `TENANT_ADMIN` of the first tenant (or `SUPER_ADMIN` when no tenant exists yet).
 
 ### Role attributes are not inherited, and the boot guard asks the neighbouring question
 

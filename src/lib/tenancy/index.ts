@@ -39,9 +39,10 @@ export function authorize(
 }
 
 // NOTE: pure request-context resolution (unit-tested without Elysia). X-Tenant-Id is a
-// control-plane header: honored ONLY for SUPER_ADMIN (who has no home tenant and selects
-// a target per request). For everyone else it is forgeable and ignored — a mismatching
-// value is flagged as an anomaly to log, never silently accepted.
+// control-plane header: a SUPER_ADMIN (who has no home tenant) selects any target with it here; a
+// person with memberships selects among them one step earlier, in `getAuthUser`, which refuses a
+// tenant they do not belong to. For a principal bound to one tenant (an API key) it is forgeable
+// and ignored — a mismatching value is flagged as an anomaly to log, never silently accepted.
 //
 // A malformed selector is REPORTED rather than folded into "no target", and the boundary refuses it
 // (api/middlewares/tenancy.ts). Folding was this function's old behaviour and the reason to change
@@ -83,9 +84,11 @@ export function resolveRequestTenantContext(
     };
   }
 
-  // NOTE: no malformed report for anyone else. The header is not honored for them at all, so its
-  // SHAPE decides nothing, and refusing on it would turn a forgeable value nobody reads into a way
-  // to fail another principal's request.
+  // NOTE: for a PERSON the selector was already resolved against their memberships before this point
+  // (src/api/lib/auth.ts, issue #756), so `user.tenantId` is the tenant it chose and a mismatch here
+  // can only come from a principal bound to one tenant: an API key. For that one the header is not
+  // honored at all, so its SHAPE decides nothing, and refusing on it would turn a forgeable value
+  // nobody reads into a way to fail another principal's request.
   const anomaly =
     headerTenantId !== undefined &&
     headerTenantId !== String(user.tenantId ?? "");

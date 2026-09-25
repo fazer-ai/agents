@@ -1,9 +1,13 @@
 {
   "acceptInvite": {
+    "currentPassword": "Current password",
+    "existingSubtitle": "This email already has an account. Enter its password to add this tenant to it.",
     "failed": "Could not accept the invitation",
     "invalid": "This invitation link is invalid or has expired.",
     "invalidTitle": "Invitation unavailable",
+    "join": "Join",
     "namePlaceholder": "Optional",
+    "signedInSubtitle": "You are signed in with this email. Join to add this tenant to your account.",
     "submit": "Activate account",
     "submitting": "Activating…",
     "subtitle": "Set a password to activate your account.",
@@ -36,6 +40,9 @@
     "noUsers": "No users found",
     "promote": "Promote",
     "promoteTooltip": "Promote to Admin",
+    "removeUser": "Remove from tenant",
+    "removeUserDone": "User removed from the tenant.",
+    "removeUserWarning": "This removes {{email}} from this tenant and revokes their access to it. Their account and any other tenants they belong to are kept.",
     "role": "Role",
     "roleUpdated": "Role updated to {{role}}",
     "roleUpdateFailed": "Failed to update role",

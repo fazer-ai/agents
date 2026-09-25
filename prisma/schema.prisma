@@ -114,7 +114,7 @@ model Tenant {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  users                         User[]
+  members                       TenantUser[]
   invitations                   Invitation[]
   chatwootDeployments           ChatwootDeployment[]
   chatwootInstances             ChatwootInstance[]
@@ -199,26 +199,45 @@ model AppBranding {
 }
 
 // NOTE: Global identity table — NOT under tenant RLS (read before a tenant context
-// exists, e.g. login/bootstrap). Isolation is via the $extends GLOBAL_MODELS allowlist
-// + authorize(). tenant_id is NULL only for SUPER_ADMIN (enforced by a CHECK constraint
-// in the migration). Email uniqueness is per-tenant (case-insensitive) via partial
-// functional indexes in the migration.
+// exists, e.g. login/bootstrap). One row per PERSON, the way Chatwoot's `users` is: the email is
+// unique across the whole install (case-insensitive, functional index in the migration) and there is
+// one password. Which tenants the person works in, and with what role, lives in `TenantUser`; the
+// only role on the person is SUPER_ADMIN, which needs no membership and sees every tenant. Issue #756.
 model User {
   id           BigInt    @id @default(autoincrement())
-  tenantId     BigInt?   @map("tenant_id")
   email        String
   passwordHash String?   @map("password_hash")
   googleId     String?   @unique @map("google_id")
   name         String?
-  role         UserRole  @default(AGENT)
+  isSuperAdmin Boolean   @default(false) @map("is_super_admin")
   lastLoginAt  DateTime? @map("last_login_at")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
-  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  memberships TenantUser[]
 
-  @@index([tenantId])
   @@map("users")
+}
+
+// A person's membership in a tenant, and their role THERE (Chatwoot's `account_users`). GLOBAL table
+// (no RLS) like `users`: the session reads a person's memberships before any tenant is chosen, to
+// decide which one the request may be scoped to. A CHECK (in the migration) keeps SUPER_ADMIN out:
+// that is a property of the person, not of a membership. Issue #756.
+model TenantUser {
+  id          BigInt   @id @default(autoincrement())
+  tenantId    BigInt   @map("tenant_id")
+  userId      BigInt   @map("user_id")
+  role        UserRole @default(AGENT)
+  invitedById BigInt?  @map("invited_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, userId])
+  @@index([userId])
+  @@map("tenant_users")
 }
 
 // Tenant-scoped user invitation. GLOBAL table (NO RLS) like `users`: acceptInvite looks it up by
@@ -2173,27 +2192,27 @@ model ExecutionLog {
 // External alert sink (Discord / generic webhook) for execution-flow warnings/errors. `url` is an
 // encryptJson blob (a Discord URL embeds a token) — never stored or returned in the clear.
 model AlertChannel {
-  id        BigInt   @id @default(autoincrement())
-  tenantId  BigInt   @map("tenant_id")
-  name      String
+  id              BigInt   @id @default(autoincrement())
+  tenantId        BigInt   @map("tenant_id")
+  name            String
   // discord|webhook.
-  type      String
+  type            String
   // encryptJson blob — masked in every DTO/log, decrypted only at delivery.
-  url       String
-  enabled   Boolean  @default(true)
+  url             String
+  enabled         Boolean  @default(true)
   // warn|error: the minimum level that triggers this channel.
-  minLevel  String   @default("error") @map("min_level")
+  minLevel        String   @default("error") @map("min_level")
   // Stage allowlist; empty = all stages.
-  stages    String[] @default([])
+  stages          String[] @default([])
   // Agents whose lines never alert on this channel (issue #843), e.g. an evaluation battery's test
   // agents beside production on one instance. Their lines stay in the flow log, which the battery
   // reads; only this channel's dispatch skips them. No FK: an id whose agent is deleted matches
   // nothing and is harmless.
   excludeAgentIds BigInt[] @default([]) @map("exclude_agent_ids")
   // Vault ref for the HMAC signing secret (webhook type only).
-  secretRef String?  @map("secret_ref")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  secretRef       String?  @map("secret_ref")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
 
   tenant     Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   deliveries AlertDelivery[]

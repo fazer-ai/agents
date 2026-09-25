@@ -1,18 +1,40 @@
-// The SUPER_ADMIN's selected target tenant, sent as X-Tenant-Id on every API call. The backend
-// honors it ONLY for SUPER_ADMIN (it logs an anomaly + ignores it for anyone else), so a stale
-// value in a non-super browser is harmless. Persisted so a reload keeps the selection.
+// The selected tenant, sent as X-Tenant-Id on every API call: any tenant for a SUPER_ADMIN, one of
+// the person's memberships for everyone else (issue #756). The backend refuses a selector outside
+// what the session may reach and names it on the refusal, which is how a stale value (another
+// person's, on a shared browser, or a membership since removed) gets dropped
+// (src/client/lib/tenantSelectorRecovery.ts).
+//
+// Remembered PER TAB, with the last choice as the default for a new one: sessionStorage is the tab's
+// own, localStorage what the next tab starts from. One shared value would make choosing a tenant in
+// one tab move every other tab to it on their next request, under pages built for the old one.
 
 const KEY = "@app:active-tenant";
 
+function tabStore(): Storage | null {
+  return typeof sessionStorage === "undefined" ? null : sessionStorage;
+}
+
+function sharedStore(): Storage | null {
+  return typeof localStorage === "undefined" ? null : localStorage;
+}
+
 export function getActiveTenantId(): string | null {
-  if (typeof localStorage === "undefined") return null;
-  return localStorage.getItem(KEY);
+  const tab = tabStore();
+  const own = tab?.getItem(KEY) ?? null;
+  if (own !== null) return own;
+  // A tab that has not chosen starts from the last choice and KEEPS it: pinned to the tab on first
+  // read, so a later choice in another tab does not move this one.
+  const inherited = sharedStore()?.getItem(KEY) ?? null;
+  if (inherited !== null) tab?.setItem(KEY, inherited);
+  return inherited;
 }
 
 export function setActiveTenantId(id: string | null): void {
-  if (typeof localStorage === "undefined") return;
-  if (id) localStorage.setItem(KEY, id);
-  else localStorage.removeItem(KEY);
+  for (const store of [tabStore(), sharedStore()]) {
+    if (!store) continue;
+    if (id) store.setItem(KEY, id);
+    else store.removeItem(KEY);
+  }
 }
 
 // The set of selectable tenants changed (a tenant was created). Components that cache the list

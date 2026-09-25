@@ -162,7 +162,8 @@ describe("resolveRequestTenantContext", () => {
 describe("every model with a tenant_id is accounted for", () => {
   const KNOWN_UNREGISTERED: Record<string, string> = {
     // Documented exclusions (see the comment above TENANT_SCOPED_MODELS): global/identity tables.
-    User: "identity, not tenant data",
+    TenantUser:
+      "identity: a person's membership, read before any tenant is chosen (issue #756)",
     AuditLog: "written for global actions too",
     McpOAuthAccessToken: "OAuth identity table",
     McpOAuthRefreshToken: "OAuth identity table",

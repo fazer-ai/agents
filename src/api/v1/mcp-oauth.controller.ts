@@ -13,6 +13,7 @@ import {
   runScoped,
   type TenantContext,
 } from "@/lib/tenancy";
+import { roleIn } from "@/lib/tenancy/role-in";
 import { auditMutationOn } from "@/modules/audit/service";
 import {
   consumePendingAuthorization,
@@ -415,13 +416,30 @@ export const mcpOAuthController = new Elysia({
   .post(
     "/consent/:req",
     async ({ tenantContext, params, body }) => {
-      const ctx = tenantContext;
-      if (!ctx?.userId) throw new UnauthorizedError();
-      requireSession(ctx);
+      const sessionCtx = tenantContext;
+      if (!sessionCtx?.userId) throw new UnauthorizedError();
+      requireSession(sessionCtx);
+      const userId = sessionCtx.userId;
+      // The decision acts in the tenant the request was PARKED for, not the one the console tab
+      // happens to have selected: a person with several memberships (issue #756) parked it under
+      // their default at /authorize, which carries no selector, and may be looking at another tenant
+      // now. They still have to belong there, with the role read now.
+      let ctx = sessionCtx;
+      if (sessionCtx.role !== "SUPER_ADMIN") {
+        const parked = await getPendingAuthorization(params.req, userId);
+        if (
+          parked &&
+          parked.tenantId !== null &&
+          parked.tenantId !== sessionCtx.tenantId
+        ) {
+          const role = await roleIn(basePrisma, userId, parked.tenantId);
+          if (role !== null)
+            ctx = { ...sessionCtx, tenantId: parked.tenantId, role };
+        }
+      }
       // Mirrors /authorize, which parks a tenant-less pending for a fleet-level SUPER_ADMIN: the
       // console's `X-Tenant-Id` SELECTOR must not decide which trail a decision joins.
       const scopeTenantId = ctx.role === "SUPER_ADMIN" ? null : ctx.tenantId;
-      const userId = ctx.userId;
 
       // ONE TRANSACTION FOR THE DECISION AND ITS ROW. Consuming the pending, minting the code and
       // remembering the approval used to commit first, and the row was appended afterwards through
@@ -439,11 +457,10 @@ export const mcpOAuthController = new Elysia({
         // THE PRINCIPAL CHANGED UNDER THE REQUEST, and this used to be a fourth branch that wrote
         // nothing and did not even warn. The pending's tenant is written from the role held at
         // /authorize; if the role held now would file the row somewhere else, the decision cannot be
-        // attributed, and consenting on an unreadable trail is worse than refusing. Unreachable
-        // today and measured as such: only a SUPER_ADMIN parks a tenant-less pending,
-        // `users_role_tenant_check` forbids a SUPER_ADMIN with a tenant, and `updateUserRole` writes
-        // only the role — so the demotion this needs fails at the database (#534). It says so
-        // instead of falling through, because that is a constraint away from being reachable.
+        // attributed, and consenting on an unreadable trail is worse than refusing. Reachable since
+        // #756 by a person who LEFT the parked tenant between /authorize and this decision (the
+        // rescoping above only follows a membership that still exists), and by a fleet
+        // administrator demoted in between.
         if (pending.tenantId !== scopeTenantId) {
           throw new ConflictError(
             "the signed-in principal no longer matches this authorization request",

@@ -45,10 +45,11 @@ export function ProtectedRoute({
     const requested = new URLSearchParams(location.search).get(
       SWITCH_TENANT_PARAM,
     );
-    // A fresh login answers with the default membership's role and no membership list; `/auth/me`
-    // brings the list a moment later. Deciding before it lands would send an administrator of the
-    // linked tenant away and lose the link (review round 3).
-    if (requested && user.tenants === undefined) {
+    // A fresh login answers with the DEFAULT membership's role and no membership list; `/auth/me`
+    // brings the role held in the selected tenant, and the list, a moment later. Deciding before it
+    // lands would send an administrator of the selected or linked tenant away and lose the page they
+    // asked for (review rounds 3 and 6).
+    if (user.tenants === undefined) {
       return (
         <div className="flex min-h-dvh items-center justify-center bg-bg-primary">
           <Loader2 className="h-6 w-6 animate-spin text-text-secondary" />

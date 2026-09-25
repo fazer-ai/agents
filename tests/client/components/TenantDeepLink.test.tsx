@@ -385,6 +385,40 @@ describe("TenantDeepLink", () => {
     expect(localStorage.getItem(KEY)).toBe("20");
   });
 
+  // Review round 6: the same wait with no link at all. The role a fresh login answers is the default
+  // membership's, and the tab may have another tenant selected where the person is an administrator.
+  test("right after login, an admin page waits for the session before sending anybody away", async () => {
+    role = "AGENT";
+    userTenantId = "10";
+    userTenants = undefined;
+    const view = renderAdminRouteAt("");
+    await new Promise((r) => setTimeout(r, 50));
+    expect(shows("conversations")).toBe(false);
+    userTenants = [{ id: "10", name: "A", role: "AGENT" }];
+    view.rerender(
+      withI18n(
+        <MemoryRouter initialEntries={["/resources/vault"]}>
+          <ToastProvider>
+            <Routes>
+              <Route
+                path="/resources/vault"
+                element={
+                  <ProtectedRoute requireAdmin>
+                    <div>panel</div>
+                  </ProtectedRoute>
+                }
+              />
+              <Route path="/conversations" element={<div>conversations</div>} />
+            </Routes>
+          </ToastProvider>
+        </MemoryRouter>,
+      ),
+    );
+    await waitFor(() => {
+      expect(shows("conversations")).toBe(true);
+    });
+  });
+
   test("a link to a tenant where the person is an agent still meets the admin gate", async () => {
     role = "AGENT";
     userTenantId = "20";

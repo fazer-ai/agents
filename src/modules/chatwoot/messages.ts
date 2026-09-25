@@ -60,9 +60,9 @@ export interface ChatwootMessageRow {
   // How many of `visuals` are images the mailbox kept in the email body (issue #864). They carry no
   // attachment type, so this is what makes a message whose only content is one of them answerable.
   bodyImages?: number;
-  // True when the vision aggregate on this row came from the in-process stash, which is written by
-  // the pass that read the body images too; attachment meta alone never covers them (issue #864).
-  visionAggregate?: boolean;
+  // True when a vision pass already went through the body images (in-process stash): attachment
+  // meta never covers them, since they have no attachment to carry it (issue #864).
+  bodyRead?: boolean;
   // NOTE: The first usable location attachment's content (coordinates/title), for the
   // <localização> marker — mirrors the direct webhook path (issue #45). Null when absent/unusable.
   location: RenderableLocation | null;

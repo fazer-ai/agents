@@ -558,7 +558,11 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     await setVision(true);
     stashMediaAnnotation(
       { tenantId, instanceId, messageId: 1 },
-      { imageDescription: "Tudo lido antes.", attachmentsUnread: 0 },
+      {
+        imageDescription: "Tudo lido antes.",
+        attachmentsUnread: 0,
+        bodyRead: true,
+      },
     );
     const out = await reengage(1013, {
       content: "Segue",
@@ -702,6 +706,90 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
       { fail: new Set([broken]) },
     );
     expect(out.turn).toContain(unreadMarker(1));
+  });
+
+  test("a body of ornaments only is not downloaded again by the next turn", async () => {
+    await setVision(true);
+    const icon = blob(96, "icon.png");
+    const message = {
+      content: "Obrigado",
+      content_attributes: emailBag({
+        html: `<p>Obrigado</p><img src="${icon}">`,
+      }),
+    };
+    const first = await reengage(1020, message, {
+      sizes: { [icon]: [144, 144] },
+    });
+    expect(first.downloads).toEqual([icon]);
+    // Same message id, still inside the annotation's TTL: the pass already went through the body.
+    const second = await reengage(1021, message, {
+      sizes: { [icon]: [144, 144] },
+    });
+    expect(second.downloads).toEqual([]);
+    expect(provider.calls).toBe(0);
+  });
+
+  test("overflow is classified in batches no larger than the cap", async () => {
+    await setVision(true);
+    const photos = Array.from({ length: 8 }, (_, i) =>
+      blob(110 + i, `f${i}.jpeg`),
+    );
+    const icons = Array.from({ length: 12 }, (_, i) =>
+      blob(130 + i, `i${i}.png`),
+    );
+    const sizes = Object.fromEntries(
+      icons.map((u) => [u, [144, 144] as [number, number]]),
+    );
+    const id = await seedConversation(1022);
+    let inFlight = 0;
+    let peak = 0;
+    const base = stub({
+      page: {
+        payload: [
+          {
+            id: 1,
+            message_type: 0,
+            private: false,
+            content: "Fotos",
+            content_attributes: emailBag({
+              html: [...photos, ...icons]
+                .map((u) => `<img src="${u}">`)
+                .join(""),
+            }),
+          },
+        ],
+      },
+      sizes,
+      downloads: [],
+      metaWrites: [],
+    });
+    const client = await base();
+    const download = client.downloadAttachment.bind(client);
+    client.downloadAttachment = (async (url: string) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      try {
+        return await download(url);
+      } finally {
+        inFlight--;
+      }
+    }) as never;
+    const counted = async () => client;
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: () => new TurnCapturingModel("ok"),
+        makeClient: counted,
+        visionFetch: visionFetch(["Foto."]),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+    expect(res.outcome).toBe("posted");
+    expect(provider.calls).toBe(8);
+    expect(peak).toBeLessThanOrEqual(8);
   });
 
   test("a message whose body has no Chatwoot blob costs nothing", async () => {

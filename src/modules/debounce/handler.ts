@@ -523,14 +523,16 @@ async function fillMissingVisuals(args: {
   // deixou por ler de propósito (o teto por mensagem) ou por falha está dito na contagem de não
   // lidos, que é o que o modelo recebe.
   //
-  // Com UMA exceção: imagem do corpo do e-mail (#864) não tem anexo onde a leitura fique gravada, então
-  // uma meta de anexo não diz nada sobre ela. Só o agregado do stash, escrito pela passagem que leu o
-  // corpo também, cobre a mensagem; sem ele, a passagem roda de novo e reusa o que a meta já tem.
+  // Com imagem no corpo do e-mail (#864) a pergunta é outra: ela não tem anexo onde a leitura fique
+  // gravada, então uma meta de anexo não diz nada sobre ela. Só o stash da passagem que passou pelo
+  // corpo cobre a mensagem, inclusive quando tudo ali era ornamento; sem ele, a passagem roda de novo
+  // e reusa o que a meta já tem.
   const alvos = args.pending.filter(
     (m) =>
       hasUnextractedVisual(m.visuals) &&
-      ((!m.imageDescription && !m.extractedText) ||
-        ((m.bodyImages ?? 0) > 0 && !m.visionAggregate)),
+      ((m.bodyImages ?? 0) > 0
+        ? !m.bodyRead
+        : !m.imageDescription && !m.extractedText),
   );
   if (alvos.length === 0) return false;
 

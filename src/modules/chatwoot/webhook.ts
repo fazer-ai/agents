@@ -1819,7 +1819,8 @@ export async function runEagerMedia(
     !n.message.extractedText &&
     // Also a mark that this event has been through the pass: without it, a message whose every
     // extraction failed pays the whole provider bill again at the second call site.
-    !n.message.attachmentsUnread
+    !n.message.attachmentsUnread &&
+    !n.message.bodyRead
   ) {
     try {
       const visionCfg = await resolveVisionConfig(
@@ -1853,6 +1854,7 @@ export async function runEagerMedia(
           // A COUNT, phrased by the renderer, because it has to survive the debounce re-fetch.
           if (r.attachmentsUnread > 0)
             n.message.attachmentsUnread = r.attachmentsUnread;
+          if (r.bodyRead) n.message.bodyRead = true;
           if (r.imageDescription)
             n.message.imageDescription = r.imageDescription;
           if (r.extractedText) n.message.extractedText = r.extractedText;

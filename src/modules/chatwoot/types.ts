@@ -109,6 +109,9 @@ export interface NormalizedChatwootMessage {
   // renderer turns it into the marker that tells the model files are missing, so it must reach the
   // flush as well as the direct path — it rides the annotation store, not the payload.
   attachmentsUnread?: number | null;
+  // Filled by the eager vision pass: it went through the email body's images (issue #864), so the
+  // second call site of this delivery does not download them again.
+  bodyRead?: boolean;
   // The message author (message events only), from the payload `sender.webhook_data`. `type` is
   // "user" (a HUMAN agent), "agent_bot" (a bot — ours or another), or null/absent (the customer, on
   // incoming). Drives continuous ingestion: a human agent's outgoing reply is folded into the agent's

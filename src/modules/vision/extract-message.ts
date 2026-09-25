@@ -53,6 +53,8 @@ export interface MessageVisuals {
   extractedText: string | null;
   // Anexos que esta passagem não abriu: os que passaram do teto mais os que falharam.
   attachmentsUnread: number;
+  // Esta passagem percorreu as imagens do corpo do e-mail (#864), mesmo que fossem todas ornamento.
+  bodyRead: boolean;
 }
 
 // SE SOBROU ALGUMA COISA PARA ABRIR nesta mensagem. Uma pergunta só, e exportada, porque quem
@@ -192,23 +194,26 @@ export async function extractMessageVisuals(params: {
   }
   // O que passou do teto é baixado só para saber se é ornamento, sem ir ao provedor: um logotipo de
   // assinatura depois de oito fotos não é arquivo a pedir de novo.
-  const alemDoTeto = await Promise.all(
-    corpo.map((visual) =>
-      classifyBodyImage({
-        tenantId,
-        instanceId,
-        conversationId: params.conversationId,
-        messageId,
-        dataUrl: visual.dataUrl,
-        cfg: params.cfg,
-        base: params.base,
-        flow: params.flow,
-        deps: params.deps,
-        stashAnnotation: false,
-      }).catch(() => null),
-    ),
-  );
-  sobraram += alemDoTeto.filter((r) => r !== BODY_IMAGE_IGNORED).length;
+  // Em lotes do tamanho do teto, porque cada download fica inteiro em memória.
+  while (corpo.length > 0) {
+    const alemDoTeto = await Promise.all(
+      corpo.splice(0, VISION_MAX_ATTACHMENTS).map((visual) =>
+        classifyBodyImage({
+          tenantId,
+          instanceId,
+          conversationId: params.conversationId,
+          messageId,
+          dataUrl: visual.dataUrl,
+          cfg: params.cfg,
+          base: params.base,
+          flow: params.flow,
+          deps: params.deps,
+          stashAnnotation: false,
+        }).catch(() => null),
+      ),
+    );
+    sobraram += alemDoTeto.filter((r) => r !== BODY_IMAGE_IGNORED).length;
+  }
 
   const imagens: string[] = [];
   const documentos: string[] = [];
@@ -238,7 +243,8 @@ export async function extractMessageVisuals(params: {
   // chave de mensagem e a loja mescla campo a campo, então N extrações em paralelo deixariam só a
   // que terminou por último — e no Chatwoot upstream, onde a rota de write-back da meta não existe,
   // essa loja é o ÚNICO leitor do flush do debounce.
-  if (descricao || documento || naoLidos > 0)
+  const leuCorpo = todos.some((v) => v.id === null);
+  if (descricao || documento || naoLidos > 0 || leuCorpo)
     stashMediaAnnotation(
       { tenantId, instanceId, messageId },
       {
@@ -248,6 +254,7 @@ export async function extractMessageVisuals(params: {
         // finalmente leu tudo deixava de pé a contagem positiva anterior, e o flush renderizava
         // "N arquivos não lidos" ao lado da extração completa.
         attachmentsUnread: naoLidos,
+        ...(leuCorpo ? { bodyRead: true } : {}),
       },
     );
 
@@ -255,5 +262,6 @@ export async function extractMessageVisuals(params: {
     imageDescription: descricao,
     extractedText: documento,
     attachmentsUnread: naoLidos,
+    bodyRead: leuCorpo,
   };
 }

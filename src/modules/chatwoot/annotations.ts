@@ -20,6 +20,9 @@ export interface MediaAnnotation {
   // for it again. A COUNT, never text: it crosses the debounce re-fetch, where the notice this
   // becomes is phrased by the renderer like every other marker (PR #692 review, rounds 1 and 3).
   attachmentsUnread?: number;
+  // The pass that wrote this went through the email body's images too (issue #864). They leave no
+  // meta anywhere, so this is the only record that they were read, or were all ornaments.
+  bodyRead?: boolean;
 }
 
 const TTL_MS = 15 * 60 * 1000;
@@ -128,12 +131,7 @@ export function overlayMediaAnnotations(
     // the more complete reading of the same extraction — never a different one, since the pass is
     // idempotent per message and the store is message-keyed with a 15-minute TTL. Absent (another
     // process, or past the TTL), the meta still answers, which is what it is for.
-    if (
-      hit.note.imageDescription != null ||
-      hit.note.extractedText != null ||
-      hit.note.attachmentsUnread != null
-    )
-      row.visionAggregate = true;
+    if (hit.note.bodyRead) row.bodyRead = true;
     row.imageDescription =
       hit.note.imageDescription ?? row.imageDescription ?? null;
     row.extractedText = hit.note.extractedText ?? row.extractedText ?? null;

@@ -113,7 +113,17 @@ export function priceCall(
   const own = overrides ? findOverride(overrides, provider, model) : null;
   if (own && overrides)
     return {
-      costUsd: costAt(own, tokens, false),
+      // A cache rate the tenant left empty is "no discount": that part is charged at its input rate,
+      // since a price the account stated must not turn a call into no price at all.
+      costUsd: costAt(
+        {
+          ...own,
+          cachedInput: own.cachedInput ?? own.input,
+          cacheWrite: own.cacheWrite ?? own.input,
+        },
+        tokens,
+        false,
+      ),
       priceTable: overridePriceTable(overrides),
     };
   return {

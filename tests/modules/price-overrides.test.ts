@@ -104,7 +104,8 @@ describe("what prices a call", () => {
     ).toBeCloseTo(1, 12);
   });
 
-  test("a cache read on a tenant price with no cached rate is no price, not a guess", () => {
+  // A cache rate the tenant left empty means no discount, never no price (verification of #865).
+  test("a cache read or write on a tenant price with no cache rate is charged at its input rate", () => {
     const own = block([
       { provider: "openai", model: "gpt-4o-mini", input: 0.1, output: 0.3 },
     ]);
@@ -112,11 +113,15 @@ describe("what prices a call", () => {
       priceCall(
         "openai",
         "gpt-4o-mini",
-        { ...tokens(1_000, 100), cachedReadTokens: 500 },
+        {
+          ...tokens(1_000, 100),
+          cachedReadTokens: 500,
+          cacheCreationTokens: 200,
+        },
         AT,
         own,
       ).costUsd,
-    ).toBeNull();
+    ).toBeCloseTo((1_000 * 0.1 + 100 * 0.3) / 1e6, 12);
   });
 });
 
@@ -439,7 +444,8 @@ describe.skipIf(!dbUp)("a saved price prices the next call", () => {
         { base: appDb },
       );
       expect(bad.ok).toBe(false);
-      if (!bad.ok) expect(bad.error).toContain("price row 1 is not valid");
+      if (!bad.ok)
+        expect(bad.error).toContain("price row 1 is not valid: input:");
     }
     // A bad list refuses the whole call: the other block in it is not written either.
     const lfBefore = (await getTenantSettings(ctx(), appDb)).langfuse;

@@ -2468,7 +2468,7 @@
     "add": "Add price",
     "cachedInput": "Cached input",
     "cacheWrite": "Cache write",
-    "description": "The cost the console shows comes from public list prices. If this account pays something else for a model (a negotiated discount, Azure or Bedrock, its own server), write what it pays here, in USD per million tokens. It applies from the next call; calls already made keep their price.",
+    "description": "The cost the console shows comes from public list prices. If this account pays something else for a model (a negotiated discount, Azure or Bedrock, its own server), write what it pays here, in USD per million tokens. An empty cache rate is charged at the input rate. It applies from the next call; calls already made keep their price.",
     "empty": "No prices of this account's own: every call is priced from the list.",
     "input": "Input",
     "model": "Model",

@@ -685,7 +685,9 @@ export function parsePriceOverrides(overrides: unknown): PriceOverride[] {
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     const row = typeof issue?.path[0] === "number" ? issue.path[0] + 1 : 1;
-    const reason = issue?.message ?? "invalid";
+    // The field too, so a caller that sent several rates learns which one was refused.
+    const field = issue?.path.slice(1).join(".");
+    const reason = `${field ? `${field}: ` : ""}${issue?.message ?? "invalid"}`;
     throw new AppError(
       `price row ${row} is not valid: ${reason}`,
       422,

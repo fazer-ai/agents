@@ -2534,7 +2534,7 @@
     "add": "Adicionar preço",
     "cachedInput": "Entrada do cache",
     "cacheWrite": "Escrita no cache",
-    "description": "O custo que o console mostra vem dos preços públicos de tabela. Se esta conta paga outro valor por um modelo (desconto negociado, Azure ou Bedrock, servidor próprio), escreva aqui o que ela paga, em dólares por milhão de tokens. Vale a partir da próxima chamada; as chamadas já feitas mantêm o preço delas.",
+    "description": "O custo que o console mostra vem dos preços públicos de tabela. Se esta conta paga outro valor por um modelo (desconto negociado, Azure ou Bedrock, servidor próprio), escreva aqui o que ela paga, em dólares por milhão de tokens. Uma tarifa de cache vazia é cobrada pela tarifa de entrada. Vale a partir da próxima chamada; as chamadas já feitas mantêm o preço delas.",
     "empty": "Nenhum preço próprio desta conta: toda chamada é precificada pela tabela.",
     "input": "Entrada",
     "model": "Modelo",

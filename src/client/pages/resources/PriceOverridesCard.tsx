@@ -163,7 +163,7 @@ export function PriceOverridesCard({
         <p className="mt-0.5 text-sm text-text-muted">
           {t(
             "priceOverrides.description",
-            "The cost the console shows comes from public list prices. If this account pays something else for a model (a negotiated discount, Azure or Bedrock, its own server), write what it pays here, in USD per million tokens. It applies from the next call; calls already made keep their price.",
+            "The cost the console shows comes from public list prices. If this account pays something else for a model (a negotiated discount, Azure or Bedrock, its own server), write what it pays here, in USD per million tokens. An empty cache rate is charged at the input rate. It applies from the next call; calls already made keep their price.",
           )}
         </p>
       </div>

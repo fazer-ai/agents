@@ -24,6 +24,7 @@ import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { reengageConversation } from "@/modules/conversations/reengage";
+import { extractMessageVisuals } from "@/modules/vision/extract-message";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogCount } from "../utils/flowlog";
 
@@ -129,6 +130,7 @@ function stub(opts: {
   downloads: string[];
   metaWrites: number[];
   fail?: Set<string>;
+  types?: Record<string, string>;
 }) {
   const client = {
     getMessages: async () => opts.page,
@@ -145,7 +147,10 @@ function stub(opts: {
       opts.downloads.push(dataUrl);
       if (opts.fail?.has(dataUrl)) throw new Error("404 on the blob");
       const [w, h] = opts.sizes[dataUrl] ?? [1200, 1600];
-      return { bytes: png(w, h), contentType: "image/png" };
+      return {
+        bytes: png(w, h),
+        contentType: opts.types?.[dataUrl] ?? "image/png",
+      };
     },
     updateAttachmentMeta: async (
       _c: number,
@@ -306,6 +311,7 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
       sizes?: Record<string, [number, number]>;
       texts?: string[];
       fail?: Set<string>;
+      types?: Record<string, string>;
     } = {},
   ) {
     const id = await seedConversation(convId);
@@ -332,6 +338,7 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
           downloads,
           metaWrites,
           fail: opts.fail,
+          types: opts.types,
         }),
         visionFetch: visionFetch(opts.texts ?? ["Foto de um RG."]),
         checkpointer: new MemorySaver(),
@@ -567,6 +574,95 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     } as never);
     expect(provider.calls).toBe(0);
     expect(out.turn).toContain("Tudo lido antes.");
+  });
+
+  test("a remote body image is not counted as unread when the attachments fill the cap", async () => {
+    await setVision(true);
+    const out = await reengage(1014, {
+      content: "Tudo",
+      content_attributes: emailBag({ html: `<img src="${REMOTE_LOGO}">` }),
+      attachments: Array.from({ length: 8 }, (_, i) => ({
+        id: 200 + i,
+        file_type: "image",
+        data_url: blob(80 + i, `b${i}.png`),
+      })),
+    } as never);
+    expect(provider.calls).toBe(8);
+    expect(out.turn).not.toContain(unreadMarker(1));
+    expect(out.downloads).not.toContain(REMOTE_LOGO);
+  });
+
+  test("a body image vision cannot read is named as unread, not dropped as an ornament", async () => {
+    await setVision(true);
+    const svg = blob(90, "diagrama.svg");
+    const out = await reengage(
+      1015,
+      {
+        content: "Segue o diagrama",
+        content_attributes: emailBag({ html: `<img src="${svg}">` }),
+      },
+      { types: { [svg]: "image/svg+xml" } },
+    );
+    expect(provider.calls).toBe(0);
+    expect(out.turn).toContain(unreadMarker(1));
+  });
+
+  test("an email with no text whose only body image is an ornament does not ask for a resend", async () => {
+    await setVision(true);
+    const logo = blob(91, "LOGO.png");
+    const out = await reengage(
+      1016,
+      {
+        content: "",
+        content_attributes: emailBag({
+          subject: "",
+          html: `<img src="${logo}">`,
+        }),
+      },
+      { sizes: { [logo]: [908, 140] } },
+    );
+    expect(provider.calls).toBe(0);
+    const resend = renderInboundMessage({
+      text: "",
+      attachmentTypes: ["image"],
+    });
+    expect(out.turn).not.toContain(resend);
+    expect(out.turn).toContain(
+      renderInboundMessage({ text: "", attachmentTypes: [], bodyImages: 1 }),
+    );
+  });
+
+  test("when the instance's address cannot be read, no body image is fetched", async () => {
+    const downloads: string[] = [];
+    const r = await extractMessageVisuals({
+      tenantId,
+      // An instance that does not exist: the base URL read throws.
+      instanceId: 987_654_321n,
+      conversationId: 1017,
+      messageId: 1,
+      visuals: [
+        {
+          id: null,
+          dataUrl: blob(92),
+          name: "image92.jpeg",
+          imageDescription: null,
+          extractedText: null,
+        },
+      ],
+      cfg: {
+        enabled: true,
+        provider: "openai",
+        credentialRef: `vault:${visionKeyId}`,
+      } as never,
+      base: appDb,
+      deps: {
+        makeClient: stub({ page: [], sizes: {}, downloads, metaWrites: [] }),
+        fetchImpl: visionFetch(["não deveria ler"]),
+      },
+    });
+    expect(downloads).toEqual([]);
+    expect(provider.calls).toBe(0);
+    expect(r?.attachmentsUnread ?? 0).toBe(0);
   });
 
   test("a message whose body has no Chatwoot blob costs nothing", async () => {

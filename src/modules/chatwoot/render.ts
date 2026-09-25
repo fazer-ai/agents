@@ -119,6 +119,8 @@ const QUOTE_MAX = 200;
 
 // O PREFIXO É CONTRATO: `unwrapFileMarker` (../playground/sessions.ts) reconhece este marcador por
 // `startsWith`; ver a nota no ramo de imagem de `renderInboundMessage`.
+const CORPO_SEM_CONTEUDO =
+  "<e-mail sem texto; as imagens do corpo não trouxeram conteúdo legível>";
 const IMAGEM_ILEGIVEL =
   "<usuário enviou uma imagem; não foi possível ler o conteúdo, peça que o cliente reenvie o arquivo ou escreva a informação>";
 
@@ -240,8 +242,9 @@ export function renderInboundMessage(
     body = "";
   } else if (m.bodyImages) {
     // An email whose only content is an image in its body (issue #864). Unread ones are named
-    // below; nothing read and nothing counted as unread is vision off or every image an ornament.
-    body = naoLidos ? "" : IMAGEM_ILEGIVEL;
+    // below. Nothing read and nothing unread is every image an ornament, or vision off, and neither
+    // is a file to ask for again: the marker says only that there is nothing to read.
+    body = naoLidos ? "" : CORPO_SEM_CONTEUDO;
   } else {
     return ""; // nothing renderable → skip
   }

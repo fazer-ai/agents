@@ -63,3 +63,13 @@ export function bodyImagesBesides(
   const attached = new Set(attachmentUrls.map(blobKeyOf));
   return urls.filter((u) => !attached.has(blobKeyOf(u)));
 }
+
+// Whether a body image is this Chatwoot's, by host: a remote image in quoted HTML was never
+// uploaded by anyone in the conversation, and is not fetched.
+export function servedBy(url: string, baseUrl: string): boolean {
+  try {
+    return new URL(url).host === new URL(baseUrl).host;
+  } catch {
+    return false;
+  }
+}

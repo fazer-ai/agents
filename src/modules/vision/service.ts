@@ -309,9 +309,10 @@ async function convertForProvider(args: {
   }
 }
 
-// What an email body image comes back as when it is not the customer's: an ornament (a signature
-// icon, the logo of a quoted email) or a URL that is not this Chatwoot's. Not a failure, so it is
-// neither extracted nor counted among the files the model is told were not read (#864).
+// What an email body image comes back as when it is an ornament (a signature icon, the logo of a
+// quoted email). Not a failure, so it is neither extracted nor counted among the files the model is
+// told were not read (#864). A URL that is not this Chatwoot's never gets here: the caller drops it
+// before the per-message cap is applied.
 export const BODY_IMAGE_IGNORED = "ignored" as const;
 
 export async function extractInboundFile(
@@ -383,9 +384,6 @@ async function extractInbound(
     base,
     makeClient: params.deps?.makeClient,
   });
-  // A remote image in quoted HTML was never uploaded by anyone in this conversation: not fetched.
-  if (params.bodyImage && !client.servesUrl(params.dataUrl))
-    return BODY_IMAGE_IGNORED;
   // Mirrors STT: the download is outside the span below, so surface its failure as a `vision` line
   // instead of letting it vanish, and absorb Chatwoot's write race on a freshly-posted attachment.
   let bytes: ArrayBuffer;
@@ -408,7 +406,9 @@ async function extractInbound(
     throw err;
   }
   const kind = visionKindForMime(contentType);
-  if (params.bodyImage && (kind !== "image" || isDecorativeImage(bytes)))
+  // Only a positively identified ornament; a type vision cannot read is the unsupported skip below,
+  // counted as unread like any other file that was sent and not read.
+  if (params.bodyImage && kind === "image" && isDecorativeImage(bytes))
     return BODY_IMAGE_IGNORED;
   if (!kind) return skip("unsupported_mime"); // unsupported mime → marker
   // The ENDPOINT decides, not the provider name: the same base URL that the call below posts to is

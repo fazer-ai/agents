@@ -19,6 +19,8 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
+import { servedBy } from "@/modules/chatwoot/email-body-images";
+import { chatwootBaseUrl } from "@/modules/chatwoot/instance";
 import type { FlowContext } from "@/modules/flowlog/service";
 import {
   BODY_IMAGE_IGNORED,
@@ -69,6 +71,30 @@ function rotulado(nome: string | null, texto: string, total: number): string {
   return `[${nome ?? "anexo"}] ${texto}`;
 }
 
+// Imagem do corpo que não é deste Chatwoot sai ANTES do teto: senão ela ocuparia vaga, ou entraria na
+// contagem de não lidos quando os anexos já esgotaram o teto (#864). Sem conseguir ler o endereço
+// da instância, nenhuma imagem do corpo é lida: ler uma remota é pior do que não ler uma do cliente.
+async function doProprioChatwoot(
+  corpo: VisualAttachment[],
+  params: { tenantId: bigint; instanceId: bigint; base: PrismaClient },
+): Promise<VisualAttachment[]> {
+  if (corpo.length === 0) return corpo;
+  try {
+    const baseUrl = await chatwootBaseUrl(
+      params.tenantId,
+      params.instanceId,
+      params.base,
+    );
+    return corpo.filter((v) => servedBy(v.dataUrl, baseUrl));
+  } catch (err) {
+    logger.warn(
+      "vision: body images skipped, the instance base URL was not read: %s",
+      err instanceof Error ? err.message : String(err),
+    );
+    return [];
+  }
+}
+
 export async function extractMessageVisuals(params: {
   tenantId: bigint;
   instanceId: bigint;
@@ -89,7 +115,10 @@ export async function extractMessageVisuals(params: {
   // em lotes do que sobrou do teto: só se sabe que uma é ornamento depois de baixá-la, e ornamento
   // não gasta vaga, então cada lote devolve as vagas dos que foram ignorados ao lote seguinte.
   const anexos = todos.filter((v) => v.id !== null);
-  const corpo = todos.filter((v) => v.id === null);
+  const corpo = await doProprioChatwoot(
+    todos.filter((v) => v.id === null),
+    params,
+  );
   let novasExtracoes = 0;
   const visuais = anexos.filter((v) =>
     hasUnextractedVisual([v])

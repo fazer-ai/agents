@@ -219,6 +219,171 @@ describe.skipIf(!dbUp)("getLangfuseCosts (DB)", () => {
     }
   });
 
+  // THE LOCAL PRICE TABLE CHECKED AGAINST LANGFUSE'S (issue #868). The ledger is read over the
+  // Langfuse query's own tenant, window and sources, so the two figures beside each model are two
+  // prices for the same calls: a row of another tenant, of the other segment or from before the
+  // window would put a difference on screen that no price table caused.
+  describe("the cost check", () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    let otherTenant = 0n;
+
+    async function seed(
+      tenant: bigint,
+      model: string,
+      source: string,
+      costs: (number | null)[],
+      at = new Date(Date.now() - 60 * 60 * 1000),
+    ) {
+      await suDb.llmUsage.createMany({
+        data: costs.map((c) => ({
+          tenantId: tenant,
+          model,
+          source,
+          costUsd: c ?? undefined,
+          createdAt: at,
+        })),
+      });
+    }
+
+    beforeAll(async () => {
+      const t = await suDb.tenant.create({
+        data: { name: "CostOther", slug: `cost-other-${process.pid}` },
+      });
+      otherTenant = t.id;
+      // Diverges: $3 locally against $6 in Langfuse, under the dated name OpenAI answers with.
+      await seed(tenantId, "gpt-4o-mini", "inbox", [1, 1, 1]);
+      // Incomplete: one of its calls has no local price.
+      await seed(tenantId, "claude-x", "inbox", [2, null]);
+      // Agrees within the thresholds.
+      await seed(tenantId, "agrees", "inbox", [5]);
+      // Only in the ledger.
+      await seed(tenantId, "local-only", "inbox", [0.5]);
+      // The playground's own model, and a playground call on a shared one.
+      await seed(tenantId, "gemini-play", "playground", [4]);
+      await seed(tenantId, "gpt-4o-mini", "playground", [2]);
+      // Before `since`, and inside the 90 days the query reads when no `since` is given.
+      await seed(
+        tenantId,
+        "gpt-4o-mini",
+        "inbox",
+        [100],
+        new Date(Date.now() - 60 * DAY),
+      );
+      // After the query's `toTimestamp`: a call Langfuse was not asked about.
+      await seed(
+        tenantId,
+        "gpt-4o-mini",
+        "inbox",
+        [1000],
+        new Date(Date.now() + DAY),
+      );
+      // Another tenant's calls on the same model: RLS keeps them out.
+      await seed(otherTenant, "gpt-4o-mini", "inbox", [100]);
+    });
+
+    afterAll(async () => {
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM llm_usage WHERE tenant_id IN (${tenantId}, ${otherTenant})`,
+      );
+      await suDb.$executeRawUnsafe(
+        `DELETE FROM tenants WHERE id = ${otherTenant}`,
+      );
+    });
+
+    const langfuseModels = [
+      { providedModelName: "gpt-4o-mini-2024-07-18", sum_totalCost: "6" },
+      { providedModelName: "claude-x", sum_totalCost: "9" },
+      { providedModelName: "agrees", sum_totalCost: "5.5" },
+      { providedModelName: "gemini-play", sum_totalCost: "4" },
+      { providedModelName: "langfuse-only", sum_totalCost: "3" },
+    ];
+
+    test("one segment: that segment's calls in the window, this tenant's only", async () => {
+      const result = await getLangfuseCosts(
+        ctx(),
+        { since: new Date(Date.now() - DAY), source: "inbox" },
+        appDb,
+        makeFetch([{ data: [] }, { data: langfuseModels }]),
+      );
+      if (result.status !== "ok") throw new Error(result.status);
+      expect(result.costCheck).toEqual({
+        models: [
+          {
+            model: "claude-x",
+            ledgerModels: ["claude-x"],
+            langfuseModels: ["claude-x"],
+            localUsd: 2,
+            langfuseUsd: 9,
+            calls: 2,
+            localUnpricedCalls: 1,
+            status: "incomplete",
+          },
+          {
+            model: "gpt-4o-mini",
+            ledgerModels: ["gpt-4o-mini"],
+            langfuseModels: ["gpt-4o-mini-2024-07-18"],
+            localUsd: 3,
+            langfuseUsd: 6,
+            calls: 3,
+            localUnpricedCalls: 0,
+            status: "diverges",
+          },
+          {
+            model: "agrees",
+            ledgerModels: ["agrees"],
+            langfuseModels: ["agrees"],
+            localUsd: 5,
+            langfuseUsd: 5.5,
+            calls: 1,
+            localUnpricedCalls: 0,
+            status: "match",
+          },
+        ],
+        onlyInLangfuse: ["gemini-play", "langfuse-only"],
+        onlyLocal: ["local-only"],
+      });
+    });
+
+    test("no segment: both of ours, the way the Langfuse query asks for both environments", async () => {
+      const result = await getLangfuseCosts(
+        ctx(),
+        { since: new Date(Date.now() - DAY) },
+        appDb,
+        makeFetch([{ data: [] }, { data: langfuseModels }]),
+      );
+      if (result.status !== "ok") throw new Error(result.status);
+      const byName = Object.fromEntries(
+        (result.costCheck?.models ?? []).map((m) => [m.model, m]),
+      );
+      // $3 inbox + $2 playground against $6: within a fifth of the larger, so it agrees.
+      expect(byName["gpt-4o-mini"]).toMatchObject({
+        localUsd: 5,
+        calls: 4,
+        status: "match",
+      });
+      expect(byName["gemini-play"]).toMatchObject({
+        localUsd: 4,
+        langfuseUsd: 4,
+        status: "match",
+      });
+      expect(result.costCheck?.onlyInLangfuse).toEqual(["langfuse-only"]);
+    });
+
+    test("no since: the window is the Langfuse query's default, which reaches the older call", async () => {
+      const result = await getLangfuseCosts(
+        ctx(),
+        { source: "inbox" },
+        appDb,
+        makeFetch([{ data: [] }, { data: langfuseModels }]),
+      );
+      if (result.status !== "ok") throw new Error(result.status);
+      const gpt = result.costCheck?.models.find(
+        (m) => m.model === "gpt-4o-mini",
+      );
+      expect(gpt).toMatchObject({ localUsd: 103, calls: 4 });
+    });
+  });
+
   test("error: fetch failure → { status: 'error' }", async () => {
     const result = await getLangfuseCosts(ctx(), {}, appDb, failingFetch());
     expect(result.status).toBe("error");

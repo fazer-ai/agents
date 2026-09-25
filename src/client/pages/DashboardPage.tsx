@@ -34,6 +34,7 @@ import {
 import { api } from "@/client/lib/api";
 import { formatDuration } from "@/client/lib/duration";
 import { cn } from "@/client/lib/utils";
+import { CostByModelCard } from "./dashboard/CostByModel";
 import type { TrendPoint } from "./dashboard/CostTrendChart";
 
 // recharts is heavy and only the dashboard needs it → lazy-load the chart so it splits into its own
@@ -649,8 +650,12 @@ export function DashboardPage() {
   const costDays = costsOk && costs.status === "ok" ? costs.days : [];
   const totalCostUsd =
     costsOk && costs.status === "ok" ? costs.totalCostUsd : 0;
+  // NOTE: the card renders for Langfuse's models, and also when Langfuse answered with none but the ledger
+  // has usage: the models only this app recorded are the check's finding then (issue #868 review).
   const costByModel =
-    showCost && costs.status === "ok" && costs.byModel.length > 0
+    showCost &&
+    costs.status === "ok" &&
+    (costs.byModel.length > 0 || (costs.costCheck?.onlyLocal.length ?? 0) > 0)
       ? costs.byModel
       : null;
 
@@ -1051,6 +1056,17 @@ export function DashboardPage() {
                                 "Connect Langfuse to track actual LLM spend from your real usage.",
                               )}
                             </p>
+                            {/* Issue #868: the cost check needs Langfuse, and a screen without it must not
+                                read as a check that passed. */}
+                            <p
+                              className="text-text-muted text-xs"
+                              data-testid="cost-check-unavailable"
+                            >
+                              {t(
+                                "dashboard.costCheckUnavailable",
+                                "Until then, the costs this app records are not checked against Langfuse's.",
+                              )}
+                            </p>
                             <button
                               type="button"
                               onClick={() => navigate("/resources/advanced")}
@@ -1328,28 +1344,12 @@ export function DashboardPage() {
                     </Card>
                   </div>
 
-                  {/* Cost by model — only when Langfuse costs are available (Real segment) */}
-                  {costByModel && (
-                    <Card className="flex flex-col gap-3">
-                      <h2 className="font-medium text-text-primary">
-                        {t("dashboard.costByModel", "Cost by model")}
-                      </h2>
-                      <ul className="flex flex-col gap-2">
-                        {costByModel.map((m) => (
-                          <li
-                            key={m.model}
-                            className="flex items-center justify-between gap-4 text-sm"
-                          >
-                            <span className="truncate text-text-secondary">
-                              {m.model}
-                            </span>
-                            <span className="shrink-0 font-medium text-text-primary tabular-nums">
-                              {cf.format(m.costUsd)}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </Card>
+                  {/* Cost by model, with the local price table checked against it (issue #868): only when Langfuse answered */}
+                  {costByModel && costs?.status === "ok" && (
+                    <CostByModelCard
+                      byModel={costByModel}
+                      costCheck={costs.costCheck}
+                    />
                   )}
                 </>
               )}

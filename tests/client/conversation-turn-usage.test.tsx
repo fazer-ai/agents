@@ -1,13 +1,19 @@
 /// <reference lib="dom" />
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import i18next from "i18next";
+import type { ReactNode } from "react";
+import { I18nextProvider } from "react-i18next";
 import { UsageFigure } from "@/client/components/TokenUsage";
+import clientEn from "@/client/locales/en.json";
+import clientPt from "@/client/locales/pt-BR.json";
 import {
   buildTimeline,
   type Message,
   type TurnUsageEntry,
 } from "@/client/pages/conversationTimeline";
+import { PRICE_TABLE_READ_AT } from "@/modules/pricing/version";
 
 // Issues #853 and #858: each agent turn's spend sits at the foot of the last message the turn
 // created that is on screen. A turn with none on screen (silent, older than the loaded page, from
@@ -18,6 +24,20 @@ import {
 afterEach(() => {
   cleanup();
 });
+
+// The real catalogs, so a figure reads the way the operator reads it, whatever ran before this file.
+async function inLanguage(lng: "en" | "pt-BR", ui: ReactNode) {
+  const i = i18next.createInstance();
+  await i.init({
+    lng,
+    resources: {
+      en: { translation: clientEn },
+      "pt-BR": { translation: clientPt },
+    },
+    interpolation: { escapeValue: false },
+  });
+  return render(<I18nextProvider i18n={i}>{ui}</I18nextProvider>);
+}
 
 const T0 = Date.parse("2026-09-25T10:00:00Z");
 
@@ -49,6 +69,8 @@ function turn(
       cacheCreationTokens: 0,
       completionTokens: 75,
       byNode: { agent: 1, guardrail: 1 },
+      costUsd: 0,
+      unpricedCalls: 2,
     },
   };
 }
@@ -116,8 +138,9 @@ describe("where a turn's usage sits", () => {
 });
 
 describe("the figure itself", () => {
-  test("shows the input tokens and nothing else before it is opened", () => {
-    render(
+  test("shows the input tokens and nothing else before it is opened", async () => {
+    await inLanguage(
+      "en",
       <UsageFigure usage={turn("tA", T0).usage} timing={turn("tA", T0)} />,
     );
     const text = screen.getByTestId("token-usage").textContent ?? "";
@@ -125,8 +148,56 @@ describe("the figure itself", () => {
     expect(screen.queryByTestId("token-usage-detail") === null).toBe(true);
   });
 
-  test("a total with no call renders nothing, not a zero", () => {
-    render(
+  // Issue #863: the cost is in the popover and nowhere else.
+  const priced = (costUsd: number, unpricedCalls: number) => ({
+    ...turn("tA", T0).usage,
+    costUsd,
+    unpricedCalls,
+  });
+  const open = () => {
+    fireEvent.click(screen.getByTestId("token-usage"));
+    return screen.getByTestId("token-usage-detail").textContent ?? "";
+  };
+
+  test("the cost shows only once the popover is open", async () => {
+    await inLanguage("en", <UsageFigure usage={priced(0.001234, 0)} />);
+    expect(screen.getByTestId("token-usage").textContent).not.toContain("$");
+    const detail = open();
+    expect(detail).toContain("$0.001234");
+    // How old the rates are, as a date the reader's locale writes.
+    expect(detail).toContain(
+      `price table of ${new Intl.DateTimeFormat("en", { dateStyle: "short" }).format(new Date(`${PRICE_TABLE_READ_AT}T12:00:00Z`))}`,
+    );
+    expect(detail).not.toContain("no price are not in it");
+  });
+
+  test("a turn nothing could price says so, and shows no dollar figure", async () => {
+    await inLanguage("en", <UsageFigure usage={priced(0, 2)} />);
+    const detail = open();
+    expect(detail).toContain("no price");
+    expect(detail).not.toContain("$");
+  });
+
+  test("a total with unpriced calls says how many it leaves out", async () => {
+    await inLanguage("en", <UsageFigure usage={priced(0.25, 1)} />);
+    const detail = open();
+    expect(detail).toContain("$0.25");
+    expect(detail).toContain("1 call with no price is not in it");
+  });
+
+  test("in Portuguese, the words and the currency are the operator's", async () => {
+    await inLanguage(
+      "pt-BR",
+      <UsageFigure usage={{ ...priced(0.25, 2), calls: 3 }} />,
+    );
+    const detail = open().replace(/\u00a0/g, " ");
+    expect(detail).toContain("US$ 0,25");
+    expect(detail).toContain("2 chamadas sem preço ficaram de fora");
+  });
+
+  test("a total with no call renders nothing, not a zero", async () => {
+    await inLanguage(
+      "en",
       <UsageFigure
         usage={{
           calls: 0,
@@ -135,6 +206,8 @@ describe("the figure itself", () => {
           cacheCreationTokens: 0,
           completionTokens: 0,
           byNode: {},
+          costUsd: 0,
+          unpricedCalls: 0,
         }}
         label="Tokens"
       />,

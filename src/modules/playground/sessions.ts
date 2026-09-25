@@ -16,7 +16,12 @@ import {
   type TraceEntry,
   type TraceSource,
 } from "@/graph/trace";
-import { addUsageGroup, emptyTurnUsage, type TurnUsage } from "@/graph/usage";
+import {
+  addUsageGroup,
+  emptyTurnUsage,
+  type TurnUsage,
+  usdOrNull,
+} from "@/graph/usage";
 import { NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
@@ -485,12 +490,13 @@ async function usageByTurn(
         source: "playground",
         turnId: { not: null },
       },
-      _count: { _all: true },
+      _count: { _all: true, costUsd: true },
       _sum: {
         promptTokens: true,
         cachedReadTokens: true,
         cacheCreationTokens: true,
         completionTokens: true,
+        costUsd: true,
       },
     }),
   );
@@ -505,6 +511,8 @@ async function usageByTurn(
       cachedReadTokens: g._sum.cachedReadTokens,
       cacheCreationTokens: g._sum.cacheCreationTokens,
       completionTokens: g._sum.completionTokens,
+      costUsd: usdOrNull(g._sum.costUsd),
+      pricedCalls: g._count.costUsd,
     });
     out.set(g.turnId, usage);
   }
@@ -677,12 +685,13 @@ export async function getPlaygroundSessionUsage(
     db.llmUsage.groupBy({
       by: ["node"],
       where: { tenantId, threadId, source: "playground" },
-      _count: { _all: true },
+      _count: { _all: true, costUsd: true },
       _sum: {
         promptTokens: true,
         cachedReadTokens: true,
         cacheCreationTokens: true,
         completionTokens: true,
+        costUsd: true,
       },
     }),
   );
@@ -695,6 +704,8 @@ export async function getPlaygroundSessionUsage(
       cachedReadTokens: g._sum.cachedReadTokens,
       cacheCreationTokens: g._sum.cacheCreationTokens,
       completionTokens: g._sum.completionTokens,
+      costUsd: usdOrNull(g._sum.costUsd),
+      pricedCalls: g._count.costUsd,
     });
   }
   return usage;

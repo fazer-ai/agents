@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Popover } from "@/client/components/Popover";
 import { cn } from "@/client/lib/utils";
+import { PRICE_TABLE_READ_AT } from "@/modules/pricing/version";
 
 // The provider's numbers for one or more model calls: the shape `TurnUsage` has on the server, as the
 // playground turn and the conversation screen both receive it.
@@ -14,6 +15,9 @@ export type TokenUsage = {
   completionTokens: number;
   // Calls by the step that made them, keyed by the ledger's node.
   byNode: Record<string, number>;
+  // USD over the calls the price table could price, and how many it could not (issue #863).
+  costUsd: number;
+  unpricedCalls: number;
 };
 
 // How long a turn took and how much of that was spent waiting on a model. Either can be unknown: the
@@ -85,6 +89,24 @@ export interface UsageDetail {
   model: string | null;
   // Share of the turn's time spent waiting on a model, 0 to 100; null unless both are known.
   modelPct: number | null;
+  // The priced calls' cost, formatted; null when no call could be priced, which is never shown as
+  // a zero. `unpriced` is how many calls the figure leaves out.
+  cost: string | null;
+  unpriced: number;
+  // The day the price table was read, so a reader can tell how old the rates behind the figure are.
+  priceTableDate: string;
+}
+
+// Dollars to the precision a turn needs: a turn costs fractions of a cent, and "$0.00" would read as
+// free. Cents once it is a dollar or more.
+export function formatUsd(locale: string, v: number): string {
+  const digits = v >= 1 ? 2 : v >= 0.01 ? 4 : 6;
+  return new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: digits,
+  }).format(v);
 }
 
 export function usageDetail(
@@ -125,6 +147,15 @@ export function usageDetail(
       turnMs != null && modelMs != null && turnMs > 0
         ? Math.min(100, Math.round((modelMs / turnMs) * 100))
         : null,
+    cost:
+      usage.calls > usage.unpricedCalls
+        ? formatUsd(locale, usage.costUsd)
+        : null,
+    unpriced: usage.unpricedCalls,
+    // Noon UTC, so the calendar day is the same in every timezone the console runs in.
+    priceTableDate: new Intl.DateTimeFormat(locale, {
+      dateStyle: "short",
+    }).format(new Date(`${PRICE_TABLE_READ_AT}T12:00:00Z`)),
   };
 }
 
@@ -219,6 +250,29 @@ function UsageDetailCard({ title, d }: { title: string; d: UsageDetail }) {
             </span>
           ))}
         </div>
+      </Section>
+      <div className="border-border border-t" />
+      <Section title={t("tokenUsage.costTitle", "Cost")}>
+        <Row
+          label={t("tokenUsage.costLabel", "Model calls")}
+          value={d.cost ?? t("tokenUsage.noPrice", "no price")}
+        />
+        {d.cost !== null && d.unpriced > 0 && (
+          <p className="text-[11px] text-warning">
+            {t(
+              "tokenUsage.unpricedCalls",
+              "{{count}} calls with no price are not in it",
+              { count: d.unpriced },
+            )}
+          </p>
+        )}
+        <p className="text-[11px] text-text-muted">
+          {t(
+            "tokenUsage.costSource",
+            "Estimated from the price table of {{date}}; may differ slightly from the dashboard",
+            { date: d.priceTableDate },
+          )}
+        </p>
       </Section>
       {(d.turn || d.model) && (
         <>

@@ -2213,6 +2213,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   test("o consumo de cada turno real chega à tela da conversa, com o total (issue #853)", async () => {
     await seedConversation(9853, null);
     const saver = new MemorySaver();
+    const usd4oMini = (s: { input: number; cached: number; output: number }) =>
+      ((s.input - s.cached) * 0.15 + s.cached * 0.075 + s.output * 0.6) / 1e6;
     const spends = [
       { input: 1500, cached: 1024, output: 40 },
       { input: 1800, cached: 0, output: 60 },
@@ -2257,6 +2259,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       cacheCreationTokens: 0,
       completionTokens: 100,
       byNode: { agent: 2 },
+      // Issue #863: each call at gpt-4o-mini's published rates, per million: $0.15 input, $0.075
+      // cached, $0.60 output. The cached part is charged at the cache rate and only the rest in full.
+      costUsd: expect.closeTo(
+        spends.reduce((sum, s) => sum + usd4oMini(s), 0),
+        12,
+      ),
+      unpricedCalls: 0,
     });
     expect(usage.turns.map((t) => t.usage)).toEqual(
       spends.map((s) => ({
@@ -2266,6 +2275,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         cacheCreationTokens: 0,
         completionTokens: s.output,
         byNode: { agent: 1 },
+        costUsd: expect.closeTo(usd4oMini(s), 12),
+        unpricedCalls: 0,
       })),
     );
     // The line's turn is the turn the activity trail and the Langfuse trace name: the same id the

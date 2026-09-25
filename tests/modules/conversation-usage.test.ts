@@ -75,6 +75,8 @@ interface Row {
   output: number;
   at: string;
   tenant?: bigint;
+  // The price the capture wrote (issue #863); absent is a row it could not price.
+  cost?: string;
 }
 
 async function bill(r: Row) {
@@ -90,6 +92,7 @@ async function bill(r: Row) {
       cachedReadTokens: r.cached ?? 0,
       cacheCreationTokens: r.written ?? 0,
       completionTokens: r.output,
+      costUsd: r.cost,
       createdAt: new Date(r.at),
     },
   });
@@ -242,6 +245,8 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
         tts_normalize: 1,
         memory_compact: 1,
       },
+      costUsd: 0,
+      unpricedCalls: 6,
     });
     expect(usage.turns).toEqual([
       {
@@ -255,6 +260,8 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
           cacheCreationTokens: 0,
           completionTokens: 75,
           byNode: { agent: 1, guardrail: 1, vision: 1 },
+          costUsd: 0,
+          unpricedCalls: 3,
         },
         // No closing line was written for these seeded turns, and no call was timed.
         messageIds: [],
@@ -271,6 +278,8 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
           cacheCreationTokens: 2500,
           completionTokens: 200,
           byNode: { agent: 1, tts_normalize: 1 },
+          costUsd: 0,
+          unpricedCalls: 2,
         },
         messageIds: [],
         turnMs: null,
@@ -331,6 +340,61 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
     expect(byTurn.tClosed?.turnMs).toBe(4200);
     expect(byTurn.tOpen?.messageIds).toEqual([]);
     expect(byTurn.tOpen?.turnMs).toBeNull();
+  });
+
+  // Issue #863: the cost is summed from the column, the calls it could not price are counted beside
+  // it, and the Decimal sum comes back exact to the cent's ten-thousandth and past it.
+  test("a total and a turn carry the priced calls' cost and count the unpriced ones", async () => {
+    const conv = await newConversation();
+    const base = { conversationId: conv.id, input: 100, output: 10 };
+    await bill({
+      ...base,
+      turnId: "tP",
+      node: "agent",
+      cost: "0.0001234567",
+      at: "2026-09-25T13:00:00Z",
+    });
+    await bill({
+      ...base,
+      turnId: "tP",
+      node: "guardrail",
+      cost: "0.0000000001",
+      at: "2026-09-25T13:00:01Z",
+    });
+    await bill({
+      ...base,
+      turnId: "tM",
+      node: "agent",
+      cost: "0.25",
+      at: "2026-09-25T13:01:00Z",
+    });
+    await bill({
+      ...base,
+      turnId: "tM",
+      node: "vision",
+      at: "2026-09-25T13:01:01Z",
+    });
+    await bill({
+      ...base,
+      turnId: "tU",
+      node: "agent",
+      at: "2026-09-25T13:02:00Z",
+    });
+    const usage = await usageOf(conv.id);
+    expect(usage.total.costUsd).toBeCloseTo(0.2501234568, 10);
+    expect(usage.total.unpricedCalls).toBe(2);
+    const byTurn = Object.fromEntries(
+      usage.turns.map((t) => [
+        t.turnId,
+        [t.usage.costUsd, t.usage.unpricedCalls],
+      ]),
+    );
+    expect(byTurn.tP?.[0]).toBeCloseTo(0.0001234568, 10);
+    expect(byTurn.tP?.[1]).toBe(0);
+    expect(byTurn.tM).toEqual([0.25, 1]);
+    // Nothing priced is a zero SUM with every call counted as unpriced, which the screen reads as
+    // "no price", never as $0.
+    expect(byTurn.tU).toEqual([0, 1]);
   });
 
   test("the observer's calls are billed to the conversation it watched", async () => {

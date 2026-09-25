@@ -6,6 +6,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import { FailingModel, UsageReportingModel } from "../utils/scripted-models";
@@ -51,7 +52,9 @@ let noFallbackAgentId = 0n;
 // Named differently on purpose: the usage row has to name the model that ACTUALLY answered, and a
 // shared name would let the wrong attribution pass.
 const PRIMARY_MODEL = "primary-mini";
-const FALLBACK_MODEL = "fallback-mini";
+// A model the price table knows, on another provider than the primary, so the row's price shows
+// whose rates it was written at (issue #863).
+const FALLBACK_MODEL = "claude-haiku-4-5";
 const REPLY = "Claro, posso agendar.";
 
 function makeStub(rec: { text: string[] }) {
@@ -108,7 +111,13 @@ async function seedConversation(convId: number, agentId: bigint) {
 function usageRows(threadId: string) {
   return suDb.llmUsage.findMany({
     where: { tenantId, threadId },
-    select: { node: true, model: true, promptTokens: true },
+    select: {
+      node: true,
+      model: true,
+      promptTokens: true,
+      costUsd: true,
+      priceTable: true,
+    },
     orderBy: { id: "asc" },
   });
 }
@@ -341,6 +350,11 @@ describe.skipIf(!dbUp)("a provider that cannot take the turn", () => {
     expect(usage[0]?.model).toBe(FALLBACK_MODEL);
     expect(usage[0]?.node).toBe("agent");
     expect(usage[0]?.promptTokens).toBeGreaterThan(0);
+    // And priced as the fallback's own provider's: Claude Haiku 4.5 at $1 in and $5 out per million
+    // (platform.claude.com pricing, read 2026-09-25), for the 11 in and 7 out the model reported.
+    expect(Number(usage[0]?.costUsd)).toBeCloseTo((11 * 1 + 7 * 5) / 1e6, 12);
+    // With the table that priced it, so a table found wrong later can be corrected on its own rows.
+    expect(usage[0]?.priceTable).toBe(PRICE_TABLE_VERSION);
   });
 
   test("the trail says the fallback took the turn, and why", async () => {

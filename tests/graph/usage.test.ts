@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { LLMResult } from "@langchain/core/outputs";
-import { extractTokenUsage, UsageCapture, type UsageRow } from "@/graph/usage";
+import {
+  extractTokenUsage,
+  USAGE_PROVIDER_METADATA_KEY,
+  UsageCapture,
+  type UsageRow,
+} from "@/graph/usage";
 
 function resultWithUsageMetadata(input: number, output: number): LLMResult {
   return {
@@ -117,6 +122,7 @@ describe("UsageCapture", () => {
       agentId: 9n,
       conversationId: 42n,
       threadId: "5:1:900",
+      provider: "test-provider",
       model: "gpt-4o-mini",
       node: "agent",
       persist: async (row) => {
@@ -152,6 +158,7 @@ describe("UsageCapture", () => {
       agentId: 9n,
       inboxId: 7n,
       source: "playground",
+      provider: "test-provider",
       model: "gpt-4o-mini",
       persist: async (row) => {
         rows.push(row);
@@ -186,6 +193,7 @@ describe("UsageCapture", () => {
     const rows: UsageRow[] = [];
     const capture = new UsageCapture({
       tenantId: 5n,
+      provider: "test-provider",
       model: "gpt-4o-mini",
       persist: async (row) => {
         rows.push(row);
@@ -201,6 +209,7 @@ describe("UsageCapture", () => {
   test("a failing sink never throws into the reply path", async () => {
     const capture = new UsageCapture({
       tenantId: 5n,
+      provider: "test-provider",
       model: "gpt-4o-mini",
       persist: async () => {
         throw new Error("db down");
@@ -225,6 +234,7 @@ describe("UsageCapture attributes a run to the model that made it", () => {
       agentId: 9n,
       conversationId: 42n,
       threadId: "5:1:900",
+      provider: "test-provider",
       model,
       node: "agent",
       persist: async (row) => {
@@ -290,5 +300,57 @@ describe("UsageCapture attributes a run to the model that made it", () => {
       "claude-haiku-4-5",
       "gpt-5.4-mini",
     ]);
+  });
+
+  // Issue #863: the row is priced when it is written, as the model's own provider's. A fallback on
+  // another provider names both, and the price is the fallback's.
+  test("the row carries its price, from the provider that answered", async () => {
+    const rows: UsageRow[] = [];
+    const c = new UsageCapture({
+      tenantId: 5n,
+      provider: "openai",
+      model: "gpt-5.4-mini",
+      persist: async (row) => {
+        rows.push(row);
+      },
+    });
+    await c.handleLLMEnd(resultWithUsageMetadata(1_000, 100), "run-p");
+    await c.handleLLMStart({}, [], "run-q", undefined, undefined, undefined, {
+      [KEY]: "claude-sonnet-4-6",
+      [USAGE_PROVIDER_METADATA_KEY]: "anthropic",
+    });
+    await c.handleLLMEnd(resultWithUsageMetadata(1_000, 100), "run-q");
+    // gpt-5.4-mini at $0.75 / $4.50, claude-sonnet-4-6 at $3 / $15, per million.
+    expect(rows[0]?.costUsd).toBeCloseTo((1_000 * 0.75 + 100 * 4.5) / 1e6, 12);
+    expect(rows[1]?.costUsd).toBeCloseTo((1_000 * 3 + 100 * 15) / 1e6, 12);
+  });
+
+  // A model named without its provider is priced as nobody's, never as the primary's provider: the
+  // primary's rates on another vendor's model would be a wrong figure that looks right.
+  test("a model named without a provider is not priced as the primary's", async () => {
+    const rows: UsageRow[] = [];
+    const c = new UsageCapture({
+      tenantId: 5n,
+      provider: "anthropic",
+      model: "claude-sonnet-4-6",
+      persist: async (row) => {
+        rows.push(row);
+      },
+    });
+    await c.handleLLMStart({}, [], "run-r", undefined, undefined, undefined, {
+      [KEY]: "claude-haiku-4-5",
+    });
+    await c.handleLLMEnd(resultWithUsageMetadata(1_000, 100), "run-r");
+    expect(rows[0]?.model).toBe("claude-haiku-4-5");
+    expect(rows[0]?.costUsd).toBeNull();
+  });
+
+  test("a model the table does not know writes null, not zero", async () => {
+    const rows: UsageRow[] = [];
+    await capture(rows, "no-such-model").handleLLMEnd(
+      resultWithUsageMetadata(1_000, 100),
+      "run-s",
+    );
+    expect(rows[0]?.costUsd).toBeNull();
   });
 });

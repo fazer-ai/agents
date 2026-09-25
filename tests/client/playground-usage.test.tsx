@@ -44,6 +44,8 @@ const TURN: PlaygroundUsage = {
   cacheCreationTokens: 0,
   completionTokens: 100,
   byNode: { agent: 1, guardrail: 1 },
+  costUsd: 0,
+  unpricedCalls: 2,
 };
 
 describe("the figure on screen", () => {
@@ -211,6 +213,8 @@ describe("the turn keeps its usage", () => {
       cacheCreationTokens: 0,
       completionTokens: 200,
       byNode: { agent: 2, guardrail: 2 },
+      costUsd: 0,
+      unpricedCalls: 4,
     });
   });
 });

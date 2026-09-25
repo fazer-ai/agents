@@ -47,6 +47,7 @@ async function rowFor(model: BaseChatModel, label: string): Promise<UsageRow> {
     callbacks: [
       new UsageCapture({
         tenantId: 1n,
+        provider: "test-provider",
         model: label,
         node: "agent",
         persist: async (row) => {

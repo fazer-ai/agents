@@ -36,6 +36,8 @@ export function addUsage(
     cachedReadTokens: a.cachedReadTokens + b.cachedReadTokens,
     cacheCreationTokens: a.cacheCreationTokens + b.cacheCreationTokens,
     completionTokens: a.completionTokens + b.completionTokens,
+    costUsd: a.costUsd + b.costUsd,
+    unpricedCalls: a.unpricedCalls + b.unpricedCalls,
     byNode: Object.fromEntries(
       [...new Set([...Object.keys(a.byNode), ...Object.keys(b.byNode)])].map(
         (node) => [node, (a.byNode[node] ?? 0) + (b.byNode[node] ?? 0)],
@@ -51,6 +53,8 @@ export const NO_USAGE: PlaygroundUsage = {
   cacheCreationTokens: 0,
   completionTokens: 0,
   byNode: {},
+  costUsd: 0,
+  unpricedCalls: 0,
 };
 
 export type PlaygroundTurn =

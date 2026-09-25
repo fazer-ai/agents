@@ -10,6 +10,8 @@ import {
 } from "@/graph/observability";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import type { FlowContext } from "@/modules/flowlog/service";
+import { callCostUsd } from "@/modules/pricing/price";
+import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 
 // LLM usage capture AT THE SOURCE (not mirrored from Langfuse): a LangChain callback that
@@ -34,6 +36,9 @@ export type UsageSource = "inbox" | "playground";
 // and to reach the inherited handlers, unlike `callbacks`, which replaces them and would have cost
 // the Langfuse trace.
 export const USAGE_MODEL_METADATA_KEY = "fazerai_usage_model";
+// The provider of that same model, beside it: the price table needs both (issue #863), and a fallback
+// can sit on another provider than the primary it replaced.
+export const USAGE_PROVIDER_METADATA_KEY = "fazerai_usage_provider";
 
 export interface UsageRow {
   tenantId: bigint;
@@ -56,6 +61,8 @@ export interface UsageRow {
   cacheCreationTokens: number;
   // How long the call took, as the capture measured it (issue #855). Null when nothing measured it.
   durationMs: number | null;
+  // What the call cost in USD, from the price table (issue #863). Null when the table could not price it.
+  costUsd: number | null;
 }
 
 export type UsagePersist = (row: UsageRow) => Promise<void>;
@@ -77,6 +84,10 @@ export interface TurnUsage {
   // The calls by the step that made them, keyed by the ledger's `node` (issue #858): the detail the
   // screens show, so "3 calls" says which three. A row with no node is the agent's (#316).
   byNode: Record<string, number>;
+  // USD over the calls the price table could price (issue #863), and how many it could not. A total
+  // with unpriced calls is a floor, and the screens say so rather than show it as the whole.
+  costUsd: number;
+  unpricedCalls: number;
 }
 
 export function emptyTurnUsage(): TurnUsage {
@@ -87,6 +98,8 @@ export function emptyTurnUsage(): TurnUsage {
     cacheCreationTokens: 0,
     completionTokens: 0,
     byNode: {},
+    costUsd: 0,
+    unpricedCalls: 0,
   };
 }
 
@@ -94,6 +107,12 @@ export function emptyTurnUsage(): TurnUsage {
 // agent's, the same reading `NON_AGENT_TURN_NODES` gives it.
 export function usageNode(node: string | null): string {
   return node ?? "agent";
+}
+
+// A summed `cost_usd` as the number the screens add up. The column is a Decimal so a sum of many
+// sub-cent calls does not drift; a figure shown to four places loses nothing as a double.
+export function usdOrNull(d: { toString(): string } | null): number | null {
+  return d === null ? null : Number(d.toString());
 }
 
 // One ledger group (a `groupBy` bucket) added into a running usage, so every reader folds rows the
@@ -107,6 +126,9 @@ export function addUsageGroup(
     cachedReadTokens: number | null;
     cacheCreationTokens: number | null;
     completionTokens: number | null;
+    // The group's summed cost and how many of its rows carried one (`_count` of the column).
+    costUsd: number | null;
+    pricedCalls: number;
   },
 ): void {
   into.calls += g.calls;
@@ -114,6 +136,8 @@ export function addUsageGroup(
   into.cachedReadTokens += g.cachedReadTokens ?? 0;
   into.cacheCreationTokens += g.cacheCreationTokens ?? 0;
   into.completionTokens += g.completionTokens ?? 0;
+  into.costUsd += g.costUsd ?? 0;
+  into.unpricedCalls += g.calls - g.pricedCalls;
   const node = usageNode(g.node);
   into.byNode[node] = (into.byNode[node] ?? 0) + g.calls;
 }
@@ -162,6 +186,8 @@ export async function sumTurnUsage<T>(
         cacheCreationTokens:
           after.cacheCreationTokens - before.cacheCreationTokens,
         completionTokens: after.completionTokens - before.completionTokens,
+        costUsd: after.costUsd - before.costUsd,
+        unpricedCalls: after.unpricedCalls - before.unpricedCalls,
         byNode: Object.fromEntries(
           Object.entries(after.byNode)
             .map(([n, c]) => [n, c - (before.byNode[n] ?? 0)] as const)
@@ -191,6 +217,8 @@ function noteTurnUsage(row: UsageRow): void {
   sink.usage.cachedReadTokens += row.cachedReadTokens;
   sink.usage.cacheCreationTokens += row.cacheCreationTokens;
   sink.usage.completionTokens += row.completionTokens;
+  if (row.costUsd === null) sink.usage.unpricedCalls += 1;
+  else sink.usage.costUsd += row.costUsd;
   const node = usageNode(row.node);
   sink.usage.byNode[node] = (sink.usage.byNode[node] ?? 0) + 1;
 }
@@ -256,6 +284,8 @@ export function defaultUsagePersist(
           cacheCreationTokens: row.cacheCreationTokens,
           durationMs:
             row.durationMs === null ? undefined : Math.round(row.durationMs),
+          costUsd: row.costUsd ?? undefined,
+          priceTable: PRICE_TABLE_VERSION,
         },
       });
       // Fleet event (the subscriber consolidates). Same scoped tx as the row; allowlisted
@@ -432,6 +462,7 @@ export function usageAttribution(flow: FlowContext): {
 export async function recordDirectUsage(
   flow: FlowContext,
   row: {
+    provider: string;
     model: string;
     node: string;
     promptTokens: number;
@@ -453,6 +484,17 @@ export async function recordDirectUsage(
     cachedReadTokens: row.cachedReadTokens ?? 0,
     cacheCreationTokens: row.cacheCreationTokens ?? 0,
     durationMs: row.durationMs ?? null,
+    costUsd: callCostUsd(
+      row.provider,
+      row.model,
+      {
+        promptTokens: row.promptTokens,
+        cachedReadTokens: row.cachedReadTokens ?? 0,
+        cacheCreationTokens: row.cacheCreationTokens ?? 0,
+        completionTokens: row.completionTokens,
+      },
+      new Date(),
+    ),
   };
   noteTurnUsage(usageRow);
   try {
@@ -497,6 +539,8 @@ export interface UsageCaptureParams {
   inboxId?: bigint | null;
   threadId?: string | null;
   turnId?: string | null;
+  // The provider of `model`, for its price (issue #863).
+  provider: string;
   model: string;
   node?: string | null;
   source?: UsageSource;
@@ -515,6 +559,7 @@ export class UsageCapture extends BaseCallbackHandler {
   private readonly inboxId: bigint | null;
   private readonly threadId: string | null;
   private readonly turnId: string | null;
+  private readonly provider: string;
   private readonly model: string;
   private readonly node: string | null;
   private readonly source: UsageSource;
@@ -528,6 +573,7 @@ export class UsageCapture extends BaseCallbackHandler {
     this.inboxId = params.inboxId ?? null;
     this.threadId = params.threadId ?? null;
     this.turnId = params.turnId ?? null;
+    this.provider = params.provider;
     this.model = params.model;
     this.node = params.node ?? null;
     this.source = params.source ?? "inbox";
@@ -539,6 +585,7 @@ export class UsageCapture extends BaseCallbackHandler {
   // fire, which on a turn whose primary failed and whose fallback answered is exactly the wrong one.
   // Bounded by the runs in flight on one turn, and erased by whichever of END / ERROR arrives.
   private readonly runModel = new Map<string, string>();
+  private readonly runProvider = new Map<string, string>();
   // When each in-flight run started, for the turn's model time. Same lifetime as runModel.
   private readonly runStart = new Map<string, number>();
 
@@ -559,10 +606,14 @@ export class UsageCapture extends BaseCallbackHandler {
     // falsy sent the row to `this.model` instead, which is the primary's name: a call that never
     // reached that vendor, billed to it, in the one column this table has for saying who answered.
     if (typeof named === "string") this.runModel.set(runId, named);
+    const namedProvider = metadata?.[USAGE_PROVIDER_METADATA_KEY];
+    if (typeof namedProvider === "string")
+      this.runProvider.set(runId, namedProvider);
   }
 
   override async handleLLMError(_err: unknown, runId: string): Promise<void> {
     this.runModel.delete(runId);
+    this.runProvider.delete(runId);
     this.runStart.delete(runId);
   }
 
@@ -573,8 +624,13 @@ export class UsageCapture extends BaseCallbackHandler {
       cachedReadTokens,
       cacheCreationTokens,
     } = extractTokenUsage(output);
-    const model = this.runModel.get(runId) ?? this.model;
+    // The pair, never one half: a named model is priced as its own provider's or not at all.
+    const named = this.runModel.get(runId);
+    const model = named ?? this.model;
+    const provider =
+      named === undefined ? this.provider : (this.runProvider.get(runId) ?? "");
     this.runModel.delete(runId);
+    this.runProvider.delete(runId);
     const started = this.runStart.get(runId);
     this.runStart.delete(runId);
     const durationMs =
@@ -595,6 +651,17 @@ export class UsageCapture extends BaseCallbackHandler {
       cachedReadTokens,
       cacheCreationTokens,
       durationMs,
+      costUsd: callCostUsd(
+        provider,
+        model,
+        {
+          promptTokens,
+          cachedReadTokens,
+          cacheCreationTokens,
+          completionTokens,
+        },
+        new Date(),
+      ),
     };
     noteTurnUsage(row);
     try {

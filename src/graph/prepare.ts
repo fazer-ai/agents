@@ -1632,8 +1632,9 @@ export interface CallbacksArgs {
   node?: string;
   // The model to LABEL the usage row with. Defaults to the agent's own model, which is right for the
   // turn itself; a secondary call on a separately-configured model (the speech normalizer) must pass
-  // the model it actually billed, or the row attributes that spend to the wrong model.
-  model?: string;
+  // the model it actually billed, or the row attributes that spend to the wrong model. The provider
+  // travels with it, because the price of a model is its provider's (issue #863).
+  billedModel?: { provider: string; model: string };
   // The conversation to ATTRIBUTE the usage row and the trace to. Defaults to the one the config was
   // loaded for, which is right for a turn; memory compaction is the exception, because a claimed job
   // can find the thread already past the conversation its payload named, and the summary it bills is
@@ -1676,7 +1677,8 @@ export function buildCallbacks(
     inboxId: cfg.inboxDbId,
     threadId: args.threadId,
     turnId: args.turnId ?? null,
-    model: args.model ?? cfg.mc.model,
+    provider: (args.billedModel ?? cfg.mc).provider,
+    model: (args.billedModel ?? cfg.mc).model,
     node: args.node ?? "agent",
     source: args.source,
     persist: args.persistUsage,
@@ -1794,7 +1796,7 @@ export function buildSpeechNormalizer(
     ? buildCallbacks(cfg, {
         ...args.callbacks,
         node: "tts_normalize",
-        model: mc.model,
+        billedModel: mc,
         // The turn's trace already exists under this turnId; this call is a generation INSIDE it.
         updateRoot: false,
       })

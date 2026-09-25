@@ -650,8 +650,12 @@ export function DashboardPage() {
   const costDays = costsOk && costs.status === "ok" ? costs.days : [];
   const totalCostUsd =
     costsOk && costs.status === "ok" ? costs.totalCostUsd : 0;
+  // NOTE: the card renders for Langfuse's models, and also when Langfuse answered with none but the ledger
+  // has usage: the models only this app recorded are the check's finding then (issue #868 review).
   const costByModel =
-    showCost && costs.status === "ok" && costs.byModel.length > 0
+    showCost &&
+    costs.status === "ok" &&
+    (costs.byModel.length > 0 || (costs.costCheck?.onlyLocal.length ?? 0) > 0)
       ? costs.byModel
       : null;
 

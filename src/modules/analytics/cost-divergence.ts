@@ -39,8 +39,13 @@ export interface LangfuseModelCost {
 export type CostComparisonStatus = "match" | "diverges" | "incomplete";
 
 export interface CostComparison {
-  // The ledger's name for the model (the id the agent is configured with).
+  // The ledger's name for the model (the id the agent is configured with). For a group of ledger
+  // models compared together (see `compareModelCosts`), the first of `ledgerModels`.
   model: string;
+  // Every ledger model this comparison covers, sorted: one, unless Langfuse reports a name that
+  // could belong to more than one of them, in which case they are compared as a whole and
+  // `localUsd`, `calls` and `localUnpricedCalls` are their sums.
+  ledgerModels: string[];
   // Every Langfuse name that matched it, summed into `langfuseUsd`.
   langfuseModels: string[];
   localUsd: number;
@@ -81,7 +86,9 @@ export function snapshotBase(name: string): string | null {
 // undefined is dropped on serialize, so a response that carries no model name keeps the configured
 // id. `providedModelName` is that final value. A call we trace by hand
 // (`recordDirectGeneration`) carries the ledger's own name. So one ledger model can arrive as two
-// Langfuse names, and both are summed into it.
+// Langfuse names, and both are summed into it. A name that is BOTH a ledger name and a dated snapshot
+// of another ledger name could be either; the exact match is only its representative here, and
+// `compareModelCosts` compares the two as one group.
 export function matchLedgerModel(
   langfuseName: string,
   ledgerNames: ReadonlySet<string>,
@@ -108,11 +115,46 @@ export function judgeCosts(
     : "match";
 }
 
+// The ledger models a Langfuse name could belong to: its exact name, and the model it is a dated
+// snapshot of. Two candidates make the name ambiguous.
+function candidateLedgerModels(
+  langfuseName: string,
+  ledgerNames: ReadonlySet<string>,
+): string[] {
+  const out: string[] = [];
+  if (ledgerNames.has(langfuseName)) out.push(langfuseName);
+  const base = snapshotBase(langfuseName);
+  if (base !== null && ledgerNames.has(base)) out.push(base);
+  return out;
+}
+
+// ONE COMPARISON PER GROUP OF LEDGER MODELS THAT LANGFUSE CANNOT TELL APART. When the period has calls
+// configured with both an alias and its dated snapshot (`gpt-4o` and `gpt-4o-2024-08-06`), the
+// alias's calls can reach Langfuse under the snapshot's name (the vendor answers with it, see
+// `matchLedgerModel`), so the Langfuse figure under that name may be either model's or both. Handing
+// it all to the exact match flagged a divergence that is only a split, and listed the alias as
+// local-only. So a Langfuse name with more than one candidate joins its candidates into one group,
+// transitively, and the group is compared as a whole: the sum of its ledger rows against the sum of
+// every Langfuse name matched into any of them. A model no ambiguous name touches is a group of one,
+// compared exactly as before.
 export function compareModelCosts(
   local: readonly LocalModelCost[],
   langfuse: readonly LangfuseModelCost[],
 ): CostCheck {
   const ledgerNames = new Set(local.map((l) => l.model));
+  const parent = new Map<string, string>();
+  for (const n of ledgerNames) parent.set(n, n);
+  const root = (n: string): string => {
+    let r = n;
+    while (parent.get(r) !== r) r = parent.get(r) as string;
+    return r;
+  };
+  for (const row of langfuse) {
+    const [first, ...rest] = candidateLedgerModels(row.model, ledgerNames);
+    if (first === undefined) continue;
+    for (const other of rest) parent.set(root(other), root(first));
+  }
+
   const matched = new Map<string, { names: string[]; usd: number }>();
   const onlyInLangfuse: string[] = [];
   for (const row of langfuse) {
@@ -121,27 +163,40 @@ export function compareModelCosts(
       onlyInLangfuse.push(row.model);
       continue;
     }
-    const m = matched.get(ledger) ?? { names: [], usd: 0 };
+    const group = root(ledger);
+    const m = matched.get(group) ?? { names: [], usd: 0 };
     m.names.push(row.model);
     m.usd += row.costUsd;
-    matched.set(ledger, m);
+    matched.set(group, m);
   }
+
+  const groups = new Map<string, LocalModelCost[]>();
+  for (const l of local) {
+    const g = root(l.model);
+    groups.set(g, [...(groups.get(g) ?? []), l]);
+  }
+
   const models: CostComparison[] = [];
   const onlyLocal: string[] = [];
-  for (const l of local) {
-    const m = matched.get(l.model);
+  for (const [group, rows] of groups) {
+    const m = matched.get(group);
     if (!m) {
-      onlyLocal.push(l.model);
+      onlyLocal.push(...rows.map((r) => r.model));
       continue;
     }
+    const ledgerModels = rows.map((r) => r.model).sort();
+    const localUsd = rows.reduce((a, r) => a + r.costUsd, 0);
+    const calls = rows.reduce((a, r) => a + r.calls, 0);
+    const pricedCalls = rows.reduce((a, r) => a + r.pricedCalls, 0);
     models.push({
-      model: l.model,
+      model: ledgerModels[0] as string,
+      ledgerModels,
       langfuseModels: m.names,
-      localUsd: l.costUsd,
+      localUsd,
       langfuseUsd: m.usd,
-      calls: l.calls,
-      localUnpricedCalls: l.calls - l.pricedCalls,
-      status: judgeCosts(l.costUsd, m.usd, l.calls, l.pricedCalls),
+      calls,
+      localUnpricedCalls: calls - pricedCalls,
+      status: judgeCosts(localUsd, m.usd, calls, pricedCalls),
     });
   }
   models.sort(

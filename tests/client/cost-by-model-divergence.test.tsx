@@ -42,6 +42,7 @@ const byModel: Props["byModel"] = [
 function cmp(over: Partial<Comparison>): Comparison {
   return {
     model: "m",
+    ledgerModels: [over.model ?? "m"],
     langfuseModels: ["m"],
     localUsd: 0,
     langfuseUsd: 0,
@@ -191,5 +192,40 @@ describe("the cost check on the cost-by-model card", () => {
     );
     expect(screen.queryByTestId("cost-divergence-marker")).toBeNull();
     expect(screen.queryByTestId("cost-divergence-summary")).toBeNull();
+  });
+
+  test("a group of ledger models is named in full in the popover, and said to be compared as a sum", async () => {
+    const grouped: Check = {
+      models: [
+        cmp({
+          model: "gpt-4o",
+          ledgerModels: ["gpt-4o", "gpt-4o-2024-08-06"],
+          langfuseModels: ["gpt-4o-2024-08-06"],
+          localUsd: 20,
+          langfuseUsd: 40,
+          calls: 10,
+          status: "diverges",
+        }),
+      ],
+      onlyInLangfuse: [],
+      onlyLocal: [],
+    };
+    await inLanguage(
+      "en",
+      <CostByModelCard
+        byModel={[{ model: "gpt-4o-2024-08-06", costUsd: 40 }]}
+        costCheck={grouped}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("cost-divergence-marker"));
+    const detail =
+      screen.getByTestId("cost-divergence-detail").textContent ?? "";
+    expect(detail).toContain("what gpt-4o, gpt-4o-2024-08-06 cost");
+    expect(detail).toContain(
+      "Langfuse can report calls to gpt-4o, gpt-4o-2024-08-06 under one name, so they are compared together, as their sum.",
+    );
+    expect(detail).toContain("This app's figure$20.00");
+    // The snapshot is one of the group's own names, so it is not a rename.
+    expect(detail).not.toContain("Langfuse names it");
   });
 });

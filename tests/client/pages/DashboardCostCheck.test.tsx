@@ -111,3 +111,39 @@ test("with Langfuse unreachable the card says so, and does not claim the check i
   });
   expect(screen.queryByTestId("cost-check-unavailable")).toBeNull();
 });
+
+// Review of #868: Langfuse answering with no models while the ledger has usage is itself a finding,
+// the models only this app recorded, and the card has to carry it rather than vanish.
+test("with Langfuse answering no models, the models only this app recorded are still shown", async () => {
+  costs = {
+    status: "ok",
+    totalCostUsd: 0,
+    days: [],
+    byModel: [],
+    baseUrl: "http://langfuse.local",
+    costCheck: { models: [], onlyInLangfuse: [], onlyLocal: ["gpt-4o"] },
+  };
+  await renderDash();
+  await waitFor(() => {
+    expect(screen.getByTestId("cost-check-only-local").textContent).toBe(
+      "Only in this app's usage records, not compared: gpt-4o",
+    );
+  });
+});
+
+test("with Langfuse answering no models and no local usage either, there is no card", async () => {
+  costs = {
+    status: "ok",
+    totalCostUsd: 0,
+    days: [],
+    byModel: [],
+    baseUrl: "http://langfuse.local",
+    costCheck: { models: [], onlyInLangfuse: [], onlyLocal: [] },
+  };
+  await renderDash();
+  // Let the costs request settle before asserting the absence.
+  await waitFor(() => {
+    expect(screen.queryByTestId("cost-check-unavailable")).toBeNull();
+  });
+  expect(screen.queryByText("Cost by model")).toBeNull();
+});

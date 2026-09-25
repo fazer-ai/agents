@@ -749,6 +749,7 @@
     "costByModel": "Cost by model",
     "costCheck": {
       "detailLabel": "Cost check for {{model}}",
+      "grouped": "Langfuse can report calls to {{models}} under one name, so they are compared together, as their sum.",
       "langfuse": "Langfuse's figure",
       "local": "This app's figure",
       "markerLabel": "Cost differs from this app's price table",

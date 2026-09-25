@@ -116,6 +116,7 @@ describe("compareModelCosts", () => {
     expect(check.models).toEqual([
       {
         model: "claude-sonnet-4",
+        ledgerModels: ["claude-sonnet-4"],
         langfuseModels: ["claude-sonnet-4-20250514"],
         localUsd: 2,
         langfuseUsd: 9,
@@ -125,6 +126,7 @@ describe("compareModelCosts", () => {
       },
       {
         model: "gpt-4o",
+        ledgerModels: ["gpt-4o"],
         langfuseModels: ["gpt-4o-2024-08-06", "gpt-4o"],
         localUsd: 3,
         langfuseUsd: 7,
@@ -153,5 +155,72 @@ describe("compareModelCosts", () => {
       [{ model: "a", costUsd: 10.5 }],
     );
     expect(check.models[0]?.status).toBe("match");
+  });
+
+  // Review of #868: calls configured with both an alias and its dated snapshot can all reach
+  // Langfuse under the snapshot's name, so that name's figure cannot be handed to either ledger
+  // model alone.
+  test("an alias and its dated snapshot both in the ledger are compared as one group", () => {
+    const check = compareModelCosts(
+      [
+        { model: "gpt-4o", calls: 5, pricedCalls: 5, costUsd: 10 },
+        { model: "gpt-4o-2024-08-06", calls: 5, pricedCalls: 5, costUsd: 10 },
+      ],
+      [{ model: "gpt-4o-2024-08-06", costUsd: 20 }],
+    );
+    expect(check.models).toEqual([
+      {
+        model: "gpt-4o",
+        ledgerModels: ["gpt-4o", "gpt-4o-2024-08-06"],
+        langfuseModels: ["gpt-4o-2024-08-06"],
+        localUsd: 20,
+        langfuseUsd: 20,
+        calls: 10,
+        localUnpricedCalls: 0,
+        status: "match",
+      },
+    ]);
+    expect(check.onlyLocal).toEqual([]);
+    expect(check.onlyInLangfuse).toEqual([]);
+  });
+
+  test("the group takes every Langfuse name of its members, and still flags a real gap", () => {
+    const check = compareModelCosts(
+      [
+        { model: "gpt-4o", calls: 5, pricedCalls: 5, costUsd: 10 },
+        { model: "gpt-4o-2024-08-06", calls: 5, pricedCalls: 4, costUsd: 10 },
+        { model: "claude-x", calls: 1, pricedCalls: 1, costUsd: 3 },
+      ],
+      [
+        { model: "gpt-4o-2024-08-06", costUsd: 15 },
+        { model: "gpt-4o", costUsd: 2 },
+        { model: "claude-x", costUsd: 3 },
+      ],
+    );
+    const group = check.models.find((c) => c.ledgerModels.length > 1);
+    expect(group).toEqual({
+      model: "gpt-4o",
+      ledgerModels: ["gpt-4o", "gpt-4o-2024-08-06"],
+      langfuseModels: ["gpt-4o-2024-08-06", "gpt-4o"],
+      localUsd: 20,
+      langfuseUsd: 17,
+      calls: 10,
+      localUnpricedCalls: 1,
+      status: "incomplete",
+    });
+    // A model no ambiguous name touches is still compared on its own.
+    expect(
+      check.models.find((c) => c.model === "claude-x")?.ledgerModels,
+    ).toEqual(["claude-x"]);
+    expect(check.models).toHaveLength(2);
+  });
+
+  test("a dated ledger name with no alias in the ledger is not grouped", () => {
+    const check = compareModelCosts(
+      [{ model: "gpt-4o-2024-08-06", calls: 1, pricedCalls: 1, costUsd: 10 }],
+      [{ model: "gpt-4o-2024-08-06", costUsd: 30 }],
+    );
+    expect(check.models[0]?.ledgerModels).toEqual(["gpt-4o-2024-08-06"]);
+    expect(check.models[0]?.status).toBe("diverges");
   });
 });

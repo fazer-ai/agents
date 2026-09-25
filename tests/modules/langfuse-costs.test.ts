@@ -310,6 +310,7 @@ describe.skipIf(!dbUp)("getLangfuseCosts (DB)", () => {
         models: [
           {
             model: "claude-x",
+            ledgerModels: ["claude-x"],
             langfuseModels: ["claude-x"],
             localUsd: 2,
             langfuseUsd: 9,
@@ -319,6 +320,7 @@ describe.skipIf(!dbUp)("getLangfuseCosts (DB)", () => {
           },
           {
             model: "gpt-4o-mini",
+            ledgerModels: ["gpt-4o-mini"],
             langfuseModels: ["gpt-4o-mini-2024-07-18"],
             localUsd: 3,
             langfuseUsd: 6,
@@ -328,6 +330,7 @@ describe.skipIf(!dbUp)("getLangfuseCosts (DB)", () => {
           },
           {
             model: "agrees",
+            ledgerModels: ["agrees"],
             langfuseModels: ["agrees"],
             localUsd: 5,
             langfuseUsd: 5.5,

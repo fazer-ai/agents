@@ -770,6 +770,7 @@
     "costByModel": "Custo por modelo",
     "costCheck": {
       "detailLabel": "Conferência de custo de {{model}}",
+      "grouped": "O Langfuse pode registrar as chamadas de {{models}} sob um nome só, então eles são comparados juntos, pela soma.",
       "langfuse": "Valor do Langfuse",
       "local": "Valor neste app",
       "markerLabel": "O custo difere da tabela de preços deste app",

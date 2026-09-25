@@ -31,11 +31,14 @@ function DivergenceMarker({ c }: { c: Comparison }) {
   const { t, i18n } = useTranslation();
   const pct = Math.round(COST_DIVERGENCE_RELATIVE * 100);
   const floor = usd(i18n.language, COST_DIVERGENCE_FLOOR_USD);
-  const renamed = c.langfuseModels.some((n) => n !== c.model);
+  // NOTE: a group (issue #868 review) is several ledger models Langfuse cannot tell apart, compared as one.
+  const model = c.ledgerModels.join(", ");
+  const grouped = c.ledgerModels.length > 1;
+  const renamed = c.langfuseModels.some((n) => !c.ledgerModels.includes(n));
   return (
     <Popover
       label={t("dashboard.costCheck.detailLabel", "Cost check for {{model}}", {
-        model: c.model,
+        model,
       })}
       side="top"
       align="end"
@@ -45,7 +48,7 @@ function DivergenceMarker({ c }: { c: Comparison }) {
             {t(
               "dashboard.costCheck.title",
               "Langfuse and this app disagree on what {{model}} cost",
-              { model: c.model },
+              { model },
             )}
           </p>
           <div className="space-y-1 tabular-nums">
@@ -62,6 +65,15 @@ function DivergenceMarker({ c }: { c: Comparison }) {
               <span>{usd(i18n.language, c.localUsd)}</span>
             </div>
           </div>
+          {grouped && (
+            <p className="text-text-muted text-xs">
+              {t(
+                "dashboard.costCheck.grouped",
+                "Langfuse can report calls to {{models}} under one name, so they are compared together, as their sum.",
+                { models: model },
+              )}
+            </p>
+          )}
           {renamed && (
             <p className="text-text-muted text-xs">
               {t("dashboard.costCheck.names", "Langfuse names it {{names}}.", {
@@ -136,25 +148,27 @@ export function CostByModelCard({
           )}
         </p>
       )}
-      <ul className="flex flex-col gap-2">
-        {byModel.map((m) => {
-          const c = comparisonFor(m.model);
-          return (
-            <li
-              key={m.model}
-              className="flex items-center justify-between gap-4 text-sm"
-            >
-              <span className="truncate text-text-secondary">{m.model}</span>
-              <span className="flex shrink-0 items-center gap-1.5">
-                {c?.status === "diverges" && <DivergenceMarker c={c} />}
-                <span className="font-medium text-text-primary tabular-nums">
-                  {usd(i18n.language, m.costUsd)}
+      {byModel.length > 0 && (
+        <ul className="flex flex-col gap-2">
+          {byModel.map((m) => {
+            const c = comparisonFor(m.model);
+            return (
+              <li
+                key={m.model}
+                className="flex items-center justify-between gap-4 text-sm"
+              >
+                <span className="truncate text-text-secondary">{m.model}</span>
+                <span className="flex shrink-0 items-center gap-1.5">
+                  {c?.status === "diverges" && <DivergenceMarker c={c} />}
+                  <span className="font-medium text-text-primary tabular-nums">
+                    {usd(i18n.language, m.costUsd)}
+                  </span>
                 </span>
-              </span>
-            </li>
-          );
-        })}
-      </ul>
+              </li>
+            );
+          })}
+        </ul>
+      )}
       {onlyInLangfuse.length > 0 && (
         <p
           className="text-text-muted text-xs"

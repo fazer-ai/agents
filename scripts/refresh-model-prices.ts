@@ -49,16 +49,34 @@ function rates(e: Record<string, unknown>, suffix: string): Rates | null {
   return r;
 }
 
-const commit = (await (
-  await fetch(
-    `https://api.github.com/repos/${REPO}/commits?path=${FILE}&per_page=1`,
-  )
-).json()) as { sha: string; commit: { committer: { date: string } } }[];
+// Unauthenticated, the commits API allows 60 requests an hour per IP, and a CI runner shares its IP
+// with strangers; the weekly job (.github/workflows/refresh-model-prices.yml) hands its token in.
+const token = process.env.GITHUB_TOKEN;
+const commitsRes = await fetch(
+  `https://api.github.com/repos/${REPO}/commits?path=${FILE}&per_page=1`,
+  token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
+);
+if (!commitsRes.ok) {
+  throw new Error(
+    `GitHub answered ${commitsRes.status} for the LiteLLM commit`,
+  );
+}
+const commit = (await commitsRes.json()) as {
+  sha: string;
+  commit: { committer: { date: string } };
+}[];
 const sha = commit[0]?.sha;
 if (!sha) throw new Error("could not resolve the LiteLLM commit");
-const table = (await (
-  await fetch(`https://raw.githubusercontent.com/${REPO}/${sha}/${FILE}`)
-).json()) as Record<string, Record<string, unknown>>;
+const tableRes = await fetch(
+  `https://raw.githubusercontent.com/${REPO}/${sha}/${FILE}`,
+);
+if (!tableRes.ok) {
+  throw new Error(`GitHub answered ${tableRes.status} for the LiteLLM table`);
+}
+const table = (await tableRes.json()) as Record<
+  string,
+  Record<string, unknown>
+>;
 
 const models: Record<string, Entry> = {};
 for (const [key, e] of Object.entries(table)) {

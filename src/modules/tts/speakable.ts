@@ -37,6 +37,10 @@ export type SpeakabilityLimits = Pick<
 // followed by `.` or `)`. Indentation is allowed, so a nested list counts every level, which is
 // right: every level is more to hold in the ear.
 const LIST_ITEM = /^[ \t]*(?:[-*+•◦▪–][ \t]+\S|\d{1,3}[.)][ \t]+\S)/u;
+// A step number set in bold or italics (`**1.** Entre`): the marks around the number are layout.
+const EMPHASIZED_STEP = /^([ \t]*)[*_]+(\d{1,3}[.)])[*_]+/u;
+const isListItem = (line: string) =>
+  LIST_ITEM.test(line.replace(EMPHASIZED_STEP, "$1$2"));
 // A markdown table's delimiter row (`|---|:--:|`, or `--- | ---` without the outer pipes). Tested
 // only on lines that hold a pipe, so a bare `---` (a horizontal rule) never takes an item away.
 const TABLE_SEPARATOR =
@@ -59,7 +63,7 @@ function countListItems(text: string): number {
   while (i < lines.length) {
     const line = lines[i] as string;
     if (!line.includes("|")) {
-      if (LIST_ITEM.test(line)) n += 1;
+      if (isListItem(line)) n += 1;
       i += 1;
       continue;
     }
@@ -71,17 +75,21 @@ function countListItems(text: string): number {
     const isTable = block.some((l) => TABLE_SEPARATOR.test(l));
     for (const l of block) {
       if (TABLE_SEPARATOR.test(l)) continue;
-      if (isTable || PIPED_ROW.test(l) || LIST_ITEM.test(l)) n += 1;
+      if (isTable || PIPED_ROW.test(l) || isListItem(l)) n += 1;
     }
     i = end;
   }
   return n;
 }
 
+// Inline emphasis and code marks (`R$ **30**`, `_60 €_`, `` `1234` ``): layout, not part of a value,
+// and a matcher that has to step over them would miss the formatted price the model likes best.
+const INLINE_MARKS = /[*_`~]+/gu;
+
 function countNumbers(text: string): number {
   let n = 0;
   // Money first, blanked out, so its digits are not counted a second time as a long number.
-  const rest = text.replace(MONEY, () => {
+  const rest = text.replace(INLINE_MARKS, "").replace(MONEY, () => {
     n += 1;
     return " ";
   });

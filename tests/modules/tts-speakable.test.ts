@@ -61,6 +61,9 @@ describe("unspeakable", () => {
         LIMITS,
       ),
     ).toEqual({ criterion: "list", value: 3, limit: 3 });
+    expect(
+      unspeakable("**1.** Entre\n**2)** Abra o pedido\n_3._ Transfira", LIMITS),
+    ).toEqual({ criterion: "list", value: 3, limit: 3 });
     expect(unspeakable("• um\n• dois\n  • três", LIMITS)?.criterion).toBe(
       "list",
     );
@@ -140,6 +143,14 @@ describe("unspeakable", () => {
         textOverNumbers: 3,
       }),
     ).toBeNull();
+    // Inline markdown around the value is layout, prefix or suffix sign alike.
+    expect(
+      unspeakable(
+        "A meia custa R$ **30**, a inteira R$ **60** e o camarote R$ **90**.",
+        LIMITS,
+      ),
+    ).toEqual({ criterion: "numbers", value: 3, limit: 3 });
+    expect(unspeakable("_10_ €, **20** USD e `30` BRL", LIMITS)?.value).toBe(3);
     // A code glued to a word is not a code.
     expect(unspeakable("10 USDT, 20 EURO, 30 BRLX", LIMITS)).toBeNull();
   });

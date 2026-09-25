@@ -4021,6 +4021,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   async function withTtsMode(
     mode: "mirror" | "preference",
     fn: () => Promise<void>,
+    extra: Record<string, unknown> = {},
   ) {
     const agent = await suDb.agent.findFirstOrThrow({
       where: { tenantId },
@@ -4039,6 +4040,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
             mode,
             provider: "openai",
             credentialRef: `vault:${key.id}`,
+            ...extra,
           },
         },
       },
@@ -4254,6 +4256,106 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       const r = await audioTurn(787_04, reply, { ttsStatus: 500 });
       expect(r.log).toEqual([{ kind: "text", text: reply }]);
     });
+  });
+
+  // Issue #856: a reply built to be read goes as text, whole, even when the customer would get audio.
+  const PRICE_TABLE = `Os valores de 2 lugares ficam assim:
+
+- **Cadeira**: meia R$ 300,00, total R$ 600,00
+- **Bronze**: meia R$ 550,00, total R$ 1.100,00
+- **Ouro**: meia R$ 770,00, total R$ 1.540,00`;
+
+  const GATE_ON = { textInstead: true };
+
+  async function ttsLines(conv: number) {
+    const c = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: conv },
+    });
+    const rows = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: c.id, stage: "tts" },
+    });
+    return rows.map(({ level, status, detail }) => ({ level, status, detail }));
+  }
+
+  test("an agent that never turned the switch on keeps speaking the price table (#856)", async () => {
+    await withTtsMirror(async () => {
+      const r = await audioTurn(856_05, PRICE_TABLE);
+      expect(r.log.map((m) => m.kind)).toEqual(["audio"]);
+      expect(r.spoken).toHaveLength(1);
+    });
+  });
+
+  test("a price table goes as one text message, with no synthesis and no rewrite (#856)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const r = await audioTurn(856_01, PRICE_TABLE);
+        expect(r.outcome).toBe("posted");
+        expect(r.log).toEqual([{ kind: "text", text: PRICE_TABLE }]);
+        expect(r.spoken).toEqual([]);
+        expect(r.normalized).toEqual([]);
+        // The line says why, in numbers, and carries no word of the reply.
+        const lines = await ttsLines(856_01);
+        expect(lines).toEqual([
+          {
+            level: "info",
+            status: "skipped",
+            detail: { sentAsText: "list", value: 3, limit: 3 },
+          },
+        ]);
+        expect(JSON.stringify(lines)).not.toContain("Bronze");
+      },
+      GATE_ON,
+    );
+  });
+
+  test("the limits are the agent's: raised, the same table is spoken (#856)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const r = await audioTurn(856_02, PRICE_TABLE);
+        expect(r.log.map((m) => m.kind)).toEqual(["audio"]);
+        expect(r.spoken).toHaveLength(1);
+      },
+      {
+        ...GATE_ON,
+        textOverChars: null,
+        textOverListItems: 10,
+        textOverNumbers: 10,
+      },
+    );
+  });
+
+  test("a length limit set by the operator sends a long paragraph as text (#856)", async () => {
+    const reply =
+      "Entendi, o seu caso é de uma compra feita ontem para um evento que acontece no mês que vem, e o cancelamento dentro do prazo é feito pelo próprio site, na página do pedido, sem precisar falar com ninguém.";
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const r = await audioTurn(856_03, reply);
+        expect(r.log).toEqual([{ kind: "text", text: reply }]);
+        const lines = await ttsLines(856_03);
+        expect(lines[0]?.detail).toEqual({
+          sentAsText: "length",
+          value: reply.length,
+          limit: 120,
+        });
+      },
+      { ...GATE_ON, textOverChars: 120 },
+    );
+  });
+
+  test("a table that also carries a link goes in one message, with the link once (#856)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const reply = `${PRICE_TABLE}\n\nCompre em https://x.com.br/evento/1`;
+        const r = await audioTurn(856_04, reply);
+        expect(r.log).toEqual([{ kind: "text", text: reply }]);
+        expect(r.spoken).toEqual([]);
+      },
+      GATE_ON,
+    );
   });
 
   // Review round 1 of #788: the written follow-up is a second write, and a /reset or a disabled agent

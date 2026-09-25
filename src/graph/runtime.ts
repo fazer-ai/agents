@@ -77,7 +77,7 @@ import { deliverReply, type ReplyDelivery } from "@/modules/split/service";
 import type { TtsCheckConfig } from "@/modules/tts/check";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
-import { planSpokenReply } from "@/modules/tts/spoken";
+import { logTextInsteadOfAudio, planAudioReply } from "@/modules/tts/speakable";
 import {
   attendanceHasStarted,
   claimAttendanceBoundary,
@@ -1440,8 +1440,10 @@ async function runTurnBody(
       voiceReply,
     );
     // A URL or an e-mail address is never said: it follows the voice note in writing, or the whole
-    // reply goes as text when nothing but its introduction would be said (issue #787).
-    const spoken = planSpokenReply(text);
+    // reply goes as text when nothing but its introduction would be said (issue #787), or when the
+    // reply is built to be read, not heard: too long, a list, a run of prices (issue #856).
+    const spoken = planAudioReply(text, loaded.ttsConfig);
+    if (wantAudio) logTextInsteadOfAudio(flow, spoken);
     if (wantAudio && !spoken.textOnly) {
       try {
         // Opt-in LLM speech normalization (or the injected normalizer in tests). Its callbacks are

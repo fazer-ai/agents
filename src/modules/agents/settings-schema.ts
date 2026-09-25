@@ -182,6 +182,30 @@ const tts = z.looseObject({
     .nullable()
     .optional()
     .describe("null = the instance default"),
+  // Issue #856: with `textInstead` on, a reply past one of these goes as TEXT instead of a voice
+  // note. Absent = the default, null = that criterion off; the reader clamps, so a number outside the
+  // band is read at its end.
+  textInstead: z
+    .boolean()
+    .optional()
+    .describe("send a reply past a textOver* limit as text; default false"),
+  textOverChars: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("text above this many chars (80-4000, default 450); null = off"),
+  textOverListItems: z
+    .number()
+    .nullable()
+    .optional()
+    .describe("text from this many list items (2-50, default 3); null = off"),
+  textOverNumbers: z
+    .number()
+    .nullable()
+    .optional()
+    .describe(
+      "text from this many prices or 4+ digit numbers (2-50, default 3); null = off",
+    ),
 });
 
 const vision = z.looseObject({

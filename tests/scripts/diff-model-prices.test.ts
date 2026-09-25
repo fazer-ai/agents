@@ -164,3 +164,28 @@ describe("diffModelPrices", () => {
     );
   });
 });
+
+// A long-context call is priced from the tier's own rates, cache included, so an added or removed
+// row shows all four of them (review round 1).
+test("an added model's long-context tier lists its cache rates too", () => {
+  const before = table(SHA_OLD, "2026-09-18", {});
+  const after = table(SHA_NEW, "2026-09-25", {
+    "long-model": {
+      input: 1,
+      output: 4,
+      tiers: [
+        {
+          above: 200_000,
+          input: 2,
+          cachedInput: 0.5,
+          cacheWrite: 2.5,
+          output: 8,
+        },
+      ],
+    },
+  });
+  const md = diffModelPrices(before, after, DEFAULTS).markdown;
+  expect(md).toContain(
+    "above 200K: input $2, cached input $0.5, cache write $2.5, output $8",
+  );
+});

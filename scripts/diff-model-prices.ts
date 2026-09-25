@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// What a refresh of the price table changed, as the Markdown body of the pull request the weekly job
-// opens (issue #869, .github/workflows/refresh-model-prices.yml). Also useful by hand after running
+// What a refresh of the price table changed, as the Markdown body of the pull request the weekly
+// price refresh opens (issue #869). Also useful by hand after running
 // scripts/refresh-model-prices.ts, against the table as it was before:
 //
 //   git show HEAD:src/modules/pricing/model-prices.json > old.json
@@ -92,18 +92,16 @@ function resolveKey(
   return tableKeys(provider, model).find((k) => k in models);
 }
 
+const rateList = (entry: Rates): string =>
+  RATE_FIELDS.map(([f, label]) => `${label} ${usd(entry[f])}`).join(", ");
+
 function rowCells(entry: Entry): string {
   const tiers = (entry.tiers ?? [])
-    .map(
-      (t) =>
-        `above ${thousands(t.above)}: ${usd(t.input)} in, ${usd(t.output)} out`,
-    )
+    // All four rates: a long-context call is priced from the tier's own, cache included.
+    .map((t) => `above ${thousands(t.above)}: ${rateList(t)}`)
     .join("; ");
   return `${RATE_FIELDS.map(([f]) => usd(entry[f])).join(" | ")} | ${tiers || "none"}`;
 }
-
-const rateList = (entry: Entry): string =>
-  RATE_FIELDS.map(([f, label]) => `${label} ${usd(entry[f])}`).join(", ");
 
 const ROW_HEADER = [
   "| Model | Input | Cached input | Cache write | Output | Long context |",

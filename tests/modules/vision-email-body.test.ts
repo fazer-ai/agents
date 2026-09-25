@@ -363,6 +363,24 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     expect(out.metaWrites).toEqual([]);
   });
 
+  test("a blob written as a path relative to the Chatwoot host is fetched from the instance", async () => {
+    await setVision(true);
+    const path = "/rails/active_storage/blobs/redirect/sig40--x/image001.png";
+    const out = await reengage(
+      1040,
+      {
+        content: "Olha o erro:",
+        content_attributes: emailBag({
+          html: `<div>Olha o erro:<br><img src="${path}" width="1170" height="2532"></div>`,
+        }),
+      },
+      { texts: ["Print de uma tela de erro."] },
+    );
+    expect(out.downloads).toEqual([`${HOST}${path}`]);
+    expect(out.turn).toContain("Print de uma tela de erro.");
+    expect(provider.calls).toBe(1);
+  });
+
   test("the pasted shape: every Chatwoot blob in the HTML is read, the remote logo is not fetched", async () => {
     await setVision(true);
     const out = await reengage(

@@ -56,15 +56,19 @@ describe("emailBodyImageUrlsFrom", () => {
     expect(emailBodyImageUrlsFrom(ca)).toEqual([BLOB]);
   });
 
-  test("a relative blob path is not a URL anything can download", () => {
+  test("a blob path relative to the Chatwoot host is kept, for the instance to resolve", () => {
     const ca = {
       email: {
         html_content: {
-          full: `<img src="/rails/active_storage/blobs/redirect/x--y/a.png">`,
+          full: `<img src="/rails/active_storage/blobs/redirect/x--y/a.png"><img src="//cdn.shop.example/rails/active_storage/blobs/redirect/z/b.png"><img src="rails/active_storage/blobs/redirect/w/c.png">`,
         },
       },
     };
-    expect(emailBodyImageUrlsFrom(ca)).toEqual([]);
+    // A protocol-relative URL names another host, and a path without the leading slash is relative
+    // to a page nobody knows: neither is this Chatwoot's.
+    expect(emailBodyImageUrlsFrom(ca)).toEqual([
+      "/rails/active_storage/blobs/redirect/x--y/a.png",
+    ]);
   });
 
   test("the same blob in both bodies is one image", () => {

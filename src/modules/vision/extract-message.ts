@@ -19,7 +19,7 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
-import { servedBy } from "@/modules/chatwoot/email-body-images";
+import { onChatwootHost, servedBy } from "@/modules/chatwoot/email-body-images";
 import { chatwootBaseUrl } from "@/modules/chatwoot/instance";
 import type { FlowContext } from "@/modules/flowlog/service";
 import {
@@ -88,7 +88,9 @@ async function doProprioChatwoot(
       params.instanceId,
       params.base,
     );
-    return corpo.filter((v) => servedBy(v.dataUrl, baseUrl));
+    return corpo
+      .map((v) => ({ ...v, dataUrl: onChatwootHost(v.dataUrl, baseUrl) }))
+      .filter((v) => servedBy(v.dataUrl, baseUrl));
   } catch (err) {
     logger.warn(
       "vision: body images skipped, the instance base URL was not read: %s",

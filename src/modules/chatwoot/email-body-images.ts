@@ -8,7 +8,9 @@
 // messages that declared an attachment in 14 days.
 //
 // Only Chatwoot's own blob URLs count: a remote image in quoted HTML was never uploaded by anybody
-// in this conversation. The host is checked later, against the instance, by whoever downloads.
+// in this conversation. The host is checked later, against the instance, by whoever downloads. A
+// path starting at `/rails/active_storage/` is kept as written: it is relative to the Chatwoot host,
+// where the dashboard renders it, and whoever downloads resolves it against the instance's address.
 
 const IMG_SRC = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 const BLOB_PATH = "/rails/active_storage/";
@@ -37,7 +39,8 @@ export function emailBodyImageUrlsFrom(
   ]) {
     for (const m of body.matchAll(IMG_SRC)) {
       const src = (m[1] ?? m[2] ?? "").trim().replace(/&amp;/g, "&");
-      if (!/^https?:\/\//i.test(src) || !src.includes(BLOB_PATH)) continue;
+      const absolute = /^https?:\/\//i.test(src) && src.includes(BLOB_PATH);
+      if (!absolute && !src.startsWith(BLOB_PATH)) continue;
       if (!out.includes(src)) out.push(src);
     }
   }
@@ -62,6 +65,12 @@ export function bodyImagesBesides(
 ): string[] {
   const attached = new Set(attachmentUrls.map(blobKeyOf));
   return urls.filter((u) => !attached.has(blobKeyOf(u)));
+}
+
+// A body image as a URL to download: a path relative to the Chatwoot host becomes one on the
+// instance's address; an absolute URL is left as it is.
+export function onChatwootHost(url: string, baseUrl: string): string {
+  return url.startsWith(BLOB_PATH) ? new URL(url, baseUrl).href : url;
 }
 
 // Whether a body image is this Chatwoot's, by host: a remote image in quoted HTML was never

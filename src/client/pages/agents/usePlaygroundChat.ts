@@ -40,6 +40,7 @@ export function addUsage(
     unpricedCalls: a.unpricedCalls + b.unpricedCalls,
     olderTablePricedCalls: a.olderTablePricedCalls + b.olderTablePricedCalls,
     tenantPricedCalls: a.tenantPricedCalls + b.tenantPricedCalls,
+    reportedPricedCalls: a.reportedPricedCalls + b.reportedPricedCalls,
     byNode: Object.fromEntries(
       [...new Set([...Object.keys(a.byNode), ...Object.keys(b.byNode)])].map(
         (node) => [node, (a.byNode[node] ?? 0) + (b.byNode[node] ?? 0)],
@@ -59,6 +60,7 @@ export const NO_USAGE: PlaygroundUsage = {
   unpricedCalls: 0,
   olderTablePricedCalls: 0,
   tenantPricedCalls: 0,
+  reportedPricedCalls: 0,
 };
 
 export type PlaygroundTurn =

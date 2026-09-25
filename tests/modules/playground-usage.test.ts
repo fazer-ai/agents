@@ -265,6 +265,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       unpricedCalls: 1,
       olderTablePricedCalls: 0,
       tenantPricedCalls: 0,
+      reportedPricedCalls: 0,
     });
     // The cached share is a PART of the input, not added to it.
     expect(r.usage.promptTokens).toBe(1500);
@@ -315,6 +316,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       unpricedCalls: first.usage.unpricedCalls + second.usage.unpricedCalls,
       olderTablePricedCalls: 0,
       tenantPricedCalls: 0,
+      reportedPricedCalls: 0,
     });
   });
 
@@ -361,6 +363,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       unpricedCalls: 0,
       olderTablePricedCalls: 0,
       tenantPricedCalls: 0,
+      reportedPricedCalls: 0,
     });
     expect((await ledger(read.threadId)).map((x) => x.node)).toEqual([
       "vision",
@@ -556,6 +559,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       unpricedCalls: read.usage.unpricedCalls + turn.usage.unpricedCalls,
       olderTablePricedCalls: 0,
       tenantPricedCalls: 0,
+      reportedPricedCalls: 0,
     });
     expect(two?.usage).toEqual(replay.usage);
   });
@@ -714,6 +718,7 @@ describe("sumTurnUsage", () => {
       unpricedCalls: 1,
       olderTablePricedCalls: 0,
       tenantPricedCalls: 0,
+      reportedPricedCalls: 0,
     });
     // Every row is still written: the sum observes the ledger, it does not gate it.
     expect(rows).toHaveLength(3);
@@ -741,6 +746,7 @@ describe("sumTurnUsage", () => {
       unpricedCalls: 1,
       olderTablePricedCalls: 0,
       tenantPricedCalls: 0,
+      reportedPricedCalls: 0,
     });
     expect(outer.usage).toEqual({
       ...emptyTurnUsage(),
@@ -752,6 +758,7 @@ describe("sumTurnUsage", () => {
       unpricedCalls: 2,
       olderTablePricedCalls: 0,
       tenantPricedCalls: 0,
+      reportedPricedCalls: 0,
     });
   });
 

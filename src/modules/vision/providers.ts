@@ -2,6 +2,7 @@
 // turns a file (image or PDF) + an instruction into extracted text. Adding a provider = one function
 // + one registry entry. The key never lands in the URL or logs.
 
+import { reportedCostFromUsage } from "@/modules/pricing/reported";
 import { mediaSubtype, normalizeMediaType } from "./media-conversion";
 export type VisionKind = "image" | "document";
 
@@ -32,6 +33,8 @@ export interface VisionUsage {
   // summing both must not have to know which one wrote the row.
   cachedReadTokens: number;
   cacheCreationTokens: number;
+  // What the provider said the call cost, when it did (OpenRouter's `usage.cost`, issue #866).
+  reportedCostUsd?: number | null;
 }
 
 export interface VisionResult {
@@ -164,16 +167,21 @@ async function chatCompletionsExtract(
       prompt_tokens_details?: { cached_tokens?: number };
     };
   };
+  const usage = usageOf({
+    prompt: json.usage?.prompt_tokens,
+    completion: json.usage?.completion_tokens,
+    // NOTE: `completion_tokens_details.reasoning_tokens` is NOT read here on purpose: OpenAI
+    // counts reasoning INSIDE completion_tokens, so adding it would bill the same tokens twice.
+    // Gemini is the opposite case, and is handled as such below.
+    cachedRead: json.usage?.prompt_tokens_details?.cached_tokens,
+  });
+  const reported = reportedCostFromUsage(providerName, json.usage);
   return {
     text: (json.choices?.[0]?.message?.content ?? "").trim(),
-    usage: usageOf({
-      prompt: json.usage?.prompt_tokens,
-      completion: json.usage?.completion_tokens,
-      // NOTE: `completion_tokens_details.reasoning_tokens` is NOT read here on purpose: OpenAI
-      // counts reasoning INSIDE completion_tokens, so adding it would bill the same tokens twice.
-      // Gemini is the opposite case, and is handled as such below.
-      cachedRead: json.usage?.prompt_tokens_details?.cached_tokens,
-    }),
+    usage:
+      usage && reported != null
+        ? { ...usage, reportedCostUsd: reported }
+        : usage,
   };
 }
 

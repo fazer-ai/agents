@@ -2268,6 +2268,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       unpricedCalls: 0,
       olderTablePricedCalls: 0,
       tenantPricedCalls: 0,
+      reportedPricedCalls: 0,
     });
     expect(usage.turns.map((t) => t.usage)).toEqual(
       spends.map((s) => ({
@@ -2281,6 +2282,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         unpricedCalls: 0,
         olderTablePricedCalls: 0,
         tenantPricedCalls: 0,
+        reportedPricedCalls: 0,
       })),
     );
     // The line's turn is the turn the activity trail and the Langfuse trace name: the same id the

@@ -598,6 +598,19 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     expect(out.turn).toContain("Tudo lido antes.");
   });
 
+  test("a body image URL that leaves Active Storage on the Chatwoot host is never fetched", async () => {
+    await setVision(true);
+    const out = await reengage(1041, {
+      content: "Oi",
+      content_attributes: emailBag({
+        html: `<p>Oi</p><img src="${HOST}/api/v1/accounts/11/conversations?x=/rails/active_storage/"><img src="/rails/active_storage/../../api/v1/profile">`,
+      }),
+    });
+    // The downloader sends the admin token to its own host: no API route may be reached through it.
+    expect(out.downloads).toEqual([]);
+    expect(provider.calls).toBe(0);
+  });
+
   test("a remote body image is not counted as unread when the attachments fill the cap", async () => {
     await setVision(true);
     const out = await reengage(1014, {

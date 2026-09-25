@@ -15,6 +15,17 @@
 const IMG_SRC = /<img\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 const BLOB_PATH = "/rails/active_storage/";
 
+// Whether a URL, once parsed and normalized (`..`, `%2e%2e`), still names a path under Active
+// Storage. Matching the raw text is not enough: `?x=/rails/active_storage/` or a `../` would reach an
+// API route on the Chatwoot host, and the downloader sends the admin token to that host.
+function inActiveStorage(url: string, base?: string): boolean {
+  try {
+    return new URL(url, base).pathname.startsWith(BLOB_PATH);
+  } catch {
+    return false;
+  }
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -39,8 +50,10 @@ export function emailBodyImageUrlsFrom(
   ]) {
     for (const m of body.matchAll(IMG_SRC)) {
       const src = (m[1] ?? m[2] ?? "").trim().replace(/&amp;/g, "&");
-      const absolute = /^https?:\/\//i.test(src) && src.includes(BLOB_PATH);
-      if (!absolute && !src.startsWith(BLOB_PATH)) continue;
+      const absolute = /^https?:\/\//i.test(src) && inActiveStorage(src);
+      const relative =
+        src.startsWith(BLOB_PATH) && inActiveStorage(src, "http://relative");
+      if (!absolute && !relative) continue;
       if (!out.includes(src)) out.push(src);
     }
   }
@@ -73,11 +86,12 @@ export function onChatwootHost(url: string, baseUrl: string): string {
   return url.startsWith(BLOB_PATH) ? new URL(url, baseUrl).href : url;
 }
 
-// Whether a body image is this Chatwoot's, by host: a remote image in quoted HTML was never
-// uploaded by anyone in the conversation, and is not fetched.
+// Whether a body image is this Chatwoot's: on its host, and still under Active Storage once
+// normalized. A remote image in quoted HTML was never uploaded by anyone in the conversation, and is
+// not fetched.
 export function servedBy(url: string, baseUrl: string): boolean {
   try {
-    return new URL(url).host === new URL(baseUrl).host;
+    return new URL(url).host === new URL(baseUrl).host && inActiveStorage(url);
   } catch {
     return false;
   }

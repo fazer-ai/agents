@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   bodyImagesBesides,
   emailBodyImageUrlsFrom,
+  servedBy,
 } from "@/modules/chatwoot/email-body-images";
 import {
   incomingRenderable,
@@ -69,6 +70,39 @@ describe("emailBodyImageUrlsFrom", () => {
     expect(emailBodyImageUrlsFrom(ca)).toEqual([
       "/rails/active_storage/blobs/redirect/x--y/a.png",
     ]);
+  });
+
+  test("a URL that only mentions the blob path, or climbs out of it, is not a blob", () => {
+    const host = "https://chat.example.com";
+    const ca = {
+      email: {
+        html_content: {
+          full: [
+            `${host}/api/v1/accounts/1/conversations?x=/rails/active_storage/`,
+            `${host}/rails/active_storage/../../api/v1/profile`,
+            `${host}/rails/active_storage/%2e%2e/%2e%2e/api/v1/profile`,
+            "/rails/active_storage/../../api/v1/profile",
+            `${host}/x#/rails/active_storage/`,
+          ]
+            .map((u) => `<img src="${u}">`)
+            .join(""),
+        },
+      },
+    };
+    expect(emailBodyImageUrlsFrom(ca)).toEqual([]);
+  });
+
+  test("the host check itself refuses a path outside Active Storage", () => {
+    const host = "https://chat.example.com";
+    expect(
+      servedBy(`${host}/rails/active_storage/blobs/redirect/s/a.png`, host),
+    ).toBe(true);
+    expect(
+      servedBy(`${host}/api/v1/profile?x=/rails/active_storage/`, host),
+    ).toBe(false);
+    expect(
+      servedBy(`${host}/rails/active_storage/../api/v1/profile`, host),
+    ).toBe(false);
   });
 
   test("the same blob in both bodies is one image", () => {

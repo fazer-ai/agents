@@ -38,8 +38,19 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   return realFetch(input as RequestInfo | URL, init);
 }) as typeof fetch;
 
+let signedInAs: { email: string } | null = null;
+let logoutAnswer = true;
+let logouts = 0;
 mock.module("@/client/contexts/AuthContext", () => ({
-  useAuth: () => ({ user: null, login: () => {} }),
+  useAuth: () => ({
+    user: signedInAs,
+    login: () => {},
+    logout: async () => {
+      logouts += 1;
+      if (logoutAnswer) signedInAs = null;
+      return logoutAnswer;
+    },
+  }),
 }));
 
 const { AcceptInvitePage } = await import("@/client/pages/AcceptInvitePage");
@@ -73,6 +84,9 @@ describe("accepting an invitation by signing in", () => {
     cleanup();
     sessionStorage.removeItem(PARKED);
     inviteQueries.length = 0;
+    signedInAs = null;
+    logoutAnswer = true;
+    logouts = 0;
   });
   afterAll(() => {
     globalThis.fetch = realFetch;
@@ -99,5 +113,37 @@ describe("accepting an invitation by signing in", () => {
       expect(inviteQueries.join(",")).toBe("tok-756");
     });
     expect(sessionStorage.getItem(PARKED)).toBeNull();
+  });
+
+  // Signed in as somebody else, the login page would bounce straight back: that session ends first,
+  // and a logout the server did not confirm goes nowhere.
+  test("signed in as somebody else, signs that session out before going to sign in", async () => {
+    signedInAs = { email: "other@x.test" };
+    renderAt("/accept-invite?token=tok-756");
+    fireEvent.click(
+      await screen.findByText(
+        "Sign out and sign in to this account (Google included)",
+      ),
+    );
+    await waitFor(() => {
+      expect(seenPath.startsWith("/login")).toBe(true);
+    });
+    expect(logouts).toBe(1);
+    expect(sessionStorage.getItem(PARKED)).toBe("tok-756");
+  });
+
+  test("a sign-out that failed stays on the invitation", async () => {
+    signedInAs = { email: "other@x.test" };
+    logoutAnswer = false;
+    renderAt("/accept-invite?token=tok-756");
+    fireEvent.click(
+      await screen.findByText(
+        "Sign out and sign in to this account (Google included)",
+      ),
+    );
+    await waitFor(() => {
+      expect(logouts).toBe(1);
+    });
+    expect(seenPath.startsWith("/accept-invite")).toBe(true);
   });
 });

@@ -5,6 +5,7 @@ import { translate } from "@/api/lib/i18n";
 import logger from "@/api/lib/logger";
 import prisma from "@/api/lib/prisma";
 import config from "@/config";
+import { parseDbId } from "@/lib/db-id";
 import {
   ServiceUnavailableError,
   TenantSelectorRefusedError,
@@ -116,6 +117,23 @@ export const authPlugin = new Elysia({ name: "auth" })
     clearAuthCookie() {
       cookie[COOKIE_NAME]?.remove();
       cookie[LEGACY_COOKIE_NAME]?.remove();
+    },
+    // WHICH PERSON the session cookie names, and nothing else: no tenant selector, no membership, no
+    // API key. For the one operation where the session is only proof of identity (accepting an
+    // invitation into the account it names), a stale selector must not turn that proof into "signed
+    // out" (review round 5 on #756).
+    async getSessionUserId(): Promise<bigint | null> {
+      const token =
+        cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
+      if (!token || typeof token !== "string") return null;
+      try {
+        const payload = (await jwt.verify(token)) as JWTPayload | false;
+        return payload && typeof payload.userId === "string"
+          ? parseDbId(payload.userId)
+          : null;
+      } catch {
+        return null;
+      }
     },
     async getAuthUser(): Promise<AuthUser | null> {
       let token = cookie[COOKIE_NAME]?.value;

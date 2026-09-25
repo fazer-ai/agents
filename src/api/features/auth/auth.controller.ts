@@ -530,17 +530,17 @@ const baseAuthController = new Elysia({
   // invite is explicit authorization by an admin, like the /setup operator bypass.
   .post(
     "/accept-invite",
-    async ({ body, set, setAuthCookie, getAuthUser }) => {
+    async ({ body, set, setAuthCookie, getSessionUserId }) => {
       let user: Awaited<ReturnType<typeof acceptInvite>>;
       try {
-        // A signed-in session only matters as proof of WHICH person it is; a stale tenant selector
-        // it carries is no reason to refuse the invitation.
-        const session = await getAuthUser().catch(() => null);
+        // A signed-in session only matters as proof of WHICH person it is, so it is read without the
+        // tenant selector: a membership removed while the page was open must not make the invitee
+        // "signed out" here (review round 5).
         user = await acceptInvite({
           token: body.token,
           password: body.password,
           name: body.name?.trim() || null,
-          sessionUserId: session && !session.isApiKey ? session.id : null,
+          sessionUserId: await getSessionUserId(),
         });
       } catch (error) {
         if (error instanceof InviteAccountProofError) {

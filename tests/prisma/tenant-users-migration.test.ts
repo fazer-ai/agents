@@ -202,8 +202,7 @@ async function seed(c: Client): Promise<Ids> {
     "g-root",
     "2026-02-01",
   );
-  // Cai: THREE rows. The two that go both approved a client the one that stays never did, which is
-  // the collision a per-pair de-duplication misses (review round 1).
+  // Cai: THREE rows, the two that go having approved a client the one that stays never did.
   await user(
     "caiA",
     ids.A as string,
@@ -252,7 +251,8 @@ async function seed(c: Client): Promise<Ids> {
     "INSERT INTO mcp_oauth_pending_authorizations (user_id) VALUES ($1)",
     [ids.anaA],
   );
-  // The same client approved from both of Ana's rows, and another from the row that goes.
+  // The same client approved from both of Ana's rows, and another from the row that goes; and a client
+  // two of Cai's merged rows approved.
   await c.query(
     "INSERT INTO mcp_oauth_client_approvals (user_id, client_id) VALUES ($1, 'c1'), ($2, 'c1'), ($1, 'c2')",
     [ids.anaA, ids.anaB],
@@ -385,7 +385,7 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
     ]);
   });
 
-  test("what named a merged row names the person that stayed", async () => {
+  test("what named a merged row names the person that stayed, and its MCP credentials are revoked", async () => {
     const { ids, c } = await migrate(sql);
     const col = async (table: string, column: string) =>
       (
@@ -396,15 +396,16 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
     expect(await col("invitations", "invited_by_id")).toEqual([
       ids.anaB as string,
     ]);
+    // The MCP credentials of a row that went are revoked, never moved: moved, they would let whoever
+    // held that row act as the person who stayed (review round 5). The kept row's own survive.
     for (const table of [
       "mcp_oauth_access_tokens",
       "mcp_oauth_refresh_tokens",
       "mcp_oauth_authorization_codes",
       "mcp_oauth_pending_authorizations",
     ]) {
-      expect(await col(table, "user_id")).toEqual([ids.anaB as string]);
+      expect(await col(table, "user_id")).toEqual([]);
     }
-    // The client both rows approved keeps ONE approval, and the other moves.
     const approvals = (
       await c.query<{ user_id: string; client_id: string }>(
         "SELECT user_id::text, client_id FROM mcp_oauth_client_approvals ORDER BY client_id",
@@ -412,8 +413,6 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
     ).rows;
     expect(approvals).toEqual([
       { user_id: ids.anaB as string, client_id: "c1" },
-      { user_id: ids.anaB as string, client_id: "c2" },
-      { user_id: ids.caiA as string, client_id: "c9" },
     ]);
     // An API key's creator answers the step-up for a key minted before it had its own, so a key made
     // by the row that went is now the person's. The table is FORCE-RLS, and stays so.

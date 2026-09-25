@@ -412,6 +412,36 @@ describe.skipIf(!dbUp)("a person with several tenants", () => {
     });
   });
 
+  // Review round 5: the session is proof of WHICH person it is, and a tenant selector it carries
+  // that no longer names a membership (removed while the page was open) does not unmake that proof.
+  test("signed in as the invited account with a stale selector, still joins", async () => {
+    const { createInvite } = await import(
+      "@/api/features/invitations/invitation.service"
+    );
+    const { token } = await createInvite(
+      { tenantId: null, userId: personId, role: "SUPER_ADMIN" },
+      { tenantId: outside, email: `${tag}@x.test`, role: "AGENT" },
+      suDb,
+    );
+    const res = await server.handle(
+      req("/auth/accept-invite", {
+        method: "POST",
+        cookie: await cookieFor(personId),
+        tenant: outside,
+        body: JSON.stringify({ token }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(
+      await suDb.tenantUser.count({
+        where: { userId: personId, tenantId: outside },
+      }),
+    ).toBe(1);
+    await suDb.tenantUser.deleteMany({
+      where: { userId: personId, tenantId: outside },
+    });
+  });
+
   // The password is optional on the wire only because an existing account proves itself another way.
   // A NEW account still needs one, of the usual length.
   test("an invitation for a new account without a password is refused", async () => {

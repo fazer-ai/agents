@@ -44,7 +44,7 @@ function takeParkedInviteToken(): string | null {
 export function AcceptInvitePage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { user, login } = useAuth();
+  const { user, login, logout } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const [token] = useState(
     () => searchParams.get("token") ?? takeParkedInviteToken() ?? "",
@@ -140,6 +140,21 @@ export function AcceptInvitePage() {
       inFlightRef.current = false;
       setLoading(false);
     }
+  };
+
+  // An account that signs in with Google has no password to enter on this page: signing in proves it
+  // the same way, with the invitation parked in this tab until the invitee comes back.
+  const switchToSignIn = async () => {
+    parkInviteToken(token);
+    // Signed in as somebody else, the login page would bounce straight back here: that
+    // session ends first, and only once the server says it ended (review round 5).
+    if (user && !(await logout())) {
+      setError(
+        t("auth.genericError", "Something went wrong. Please try again."),
+      );
+      return;
+    }
+    navigate(`/login?redirect=${encodeURIComponent("/accept-invite")}`);
   };
 
   return (
@@ -303,18 +318,18 @@ export function AcceptInvitePage() {
                     first proves the account the same way, and the invitation waits in this tab. */}
                 <button
                   type="button"
-                  onClick={() => {
-                    parkInviteToken(token);
-                    navigate(
-                      `/login?redirect=${encodeURIComponent("/accept-invite")}`,
-                    );
-                  }}
+                  onClick={switchToSignIn}
                   className="mt-2 text-accent text-sm hover:underline"
                 >
-                  {t(
-                    "acceptInvite.signInInstead",
-                    "Sign in to this account instead (Google included)",
-                  )}
+                  {user
+                    ? t(
+                        "acceptInvite.switchAccount",
+                        "Sign out and sign in to this account (Google included)",
+                      )
+                    : t(
+                        "acceptInvite.signInInstead",
+                        "Sign in to this account instead (Google included)",
+                      )}
                 </button>
               </div>
             )}

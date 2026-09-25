@@ -109,10 +109,9 @@ UPDATE "tenant_users" t SET "user_id" = m."keeper_id"
   FROM "user_merge" m WHERE t."user_id" = m."dup_id";
 
 -- What else names a user by id. These are loose columns (no foreign key), so a deleted row would
--- leave them pointing at nobody: an invitation's inviter, an API key's creator (who answers the
--- step-up for a key minted before it had one of its own), and the MCP connections the person
--- authorized, which keep working because the kept person holds the same membership the token was
--- issued under.
+-- leave them pointing at nobody: an invitation's inviter, and an API key's creator. Moving those
+-- grants nothing: the key's own authority is fixed on the key, and its creator is who answers the
+-- step-up for a key minted before it had one of its own, which is now the kept person.
 UPDATE "invitations" i SET "invited_by_id" = m."keeper_id"
   FROM "user_merge" m WHERE i."invited_by_id" = m."dup_id";
 -- `api_keys` is FORCE-RLS, and its owner, which runs this file, is subject to the tenant policy: without
@@ -121,30 +120,16 @@ ALTER TABLE "api_keys" NO FORCE ROW LEVEL SECURITY;
 UPDATE "api_keys" x SET "created_by_user_id" = m."keeper_id"
   FROM "user_merge" m WHERE x."created_by_user_id" = m."dup_id";
 ALTER TABLE "api_keys" FORCE ROW LEVEL SECURITY;
-UPDATE "mcp_oauth_authorization_codes" x SET "user_id" = m."keeper_id"
-  FROM "user_merge" m WHERE x."user_id" = m."dup_id";
-UPDATE "mcp_oauth_access_tokens" x SET "user_id" = m."keeper_id"
-  FROM "user_merge" m WHERE x."user_id" = m."dup_id";
-UPDATE "mcp_oauth_refresh_tokens" x SET "user_id" = m."keeper_id"
-  FROM "user_merge" m WHERE x."user_id" = m."dup_id";
-UPDATE "mcp_oauth_pending_authorizations" x SET "user_id" = m."keeper_id"
-  FROM "user_merge" m WHERE x."user_id" = m."dup_id";
--- One approval per (person, client) survives, decided over the WHOLE merge group: two merged rows can
--- both have approved a client the kept row never did (review round 1). The kept person's own approval
--- wins, then the oldest.
-DELETE FROM "mcp_oauth_client_approvals" a
- USING (
-   SELECT x."id",
-          row_number() OVER (
-            PARTITION BY COALESCE(m."keeper_id", x."user_id"), x."client_id"
-            ORDER BY (m."keeper_id" IS NULL) DESC, x."id"
-          ) AS "rn"
-     FROM "mcp_oauth_client_approvals" x
-     LEFT JOIN "user_merge" m ON m."dup_id" = x."user_id"
- ) ranked
- WHERE a."id" = ranked."id" AND ranked."rn" > 1;
-UPDATE "mcp_oauth_client_approvals" x SET "user_id" = m."keeper_id"
-  FROM "user_merge" m WHERE x."user_id" = m."dup_id";
+-- The MCP credentials a merged row holds are REVOKED, not moved: a token names the person it acts as,
+-- and moving a merged row's token onto the kept one would let whoever held that row act as the kept
+-- person, a fleet administrator included (review round 5). The person reconnects their clients, which
+-- is the whole cost. Codes and pending authorizations are short-lived and go the same way, and so do
+-- the client approvals, which the kept person gives again on their next consent.
+DELETE FROM "mcp_oauth_authorization_codes" WHERE "user_id" IN (SELECT "dup_id" FROM "user_merge");
+DELETE FROM "mcp_oauth_access_tokens" WHERE "user_id" IN (SELECT "dup_id" FROM "user_merge");
+DELETE FROM "mcp_oauth_refresh_tokens" WHERE "user_id" IN (SELECT "dup_id" FROM "user_merge");
+DELETE FROM "mcp_oauth_pending_authorizations" WHERE "user_id" IN (SELECT "dup_id" FROM "user_merge");
+DELETE FROM "mcp_oauth_client_approvals" WHERE "user_id" IN (SELECT "dup_id" FROM "user_merge");
 
 -- Each merge is written to the audit trail, where an operator answers "my other password stopped
 -- working": one row in the fleet trail and one in every tenant the person now belongs to, naming the

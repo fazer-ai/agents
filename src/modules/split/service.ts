@@ -8,6 +8,7 @@ import {
   chatwootMessageListLength,
   parseChatwootMessages,
 } from "@/modules/chatwoot/messages";
+import { noteLandedMessage } from "@/modules/chatwoot/record-sends";
 import {
   emitFlowEvent,
   type FlowContext,
@@ -635,7 +636,12 @@ async function findLandedMessage(
       // No boundary, no `private`, no `message_type`: those were narrowing a match on CONTENT, and a
       // name cannot be worn by somebody else's message.
       const hit = rows.find((m) => m.sendId === sendId);
-      if (hit !== undefined) return { known: true, id: hit.id };
+      if (hit !== undefined) {
+        // The create's response was lost and this read found the message: it is still one the turn
+        // created, and the turn's closing line names it (issue #855).
+        if (typeof hit.id === "number") noteLandedMessage(client, hit.id);
+        return { known: true, id: hit.id };
+      }
       // ABSENCE, THOUGH, MAY ONLY REST ON A PAGE THAT WAS READ WHOLE — the rule three review rounds
       // arrived at one case at a time: a body that is not a list, a page whose rows were all
       // unreadable, a page where only SOME rows were. They are not three cases. An entry this build

@@ -203,11 +203,14 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/graph/history-ceiling-turn.test.ts": 1,
   "tests/graph/ingest.test.ts": 2,
   "tests/graph/label-allowed-wiring.test.ts": 1,
-  "tests/graph/nudge.test.ts": 4,
+  // #855, review round 2: a turn a gate stopped writes no closing line, which only a read can show.
+  "tests/graph/nudge.test.ts": 6,
   "tests/graph/nudge-waits-for-turn.test.ts": 2,
+  // #855, review round 2: a withdrawn turn closes on no line.
+  "tests/graph/read-receipt-turn.test.ts": 1,
   // #726: dois leitores novos, o carimbo provisorio da linha de `skip_reply` e a ausencia do fato do
   // turno num turno que nao decidiu silencio.
-  "tests/graph/runtime.test.ts": 24,
+  "tests/graph/runtime.test.ts": 25,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/skip-handover.test.ts": 1,
   // #726: the helper that runs one tool call end to end, plus the case that asks WHEN the turn's

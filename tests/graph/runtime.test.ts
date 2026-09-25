@@ -145,6 +145,8 @@ class SpendingReplyModel extends BaseChatModel {
   constructor(
     private readonly reply: string,
     private readonly spend: { input: number; cached: number; output: number },
+    // How long the provider "takes", so the duration the ledger records is one the call produced.
+    private readonly delayMs = 0,
   ) {
     super({});
   }
@@ -155,6 +157,7 @@ class SpendingReplyModel extends BaseChatModel {
     return this;
   }
   async _generate(): Promise<ChatResult> {
+    if (this.delayMs > 0) await Bun.sleep(this.delayMs);
     const { input, cached, output } = this.spend;
     const message = new AIMessage({
       content: this.reply,
@@ -2272,6 +2275,150 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(new Set(usage.turns.map((t) => t.turnId))).toEqual(
       new Set(logged.map((r) => r.turnId)),
     );
+  });
+
+  test("cada turno registra as mensagens que criou e quanto levou, e cada chamada a própria duração (issue #855)", async () => {
+    // A client that answers every create with the id Chatwoot would, and records what it was asked.
+    let nextId = 855_000;
+    const creates: Array<[string, number]> = [];
+    const idClient = () => {
+      const create = (kind: string) => async () => {
+        const id = nextId++;
+        creates.push([kind, id]);
+        return { id };
+      };
+      const client = {
+        sendMessage: create("message"),
+        sendPrivateNote: create("note"),
+        toggleStatus: async () => ({}),
+      } as unknown as ChatwootClient;
+      return async () => client;
+    };
+    const endLine = async (chatwootConvId: number) => {
+      const conv = await suDb.conversation.findFirstOrThrow({
+        where: { tenantId, chatwootConversationId: chatwootConvId },
+      });
+      const rows = await flowLogRows(suDb, {
+        where: { tenantId, conversationId: conv.id, stage: "generate" },
+        select: { detail: true, turnId: true },
+      });
+      const ends = rows.filter(
+        (r) => typeof (r.detail as { turnMs?: unknown })?.turnMs === "number",
+      );
+      expect(ends).toHaveLength(1);
+      return {
+        conv,
+        end: ends[0] as { detail: Record<string, unknown>; turnId: string },
+      };
+    };
+
+    // A reply: the one message it sent, and the call's own time in the ledger.
+    await seedConversation(98551, null);
+    expect(
+      await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 98551 }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new SpendingReplyModel(
+              REPLY,
+              { input: 100, cached: 0, output: 10 },
+              40,
+            ) as unknown as BaseChatModel,
+          makeClient: idClient(),
+          checkpointer: new MemorySaver(),
+        },
+      }),
+    ).toBe("posted");
+    await awaitAllCallbacks();
+    const reply = await endLine(98551);
+    const replyId = creates.at(-1)?.[1];
+    expect(reply.end.detail.sentMessageIds).toEqual([replyId]);
+    expect(reply.end.detail.turnMs as number).toBeGreaterThanOrEqual(40);
+    const billed = await suDb.llmUsage.findMany({
+      where: { tenantId, conversationId: reply.conv.id },
+      select: { durationMs: true, turnId: true },
+    });
+    expect(billed).toHaveLength(1);
+    expect(billed[0]?.turnId).toBe(reply.end.turnId);
+    expect(billed[0]?.durationMs ?? -1).toBeGreaterThanOrEqual(35);
+
+    // A transfer whose only words are the closing line: that line is the turn's message.
+    await seedConversation(98552, null);
+    const before = creates.length;
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98552 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new SkipThenHandoffModel(
+            "Já chamo uma pessoa.",
+          ) as unknown as BaseChatModel,
+        makeClient: idClient(),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    await awaitAllCallbacks();
+    const handoff = await endLine(98552);
+    expect(creates.length).toBeGreaterThan(before);
+    expect(handoff.end.detail.sentMessageIds).toEqual(
+      creates.slice(before).map(([, id]) => id),
+    );
+
+    // A turn the silence token ended: it says nothing to the customer and leaves the operator a note,
+    // and the note is a message it created, so it is named like any other.
+    await seedConversation(98553, null);
+    const quiet = creates.length;
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98553 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new FakeListChatModel({ responses: [FOLLOWUP_SKIP_SENTINEL] }),
+        makeClient: idClient(),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    await awaitAllCallbacks();
+    const silent = await endLine(98553);
+    expect(creates.slice(quiet).map(([kind]) => kind)).toEqual(["note"]);
+    expect(silent.end.detail.sentMessageIds).toEqual(
+      creates.slice(quiet).map(([, id]) => id),
+    );
+
+    // A turn that ran the model and has no id to name still closes on its line (review round 2): the
+    // model was billed, so the screen has spend to place. An empty reply leaves a note, answered here
+    // without an id, so nothing is recorded.
+    await seedConversation(98554, null);
+    const idless = {
+      sendMessage: async () => ({}),
+      sendPrivateNote: async () => ({}),
+      toggleStatus: async () => ({}),
+    } as unknown as ChatwootClient;
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98554 }),
+      base: appDb,
+      deps: {
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        makeClient: async () => idless,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    await awaitAllCallbacks();
+    const empty = await endLine(98554);
+    expect(empty.end.detail.sentMessageIds).toBeUndefined();
   });
 
   test("silêncio decidido e transferência depois: o fato do turno diz que saiu mensagem", async () => {

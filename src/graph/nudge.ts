@@ -22,6 +22,7 @@ import {
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
+import { recordSends } from "@/modules/chatwoot/record-sends";
 import { withAuthContextSection } from "@/modules/contact-auth/context";
 import {
   authorizeContact,
@@ -437,8 +438,58 @@ export function renderNudge(
   return parts.join("\n");
 }
 
+// What the closing line needs from inside the turn, filled in once the turn has a client.
+interface NudgeClosing {
+  flow: FlowContext | null;
+  sentIds: () => number[];
+  // The outcome line (`markFollowUp`) was written, and it carries the same two fields.
+  written: boolean;
+  // The turn reached the model. Before that, a gate that stops the turn (stale, not owned, a refused
+  // contact) ran nothing and owes no line, unless it left a message (review round 2).
+  generating: boolean;
+}
+
+// EVERY PROACTIVE TURN CLOSES ON ONE LINE (issue #855, review round 1). The outcome line carries the
+// messages the turn created and its time, but only the outcomes that reach it: a turn that decided
+// on silence can still hand the conversation over with a note, and a generation that failed can
+// still deliver a promised handoff line before it throws. Written here, around the whole turn, for
+// whichever way it ended without that line, so no message the turn created goes unnamed.
 export async function runAgentNudge(
   params: RunAgentNudgeParams,
+): Promise<RunAgentNudgeOutcome> {
+  const turnStartedAt = performance.now();
+  const closing: NudgeClosing = {
+    flow: null,
+    sentIds: () => [],
+    written: false,
+    generating: false,
+  };
+  try {
+    return await runAgentNudgeBody(params, closing, turnStartedAt);
+  } finally {
+    const sentMessageIds = closing.sentIds();
+    if (
+      closing.flow &&
+      !closing.written &&
+      (closing.generating || sentMessageIds.length > 0)
+    ) {
+      emitFlowEvent(closing.flow, {
+        stage: "generate",
+        level: "info",
+        status: "ok",
+        detail: {
+          turnMs: Math.round(performance.now() - turnStartedAt),
+          ...(sentMessageIds.length > 0 ? { sentMessageIds } : {}),
+        },
+      });
+    }
+  }
+}
+
+async function runAgentNudgeBody(
+  params: RunAgentNudgeParams,
+  closing: NudgeClosing,
+  turnStartedAt: number,
 ): Promise<RunAgentNudgeOutcome> {
   const base = params.base ?? basePrisma;
   const parsed = parseThreadId(params.threadId);
@@ -650,7 +701,10 @@ export async function runAgentNudge(
     const id = (res as { id?: unknown } | null)?.id;
     if (typeof id === "number" && Number.isSafeInteger(id)) sentMessageId = id;
   };
+  // What the client below noted, once it exists. Before it does, the turn has created nothing.
+  let sentIds: () => number[] = () => [];
   const markFollowUp = (outcome: RunAgentNudgeOutcome): void => {
+    closing.written = true;
     const origin = nudgeOrigin(params.nudge);
     emitFlowEvent(flow, {
       stage: "generate",
@@ -662,6 +716,10 @@ export async function runAgentNudge(
         origin,
         // Set only by a send that reached the customer, so a note or a silence carries none.
         ...(sentMessageId !== null ? { messageId: sentMessageId } : {}),
+        // Every message the turn created, the note included, and how long it took (issue #855): what
+        // the conversation screen hangs the turn's usage on.
+        ...(sentIds().length > 0 ? { sentMessageIds: sentIds() } : {}),
+        turnMs: Math.round(performance.now() - turnStartedAt),
         ...(origin === "event" && params.nudge.integrationInstanceId
           ? { integrationInstanceId: params.nudge.integrationInstanceId }
           : {}),
@@ -671,11 +729,19 @@ export async function runAgentNudge(
 
   // 2. Client + tools (network, outside the tx). The bot token is the persona's, so the proactive
   // message is attributed to this persona's Agent Bot in Chatwoot.
-  const client = await loadChatwootClient(tenantId, instanceId, {
-    base,
-    makeClient: params.deps?.makeClient,
-    botToken: cfg.agentBotToken ?? undefined,
-  });
+  //
+  // Wrapped so the turn knows every message it created, notes included (issue #855).
+  const recorded = recordSends(
+    await loadChatwootClient(tenantId, instanceId, {
+      base,
+      makeClient: params.deps?.makeClient,
+      botToken: cfg.agentBotToken ?? undefined,
+    }),
+  );
+  const client = recorded.client;
+  sentIds = recorded.sentIds;
+  closing.flow = flow;
+  closing.sentIds = recorded.sentIds;
 
   // NOTE: Live-ownership probe (the opt-in requireLiveBotOwnership path): fetch the REAL
   // conversation from Chatwoot, reconcile the mirror with what came back (the GET is fresher than
@@ -2104,6 +2170,7 @@ export async function runAgentNudge(
           ).values as { messages?: BaseMessage[] } | undefined
         )?.messages ?? [],
       );
+    closing.generating = true;
     result = await graph
       .invoke(
         {

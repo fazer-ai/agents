@@ -54,6 +54,8 @@ export interface UsageRow {
   // Cached-input accounting: a discounted SUBSET of promptTokens, never additive.
   cachedReadTokens: number;
   cacheCreationTokens: number;
+  // How long the call took, as the capture measured it (issue #855). Null when nothing measured it.
+  durationMs: number | null;
 }
 
 export type UsagePersist = (row: UsageRow) => Promise<void>;
@@ -143,10 +145,10 @@ export async function sumTurnUsage<T>(
   };
 }
 
-function noteTurnUsage(row: UsageRow, durationMs: number | null): void {
+function noteTurnUsage(row: UsageRow): void {
   const sink = turnUsageSink.getStore();
   if (!sink || row.threadId !== sink.threadId) return;
-  if (durationMs !== null) sink.modelMs += durationMs;
+  if (row.durationMs !== null) sink.modelMs += row.durationMs;
   sink.usage.calls += 1;
   sink.usage.promptTokens += row.promptTokens;
   sink.usage.cachedReadTokens += row.cachedReadTokens;
@@ -213,6 +215,8 @@ export function defaultUsagePersist(
           completionTokens: row.completionTokens,
           cachedReadTokens: row.cachedReadTokens,
           cacheCreationTokens: row.cacheCreationTokens,
+          durationMs:
+            row.durationMs === null ? undefined : Math.round(row.durationMs),
         },
       });
       // Fleet event (the subscriber consolidates). Same scoped tx as the row; allowlisted
@@ -409,8 +413,9 @@ export async function recordDirectUsage(
     completionTokens: row.completionTokens,
     cachedReadTokens: row.cachedReadTokens ?? 0,
     cacheCreationTokens: row.cacheCreationTokens ?? 0,
+    durationMs: row.durationMs ?? null,
   };
-  noteTurnUsage(usageRow, row.durationMs ?? null);
+  noteTurnUsage(usageRow);
   try {
     await defaultUsagePersist(attr.base)(usageRow);
   } catch (err) {
@@ -550,8 +555,9 @@ export class UsageCapture extends BaseCallbackHandler {
       completionTokens,
       cachedReadTokens,
       cacheCreationTokens,
+      durationMs,
     };
-    noteTurnUsage(row, durationMs);
+    noteTurnUsage(row);
     try {
       await this.persist(row);
     } catch (err) {

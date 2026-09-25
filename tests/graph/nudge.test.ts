@@ -42,12 +42,14 @@ import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
 import { MAX_DB_ID } from "@/lib/db-id";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { selectClosedPrefix } from "@/modules/memory/cut";
 import { withJobHandler } from "@/tests/utils/job-registry";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import {
   EmptyThenReplyModel,
+  FailingModel,
   guardrailModel,
   HandoffDeclaredSilenceModel,
   HandoffThenReplyModel,
@@ -389,6 +391,7 @@ function statusClient(opts: { failOn?: string } = {}) {
 function stub() {
   const messages: Array<[number, string]> = [];
   const notes: Array<[number, string]> = [];
+  const noteIds: number[] = [];
   const labelSets: string[][] = [];
   const resolved: number[] = [];
   // What each status call asked for, beside `resolved`, which only names the conversation.
@@ -408,7 +411,10 @@ function stub() {
     sendPrivateNote: async (c: number, t: string) => {
       notes.push([c, t]);
       order.push("note");
-      return {};
+      // Chatwoot answers a create with the row it made (issue #855).
+      const id = 88_000 + notes.length;
+      noteIds.push(id);
+      return { id };
     },
     getConversationLabels: async () => currentLabels,
     setConversationLabels: async (_c: number, labels: string[]) => {
@@ -433,6 +439,7 @@ function stub() {
     client,
     messages,
     notes,
+    noteIds,
     labelSets,
     resolved,
     statuses,
@@ -440,6 +447,27 @@ function stub() {
     order,
     makeClient: async () => client,
   };
+}
+
+// The line a proactive turn closed on (issue #855): the one carrying `turnMs`. Polled, because the
+// write is not awaited.
+async function closingLine(convId: number): Promise<Record<string, unknown>> {
+  for (let i = 0; i < 100; i++) {
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:${convId}`,
+      },
+      select: { detail: true },
+    });
+    const hit = rows
+      .map((r) => r.detail as Record<string, unknown> | null)
+      .find((d) => typeof d?.turnMs === "number");
+    if (hit) return hit;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`conversation ${convId} never closed its turn`);
 }
 
 async function seedConv(
@@ -808,13 +836,18 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       origin: "followup",
       messageId: 77002,
       step: 1,
+      // Issue #855: every message the turn created, and how long it took.
+      sentMessageIds: [77002],
     });
+    expect(typeof line?.turnMs).toBe("number");
     expect(line).not.toHaveProperty("integrationInstanceId");
   });
 
   test("an event that only left a note records no message to badge", async () => {
     await seedConv(8463, "User");
     const s = stub();
+    (s.client as unknown as Record<string, unknown>).sendPrivateNote =
+      async () => ({ id: 77003 });
     const outcome = await runAgentNudge({
       tenantId,
       threadId: `${tenantId}:${instanceId}:8463`,
@@ -837,6 +870,8 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     const line = await originLine(8463);
     expect(line).toMatchObject({ origin: "event", outcome: "noted" });
     expect(line).not.toHaveProperty("messageId");
+    // Issue #855: the note is still a message the turn created, and the screen hangs its usage there.
+    expect(line).toMatchObject({ sentMessageIds: [77003] });
   });
 
   // The other half of the #454 cause fix. A follow-up must ALWAYS have a way to say nothing: the
@@ -1683,8 +1718,84 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.messages).toEqual([]);
     expect(s.statuses).toEqual([[9661, "open"]]);
     expect(s.notes).toEqual([[9661, skipHandoverNote("needs_human", null)]]);
+    // Issue #855 (review round 1): a silent turn writes no outcome line, and still closes on one,
+    // naming the note it left.
+    const closing = await closingLine(9661);
+    expect(typeof closing.turnMs).toBe("number");
+    expect(closing.sentMessageIds).toEqual(s.noteIds);
     // The label still applies: it is how the operator triages what the bot left behind.
     expect(s.labelSets).toEqual([["follow-up"]]);
+  });
+
+  test("a turn a gate stopped before the model closes on no line (#855, review round 2)", async () => {
+    await seedConv(9667, null);
+    const s = stub();
+    let modelCalls = 0;
+    const client = {
+      ...(await s.makeClient()),
+      // A person took the conversation: the live probe stops the turn before any model call.
+      getConversation: async (c: number) => ({
+        id: c,
+        status: "open",
+        meta: { assignee: { id: 5, type: "user" } },
+        last_activity_at: Math.floor(Date.now() / 1000),
+      }),
+    } as unknown as ChatwootClient;
+    const outcome = await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9667`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      requireLiveBotOwnership: true,
+      base: appDb,
+      deps: {
+        makeModel: () => {
+          modelCalls += 1;
+          return new NudgeSkipModel("needs_human") as never;
+        },
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(outcome).not.toBe("sent");
+    expect(modelCalls).toBe(0);
+    await settleFlowEvents();
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:9667`,
+      },
+      select: { detail: true },
+    });
+    expect(
+      rows.filter(
+        (r) =>
+          typeof (r.detail as { turnMs?: unknown } | null)?.turnMs === "number",
+      ),
+    ).toEqual([]);
+  });
+
+  test("a turn whose generation failed still closes on its line, naming nothing (#855, review round 2)", async () => {
+    await seedConv(9668, null);
+    const s = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9668`,
+      nudge: { source: "followup", kind: "inactivity", step: 1 },
+      base: appDb,
+      deps: {
+        makeModel: () => new FailingModel(new Error("model down")) as never,
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    }).catch(() => {});
+    expect(s.messages).toEqual([]);
+    expect(s.noteIds).toEqual([]);
+    const closing = await closingLine(9668);
+    expect(typeof closing.turnMs).toBe("number");
+    expect(closing.sentMessageIds).toBeUndefined();
   });
 
   test("a follow-up whose hand-over failed still does not close the conversation", async () => {

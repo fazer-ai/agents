@@ -73,6 +73,12 @@ interface Row {
 }
 
 const det = (r: Row): Detail => (r.detail ?? {}) as Detail;
+// The line every turn closes on (issue #855): how long the turn took and the messages it created.
+// Kept apart from the lines these tests are about, and asserted on its own where it matters.
+const isTurnEnd = (r: Row): boolean =>
+  typeof (det(r) as { turnMs?: unknown }).turnMs === "number";
+const withoutTurnEnd = (rows: Row[]): Row[] =>
+  rows.filter((r) => !isTurnEnd(r));
 const tools = (rows: Row[]): Row[] => rows.filter((r) => r.stage === "tool");
 // The marker under test, asked the way an operator would: one structural field, no error text.
 const refused = (rows: Row[]): Row[] =>
@@ -359,7 +365,7 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     // `generate` line is issue #773's: the call was refused, so nothing reached the customer and
     // nothing in the turn chose that silence. Both are `status: ok` — neither is an error of the
     // generation step — and they differ in level, which is what decides who hears about it.
-    const gen = t.rows.filter((r) => r.stage === "generate");
+    const gen = withoutTurnEnd(t.rows).filter((r) => r.stage === "generate");
     expect(gen.map((r) => r.status)).toEqual(["ok", "ok"]);
     expect(gen.map((r) => r.level)).toEqual(["info", "warn"]);
     // And the refusal still reaches the model, unchanged: the wrapper observes, it does not answer.
@@ -380,12 +386,17 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     // since issue #773 is a turn the operator is told about rather than one that disappears. And
     // nobody on our side had spoken in this conversation, so since issue #659 the silence also hands
     // it to a person: the `handoff` line is that.
-    expect(b.rows.map((r) => `${r.stage}/${r.status}/${r.level}`)).toEqual([
+    const lines = withoutTurnEnd(b.rows);
+    expect(lines.map((r) => `${r.stage}/${r.status}/${r.level}`)).toEqual([
       "generate/ok/info",
       "generate/ok/warn",
       "handoff/ok/info",
     ]);
-    expect(Object.keys(det(b.rows[0] as Row))).toEqual(["systemPrompt"]);
+    expect(Object.keys(det(lines[0] as Row))).toEqual(["systemPrompt"]);
+    // And the turn closed on its own line, naming no message: it created none.
+    const end = b.rows.filter(isTurnEnd);
+    expect(end).toHaveLength(1);
+    expect(det(end[0] as Row)).not.toHaveProperty("sentMessageIds");
   });
 
   test("a refusal and a hit in the same turn are two countable lines", async () => {

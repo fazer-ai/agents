@@ -13,6 +13,8 @@ type MessagesResp = Awaited<
 >;
 export type Message = NonNullable<MessagesResp["data"]>["messages"][number];
 export type TrailEntry = NonNullable<ConversationDetail>["trail"][number];
+export type TurnUsageEntry =
+  NonNullable<ConversationDetail>["usage"]["turns"][number];
 
 // What a proactive bubble says about where it came from (issue #846): an inactivity follow-up (with
 // its step), a channel-redirect follow-up, or an inbound integration's event, named when the
@@ -51,7 +53,14 @@ export function followUpBadgeText(b: FollowUpBadgeInfo, t: TFunction): string {
 // is a stable tiebreaker for equal timestamps.
 export type TimelineItem =
   | { kind: "message"; at: number; seq: number; key: string; m: Message }
-  | { kind: "trail"; at: number; seq: number; key: string; entry: TrailEntry };
+  | { kind: "trail"; at: number; seq: number; key: string; entry: TrailEntry }
+  | {
+      kind: "usage";
+      at: number;
+      seq: number;
+      key: string;
+      turn: TurnUsageEntry;
+    };
 
 export type Timeline = {
   items: TimelineItem[];
@@ -69,6 +78,9 @@ export function buildTimeline(
   messages: Message[],
   trail: TrailEntry[],
   totalSteps: number,
+  turnUsage: TurnUsageEntry[] = [],
+  // Whether the thread has older messages still to page in.
+  olderPending = false,
 ): Timeline {
   // A proactive send draws no trail line of its own when its bubble can be found: the bubble carries
   // a badge saying where it came from instead (items 19/20, issue #846). A send whose bubble cannot be
@@ -160,6 +172,31 @@ export function buildTimeline(
       seq: messages.length + i,
       key: `t-${e.id}`,
       entry: e,
+    });
+  });
+  // What each turn spent (issue #853), at the time of its last billed call. While older messages are
+  // still to page in, a turn older than the oldest loaded message waits for them: its line would
+  // otherwise stack above the first bubble, far from the exchange it belongs to. With the whole
+  // thread loaded every line shows, including a turn that opened the conversation (an event, a
+  // follow-up) and so ran before its own first message.
+  const oldest = messages.reduce<number | null>(
+    (min, m) =>
+      m.createdAt == null
+        ? min
+        : min === null
+          ? m.createdAt * 1000
+          : Math.min(min, m.createdAt * 1000),
+    null,
+  );
+  turnUsage.forEach((u, i) => {
+    const at = Date.parse(u.at);
+    if (olderPending && oldest !== null && at < oldest) return;
+    items.push({
+      kind: "usage",
+      at,
+      seq: messages.length + trail.length + i,
+      key: `u-${u.turnId}`,
+      turn: u,
     });
   });
   items.sort((a, b) => a.at - b.at || a.seq - b.seq);

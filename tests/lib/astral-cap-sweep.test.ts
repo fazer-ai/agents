@@ -476,6 +476,8 @@ const BARE_SLICES: Record<
   // NUMBERS cannot land inside a surrogate pair; the join that renders it happens after the cut.
   "src/modules/chatwoot/management.ts": [1, "array"],
   "src/modules/conversations/service.ts": [1, "array"],
+  // The newest turns' lines kept off an ARRAY of turns (issue #853), never a string.
+  "src/modules/conversations/usage.ts": [1, "array"],
   "src/modules/debounce/handler.ts": [2, "array"],
   // The logo's one-shot download token is hex from randomUUID.
   "src/modules/documents/company.ts": [1, "ascii"],

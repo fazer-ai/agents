@@ -666,6 +666,9 @@
       "result": "Result",
       "tool": "Used a tool"
     },
+    "usage": {
+      "total": "Tokens"
+    },
     "viewLogs": "View logs",
     "voicePref": {
       "audio": "Prefers audio replies",
@@ -2432,13 +2435,7 @@
     },
     "untitledSession": "Untitled session",
     "usage": {
-      "cacheWrite": "cache write {{written}}",
-      "calls_one": "{{count}} call",
-      "calls_other": "{{count}} calls",
-      "input": "In {{input}} ({{cached}} from cache)",
-      "output": "out {{output}}",
-      "session": "Session",
-      "timing": "{{turn}} (model {{model}})"
+      "session": "Session"
     }
   },
   "resources": {
@@ -2581,6 +2578,14 @@
     "dark": "Dark",
     "label": "Theme",
     "light": "Light"
+  },
+  "tokenUsage": {
+    "cacheWrite": "cache write {{written}}",
+    "calls_one": "{{count}} call",
+    "calls_other": "{{count}} calls",
+    "input": "In {{input}} ({{cached}} from cache)",
+    "output": "out {{output}}",
+    "timing": "{{turn}} (model {{model}})"
   },
   "toolpackTools": {
     "argNote": {

@@ -41,6 +41,10 @@ import {
 import { reconcileMirrorFromLive } from "@/modules/chatwoot/reconcile";
 import { recordConversationAction } from "@/modules/conversations/audit";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
+import {
+  type ConversationUsage,
+  getConversationUsage,
+} from "@/modules/conversations/usage";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
 import {
   isFollowUpLive,
@@ -475,6 +479,9 @@ export interface ConversationDetail {
   // Recent execution-flow markers for THIS conversation (PII-free), interleaved into the timeline:
   // tool calls (name + status + duration) and proactive follow-up sends. Oldest → newest.
   trail: ConversationTrailEntry[];
+  // What the conversation has spent, as the provider reported it (issue #853): the total for the
+  // header and the newest turns' lines for the timeline.
+  usage: ConversationUsage;
 }
 
 // A compact, PII-free activity marker drawn inline in the conversation timeline. Derived from the
@@ -1646,6 +1653,7 @@ export async function getConversationDetail(
     chatwootBaseUrl: conv.instance.deployment.baseUrl,
     accountId: conv.instance.accountId,
     trail,
+    usage: await getConversationUsage(ctx, id, base),
   };
 }
 

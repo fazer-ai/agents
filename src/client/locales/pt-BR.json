@@ -684,6 +684,9 @@
       "result": "Resultado",
       "tool": "Usou uma ferramenta"
     },
+    "usage": {
+      "total": "Consumo"
+    },
     "viewLogs": "Ver logs",
     "voicePref": {
       "audio": "Prefere respostas em áudio",
@@ -2496,15 +2499,7 @@
     },
     "untitledSession": "Sessão sem título",
     "usage": {
-      "cacheWrite": "escrita no cache {{written}}",
-      "calls_zero": "{{count}} chamadas",
-      "calls_one": "{{count}} chamada",
-      "calls_many": "{{count}} chamadas",
-      "calls_other": "{{count}} chamadas",
-      "input": "Entrada {{input}} ({{cached}} do cache)",
-      "output": "saída {{output}}",
-      "session": "Sessão",
-      "timing": "{{turn}} (modelo {{model}})"
+      "session": "Sessão"
     }
   },
   "resources": {
@@ -2651,6 +2646,16 @@
     "dark": "Escuro",
     "label": "Tema",
     "light": "Claro"
+  },
+  "tokenUsage": {
+    "cacheWrite": "escrita no cache {{written}}",
+    "calls_zero": "{{count}} chamadas",
+    "calls_one": "{{count}} chamada",
+    "calls_many": "{{count}} chamadas",
+    "calls_other": "{{count}} chamadas",
+    "input": "Entrada {{input}} ({{cached}} do cache)",
+    "output": "saída {{output}}",
+    "timing": "{{turn}} (modelo {{model}})"
   },
   "toolpackTools": {
     "argNote": {

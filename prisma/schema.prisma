@@ -2152,6 +2152,9 @@ model LlmUsage {
   // A playground session's total (issue #839): the ledger summed by thread. Without it the sum walks
   // every row of the tenant, inbox traffic included, each time a session is opened.
   @@index([tenantId, threadId])
+  // A conversation's total and its turns' lines on the conversation screen (issue #853): the ledger
+  // summed by conversation.
+  @@index([tenantId, conversationId])
   @@map("llm_usage")
 }
 

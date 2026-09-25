@@ -1,7 +1,18 @@
 import { useTranslation } from "react-i18next";
-import type { PlaygroundTiming, PlaygroundUsage } from "./usePlaygroundChat";
+// The provider's numbers for one or more model calls: the shape `TurnUsage` has on the server, as the
+// playground turn and the conversation screen both receive it.
+export type TokenUsage = {
+  calls: number;
+  promptTokens: number;
+  cachedReadTokens: number;
+  cacheCreationTokens: number;
+  completionTokens: number;
+};
 
-// What a turn (or the whole session) spent, as the provider reported it (issue #839). The cached
+export type TokenTiming = { turnMs: number; modelMs: number };
+
+// What a turn (or a whole playground session or conversation) spent, as the provider reported it
+// (issues #839 and #853). The cached
 // share is always said, as a part OF the input and never subtracted from it: `cachedReadTokens` is a
 // discounted subset, and it is the number a prompt change can zero without anything else moving. A
 // cache write (Anthropic's premium) only shows when there was one. Nothing renders for a turn that
@@ -15,8 +26,8 @@ import type { PlaygroundTiming, PlaygroundUsage } from "./usePlaygroundChat";
 export function usageText(
   t: (key: string, fallback: string, opts?: Record<string, unknown>) => string,
   locale: string,
-  usage: PlaygroundUsage,
-  timing?: PlaygroundTiming,
+  usage: TokenUsage,
+  timing?: TokenTiming,
 ): string {
   const n = (v: number) => new Intl.NumberFormat(locale).format(v);
   const sec = (ms: number) =>
@@ -28,27 +39,27 @@ export function usageText(
       maximumFractionDigits: 1,
     }).format(ms / 1000);
   const parts = [
-    t("playground.usage.input", "In {{input}} ({{cached}} from cache)", {
+    t("tokenUsage.input", "In {{input}} ({{cached}} from cache)", {
       input: n(usage.promptTokens),
       cached: n(usage.cachedReadTokens),
     }),
   ];
   if (usage.cacheCreationTokens > 0) {
     parts.push(
-      t("playground.usage.cacheWrite", "cache write {{written}}", {
+      t("tokenUsage.cacheWrite", "cache write {{written}}", {
         written: n(usage.cacheCreationTokens),
       }),
     );
   }
   parts.push(
-    t("playground.usage.output", "out {{output}}", {
+    t("tokenUsage.output", "out {{output}}", {
       output: n(usage.completionTokens),
     }),
-    t("playground.usage.calls", "{{count}} calls", { count: usage.calls }),
+    t("tokenUsage.calls", "{{count}} calls", { count: usage.calls }),
   );
   if (timing) {
     parts.push(
-      t("playground.usage.timing", "{{turn}} (model {{model}})", {
+      t("tokenUsage.timing", "{{turn}} (model {{model}})", {
         turn: sec(timing.turnMs),
         model: sec(timing.modelMs),
       }),
@@ -62,9 +73,9 @@ export function UsageLine({
   timing,
   label,
 }: {
-  usage: PlaygroundUsage | undefined;
-  timing?: PlaygroundTiming;
-  // Prefixes the line (the session total says whose it is; a turn's line needs no name).
+  usage: TokenUsage | undefined;
+  timing?: TokenTiming;
+  // Prefixes the line (a total says whose it is; a turn's line needs no name).
   label?: string;
 }) {
   const { t, i18n } = useTranslation();
@@ -78,7 +89,7 @@ export function UsageLine({
   return (
     <p
       className="text-text-muted text-xs tabular-nums"
-      data-testid="playground-usage"
+      data-testid="token-usage"
     >
       {label ? `${label}: ${text}` : text}
     </p>

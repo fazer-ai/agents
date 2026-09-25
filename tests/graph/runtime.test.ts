@@ -4,13 +4,14 @@ import {
   awaitAllCallbacks,
   consumeCallback,
 } from "@langchain/core/callbacks/promises";
-import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
+import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import {
   AIMessage,
   type BaseMessage,
   HumanMessage,
   ToolMessage,
 } from "@langchain/core/messages";
+import type { ChatResult } from "@langchain/core/outputs";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -135,6 +136,36 @@ class CaptureReplyModel {
   }
   bindTools(_tools: unknown) {
     return { invoke: (messages: unknown[]) => this.invoke(messages) };
+  }
+}
+
+// A real chat model reporting the provider's usage, so the turn's callbacks fire and `UsageCapture`
+// writes the ledger row the way it does for a provider (issue #853).
+class SpendingReplyModel extends BaseChatModel {
+  constructor(
+    private readonly reply: string,
+    private readonly spend: { input: number; cached: number; output: number },
+  ) {
+    super({});
+  }
+  _llmType(): string {
+    return "spending-reply";
+  }
+  override bindTools(): this {
+    return this;
+  }
+  async _generate(): Promise<ChatResult> {
+    const { input, cached, output } = this.spend;
+    const message = new AIMessage({
+      content: this.reply,
+      usage_metadata: {
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: input + output,
+        input_token_details: { cache_read: cached },
+      },
+    });
+    return { generations: [{ text: this.reply, message }] };
   }
 }
 
@@ -2174,6 +2205,73 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       await hold;
       await awaitAllCallbacks();
     }
+  });
+
+  test("o consumo de cada turno real chega à tela da conversa, com o total (issue #853)", async () => {
+    await seedConversation(9853, null);
+    const saver = new MemorySaver();
+    const spends = [
+      { input: 1500, cached: 1024, output: 40 },
+      { input: 1800, cached: 0, output: 60 },
+    ];
+    for (const [i, spend] of spends.entries()) {
+      const outcome = await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({
+          conversationId: 9853,
+          message: {
+            id: 853_00 + i,
+            content: `mensagem ${i}`,
+            messageType: "incoming",
+            private: false,
+          },
+        }),
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new SpendingReplyModel(REPLY, spend) as unknown as BaseChatModel,
+          makeClient: makeStubClient([]),
+          checkpointer: saver,
+        },
+      });
+      expect(outcome).toBe("posted");
+    }
+    await awaitAllCallbacks();
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 9853 },
+    });
+    const { usage } = await getConversationDetail(
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      conv.id,
+      appDb,
+    );
+    expect(usage.total).toEqual({
+      calls: 2,
+      promptTokens: 3300,
+      cachedReadTokens: 1024,
+      cacheCreationTokens: 0,
+      completionTokens: 100,
+    });
+    expect(usage.turns.map((t) => t.usage)).toEqual(
+      spends.map((s) => ({
+        calls: 1,
+        promptTokens: s.input,
+        cachedReadTokens: s.cached,
+        cacheCreationTokens: 0,
+        completionTokens: s.output,
+      })),
+    );
+    // The line's turn is the turn the activity trail and the Langfuse trace name: the same id the
+    // ExecutionLog carries for each of the two turns.
+    const logged = await flowLogRows(suDb, {
+      where: { tenantId, conversationId: conv.id },
+      select: { turnId: true },
+    });
+    expect(new Set(usage.turns.map((t) => t.turnId))).toEqual(
+      new Set(logged.map((r) => r.turnId)),
+    );
   });
 
   test("silêncio decidido e transferência depois: o fato do turno diz que saiu mensagem", async () => {

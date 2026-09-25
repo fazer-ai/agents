@@ -10,6 +10,7 @@ import {
   Clock,
   ExternalLink,
   Eye,
+  Gauge,
   Lock,
   Megaphone,
   Paperclip,
@@ -55,6 +56,7 @@ import {
   useToast,
 } from "@/client/components";
 import { MonitoringBadge } from "@/client/components/MonitoringBadge";
+import { UsageLine } from "@/client/components/TokenUsage";
 import { useAuth } from "@/client/contexts/AuthContext";
 import { useTenantEvents } from "@/client/hooks/useTenantEvents";
 import { api } from "@/client/lib/api";
@@ -68,6 +70,7 @@ import {
   followUpBadgeText,
   type Message,
   type TrailEntry,
+  type TurnUsageEntry,
 } from "./conversationTimeline";
 
 // Eden-derived types for the dynamic /conversations/:id routes (metadata shell + the separate
@@ -394,6 +397,20 @@ type ActivityState = {
   // has to read as unknown — see `TurnFacts`.
   delivered?: boolean | null;
 } | null;
+
+// What one agent turn spent, as the provider reported it (issue #853): the playground's per-turn line,
+// drawn in the timeline at the time of the turn's last billed call.
+function TurnUsageMarker({ turn }: { turn: TurnUsageEntry }) {
+  return (
+    <div
+      className="flex items-center justify-center gap-1.5"
+      data-testid="turn-usage"
+    >
+      <Gauge className="h-3 w-3 shrink-0 text-text-muted" aria-hidden="true" />
+      <UsageLine usage={turn.usage} />
+    </div>
+  );
+}
 
 // A compact, persistent activity marker drawn inline in the timeline (a tool call that ran, or a
 // proactive follow-up that was sent). Distinct from the transient AgentActivityIndicator below. A tool
@@ -1333,8 +1350,16 @@ export function ConversationDetailPage() {
         messages,
         conv?.trail ?? [],
         conv?.followUp?.totalSteps ?? 0,
+        conv?.usage.turns ?? [],
+        canLoadOlder,
       ),
-    [messages, conv?.trail, conv?.followUp?.totalSteps],
+    [
+      messages,
+      conv?.trail,
+      conv?.followUp?.totalSteps,
+      conv?.usage.turns,
+      canLoadOlder,
+    ],
   );
   // Resolve a reply's quoted message (item 11): map id → message, so a bubble that quotes another can
   // show a WhatsApp-style preview when the referenced message is in the loaded window.
@@ -1741,6 +1766,12 @@ export function ConversationDetailPage() {
                     )}
                   </p>
                 )}
+                <div className="mt-1" data-testid="conversation-usage">
+                  <UsageLine
+                    usage={conv.usage.total}
+                    label={t("conversation.usage.total", "Tokens")}
+                  />
+                </div>
               </div>
               {/* Actions + navigation. Below lg: one wrapping row (item 12) — below sm they stack
                   full-width; at sm+ they flow right-aligned and wrap as the width shrinks. The two
@@ -1998,8 +2029,10 @@ export function ConversationDetailPage() {
                     </Button>
                   </div>
                   {timeline.items.map((item) =>
-                    item.kind !== "message" ? (
+                    item.kind === "trail" ? (
                       <TrailMarker key={item.key} entry={item.entry} />
+                    ) : item.kind === "usage" ? (
+                      <TurnUsageMarker key={item.key} turn={item.turn} />
                     ) : null,
                   )}
                 </div>
@@ -2027,8 +2060,13 @@ export function ConversationDetailPage() {
                     </div>
                   )}
                   {timeline.items.map((item) => {
-                    if (item.kind !== "message") {
+                    if (item.kind === "trail") {
                       return <TrailMarker key={item.key} entry={item.entry} />;
+                    }
+                    if (item.kind === "usage") {
+                      return (
+                        <TurnUsageMarker key={item.key} turn={item.turn} />
+                      );
                     }
                     const qm =
                       item.m.inReplyTo != null

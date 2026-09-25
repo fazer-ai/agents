@@ -3,9 +3,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, render, screen } from "@testing-library/react";
 import i18next from "i18next";
+import { UsageLine, usageText } from "@/client/components/TokenUsage";
 import clientEn from "@/client/locales/en.json";
 import clientPt from "@/client/locales/pt-BR.json";
-import { UsageLine, usageText } from "@/client/pages/agents/PlaygroundUsage";
 import {
   addUsage,
   agentTurn,
@@ -96,14 +96,14 @@ describe("usageText with timing", () => {
 describe("UsageLine", () => {
   test("a turn that made no model call draws nothing", () => {
     render(<UsageLine usage={NO_USAGE} />);
-    expect(screen.queryByTestId("playground-usage")).toBeNull();
+    expect(screen.queryByTestId("token-usage")).toBeNull();
     render(<UsageLine usage={undefined} />);
-    expect(screen.queryByTestId("playground-usage")).toBeNull();
+    expect(screen.queryByTestId("token-usage")).toBeNull();
   });
 
   test("the session total names itself", () => {
     render(<UsageLine usage={TURN} label="Session" />);
-    expect(screen.getByTestId("playground-usage").textContent).toStartWith(
+    expect(screen.getByTestId("token-usage").textContent).toStartWith(
       "Session: ",
     );
   });

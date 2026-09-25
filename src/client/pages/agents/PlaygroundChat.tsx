@@ -43,10 +43,10 @@ import {
   type ConfirmPayload,
 } from "@/client/components/ConfirmDialog";
 import { useModalController } from "@/client/components/Modal";
+import { UsageLine } from "@/client/components/TokenUsage";
 import { useMediaObjectUrl } from "@/client/components/useMediaObjectUrl";
 import { cn } from "@/client/lib/utils";
 import { useKnowledgeManager } from "@/client/pages/resources/useKnowledgeManager";
-import { UsageLine } from "./PlaygroundUsage";
 import type {
   PlaygroundSessionMeta,
   PlaygroundTurn,

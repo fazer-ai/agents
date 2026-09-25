@@ -85,13 +85,18 @@ export async function extractMessageVisuals(params: {
   const { visuals: todos, tenantId, instanceId, messageId } = params;
   if (todos.length === 0) return null;
 
+  // Anexos reais primeiro, com o teto como sempre. As imagens do corpo do e-mail (#864) vêm depois,
+  // em lotes do que sobrou do teto: só se sabe que uma é ornamento depois de baixá-la, e ornamento
+  // não gasta vaga, então cada lote devolve as vagas dos que foram ignorados ao lote seguinte.
+  const anexos = todos.filter((v) => v.id !== null);
+  const corpo = todos.filter((v) => v.id === null);
   let novasExtracoes = 0;
-  const visuais = todos.filter((v) =>
+  const visuais = anexos.filter((v) =>
     hasUnextractedVisual([v])
       ? novasExtracoes++ < VISION_MAX_ATTACHMENTS
       : true,
   );
-  const sobraram = todos.length - visuais.length;
+  let sobraram = anexos.length - visuais.length;
 
   const extrair = (visual: VisualAttachment) => {
     const comum = {
@@ -112,37 +117,50 @@ export async function extractMessageVisuals(params: {
       : extractInboundFile({ ...comum, attachmentId: visual.id });
   };
 
+  const ler = (visual: VisualAttachment) =>
+    // Já extraído numa passagem anterior (a recuperação de entrega repassa por aqui): reusa.
+    // Mais barato, e é o que mantém o agregado COMPLETO — uma repassagem parcial publicava um
+    // agregado mais pobre do que a metadata que ela depois sobrescrevia.
+    !hasUnextractedVisual([visual])
+      ? Promise.resolve({
+          nome: visual.name,
+          r: visual.imageDescription
+            ? ({ kind: "image", text: visual.imageDescription } as const)
+            : ({
+                kind: "document",
+                text: visual.extractedText ?? "",
+              } as const),
+        })
+      : extrair(visual)
+          // Um arquivo ilegível não pode custar os outros: a extração é best-effort por anexo.
+          .catch((err) => {
+            logger.warn(
+              "vision failed for attachment %s (conv=%s): %s",
+              visual.id,
+              params.convLabel ?? String(params.conversationId),
+              err instanceof Error ? err.message : String(err),
+            );
+            return null;
+          })
+          .then((r) => ({ nome: visual.name, r }));
+
   // EM PARALELO, porque o orçamento por arquivo é de 20s para imagem e 60s para documento: cinco
   // deles em série é um turno que ninguém espera, cinco de uma vez custam um.
-  const extraidos = await Promise.all(
-    visuais.map((visual) =>
-      // Já extraído numa passagem anterior (a recuperação de entrega repassa por aqui): reusa.
-      // Mais barato, e é o que mantém o agregado COMPLETO — uma repassagem parcial publicava um
-      // agregado mais pobre do que a metadata que ela depois sobrescrevia.
-      !hasUnextractedVisual([visual])
-        ? Promise.resolve({
-            nome: visual.name,
-            r: visual.imageDescription
-              ? ({ kind: "image", text: visual.imageDescription } as const)
-              : ({
-                  kind: "document",
-                  text: visual.extractedText ?? "",
-                } as const),
-          })
-        : extrair(visual)
-            // Um arquivo ilegível não pode custar os outros: a extração é best-effort por anexo.
-            .catch((err) => {
-              logger.warn(
-                "vision failed for attachment %s (conv=%s): %s",
-                visual.id,
-                params.convLabel ?? String(params.conversationId),
-                err instanceof Error ? err.message : String(err),
-              );
-              return null;
-            })
-            .then((r) => ({ nome: visual.name, r })),
-    ),
-  );
+  let vagas = Math.max(0, VISION_MAX_ATTACHMENTS - novasExtracoes);
+  let lote = corpo.splice(0, vagas);
+  const [dosAnexos, primeiroLote] = await Promise.all([
+    Promise.all(visuais.map(ler)),
+    Promise.all(lote.map(ler)),
+  ]);
+  const extraidos = [...dosAnexos, ...primeiroLote];
+  vagas = primeiroLote.filter((e) => e.r === BODY_IMAGE_IGNORED).length;
+  while (corpo.length > 0 && vagas > 0) {
+    lote = corpo.splice(0, vagas);
+    const lidos = await Promise.all(lote.map(ler));
+    extraidos.push(...lidos);
+    vagas = lidos.filter((e) => e.r === BODY_IMAGE_IGNORED).length;
+  }
+  sobraram += corpo.length;
 
   const imagens: string[] = [];
   const documentos: string[] = [];

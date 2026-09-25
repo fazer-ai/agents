@@ -3,6 +3,11 @@ import {
   bodyImagesBesides,
   emailBodyImageUrlsFrom,
 } from "@/modules/chatwoot/email-body-images";
+import {
+  incomingRenderable,
+  normalizeChatwootEvent,
+} from "@/modules/chatwoot/normalize";
+import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { isDecorativeImage } from "@/modules/vision/decorative";
 
 // ISSUE #864: the picture a customer puts in an email body is kept by Chatwoot's mailbox INSIDE the
@@ -108,6 +113,26 @@ describe("bodyImagesBesides", () => {
       bodyImagesBesides([`${BLOB}?disposition=inline`, BLOB2], [attached]),
     ).toEqual([BLOB2]);
     expect(bodyImagesBesides([BLOB, BLOB2], [])).toEqual([BLOB, BLOB2]);
+  });
+});
+
+describe("the delivered event", () => {
+  test("an email whose only content is a body image renders, so the direct path answers it", () => {
+    const n = normalizeChatwootEvent({
+      event: "message_created",
+      id: 1,
+      content: "",
+      message_type: "incoming",
+      private: false,
+      content_attributes: {
+        email: { subject: "", html_content: { full: `<img src="${BLOB}">` } },
+      },
+      conversation: { id: 2, inbox_id: 3, status: "pending" },
+    });
+    if (!n) throw new Error("unreachable: valid event");
+    expect(renderInboundMessage(incomingRenderable(n)).length).toBeGreaterThan(
+      0,
+    );
   });
 });
 

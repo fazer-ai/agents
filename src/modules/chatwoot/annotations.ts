@@ -128,6 +128,12 @@ export function overlayMediaAnnotations(
     // the more complete reading of the same extraction — never a different one, since the pass is
     // idempotent per message and the store is message-keyed with a 15-minute TTL. Absent (another
     // process, or past the TTL), the meta still answers, which is what it is for.
+    if (
+      hit.note.imageDescription != null ||
+      hit.note.extractedText != null ||
+      hit.note.attachmentsUnread != null
+    )
+      row.visionAggregate = true;
     row.imageDescription =
       hit.note.imageDescription ?? row.imageDescription ?? null;
     row.extractedText = hit.note.extractedText ?? row.extractedText ?? null;

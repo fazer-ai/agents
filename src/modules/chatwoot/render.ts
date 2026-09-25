@@ -27,6 +27,8 @@ export interface RenderableMessage {
   attachmentsUnread?: number | null;
   // Chatwoot file_type of each attachment ("audio" | "image" | "file" | "video" | ...).
   attachmentTypes: string[];
+  // Images the mailbox kept in the email body (issue #864): no attachment type, read by vision.
+  bodyImages?: number | null;
   // Best-effort file name of the first attachment (for the "could not extract" marker).
   attachmentName?: string | null;
   // NOTE: The first usable location attachment's content (coordinates/title), or null/absent.
@@ -115,6 +117,11 @@ export function cleanTranscription(s: string): string {
 
 const QUOTE_MAX = 200;
 
+// O PREFIXO É CONTRATO: `unwrapFileMarker` (../playground/sessions.ts) reconhece este marcador por
+// `startsWith`; ver a nota no ramo de imagem de `renderInboundMessage`.
+const IMAGEM_ILEGIVEL =
+  "<usuário enviou uma imagem; não foi possível ler o conteúdo, peça que o cliente reenvie o arquivo ou escreva a informação>";
+
 export function renderInboundMessage(
   m: RenderableMessage,
   ctx: { resolveQuoted?: (id: number) => string | null } = {},
@@ -202,9 +209,7 @@ export function renderInboundMessage(
     // O PREFIXO É CONTRATO: `unwrapFileMarker` (../playground/sessions.ts) reconhece este marcador
     // por `startsWith` para remontar o anexo na tela do operador, e uma reescrita da frase inteira
     // quebraria aquele lado em silêncio. Cercado em `tests/modules/chatwoot-render.test.ts`.
-    body = withText(
-      "<usuário enviou uma imagem; não foi possível ler o conteúdo, peça que o cliente reenvie o arquivo ou escreva a informação>",
-    );
+    body = withText(IMAGEM_ILEGIVEL);
   } else if (m.location) {
     // NOTE: A WhatsApp location pin: surfaced as attributes (mirroring the reaction marker) so the
     // model reads the coordinates and forwards them as ordinary tool arguments (issue #45). A pin
@@ -233,6 +238,10 @@ export function renderInboundMessage(
     // The subject is the whole message. An email whose body is empty or a client footer is NOT a
     // blank message, and the branch below would have dropped the turn with the request in it.
     body = "";
+  } else if (m.bodyImages) {
+    // An email whose only content is an image in its body (issue #864). Unread ones are named
+    // below; nothing read and nothing counted as unread is vision off or every image an ornament.
+    body = naoLidos ? "" : IMAGEM_ILEGIVEL;
   } else {
     return ""; // nothing renderable → skip
   }
@@ -242,7 +251,9 @@ export function renderInboundMessage(
   // noise the model has to reconcile. The case this exists for is the PARTIAL one: some files read,
   // others over the cap or unreadable, where the extraction that succeeded would otherwise make the
   // message look complete (PR #692 review, rounds 1 and 3).
-  if (naoLidos && (imageDescription || extractedText))
+  // Or when no attachment marker was emitted at all: an image in an email body has no attachment
+  // type, so a failed one would otherwise leave no trace beside the text (issue #864).
+  if (naoLidos && (imageDescription || extractedText || types.size === 0))
     body = body ? `${body}\n${naoLidos}` : naoLidos;
 
   if (m.inReplyTo != null && ctx.resolveQuoted) {

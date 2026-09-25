@@ -15,7 +15,10 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
-import { clearMediaAnnotations } from "@/modules/chatwoot/annotations";
+import {
+  clearMediaAnnotations,
+  stashMediaAnnotation,
+} from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { renderInboundMessage } from "@/modules/chatwoot/render";
@@ -108,10 +111,10 @@ function ctx(): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-function emailBag(opts: { html?: string; text?: string }) {
+function emailBag(opts: { html?: string; text?: string; subject?: string }) {
   return {
     email: {
-      subject: "Documento",
+      subject: opts.subject ?? "Documento",
       html_content: { full: opts.html ?? "" },
       text_content: { full: opts.text ?? "" },
     },
@@ -125,6 +128,7 @@ function stub(opts: {
   sizes: Record<string, [number, number]>;
   downloads: string[];
   metaWrites: number[];
+  fail?: Set<string>;
 }) {
   const client = {
     getMessages: async () => opts.page,
@@ -139,6 +143,7 @@ function stub(opts: {
     },
     downloadAttachment: async (dataUrl: string) => {
       opts.downloads.push(dataUrl);
+      if (opts.fail?.has(dataUrl)) throw new Error("404 on the blob");
       const [w, h] = opts.sizes[dataUrl] ?? [1200, 1600];
       return { bytes: png(w, h), contentType: "image/png" };
     },
@@ -300,6 +305,7 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     opts: {
       sizes?: Record<string, [number, number]>;
       texts?: string[];
+      fail?: Set<string>;
     } = {},
   ) {
     const id = await seedConversation(convId);
@@ -325,6 +331,7 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
           sizes: opts.sizes ?? {},
           downloads,
           metaWrites,
+          fail: opts.fail,
         }),
         visionFetch: visionFetch(opts.texts ?? ["Foto de um RG."]),
         checkpointer: new MemorySaver(),
@@ -414,6 +421,152 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     expect(provider.calls).toBe(1);
     expect(out.metaWrites).toEqual([77]);
     expect(out.turn.match(/<imagem>/g)?.length).toBe(1);
+  });
+
+  // Read off the renderer, so a rewording cannot turn these into no-ops.
+  const unreadMarker = (n: number) =>
+    renderInboundMessage({
+      text: "",
+      attachmentTypes: ["image"],
+      imageDescription: "x",
+      attachmentsUnread: n,
+    })
+      .split("\n")
+      .pop() ?? "";
+
+  test("ornaments ahead of the photo do not take its slot under the cap", async () => {
+    await setVision(true);
+    const icons = Array.from({ length: 8 }, (_, i) =>
+      blob(20 + i, `icon${i}.png`),
+    );
+    const photo = blob(30, "IMG_0002.jpeg");
+    const sizes = Object.fromEntries(
+      icons.map((u) => [u, [144, 144] as [number, number]]),
+    );
+    const out = await reengage(
+      1007,
+      {
+        content: "Segue",
+        content_attributes: emailBag({
+          html: `<p>Segue</p>${icons.map((u) => `<img src="${u}">`).join("")}<img src="${photo}">`,
+        }),
+      },
+      { sizes, texts: ["Foto do documento."] },
+    );
+    expect(provider.calls).toBe(1);
+    expect(out.downloads).toContain(photo);
+    expect(out.turn).toContain("Foto do documento.");
+    expect(out.turn).not.toContain(unreadMarker(1));
+  });
+
+  test("ten photos in a body: eight are read and two are named as unread", async () => {
+    await setVision(true);
+    const photos = Array.from({ length: 10 }, (_, i) =>
+      blob(40 + i, `p${i}.jpeg`),
+    );
+    const out = await reengage(1008, {
+      content: "Fotos",
+      content_attributes: emailBag({
+        html: photos.map((u) => `<img src="${u}">`).join(""),
+      }),
+    });
+    expect(provider.calls).toBe(8);
+    expect(out.turn).toContain(unreadMarker(2));
+  });
+
+  test("an email whose only content is a body image is answered", async () => {
+    await setVision(true);
+    const out = await reengage(1009, {
+      content: "",
+      content_attributes: emailBag({
+        subject: "",
+        html: `<img src="${blob(50)}">`,
+      }),
+    });
+    expect(out.res.outcome).toBe("posted");
+    expect(out.turn).toContain("Foto de um RG.");
+  });
+
+  test("a body image that fails to download is named beside the text", async () => {
+    await setVision(true);
+    const broken = blob(51);
+    const out = await reengage(
+      1010,
+      {
+        content: "Segue o documento",
+        content_attributes: emailBag({
+          html: `<p>Segue o documento</p><img src="${broken}">`,
+        }),
+      },
+      { fail: new Set([broken]) },
+    );
+    expect(provider.calls).toBe(0);
+    expect(out.turn).toContain("Segue o documento");
+    expect(out.turn).toContain(unreadMarker(1));
+  });
+
+  test("an attachment already read does not keep a distinct body image from being read", async () => {
+    await setVision(true);
+    const out = await reengage(
+      1011,
+      {
+        content: "Segue",
+        content_attributes: emailBag({
+          html: `<p>Segue</p><img src="${blob(52, "print.png")}">`,
+        }),
+        attachments: [
+          {
+            id: 88,
+            file_type: "image",
+            data_url: blob(53, "anexo.png"),
+            meta: { image_description: "Anexo já lido." },
+          },
+        ],
+      } as never,
+      { texts: ["Print do pedido."] },
+    );
+    expect(provider.calls).toBe(1);
+    expect(out.turn).toContain("Anexo já lido.");
+    expect(out.turn).toContain("Print do pedido.");
+  });
+
+  test("attachments take their slots first; the body gets what is left of the cap", async () => {
+    await setVision(true);
+    const out = await reengage(1012, {
+      content: "Tudo",
+      content_attributes: emailBag({
+        html: [60, 61, 62].map((n) => `<img src="${blob(n)}">`).join(""),
+      }),
+      attachments: Array.from({ length: 7 }, (_, i) => ({
+        id: 100 + i,
+        file_type: "image",
+        data_url: blob(70 + i, `a${i}.png`),
+      })),
+    } as never);
+    expect(provider.calls).toBe(8);
+    expect(out.turn).toContain(unreadMarker(2));
+  });
+
+  test("an aggregate from the pass that read the body is not paid for again", async () => {
+    await setVision(true);
+    stashMediaAnnotation(
+      { tenantId, instanceId, messageId: 1 },
+      { imageDescription: "Tudo lido antes.", attachmentsUnread: 0 },
+    );
+    const out = await reengage(1013, {
+      content: "Segue",
+      content_attributes: emailBag({ html: `<img src="${blob(63)}">` }),
+      attachments: [
+        {
+          id: 89,
+          file_type: "image",
+          data_url: blob(64, "anexo.png"),
+          meta: { image_description: "Anexo já lido." },
+        },
+      ],
+    } as never);
+    expect(provider.calls).toBe(0);
+    expect(out.turn).toContain("Tudo lido antes.");
   });
 
   test("a message whose body has no Chatwoot blob costs nothing", async () => {

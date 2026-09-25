@@ -895,6 +895,7 @@ export function incomingRenderable(
     attachmentTypes: (n.message?.attachments ?? [])
       .map((a) => a.fileType)
       .filter((t): t is string => t !== null),
+    bodyImages: visualAttachments(n).filter((v) => v.id === null).length,
     location: firstLocationAttachment(n.message?.attachments),
     inReplyTo: n.message?.inReplyTo,
     isReaction: n.message?.isReaction,

@@ -335,6 +335,8 @@ describe("a subject-only email is a message everywhere, not just in the renderer
       ],
       ["blank subject, no body", row({ id: 5, emailSubject: "   " })],
       ["nothing at all", row({ id: 6 })],
+      // An image the mailbox kept in the body, nothing else (issue #864).
+      ["body image only", row({ id: 8, bodyImages: 1 })],
       // Impossible on a mailbox, allowed by the type, and the one shape where the renderer and the
       // predicate used to disagree: the burst admitted it for its subject while the reaction branch
       // returned before the subject was ever added.

@@ -131,3 +131,37 @@ test("a new row with only its required rates saves without the optional ones, an
     }),
   );
 });
+
+test("while a save is in flight the list cannot be edited, so no edit is lost to its answer", async () => {
+  let answer: (r: Response) => void = () => {};
+  globalThis.fetch = (() =>
+    new Promise<Response>((r) => {
+      answer = r;
+    })) as unknown as typeof fetch;
+  mount();
+  fireEvent.click(screen.getByRole("button", { name: "Save prices" }));
+  await waitFor(() =>
+    expect(
+      (screen.getAllByRole("textbox")[0] as HTMLInputElement).disabled,
+    ).toBe(true),
+  );
+  expect(
+    (screen.getByRole("button", { name: "Add price" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  expect(
+    (screen.getByRole("button", { name: "Remove row 1" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  answer(
+    new Response(JSON.stringify({ instance: {}, priceOverrides: EXISTING }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      (screen.getAllByRole("textbox")[0] as HTMLInputElement).disabled,
+    ).toBe(false),
+  );
+});

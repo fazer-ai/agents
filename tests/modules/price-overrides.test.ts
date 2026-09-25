@@ -159,6 +159,35 @@ describe("the stored list", () => {
     expect(readPriceOverrides({}).overrides).toEqual([]);
   });
 
+  // A read that started before a save must not put the old list back after the save cleared it.
+  test("a read in flight across a save does not refill the cache with the old list", async () => {
+    const tenant = 876543n;
+    let release: (b: PriceOverridesBlock) => void = () => {};
+    const stale = cachedPriceOverrides(
+      tenant,
+      () =>
+        new Promise<PriceOverridesBlock>((r) => {
+          release = r;
+        }),
+      1_000,
+    );
+    forgetPriceOverrides(tenant);
+    release(block([{ provider: "openai", model: "old", input: 9, output: 9 }]));
+    await stale;
+    let loads = 0;
+    const fresh = await cachedPriceOverrides(
+      tenant,
+      async () => {
+        loads += 1;
+        return block([]);
+      },
+      2_000,
+    );
+    expect(loads).toBe(1);
+    expect(fresh.overrides).toEqual([]);
+    forgetPriceOverrides(tenant);
+  });
+
   test("the cache answers from memory until it is told to forget", async () => {
     let loads = 0;
     const load = async () => {
@@ -412,6 +441,19 @@ describe.skipIf(!dbUp)("a saved price prices the next call", () => {
       expect(bad.ok).toBe(false);
       if (!bad.ok) expect(bad.error).toContain("price row 1 is not valid");
     }
+    // A bad list refuses the whole call: the other block in it is not written either.
+    const lfBefore = (await getTenantSettings(ctx(), appDb)).langfuse;
+    const mixed = await tenantSettingsUpdate(
+      rw,
+      {
+        langfuse: { send_content: !lfBefore.sendContent },
+        price_overrides: [{ ...list[0], input: -1 }] as typeof list,
+        dry_run: false,
+      },
+      { base: appDb },
+    );
+    expect(mixed.ok).toBe(false);
+    expect((await getTenantSettings(ctx(), appDb)).langfuse).toEqual(lfBefore);
     const readOnly = await tenantSettingsUpdate(
       token(["mcp:read"]),
       { price_overrides: [], dry_run: false },

@@ -513,6 +513,12 @@ export async function tenantSettingsUpdate(
 
   const target = "tenant_settings";
   try {
+    // Parsed before any block is written, so an invalid list refuses the whole call instead of
+    // landing after the other blocks already did.
+    const prices =
+      args.price_overrides === undefined
+        ? undefined
+        : parsePriceOverrides(priceOverridesFromMcp(args.price_overrides));
     if (args.dry_run !== false) {
       // NOTE: the core's own KIND question, which resolving the ref above does not answer — a
       // `vault:<id>` names an entry of any kind, and this preview said "will wire" for one whose
@@ -523,10 +529,6 @@ export async function tenantSettingsUpdate(
       if (typeof langfuseRef === "string") {
         await assertLangfuseCredentialUsable(ctx, langfuseRef, base);
       }
-      const proposedPrices =
-        args.price_overrides === undefined
-          ? undefined
-          : parsePriceOverrides(priceOverridesFromMcp(args.price_overrides));
       return ok({
         dryRun: true,
         target,
@@ -544,7 +546,7 @@ export async function tenantSettingsUpdate(
                   sendContent: args.langfuse.send_content,
                   debug: args.langfuse.debug,
                 },
-          priceOverrides: proposedPrices,
+          priceOverrides: prices,
         },
       });
     }
@@ -563,12 +565,8 @@ export async function tenantSettingsUpdate(
         base,
       );
     }
-    if (args.price_overrides !== undefined) {
-      await updatePriceOverrides(
-        ctx,
-        parsePriceOverrides(priceOverridesFromMcp(args.price_overrides)),
-        base,
-      );
+    if (prices !== undefined) {
+      await updatePriceOverrides(ctx, prices, base);
     }
     const after = await getTenantSettings(ctx, base);
     // NOTE: each block writer above records its own row, so a call touching both leaves TWO where

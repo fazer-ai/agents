@@ -124,6 +124,10 @@ export function overridePriceTable(block: PriceOverridesBlock): string {
 // saved price applies from the next call; the TTL bounds a write that reached the row some other way.
 const CACHE_TTL_MS = 60_000;
 const cache = new Map<bigint, { at: number; block: PriceOverridesBlock }>();
+// Bumped by every save. A read that started before a save finishes after it with the OLD list, and
+// caching that would undo the save for a whole TTL; a fill is kept only if no save happened while
+// it was in flight.
+const generation = new Map<bigint, number>();
 
 export async function cachedPriceOverrides(
   tenantId: bigint,
@@ -132,11 +136,14 @@ export async function cachedPriceOverrides(
 ): Promise<PriceOverridesBlock> {
   const hit = cache.get(tenantId);
   if (hit && now - hit.at < CACHE_TTL_MS) return hit.block;
+  const startedAt = generation.get(tenantId) ?? 0;
   const block = await load();
-  cache.set(tenantId, { at: now, block });
+  if ((generation.get(tenantId) ?? 0) === startedAt)
+    cache.set(tenantId, { at: now, block });
   return block;
 }
 
 export function forgetPriceOverrides(tenantId: bigint): void {
   cache.delete(tenantId);
+  generation.set(tenantId, (generation.get(tenantId) ?? 0) + 1);
 }

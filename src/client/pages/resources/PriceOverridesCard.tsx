@@ -72,6 +72,8 @@ export function PriceOverridesCard({
   const { showToast } = useToast();
   const [rows, setRows] = useState<Row[]>(() => toRows(value));
   const [nextKey, setNextKey] = useState(value.overrides.length);
+  // While a save is in flight the list is read-only: the answer replaces the draft with what was
+  // saved, and an edit made in between would be dropped without a word.
   const [saving, setSaving] = useState(false);
 
   const RATES: { key: RateKey; label: string; optional: boolean }[] = [
@@ -185,6 +187,7 @@ export function PriceOverridesCard({
               label={t("priceOverrides.provider", "Provider")}
             >
               <Select
+                disabled={saving}
                 value={r.provider}
                 onChange={(e) =>
                   update(r.key, { provider: e.target.value as Provider })
@@ -202,6 +205,7 @@ export function PriceOverridesCard({
               label={t("priceOverrides.model", "Model")}
             >
               <Input
+                disabled={saving}
                 value={r.model}
                 onChange={(e) => update(r.key, { model: e.target.value })}
                 placeholder={t("priceOverrides.modelPlaceholder", "model id")}
@@ -210,6 +214,7 @@ export function PriceOverridesCard({
             <Button
               variant="secondary"
               size="sm"
+              disabled={saving}
               onClick={() =>
                 setRows((rs) => rs.filter((row) => row.key !== r.key))
               }
@@ -233,6 +238,7 @@ export function PriceOverridesCard({
                 }
               >
                 <Input
+                  disabled={saving}
                   inputMode="decimal"
                   value={r[f.key]}
                   onChange={(e) => update(r.key, { [f.key]: e.target.value })}
@@ -243,7 +249,7 @@ export function PriceOverridesCard({
         </div>
       ))}
       <div className="flex flex-wrap gap-2">
-        <Button variant="secondary" onClick={add}>
+        <Button variant="secondary" onClick={add} disabled={saving}>
           <Plus className="h-4 w-4" aria-hidden="true" />
           {t("priceOverrides.add", "Add price")}
         </Button>

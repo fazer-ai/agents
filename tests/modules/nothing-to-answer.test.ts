@@ -775,6 +775,57 @@ describe.skipIf(!dbUp)(
       }
     });
 
+    test("a test agent closes only a conversation that activated it", async () => {
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { mode: "test" },
+      });
+      try {
+        const silent = chatwoot([{ id: 2, content: "" }]);
+        await judge(89_546, silent);
+        expect(silent.toggles).toEqual([]);
+        expect(silent.clients()).toBe(0);
+        const conv = await seedConversation(89_547);
+        await suDb.conversation.update({
+          where: { id: conv.id },
+          data: { testActivatedAt: new Date() },
+        });
+        const job = await armAndClaim(89_547, conv.id);
+        const active = chatwoot([{ id: 2, content: "" }]);
+        await nothingToAnswerHandler(job, appDb, active.makeClient as never);
+        expect(active.toggles).toEqual(["resolved"]);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { mode: "production" },
+        });
+      }
+    });
+
+    test("an inbox handed to another agent while the job waited closes nothing", async () => {
+      const other = await suDb.agent.create({
+        data: { tenantId, name: "Outro", systemPrompt: "x", enabled: true },
+        select: { id: true },
+      });
+      try {
+        const cw = chatwoot([{ id: 2, content: "" }], {
+          onLive: async () => {
+            await suDb.inbox.update({
+              where: { id: inboxDbId },
+              data: { agentId: other.id },
+            });
+          },
+        });
+        await judge(89_548, cw);
+        expect(cw.toggles).toEqual([]);
+      } finally {
+        await suDb.inbox.update({
+          where: { id: inboxDbId },
+          data: { agentId: agentDbId },
+        });
+      }
+    });
+
     test("an agent switched off while the job reads closes nothing", async () => {
       try {
         const cw = chatwoot([{ id: 2, content: "" }], {
@@ -863,9 +914,8 @@ describe.skipIf(!dbUp)(
         base: appDb,
       });
       await customerWrites(89_540, "esqueci de escrever: quero cancelar", 3);
-      const pending = await armedRow(89_540);
-      expect(pending?.status).toBe("DONE");
-      expect(pending?.payload).toHaveProperty("cancelledAt");
+      // Waiting, it is gone: nothing would ever read it.
+      expect(await armedRow(89_540)).toBeNull();
 
       const claimedConv = await seedConversation(89_541);
       const job = await armAndClaim(89_541, claimedConv.id);
@@ -873,6 +923,32 @@ describe.skipIf(!dbUp)(
       const cw = chatwoot([{ id: 2, content: "" }]);
       await nothingToAnswerHandler(job, appDb, cw.makeClient as never);
       expect(cw.toggles).toEqual([]);
+      // Running, it is tombstoned rather than deleted, so the handler in flight can see it.
+      const claimedRow = await armedRow(89_541);
+      expect(claimedRow?.status).toBe("DONE");
+      expect(claimedRow?.payload).toHaveProperty("cancelledAt");
+    });
+
+    test("another delivery of the message it judged does not retire it", async () => {
+      // An observer route receives the same event on its own delivery, and a redelivery repeats it:
+      // the message is the one the job was armed for, not a newer one.
+      const conv = await seedConversation(89_549);
+      await armNothingToAnswer({
+        tenantId,
+        instanceId,
+        threadId: threadOf(89_549),
+        conversationId: 89_549,
+        conversationDbId: conv.id,
+        agentId: agentDbId,
+        agentBotId: OUR_BOT,
+        triggerMessageId: 5,
+        base: appDb,
+      });
+      await customerWrites(89_549, "", 5);
+      await customerWrites(89_549, "", 4);
+      expect((await armedRow(89_549))?.status).toBe("PENDING");
+      await customerWrites(89_549, "oi", 6);
+      expect(await armedRow(89_549)).toBeNull();
     });
 
     test("a message in another conversation leaves this one's job alone", async () => {
@@ -949,9 +1025,7 @@ describe.skipIf(!dbUp)(
           data: { mode: "production" },
         });
       }
-      const row = await armedRow(89_545);
-      expect(row?.status).toBe("DONE");
-      expect(row?.payload).toHaveProperty("cancelledAt");
+      expect(await armedRow(89_545)).toBeNull();
     });
 
     test("a close of ours counts as the agent side's, like the follow-up's", () => {

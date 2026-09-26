@@ -257,7 +257,9 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // are rare, and at most one per processing attempt of each.
   INBOUND_REDISPATCH: false,
   // One row per thread, but a thread gets one only when a blank message arrived, and a finished
-  // judgement is never read again: nothing reuses it.
+  // judgement is never read again. The retirement deletes a waiting row itself
+  // (`retireNothingToAnswer`); only a row retired mid-run stays, as a DONE tombstone the next arm
+  // reuses.
   NOTHING_TO_ANSWER: true,
 };
 

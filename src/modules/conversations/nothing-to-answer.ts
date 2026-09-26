@@ -1,9 +1,12 @@
-import type { PrismaClient } from "@/../generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { resetLandedAfter } from "@/graph/reset-episode";
 import { parseDbId } from "@/lib/db-id";
-import { runScopedOn } from "@/lib/tenancy";
-import { agentStillSpeaks } from "@/modules/agents/speaks";
+import { runScopedOn, type TenantContext } from "@/lib/tenancy";
+import { isMonitoring } from "@/modules/agents/mode";
+import { isTestSilenced } from "@/modules/agents/test-mode";
+import { episodeTestActivatedAt } from "@/modules/channel-redirect/episode";
+import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import {
   type LoadChatwootClientDeps,
   loadChatwootClient,
@@ -24,7 +27,7 @@ import { ourSideHasSpoken } from "@/modules/followups/eligibility";
 import {
   type ClaimedJob,
   enqueueJob,
-  jobRetired,
+  jobRetiredStrict,
 } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 
@@ -60,6 +63,10 @@ import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 // Recorded as `nothing_to_answer`, which the dashboard counts as a close by the agent's side (no
 // model judged anything), with an `info` line: this is not a failure. A job that throws is retried by
 // the scheduler and, past its attempts, dead-letters, which is the alert.
+
+function sysCtx(tenantId: bigint): TenantContext {
+  return { tenantId, userId: null, role: "TENANT_ADMIN" };
+}
 
 // A customer-facing message from our side: a reply, a nudge or a template. A private note is not.
 function weSpoke(m: { messageType: string; private: boolean }): boolean {
@@ -100,6 +107,52 @@ export const NOTHING_TO_ANSWER_DELAY_MS = 30 * 60_000;
 
 export function nothingToAnswerDedupeKey(threadId: string): string {
   return `nothing-to-answer:${threadId}`;
+}
+
+// Called off by the receiver when a NEWER incoming message arrives (issue #895): the conversation
+// moved on, and a later blank message arms it again from its own flush. Newer than the message the
+// job judged, not merely delivered: an observer route receives the same event on its own delivery,
+// and a redelivery repeats it, and neither may cancel the judgement of the message it carries. A
+// message with no id retires unconditionally, the safe side.
+//
+// A row still waiting is deleted, since nothing will ever read it. A row a worker already claimed is
+// tombstoned instead, as `retireJobsByDedupeKey` does, so the running handler sees `jobRetired` before
+// it writes; that one stays as a DONE row, at most one per conversation, and the next arm reuses it.
+export async function retireNothingToAnswer(params: {
+  tenantId: bigint;
+  threadId: string;
+  messageId: number | null;
+  base: PrismaClient;
+}): Promise<void> {
+  const key = nothingToAnswerDedupeKey(params.threadId);
+  const older =
+    params.messageId === null
+      ? Prisma.sql`TRUE`
+      : Prisma.sql`NOT (
+          jsonb_typeof(payload->'triggerMessageId') = 'number'
+          AND (payload->>'triggerMessageId')::bigint >= ${params.messageId}
+        )`;
+  const stamp = JSON.stringify({ cancelledAt: new Date().toISOString() });
+  await runScopedOn(params.base, sysCtx(params.tenantId), async (db) => {
+    await db.$executeRaw`
+      DELETE FROM scheduler_jobs
+       WHERE tenant_id = ${params.tenantId}
+         AND kind = 'NOTHING_TO_ANSWER'::"SchedulerJobKind"
+         AND dedupe_key = ${key}
+         AND status = 'PENDING'
+         AND ${older}`;
+    await db.$executeRaw`
+      UPDATE scheduler_jobs
+         SET status = 'DONE',
+             payload = payload || ${stamp}::jsonb,
+             claim_seq = claim_seq + 1,
+             updated_at = now()
+       WHERE tenant_id = ${params.tenantId}
+         AND kind = 'NOTHING_TO_ANSWER'::"SchedulerJobKind"
+         AND dedupe_key = ${key}
+         AND status = 'CLAIMED'
+         AND ${older}`;
+  });
 }
 
 // Armed by whoever found nothing to answer (the flush, the direct path). Best-effort: a failure to
@@ -146,6 +199,69 @@ export async function armNothingToAnswer(params: {
   }
 }
 
+// The database's half of the judgement, the same reads a follow-up makes before it speaks
+// (../../graph/nudge.ts): the conversation is mirrored, our side never spoke in it and no /reset
+// landed at or after the judged message; its inbox is still bound to the agent that armed the job;
+// that agent is on, not monitoring, and not in a test mode this conversation never activated. Null
+// when any of it fails; the row the close line needs otherwise.
+async function stillOurs(p: {
+  tenantId: bigint;
+  instanceId: bigint;
+  conversationDbId: bigint;
+  agentId: bigint;
+  triggerMessageId: number | null;
+  base: PrismaClient;
+}): Promise<{ inboxId: bigint | null; threadId: string | null } | null> {
+  return runScopedOn(p.base, sysCtx(p.tenantId), async (db) => {
+    const conv = await db.conversation.findUnique({
+      where: { id: p.conversationDbId },
+      select: {
+        lastRepliedMessageId: true,
+        chatwootFirstReplyAt: true,
+        lastProactiveAt: true,
+        resetAtMessageId: true,
+        testActivatedAt: true,
+        contactId: true,
+        inboxId: true,
+        threadId: true,
+      },
+    });
+    if (!conv?.inboxId || ourSideHasSpoken(conv)) return null;
+    if (resetLandedAfter(p.triggerMessageId, conv.resetAtMessageId))
+      return null;
+    const inbox = await db.inbox.findUnique({
+      where: { id: conv.inboxId },
+      select: { agentId: true, chatwootInboxId: true },
+    });
+    if (inbox?.agentId !== p.agentId) return null;
+    const agent = await db.agent.findUnique({
+      where: { id: p.agentId },
+      select: { enabled: true, mode: true, settings: true },
+    });
+    if (!agent?.enabled || isMonitoring(agent.mode)) return null;
+    if (
+      isTestSilenced(
+        agent.mode,
+        await episodeTestActivatedAt({
+          tenantId: p.tenantId,
+          instanceId: p.instanceId,
+          cfg: readChannelRedirectConfig(agent.settings),
+          agentMode: agent.mode,
+          conv: {
+            testActivatedAt: conv.testActivatedAt,
+            contactId: conv.contactId,
+            chatwootInboxId: inbox.chatwootInboxId,
+          },
+          base: p.base,
+          scoped: db,
+        }),
+      )
+    )
+      return null;
+    return { inboxId: conv.inboxId, threadId: conv.threadId };
+  });
+}
+
 export async function nothingToAnswerHandler(
   job: ClaimedJob,
   base: PrismaClient,
@@ -174,27 +290,18 @@ export async function nothingToAnswerHandler(
     return { outcome: "done" };
   const tenantId = job.tenantId;
 
-  if (!(await agentStillSpeaks(tenantId, agentId, base)))
-    return { outcome: "done" };
-  const row = await runScopedOn(
-    base,
-    { tenantId, userId: null, role: "TENANT_ADMIN" },
-    (db) =>
-      db.conversation.findUnique({
-        where: { id: conversationDbId },
-        select: {
-          lastRepliedMessageId: true,
-          chatwootFirstReplyAt: true,
-          lastProactiveAt: true,
-          resetAtMessageId: true,
-          inboxId: true,
-          threadId: true,
-        },
-      }),
-  );
-  if (!row || ourSideHasSpoken(row)) return { outcome: "done" };
-  if (resetLandedAfter(triggerMessageId, row.resetAtMessageId))
-    return { outcome: "done" };
+  // Asked before the network reads, so a conversation already out of scope costs no Chatwoot call,
+  // and again after them, right before the write.
+  const gate = () =>
+    stillOurs({
+      tenantId,
+      instanceId,
+      conversationDbId,
+      agentId,
+      triggerMessageId,
+      base,
+    });
+  if ((await gate()) === null) return { outcome: "done" };
 
   const client = await loadChatwootClient(tenantId, instanceId, {
     base,
@@ -211,11 +318,14 @@ export async function nothingToAnswerHandler(
   );
   if (!live || !shouldBotHandle(live, { ourAgentBotId: agentBotId }))
     return { outcome: "done" };
-  // Asked again after the reads, next to the write: an agent switched off, or a customer message or a
-  // /reset that retired the row, while this read.
-  if (!(await agentStillSpeaks(tenantId, agentId, base)))
-    return { outcome: "done" };
-  if (await jobRetired(job, base)) return { outcome: "done" };
+  // The database side again, after every network read and next to the write: a reply of ours, a
+  // /reset, a rebinding or an agent switched off while Chatwoot was being asked; then the job's own
+  // retirement, which a new incoming message sets.
+  const row = await gate();
+  if (row === null) return { outcome: "done" };
+  // Strict: a retirement this cannot read is a retry, never a licence to close over a message that
+  // may have retired it.
+  if (await jobRetiredStrict(job, base)) return { outcome: "done" };
 
   await client.toggleStatus(conversationId, "resolved", { asAdmin: true });
   await recordResolutionOrigin({

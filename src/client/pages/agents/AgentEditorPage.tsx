@@ -121,6 +121,7 @@ import {
 import { ChannelsTab } from "./ChannelsTab";
 import {
   type CrossInboxCaseState,
+  invalidCaseAttributeKey,
   readCrossInboxCaseState,
   serializeCrossInboxCase,
 } from "./CrossInboxCaseFields";
@@ -1079,8 +1080,6 @@ function AgentEditor() {
     sttEnabled: stt.enabled,
     ttsOn: tts.mode !== "never",
     ttsNormalize: tts.normalize,
-    ttsSpokenNoticeShown: tts.mode !== "never" && tts.spokenNotice,
-    ttsTextChoiceShown: tts.mode !== "never" && tts.textChoice,
     visionEnabled: vision.enabled,
     contactAuthEnabled: contactAuth.enabled,
     memoryCompactionEnabled: memory.compactionEnabled,
@@ -1197,9 +1196,6 @@ function AgentEditor() {
       vision.extractionPrompt.trim() !== DEFAULT_EXTRACTION_PROMPT
         ? vision.extractionPrompt.trim()
         : null,
-    // As `ttsSettingsFrom` stores them: trimmed, null when empty.
-    "tts.spokenNoticeText": tts.spokenNoticeText.trim() || null,
-    "tts.textChoiceNote": tts.textChoiceNote.trim() || null,
     "guardrails.customPolicy": guardrails.customPolicy,
     "guardrails.input.templateMessage": guardrails.input.templateMessage,
     "guardrails.output.templateMessage": guardrails.output.templateMessage,
@@ -3160,7 +3156,15 @@ function AgentEditor() {
       const toolsText =
         settingsTextError(toolsSettings, storedSettings) ??
         protectedLabelsError(protectedList, storedSettings) ??
-        allowedLabelsError(allowedList, storedSettings);
+        allowedLabelsError(allowedList, storedSettings) ??
+        // Refused by the PATCH, which goes out after the grants PUT: checked here so a bad key does
+        // not leave new grants written beside the old settings (review round 10 of #881).
+        (invalidCaseAttributeKey(crossInboxCase)
+          ? t(
+              "editor.crossInboxCase.attributeKeyInvalid",
+              "Use lowercase letters, digits and _, starting with a letter.",
+            )
+          : null);
       if (toolsText) {
         showToast(toolsText, "error");
         return;
@@ -4065,14 +4069,6 @@ function AgentEditor() {
                   visionExtractionPrompt: refusal.at(
                     "vision.extractionPrompt",
                     currentRef.current["vision.extractionPrompt"],
-                  ),
-                  ttsSpokenNoticeText: refusal.at(
-                    "tts.spokenNoticeText",
-                    currentRef.current["tts.spokenNoticeText"],
-                  ),
-                  ttsTextChoiceNote: refusal.at(
-                    "tts.textChoiceNote",
-                    currentRef.current["tts.textChoiceNote"],
                   ),
                   contactAuthCredential: refusal.at(
                     "settings.contactAuth.credentialRef",

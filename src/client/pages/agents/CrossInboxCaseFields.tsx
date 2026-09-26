@@ -36,6 +36,13 @@ export function readCrossInboxCaseState(raw: unknown): CrossInboxCaseState {
   };
 }
 
+// A key the settings write refuses (the reader would replace it with the default). Shared by the
+// field's inline error and the Tools save, which checks it before the grants PUT goes out.
+export function invalidCaseAttributeKey(s: CrossInboxCaseState): boolean {
+  const key = s.caseAttributeKey.trim();
+  return key !== "" && !CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE.test(key);
+}
+
 export function serializeCrossInboxCase(
   s: CrossInboxCaseState,
 ): Record<string, unknown> {
@@ -190,8 +197,7 @@ export function CrossInboxCaseFields({
           "The origin conversation's attribute that receives the case's conversation number. Default: case_conversation_id.",
         )}
         error={
-          value.caseAttributeKey.trim() &&
-          !CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE.test(value.caseAttributeKey.trim())
+          invalidCaseAttributeKey(value)
             ? t(
                 "editor.crossInboxCase.attributeKeyInvalid",
                 "Use lowercase letters, digits and _, starting with a letter.",

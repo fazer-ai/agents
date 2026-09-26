@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import {
+  invalidCaseAttributeKey,
   readCrossInboxCaseState,
   serializeCrossInboxCase,
 } from "@/client/pages/agents/CrossInboxCaseFields";
@@ -111,12 +112,39 @@ describe("the attribute key is checked where it is written", () => {
     expect(accepts("")).toBe(true);
   });
   test("the editor flags the same keys before the save", () => {
+    const at = (caseAttributeKey: string) =>
+      invalidCaseAttributeKey({
+        ...readCrossInboxCaseState({}),
+        caseAttributeKey,
+      });
+    expect(at("Ticket-ID")).toBe(true);
+    expect(at("protocolo_caso")).toBe(false);
+    expect(at(" protocolo ")).toBe(false);
+    expect(at("")).toBe(false);
     const src = readFileSync(
       "src/client/pages/agents/CrossInboxCaseFields.tsx",
       "utf8",
     );
-    expect(src).toContain(
-      "!CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE.test(value.caseAttributeKey.trim())",
+    expect(src).toContain("invalidCaseAttributeKey(value)");
+  });
+  test("the Tools save refuses a bad key before the grants PUT", () => {
+    // Review round 10: the PUT went out, then the PATCH refused the key, leaving new grants beside
+    // the old settings.
+    const src = readFileSync(
+      "src/client/pages/agents/AgentEditorPage.tsx",
+      "utf8",
     );
+    const start = src.indexOf("async function saveTools(");
+    const body = src.slice(start, src.indexOf("\n  }\n", start));
+    // The call itself is the condition of the refusal, chained after the other preflight errors.
+    const check = body.indexOf("// Refused by the PATCH");
+    expect(body).toContain(
+      "(invalidCaseAttributeKey(crossInboxCase)\n          ? t(",
+    );
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(body.indexOf('["tool-selections"].put('));
+    expect(
+      body.slice(check, body.indexOf('["tool-selections"].put(')),
+    ).toContain('showToast(toolsText, "error");\n        return;');
   });
 });

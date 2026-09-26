@@ -1704,6 +1704,23 @@ describe("the tool", () => {
     expect(out).toContain("do not repeat it");
   });
 
+  test("a failed opening with no line is a silent transfer", async () => {
+    // Review round 10: without the silence mark the model's next reply could still go out.
+    const f = fakeChatwoot({ failOn: new Set(["createConversation"]) });
+    const handoffState: {
+      customerMessage: string | null;
+      completed: boolean;
+      declinedToSpeak?: boolean;
+    } = { customerMessage: null, completed: false };
+    const { t } = toolFor(f, { handoffState });
+    await t.invoke({ reason: "x", handoff_message: "   " });
+    expect(handoffState).toMatchObject({
+      customerMessage: null,
+      completed: true,
+      declinedToSpeak: true,
+    });
+  });
+
   test("the model is told when the opening stayed a note, and when there was nowhere to move the case", async () => {
     const closed = toolFor(fakeChatwoot({ canReply: false }));
     expect(

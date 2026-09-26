@@ -109,6 +109,8 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // Shared, for the DELIVERY_RECOVERY reasons: the event already waited out the sweep's staleness
   // window, and what it may spend is a model turn, capped by the shared lane's provider concurrency.
   INBOUND_REDISPATCH: "shared",
+  // Shared: a delayed judgement of one conversation, a handful of Chatwoot reads and no model.
+  NOTHING_TO_ANSWER: "shared",
 };
 
 // Whether ONE job of this kind spends capacity at an external provider that the rest of the product
@@ -174,6 +176,7 @@ export const JOB_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   // nudge turn: a model call. Most re-dispatches are a conversion recorded in one query, but the
   // flag is about what ONE job may do.
   INBOUND_REDISPATCH: true,
+  NOTHING_TO_ANSWER: false,
 };
 
 // How many OBSERVE rows one shared tick claims (issue #621): enough to keep the provider bound busy
@@ -253,6 +256,9 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   // next sweep pass would arm the same attempt again. Rows exist only for stranded deliveries, which
   // are rare, and at most one per processing attempt of each.
   INBOUND_REDISPATCH: false,
+  // One row per thread, but a thread gets one only when a blank message arrived, and a finished
+  // judgement is never read again: nothing reuses it.
+  NOTHING_TO_ANSWER: true,
 };
 
 // Whether the NUMBER of rows of this kind follows inbound traffic, rather than a population the
@@ -329,6 +335,8 @@ export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   INBOUND_SWEEP: false,
   // One per stranded delivery, and deliveries follow what the senders post.
   INBOUND_REDISPATCH: true,
+  // One per conversation that received a blank message.
+  NOTHING_TO_ANSWER: true,
 };
 
 // WHAT ONE KIND'S DEATH MEANS TO THE OPERATOR, at the only moment the scheduler can state it
@@ -432,6 +440,9 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
   // this line. (A delivery that runs out of ITS OWN attempts is announced by the processor, at
   // `error`, and does not reach here: that path returns normally.)
   INBOUND_REDISPATCH: "error",
+  // The conversation stays pending with nobody on it, exactly as before this job existed, and
+  // nobody else will notice: this is the alert.
+  NOTHING_TO_ANSWER: "warn",
 };
 
 // HOW FAR APART ONE KIND'S RETRIES ARE, as the base of `backoffMs` in ./service.ts (issue #744).
@@ -481,6 +492,8 @@ export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {
   // The recovery family's base, for its reason: armed once per attempt and nothing re-arms the same
   // attempt, so this ladder is what outlasts a database restart that made the dispatch throw.
   INBOUND_REDISPATCH: 60_000,
+  // The judgement is already half an hour late by design; a minute between retries changes nothing.
+  NOTHING_TO_ANSWER: 60_000,
 };
 
 export function kindsInLane(

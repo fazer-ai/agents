@@ -108,6 +108,7 @@ const EXPECTED_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   KNOWLEDGE_SOURCE_SYNC: "shared",
   INBOUND_SWEEP: "shared",
   INBOUND_REDISPATCH: "shared",
+  NOTHING_TO_ANSWER: "shared",
 };
 
 // Same discipline as EXPECTED_LANE, and for a sharper reason: the bound test below can only
@@ -147,6 +148,8 @@ const EXPECTED_SPENDS_PROVIDER: Record<SchedulerJobKind, boolean> = {
   INBOUND_SWEEP: false,
   // It can run the agent's nudge turn.
   INBOUND_REDISPATCH: true,
+  // Chatwoot reads and one status write: no model (issue #895).
+  NOTHING_TO_ANSWER: false,
 };
 
 // Same discipline again, and both of these maps were added by the change that introduced
@@ -187,6 +190,8 @@ const EXPECTED_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   INBOUND_SWEEP: false,
   // One per stranded delivery.
   INBOUND_REDISPATCH: true,
+  // One per conversation that received a blank message.
+  NOTHING_TO_ANSWER: true,
 };
 
 const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
@@ -217,6 +222,9 @@ const EXPECTED_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
   INBOUND_SWEEP: false,
   // Armed `once`: the kept row is what stops the same attempt being armed again.
   INBOUND_REDISPATCH: false,
+  // One row per conversation that ever got a blank message, and a finished judgement is never read
+  // again.
+  NOTHING_TO_ANSWER: true,
 };
 
 // Written out ON PURPOSE, like the tables above: derived, it would mirror whatever the source says.
@@ -254,6 +262,9 @@ const EXPECTED_DEATH_LEVEL: Record<
   INBOUND_SWEEP: "error",
   // Nothing announced this loss before the job died: the sender holds a 2xx and the row says nothing.
   INBOUND_REDISPATCH: "error",
+  // The conversation stays pending with nobody on it, as before the job existed: this line is the
+  // alert.
+  NOTHING_TO_ANSWER: "warn",
 };
 
 const ALL_KINDS = Object.keys(EXPECTED_LANE) as SchedulerJobKind[];

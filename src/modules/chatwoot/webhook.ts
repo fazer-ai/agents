@@ -99,7 +99,7 @@ import {
   announceFailedTurn,
   readDirectFence,
 } from "@/modules/conversations/failure-note";
-import { reopenIfClosedForNothing } from "@/modules/conversations/nothing-to-answer";
+import { nothingToAnswerDedupeKey } from "@/modules/conversations/nothing-to-answer";
 import {
   type ReturnToAgentOutcome,
   returnConversationToAgent,
@@ -5767,49 +5767,6 @@ export async function processChatwootDelivery(
     }
   }
 
-  // A late attachment on a message a nothing-to-answer close judged empty (issue #895 review, rounds
-  // 7 and 8): the close is undone, so the voice note is back in the queue instead of buried in a
-  // resolved conversation. Late CONTENT, whether or not STT still has work on it: an audio that
-  // arrives already transcribed is the same customer speaking. Asked only of an enabled agent's own
-  // route, and cheap: one row read decides before any client is built.
-  // The RESPONDER's route, and only while it can still answer (round 9): `rt` is the observer where
-  // there is one, and reopening for an observer beside a responder that was switched off, flipped to
-  // monitoring or unbound since the close would park the conversation pending on nobody, the state
-  // the return-to-agent guard refuses (#495).
-  if (
-    (hasLateMedia || inboundTranscriptionOnUpdate(n) !== null) &&
-    responderRt?.enabled === true &&
-    !isMonitoring(responderRt.mode) &&
-    mirror.conversationRowId !== null &&
-    n.conversationId !== null
-  ) {
-    await reopenIfClosedForNothing({
-      client: () =>
-        loadChatwootClient(params.tenantId, params.instanceId, {
-          base,
-          makeClient: params.deps?.makeClient,
-        }),
-      conversationId: n.conversationId,
-      conversationDbId: mirror.conversationRowId,
-      tenantId: params.tenantId,
-      base,
-      flow: {
-        tenantId: params.tenantId,
-        turnId: crypto.randomUUID(),
-        source: "inbox",
-        conversationId: mirror.conversationRowId,
-        agentId: responderRt.agentId,
-        inboxId: responderRt.inboxId,
-        threadId: chatwootThreadId(
-          params.tenantId,
-          params.instanceId,
-          n.conversationId,
-        ),
-        base,
-      },
-    });
-  }
-
   // First-class on-reply reset: a new customer message makes any pending inactivity follow-up moot.
   // Cancel it regardless of the bot gate (a reply while a human handles it should still stop the
   // bot's queued follow-up). Best-effort — a failure here must never strand the delivery.
@@ -5869,6 +5826,24 @@ export async function processChatwootDelivery(
     } catch (err) {
       logger.warn(
         "failed to cancel pending follow-up on reply (conv=%s): %s",
+        convLabel,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    // And the delayed nothing-to-answer judgement (issue #895): the customer wrote again, so what
+    // it was armed to judge is no longer the conversation. A new blank message re-arms it from its
+    // own flush. A /reset is a new incoming message too (`command` is only read off one), so this
+    // is also what retires it on a reset.
+    try {
+      await retireJobsByDedupeKey(
+        params.tenantId,
+        "NOTHING_TO_ANSWER",
+        nothingToAnswerDedupeKey(threadId),
+        base,
+      );
+    } catch (err) {
+      logger.warn(
+        "failed to cancel the nothing-to-answer close on reply (conv=%s): %s",
         convLabel,
         err instanceof Error ? err.message : String(err),
       );

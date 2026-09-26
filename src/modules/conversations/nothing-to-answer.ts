@@ -1,7 +1,13 @@
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import { resetLandedAfter } from "@/graph/reset-episode";
+import { parseDbId } from "@/lib/db-id";
 import { runScopedOn } from "@/lib/tenancy";
-import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { agentStillSpeaks } from "@/modules/agents/speaks";
+import {
+  type LoadChatwootClientDeps,
+  loadChatwootClient,
+} from "@/modules/chatwoot/instance";
 import {
   type ChatwootMessageRow,
   chatwootMessageListLength,
@@ -13,8 +19,14 @@ import {
   shouldBotHandle,
 } from "@/modules/chatwoot/normalize";
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
-import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
+import { emitFlowEvent } from "@/modules/flowlog/service";
 import { ourSideHasSpoken } from "@/modules/followups/eligibility";
+import {
+  type ClaimedJob,
+  enqueueJob,
+  jobRetired,
+} from "@/modules/scheduler/service";
+import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 
 // A CONVERSATION WHOSE CUSTOMER SAID NOTHING, AND THAT NOBODY ON OUR SIDE EVER ANSWERED (issue #895).
 //
@@ -25,27 +37,30 @@ import { ourSideHasSpoken } from "@/modules/followups/eligibility";
 // here it never did. Measured on an email inbox: blank emails sat in the pending queue for days, with
 // no log line for the agent at all.
 //
-// So the caller that found nothing to answer asks this, and it closes the conversation when all of
-// these hold, each read at the last moment it can be:
+// WHY A JOB, AND NOT A CLOSE IN THE FLUSH. The first version closed inside the flush and the direct
+// turn, and every review round found another race on that hot path: a request older than the page,
+// an attachment that lands a second later, an operator taking over mid-read, a /reset, a reply of
+// ours in flight. Each needed its own fence at the write. Here the flush and the direct path only
+// ARM one job per thread, and the job decides later, once, with every fence in one place:
 //
-//   - our side never spoke here (the mirror row, the follow-up's own predicate). Where it did, the
-//     follow-up already covers the conversation, and closing would cut its ladder short;
-//   - the thread holds no incoming message that IS answerable, and no reaction. The caller's burst
-//     only saw messages above the watermark; this reads the WHOLE history (the catch-up read from the
-//     first id, which also carries every reaction), so a message a previous turn left unanswered keeps
-//     the conversation open for whatever handles that. The default page would not do: it is the last
-//     twenty, and a request older than that is exactly the one nobody answered. A history the read
-//     cannot hold in one batch is not proven blank, so it is left alone;
-//   - Chatwoot, read live, still has it `pending` with our bot (or nobody) holding it. An operator
-//     who took it, or an escalation that opened it, is never overruled;
-//   - the caller still wants it, asked right before the write (`stillWanted`): the reads above are
-//     waits a `/reset`, an agent switched off or the job's deadline can land inside, and none of the
-//     caller's own fences run after this point. Withdrawn closes nothing and says nothing.
+//   - the delay absorbs content that arrives after the message (measured on two email inboxes over
+//     14 days: attachments land within 0.4 s of a blank message, and within 813 s of any message at
+//     the worst); `NOTHING_TO_ANSWER_DELAY_MS` sits well past that;
+//   - a new incoming message retires the job (the receiver, beside the follow-up's retirement), and
+//     a /reset is one, so a conversation that moved on is never judged by a stale arm;
+//   - when it runs it reads everything fresh: the agent still speaks; the mirror says our side never
+//     spoke and no /reset landed after the judged message; the WHOLE history (the catch-up read from
+//     the first id, not the default page of twenty, which would hide an older unanswered request)
+//     read in full, with no reply of ours, at least one incoming message and none answerable or a
+//     reaction; and, last of the network reads, Chatwoot still has it `pending` with our bot or
+//     nobody holding it. The agent's switch and the job's own retirement are asked again right
+//     before the write. What is left is the one round trip of the write itself, half an hour after a
+//     message that said nothing: accepted, where the flush version had the whole read in between.
 //
-// Recorded as `nothing_to_answer`, which the dashboard counts as a close by somebody other than the
-// agent: no model judged anything. The line is `info`, not `warn`: this is not a failure, and an
-// alert channel has nothing to act on. Best-effort and never throws: the caller's flush or turn has
-// already settled. A failed close is the exception, and says so at `warn`.
+// Recorded as `nothing_to_answer`, which the dashboard counts as a close by the agent's side (no
+// model judged anything), with an `info` line: this is not a failure. A job that throws is retried by
+// the scheduler and, past its attempts, dead-letters, which is the alert.
+
 // A customer-facing message from our side: a reply, a nudge or a template. A private note is not.
 function weSpoke(m: { messageType: string; private: boolean }): boolean {
   return (
@@ -78,167 +93,170 @@ function nothingToAnswerIn(raw: unknown): boolean {
 // The fork's `MessageFinder::CATCH_UP_LIMIT`: a batch this full may have more behind it.
 const HISTORY_BATCH = 100;
 
-export async function closeIfNothingToAnswer(params: {
-  client: ChatwootClient;
-  conversationId: number;
-  conversationDbId: bigint | null;
-  ourAgentBotId: number | null;
+// Well past the worst measured delay of content after its message (813 s, above). A blank email
+// staying in the queue half an hour costs nothing; closing over a voice note that was still arriving
+// would bury it.
+export const NOTHING_TO_ANSWER_DELAY_MS = 30 * 60_000;
+
+export function nothingToAnswerDedupeKey(threadId: string): string {
+  return `nothing-to-answer:${threadId}`;
+}
+
+// Armed by whoever found nothing to answer (the flush, the direct path). Best-effort: a failure to
+// arm leaves the conversation where it was before this existed, and says so on stdout.
+export async function armNothingToAnswer(params: {
   tenantId: bigint;
   instanceId: bigint;
-  base: PrismaClient;
-  flow: FlowContext;
-  stage: "debounce" | "route";
-  stillWanted: () => Promise<boolean>;
-}): Promise<boolean> {
-  const { client, conversationId, conversationDbId, tenantId, base } = params;
-  if (conversationDbId === null) return false;
-  try {
-    const row = await runScopedOn(
-      base,
-      { tenantId, userId: null, role: "TENANT_ADMIN" },
-      (db) =>
-        db.conversation.findUnique({
-          where: { id: conversationDbId },
-          select: {
-            lastRepliedMessageId: true,
-            chatwootFirstReplyAt: true,
-            lastProactiveAt: true,
-          },
-        }),
-    );
-    if (!row || ourSideHasSpoken(row)) return false;
-
-    if (
-      !nothingToAnswerIn(await client.getMessages(conversationId, { after: 0 }))
-    )
-      return false;
-
-    // The supersede re-read, the same one the reply's post gate makes, and of the WHOLE history again
-    // rather than past the last id: a message that landed meanwhile is answerable work for its own
-    // flush (created on a PENDING conversation, so Chatwoot does not reopen for it), a reply of ours
-    // means our side spoke, and a message already read can have changed in place (an attachment that
-    // arrives by `message_updated` turns a blank audio into something to transcribe). Asked last, right
-    // before the write, so what is left is the same read-to-write gap every close and every post in the
-    // runtime has. Closing first and reopening on a late change does not work: by then that message's
-    // flush may already have settled against a resolved conversation.
-    if (
-      !nothingToAnswerIn(await client.getMessages(conversationId, { after: 0 }))
-    )
-      return false;
-    // Ownership last among the network reads (issue #895 review, round 9): an operator who takes
-    // the conversation while the history reads are in flight is never overruled.
-    const live = parseLiveConversation(
-      await client.getConversation(conversationId),
-    );
-    if (
-      !live ||
-      !shouldBotHandle(live, { ourAgentBotId: params.ourAgentBotId })
-    )
-      return false;
-
-    // The caller's fences, asked after the last read and right before the write: every await above
-    // is a wait a /reset, a switched-off agent or the job's deadline can land in.
-    if (!(await params.stillWanted())) return false;
-    await client.toggleStatus(conversationId, "resolved");
-    await recordResolutionOrigin({
-      tenantId,
-      conversation: {
-        chatwootInstanceId: params.instanceId,
-        chatwootConversationId: conversationId,
-      },
-      origin: "nothing_to_answer",
-      observed: { status: live.status, statusAt: live.updatedAt },
-      base,
-    });
-    emitFlowEvent(params.flow, {
-      stage: params.stage,
-      level: "info",
-      status: "ok",
-      detail: { outcome: "resolved", reason: "nothingAnswerable" },
-    });
-    return true;
-  } catch (e) {
-    // A close that failed leaves the conversation stuck exactly as the issue found it, so this one IS
-    // a warn: it reaches the operator's alert channel instead of a stdout nobody reads.
-    const msg = e instanceof Error ? e.message : String(e);
-    logger.warn(
-      "nothing to answer: could not close (conv=%s): %s",
-      String(conversationId),
-      msg,
-    );
-    emitFlowEvent(params.flow, {
-      stage: params.stage,
-      level: "warn",
-      status: "error",
-      detail: { outcome: "resolved", reason: "nothingAnswerable" },
-      errorMessage: msg,
-    });
-    return false;
-  }
-}
-
-// THE CLOSE UNDONE, when the message it judged turns out to have content (issue #895 review, round 7).
-// Some transports create the message empty and attach the audio just after, on `message_updated`
-// (`hasPendingInboundMediaUpdate`). With debounce on, the flush's wait covers that; on the direct
-// path the turn runs on the empty message at once, finds nothing, and the close above can run before
-// the attachment lands. A late attachment never arms a turn (the write-back loop that rule prevents),
-// so without this the voice note sits in a resolved conversation nobody looks at. Put back to
-// `pending`, it is where it was before this close existed: in the queue, visible.
-//
-// Only a close of THIS kind is undone (`resolvedBy = nothing_to_answer` on the mirror), and only while
-// Chatwoot still has the conversation resolved: an operator's close, or one a person already reopened,
-// is theirs. Admin token, because it is a conversation's state and not a persona's utterance.
-export async function reopenIfClosedForNothing(params: {
-  // Built only once the row says this close is ours, and inside the guard: building one reads the
-  // instance, decrypts its token and validates its URL, and a failure there must not abort the
-  // delivery that asked.
-  client: () => Promise<ChatwootClient>;
+  threadId: string;
   conversationId: number;
   conversationDbId: bigint;
-  tenantId: bigint;
-  base: PrismaClient;
-  flow: FlowContext;
-}): Promise<boolean> {
-  const { conversationId, conversationDbId, tenantId, base } = params;
+  agentId: bigint;
+  agentBotId: number | null;
+  // The message judged empty: what a later /reset is ordered against.
+  triggerMessageId: number | null;
+  base?: PrismaClient;
+  now?: Date;
+}): Promise<void> {
   try {
-    const row = await runScopedOn(
+    await enqueueJob({
+      tenantId: params.tenantId,
+      kind: "NOTHING_TO_ANSWER",
+      dedupeKey: nothingToAnswerDedupeKey(params.threadId),
+      // Every arm is a new judgement to make later: another blank message pushes it out again.
+      rearm: "new-work",
+      runAt: new Date(
+        (params.now ?? new Date()).getTime() + NOTHING_TO_ANSWER_DELAY_MS,
+      ),
+      payload: {
+        instanceId: String(params.instanceId),
+        conversationId: params.conversationId,
+        conversationDbId: String(params.conversationDbId),
+        agentId: String(params.agentId),
+        agentBotId: params.agentBotId,
+        triggerMessageId: params.triggerMessageId,
+      },
+      ...(params.base ? { base: params.base } : {}),
+    });
+  } catch (err) {
+    logger.warn(
+      "nothing to answer: could not arm the close (conv=%s): %s",
+      String(params.conversationId),
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
+export async function nothingToAnswerHandler(
+  job: ClaimedJob,
+  base: PrismaClient,
+  // Test seam, as the media fallback takes one; optional, so this stays assignable to `JobHandler`.
+  makeClient?: LoadChatwootClientDeps["makeClient"],
+): Promise<JobResult> {
+  const p = job.payload as Record<string, unknown>;
+  const instanceId =
+    typeof p.instanceId === "string" ? parseDbId(p.instanceId) : null;
+  const conversationDbId =
+    typeof p.conversationDbId === "string"
+      ? parseDbId(p.conversationDbId)
+      : null;
+  const agentId = typeof p.agentId === "string" ? parseDbId(p.agentId) : null;
+  const conversationId =
+    typeof p.conversationId === "number" ? p.conversationId : null;
+  const agentBotId = typeof p.agentBotId === "number" ? p.agentBotId : null;
+  const triggerMessageId =
+    typeof p.triggerMessageId === "number" ? p.triggerMessageId : null;
+  if (
+    instanceId === null ||
+    conversationDbId === null ||
+    agentId === null ||
+    conversationId === null
+  )
+    return { outcome: "done" };
+  const tenantId = job.tenantId;
+
+  if (!(await agentStillSpeaks(tenantId, agentId, base)))
+    return { outcome: "done" };
+  const row = await runScopedOn(
+    base,
+    { tenantId, userId: null, role: "TENANT_ADMIN" },
+    (db) =>
+      db.conversation.findUnique({
+        where: { id: conversationDbId },
+        select: {
+          lastRepliedMessageId: true,
+          chatwootFirstReplyAt: true,
+          lastProactiveAt: true,
+          resetAtMessageId: true,
+          inboxId: true,
+          threadId: true,
+        },
+      }),
+  );
+  if (!row || ourSideHasSpoken(row)) return { outcome: "done" };
+  if (resetLandedAfter(triggerMessageId, row.resetAtMessageId))
+    return { outcome: "done" };
+
+  const client = await loadChatwootClient(tenantId, instanceId, {
+    base,
+    makeClient,
+  });
+  if (
+    !nothingToAnswerIn(await client.getMessages(conversationId, { after: 0 }))
+  )
+    return { outcome: "done" };
+  // Ownership last among the network reads: an operator who took the conversation, or an escalation
+  // that opened it, is never overruled.
+  const live = parseLiveConversation(
+    await client.getConversation(conversationId),
+  );
+  if (!live || !shouldBotHandle(live, { ourAgentBotId: agentBotId }))
+    return { outcome: "done" };
+  // Asked again after the reads, next to the write: an agent switched off, or a customer message or a
+  // /reset that retired the row, while this read.
+  if (!(await agentStillSpeaks(tenantId, agentId, base)))
+    return { outcome: "done" };
+  if (await jobRetired(job, base)) return { outcome: "done" };
+
+  await client.toggleStatus(conversationId, "resolved", { asAdmin: true });
+  await recordResolutionOrigin({
+    tenantId,
+    conversation: {
+      chatwootInstanceId: instanceId,
+      chatwootConversationId: conversationId,
+    },
+    origin: "nothing_to_answer",
+    observed: { status: live.status, statusAt: live.updatedAt },
+    base,
+  });
+  emitFlowEvent(
+    {
+      tenantId,
+      turnId: crypto.randomUUID(),
+      source: "inbox",
+      conversationId: conversationDbId,
+      agentId,
+      inboxId: row.inboxId,
+      threadId: row.threadId,
       base,
-      { tenantId, userId: null, role: "TENANT_ADMIN" },
-      (db) =>
-        db.conversation.findUnique({
-          where: { id: conversationDbId },
-          select: { resolvedBy: true },
-        }),
-    );
-    if (row?.resolvedBy !== "nothing_to_answer") return false;
-    const client = await params.client();
-    const live = parseLiveConversation(
-      await client.getConversation(conversationId),
-    );
-    if (live?.status !== "resolved") return false;
-    await client.toggleStatus(conversationId, "pending", { asAdmin: true });
-    emitFlowEvent(params.flow, {
+    },
+    {
       stage: "route",
       level: "info",
       status: "ok",
-      detail: { outcome: "reopened", reason: "lateMedia" },
-    });
-    return true;
-  } catch (e) {
-    // The voice note is closed over and nothing else will surface it: this one pages.
-    const msg = e instanceof Error ? e.message : String(e);
-    logger.warn(
-      "nothing to answer: could not reopen for late media (conv=%s): %s",
-      String(conversationId),
-      msg,
-    );
-    emitFlowEvent(params.flow, {
-      stage: "route",
-      level: "warn",
-      status: "error",
-      detail: { outcome: "reopened", reason: "lateMedia" },
-      errorMessage: msg,
-    });
-    return false;
-  }
+      detail: { outcome: "resolved", reason: "nothingAnswerable" },
+    },
+  );
+  return { outcome: "done" };
 }
+
+let registered = false;
+export function registerNothingToAnswerJob(): void {
+  if (registered) return;
+  registered = true;
+  // Wrapped, because the handler's third parameter is a test seam and not the JobContext.
+  registerJobHandler("NOTHING_TO_ANSWER", (job, base) =>
+    nothingToAnswerHandler(job, base),
+  );
+}
+
+registerNothingToAnswerJob();

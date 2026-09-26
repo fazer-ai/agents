@@ -82,7 +82,8 @@ export type SchedulerJobKind =
   | "MEDIA_TEXT_FALLBACK"
   | "KNOWLEDGE_SOURCE_SYNC"
   | "INBOUND_SWEEP"
-  | "INBOUND_REDISPATCH";
+  | "INBOUND_REDISPATCH"
+  | "NOTHING_TO_ANSWER";
 
 export interface ClaimedJob {
   id: bigint;

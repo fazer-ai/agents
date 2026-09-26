@@ -41,7 +41,7 @@ import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import { withAuthContextSection } from "@/modules/contact-auth/context";
 import { recordConversationError } from "@/modules/conversations/error";
-import { closeIfNothingToAnswer } from "@/modules/conversations/nothing-to-answer";
+import { armNothingToAnswer } from "@/modules/conversations/nothing-to-answer";
 import {
   type ObservedConversation,
   observeBeforeClose,
@@ -3331,10 +3331,10 @@ export interface RunAgentTurnParams {
 
 // NOTHING TO ANSWER, on the direct path (issue #895). The message renders to nothing, so no turn
 // runs, and the word stays `skipped`, which the webhook's settlement already reads. What is new is
-// the conversation: on one our side never spoke in, the flush's helper closes it. It needs the agent
-// loaded first, so a switched-off or monitoring agent (both refused by the config load) and an inbox
-// with no agent close nothing, exactly as they answer nothing.
-async function closeIfNothingToAnswerDirect(
+// the delayed judgement it arms, for the inbox's agent on the mirrored conversation; the job decides
+// later whether the conversation is one our side never spoke in, and a switched-off or monitoring
+// agent closes nothing when it runs.
+async function armNothingToAnswerDirect(
   params: RunAgentTurnParams,
   conversationId: number,
   inboxId: number,
@@ -3342,7 +3342,7 @@ async function closeIfNothingToAnswerDirect(
   const { tenantId, instanceId } = params;
   const base = params.base ?? basePrisma;
   const threadId = chatwootThreadId(tenantId, instanceId, conversationId);
-  const loaded = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+  const found = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const inbox = await db.inbox.findUnique({
       where: {
         tenantId_chatwootInstanceId_chatwootInboxId: {
@@ -3354,58 +3354,27 @@ async function closeIfNothingToAnswerDirect(
       select: { agentId: true },
     });
     if (!inbox?.agentId) return null;
-    // No model runs here, so no experiment variant is resolved: resolving one inserts the thread's
-    // assignment, and a conversation that never saw the tested prompt would join its denominator.
-    return loadAgentConfig(
-      db,
-      {
+    const conv = await db.conversation.findFirst({
+      where: {
         tenantId,
-        instanceId,
-        conversationId,
-        agentId: inbox.agentId,
-        threadId,
-        lastIncomingAt: params.event.message?.createdAt ?? null,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: conversationId,
       },
-      { skipExperiment: true },
-    );
+      select: { id: true },
+    });
+    return conv ? { agentId: inbox.agentId, conversationDbId: conv.id } : null;
   });
-  if (!loaded) return;
-  const client = await loadChatwootClient(tenantId, instanceId, {
-    base,
-    makeClient: params.deps?.makeClient,
-    botToken: loaded.agentBotToken ?? undefined,
-  });
-  await closeIfNothingToAnswer({
-    client,
-    conversationId,
-    conversationDbId: loaded.conversationDbId,
-    ourAgentBotId: loaded.agentBotId ?? params.agentBotId,
+  if (!found) return;
+  await armNothingToAnswer({
     tenantId,
     instanceId,
+    threadId,
+    conversationId,
+    conversationDbId: found.conversationDbId,
+    agentId: found.agentId,
+    agentBotId: params.agentBotId,
+    triggerMessageId: params.event.message?.id ?? null,
     base,
-    flow: {
-      tenantId,
-      turnId: crypto.randomUUID(),
-      source: "inbox",
-      conversationId: loaded.conversationDbId,
-      agentId: loaded.agentId,
-      inboxId: loaded.inboxDbId,
-      threadId,
-      base,
-    },
-    stage: "route",
-    // No job to retire on this path. What names the run is the EPISODE of the message it judged,
-    // the same fence an ordinary direct turn writes under (a /reset processed while the helper reads
-    // withdraws it); and the agent can still be switched off meanwhile.
-    stillWanted: async () =>
-      (loaded.conversationDbId === null ||
-        (await stillInSameEpisode({
-          tenantId,
-          conversationDbId: loaded.conversationDbId,
-          triggerMessageId: params.event.message?.id ?? null,
-          base,
-        })({ strict: false }))) &&
-      (await agentStillSpeaks(tenantId, loaded.agentId, base)),
   });
 }
 
@@ -3424,7 +3393,7 @@ export async function runAgentTurn(
   const renderable = incomingRenderable(n);
   let text = renderInboundMessage(renderable);
   if (!text) {
-    await closeIfNothingToAnswerDirect(params, n.conversationId, n.inboxId);
+    await armNothingToAnswerDirect(params, n.conversationId, n.inboxId);
     return "skipped";
   }
   const conversationId = n.conversationId;

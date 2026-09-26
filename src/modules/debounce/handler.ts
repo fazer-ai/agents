@@ -60,7 +60,7 @@ import {
   recordConversationError,
 } from "@/modules/conversations/error";
 import { announceFailedTurn } from "@/modules/conversations/failure-note";
-import { closeIfNothingToAnswer } from "@/modules/conversations/nothing-to-answer";
+import { armNothingToAnswer } from "@/modules/conversations/nothing-to-answer";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import type { FlowStage } from "@/modules/flowlog/stages";
 import { emitUnroutedMessage } from "@/modules/flowlog/unrouted";
@@ -2747,46 +2747,22 @@ export async function flushDebounceJob(
       });
     }
     // NOTHING TO ANSWER (issue #895): the burst held no message a turn could read. On a conversation
-    // our side never spoke in, that used to leave it pending for good; the helper decides whether
-    // this is that conversation and closes it. Past the deadline the retry asks instead. A burst a
-    // REACTION armed is left alone: the default page the helper reads does not carry every reaction
-    // (issue #746), so there "no answerable message on the page" is not evidence the customer said
-    // nothing.
-    if (
-      outcome === "empty" &&
-      !pastDeadline() &&
-      job.payload.reactionArmed !== true
-    ) {
-      const client = await loadChatwootClient(tenantId, instanceId, {
-        base,
-        makeClient: deps?.makeClient,
-        botToken: ctx.loaded.agentBotToken ?? undefined,
-      });
-      await closeIfNothingToAnswer({
-        client,
-        conversationId,
-        conversationDbId: ctx.convDbId,
-        ourAgentBotId: ctx.loaded.agentBotId,
+    // our side never spoke in, that used to leave it pending for good. The flush does not decide
+    // that here, on the hot path; it arms the delayed judgement, which reads everything fresh.
+    if (outcome === "empty" && ctx.convDbId !== null) {
+      await armNothingToAnswer({
         tenantId,
         instanceId,
+        threadId,
+        conversationId,
+        conversationDbId: ctx.convDbId,
+        agentId: ctx.loaded.agentId,
+        agentBotId: ctx.loaded.agentBotId,
+        triggerMessageId:
+          typeof job.payload.lastMessageId === "number"
+            ? job.payload.lastMessageId
+            : null,
         base,
-        flow: {
-          tenantId,
-          turnId: crypto.randomUUID(),
-          source: "inbox",
-          conversationId: ctx.convDbId,
-          agentId: ctx.loaded.agentId,
-          inboxId: ctx.loaded.inboxDbId,
-          threadId,
-          base,
-        },
-        stage: "debounce",
-        // The flush's own fences, asked again at the write: /reset retires the burst, the agent can be
-        // switched off, and the deadline can pass while the helper reads.
-        stillWanted: async () =>
-          !(await jobRetired(job, base)) &&
-          (await agentStillSpeaks(tenantId, ctx.loaded.agentId, base)) &&
-          !pastDeadline(),
       });
     }
     // NOTHING WAS WRITTEN and the burst is still owed: the turn found the thread occupied by another

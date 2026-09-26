@@ -6,17 +6,27 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import { runAgentTurn } from "@/graph/runtime";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
+import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
+import {
+  armNothingToAnswer,
+  NOTHING_TO_ANSWER_DELAY_MS,
+  nothingToAnswerDedupeKey,
+  nothingToAnswerHandler,
+} from "@/modules/conversations/nothing-to-answer";
 import { closedByTheAgentSide } from "@/modules/conversations/resolution-origin";
 import { flushDebounceJob } from "@/modules/debounce/handler";
 import { debounceDedupeKey } from "@/modules/debounce/service";
+import type { ClaimedJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
 // Issue #895: a NEW conversation whose only customer message has nothing to answer (no text, no
 // attachment, no subject, no image in the body) used to stay `pending` and bot-owned forever. No turn
-// ran, so our side never spoke, so the follow-up never armed, and nothing was logged. It is closed
-// now, on both the debounce flush and the direct path, with an `info` line saying why.
+// ran, so our side never spoke, so the follow-up never armed, and nothing was logged. Now the flush
+// and the direct path arm a delayed NOTHING_TO_ANSWER job, and the job closes it, with an `info` line
+// saying why, when everything it reads fresh still says there is nothing to answer.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -84,9 +94,9 @@ function page(msgs: Msg[]) {
   };
 }
 
-// Chatwoot as the flush and the turn see it: the thread page, the live conversation (status and who
-// holds it), and a status toggle that CHANGES that live status, so a second delivery reads the close
-// the first one made.
+// Chatwoot as the flush, the turn and the job see it: the thread page, the live conversation (status
+// and who holds it), and a status toggle that CHANGES that live status, so a second run reads the
+// close the first one made.
 function chatwoot(
   msgs: Msg[],
   live: {
@@ -94,9 +104,7 @@ function chatwoot(
     assigneeType?: string;
     assigneeId?: number;
     toggleFails?: boolean;
-    // Runs inside every thread read: the wait a job deadline can land in.
-    onRead?: () => void;
-    // Runs inside the live conversation read, the helper's last wait before it writes.
+    // Runs inside the live conversation read, the job's last network read before it writes.
     onLive?: () => Promise<void> | void;
     // History older than the default page: only the full catch-up read (`after`) returns it.
     older?: Msg[];
@@ -111,11 +119,12 @@ function chatwoot(
     assigneeId: live.assigneeId ?? OUR_BOT,
   };
   const toggles: string[] = [];
+  const admin: boolean[] = [];
   const sent: string[] = [];
   let fullReads = 0;
+  let clients = 0;
   const client = {
     getMessages: async (_id: number, o?: { after?: number }) => {
-      live.onRead?.();
       const after = o?.after;
       if (after === 0 && live.onFullRead) {
         const r = await live.onFullRead(++fullReads);
@@ -138,9 +147,14 @@ function chatwoot(
         },
       };
     },
-    toggleStatus: async (_id: number, status: string) => {
+    toggleStatus: async (
+      _id: number,
+      status: string,
+      opts: { asAdmin?: boolean } = {},
+    ) => {
       if (live.toggleFails) throw new Error("chatwoot 500");
       toggles.push(status);
+      admin.push(opts.asAdmin === true);
       state.status = status;
       return {};
     },
@@ -154,7 +168,17 @@ function chatwoot(
     listLabels: async () => [],
     listCustomAttributeDefinitions: async () => [],
   } as unknown as ChatwootClient;
-  return { toggles, sent, state, makeClient: async () => client };
+  return {
+    toggles,
+    admin,
+    sent,
+    state,
+    clients: () => clients,
+    makeClient: async () => {
+      clients++;
+      return client;
+    },
+  };
 }
 
 class Answers {
@@ -179,38 +203,40 @@ class NeverCalled {
 
 async function seedConversation(
   convId: number,
-  opts: { spoken?: boolean; status?: string; handled?: number } = {},
+  opts: { spoken?: boolean; resetAt?: number } = {},
 ) {
   return suDb.conversation.create({
     data: {
       tenantId,
       chatwootInstanceId: instanceId,
       chatwootConversationId: convId,
-      status: opts.status ?? "pending",
+      status: "pending",
       assigneeType: "AgentBot",
       assigneeId: OUR_BOT,
       inboxId: inboxDbId,
       threadId: threadOf(convId),
       lastEventAt: new Date(),
       ...(opts.spoken ? { lastRepliedMessageId: 1 } : {}),
-      ...(opts.handled ? { lastHandledMessageId: opts.handled } : {}),
+      ...(opts.resetAt ? { resetAtMessageId: opts.resetAt } : {}),
     },
     select: { id: true },
   });
 }
 
-async function claimedJob(
+async function flush(
   convId: number,
-  lastMessageId: number,
-  reactionArmed = false,
+  cw: ReturnType<typeof chatwoot>,
+  model: unknown,
 ) {
   const thread = threadOf(convId);
+  await suDb.schedulerJob.deleteMany({
+    where: { tenantId, dedupeKey: debounceDedupeKey(thread) },
+  });
   const payload = {
     threadId: thread,
     agentBotId: OUR_BOT,
     burstStartedAt: 1,
-    lastMessageId,
-    ...(reactionArmed ? { reactionArmed: true } : {}),
+    lastMessageId: 2,
   };
   const row = await suDb.schedulerJob.create({
     data: {
@@ -223,31 +249,16 @@ async function claimedJob(
     },
     select: { id: true, claimSeq: true },
   });
-  return {
-    id: row.id,
-    tenantId,
-    kind: "DEBOUNCE" as const,
-    payload,
-    attempts: 0,
-    claimSeq: row.claimSeq,
-  };
-}
-
-async function flush(
-  convId: number,
-  cw: ReturnType<typeof chatwoot>,
-  model: unknown,
-  reactionArmed = false,
-  signal?: AbortSignal,
-) {
-  await suDb.schedulerJob.deleteMany({
-    where: { tenantId, dedupeKey: debounceDedupeKey(threadOf(convId)) },
-  });
-  const job = await claimedJob(convId, 2, reactionArmed);
   return flushDebounceJob({
-    job,
+    job: {
+      id: row.id,
+      tenantId,
+      kind: "DEBOUNCE" as const,
+      payload,
+      attempts: 0,
+      claimSeq: row.claimSeq,
+    },
     base: appDb,
-    signal,
     deps: {
       makeModel: () => model as never,
       makeClient: cw.makeClient as never,
@@ -289,6 +300,68 @@ async function direct(
   });
 }
 
+// The armed row of a conversation, as the scheduler holds it.
+async function armedRow(convId: number) {
+  return suDb.schedulerJob.findFirst({
+    where: {
+      tenantId,
+      kind: "NOTHING_TO_ANSWER",
+      dedupeKey: nothingToAnswerDedupeKey(threadOf(convId)),
+    },
+  });
+}
+
+// Arms the job the way the flush does, then claims it the way the worker does, and hands back what
+// the worker gives the handler.
+async function armAndClaim(
+  convId: number,
+  convDbId: bigint,
+  triggerMessageId: number | null = 2,
+): Promise<ClaimedJob> {
+  await armNothingToAnswer({
+    tenantId,
+    instanceId,
+    threadId: threadOf(convId),
+    conversationId: convId,
+    conversationDbId: convDbId,
+    agentId: agentDbId,
+    agentBotId: OUR_BOT,
+    triggerMessageId,
+    base: appDb,
+  });
+  const row = await armedRow(convId);
+  if (!row) throw new Error("the job was not armed");
+  const claimed = await suDb.schedulerJob.update({
+    where: { id: row.id },
+    data: {
+      status: "CLAIMED",
+      claimedAt: new Date(),
+      claimSeq: { increment: 1 },
+    },
+  });
+  return {
+    id: claimed.id,
+    tenantId,
+    kind: "NOTHING_TO_ANSWER",
+    payload: claimed.payload as Record<string, unknown>,
+    dedupeKey: claimed.dedupeKey,
+    attempts: 0,
+    claimSeq: claimed.claimSeq,
+  };
+}
+
+// One conversation, armed, claimed and run against the given Chatwoot.
+async function judge(
+  convId: number,
+  cw: ReturnType<typeof chatwoot>,
+  opts: { spoken?: boolean; resetAt?: number } = {},
+) {
+  const conv = await seedConversation(convId, opts);
+  const job = await armAndClaim(convId, conv.id);
+  const out = await nothingToAnswerHandler(job, appDb, cw.makeClient as never);
+  return { conv, job, out };
+}
+
 async function resolvedBy(convId: number) {
   const row = await suDb.conversation.findFirstOrThrow({
     where: { tenantId, chatwootConversationId: convId },
@@ -297,17 +370,82 @@ async function resolvedBy(convId: number) {
   return row.resolvedBy;
 }
 
-async function closeLines(convDbId: bigint) {
-  const rows = await flowLogRows(suDb, {
-    where: { conversationId: convDbId },
+// The emit is fire-and-forget: poll for the line.
+async function closeLines(convDbId: bigint, expectSome = true) {
+  for (let i = 0; i < (expectSome ? 100 : 1); i++) {
+    const rows = await flowLogRows(suDb, {
+      where: { conversationId: convDbId },
+    });
+    const mine = rows
+      .filter(
+        (r) =>
+          (r.detail as Record<string, unknown> | null)?.reason ===
+          "nothingAnswerable",
+      )
+      .map((r) => ({ stage: r.stage, level: r.level, detail: r.detail }));
+    if (mine.length > 0 || !expectSome) return mine;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return [];
+}
+
+// A customer message through the real receiver, so the retirement is measured at its call site.
+async function customerWrites(convId: number, content: string, id: number) {
+  const n = normalizeChatwootEvent({
+    event: "message_created",
+    id,
+    content,
+    message_type: "incoming",
+    private: false,
+    sender: { type: "contact", id: 31 },
+    conversation: {
+      id: convId,
+      inbox_id: INBOX,
+      status: "pending",
+      contact_inbox: { id: 70_000 + convId },
+      meta: {
+        assignee_type: "AgentBot",
+        assignee: { id: OUR_BOT, name: "x" },
+        sender: { id: 31, name: "Cliente" },
+      },
+      channel: "Channel::Api",
+      last_activity_at: Math.floor(Date.now() / 1000),
+    },
   });
-  return rows
-    .filter(
-      (r) =>
-        (r.detail as Record<string, unknown> | null)?.reason ===
-        "nothingAnswerable",
-    )
-    .map((r) => ({ stage: r.stage, level: r.level, detail: r.detail }));
+  if (!n) throw new Error("unreachable: the fixture is a valid event");
+  const delivery = await suDb.chatwootWebhookDelivery.create({
+    data: {
+      tenantId,
+      chatwootInstanceId: instanceId,
+      deliveryId: `nothing-${process.pid}-${crypto.randomUUID()}`,
+      event: "message_created",
+      status: "PENDING",
+    },
+    select: { id: true },
+  });
+  await processChatwootDelivery({
+    tenantId,
+    instanceId,
+    deliveryRowId: delivery.id,
+    agentBotId: OUR_BOT,
+    normalized: n,
+    base: appDb,
+    deps: {
+      sleep: async () => {},
+      makeClient: (async () =>
+        ({
+          sendMessage: async () => ({}),
+          sendPrivateNote: async () => ({}),
+          toggleTyping: async () => ({}),
+          getMessages: async () => ({ payload: [] }),
+        }) as unknown as ChatwootClient) as never,
+      makeModel: () => {
+        throw new Error("the retirement is what this measures, not a turn");
+      },
+    },
+  }).catch(() => {
+    // The receiver may stand down on any gate of its own; the retirement comes before those.
+  });
 }
 
 describe.skipIf(!dbUp)(
@@ -380,6 +518,7 @@ describe.skipIf(!dbUp)(
       await clearFlowLog(suDb, { tenantId });
       for (const table of [
         "scheduler_jobs",
+        "chatwoot_webhook_deliveries",
         "agent_threads",
         "llm_usage",
         "conversations",
@@ -399,21 +538,33 @@ describe.skipIf(!dbUp)(
       await appDb.$disconnect();
     });
 
-    test("the flush closes it, records why, and never reaches the model", async () => {
+    // ---- the arm -------------------------------------------------------------------------------
+
+    test("the flush arms the delayed close, closes nothing now, and never reaches the model", async () => {
       const conv = await seedConversation(89_501);
       const cw = chatwoot([{ id: 2, content: "" }]);
+      const before = Date.now();
       const out = await flush(89_501, cw, new NeverCalled());
       expect(out.outcome).toBe("done");
-      expect(cw.toggles).toEqual(["resolved"]);
+      expect(cw.toggles).toEqual([]);
       expect(cw.sent).toEqual([]);
-      expect(await resolvedBy(89_501)).toBe("nothing_to_answer");
-      expect(await closeLines(conv.id)).toEqual([
-        {
-          stage: "debounce",
-          level: "info",
-          detail: { outcome: "resolved", reason: "nothingAnswerable" },
-        },
-      ]);
+      const row = await armedRow(89_501);
+      expect(row?.status).toBe("PENDING");
+      const due = row?.runAt.getTime() ?? 0;
+      expect(due).toBeGreaterThanOrEqual(before + NOTHING_TO_ANSWER_DELAY_MS);
+      expect(due).toBeLessThanOrEqual(Date.now() + NOTHING_TO_ANSWER_DELAY_MS);
+      expect(row?.payload).toEqual({
+        instanceId: String(instanceId),
+        conversationId: 89_501,
+        conversationDbId: String(conv.id),
+        agentId: String(agentDbId),
+        agentBotId: OUR_BOT,
+        triggerMessageId: 2,
+      });
+    });
+
+    test("the delay is half an hour: past the worst measured lateness of content", () => {
+      expect(NOTHING_TO_ANSWER_DELAY_MS).toBe(30 * 60_000);
     });
 
     test("a null body is the same as an empty one", async () => {
@@ -423,85 +574,52 @@ describe.skipIf(!dbUp)(
         { id: 3, content: "   " },
       ]);
       await flush(89_502, cw, new NeverCalled());
-      expect(cw.toggles).toEqual(["resolved"]);
+      expect((await armedRow(89_502))?.status).toBe("PENDING");
     });
 
-    test("a second delivery of the same flush does not close it twice", async () => {
-      await seedConversation(89_503);
+    test("the direct path arms it too, and its word stays `skipped`", async () => {
+      const conv = await seedConversation(89_503);
       const cw = chatwoot([{ id: 2, content: "" }]);
-      await flush(89_503, cw, new NeverCalled());
-      await flush(89_503, cw, new NeverCalled());
-      expect(cw.toggles).toEqual(["resolved"]);
-    });
-
-    test("where our side already spoke, it is left for the follow-up", async () => {
-      const conv = await seedConversation(89_504, { spoken: true });
-      const cw = chatwoot([
-        { id: 1, content: "Olá", type: 1 },
-        { id: 2, content: "" },
-      ]);
-      await flush(89_504, cw, new NeverCalled());
+      const outcome = await direct(89_503, cw);
+      expect(outcome).toBe("skipped");
       expect(cw.toggles).toEqual([]);
-      expect(await closeLines(conv.id)).toEqual([]);
-    });
-
-    test("a conversation a person holds live is not closed", async () => {
-      await seedConversation(89_505);
-      const cw = chatwoot([{ id: 2, content: "" }], {
-        assigneeType: "User",
-        assigneeId: 7,
+      const row = await armedRow(89_503);
+      expect(row?.status).toBe("PENDING");
+      expect(row?.payload).toMatchObject({
+        conversationDbId: String(conv.id),
+        agentBotId: OUR_BOT,
+        triggerMessageId: 2,
       });
-      await flush(89_505, cw, new NeverCalled());
-      expect(cw.toggles).toEqual([]);
     });
 
-    test("a conversation that is live open (escalated) is not closed", async () => {
-      await seedConversation(89_506);
-      const cw = chatwoot([{ id: 2, content: "" }], { status: "open" });
-      await flush(89_506, cw, new NeverCalled());
-      expect(cw.toggles).toEqual([]);
+    test("an unmirrored conversation arms nothing on the direct path", async () => {
+      const cw = chatwoot([{ id: 2, content: "" }]);
+      await direct(89_504, cw);
+      expect(await armedRow(89_504)).toBeNull();
     });
 
-    test("a reaction is not an empty message: it does not close", async () => {
-      await seedConversation(89_507);
-      const cw = chatwoot([{ id: 2, content: "", reaction: true }]);
-      await flush(89_507, cw, new NeverCalled());
-      expect(cw.toggles).toEqual([]);
-    });
-
-    test("an empty message beside a real one runs the turn and does not close", async () => {
-      await seedConversation(89_508);
+    test("a burst with a real message runs the turn and arms nothing", async () => {
+      await seedConversation(89_505);
       const cw = chatwoot([
         { id: 2, content: "" },
         { id: 3, content: "quero cancelar" },
       ]);
       const model = new Answers();
-      await flush(89_508, cw, model);
+      await flush(89_505, cw, model);
       expect(model.calls).toBeGreaterThan(0);
-      expect(cw.sent.length).toBeGreaterThan(0);
-      expect(cw.toggles).not.toContain("resolved");
+      expect(await armedRow(89_505)).toBeNull();
     });
 
-    test("answerable shapes with no text are not closed: attachment, subject", async () => {
-      await seedConversation(89_509);
-      await seedConversation(89_510);
-      const a = chatwoot([
-        { id: 2, content: "", attachments: [{ file_type: "file" }] },
-      ]);
-      const s = chatwoot([{ id: 2, content: "", subject: "Reembolso" }]);
-      await flush(89_509, a, new Answers());
-      await flush(89_510, s, new Answers());
-      expect(a.toggles).not.toContain("resolved");
-      expect(s.toggles).not.toContain("resolved");
-    });
+    // ---- the job -------------------------------------------------------------------------------
 
-    test("the direct path closes it too, with its own line", async () => {
-      const conv = await seedConversation(89_511);
+    test("the job closes it as the admin, records why, and logs an info line", async () => {
       const cw = chatwoot([{ id: 2, content: "" }]);
-      const outcome = await direct(89_511, cw);
-      expect(outcome).toBe("skipped");
+      const { conv, out } = await judge(89_510, cw);
+      expect(out).toEqual({ outcome: "done" });
       expect(cw.toggles).toEqual(["resolved"]);
-      expect(await resolvedBy(89_511)).toBe("nothing_to_answer");
+      expect(cw.admin).toEqual([true]);
+      expect(cw.sent).toEqual([]);
+      expect(await resolvedBy(89_510)).toBe("nothing_to_answer");
       expect(await closeLines(conv.id)).toEqual([
         {
           stage: "route",
@@ -511,135 +629,43 @@ describe.skipIf(!dbUp)(
       ]);
     });
 
-    test("the direct path leaves a conversation our side spoke in", async () => {
-      await seedConversation(89_512, { spoken: true });
-      const cw = chatwoot([
-        { id: 1, content: "Olá", type: 1 },
-        { id: 2, content: "" },
-      ]);
-      await direct(89_512, cw);
-      expect(cw.toggles).toEqual([]);
-    });
-
-    test("a switched-off agent closes nothing, on either path", async () => {
-      await seedConversation(89_513);
-      await seedConversation(89_514);
-      await suDb.agent.update({
-        where: { id: agentDbId },
-        data: { enabled: false },
-      });
-      try {
-        const f = chatwoot([{ id: 2, content: "" }]);
-        const d = chatwoot([{ id: 2, content: "" }]);
-        await flush(89_513, f, new NeverCalled());
-        const outcome = await direct(89_514, d);
-        expect(f.toggles).toEqual([]);
-        expect(d.toggles).toEqual([]);
-        // Unchanged word: an empty message on the direct path was always `skipped`, and the webhook's
-        // settlement reads it. Only whether the conversation closes is new.
-        expect(outcome).toBe("skipped");
-      } finally {
-        await suDb.agent.update({
-          where: { id: agentDbId },
-          data: { enabled: true },
-        });
-      }
-    });
-
-    test("a monitoring agent closes nothing", async () => {
-      await seedConversation(89_515);
-      await suDb.agent.update({
-        where: { id: agentDbId },
-        data: { mode: "monitoring" },
-      });
-      try {
-        const cw = chatwoot([{ id: 2, content: "" }]);
-        await flush(89_515, cw, new NeverCalled());
-        expect(cw.toggles).toEqual([]);
-      } finally {
-        await suDb.agent.update({
-          where: { id: agentDbId },
-          data: { mode: "production" },
-        });
-      }
-    });
-
-    test("a burst a reaction armed is left alone: the page may not carry that reaction", async () => {
-      await seedConversation(89_516);
+    test("a second run of the same job does not close it twice", async () => {
       const cw = chatwoot([{ id: 2, content: "" }]);
-      await flush(89_516, cw, new NeverCalled(), true);
-      expect(cw.toggles).toEqual([]);
-    });
-
-    test("a thread with no incoming message at all is not closed", async () => {
-      await seedConversation(89_517);
-      const cw = chatwoot([{ id: 2, content: "nota do operador", type: 2 }]);
-      await flush(89_517, cw, new NeverCalled());
-      expect(cw.toggles).toEqual([]);
-    });
-
-    test("a close that fails is a warn, so it reaches the alert channel", async () => {
-      const conv = await seedConversation(89_518);
-      const cw = chatwoot([{ id: 2, content: "" }], { toggleFails: true });
-      await flush(89_518, cw, new NeverCalled());
-      expect(await resolvedBy(89_518)).toBeNull();
-      expect(await closeLines(conv.id)).toEqual([
-        {
-          stage: "debounce",
-          level: "warn",
-          detail: { outcome: "resolved", reason: "nothingAnswerable" },
-        },
-      ]);
-    });
-
-    test("a message a previous turn left unanswered keeps the conversation open", async () => {
-      // The burst above the watermark is only the blank message, so the flush finds nothing; the
-      // text below the mark was never answered (our side never spoke), and closing would bury it.
-      await seedConversation(89_519, { handled: 1 });
-      const cw = chatwoot([
-        { id: 1, content: "preciso de ajuda com meu pedido" },
-        { id: 2, content: "" },
-      ]);
-      await flush(89_519, cw, new NeverCalled());
-      expect(cw.toggles).toEqual([]);
-    });
-
-    test("a private incoming row is not the customer speaking", async () => {
-      await seedConversation(89_520);
-      const cw = chatwoot([
-        { id: 1, content: "nota interna", private: true },
-        { id: 2, content: "" },
-      ]);
-      await flush(89_520, cw, new NeverCalled());
+      const { job } = await judge(89_511, cw);
+      await nothingToAnswerHandler(job, appDb, cw.makeClient as never);
       expect(cw.toggles).toEqual(["resolved"]);
     });
 
-    test("past the job's deadline the flush leaves the close to its retry", async () => {
-      await seedConversation(89_521);
-      const deadline = new AbortController();
-      const cw = chatwoot([{ id: 2, content: "" }], {
-        onRead: () => deadline.abort(),
-      });
-      await flush(89_521, cw, new NeverCalled(), false, deadline.signal);
+    test("where the mirror says our side spoke, it is left for the follow-up", async () => {
+      const cw = chatwoot([{ id: 2, content: "" }]);
+      const { conv } = await judge(89_512, cw, { spoken: true });
       expect(cw.toggles).toEqual([]);
+      expect(cw.clients()).toBe(0);
+      expect(await closeLines(conv.id, false)).toEqual([]);
     });
 
-    test("an unmirrored conversation closes nothing and logs nothing", async () => {
-      const cw = chatwoot([{ id: 2, content: "" }]);
-      await direct(89_522, cw);
-      expect(cw.toggles).toEqual([]);
-      // flowlog-scope: tenant-wide — an unmirrored conversation has no row to scope by, and the
-      // subject is that no route warn was written for it anywhere.
-      const rows = await flowLogRows(suDb, {
-        where: { tenantId, stage: "route", level: "warn" },
-      });
-      expect(rows).toEqual([]);
+    test("a reply of ours in the history keeps it open, a private note of ours does not", async () => {
+      const replied = chatwoot([
+        { id: 1, content: "Olá, como posso ajudar?", type: 1 },
+        { id: 2, content: "" },
+      ]);
+      await judge(89_513, replied);
+      expect(replied.toggles).toEqual([]);
+      const template = chatwoot([
+        { id: 1, content: "Olá", type: 3 },
+        { id: 2, content: "" },
+      ]);
+      await judge(89_514, template);
+      expect(template.toggles).toEqual([]);
+      const note = chatwoot([
+        { id: 1, content: "nota do operador", type: 1, private: true },
+        { id: 2, content: "" },
+      ]);
+      await judge(89_515, note);
+      expect(note.toggles).toEqual(["resolved"]);
     });
 
     test("a request older than the default page keeps the conversation open", async () => {
-      // The default page is the last twenty; the unanswered request sits behind it, and the blank
-      // messages on top say nothing about it.
-      await seedConversation(89_523, { handled: 30 });
       const blanks = Array.from({ length: 20 }, (_, i) => ({
         id: 31 + i,
         content: "",
@@ -647,249 +673,285 @@ describe.skipIf(!dbUp)(
       const cw = chatwoot(blanks, {
         older: [{ id: 1, content: "meu ingresso não chegou" }],
       });
-      await flush(89_523, cw, new NeverCalled());
+      await judge(89_516, cw);
       expect(cw.toggles).toEqual([]);
     });
 
     test("a history too long to read in one batch is not proven blank", async () => {
-      await seedConversation(89_524);
       const cw = chatwoot([{ id: 200, content: "" }], {
-        older: Array.from({ length: 100 }, (_, i) => ({
+        older: Array.from({ length: 99 }, (_, i) => ({
           id: 1 + i,
           content: "",
         })),
       });
-      await flush(89_524, cw, new NeverCalled());
+      await judge(89_517, cw);
       expect(cw.toggles).toEqual([]);
-    });
-
-    test("a /reset that lands while the helper reads closes nothing", async () => {
-      const conv = await seedConversation(89_525);
-      const cw = chatwoot([{ id: 2, content: "" }], {
-        onLive: async () => {
-          await suDb.schedulerJob.updateMany({
-            where: { tenantId, dedupeKey: debounceDedupeKey(threadOf(89_525)) },
-            data: { payload: { threadId: threadOf(89_525), cancelledAt: 1 } },
-          });
-        },
+      // One row fewer is one batch, and the same blank history closes.
+      const short = chatwoot([{ id: 200, content: "" }], {
+        older: Array.from({ length: 98 }, (_, i) => ({
+          id: 1 + i,
+          content: "",
+        })),
       });
-      await flush(89_525, cw, new NeverCalled());
-      expect(cw.toggles).toEqual([]);
-      expect(await closeLines(conv.id)).toEqual([]);
-    });
-
-    test("an agent switched off while the helper reads closes nothing, on either path", async () => {
-      await seedConversation(89_526);
-      await seedConversation(89_527);
-      const off = async () => {
-        await suDb.agent.update({
-          where: { id: agentDbId },
-          data: { enabled: false },
-        });
-      };
-      try {
-        const f = chatwoot([{ id: 2, content: "" }], { onLive: off });
-        await flush(89_526, f, new NeverCalled());
-        await suDb.agent.update({
-          where: { id: agentDbId },
-          data: { enabled: true },
-        });
-        const d = chatwoot([{ id: 2, content: "" }], { onLive: off });
-        await direct(89_527, d);
-        expect(f.toggles).toEqual([]);
-        expect(d.toggles).toEqual([]);
-      } finally {
-        await suDb.agent.update({
-          where: { id: agentDbId },
-          data: { enabled: true },
-        });
-      }
-    });
-
-    test("a deadline that passes while the helper reads closes nothing", async () => {
-      await seedConversation(89_528);
-      const deadline = new AbortController();
-      const cw = chatwoot([{ id: 2, content: "" }], {
-        onLive: () => deadline.abort(),
-      });
-      await flush(89_528, cw, new NeverCalled(), false, deadline.signal);
-      expect(cw.toggles).toEqual([]);
-    });
-
-    test("a message that lands after the history read keeps the conversation open", async () => {
-      const conv = await seedConversation(89_529);
-      const msgs: Msg[] = [{ id: 2, content: "" }];
-      const cw = chatwoot(msgs, {
-        // Lands after the first full read returned, before the last one.
-        onFullRead: (nth) => {
-          if (nth !== 1) return undefined;
-          const judged = page([...msgs]);
-          msgs.push({ id: 3, content: "esqueci de escrever: quero cancelar" });
-          return judged;
-        },
-      });
-      await flush(89_529, cw, new NeverCalled());
-      expect(cw.toggles).toEqual([]);
-      expect(cw.state.status).toBe("pending");
-      expect(await resolvedBy(89_529)).toBeNull();
-      expect(await closeLines(conv.id)).toEqual([]);
-    });
-
-    test("the direct path's close joins no experiment: no model ran", async () => {
-      await seedConversation(89_530);
-      const exp = await suDb.experiment.create({
-        data: {
-          tenantId,
-          agentId: agentDbId,
-          name: "tom",
-          enabled: true,
-          variants: [
-            { key: "a", systemPrompt: "A" },
-            { key: "b", systemPrompt: "B" },
-          ],
-        },
-        select: { id: true },
-      });
-      try {
-        const cw = chatwoot([{ id: 2, content: "" }]);
-        await direct(89_530, cw);
-        expect(cw.toggles).toEqual(["resolved"]);
-        const assigned = await suDb.promptVariantAssignment.count({
-          where: { tenantId, experimentId: exp.id },
-        });
-        expect(assigned).toBe(0);
-      } finally {
-        await suDb.promptVariantAssignment.deleteMany({
-          where: { tenantId, experimentId: exp.id },
-        });
-        await suDb.experiment.delete({ where: { id: exp.id } });
-      }
-    });
-
-    test("a reply our side sent while the helper read keeps the conversation open", async () => {
-      // The mirror row still says we never spoke; the history the helper reads says otherwise.
-      await seedConversation(89_531);
-      const early = chatwoot([
-        { id: 1, content: "Olá, como posso ajudar?", type: 1 },
-        { id: 2, content: "" },
-      ]);
-      await flush(89_531, early, new NeverCalled());
-      expect(early.toggles).toEqual([]);
-
-      await seedConversation(89_532);
-      const msgs: Msg[] = [{ id: 2, content: "" }];
-      const late = chatwoot(msgs, {
-        onFullRead: (nth) => {
-          if (nth !== 1) return undefined;
-          const judged = page([...msgs]);
-          msgs.push({ id: 3, content: "Oi! Ainda precisa de ajuda?", type: 1 });
-          return judged;
-        },
-      });
-      await flush(89_532, late, new NeverCalled());
-      expect(late.toggles).toEqual([]);
+      await judge(89_518, short);
+      expect(short.toggles).toEqual(["resolved"]);
     });
 
     test("a history read that could not tell closes nothing", async () => {
-      // A body that is not a list, or a row the parser cannot read, on the first full read or on the
-      // final one. Each is "could not tell", never "the customer said nothing".
-      const cases: Array<[number, (nth: number) => unknown]> = [
-        [89_535, (nth) => (nth === 1 ? {} : undefined)],
-        [
-          89_536,
-          (nth) =>
-            nth === 1
-              ? { payload: [{}, { id: 2, content: "", message_type: 0 }] }
-              : undefined,
-        ],
-        [89_537, (nth) => (nth === 2 ? {} : undefined)],
+      // A body that is not a list, or a row the parser cannot read: "could not tell", never "the
+      // customer said nothing".
+      const bodies: Array<[number, unknown]> = [
+        [89_519, {}],
+        [89_520, { payload: [{}, { id: 2, content: "", message_type: 0 }] }],
       ];
-      for (const [convId, bad] of cases) {
-        await seedConversation(convId);
-        const cw = chatwoot([{ id: 2, content: "" }], { onFullRead: bad });
-        await flush(convId, cw, new NeverCalled());
+      for (const [convId, body] of bodies) {
+        const cw = chatwoot([{ id: 2, content: "" }], {
+          onFullRead: () => body,
+        });
+        await judge(convId, cw);
         expect(cw.toggles).toEqual([]);
       }
     });
 
-    test("a message that gains an attachment while the helper reads keeps the conversation open", async () => {
-      // A transport that delivers audio by `message_updated`: the blank message judged at the first
-      // read has media by the time of the last.
-      await seedConversation(89_538);
-      const msgs: Msg[] = [{ id: 2, content: "" }];
-      const cw = chatwoot(msgs, {
-        onFullRead: (nth) => {
-          if (nth !== 1) return undefined;
-          const judged = page([...msgs]);
-          msgs[0] = {
-            id: 2,
-            content: "",
-            attachments: [{ file_type: "audio" }],
-          };
-          return judged;
-        },
-      });
-      await flush(89_538, cw, new NeverCalled());
-      expect(cw.toggles).toEqual([]);
+    test("answerable shapes with no text keep it open: attachment, subject, reaction", async () => {
+      const shapes: Array<[number, Msg]> = [
+        [89_521, { id: 2, content: "", attachments: [{ file_type: "audio" }] }],
+        [89_522, { id: 2, content: "", subject: "Reembolso" }],
+        [89_523, { id: 2, content: "", reaction: true }],
+      ];
+      for (const [convId, msg] of shapes) {
+        const cw = chatwoot([msg]);
+        await judge(convId, cw);
+        expect(cw.toggles).toEqual([]);
+      }
     });
 
-    test("a private note from our side is not our side speaking", async () => {
-      await seedConversation(89_534);
+    test("a private incoming row is not the customer speaking", async () => {
       const cw = chatwoot([
-        { id: 1, content: "nota do operador", type: 1, private: true },
+        { id: 1, content: "nota interna", private: true },
         { id: 2, content: "" },
       ]);
-      await flush(89_534, cw, new NeverCalled());
+      await judge(89_525, cw);
       expect(cw.toggles).toEqual(["resolved"]);
     });
 
-    test("a /reset that lands during the final history read closes nothing", async () => {
-      await seedConversation(89_533);
+    test("a thread with no incoming message at all is not closed", async () => {
+      const cw = chatwoot([{ id: 2, content: "nota do operador", type: 2 }]);
+      await judge(89_526, cw);
+      expect(cw.toggles).toEqual([]);
+    });
+
+    test("a conversation a person, another bot or an escalation holds is not closed", async () => {
+      const held: Array<[number, Parameters<typeof chatwoot>[1]]> = [
+        [89_527, { assigneeType: "User", assigneeId: 7 }],
+        [89_528, { assigneeType: "AgentBot", assigneeId: 99 }],
+        [89_529, { status: "open" }],
+        [89_530, { status: "resolved" }],
+      ];
+      for (const [convId, live] of held) {
+        const cw = chatwoot([{ id: 2, content: "" }], live);
+        await judge(convId, cw);
+        expect(cw.toggles).toEqual([]);
+      }
+    });
+
+    test("a switched-off or monitoring agent closes nothing, and reads nothing", async () => {
+      for (const [convId, data] of [
+        [89_531, { enabled: false }],
+        [89_532, { mode: "monitoring" as const }],
+      ] as const) {
+        await suDb.agent.update({ where: { id: agentDbId }, data });
+        try {
+          const cw = chatwoot([{ id: 2, content: "" }]);
+          await judge(convId, cw);
+          expect(cw.toggles).toEqual([]);
+          expect(cw.clients()).toBe(0);
+        } finally {
+          await suDb.agent.update({
+            where: { id: agentDbId },
+            data: { enabled: true, mode: "production" },
+          });
+        }
+      }
+    });
+
+    test("an agent switched off while the job reads closes nothing", async () => {
+      try {
+        const cw = chatwoot([{ id: 2, content: "" }], {
+          onLive: async () => {
+            await suDb.agent.update({
+              where: { id: agentDbId },
+              data: { enabled: false },
+            });
+          },
+        });
+        await judge(89_533, cw);
+        expect(cw.toggles).toEqual([]);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { enabled: true },
+        });
+      }
+    });
+
+    test("a /reset that landed at or after the judged message closes nothing", async () => {
+      const at = chatwoot([{ id: 2, content: "" }]);
+      await judge(89_534, at, { resetAt: 2 });
+      expect(at.toggles).toEqual([]);
+      // A /reset BEFORE the judged message is an older episode: the blank message is this one's.
+      const before = chatwoot([{ id: 2, content: "" }]);
+      await judge(89_535, before, { resetAt: 1 });
+      expect(before.toggles).toEqual(["resolved"]);
+    });
+
+    test("a job retired while it reads closes nothing", async () => {
       const cw = chatwoot([{ id: 2, content: "" }], {
-        onFullRead: async (nth) => {
-          if (nth !== 2) return undefined;
+        onLive: async () => {
           await suDb.schedulerJob.updateMany({
-            where: { tenantId, dedupeKey: debounceDedupeKey(threadOf(89_533)) },
-            data: { payload: { threadId: threadOf(89_533), cancelledAt: 1 } },
+            where: {
+              tenantId,
+              kind: "NOTHING_TO_ANSWER",
+              dedupeKey: nothingToAnswerDedupeKey(threadOf(89_536)),
+            },
+            data: { claimSeq: { increment: 1 } },
           });
-          return undefined;
         },
       });
-      await flush(89_533, cw, new NeverCalled());
+      const { conv } = await judge(89_536, cw);
+      expect(cw.toggles).toEqual([]);
+      expect(await resolvedBy(89_536)).toBeNull();
+      expect(await closeLines(conv.id, false)).toEqual([]);
+    });
+
+    test("a close that fails throws, so the scheduler retries it and dead-letters at the end", async () => {
+      const cw = chatwoot([{ id: 2, content: "" }], { toggleFails: true });
+      const conv = await seedConversation(89_537);
+      const job = await armAndClaim(89_537, conv.id);
+      await expect(
+        nothingToAnswerHandler(job, appDb, cw.makeClient as never),
+      ).rejects.toThrow("chatwoot 500");
+      expect(await resolvedBy(89_537)).toBeNull();
+    });
+
+    test("a payload it cannot read is dropped, not retried", async () => {
+      const conv = await seedConversation(89_538);
+      const job = await armAndClaim(89_538, conv.id);
+      const cw = chatwoot([{ id: 2, content: "" }]);
+      const out = await nothingToAnswerHandler(
+        { ...job, payload: { conversationId: "89538" } },
+        appDb,
+        cw.makeClient as never,
+      );
+      expect(out).toEqual({ outcome: "done" });
+      expect(cw.clients()).toBe(0);
+    });
+
+    // ---- the retirement ------------------------------------------------------------------------
+
+    test("a new customer message retires the armed job, pending or already claimed", async () => {
+      const pendingConv = await seedConversation(89_540);
+      await armNothingToAnswer({
+        tenantId,
+        instanceId,
+        threadId: threadOf(89_540),
+        conversationId: 89_540,
+        conversationDbId: pendingConv.id,
+        agentId: agentDbId,
+        agentBotId: OUR_BOT,
+        triggerMessageId: 2,
+        base: appDb,
+      });
+      await customerWrites(89_540, "esqueci de escrever: quero cancelar", 3);
+      const pending = await armedRow(89_540);
+      expect(pending?.status).toBe("DONE");
+      expect(pending?.payload).toHaveProperty("cancelledAt");
+
+      const claimedConv = await seedConversation(89_541);
+      const job = await armAndClaim(89_541, claimedConv.id);
+      await customerWrites(89_541, "alô?", 3);
+      const cw = chatwoot([{ id: 2, content: "" }]);
+      await nothingToAnswerHandler(job, appDb, cw.makeClient as never);
       expect(cw.toggles).toEqual([]);
     });
 
-    test("an operator who takes it during the final history read keeps it", async () => {
-      await seedConversation(89_539);
-      const holder: { cw?: ReturnType<typeof chatwoot> } = {};
-      holder.cw = chatwoot([{ id: 2, content: "" }], {
-        onFullRead: (nth) => {
-          if (nth === 2 && holder.cw) {
-            holder.cw.state.status = "open";
-            holder.cw.state.assigneeType = "User";
-            holder.cw.state.assigneeId = 9;
-          }
-          return undefined;
-        },
+    test("a message in another conversation leaves this one's job alone", async () => {
+      const conv = await seedConversation(89_542);
+      await armNothingToAnswer({
+        tenantId,
+        instanceId,
+        threadId: threadOf(89_542),
+        conversationId: 89_542,
+        conversationDbId: conv.id,
+        agentId: agentDbId,
+        agentBotId: OUR_BOT,
+        triggerMessageId: 2,
+        base: appDb,
       });
-      await flush(89_539, holder.cw, new NeverCalled());
-      expect(holder.cw.toggles).toEqual([]);
+      await seedConversation(89_543);
+      await customerWrites(89_543, "outro assunto", 3);
+      expect((await armedRow(89_542))?.status).toBe("PENDING");
     });
 
-    test("a /reset that lands during the direct path's final read closes nothing", async () => {
-      const conv = await seedConversation(89_540);
-      const cw = chatwoot([{ id: 2, content: "" }], {
-        onFullRead: async (nth) => {
-          if (nth !== 2) return undefined;
-          await suDb.conversation.update({
-            where: { id: conv.id },
-            data: { resetAtMessageId: 2 },
-          });
-          return undefined;
+    test("a later blank message re-arms a retired job as new work", async () => {
+      const conv = await seedConversation(89_544);
+      await armAndClaim(89_544, conv.id);
+      await customerWrites(89_544, "oi", 3);
+      expect((await armedRow(89_544))?.status).toBe("DONE");
+      // As if the retired run had failed on its way: the next blank message is new work, and starts
+      // with the whole retry budget.
+      await suDb.schedulerJob.updateMany({
+        where: {
+          tenantId,
+          kind: "NOTHING_TO_ANSWER",
+          dedupeKey: nothingToAnswerDedupeKey(threadOf(89_544)),
         },
+        data: { attempts: 4 },
       });
-      await direct(89_540, cw);
-      expect(cw.toggles).toEqual([]);
+      const cw = chatwoot([
+        { id: 2, content: "" },
+        { id: 4, content: "" },
+      ]);
+      await direct(89_544, cw);
+      const row = await armedRow(89_544);
+      expect(row?.status).toBe("PENDING");
+      expect(row?.payload).not.toHaveProperty("cancelledAt");
+      expect(row?.attempts).toBe(0);
+    });
+
+    // The same retirement as any incoming message: the receiver only reads a command off one.
+    test("a /reset retires the armed job", async () => {
+      const conv = await seedConversation(89_545);
+      await armNothingToAnswer({
+        tenantId,
+        instanceId,
+        threadId: threadOf(89_545),
+        conversationId: 89_545,
+        conversationDbId: conv.id,
+        agentId: agentDbId,
+        agentBotId: OUR_BOT,
+        triggerMessageId: 2,
+        base: appDb,
+      });
+      await suDb.agent.update({
+        where: { id: agentDbId },
+        data: { mode: "test" },
+      });
+      await suDb.conversation.update({
+        where: { id: conv.id },
+        data: { testActivatedAt: new Date() },
+      });
+      try {
+        await customerWrites(89_545, "/reset", 3);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { mode: "production" },
+        });
+      }
+      const row = await armedRow(89_545);
+      expect(row?.status).toBe("DONE");
+      expect(row?.payload).toHaveProperty("cancelledAt");
     });
 
     test("a close of ours counts as the agent side's, like the follow-up's", () => {

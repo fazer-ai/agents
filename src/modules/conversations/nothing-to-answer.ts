@@ -3,6 +3,8 @@ import logger from "@/api/lib/logger";
 import { runScopedOn } from "@/lib/tenancy";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import {
+  type ChatwootMessageRow,
+  chatwootMessageListLength,
   hasAnswerableContent,
   parseChatwootMessages,
 } from "@/modules/chatwoot/messages";
@@ -51,6 +53,14 @@ function weSpoke(m: { messageType: string; private: boolean }): boolean {
   );
 }
 
+// A read this helper may judge by: a list, every row of it readable. A body that is not a list, or a
+// row the parser dropped, is a read that could not tell, and "could not tell" must not become "the
+// customer said nothing" (`chatwootMessageListLength`).
+function readWhole(raw: unknown): ChatwootMessageRow[] | null {
+  const rows = parseChatwootMessages(raw);
+  return chatwootMessageListLength(raw) === rows.length ? rows : null;
+}
+
 // The fork's `MessageFinder::CATCH_UP_LIMIT`: a batch this full may have more behind it.
 const HISTORY_BATCH = 100;
 
@@ -84,10 +94,10 @@ export async function closeIfNothingToAnswer(params: {
     );
     if (!row || ourSideHasSpoken(row)) return false;
 
-    const messages = parseChatwootMessages(
+    const messages = readWhole(
       await client.getMessages(conversationId, { after: 0 }),
     );
-    if (messages.length >= HISTORY_BATCH) return false;
+    if (messages === null || messages.length >= HISTORY_BATCH) return false;
     // The mirror row above is a snapshot from before these reads; a nudge or a reply sent while they
     // ran is on the history they return, and it means our side spoke after all.
     if (messages.some(weSpoke)) return false;
@@ -114,10 +124,11 @@ export async function closeIfNothingToAnswer(params: {
     // has. Closing first and reopening on a late arrival does not work: by then that message's flush
     // may already have settled against a resolved conversation.
     const seen = Math.max(...messages.map((m) => m.id));
-    const later = parseChatwootMessages(
+    const later = readWhole(
       await client.getMessages(conversationId, { after: seen }),
     );
     if (
+      later === null ||
       later.some(
         (m) => (m.messageType === "incoming" && !m.private) || weSpoke(m),
       )

@@ -775,6 +775,43 @@ describe.skipIf(!dbUp)(
       expect(late.toggles).toEqual([]);
     });
 
+    test("a history read that could not tell closes nothing", async () => {
+      // A body that is not a list, or a row the parser cannot read, on the full read or on the final
+      // re-read. Each is "could not tell", never "the customer said nothing".
+      const cases: Array<[number, (after: number) => unknown]> = [
+        [89_535, (after) => (after === 0 ? {} : undefined)],
+        [
+          89_536,
+          (after) =>
+            after === 0
+              ? { payload: [{}, { id: 2, content: "", message_type: 0 }] }
+              : undefined,
+        ],
+        [89_537, (after) => (after > 0 ? {} : undefined)],
+      ];
+      for (const [convId, bad] of cases) {
+        await seedConversation(convId);
+        const cw = chatwoot([{ id: 2, content: "" }]);
+        const base = cw.makeClient;
+        cw.makeClient = async () => {
+          const c = (await base()) as unknown as {
+            getMessages: (
+              id: number,
+              o?: { after?: number },
+            ) => Promise<unknown>;
+          };
+          const get = c.getMessages;
+          c.getMessages = async (id, o) => {
+            const r = o?.after != null ? bad(o.after) : undefined;
+            return r !== undefined ? r : get(id, o);
+          };
+          return c as unknown as ChatwootClient;
+        };
+        await flush(convId, cw, new NeverCalled());
+        expect(cw.toggles).toEqual([]);
+      }
+    });
+
     test("a private note from our side is not our side speaking", async () => {
       await seedConversation(89_534);
       const cw = chatwoot([

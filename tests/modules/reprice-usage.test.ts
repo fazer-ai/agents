@@ -110,6 +110,32 @@ describe("arguments", () => {
     ).toThrow(/--provider is required/);
   });
 
+  test("an empty model is a real target only for an openai-compatible server", () => {
+    expect(
+      parseRepriceArgs([
+        "--tenant",
+        "1",
+        "--provider",
+        "openai-compatible",
+        "--model",
+        "",
+      ]).model,
+    ).toBe("");
+    expect(() =>
+      parseRepriceArgs([
+        "--tenant",
+        "1",
+        "--provider",
+        "openai",
+        "--model",
+        "",
+      ]),
+    ).toThrow(/only an openai-compatible server/);
+    expect(() =>
+      parseRepriceArgs(["--tenant", "1", "--provider", "openai"]),
+    ).toThrow(/--model is required/);
+  });
+
   test("an unknown provider is refused up front", () => {
     expect(() =>
       parseRepriceArgs([
@@ -378,6 +404,7 @@ describe.skipIf(!dbUp)("re-pricing the ledger (issue #867)", () => {
     });
     try {
       const unpricedA = await seed({ model: "local-model", cost: null });
+      const namelessA = await seed({ model: "", cost: null });
       const unpricedB = await seed({
         tenant: tB,
         model: "local-model",
@@ -399,6 +426,34 @@ describe.skipIf(!dbUp)("re-pricing the ledger (issue #867)", () => {
         table: "tenant-override@2026-09-26T00:00:00.000Z",
       });
       expect(await read(unpricedB)).toEqual({ cost: null, table: OLD });
+      // A server with no model name: the ledger's empty model, priced by a price for "".
+      await suDb.tenant.update({
+        where: { id: tA },
+        data: {
+          settings: {
+            priceOverrides: {
+              ...block,
+              overrides: [{ ...block.overrides[0], model: "" }],
+            },
+          },
+        },
+      });
+      await runReprice(
+        suDb,
+        parseRepriceArgs([
+          "--tenant",
+          "all",
+          "--provider",
+          "openai-compatible",
+          "--model",
+          "",
+          "--apply",
+        ]),
+      );
+      expect(await read(namelessA)).toEqual({
+        cost: (0.01 + 0.004).toFixed(10),
+        table: "tenant-override@2026-09-26T00:00:00.000Z",
+      });
     } finally {
       await suDb.tenant.update({ where: { id: tA }, data: { settings: {} } });
     }

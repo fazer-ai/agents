@@ -39,7 +39,14 @@ export function parseRepriceArgs(argv: string[]): RepriceOptions {
   });
   if (!values.tenant) throw new UsageError("--tenant <id|all> is required");
   if (!values.provider) throw new UsageError("--provider is required");
-  if (!values.model) throw new UsageError("--model is required");
+  // An `openai-compatible` server that serves one model under no name writes `model: ""`, and a
+  // tenant's own price can name that empty model (issue #865), so an explicit empty value is a real
+  // target there; everywhere else it is a typo.
+  if (values.model === undefined) throw new UsageError("--model is required");
+  if (values.model === "" && values.provider !== "openai-compatible")
+    throw new UsageError(
+      '--model "" is only an openai-compatible server that serves one model under no name',
+    );
   let tenant: bigint | "all";
   if (values.tenant === "all") tenant = "all";
   else if (/^[1-9]\d*$/.test(values.tenant)) tenant = BigInt(values.tenant);

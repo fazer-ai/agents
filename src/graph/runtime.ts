@@ -3388,6 +3388,8 @@ async function closeIfNothingToAnswerDirect(
       base,
     },
     stage: "route",
+    // No job to retire on this path; the agent can still be switched off while the helper reads.
+    stillWanted: () => agentStillSpeaks(tenantId, loaded.agentId, base),
   });
 }
 

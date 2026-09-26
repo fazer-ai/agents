@@ -29,15 +29,24 @@ import { ourSideHasSpoken } from "@/modules/followups/eligibility";
 //   - our side never spoke here (the mirror row, the follow-up's own predicate). Where it did, the
 //     follow-up already covers the conversation, and closing would cut its ladder short;
 //   - the thread holds no incoming message that IS answerable, and no reaction. The caller's burst
-//     only saw messages above the watermark; this reads the whole page, so a message a previous turn
-//     left unanswered keeps the conversation open for whatever handles that;
+//     only saw messages above the watermark; this reads the WHOLE history (the catch-up read from the
+//     first id, which also carries every reaction), so a message a previous turn left unanswered keeps
+//     the conversation open for whatever handles that. The default page would not do: it is the last
+//     twenty, and a request older than that is exactly the one nobody answered. A history the read
+//     cannot hold in one batch is not proven blank, so it is left alone;
 //   - Chatwoot, read live, still has it `pending` with our bot (or nobody) holding it. An operator
-//     who took it, or an escalation that opened it, is never overruled.
+//     who took it, or an escalation that opened it, is never overruled;
+//   - the caller still wants it, asked right before the write (`stillWanted`): the reads above are
+//     waits a `/reset`, an agent switched off or the job's deadline can land inside, and none of the
+//     caller's own fences run after this point. Withdrawn closes nothing and says nothing.
 //
 // Recorded as `nothing_to_answer`, which the dashboard counts as a close by somebody other than the
 // agent: no model judged anything. The line is `info`, not `warn`: this is not a failure, and an
 // alert channel has nothing to act on. Best-effort and never throws: the caller's flush or turn has
 // already settled. A failed close is the exception, and says so at `warn`.
+// The fork's `MessageFinder::CATCH_UP_LIMIT`: a batch this full may have more behind it.
+const HISTORY_BATCH = 100;
+
 export async function closeIfNothingToAnswer(params: {
   client: ChatwootClient;
   conversationId: number;
@@ -48,6 +57,7 @@ export async function closeIfNothingToAnswer(params: {
   base: PrismaClient;
   flow: FlowContext;
   stage: "debounce" | "route";
+  stillWanted: () => Promise<boolean>;
 }): Promise<boolean> {
   const { client, conversationId, conversationDbId, tenantId, base } = params;
   if (conversationDbId === null) return false;
@@ -68,8 +78,9 @@ export async function closeIfNothingToAnswer(params: {
     if (!row || ourSideHasSpoken(row)) return false;
 
     const messages = parseChatwootMessages(
-      await client.getMessages(conversationId),
+      await client.getMessages(conversationId, { after: 0 }),
     );
+    if (messages.length >= HISTORY_BATCH) return false;
     const incoming = messages.filter(
       (m) => m.messageType === "incoming" && !m.private,
     );
@@ -86,6 +97,7 @@ export async function closeIfNothingToAnswer(params: {
     )
       return false;
 
+    if (!(await params.stillWanted())) return false;
     await client.toggleStatus(conversationId, "resolved");
     await recordResolutionOrigin({
       tenantId,

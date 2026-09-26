@@ -2781,6 +2781,12 @@ export async function flushDebounceJob(
           base,
         },
         stage: "debounce",
+        // The flush's own fences, asked again at the write: /reset retires the burst, the agent can be
+        // switched off, and the deadline can pass while the helper reads.
+        stillWanted: async () =>
+          !(await jobRetired(job, base)) &&
+          (await agentStillSpeaks(tenantId, ctx.loaded.agentId, base)) &&
+          !pastDeadline(),
       });
     }
     // NOTHING WAS WRITTEN and the burst is still owed: the turn found the thread occupied by another

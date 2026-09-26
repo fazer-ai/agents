@@ -96,6 +96,10 @@ function chatwoot(
     toggleFails?: boolean;
     // Runs inside every thread read: the wait a job deadline can land in.
     onRead?: () => void;
+    // Runs inside the live conversation read, the helper's last wait before it writes.
+    onLive?: () => Promise<void> | void;
+    // History older than the default page: only the full catch-up read (`after`) returns it.
+    older?: Msg[];
   } = {},
 ) {
   const state = {
@@ -108,20 +112,24 @@ function chatwoot(
   const client = {
     getMessages: async (_id: number, o?: { after?: number }) => {
       live.onRead?.();
-      return o && (o as { after?: number }).after != null
-        ? { payload: [] }
+      const after = o?.after;
+      return after != null
+        ? page([...(live.older ?? []), ...msgs].filter((m) => m.id > after))
         : page(msgs);
     },
-    getConversation: async (id: number) => ({
-      id,
-      status: state.status,
-      updated_at: 1_700_000_000.5,
-      inbox_id: INBOX,
-      meta: {
-        assignee_type: state.assigneeType,
-        assignee: { id: state.assigneeId, name: "x" },
-      },
-    }),
+    getConversation: async (id: number) => {
+      await live.onLive?.();
+      return {
+        id,
+        status: state.status,
+        updated_at: 1_700_000_000.5,
+        inbox_id: INBOX,
+        meta: {
+          assignee_type: state.assigneeType,
+          assignee: { id: state.assigneeId, name: "x" },
+        },
+      };
+    },
     toggleStatus: async (_id: number, status: string) => {
       if (live.toggleFails) throw new Error("chatwoot 500");
       toggles.push(status);
@@ -618,6 +626,86 @@ describe.skipIf(!dbUp)(
         where: { tenantId, stage: "route", level: "warn" },
       });
       expect(rows).toEqual([]);
+    });
+
+    test("a request older than the default page keeps the conversation open", async () => {
+      // The default page is the last twenty; the unanswered request sits behind it, and the blank
+      // messages on top say nothing about it.
+      await seedConversation(89_523, { handled: 30 });
+      const blanks = Array.from({ length: 20 }, (_, i) => ({
+        id: 31 + i,
+        content: "",
+      }));
+      const cw = chatwoot(blanks, {
+        older: [{ id: 1, content: "meu ingresso não chegou" }],
+      });
+      await flush(89_523, cw, new NeverCalled());
+      expect(cw.toggles).toEqual([]);
+    });
+
+    test("a history too long to read in one batch is not proven blank", async () => {
+      await seedConversation(89_524);
+      const cw = chatwoot([{ id: 200, content: "" }], {
+        older: Array.from({ length: 100 }, (_, i) => ({
+          id: 1 + i,
+          content: "",
+        })),
+      });
+      await flush(89_524, cw, new NeverCalled());
+      expect(cw.toggles).toEqual([]);
+    });
+
+    test("a /reset that lands while the helper reads closes nothing", async () => {
+      const conv = await seedConversation(89_525);
+      const cw = chatwoot([{ id: 2, content: "" }], {
+        onLive: async () => {
+          await suDb.schedulerJob.updateMany({
+            where: { tenantId, dedupeKey: debounceDedupeKey(threadOf(89_525)) },
+            data: { payload: { threadId: threadOf(89_525), cancelledAt: 1 } },
+          });
+        },
+      });
+      await flush(89_525, cw, new NeverCalled());
+      expect(cw.toggles).toEqual([]);
+      expect(await closeLines(conv.id)).toEqual([]);
+    });
+
+    test("an agent switched off while the helper reads closes nothing, on either path", async () => {
+      await seedConversation(89_526);
+      await seedConversation(89_527);
+      const off = async () => {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { enabled: false },
+        });
+      };
+      try {
+        const f = chatwoot([{ id: 2, content: "" }], { onLive: off });
+        await flush(89_526, f, new NeverCalled());
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { enabled: true },
+        });
+        const d = chatwoot([{ id: 2, content: "" }], { onLive: off });
+        await direct(89_527, d);
+        expect(f.toggles).toEqual([]);
+        expect(d.toggles).toEqual([]);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentDbId },
+          data: { enabled: true },
+        });
+      }
+    });
+
+    test("a deadline that passes while the helper reads closes nothing", async () => {
+      await seedConversation(89_528);
+      const deadline = new AbortController();
+      const cw = chatwoot([{ id: 2, content: "" }], {
+        onLive: () => deadline.abort(),
+      });
+      await flush(89_528, cw, new NeverCalled(), false, deadline.signal);
+      expect(cw.toggles).toEqual([]);
     });
 
     test("a close of ours counts as the agent side's, like the follow-up's", () => {

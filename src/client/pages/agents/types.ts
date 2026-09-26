@@ -78,6 +78,9 @@ export interface BehaviorRefusals {
   ttsNormalizeCredential: string | null;
   visionCredential: string | null;
   visionExtractionPrompt: string | null;
+  // Issue #859: the spoken-reply notice and the reply_as_text note.
+  ttsSpokenNoticeText: string | null;
+  ttsTextChoiceNote: string | null;
   contactAuthCredential: string | null;
   contactAuthDenyMessage: string | null;
   memoryCredential: string | null;

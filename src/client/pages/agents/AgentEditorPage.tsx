@@ -1079,6 +1079,8 @@ function AgentEditor() {
     sttEnabled: stt.enabled,
     ttsOn: tts.mode !== "never",
     ttsNormalize: tts.normalize,
+    ttsSpokenNoticeShown: tts.mode !== "never" && tts.spokenNotice,
+    ttsTextChoiceShown: tts.mode !== "never" && tts.textChoice,
     visionEnabled: vision.enabled,
     contactAuthEnabled: contactAuth.enabled,
     memoryCompactionEnabled: memory.compactionEnabled,
@@ -1195,6 +1197,9 @@ function AgentEditor() {
       vision.extractionPrompt.trim() !== DEFAULT_EXTRACTION_PROMPT
         ? vision.extractionPrompt.trim()
         : null,
+    // As `ttsSettingsFrom` stores them: trimmed, null when empty.
+    "tts.spokenNoticeText": tts.spokenNoticeText.trim() || null,
+    "tts.textChoiceNote": tts.textChoiceNote.trim() || null,
     "guardrails.customPolicy": guardrails.customPolicy,
     "guardrails.input.templateMessage": guardrails.input.templateMessage,
     "guardrails.output.templateMessage": guardrails.output.templateMessage,
@@ -4060,6 +4065,14 @@ function AgentEditor() {
                   visionExtractionPrompt: refusal.at(
                     "vision.extractionPrompt",
                     currentRef.current["vision.extractionPrompt"],
+                  ),
+                  ttsSpokenNoticeText: refusal.at(
+                    "tts.spokenNoticeText",
+                    currentRef.current["tts.spokenNoticeText"],
+                  ),
+                  ttsTextChoiceNote: refusal.at(
+                    "tts.textChoiceNote",
+                    currentRef.current["tts.textChoiceNote"],
                   ),
                   contactAuthCredential: refusal.at(
                     "settings.contactAuth.credentialRef",

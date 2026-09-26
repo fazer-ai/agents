@@ -84,6 +84,7 @@ const EVERY_BLOCK = {
   signature: { text: HUGE },
   vision: { extractionPrompt: HUGE },
   followUp: { steps: [{ instructions: HUGE }, { instructions: HUGE }] },
+  tts: { spokenNoticeText: HUGE, textChoiceNote: HUGE },
 };
 
 const collapseYielded = (path: string): string =>

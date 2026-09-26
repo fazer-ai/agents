@@ -117,6 +117,24 @@ const modelId = () =>
 // because that is how the field is cleared on purpose.
 const chatwootId = () => z.number().int().positive().nullable().optional();
 
+// BLANK IS WHAT THE READER THROWS AWAY, so the schema is where it gets declared. `readToolInstructions`
+// trims and returns null for an empty result, so a note of `""` or `"   "` is accepted by the write,
+// replaces whatever note was there, and then never reaches a tool description — the one outcome
+// docs/mcp.md says a caller cannot discover by trying, because what comes back is success.
+//
+// A PATTERN rather than a length: `minLength` would not catch `"   "`, and this is not the size rule
+// the contract forbids copying into zod ("type and choice, never size"). It refuses a KIND of value,
+// it is published faithfully (`\S` carries no flag to lose, unlike the /…/i case in docs/mcp.md), and
+// it diverges from no console path — all three fields are written by the editor as `.trim() || null`,
+// or with the key deleted (toolGuidance), so the console never produces the value this refuses.
+//
+// `followUps[].instructions` is deliberately NOT here: its stored default is `""` (see
+// modules/followups/settings.ts), the reader keeps it, and refusing it would break the round trip
+// this surface documents.
+const nonBlank = (message: string) => z.string().regex(/\S/, message);
+
+const toolNote = () => nonBlank("must not be blank; use null to clear it");
+
 const debounce = z.looseObject({
   enabled: z.boolean().optional(),
   windowSeconds: z
@@ -206,6 +224,23 @@ const tts = z.looseObject({
     .describe(
       "text from this many prices or 4+ digit numbers (2-50, default 3); null = off",
     ),
+  // Issue #859: what the model is told about a spoken reply. Both switches default to false.
+  spokenNotice: z
+    .boolean()
+    .optional()
+    .describe("tell the model when its reply will be spoken; default false"),
+  spokenNoticeText: toolNote()
+    .nullable()
+    .optional()
+    .describe("null = the default notice"),
+  textChoice: z
+    .boolean()
+    .optional()
+    .describe("offer the reply_as_text tool; default false"),
+  textChoiceNote: toolNote()
+    .nullable()
+    .optional()
+    .describe("note appended to reply_as_text"),
 });
 
 const vision = z.looseObject({
@@ -278,24 +313,6 @@ const grounding = z.looseObject({
     .optional()
     .describe("cosine ceiling for a knowledge hit; null = no filter"),
 });
-
-// BLANK IS WHAT THE READER THROWS AWAY, so the schema is where it gets declared. `readToolInstructions`
-// trims and returns null for an empty result, so a note of `""` or `"   "` is accepted by the write,
-// replaces whatever note was there, and then never reaches a tool description — the one outcome
-// docs/mcp.md says a caller cannot discover by trying, because what comes back is success.
-//
-// A PATTERN rather than a length: `minLength` would not catch `"   "`, and this is not the size rule
-// the contract forbids copying into zod ("type and choice, never size"). It refuses a KIND of value,
-// it is published faithfully (`\S` carries no flag to lose, unlike the /…/i case in docs/mcp.md), and
-// it diverges from no console path — all three fields are written by the editor as `.trim() || null`,
-// or with the key deleted (toolGuidance), so the console never produces the value this refuses.
-//
-// `followUps[].instructions` is deliberately NOT here: its stored default is `""` (see
-// modules/followups/settings.ts), the reader keeps it, and refusing it would break the round trip
-// this surface documents.
-const nonBlank = (message: string) => z.string().regex(/\S/, message);
-
-const toolNote = () => nonBlank("must not be blank; use null to clear it");
 
 const followUpStep = z.looseObject({
   delayValue: z.number().optional().describe("≥ 1, clamped"),

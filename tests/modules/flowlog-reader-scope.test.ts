@@ -211,7 +211,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   // #726: dois leitores novos, o carimbo provisorio da linha de `skip_reply` e a ausencia do fato do
   // turno num turno que nao decidiu silencio. #856: mais um, a linha `tts` da resposta que foi como
   // texto em vez de audio, escopada por tenant e conversa.
-  "tests/graph/runtime.test.ts": 26,
+  // #859: every line of one conversation, to prove the reply the model chose to send as text is in
+  // none of them.
+  "tests/graph/runtime.test.ts": 27,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/skip-handover.test.ts": 1,
   // #726: the helper that runs one tool call end to end, plus the case that asks WHEN the turn's
@@ -227,6 +229,8 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/channel-failure.test.ts": 1,
   // #841: the line a playground turn that failed unhandled leaves, read by the turn's own id.
   "tests/modules/playground-turn-failure.test.ts": 1,
+  // #859: the lines of one playground thread, read by its threadId.
+  "tests/modules/playground.test.ts": 1,
   "tests/modules/chatwoot-command-dropped.test.ts": 2,
   "tests/modules/chatwoot-gate-trail.test.ts": 1,
   "tests/modules/chatwoot-human-reply-takeover.test.ts": 1,

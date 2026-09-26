@@ -93,6 +93,11 @@ const TEXT_TARGETS: ReadonlyArray<{ match: RegExp } & EditorTarget> = [
   { match: /^guardrails\.input\./, tab: "guardrails", sectionId: "gr-input" },
   { match: /^guardrails\.output\./, tab: "guardrails", sectionId: "gr-output" },
   { match: /^vision\.extractionPrompt$/, tab: "behavior", sectionId: "vision" },
+  {
+    match: /^tts\.(spokenNoticeText|textChoiceNote)$/,
+    tab: "behavior",
+    sectionId: "tts",
+  },
   { match: /^followUp\.steps\[/, tab: "behavior", sectionId: "proactive" },
   // Not text caps: the other refusals an agent write names by a settings path. They are here for the
   // same reason the caps are -- so a refusal about one can take the operator to it -- and their
@@ -186,6 +191,10 @@ export interface EditorControlsShown {
   // TTS has no boolean: any mode other than "never" means audio replies are on.
   ttsOn: boolean;
   ttsNormalize: boolean;
+  // Each of the two texts of issue #859 sits behind audio being on AND its own switch, which is one
+  // name here because a field can only need one.
+  ttsSpokenNoticeShown: boolean;
+  ttsTextChoiceShown: boolean;
   visionEnabled: boolean;
   contactAuthEnabled: boolean;
   memoryCompactionEnabled: boolean;
@@ -249,6 +258,16 @@ const OWNED_FIELDS: readonly OwnedField[] = [
     field: "vision.extractionPrompt",
     tab: "behavior",
     needs: "visionEnabled",
+  },
+  {
+    field: "tts.spokenNoticeText",
+    tab: "behavior",
+    needs: "ttsSpokenNoticeShown",
+  },
+  {
+    field: "tts.textChoiceNote",
+    tab: "behavior",
+    needs: "ttsTextChoiceShown",
   },
   {
     field: "guardrails.customPolicy",

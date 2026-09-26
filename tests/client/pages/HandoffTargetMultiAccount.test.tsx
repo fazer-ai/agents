@@ -123,6 +123,8 @@ function renderContactAuth(
         ttsNormalizeCredential: null,
         visionCredential: null,
         visionExtractionPrompt: null,
+        ttsSpokenNoticeText: null,
+        ttsTextChoiceNote: null,
         contactAuthCredential: null,
         contactAuthDenyMessage: null,
         memoryCredential: null,

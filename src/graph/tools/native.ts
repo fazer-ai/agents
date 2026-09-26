@@ -374,6 +374,12 @@ export interface ToolCtx {
   // set_voice_preference description so the model knows the existing value before changing it.
   // true = audio, false = text, null/undefined = not set yet.
   contactVoiceReply?: boolean | null;
+  // Whether THIS turn's reply goes as a voice note once the stored preference is the given value
+  // (issue #859). Present on the turns that deliver a reply that can be spoken; set_voice_preference
+  // then tells the model how the reply it is writing will go out, because the preference it just
+  // saved applies to this very reply and a model told "voice note" at the start would otherwise
+  // write for the ear a reply that is sent as text, or the reverse.
+  replyIsAudioWith?: (voiceReply: boolean | null) => boolean;
   // IANA timezone for the get_current_time utility tool (the agent's BusinessHours.timezone,
   // falling back to DEFAULT_TIMEZONE).
   timezone?: string;
@@ -1896,9 +1902,14 @@ function setVoicePreferenceTool(ctx: ToolCtx) {
           data: { voiceReply: value },
         }),
       );
-      return preference === "default"
-        ? "Voice preference reset: replies now mirror what the customer sends (audio→audio, text→text)."
-        : `Voice preference saved: the customer prefers ${preference} replies.`;
+      const saved =
+        preference === "default"
+          ? "Voice preference reset: replies now mirror what the customer sends (audio→audio, text→text)."
+          : `Voice preference saved: the customer prefers ${preference} replies.`;
+      if (!ctx.replyIsAudioWith) return saved;
+      return `${saved} The reply you are writing now will be sent as ${
+        ctx.replyIsAudioWith(value) ? "a voice note" : "a text message"
+      }.`;
     },
     {
       name: "set_voice_preference",

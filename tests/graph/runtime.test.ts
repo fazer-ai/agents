@@ -40,6 +40,7 @@ import { runAgentTurn } from "@/graph/runtime";
 import { clearTurnOwning, markTurnOwning } from "@/graph/thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { HANDOFF_DONE_PREFIX } from "@/graph/tools/catalog";
+import { REPLY_AS_TEXT_TOOL } from "@/graph/tools/reply-as-text";
 import { withKeyedQueue } from "@/lib/locks";
 import type { TenantContext } from "@/lib/tenancy";
 import { computeConfigIssues } from "@/modules/agents/config-health";
@@ -57,6 +58,7 @@ import { createDocumentTemplate } from "@/modules/documents/templates";
 import { GuardrailHandoffFailedError } from "@/modules/guardrails/handoff";
 import { readGuardrailHealth } from "@/modules/guardrails/health";
 import { selectClosedPrefix } from "@/modules/memory/cut";
+import { SPOKEN_NOTICE_DEFAULT } from "@/modules/tts/settings-shared";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRow, flowLogRows } from "../utils/flowlog";
 import {
@@ -71,6 +73,7 @@ import {
   PromptCapturingModel,
   ResolveAndHandoffModel,
   ResolveThenReplyModel,
+  ScriptedCaptureModel,
   SendDocumentThenReplyModel,
   SendImageAndResolveModel,
   SendImageBatchModel,
@@ -4359,6 +4362,567 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(r.spoken).toEqual([]);
       },
       GATE_ON,
+    );
+  });
+
+  // Issue #859: the model is TOLD when its reply will be spoken, and may choose text for it. What it
+  // is told is a property of the request, so every test here reads the request the model received.
+  const NOTICE_ON = { spokenNotice: true };
+
+  const systemOf = (messages: BaseMessage[]) =>
+    messages
+      .filter((m) => m.getType() === "system")
+      .map((m) => String(m.content))
+      .join("\n\n");
+  const nonSystemOf = (messages: BaseMessage[]) =>
+    messages
+      .filter((m) => m.getType() !== "system")
+      .map((m) => JSON.stringify(m.content))
+      .join("\n");
+
+  async function voiceTurn(
+    conv: number,
+    model: ScriptedCaptureModel,
+    opts: {
+      audio: boolean;
+      checkpointer?: MemorySaver;
+      seed?: boolean;
+      // A second turn on the same conversation answers a NEW message; the same id is a redelivery.
+      messageId?: number;
+    },
+  ) {
+    if (opts.seed !== false) await seedConversation(conv, null);
+    const log: Array<{ kind: string; text: string; reply?: string }> = [];
+    const spoken: string[] = [];
+    const normalized: string[] = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: opts.audio
+        ? audioIncoming(conv)
+        : incoming({
+            conversationId: conv,
+            message: {
+              id: opts.messageId ?? 1,
+              content: "oi",
+              messageType: "incoming",
+              private: false,
+            },
+          }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: recordingAudioClient(log),
+        checkpointer: opts.checkpointer ?? new MemorySaver(),
+        ttsFetch: recordingTts(spoken),
+        normalizeSpeech: async (t: string) => {
+          normalized.push(t);
+          return t;
+        },
+      },
+    });
+    return { outcome, log, spoken, normalized };
+  }
+
+  async function seedWithVoiceReply(conv: number, voiceReply: boolean | null) {
+    const contact = await suDb.contact.create({
+      data: {
+        chatwootInstanceId: instanceId,
+        tenantId,
+        chatwootContactId: 85_900 + (conv % 1000),
+        name: "Contato 859",
+        voiceReply,
+      },
+      select: { id: true },
+    });
+    await suDb.conversation.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: conv,
+        status: "pending",
+        contactId: contact.id,
+        threadId: `${tenantId}:${instanceId}:${conv}`,
+        lastEventAt: new Date(),
+      },
+    });
+    return contact.id;
+  }
+
+  async function allTurnLines(conv: number) {
+    const c = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: conv },
+    });
+    return flowLogRows(suDb, { where: { tenantId, conversationId: c.id } });
+  }
+
+  test("an agent without the new keys reads the same prompt and tools on an audio turn (#859)", async () => {
+    await withTtsMirror(async () => {
+      const text = new ScriptedCaptureModel([{ reply: "Olá, tudo certo?" }]);
+      await voiceTurn(859_01, text, { audio: false });
+      const audio = new ScriptedCaptureModel([{ reply: "Olá, tudo certo?" }]);
+      const r = await voiceTurn(859_02, audio, { audio: true });
+      expect(systemOf(audio.seen[0] ?? [])).toBe(systemOf(text.seen[0] ?? []));
+      expect(systemOf(audio.seen[0] ?? [])).not.toContain(
+        SPOKEN_NOTICE_DEFAULT,
+      );
+      expect(audio.boundToolNames ?? []).not.toContain(REPLY_AS_TEXT_TOOL);
+      expect(r.log.map((m) => m.kind)).toEqual(["audio"]);
+    });
+  });
+
+  test("an audio turn ends the model's instructions with the notice, after the same prefix (#859)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const text = new ScriptedCaptureModel([{ reply: "Certo, anotado." }]);
+        await voiceTurn(859_03, text, { audio: false });
+        const audio = new ScriptedCaptureModel([{ reply: "Certo, anotado." }]);
+        const r = await voiceTurn(859_04, audio, { audio: true });
+        const req = audio.seen[0] ?? [];
+        // The first message is byte for byte the text turn's, and the notice comes after everything.
+        expect(String(req[0]?.content)).toBe(
+          String(text.seen[0]?.[0]?.content),
+        );
+        expect(systemOf(req)).toBe(
+          `${systemOf(text.seen[0] ?? [])}\n\n${SPOKEN_NOTICE_DEFAULT}`,
+        );
+        expect(String(req.at(-1)?.content)).toBe(SPOKEN_NOTICE_DEFAULT);
+        expect(req.at(-1)?.getType()).toBe("system");
+        expect(nonSystemOf(req)).not.toContain("mensagem de voz");
+        // A text turn of the same agent is told nothing.
+        expect(systemOf(text.seen[0] ?? [])).not.toContain(
+          SPOKEN_NOTICE_DEFAULT,
+        );
+        expect(r.log.map((m) => m.kind)).toEqual(["audio"]);
+      },
+      NOTICE_ON,
+    );
+  });
+
+  test("the operator's notice replaces the default, word for word (#859)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const m = new ScriptedCaptureModel([{ reply: "Certo." }]);
+        await voiceTurn(859_05, m, { audio: true });
+        const sys = systemOf(m.seen[0] ?? []);
+        expect(sys.endsWith("AVISO-859-A")).toBe(true);
+        expect(sys).not.toContain(SPOKEN_NOTICE_DEFAULT);
+      },
+      { ...NOTICE_ON, spokenNoticeText: "AVISO-859-A" },
+    );
+  });
+
+  test("a blank notice text falls back to the default instead of an empty block (#859)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const m = new ScriptedCaptureModel([{ reply: "Certo." }]);
+        await voiceTurn(859_06, m, { audio: true });
+        expect(String(m.seen[0]?.at(-1)?.content)).toBe(SPOKEN_NOTICE_DEFAULT);
+      },
+      { ...NOTICE_ON, spokenNoticeText: "   \n  " },
+    );
+  });
+
+  test("the notice is never stored: the next turn and the thread do not carry it (#859)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const cp = new MemorySaver();
+        const first = new ScriptedCaptureModel([{ reply: "Primeira." }]);
+        await voiceTurn(859_07, first, { audio: true, checkpointer: cp });
+        expect(systemOf(first.seen[0] ?? [])).toContain("AVISO-859-MEM");
+        const second = new ScriptedCaptureModel([{ reply: "Segunda." }]);
+        const r = await voiceTurn(859_07, second, {
+          audio: false,
+          checkpointer: cp,
+          seed: false,
+          messageId: 2,
+        });
+        const req = second.seen[0] ?? [];
+        // The history of the first turn is here, and the notice is not, in any role.
+        expect(nonSystemOf(req)).toContain("Primeira.");
+        expect(JSON.stringify(req.map((x) => x.content))).not.toContain(
+          "AVISO-859-MEM",
+        );
+        expect(r.log.map((x) => x.kind)).toEqual(["text"]);
+      },
+      { ...NOTICE_ON, spokenNoticeText: "AVISO-859-MEM" },
+    );
+  });
+
+  test("the notice is there exactly when the reply goes as a voice note (#859)", async () => {
+    const cases: Array<{
+      conv: number;
+      mode: "never" | "mirror" | "preference";
+      voiceReply?: boolean | null;
+      audio: boolean;
+      spoken: boolean;
+    }> = [
+      { conv: 859_11, mode: "never", audio: true, spoken: false },
+      { conv: 859_12, mode: "mirror", audio: false, spoken: false },
+      {
+        conv: 859_13,
+        mode: "preference",
+        voiceReply: true,
+        audio: false,
+        spoken: true,
+      },
+      {
+        conv: 859_14,
+        mode: "preference",
+        voiceReply: false,
+        audio: true,
+        spoken: false,
+      },
+      {
+        conv: 859_15,
+        mode: "preference",
+        voiceReply: null,
+        audio: true,
+        spoken: true,
+      },
+    ];
+    for (const c of cases) {
+      const agent = await suDb.agent.findFirstOrThrow({
+        where: { tenantId },
+        select: { id: true },
+      });
+      const key = await suDb.vaultEntry.findFirstOrThrow({
+        where: { tenantId, name: "llm-key" },
+        select: { id: true },
+      });
+      await suDb.agent.update({
+        where: { id: agent.id },
+        data: {
+          settings: {
+            split: { enabled: false },
+            tts: {
+              mode: c.mode,
+              provider: "openai",
+              credentialRef: `vault:${key.id}`,
+              spokenNotice: true,
+              spokenNoticeText: "AVISO-859-MOD",
+            },
+          },
+        },
+      });
+      try {
+        if (c.mode === "preference") {
+          await seedWithVoiceReply(c.conv, c.voiceReply ?? null);
+        }
+        const m = new ScriptedCaptureModel([{ reply: "Certo, anotado." }]);
+        const r = await voiceTurn(c.conv, m, {
+          audio: c.audio,
+          seed: c.mode !== "preference",
+        });
+        const told = systemOf(m.seen[0] ?? []).includes("AVISO-859-MOD");
+        const kinds = r.log.map((x) => x.kind);
+        expect({ conv: c.conv, told, kinds }).toEqual({
+          conv: c.conv,
+          told: c.spoken,
+          kinds: [c.spoken ? "audio" : "text"],
+        });
+      } finally {
+        await suDb.agent.update({
+          where: { id: agent.id },
+          data: { settings: { split: { enabled: false } } },
+        });
+      }
+    }
+  });
+
+  test("a channel that cannot take this provider's audio is never told voice (#859)", async () => {
+    const inbox = await suDb.inbox.create({
+      data: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootInboxId: 859,
+        name: "Instagram 859",
+        channelType: "Channel::Instagram",
+      },
+      select: { id: true },
+    });
+    try {
+      await withTtsMode(
+        "mirror",
+        async () => {
+          for (const [conv, inboxId, told] of [
+            [859_21, inbox.id, false],
+            [859_22, null, true],
+          ] as const) {
+            await suDb.conversation.create({
+              data: {
+                tenantId,
+                chatwootInstanceId: instanceId,
+                chatwootConversationId: conv,
+                status: "pending",
+                inboxId,
+                threadId: `${tenantId}:${instanceId}:${conv}`,
+                lastEventAt: new Date(),
+              },
+            });
+            const m = new ScriptedCaptureModel([{ reply: "Certo." }]);
+            const r = await voiceTurn(conv, m, { audio: true, seed: false });
+            expect({
+              conv,
+              told: systemOf(m.seen[0] ?? []).includes("AVISO-859-IG"),
+            }).toEqual({ conv, told });
+            if (!told) expect(r.log.map((x) => x.kind)).toEqual(["text"]);
+          }
+        },
+        {
+          ...NOTICE_ON,
+          spokenNoticeText: "AVISO-859-IG",
+          provider: "openrouter",
+          voice: "af_alloy",
+        },
+      );
+    } finally {
+      await suDb.conversation.deleteMany({
+        where: { tenantId, inboxId: inbox.id },
+      });
+      await suDb.inbox.delete({ where: { id: inbox.id } });
+    }
+  });
+
+  test("a preference changed mid-turn wins, says so in a tts line, and tells the model (#859)", async () => {
+    await withTtsMode(
+      "preference",
+      async () => {
+        const contactId = await seedWithVoiceReply(859_31, null);
+        const m = new ScriptedCaptureModel([
+          { call: "set_voice_preference", args: { preference: "text" } },
+          { reply: "Combinado, falo por texto." },
+        ]);
+        const r = await voiceTurn(859_31, m, { audio: true, seed: false });
+        expect(systemOf(m.seen[0] ?? [])).toContain("AVISO-859-PREF");
+        expect(r.log).toEqual([
+          { kind: "text", text: "Combinado, falo por texto." },
+        ]);
+        // The tool's answer is what tells the model the reply it is writing goes as text.
+        expect(nonSystemOf(m.seen[1] ?? [])).toContain(
+          "will be sent as a text message",
+        );
+        const tts = (await allTurnLines(859_31)).filter(
+          (l) => l.stage === "tts",
+        );
+        expect(tts.map((l) => l.detail)).toContainEqual({
+          sentAsText: "contact_preference",
+        });
+        const c = await suDb.contact.findUniqueOrThrow({
+          where: { id: contactId },
+          select: { voiceReply: true },
+        });
+        expect(c.voiceReply).toBe(false);
+        // And the next turn, a text one, is told nothing and answered in text.
+        const next = new ScriptedCaptureModel([{ reply: "Oi de novo." }]);
+        const r2 = await voiceTurn(859_31, next, {
+          audio: false,
+          seed: false,
+          messageId: 2,
+        });
+        expect(systemOf(next.seen[0] ?? [])).not.toContain("AVISO-859-PREF");
+        expect(r2.log.map((x) => x.kind)).toEqual(["text"]);
+      },
+      { ...NOTICE_ON, spokenNoticeText: "AVISO-859-PREF" },
+    );
+  });
+
+  const CHOICE_ON = { ...NOTICE_ON, textChoice: true };
+
+  test("the model chooses text: nothing is synthesized and one tts line says so (#859)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const reply = `${PRICE_TABLE}\n\nREPLY-859`;
+        const m = new ScriptedCaptureModel([
+          { call: REPLY_AS_TEXT_TOOL },
+          { reply },
+        ]);
+        const r = await voiceTurn(859_41, m, { audio: true });
+        expect(r.outcome).toBe("posted");
+        expect(r.log).toEqual([{ kind: "text", text: reply }]);
+        expect(r.spoken).toEqual([]);
+        expect(r.normalized).toEqual([]);
+        const lines = await allTurnLines(859_41);
+        expect(
+          lines
+            .filter((l) => l.stage === "tts")
+            .map(({ level, status, detail }) => ({ level, status, detail })),
+        ).toEqual([
+          {
+            level: "info",
+            status: "skipped",
+            detail: { sentAsText: "model_choice" },
+          },
+        ]);
+        expect(
+          JSON.stringify(lines, (_k, v) =>
+            typeof v === "bigint" ? String(v) : v,
+          ),
+        ).not.toContain("REPLY-859");
+      },
+      CHOICE_ON,
+    );
+  });
+
+  // Codex review of #879: once the reply goes as text, the rounds after the change must not read an
+  // instruction that says it is a voice note (no lists, no formatting), which is exactly what the
+  // model chose text to write.
+  test("after the model chooses text, the next round is no longer told voice (#859)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const m = new ScriptedCaptureModel([
+          { call: REPLY_AS_TEXT_TOOL },
+          { reply: "A: 10\nB: 20" },
+        ]);
+        await voiceTurn(859_51, m, { audio: true });
+        expect(systemOf(m.seen[0] ?? [])).toContain("AVISO-859-R");
+        expect(systemOf(m.seen[1] ?? [])).not.toContain("AVISO-859-R");
+        // Nothing before the notice moved: the first message is the same bytes in both rounds.
+        expect(String(m.seen[1]?.[0]?.content)).toBe(
+          String(m.seen[0]?.[0]?.content),
+        );
+      },
+      { ...CHOICE_ON, spokenNoticeText: "AVISO-859-R" },
+    );
+  });
+
+  test("after the customer asks for text mid-turn, the next round is no longer told voice (#859)", async () => {
+    await withTtsMode(
+      "preference",
+      async () => {
+        await seedWithVoiceReply(859_52, null);
+        const m = new ScriptedCaptureModel([
+          { call: "set_voice_preference", args: { preference: "text" } },
+          { reply: "Combinado." },
+        ]);
+        await voiceTurn(859_52, m, { audio: true, seed: false });
+        expect(systemOf(m.seen[0] ?? [])).toContain("AVISO-859-P2");
+        expect(systemOf(m.seen[1] ?? [])).not.toContain("AVISO-859-P2");
+      },
+      { ...NOTICE_ON, spokenNoticeText: "AVISO-859-P2" },
+    );
+  });
+
+  test("the tool is offered on text and audio turns alike, with the operator's note (#859)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const text = new ScriptedCaptureModel([{ reply: "Oi!" }]);
+        await voiceTurn(859_42, text, { audio: false });
+        const audio = new ScriptedCaptureModel([{ reply: "Oi!" }]);
+        await voiceTurn(859_43, audio, { audio: true });
+        expect(text.boundToolNames).toContain(REPLY_AS_TEXT_TOOL);
+        expect(audio.boundToolNames).toEqual(text.boundToolNames);
+        const desc = text.boundTools.find((t) => t.name === REPLY_AS_TEXT_TOOL);
+        expect(desc?.description).toContain("NOTA-859-A");
+        // The toolset is identical and so is the prompt up to the notice.
+        expect(String(audio.seen[0]?.[0]?.content)).toBe(
+          String(text.seen[0]?.[0]?.content),
+        );
+      },
+      { ...CHOICE_ON, textChoiceNote: "NOTA-859-A" },
+    );
+  });
+
+  test("the tool switched off is not offered, whatever its note says (#859)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const m = new ScriptedCaptureModel([{ reply: "Seguem as opções." }]);
+        const r = await voiceTurn(859_44, m, { audio: true });
+        expect(m.boundToolNames ?? []).not.toContain(REPLY_AS_TEXT_TOOL);
+        expect(JSON.stringify(m.boundTools)).not.toContain("NOTA-859-OFF");
+        expect(r.log.map((x) => x.kind)).toEqual(["audio"]);
+      },
+      { ...NOTICE_ON, textChoiceNote: "NOTA-859-OFF" },
+    );
+  });
+
+  test("an agent that never sends audio is not offered the tool (#859)", async () => {
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true },
+    });
+    await suDb.agent.update({
+      where: { id: agent.id },
+      data: {
+        settings: {
+          split: { enabled: false },
+          tts: { mode: "never", textChoice: true, spokenNotice: true },
+        },
+      },
+    });
+    try {
+      const m = new ScriptedCaptureModel([{ reply: "Oi." }]);
+      await voiceTurn(859_45, m, { audio: true });
+      expect(m.boundToolNames ?? []).not.toContain(REPLY_AS_TEXT_TOOL);
+      expect(systemOf(m.seen[0] ?? [])).not.toContain(SPOKEN_NOTICE_DEFAULT);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agent.id },
+        data: { settings: { split: { enabled: false } } },
+      });
+    }
+  });
+
+  test("the #856 gate still catches a table the model wrote for the ear anyway (#859)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const m = new ScriptedCaptureModel([{ reply: PRICE_TABLE }]);
+        const r = await voiceTurn(859_46, m, { audio: true });
+        expect(systemOf(m.seen[0] ?? [])).toContain(SPOKEN_NOTICE_DEFAULT);
+        expect(r.log).toEqual([{ kind: "text", text: PRICE_TABLE }]);
+        expect((await ttsLines(859_46)).map((l) => l.detail)).toEqual([
+          { sentAsText: "list", value: 3, limit: 3 },
+        ]);
+      },
+      { ...CHOICE_ON, ...GATE_ON },
+    );
+  });
+
+  test("the tool called twice sends one text and writes one line (#859)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const m = new ScriptedCaptureModel([
+          { call: REPLY_AS_TEXT_TOOL },
+          { call: REPLY_AS_TEXT_TOOL },
+          { reply: "Tabela: A 10, B 20" },
+        ]);
+        const r = await voiceTurn(859_47, m, { audio: true });
+        expect(r.outcome).toBe("posted");
+        expect(r.log).toEqual([{ kind: "text", text: "Tabela: A 10, B 20" }]);
+        expect((await ttsLines(859_47)).map((l) => l.detail)).toEqual([
+          { sentAsText: "model_choice" },
+        ]);
+      },
+      CHOICE_ON,
+    );
+  });
+
+  test("the tool on a text turn changes nothing (#859)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const m = new ScriptedCaptureModel([
+          { call: REPLY_AS_TEXT_TOOL },
+          { reply: "Oi!" },
+        ]);
+        const r = await voiceTurn(859_48, m, { audio: false });
+        expect(r.outcome).toBe("posted");
+        expect(r.log).toEqual([{ kind: "text", text: "Oi!" }]);
+        expect(r.spoken).toEqual([]);
+        expect(await ttsLines(859_48)).toEqual([]);
+      },
+      CHOICE_ON,
     );
   });
 

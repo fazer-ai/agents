@@ -3354,14 +3354,20 @@ async function closeIfNothingToAnswerDirect(
       select: { agentId: true },
     });
     if (!inbox?.agentId) return null;
-    return loadAgentConfig(db, {
-      tenantId,
-      instanceId,
-      conversationId,
-      agentId: inbox.agentId,
-      threadId,
-      lastIncomingAt: params.event.message?.createdAt ?? null,
-    });
+    // No model runs here, so no experiment variant is resolved: resolving one inserts the thread's
+    // assignment, and a conversation that never saw the tested prompt would join its denominator.
+    return loadAgentConfig(
+      db,
+      {
+        tenantId,
+        instanceId,
+        conversationId,
+        agentId: inbox.agentId,
+        threadId,
+        lastIncomingAt: params.event.message?.createdAt ?? null,
+      },
+      { skipExperiment: true },
+    );
   });
   if (!loaded) return;
   const client = await loadChatwootClient(tenantId, instanceId, {

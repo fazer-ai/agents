@@ -98,19 +98,19 @@ export async function closeIfNothingToAnswer(params: {
       return false;
 
     if (!(await params.stillWanted())) return false;
-    await client.toggleStatus(conversationId, "resolved");
-    // A message that landed after the history read was created on a PENDING conversation, so
-    // Chatwoot did not reopen for it, and its own flush would now find the conversation resolved and
-    // stand down: the customer's words closed over. Read past what was judged and, if the customer
-    // spoke, put the conversation back; its flush answers it.
+    // The supersede re-read, the same one the reply's post gate makes: a message that landed after the
+    // history read is answerable work for its own flush, and closing now would bury it (it was created
+    // on a PENDING conversation, so Chatwoot does not reopen for it). Asked last, right before the
+    // write, so what is left is the same read-to-write gap every close and every post in the runtime
+    // has. Closing first and reopening on a late arrival does not work: by then that message's flush
+    // may already have settled against a resolved conversation.
     const seen = Math.max(...messages.map((m) => m.id));
-    const after = parseChatwootMessages(
+    const later = parseChatwootMessages(
       await client.getMessages(conversationId, { after: seen }),
     );
-    if (after.some((m) => m.messageType === "incoming" && !m.private)) {
-      await client.toggleStatus(conversationId, "pending");
+    if (later.some((m) => m.messageType === "incoming" && !m.private))
       return false;
-    }
+    await client.toggleStatus(conversationId, "resolved");
     await recordResolutionOrigin({
       tenantId,
       conversation: {

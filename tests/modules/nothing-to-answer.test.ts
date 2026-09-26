@@ -708,7 +708,7 @@ describe.skipIf(!dbUp)(
       expect(cw.toggles).toEqual([]);
     });
 
-    test("a message that lands after the history read puts the conversation back", async () => {
+    test("a message that lands after the history read keeps the conversation open", async () => {
       const conv = await seedConversation(89_529);
       const msgs: Msg[] = [{ id: 2, content: "" }];
       const cw = chatwoot(msgs, {
@@ -717,10 +717,41 @@ describe.skipIf(!dbUp)(
         },
       });
       await flush(89_529, cw, new NeverCalled());
-      expect(cw.toggles).toEqual(["resolved", "pending"]);
+      expect(cw.toggles).toEqual([]);
       expect(cw.state.status).toBe("pending");
       expect(await resolvedBy(89_529)).toBeNull();
       expect(await closeLines(conv.id)).toEqual([]);
+    });
+
+    test("the direct path's close joins no experiment: no model ran", async () => {
+      await seedConversation(89_530);
+      const exp = await suDb.experiment.create({
+        data: {
+          tenantId,
+          agentId: agentDbId,
+          name: "tom",
+          enabled: true,
+          variants: [
+            { key: "a", systemPrompt: "A" },
+            { key: "b", systemPrompt: "B" },
+          ],
+        },
+        select: { id: true },
+      });
+      try {
+        const cw = chatwoot([{ id: 2, content: "" }]);
+        await direct(89_530, cw);
+        expect(cw.toggles).toEqual(["resolved"]);
+        const assigned = await suDb.promptVariantAssignment.count({
+          where: { tenantId, experimentId: exp.id },
+        });
+        expect(assigned).toBe(0);
+      } finally {
+        await suDb.promptVariantAssignment.deleteMany({
+          where: { tenantId, experimentId: exp.id },
+        });
+        await suDb.experiment.delete({ where: { id: exp.id } });
+      }
     });
 
     test("a close of ours counts as the agent side's, like the follow-up's", () => {

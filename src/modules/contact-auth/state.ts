@@ -219,19 +219,22 @@ export function mediaAlreadyAdmitted(
   return true;
 }
 
-// A refusal whose write to the conversation failed, kept so this process still honours it. Keyed by
-// conversation, holding the newest refused message id, like the column it stands in for.
+// A refusal not yet on the conversation row: held from before the write until it lands, and for good
+// when it never does. Keyed by conversation, holding the newest refused message id. Never evicted:
+// an entry is the only record of its refusal.
 const mediaRefusedHere = new Map<string, number>();
 
 export function rememberMediaRefusal(key: string, messageId: number): void {
-  if (mediaRefusedHere.size >= MAX_ENTRIES && !mediaRefusedHere.has(key)) {
-    const first = mediaRefusedHere.keys().next().value;
-    if (first !== undefined) mediaRefusedHere.delete(first);
-  }
   mediaRefusedHere.set(
     key,
     Math.max(mediaRefusedHere.get(key) ?? 0, messageId),
   );
+}
+
+// The write landed: the row now covers this refusal, unless a newer one is still pending.
+export function forgetMediaRefusal(key: string, messageId: number): void {
+  const held = mediaRefusedHere.get(key);
+  if (held !== undefined && held <= messageId) mediaRefusedHere.delete(key);
 }
 
 export function mediaRefusedHereThrough(key: string): number | null {

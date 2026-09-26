@@ -548,7 +548,12 @@ async function fillMissingVisuals(args: {
   // `extractMessageVisuals` faz). O paralelo que importa é o de arquivos da mesma mensagem, que é
   // onde o cliente anexa o comprovante, o documento e o print de uma vez; disparar as mensagens
   // todas juntas multiplicaria o teto por mensagem sem nenhum ganho de latência que o cliente veja.
-  for (const m of abriveis) {
+  for (const [i, m] of abriveis.entries()) {
+    // NOTE: A refusal can land while an earlier message is being read.
+    if (i > 0) {
+      const agora = await refusalMarkOrClosed(args);
+      if (agora !== null && m.id <= agora) continue;
+    }
     try {
       const lido = await extractMessageVisuals({
         tenantId: args.tenantId,

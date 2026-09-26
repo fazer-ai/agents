@@ -15,7 +15,11 @@ import { mediaAnnotationFor } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
-import { clearContactAuthState } from "@/modules/contact-auth/state";
+import { mediaRefusalKey } from "@/modules/contact-auth/media-refusal";
+import {
+  clearContactAuthState,
+  mediaRefusedHereThrough,
+} from "@/modules/contact-auth/state";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // With the contact authorization gate on, no media of an incoming message reaches the STT or vision
@@ -64,8 +68,13 @@ const inboxDb = new Map<number, bigint>();
 const providers = { stt: 0, vision: 0, auth: 0 };
 const authAnswers: Array<boolean | (() => Promise<boolean>)> = [];
 
+// Runs once inside the next STT call, to change the world while the provider is busy.
+let duringStt: (() => Promise<void>) | null = null;
 const sttFetch = (async () => {
   providers.stt += 1;
+  const side = duringStt;
+  duringStt = null;
+  if (side) await side();
   return new Response(JSON.stringify({ text: TRANSCRIPT }), {
     status: 200,
     headers: { "content-type": "application/json" },
@@ -347,6 +356,7 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
     providers.vision = 0;
     providers.auth = 0;
     authAnswers.length = 0;
+    duringStt = null;
   });
 
   afterAll(async () => {
@@ -699,6 +709,63 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
     expect(providers.auth).toBe(0);
     expect(providers.stt).toBe(0);
     expect(providers.vision).toBe(0);
+  });
+
+  test("a refusal that lands while the voice note is transcribed stops the image of the same message", async () => {
+    await seedConversation(8825, INBOX_GATED);
+    const id = 74_000;
+    authAnswers.push(true);
+    duringStt = async () => {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: 8825 },
+        data: { mediaRefusedThroughMessageId: id + 1 },
+      });
+    };
+    await deliver({
+      convId: 8825,
+      chatwootInboxId: INBOX_GATED,
+      humanHeld: true,
+      messageId: id,
+    });
+    expect(providers.stt).toBe(1);
+    expect(providers.vision).toBe(0);
+  });
+
+  test("a refusal is honoured from before its write lands, and let go once the row holds it", async () => {
+    await seedConversation(8826, INBOX_GATED);
+    const conv = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 8826 },
+      select: { id: true },
+    });
+    const key = mediaRefusalKey(tenantId, conv.id);
+    await suDb.$executeRawUnsafe(`CREATE OR REPLACE FUNCTION cam_refusal_slow() RETURNS trigger AS $$
+      BEGIN PERFORM pg_sleep(0.6); RETURN NEW; END $$ LANGUAGE plpgsql`);
+    await suDb.$executeRawUnsafe(`CREATE TRIGGER cam_refusal_slow BEFORE UPDATE OF media_refused_through_message_id
+      ON conversations FOR EACH ROW WHEN (NEW.chatwoot_conversation_id = 8826) EXECUTE FUNCTION cam_refusal_slow()`);
+    try {
+      authAnswers.push(false);
+      const id = 75_000;
+      const pending = deliver({
+        convId: 8826,
+        chatwootInboxId: INBOX_GATED,
+        messageId: id,
+      });
+      let seen: number | null = null;
+      for (let i = 0; i < 40 && seen === null; i++) {
+        await Bun.sleep(10);
+        seen = mediaRefusedHereThrough(key);
+      }
+      expect(seen).toBe(id);
+      await pending;
+      expect(mediaRefusedHereThrough(key)).toBeNull();
+    } finally {
+      await suDb.$executeRawUnsafe(
+        "DROP TRIGGER IF EXISTS cam_refusal_slow ON conversations",
+      );
+      await suDb.$executeRawUnsafe(
+        "DROP FUNCTION IF EXISTS cam_refusal_slow()",
+      );
+    }
   });
 
   test("with STT and vision off, the gate is not asked about media nobody would read", async () => {

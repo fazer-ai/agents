@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
   clearContactAuthState,
+  forgetMediaRefusal,
   mediaAdmissionKey,
   mediaAlreadyAdmitted,
   mediaRefusedHereThrough,
@@ -35,5 +36,18 @@ describe("media admission memory", () => {
     rememberMediaRefusal("1:2", 40);
     expect(mediaRefusedHereThrough("1:2")).toBe(50);
     expect(mediaRefusedHereThrough("1:3")).toBeNull();
+  });
+
+  test("a refusal kept in process is never evicted", () => {
+    for (let i = 0; i < 10_050; i++) rememberMediaRefusal(`1:${i}`, 7);
+    expect(mediaRefusedHereThrough("1:0")).toBe(7);
+  });
+
+  test("a landed write lets go only of what it covers", () => {
+    rememberMediaRefusal("1:2", 50);
+    forgetMediaRefusal("1:2", 40);
+    expect(mediaRefusedHereThrough("1:2")).toBe(50);
+    forgetMediaRefusal("1:2", 50);
+    expect(mediaRefusedHereThrough("1:2")).toBeNull();
   });
 });

@@ -1925,17 +1925,26 @@ export async function runEagerMedia(
     !n.message.attachmentsUnread &&
     !n.message.bodyRead;
   // NOTE: Asked at most once, and only once a provider config resolved.
+  // NOTE: The verdict is asked once; the refusal mark is re-read before each later extraction, since
+  // a newer message may be refused while the first one runs.
   let admittedMemo: boolean | null = null;
   const admitted = async (): Promise<boolean> => {
-    admittedMemo ??= await mediaAdmitted(
-      tenantId,
-      instanceId,
-      n,
-      chatwootInboxId,
-      base,
-      owner,
+    if (admittedMemo === null) {
+      admittedMemo = await mediaAdmitted(
+        tenantId,
+        instanceId,
+        n,
+        chatwootInboxId,
+        base,
+        owner,
+      );
+      return admittedMemo;
+    }
+    if (!admittedMemo || owner.conversationId === null) return admittedMemo;
+    return !refusedCovers(
+      await mediaRefusedThrough(tenantId, owner.conversationId, base),
+      n.message?.id,
     );
-    return admittedMemo;
   };
   if (audio && !n.message.transcribedText) {
     if (audio.transcribedText) {

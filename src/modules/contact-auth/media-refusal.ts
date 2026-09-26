@@ -2,6 +2,7 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
+  forgetMediaRefusal,
   mediaRefusedHereThrough,
   rememberMediaRefusal,
 } from "@/modules/contact-auth/state";
@@ -27,6 +28,8 @@ export async function recordMediaRefusal(
 ): Promise<void> {
   if (conversationDbId === null || messageId == null) return;
   const nap = sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const key = mediaRefusalKey(tenantId, conversationDbId);
+  rememberMediaRefusal(key, messageId);
   let lastErr: unknown;
   for (let attempt = 1; attempt <= WRITE_ATTEMPTS; attempt++) {
     try {
@@ -38,13 +41,13 @@ export async function recordMediaRefusal(
           SET media_refused_through_message_id = GREATEST(COALESCE(media_refused_through_message_id, 0), ${messageId}::bigint)
           WHERE id = ${conversationDbId} AND tenant_id = ${tenantId}`,
       );
+      forgetMediaRefusal(key, messageId);
       return;
     } catch (err) {
       lastErr = err;
       if (attempt < WRITE_ATTEMPTS) await nap(WRITE_BACKOFF_MS * attempt);
     }
   }
-  rememberMediaRefusal(mediaRefusalKey(tenantId, conversationDbId), messageId);
   logger.error(
     "chatwoot: the media refusal of message %d (conv=%s) was not recorded in %d attempts; this process still honours it, a restart does not: %s",
     messageId,

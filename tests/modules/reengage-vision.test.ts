@@ -581,6 +581,45 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
     });
   });
 
+  test("uma recusa que chega enquanto uma mensagem é lida para a leitura das seguintes", async () => {
+    await comCredencial(async () => {
+      const id = await seedConversation(955);
+      clearMediaAnnotations();
+      const sent: Array<[number, string]> = [];
+      const metaEscrita: Array<[number, string]> = [];
+      const leitor = visionFetch(["Print 1.", "Print 2."]);
+      const recusaNoMeio = (async (...args: Parameters<typeof fetch>) => {
+        await suDb.conversation.update({
+          where: { id },
+          data: { mediaRefusedThroughMessageId: 2 },
+        });
+        return leitor(...args);
+      }) as unknown as typeof fetch;
+
+      const res = await reengageConversation(
+        ctx(),
+        id,
+        {
+          makeModel: fakeModel,
+          makeClient: stubComAnexos({
+            page: page([
+              { id: 1, content: "", anexos: [{ id: 11 }] },
+              { id: 2, content: "", anexos: [{ id: 21 }] },
+            ]),
+            sent,
+            metaEscrita,
+          }),
+          visionFetch: recusaNoMeio,
+          checkpointer: new MemorySaver(),
+        },
+        appDb,
+      );
+
+      expect(res.outcome).toBe("posted");
+      expect(chamadasDoProvedor.n).toBe(1);
+    });
+  });
+
   test("imagem e documento na mesma mensagem: os dois chegam ao modelo", async () => {
     await comCredencial(async () => {
       const id = await seedConversation(944);

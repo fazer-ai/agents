@@ -161,6 +161,8 @@ export const RESOLUTION_ORIGINS = [
   "redirect_closing",
   /** An operator resolving from our console. */
   "console",
+  /** A new conversation whose only message had nothing to answer, closed without a turn (#895). */
+  "nothing_to_answer",
   /** Backfilled by the migration: already resolved before the origin was recorded. */
   "legacy_unknown",
 ] as const;
@@ -174,7 +176,7 @@ export type ResolutionOrigin = (typeof RESOLUTION_ORIGINS)[number];
  * `shouldBotHandle` before an operator event may speak into a resolved conversation (issue #818).
  */
 const CLOSED_BY_THE_AGENT_SIDE: ReadonlySet<string> = new Set<ResolutionOrigin>(
-  ["agent", "followup_abandonment", "redirect_closing"],
+  ["agent", "followup_abandonment", "redirect_closing", "nothing_to_answer"],
 );
 
 export function closedByTheAgentSide(

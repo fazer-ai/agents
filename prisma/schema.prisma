@@ -789,8 +789,8 @@ model Conversation {
   // real name instead of "Human #id". NULL when unassigned or assigned to a bot.
   assigneeName                 String?   @map("assignee_name")
   // Who closed this conversation, recorded at the moment WE close it: "agent" (the
-  // resolve_conversation tool), "followup_abandonment", "redirect_closing", "console", or
-  // "legacy_unknown" for a row the migration found already resolved. NULL = not resolved, or
+  // resolve_conversation tool), "followup_abandonment", "redirect_closing", "console",
+  // "nothing_to_answer", or "legacy_unknown" for a row the migration found already resolved. NULL = not resolved, or
   // resolved by something outside our code (an operator in the Chatwoot UI, an automation rule,
   // `auto_resolve_after`) — none of which reach us, which is why the dashboard reads a recorded
   // origin instead of inferring one from status + assignee. Cleared whenever the mirror applies a

@@ -41,6 +41,7 @@ import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import { withAuthContextSection } from "@/modules/contact-auth/context";
 import { recordConversationError } from "@/modules/conversations/error";
+import { closeIfNothingToAnswer } from "@/modules/conversations/nothing-to-answer";
 import {
   type ObservedConversation,
   observeBeforeClose,
@@ -3328,6 +3329,68 @@ export interface RunAgentTurnParams {
   authContext?: AuthContext | null;
 }
 
+// NOTHING TO ANSWER, on the direct path (issue #895). The message renders to nothing, so no turn
+// runs, and the word stays `skipped`, which the webhook's settlement already reads. What is new is
+// the conversation: on one our side never spoke in, the flush's helper closes it. It needs the agent
+// loaded first, so a switched-off or monitoring agent (both refused by the config load) and an inbox
+// with no agent close nothing, exactly as they answer nothing.
+async function closeIfNothingToAnswerDirect(
+  params: RunAgentTurnParams,
+  conversationId: number,
+  inboxId: number,
+): Promise<void> {
+  const { tenantId, instanceId } = params;
+  const base = params.base ?? basePrisma;
+  const threadId = chatwootThreadId(tenantId, instanceId, conversationId);
+  const loaded = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+    const inbox = await db.inbox.findUnique({
+      where: {
+        tenantId_chatwootInstanceId_chatwootInboxId: {
+          tenantId,
+          chatwootInstanceId: instanceId,
+          chatwootInboxId: inboxId,
+        },
+      },
+      select: { agentId: true },
+    });
+    if (!inbox?.agentId) return null;
+    return loadAgentConfig(db, {
+      tenantId,
+      instanceId,
+      conversationId,
+      agentId: inbox.agentId,
+      threadId,
+      lastIncomingAt: params.event.message?.createdAt ?? null,
+    });
+  });
+  if (!loaded) return;
+  const client = await loadChatwootClient(tenantId, instanceId, {
+    base,
+    makeClient: params.deps?.makeClient,
+    botToken: loaded.agentBotToken ?? undefined,
+  });
+  await closeIfNothingToAnswer({
+    client,
+    conversationId,
+    conversationDbId: loaded.conversationDbId,
+    ourAgentBotId: loaded.agentBotId ?? params.agentBotId,
+    tenantId,
+    instanceId,
+    base,
+    flow: {
+      tenantId,
+      turnId: crypto.randomUUID(),
+      source: "inbox",
+      conversationId: loaded.conversationDbId,
+      agentId: loaded.agentId,
+      inboxId: loaded.inboxDbId,
+      threadId,
+      base,
+    },
+    stage: "route",
+  });
+}
+
 // Direct (no-debounce) entry: one incoming message → resolve the inbox's Agent → run the turn.
 export async function runAgentTurn(
   params: RunAgentTurnParams,
@@ -3342,7 +3405,10 @@ export async function runAgentTurn(
   // shared with the spend-ceiling gate, which has to ask this same question before it refuses.
   const renderable = incomingRenderable(n);
   let text = renderInboundMessage(renderable);
-  if (!text) return "skipped";
+  if (!text) {
+    await closeIfNothingToAnswerDirect(params, n.conversationId, n.inboxId);
+    return "skipped";
+  }
   const conversationId = n.conversationId;
   const inboxId = n.inboxId;
   const threadId = chatwootThreadId(tenantId, instanceId, conversationId);

@@ -99,6 +99,18 @@ export async function closeIfNothingToAnswer(params: {
 
     if (!(await params.stillWanted())) return false;
     await client.toggleStatus(conversationId, "resolved");
+    // A message that landed after the history read was created on a PENDING conversation, so
+    // Chatwoot did not reopen for it, and its own flush would now find the conversation resolved and
+    // stand down: the customer's words closed over. Read past what was judged and, if the customer
+    // spoke, put the conversation back; its flush answers it.
+    const seen = Math.max(...messages.map((m) => m.id));
+    const after = parseChatwootMessages(
+      await client.getMessages(conversationId, { after: seen }),
+    );
+    if (after.some((m) => m.messageType === "incoming" && !m.private)) {
+      await client.toggleStatus(conversationId, "pending");
+      return false;
+    }
     await recordResolutionOrigin({
       tenantId,
       conversation: {

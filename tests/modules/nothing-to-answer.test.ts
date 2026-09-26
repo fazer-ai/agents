@@ -708,6 +708,21 @@ describe.skipIf(!dbUp)(
       expect(cw.toggles).toEqual([]);
     });
 
+    test("a message that lands after the history read puts the conversation back", async () => {
+      const conv = await seedConversation(89_529);
+      const msgs: Msg[] = [{ id: 2, content: "" }];
+      const cw = chatwoot(msgs, {
+        onLive: () => {
+          msgs.push({ id: 3, content: "esqueci de escrever: quero cancelar" });
+        },
+      });
+      await flush(89_529, cw, new NeverCalled());
+      expect(cw.toggles).toEqual(["resolved", "pending"]);
+      expect(cw.state.status).toBe("pending");
+      expect(await resolvedBy(89_529)).toBeNull();
+      expect(await closeLines(conv.id)).toEqual([]);
+    });
+
     test("a close of ours counts as the agent side's, like the follow-up's", () => {
       expect(closedByTheAgentSide("nothing_to_answer")).toBe(true);
     });

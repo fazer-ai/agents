@@ -1207,10 +1207,14 @@ function silenceRetryText(canSkip: boolean): string {
     : `${SILENCE_RETRY_MARK}. Decida agora: se a última mensagem do cliente pede ou espera algo de você, responda; se não há nada a dizer, encerre sem escrever nada.`;
 }
 
+// A batch that CONTAINS `skip_reply` is a declared silence, alone or beside other calls (a model
+// declares it next to `resolve_conversation`). Read here from the call, because the tool has not run
+// yet; the runtime confirms it from the tool's MARK once it has (see its `onSilenceRetry`), so a
+// `skip_reply` a precondition refused is not reported as a silence the model chose.
 function silenceRetryOutcome(m: BaseMessage): SilenceRetryOutcome {
   const calls = (m as AIMessage).tool_calls ?? [];
   if (calls.length > 0)
-    return calls.every((c) => c.name === SKIP_REPLY_TOOL)
+    return calls.some((c) => c.name === SKIP_REPLY_TOOL)
       ? "skip_reply"
       : "tools";
   return contentToText(m.content).trim() ? "answered" : "empty";

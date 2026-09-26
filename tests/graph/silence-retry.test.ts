@@ -174,6 +174,21 @@ describe("unexplained silence: one retry with both exits (issue #885)", () => {
     expect(model.seen.filter(carriesRetry)).toHaveLength(1);
   });
 
+  test("a retry that calls skip_reply beside another tool is a declared silence", async () => {
+    const model = new ScriptedSilenceModel([
+      { text: "" },
+      {
+        text: "",
+        calls: [
+          { name: SKIP_REPLY_TOOL, args: { reason: "acknowledged" } },
+          { name: "set_labels", args: {} },
+        ],
+      },
+    ]);
+    const { retries } = await run(model, { retrySilence: () => true });
+    expect(retries).toEqual([{ outcome: "skip_reply" }]);
+  });
+
   test("the silence after tool calls is retried too (the common shape)", async () => {
     const model = new ScriptedSilenceModel([
       { text: "", calls: [{ name: "set_labels", args: {} }] },

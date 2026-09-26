@@ -3943,6 +3943,113 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(await unexplainedWarned(98853)).toBe(false);
   });
 
+  // The verifier's s3(d): a retry that declares silence BESIDE another tool is still a declared
+  // silence, and the line says so. Read from the tool's mark, like `silenceWasChosen`.
+  test("a retry that declares silence beside another tool is recorded as skip_reply", async () => {
+    await seedConversation(98859, null);
+    const calls: Array<[string, number, string]> = [];
+    const model = new ScriptedSilenceModel([
+      { text: "" },
+      {
+        text: "",
+        calls: [
+          { name: "skip_reply", args: { reason: "acknowledged" } },
+          { name: "resolve_conversation", args: {} },
+        ],
+      },
+    ]);
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98859 }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("empty");
+    expect(calls.filter(([op]) => op === "sendMessage")).toEqual([]);
+    expect(calls.at(-1)).toEqual(["toggleStatus", 98859, "resolved"]);
+    expect(await silenceRetryLine(98859)).toEqual({
+      silenceRetry: "skip_reply",
+    });
+  });
+
+  test("a retry that goes back to another tool is recorded as tools", async () => {
+    await seedConversation(98860, null);
+    const calls: Array<[string, number, string]> = [];
+    const model = new ScriptedSilenceModel([
+      { text: "" },
+      { text: "", calls: [{ name: "set_labels", args: { add: ["duvida"] } }] },
+      { text: "Pronto, anotei." },
+    ]);
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98860 }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(await silenceRetryLine(98860)).toEqual({ silenceRetry: "tools" });
+  });
+
+  // A `skip_reply` a precondition refused did NOT declare the silence: its result is an ordinary
+  // tool answer under that name, with no mark. Recorded as tools, the way the close reads it.
+  test("a retry whose skip_reply was refused is not recorded as a declared silence", async () => {
+    await seedConversation(98870, null);
+    const agent = await suDb.agent.findFirstOrThrow({
+      where: { tenantId },
+      select: { id: true },
+    });
+    await suDb.agent.update({
+      where: { id: agent.id },
+      data: {
+        settings: {
+          split: { enabled: false },
+          toolPreconditions: {
+            skip_reply: { kind: "attribute", scope: "contact", key: "cpf" },
+          },
+        },
+      },
+    });
+    try {
+      const model = new ScriptedSilenceModel([
+        { text: "" },
+        {
+          text: "",
+          calls: [{ name: "skip_reply", args: { reason: "acknowledged" } }],
+        },
+      ]);
+      await runAgentTurn({
+        tenantId,
+        instanceId,
+        agentBotId: 9,
+        event: incoming({ conversationId: 98870 }),
+        base: appDb,
+        deps: {
+          makeModel: () => model as unknown as BaseChatModel,
+          makeClient: makeResolveClient([]),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(await silenceRetryLine(98870)).toEqual({ silenceRetry: "tools" });
+    } finally {
+      await suDb.agent.update({
+        where: { id: agent.id },
+        data: { settings: { split: { enabled: false } } },
+      });
+    }
+  });
+
   test("the retry instruction never lands in the thread the next turn reads", async () => {
     await seedConversation(98854, null);
     const checkpointer = new MemorySaver();

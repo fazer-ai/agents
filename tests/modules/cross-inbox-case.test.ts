@@ -1,15 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { buildNativeTools } from "@/graph/tools/native";
-import {
-  ChatwootApiError,
-  type ChatwootClient,
-} from "@/modules/chatwoot/client";
+import { ChatwootApiError, ChatwootClient } from "@/modules/chatwoot/client";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
 import {
   type CaseClient,
   customerTyped,
   destinationIdentity,
   normalizeEmail,
+  OPENING_OUTSIDE_WINDOW_PREFIX,
   type OpenCaseInput,
   openCaseInInbox,
 } from "@/modules/cross-inbox-case/service";
@@ -42,6 +40,8 @@ function fakeChatwoot(
     lockToSingle?: boolean;
     // Runs right after the create, standing for an automation or a person acting in that window.
     afterCreate?: (id: number) => void;
+    // Chatwoot's `can_reply` on what the create answers.
+    canReply?: boolean;
   } = {},
 ) {
   const calls: Array<{ fn: string; args: unknown[] }> = [];
@@ -152,7 +152,12 @@ function fakeChatwoot(
           .filter((c) => c.contactId === p.contactId && c.inboxId === p.inboxId)
           .at(-1);
         if (last)
-          return { id: last.id, inboxId: last.inboxId, status: last.status };
+          return {
+            id: last.id,
+            inboxId: last.inboxId,
+            status: last.status,
+            canReply: opts.canReply ?? null,
+          };
       }
       if (opts.continueOpen) {
         const open = convs
@@ -166,7 +171,12 @@ function fakeChatwoot(
         if (open) {
           open.status = p.status;
           Object.assign(open.attrs, p.customAttributes);
-          return { id: open.id, inboxId: open.inboxId, status: open.status };
+          return {
+            id: open.id,
+            inboxId: open.inboxId,
+            status: open.status,
+            canReply: opts.canReply ?? null,
+          };
         }
       }
       const c: Conv = {
@@ -179,7 +189,12 @@ function fakeChatwoot(
       };
       convs.push(c);
       opts.afterCreate?.(c.id);
-      return { id: c.id, inboxId: c.inboxId, status: c.status };
+      return {
+        id: c.id,
+        inboxId: c.inboxId,
+        status: c.status,
+        canReply: opts.canReply ?? null,
+      };
     },
     sendMessageAsAdmin: async (id: number, content: string, o) => {
       record("sendMessageAsAdmin", [id, content, o]);
@@ -493,6 +508,167 @@ describe("openCaseInInbox", () => {
     const r = await openCaseInInbox(f.client, input());
     expect(r).toMatchObject({ kind: "already_open", caseId: 55 });
     expect(writesOf(f.calls)).toEqual([]);
+  });
+
+  test("a remembered case that went pending or snoozed is reopened before it is reported open", async () => {
+    // Review round 4: out of the team's open queue is not "already with the team".
+    for (const status of ["pending", "snoozed"]) {
+      const f = fakeChatwoot({
+        convs: [
+          {
+            id: 7,
+            inboxId: 10,
+            contactId: 5,
+            status: "pending",
+            attrs: { case_conversation_id: 55 },
+            labels: [],
+          },
+          {
+            id: 55,
+            inboxId: 40,
+            contactId: 5,
+            status: "pending",
+            attrs: {},
+            labels: [],
+          },
+        ],
+      });
+      const remembered = f.convs.find((c) => c.id === 55);
+      if (remembered) remembered.status = status;
+      const r = await openCaseInInbox(f.client, input());
+      expect(r).toMatchObject({ kind: "already_open", caseId: 55 });
+      expect(f.convs.find((c) => c.id === 55)?.status).toBe("open");
+      expect(f.calls.some((c) => c.fn === "createConversation")).toBe(false);
+    }
+  });
+
+  test("a remembered case that cannot be reopened fails the opening", async () => {
+    const f = fakeChatwoot({
+      failOn: new Set(["toggleStatus"]),
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: { case_conversation_id: 55 },
+          labels: [],
+        },
+        {
+          id: 55,
+          inboxId: 40,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels: [],
+        },
+      ],
+    });
+    const r = await openCaseInInbox(f.client, input());
+    expect(r).toMatchObject({ kind: "failed", step: "reopen_known_case" });
+  });
+
+  test("withdrawn before the remembered case is reopened: nothing is written", async () => {
+    const f = fakeChatwoot({
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: { case_conversation_id: 55 },
+          labels: [],
+        },
+        {
+          id: 55,
+          inboxId: 40,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels: [],
+        },
+      ],
+    });
+    const r = await openCaseInInbox(
+      f.client,
+      input({ stillWanted: async () => false }),
+    );
+    expect(r.kind).toBe("called_off");
+    expect(f.convs.find((c) => c.id === 55)?.status).toBe("pending");
+  });
+
+  test("a remembered case that is open is not toggled", async () => {
+    const f = fakeChatwoot({
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: { case_conversation_id: 55 },
+          labels: [],
+        },
+        {
+          id: 55,
+          inboxId: 40,
+          contactId: 5,
+          status: "open",
+          attrs: {},
+          labels: [],
+        },
+      ],
+    });
+    await openCaseInInbox(f.client, input());
+    expect(f.calls.some((c) => c.fn === "toggleStatus")).toBe(false);
+  });
+
+  test("a destination that is this conversation's own inbox opens nothing", async () => {
+    // Review round 4: the create could hand back the origin itself and flip it open under the turn.
+    const f = fakeChatwoot({
+      continueOpen: true,
+      inboxes: { 10: { name: "WhatsApp", channel_type: "Channel::Api" } },
+    });
+    const r = await openCaseInInbox(
+      f.client,
+      input({ config: { ...CROSS_INBOX_CASE_DEFAULTS, targetInboxId: 10 } }),
+    );
+    expect(r.kind).toBe("same_inbox");
+    expect(writesOf(f.calls)).toEqual([]);
+    expect(f.convs.find((c) => c.id === 7)?.status).toBe("pending");
+  });
+
+  test("a closed reply window keeps the opening off the customer's channel and leaves it for the team", async () => {
+    // Review round 4: an official WhatsApp destination rejects a free-form first message.
+    const f = fakeChatwoot({
+      canReply: false,
+      inboxes: {
+        40: { name: "WhatsApp oficial", channel_type: "Channel::Whatsapp" },
+      },
+    });
+    const r = await openCaseInInbox(f.client, input());
+    expect(r).toMatchObject({ kind: "opened", openingOutsideWindow: true });
+    const opening = f.calls.filter(
+      (c) =>
+        c.fn === "sendMessageAsAdmin" &&
+        String(c.args[1]).includes("Abrimos seu atendimento"),
+    );
+    expect(opening).toHaveLength(1);
+    expect(opening[0]?.args[2]).toEqual({ private: true });
+    expect(String(opening[0]?.args[1])).toStartWith(
+      OPENING_OUTSIDE_WINDOW_PREFIX,
+    );
+  });
+
+  test("an open reply window sends the opening to the customer", async () => {
+    const f = fakeChatwoot({ canReply: true });
+    const r = await openCaseInInbox(f.client, input());
+    expect(r).not.toHaveProperty("openingOutsideWindow");
+    const opening = f.calls.find(
+      (c) =>
+        c.fn === "sendMessageAsAdmin" &&
+        String(c.args[1]).includes("Abrimos seu atendimento"),
+    );
+    expect(opening?.args[2]).toEqual({ private: false });
   });
 
   test("a case that was resolved, or lives in another inbox, does not block a new one", async () => {
@@ -1397,6 +1573,31 @@ describe("the tool", () => {
     expect(out).toContain("do not repeat it");
   });
 
+  test("the model is told when the opening stayed a note, and when there was nowhere to move the case", async () => {
+    const closed = toolFor(fakeChatwoot({ canReply: false }));
+    expect(
+      String(await closed.t.invoke({ reason: "x", customer_message: "Olá" })),
+    ).toContain("Do not say a message was sent to them there");
+    const same = toolFor(
+      fakeChatwoot({
+        inboxes: { 40: { name: "WhatsApp", channel_type: "Channel::Api" } },
+        convs: [
+          {
+            id: 7,
+            inboxId: 40,
+            contactId: 5,
+            status: "pending",
+            attrs: {},
+            labels: [],
+          },
+        ],
+      }),
+    );
+    const out = String(await same.t.invoke({ reason: "x" }));
+    expect(out).toContain("already in the destination inbox");
+    expect(same.toggles).toEqual([]);
+  });
+
   test("a failed request after the turn was withdrawn hands nothing off", async () => {
     // Review round 3: the fallback transferred a conversation the operator had just cleared.
     const f = fakeChatwoot({ failOn: new Set(["createConversation"]) });
@@ -1474,5 +1675,37 @@ describe("the tool", () => {
       },
     }).map((t) => t.name);
     expect(names).not.toContain("open_case_in_inbox");
+  });
+});
+
+// Review round 4: the reply window is read off what the create answers, as Chatwoot reports it.
+describe("the client reads the create's reply window", () => {
+  const created = async (body: Record<string, unknown>) => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch;
+    const c = new ChatwootClient(
+      {
+        baseUrl: "https://chat.example.com",
+        accountId: 5,
+        adminToken: "admin",
+        botToken: "bot",
+      },
+      fetchImpl,
+    );
+    return c.createConversation({
+      inboxId: 40,
+      contactId: 5,
+      status: "open",
+      customAttributes: {},
+    });
+  };
+  test("closed, open, and not reported", async () => {
+    const base = { id: 9, inbox_id: 40, status: "open" };
+    expect((await created({ ...base, can_reply: false })).canReply).toBe(false);
+    expect((await created({ ...base, can_reply: true })).canReply).toBe(true);
+    expect((await created(base)).canReply).toBeNull();
   });
 });

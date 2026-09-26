@@ -353,6 +353,9 @@ export interface ChatwootConversationRef {
   id: number;
   inboxId: number | null;
   status: string | null;
+  // Chatwoot's own reading of the channel's reply window (`can_reply`): false on an official WhatsApp
+  // inbox, or a Twilio one on WhatsApp, where the customer has not written in the last 24h.
+  canReply: boolean | null;
 }
 
 // A search that has not found an exact address in this many pages of 15 is not going to: the query
@@ -384,6 +387,7 @@ function parseConversationRef(raw: unknown): ChatwootConversationRef | null {
     id,
     inboxId: Number.isInteger(inboxId) && inboxId > 0 ? inboxId : null,
     status: typeof o.status === "string" ? o.status : null,
+    canReply: typeof o.can_reply === "boolean" ? o.can_reply : null,
   };
 }
 

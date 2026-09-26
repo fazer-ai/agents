@@ -1454,6 +1454,9 @@ async function runAgentNudgeBody(
           const d = await screenOutput(text);
           if (!guardrailTripped(d)) return "send";
           if (d.kind !== "handed-off") return "drop";
+          // Asked after the screening and before the transfer: the screening was a wait, and inside
+          // `ownTransfer` the in-flight mark makes the ownership reads look past the turn's own change.
+          if (!(await toolFence())) return "drop";
           const handed = await ownTransfer(
             handoffState,
             () =>

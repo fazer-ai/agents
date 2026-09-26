@@ -66,14 +66,18 @@ function config(cic: CrossInboxCaseConfig): AgentConfig {
   } as unknown as AgentConfig;
 }
 
-async function seenFor(cic: CrossInboxCaseConfig, instanceId: bigint) {
+async function seenFor(
+  cic: CrossInboxCaseConfig,
+  instanceId: bigint,
+  conversationId = 77,
+) {
   let seen: Record<string, unknown> | undefined;
   const ctx: ToolsetCtx = {
     tenantId: 1n,
     instanceId,
     base: app as PrismaClient,
     client: {} as unknown as ChatwootClient,
-    conversationId: 77,
+    conversationId,
     threadId: `t-${process.pid}`,
   };
   await buildToolset(config(cic), ctx, {
@@ -131,6 +135,14 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
     expect(seen?.screenCustomerText).toBe(screen);
   });
 
+  test("the playground, which belongs to no account, keeps the tool to simulate it", async () => {
+    // Review round 4: the playground builds with instance 0, which matched no picked account.
+    expect(await seenFor(picked, 0n, 0)).toEqual({
+      config: picked,
+      contactId: 55,
+    });
+  });
+
   test("a config written without the account is honored as-is", async () => {
     const legacy = { ...picked, targetInstanceId: null };
     expect(await seenFor(legacy, 4n)).toEqual({
@@ -164,6 +176,11 @@ describe("both runtimes bind the output gate for it", () => {
     expect(b).toContain("applyGuardrailHandoff({");
     expect(b).toContain('return handed ? "handed" : "drop";');
     expect(b).toContain("handoffState.completed = handed;");
+    // Review round 4: asked after the screening and before the transfer, since inside `ownTransfer`
+    // the in-flight mark hides the turn's own change from the ownership reads.
+    const fence = b.indexOf('if (!(await toolFence())) return "drop";');
+    expect(fence).toBeGreaterThan(b.indexOf("await screenOutput(text)"));
+    expect(fence).toBeLessThan(b.indexOf("await ownTransfer("));
   });
 });
 

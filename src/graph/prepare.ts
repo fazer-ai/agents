@@ -1484,7 +1484,10 @@ export async function buildToolset(
       sendImage: cfg.sendImageConfig,
       // The inbox id is account-scoped: on a conversation of another account it names a different
       // inbox or none, so the tool is not built there (same drift the pinned handoff covers above).
+      // The playground (conversationId 0, instance 0) belongs to no account and only simulates the
+      // tool, so it keeps it: an operator testing the escalation is what the playground is for.
       crossInboxCase:
+        ctx.conversationId === 0 ||
         cfg.crossInboxCaseConfig.targetInstanceId == null ||
         cfg.crossInboxCaseConfig.targetInstanceId === Number(ctx.instanceId)
           ? {

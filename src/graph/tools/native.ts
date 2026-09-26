@@ -2276,7 +2276,9 @@ function openCaseOutcomeText(
         : "";
       const blocked = r.openingBlocked
         ? " The opening message was refused by the output check and was NOT sent; the case is open without it."
-        : "";
+        : r.openingOutsideWindow
+          ? " The opening message was NOT sent: that channel only lets the team write first with an approved template, so it was left for the team as a note. Do not say a message was sent to them there."
+          : "";
       return `${how}${partial}${blocked} Tell the customer, in your reply here, that their case was opened and the team will contact them there.${close}`;
     }
     case "already_open":
@@ -2291,6 +2293,8 @@ function openCaseOutcomeText(
         : "Nothing was opened: `email` must be an address the customer typed in this conversation, and this one is not among their messages. Ask the customer for their email and pass exactly what they typed.";
     case "unsupported_channel":
       return "Nothing was opened: the configured destination inbox cannot start conversations. Hand off to a human instead.";
+    case "same_inbox":
+      return "Nothing was opened: this conversation is already in the destination inbox, so there is nowhere to move it. If the customer needs the team, hand off to a human instead.";
     case "not_configured":
       return "Nothing was opened: no destination inbox is configured. Hand off to a human instead.";
     case "called_off":

@@ -84,9 +84,14 @@ export type OpenCaseResult =
       partial: string[];
       // The opening message the output guardrail refused, so it was not sent.
       openingBlocked?: boolean;
+      // The destination's reply window was closed (Chatwoot's `can_reply`), so the opening went to
+      // the case as an explained private note instead of to the customer.
+      openingOutsideWindow?: boolean;
     }
   | { kind: "not_configured" }
   | { kind: "unsupported_channel"; channelType: string | null }
+  // The conversation already sits in the destination inbox: there is nowhere to move it.
+  | { kind: "same_inbox" }
   | { kind: "needs_email" }
   | { kind: "needs_phone" }
   | { kind: "rejected_email"; why: "invalid" | "not_in_conversation" }
@@ -162,6 +167,12 @@ export function originLinkNote(caseUrl: string, inboxName: string): string {
 export function destinationLinkNote(originUrl: string): string {
   return `⬅️ Caso aberto a partir da conversa: ${originUrl}`;
 }
+// Header of the opening that could not reach the customer: the destination channel only lets the
+// business write first with an approved template, and a free-form message there is rejected.
+export const OPENING_OUTSIDE_WINDOW_PREFIX =
+  "⏳ Fora da janela de atendimento deste canal: a mensagem de abertura abaixo NÃO foi enviada ao cliente. " +
+  "Para falar com ele por aqui, comece por um template aprovado (HSM).\n\n";
+
 export function destinationReasonNote(reason: string): string {
   return `Motivo: ${reason}`;
 }
@@ -206,6 +217,12 @@ async function run(
     // calling twice, a redelivered turn, and the customer asking again while the case is running.
     step = "read_origin";
     const originConv = await client.getConversation(origin);
+    // An agent can serve the destination inbox too. Opening the "case" there would hand back the
+    // origin itself on an inbox that continues open conversations, flip it open under the turn, and
+    // under `resolveOrigin` close the very conversation the customer was told holds the case.
+    if (Number(field(originConv, "inbox_id")) === target) {
+      return { kind: "same_inbox" };
+    }
     const known = numberAttr(originConv, config.caseAttributeKey);
     if (known !== null) {
       step = "read_known_case";
@@ -218,6 +235,15 @@ async function run(
         Number(field(existing, "inbox_id")) === target &&
         field(existing, "status") !== "resolved"
       ) {
+        // Pending or snoozed is out of the team's open queue, and "already with the team" would not
+        // be true: reopened like a continued case below, and just as mandatory.
+        if (field(existing, "status") !== "open") {
+          step = "reopen_known_case";
+          if (input.stillWanted && !(await input.stillWanted())) {
+            return { kind: "called_off" };
+          }
+          await client.toggleStatus(known, "open", { asAdmin: true });
+        }
         return {
           kind: "already_open",
           caseId: known,
@@ -384,11 +410,27 @@ async function run(
     );
     // A continued case already has its opening: repeating it would send the customer a second
     // "we opened your case" email for the same case.
+    // A channel with a reply window (official WhatsApp, Twilio on WhatsApp, an API inbox with one
+    // set) refuses a free-form first message to a customer who has not written there lately, and a
+    // new case has, by construction, no message from them. Chatwoot's own `can_reply` says so; the
+    // opening then goes to the case as an explained note, the service-window fallback.
+    let openingOutsideWindow = false;
     if (!continued && customerMessage) {
       const text = customerMessage;
-      await attempt("customer_message", () =>
-        client.sendMessageAsAdmin(caseId, text, { private: false }),
-      );
+      if (created.canReply === false) {
+        openingOutsideWindow = true;
+        await attempt("customer_message", () =>
+          client.sendMessageAsAdmin(
+            caseId,
+            `${OPENING_OUTSIDE_WINDOW_PREFIX}${text}`,
+            { private: true },
+          ),
+        );
+      } else {
+        await attempt("customer_message", () =>
+          client.sendMessageAsAdmin(caseId, text, { private: false }),
+        );
+      }
     }
     await attempt("destination_reason_note", () =>
       client.sendMessageAsAdmin(caseId, destinationReasonNote(input.reason), {
@@ -440,6 +482,7 @@ async function run(
       identity,
       partial,
       ...(openingBlocked ? { openingBlocked } : {}),
+      ...(openingOutsideWindow ? { openingOutsideWindow } : {}),
     };
   } catch (error) {
     return { kind: "failed", step, error };

@@ -2033,6 +2033,7 @@ export async function runEagerMedia(
           messageId,
           visuals,
           cfg: visionCfg,
+          stillAllowed: admitted,
           base,
           flow: flow(),
           convLabel,

@@ -123,6 +123,8 @@ export async function extractMessageVisuals(params: {
   deps?: ExtractInboundParams["deps"];
   // Como esta conversa aparece no log, para a linha de aviso dizer onde foi.
   convLabel?: string;
+  // Asked before each later batch of email body images: false stops the reading there.
+  stillAllowed?: () => Promise<boolean>;
 }): Promise<MessageVisuals | null> {
   const { visuals: todos, tenantId, instanceId, messageId } = params;
   if (todos.length === 0) return null;
@@ -208,7 +210,12 @@ export async function extractMessageVisuals(params: {
   ]);
   const extraidos = [...dosAnexos, ...primeiroLote];
   vagas = primeiroLote.filter((e) => e.r === BODY_IMAGE_IGNORED).length;
+  let parou = false;
   while (corpo.length > 0 && vagas > 0 && orcamento > 0) {
+    if (params.stillAllowed && !(await params.stillAllowed())) {
+      parou = true;
+      break;
+    }
     lote = tirar(vagas);
     const lidos = await Promise.all(lote.map(ler));
     extraidos.push(...lidos);
@@ -217,7 +224,7 @@ export async function extractMessageVisuals(params: {
   // O que passou do teto é baixado só para saber se é ornamento, sem ir ao provedor: um logotipo de
   // assinatura depois de oito fotos não é arquivo a pedir de novo.
   // Em lotes do tamanho do teto, porque cada download fica inteiro em memória.
-  while (corpo.length > 0 && orcamento > 0) {
+  while (!parou && corpo.length > 0 && orcamento > 0) {
     const alemDoTeto = await Promise.all(
       tirar(VISION_MAX_ATTACHMENTS).map((visual) =>
         classifyBodyImage({

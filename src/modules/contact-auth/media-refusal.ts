@@ -2,7 +2,6 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
-  forgetMediaRefusal,
   mediaRefusedHereThrough,
   rememberMediaRefusal,
 } from "@/modules/contact-auth/state";
@@ -41,7 +40,6 @@ export async function recordMediaRefusal(
           SET media_refused_through_message_id = GREATEST(COALESCE(media_refused_through_message_id, 0), ${messageId}::bigint)
           WHERE id = ${conversationDbId} AND tenant_id = ${tenantId}`,
       );
-      forgetMediaRefusal(key, messageId);
       return;
     } catch (err) {
       lastErr = err;

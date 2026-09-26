@@ -731,7 +731,7 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
     expect(providers.vision).toBe(0);
   });
 
-  test("a refusal is honoured from before its write lands, and let go once the row holds it", async () => {
+  test("a refusal is honoured from before its write lands, and after it", async () => {
     await seedConversation(8826, INBOX_GATED);
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: 8826 },
@@ -757,7 +757,7 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
       }
       expect(seen).toBe(id);
       await pending;
-      expect(mediaRefusedHereThrough(key)).toBeNull();
+      expect(mediaRefusedHereThrough(key)).toBe(id);
     } finally {
       await suDb.$executeRawUnsafe(
         "DROP TRIGGER IF EXISTS cam_refusal_slow ON conversations",

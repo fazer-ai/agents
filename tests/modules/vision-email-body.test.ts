@@ -777,6 +777,52 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     );
   });
 
+  test("a refusal between batches stops the body images that were still to be read", async () => {
+    await setVision(true);
+    const icons = Array.from({ length: 40 }, (_, i) =>
+      blob(470 + i, `k${i}.png`),
+    );
+    const downloads: string[] = [];
+    let asked = 0;
+    await extractMessageVisuals({
+      tenantId,
+      instanceId,
+      conversationId: 1046,
+      messageId: 1,
+      visuals: icons.map((dataUrl, i) => ({
+        id: null,
+        dataUrl,
+        name: `k${i}.png`,
+        imageDescription: null,
+        extractedText: null,
+      })),
+      cfg: {
+        enabled: true,
+        provider: "openai",
+        credentialRef: `vault:${visionKeyId}`,
+      } as never,
+      base: appDb,
+      deps: {
+        makeClient: stub({
+          page: [],
+          sizes: Object.fromEntries(
+            icons.map((u) => [u, [144, 144] as [number, number]]),
+          ),
+          downloads,
+          metaWrites: [],
+        }),
+        fetchImpl: visionFetch(["não deveria ler"]),
+      },
+      stillAllowed: async () => {
+        asked++;
+        return false;
+      },
+    });
+    // The first batch only: the ornaments gave their slots back, and the refusal took them.
+    expect(asked).toBe(1);
+    expect(downloads.length).toBe(8);
+  });
+
   test("when the instance's address cannot be read, no body image is fetched", async () => {
     const downloads: string[] = [];
     const r = await extractMessageVisuals({

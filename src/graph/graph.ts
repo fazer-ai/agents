@@ -784,10 +784,9 @@ export function buildAgentGraph({
     const wrapUpText = noReplyChannel
       ? `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: se ainda falta registrar algo, use a última ferramenta; se não, encerre sem escrever nada.`
       : `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: responda ao cliente com as informações que já tem. Só use outra ferramenta se for absolutamente imprescindível.`;
-    // The spoken-reply notice (issue #859) rides the same way, first, and on no channel that sends
-    // no reply at all: an observation is not answering anybody.
-    const notice =
-      spokenNotice?.trim() && !noReplyChannel ? [spokenNotice.trim()] : [];
+    // The spoken-reply notice (issue #859) rides the same way, first. Only the callers that deliver
+    // a reply which can be spoken pass one, so an observation never carries it.
+    const notice = spokenNotice?.trim() ? [spokenNotice.trim()] : [];
     const lateTexts = [...notice, ...(softLimit ? [wrapUpText] : [])];
     const prompt = lateSystemAccepted
       ? systemPrompt

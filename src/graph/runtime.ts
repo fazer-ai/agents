@@ -1452,17 +1452,17 @@ async function runTurnBody(
   // a partial send by throwing (issue #429), so the two have to travel together for the callers
   // below to keep deciding what a total failure means. TTS is best-effort — a synthesis failure
   // falls back to text and never drops the message.
-  const sentAsTextNoted = new Set<string>();
-  const noteSentAsText = (reason: "contact_preference" | "model_choice") => {
-    if (sentAsTextNoted.has(reason)) return;
-    sentAsTextNoted.add(reason);
+  // The `tts` line of a reply that leaves the modality it was planned in (issue #859). Written from
+  // `deliverText`, which a turn reaches once: a transfer's closing line takes the place of the reply
+  // (measured with a model that transfers and then answers: one text reaches the customer). The tool
+  // itself writes nothing, so calling it twice is still one line.
+  const noteSentAsText = (reason: "contact_preference" | "model_choice") =>
     emitFlowEvent(flow, {
       stage: "tts",
       level: "info",
       status: "skipped",
       detail: { sentAsText: reason },
     });
-  };
   const deliverText = async (
     text: string,
     voiceReply: boolean | null,

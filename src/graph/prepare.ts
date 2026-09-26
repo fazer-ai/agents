@@ -1495,15 +1495,14 @@ export async function buildToolset(
       : {}),
     ...cfg.httpToolContext,
   };
-  // `reply_as_text` (issue #859), on every turn of an agent that turned it on and never on a muted
-  // one, which has no reply to send. Placed with the natives so a tenant tool that happens to share
-  // the name is the one dropped: the operator switched this one on in the audio settings.
+  // `reply_as_text` (issue #859), on every turn of an agent that turned it on, text and audio alike.
+  // Only a caller that delivers a reply which can be spoken hands over the holder (the reactive turn
+  // and the playground), so the observer and the nudge, which never synthesize, are not offered it.
+  // Placed with the natives so a tenant tool that happens to share the name is the one dropped: the
+  // operator switched this one on in the audio settings.
   const tts = cfg.ttsConfig;
   const replyAsText =
-    ctx.replyChoice &&
-    tts.textChoice &&
-    tts.mode !== "never" &&
-    !ctx.client.muted
+    ctx.replyChoice && tts.textChoice && tts.mode !== "never"
       ? [
           buildReplyAsTextTool({
             choice: ctx.replyChoice,

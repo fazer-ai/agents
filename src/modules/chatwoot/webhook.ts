@@ -5767,20 +5767,23 @@ export async function processChatwootDelivery(
     }
   }
 
-  // A late attachment on a message a nothing-to-answer close judged empty (issue #895 review, round
-  // 7): the close is undone, so the voice note is back in the queue instead of buried in a resolved
-  // conversation. Asked only of an enabled agent's own route, and cheap: one row read decides.
+  // A late attachment on a message a nothing-to-answer close judged empty (issue #895 review, rounds
+  // 7 and 8): the close is undone, so the voice note is back in the queue instead of buried in a
+  // resolved conversation. Late CONTENT, whether or not STT still has work on it: an audio that
+  // arrives already transcribed is the same customer speaking. Asked only of an enabled agent's own
+  // route, and cheap: one row read decides before any client is built.
   if (
-    hasLateMedia &&
+    (hasLateMedia || inboundTranscriptionOnUpdate(n) !== null) &&
     rt?.enabled &&
     mirror.conversationRowId !== null &&
     n.conversationId !== null
   ) {
     await reopenIfClosedForNothing({
-      client: await loadChatwootClient(params.tenantId, params.instanceId, {
-        base,
-        makeClient: params.deps?.makeClient,
-      }),
+      client: () =>
+        loadChatwootClient(params.tenantId, params.instanceId, {
+          base,
+          makeClient: params.deps?.makeClient,
+        }),
       conversationId: n.conversationId,
       conversationDbId: mirror.conversationRowId,
       tenantId: params.tenantId,

@@ -95,6 +95,7 @@ function client(live: { status: string; toggleFails?: boolean }) {
 async function deliverLateAudio(
   convId: number,
   cw: ReturnType<typeof client>,
+  opts: { transcribed?: string; makeClient?: () => Promise<unknown> } = {},
 ): Promise<void> {
   const n = normalizeChatwootEvent({
     event: "message_updated",
@@ -107,6 +108,7 @@ async function deliverLateAudio(
         id: 90 + convId,
         file_type: "audio",
         data_url: `https://chat.late.example/audio/${convId}.ogg`,
+        ...(opts.transcribed ? { transcribed_text: opts.transcribed } : {}),
       },
     ],
     conversation: {
@@ -142,7 +144,7 @@ async function deliverLateAudio(
     normalized: n,
     base: appDb,
     deps: {
-      makeClient: cw.makeClient as never,
+      makeClient: (opts.makeClient ?? cw.makeClient) as never,
       makeModel: () => {
         throw new Error("a late-media update must not run a turn");
       },
@@ -252,6 +254,27 @@ describe.skipIf(!dbUp)(
       const cw = client({ status: "open" });
       await deliverLateAudio(9803, cw);
       expect(cw.toggles).toEqual([]);
+    });
+
+    test("an audio that arrives already transcribed reopens it too", async () => {
+      const conv = await seedConversation(9805, "nothing_to_answer");
+      const cw = client({ status: "resolved" });
+      await deliverLateAudio(9805, cw, {
+        transcribed: "quero cancelar meu pedido",
+      });
+      expect(cw.toggles).toEqual([{ status: "pending", asAdmin: true }]);
+      expect((await reopenLines(conv)).map((l) => l.level)).toEqual(["info"]);
+    });
+
+    test("a client that cannot be built is the recovery's warn, not the delivery's failure", async () => {
+      const conv = await seedConversation(9806, "nothing_to_answer");
+      const cw = client({ status: "resolved" });
+      await deliverLateAudio(9806, cw, {
+        makeClient: async () => {
+          throw new Error("instance unreadable");
+        },
+      });
+      expect((await reopenLines(conv)).map((l) => l.level)).toEqual(["warn"]);
     });
 
     test("a reopen that fails is a warn, so the buried voice note pages", async () => {

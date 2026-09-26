@@ -187,14 +187,17 @@ export async function closeIfNothingToAnswer(params: {
 // Chatwoot still has the conversation resolved: an operator's close, or one a person already reopened,
 // is theirs. Admin token, because it is a conversation's state and not a persona's utterance.
 export async function reopenIfClosedForNothing(params: {
-  client: ChatwootClient;
+  // Built only once the row says this close is ours, and inside the guard: building one reads the
+  // instance, decrypts its token and validates its URL, and a failure there must not abort the
+  // delivery that asked.
+  client: () => Promise<ChatwootClient>;
   conversationId: number;
   conversationDbId: bigint;
   tenantId: bigint;
   base: PrismaClient;
   flow: FlowContext;
 }): Promise<boolean> {
-  const { client, conversationId, conversationDbId, tenantId, base } = params;
+  const { conversationId, conversationDbId, tenantId, base } = params;
   try {
     const row = await runScopedOn(
       base,
@@ -206,6 +209,7 @@ export async function reopenIfClosedForNothing(params: {
         }),
     );
     if (row?.resolvedBy !== "nothing_to_answer") return false;
+    const client = await params.client();
     const live = parseLiveConversation(
       await client.getConversation(conversationId),
     );

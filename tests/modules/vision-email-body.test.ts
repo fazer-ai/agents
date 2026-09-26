@@ -131,7 +131,7 @@ function stub(opts: {
   metaWrites: number[];
   fail?: Set<string>;
   types?: Record<string, string>;
-  retries?: boolean[];
+  retries?: Map<string, boolean>;
 }) {
   const client = {
     getMessages: async () => opts.page,
@@ -149,7 +149,7 @@ function stub(opts: {
       o?: { retryOnMissing?: boolean },
     ) => {
       opts.downloads.push(dataUrl);
-      opts.retries?.push(o?.retryOnMissing === true);
+      opts.retries?.set(dataUrl, o?.retryOnMissing === true);
       if (opts.fail?.has(dataUrl)) throw new Error("404 on the blob");
       const [w, h] = opts.sizes[dataUrl] ?? [1200, 1600];
       return {
@@ -317,7 +317,7 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
       texts?: string[];
       fail?: Set<string>;
       types?: Record<string, string>;
-      retries?: boolean[];
+      retries?: Map<string, boolean>;
     } = {},
   ) {
     const id = await seedConversation(convId);
@@ -562,7 +562,7 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
   test("a body image that 404s is not retried as a freshly posted attachment", async () => {
     await setVision(true);
     const gone = blob(44, "gone.png");
-    const retries: boolean[] = [];
+    const retries = new Map<string, boolean>();
     await reengage(
       1044,
       {
@@ -572,11 +572,11 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
       { fail: new Set([gone]), retries },
     );
     // The mailbox stored the blob before the message existed; a 404 will not heal on retry.
-    expect(retries).toEqual([false]);
+    expect([...retries]).toEqual([[gone, false]]);
     // A real attachment still gets the retry that absorbs Chatwoot's write race. The stash is keyed
     // by message id, which the stub reuses, so the first message's reading is dropped first.
     clearMediaAnnotations();
-    const beside: boolean[] = [];
+    const beside = new Map<string, boolean>();
     await reengage(
       1046,
       {
@@ -588,7 +588,11 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
       } as never,
       { fail: new Set([gone]), retries: beside },
     );
-    expect(beside).toEqual([true, false]);
+    // Attachments and the body's first batch download in parallel, so the order is not asserted.
+    expect(Object.fromEntries(beside)).toEqual({
+      [blob(46, "a.png")]: true,
+      [gone]: false,
+    });
   });
 
   test("an email whose only content is a body image is answered", async () => {

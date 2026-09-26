@@ -754,6 +754,70 @@ describe.skipIf(!dbUp)(
       }
     });
 
+    test("a reply our side sent while the helper read keeps the conversation open", async () => {
+      // The mirror row still says we never spoke; the history the helper reads says otherwise.
+      await seedConversation(89_531);
+      const early = chatwoot([
+        { id: 1, content: "Olá, como posso ajudar?", type: 1 },
+        { id: 2, content: "" },
+      ]);
+      await flush(89_531, early, new NeverCalled());
+      expect(early.toggles).toEqual([]);
+
+      await seedConversation(89_532);
+      const msgs: Msg[] = [{ id: 2, content: "" }];
+      const late = chatwoot(msgs, {
+        onLive: () => {
+          msgs.push({ id: 3, content: "Oi! Ainda precisa de ajuda?", type: 1 });
+        },
+      });
+      await flush(89_532, late, new NeverCalled());
+      expect(late.toggles).toEqual([]);
+    });
+
+    test("a private note from our side is not our side speaking", async () => {
+      await seedConversation(89_534);
+      const cw = chatwoot([
+        { id: 1, content: "nota do operador", type: 1, private: true },
+        { id: 2, content: "" },
+      ]);
+      await flush(89_534, cw, new NeverCalled());
+      expect(cw.toggles).toEqual(["resolved"]);
+    });
+
+    test("a /reset that lands during the final re-read closes nothing", async () => {
+      await seedConversation(89_533);
+      let reads = 0;
+      const cw = chatwoot([{ id: 2, content: "" }], {
+        onRead: () => {
+          reads++;
+        },
+      });
+      const base = cw.makeClient;
+      cw.makeClient = async () => {
+        const c = (await base()) as unknown as {
+          getMessages: (id: number, o?: { after?: number }) => Promise<unknown>;
+        };
+        const get = c.getMessages;
+        c.getMessages = async (id, o) => {
+          if (o?.after != null && o.after > 0) {
+            await suDb.schedulerJob.updateMany({
+              where: {
+                tenantId,
+                dedupeKey: debounceDedupeKey(threadOf(89_533)),
+              },
+              data: { payload: { threadId: threadOf(89_533), cancelledAt: 1 } },
+            });
+          }
+          return get(id, o);
+        };
+        return c as unknown as ChatwootClient;
+      };
+      await flush(89_533, cw, new NeverCalled());
+      expect(reads).toBeGreaterThan(0);
+      expect(cw.toggles).toEqual([]);
+    });
+
     test("a close of ours counts as the agent side's, like the follow-up's", () => {
       expect(closedByTheAgentSide("nothing_to_answer")).toBe(true);
     });

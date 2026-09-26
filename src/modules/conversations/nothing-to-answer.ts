@@ -44,6 +44,13 @@ import { ourSideHasSpoken } from "@/modules/followups/eligibility";
 // agent: no model judged anything. The line is `info`, not `warn`: this is not a failure, and an
 // alert channel has nothing to act on. Best-effort and never throws: the caller's flush or turn has
 // already settled. A failed close is the exception, and says so at `warn`.
+// A customer-facing message from our side: a reply, a nudge or a template. A private note is not.
+function weSpoke(m: { messageType: string; private: boolean }): boolean {
+  return (
+    (m.messageType === "outgoing" || m.messageType === "template") && !m.private
+  );
+}
+
 // The fork's `MessageFinder::CATCH_UP_LIMIT`: a batch this full may have more behind it.
 const HISTORY_BATCH = 100;
 
@@ -81,6 +88,9 @@ export async function closeIfNothingToAnswer(params: {
       await client.getMessages(conversationId, { after: 0 }),
     );
     if (messages.length >= HISTORY_BATCH) return false;
+    // The mirror row above is a snapshot from before these reads; a nudge or a reply sent while they
+    // ran is on the history they return, and it means our side spoke after all.
+    if (messages.some(weSpoke)) return false;
     const incoming = messages.filter(
       (m) => m.messageType === "incoming" && !m.private,
     );
@@ -97,7 +107,6 @@ export async function closeIfNothingToAnswer(params: {
     )
       return false;
 
-    if (!(await params.stillWanted())) return false;
     // The supersede re-read, the same one the reply's post gate makes: a message that landed after the
     // history read is answerable work for its own flush, and closing now would bury it (it was created
     // on a PENDING conversation, so Chatwoot does not reopen for it). Asked last, right before the
@@ -108,8 +117,15 @@ export async function closeIfNothingToAnswer(params: {
     const later = parseChatwootMessages(
       await client.getMessages(conversationId, { after: seen }),
     );
-    if (later.some((m) => m.messageType === "incoming" && !m.private))
+    if (
+      later.some(
+        (m) => (m.messageType === "incoming" && !m.private) || weSpoke(m),
+      )
+    )
       return false;
+    // The caller's fences, asked after the last read and right before the write: every await above
+    // is a wait a /reset, a switched-off agent or the job's deadline can land in.
+    if (!(await params.stillWanted())) return false;
     await client.toggleStatus(conversationId, "resolved");
     await recordResolutionOrigin({
       tenantId,

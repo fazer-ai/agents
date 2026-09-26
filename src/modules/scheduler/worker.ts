@@ -22,6 +22,7 @@ import {
   claimDueTrafficJobs,
   completeJob,
   failJob,
+  jobCancelledOnPurpose,
   REAPED_DEATH_ERROR,
   type ReapedJob,
   reapStaleJobs,
@@ -285,7 +286,7 @@ async function fail(
     error,
     base,
   );
-  if (!applied) supersededWarning(job, "fail", base);
+  if (!applied) await supersededWarning(job, "fail", base);
   if (deadLettered) await dispatchDeadLetter(job, error, base);
 }
 
@@ -379,7 +380,7 @@ async function settle(
       job.kind,
       base,
     );
-    if (!applied) supersededWarning(job, "done", base);
+    if (!applied) await supersededWarning(job, "done", base);
   } else if (result.outcome === "reschedule") {
     const { applied } = await rescheduleJob(
       job.tenantId,
@@ -390,7 +391,7 @@ async function settle(
       base,
       result.payloadPatch,
     );
-    if (!applied) supersededWarning(job, "reschedule", base);
+    if (!applied) await supersededWarning(job, "reschedule", base);
   } else {
     await fail(job, result.error ?? "failed", base);
   }
@@ -455,16 +456,21 @@ function lateOutcomeDiscarded(
   announceDiscardedOutcome(job, "deadline", base, { heldMs });
 }
 
-function supersededWarning(
+async function supersededWarning(
   job: ClaimedJob,
   outcome: string,
   base: PrismaClient,
-): void {
+): Promise<void> {
   logger.warn(
     { kind: job.kind, jobId: String(job.id), claimSeq: job.claimSeq, outcome },
     "scheduler: claim superseded, outcome discarded",
   );
-  if (SUPERSEDE_ANNOUNCED.has(job.kind)) {
+  // A row retired on purpose while this run held it (/reset, the episode ending) fences the run by
+  // design, and says so with `cancelledAt` (review round 1): nothing was lost, so nothing to announce.
+  if (
+    SUPERSEDE_ANNOUNCED.has(job.kind) &&
+    !(await jobCancelledOnPurpose(job, base))
+  ) {
     announceDiscardedOutcome(job, "superseded", base, { outcome });
   }
 }

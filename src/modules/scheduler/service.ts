@@ -604,6 +604,22 @@ export async function jobRetired(
   return isRetired(job, row);
 }
 
+// WAS THIS RUN CALLED OFF BY SOMEONE WHO MEANT IT (issue #896, review round 1)? Narrower than
+// `jobRetired`, which also answers yes for a claim token that merely moved: here the caller already
+// knows the token moved (its CAS failed) and asks only whether the tombstone a retirement leaves is
+// on the row. A /reset, a customer reply ending the episode: the fenced outcome is the design, not a
+// loss. Unreadable answers no, so the caller reports rather than stays quiet about a loss it cannot
+// rule out.
+export async function jobCancelledOnPurpose(
+  job: ClaimedJob,
+  base: PrismaClient = basePrisma,
+): Promise<boolean> {
+  const row = await readJobRetirement(job, base).catch(() => null);
+  return (
+    (row?.payload as { cancelledAt?: unknown } | null)?.cancelledAt != null
+  );
+}
+
 // THE SAME QUESTION, ASKED WHERE A GUESS IS THE EXPENSIVE ANSWER. `jobRetired` swallows an
 // unreadable row as "still wanted" because for most callers the cost of guessing wrong is a message
 // sent one time too many, fenced later by the CAS. Inside the thread's critical section the cost is

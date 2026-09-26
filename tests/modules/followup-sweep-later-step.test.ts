@@ -63,6 +63,7 @@ const DAY_MS = 24 * 60 * 60_000;
 const CONV_CORRIDA = 89_601;
 const CONV_OUTRO_EPISODIO = 89_602;
 const CONV_CARIMBADA = 89_603;
+const CONV_UM_PASSO = 89_604;
 
 let tenantId = 0n;
 let instanceId = 0n;
@@ -408,6 +409,65 @@ describe.skipIf(!dbUp)(
         kind: "FOLLOWUP",
         dedupeKey: keyOf(CONV_CARIMBADA),
       });
+    });
+
+    // Review round 1: a ladder of ONE step has nothing after step 0. When that step ends between the
+    // sweep's read and its arm, the arm puts the DONE row back and step 0 runs again on the stamped
+    // episode, but no step was skipped: the sequence was already over. A warn there would page an
+    // alert channel for a conversation that lost nothing.
+    test("a one-step ladder whose only step already ran ends quietly", async () => {
+      await clearFlowLog(suDb, { tenantId });
+      const agent = await suDb.agent.findFirstOrThrow({ where: { tenantId } });
+      await suDb.agent.update({
+        where: { id: agent.id },
+        data: {
+          settings: {
+            followUp: {
+              enabled: true,
+              steps: [
+                { delayValue: 1, delayUnit: "minutes", instructions: "a" },
+              ],
+            },
+          },
+        },
+      });
+      try {
+        await seedIdle(CONV_UM_PASSO);
+        await suDb.conversation.updateMany({
+          where: { tenantId, chatwootConversationId: CONV_UM_PASSO },
+          data: { lastFollowUpAt: new Date(Date.now() - 60_000) },
+        });
+        await suDb.schedulerJob.create({
+          data: {
+            tenantId,
+            kind: "FOLLOWUP",
+            dedupeKey: keyOf(CONV_UM_PASSO),
+            status: "PENDING",
+            runAt: new Date(Date.now() - 1_000),
+            payload: { threadId: threadOf(CONV_UM_PASSO), episode: "1" },
+          },
+        });
+        const s = stubClient();
+        registerStubbedFollowUp(s);
+        const [job] = await claimOwn(CONV_UM_PASSO);
+        expect(job).toBeDefined();
+        if (!job) return;
+        await runClaimed(job, appDb);
+
+        expect(s.sent).toHaveLength(0);
+        expect((await rowOf(CONV_UM_PASSO)).status).toBe("DONE");
+        const lines = await flowLogRows(suDb, {
+          // flowlog-scope: tenant-wide — o tenant é deste arquivo e o caso esvazia o log antes; o
+          // sujeito é QUANTAS linhas um passo único já rodado escreveu.
+          where: { tenantId, stage: "dead_letter" },
+        });
+        expect(lines).toHaveLength(0);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agent.id },
+          data: { settings: agent.settings ?? {} },
+        });
+      }
     });
   },
 );

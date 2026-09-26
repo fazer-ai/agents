@@ -253,9 +253,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/flowlog-retention.test.ts": 1,
   "tests/modules/flowlog-settle.test.ts": 1,
   "tests/modules/flowlog.test.ts": 1,
-  // #896: one read, tenant-wide on purpose. Its subject is HOW MANY lines a lost follow-up sequence
-  // wrote, and the case empties this file's tenant before reading.
-  "tests/modules/followup-sweep-later-step.test.ts": 1,
+  // #896: two reads, tenant-wide on purpose. Their subject is HOW MANY lines a lost follow-up sequence
+  // wrote (one), and a one-step ladder re-run (none); each case empties this file's tenant first.
+  "tests/modules/followup-sweep-later-step.test.ts": 2,
   "tests/modules/guardrail-health.test.ts": 1,
   // #720: one reader, and it answers both directions on the same query — the line that names a
   // colleague's reply nobody remembered, and its absence on the customer's own lost ingestion, which

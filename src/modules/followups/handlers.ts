@@ -15,7 +15,6 @@ import {
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { emitFlowEvent } from "@/modules/flowlog/service";
-import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
 import {
   isFollowUpLive,
@@ -406,7 +405,6 @@ function announceLostLadder(
     agentId: bigint;
     inboxId: bigint | null;
     threadId: string;
-    fullDetail: boolean;
   },
 ): void {
   emitFlowEvent(
@@ -418,7 +416,6 @@ function announceLostLadder(
       agentId: at.agentId,
       inboxId: at.inboxId,
       threadId: at.threadId,
-      fullDetail: at.fullDetail,
       base,
     },
     {
@@ -638,7 +635,6 @@ export async function followUpHandler(
     return {
       conv,
       agentId: inbox.agentId,
-      fullDetail: readObservabilityConfig(agent.settings).fullDetail,
       followUpCfg,
       hours,
       armedAt: agent.followUpArmedAt,
@@ -702,13 +698,15 @@ export async function followUpHandler(
     // Step 0 (sequence start) only proceeds for a fresh episode — the sweep's SQL filter already
     // enforces this; re-checking here blocks a stale step-0 job on an already-handled conversation.
     if (!newEpisode) {
-      announceLostLadder(job, base, {
-        conversationId: ctx.conv.id,
-        agentId: ctx.agentId,
-        inboxId: ctx.conv.inboxId,
-        threadId,
-        fullDetail: ctx.fullDetail,
-      });
+      // Only a ladder with a step after this one can lose it (review round 1). A one-step ladder
+      // re-run here already ran its only step: the sequence was over, and nothing was lost.
+      if (steps.length > 1)
+        announceLostLadder(job, base, {
+          conversationId: ctx.conv.id,
+          agentId: ctx.agentId,
+          inboxId: ctx.conv.inboxId,
+          threadId,
+        });
       return { outcome: "done" };
     }
     // NOTE: Activation fence (mirrors the sweep SQL): a sequence only STARTS for an episode that began

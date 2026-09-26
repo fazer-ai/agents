@@ -13,6 +13,7 @@ import {
   claimDueDebounceJobs,
   claimDueJobs,
   enqueueJob,
+  retireJobsByDedupeKey,
   type SchedulerJobKind,
 } from "@/modules/scheduler/service";
 import {
@@ -182,6 +183,25 @@ describe.skipIf(!dbUp)("a discarded scheduler outcome (issue #896)", () => {
     // The later claim still owns the row: the discarded outcome did not land.
     const row = await suDb.schedulerJob.findUniqueOrThrow({ where: { id } });
     expect(row.status).toBe("CLAIMED");
+  });
+
+  // Review round 1: a command like /reset retires the claimed row on purpose (DONE, `cancelledAt`,
+  // claim_seq bumped). The run's outcome is then fenced by design, and a warn would page an alert
+  // channel for a retirement an operator asked for.
+  test("a FOLLOWUP retired on purpose while it ran stays off the flow log", async () => {
+    await clearFlowLog(suDb, { tenantId });
+    const threadId = `${tenantId}:1:4343`;
+    const key = `followup:${threadId}`;
+    install("FOLLOWUP", async () => ({ outcome: "done" }));
+    const id = await arm("FOLLOWUP", key, { threadId });
+    const job = await claim("FOLLOWUP", id);
+    expect(await retireJobsByDedupeKey(tenantId, "FOLLOWUP", key, appDb)).toBe(
+      1,
+    );
+    await runClaimed(job, appDb);
+    expect(await discardLines()).toHaveLength(0);
+    const row = await suDb.schedulerJob.findUniqueOrThrow({ where: { id } });
+    expect(row.status).toBe("DONE");
   });
 
   test("a superseded DEBOUNCE flush stays off the flow log", async () => {

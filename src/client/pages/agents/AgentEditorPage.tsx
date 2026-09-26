@@ -111,7 +111,6 @@ import {
   type MemoryState,
   MONITORING_SECTIONS,
   type ModelFallbackState,
-  type SendImageState,
   type TakeoverState,
 } from "./BehaviorTab";
 import {
@@ -152,6 +151,11 @@ import {
 } from "./observationFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
+import {
+  readSendImageState,
+  type SendImageState,
+  serializeSendImage,
+} from "./SendImageFields";
 import { signatureToForm, signatureToStored } from "./signatureFormState";
 import {
   parseToolPreconditionRows,
@@ -407,7 +411,6 @@ function readBehaviorState(a: Agent) {
   const tg = (s.toolGuidance ?? {}) as Record<string, unknown>;
   const li = (s.limits ?? {}) as Record<string, unknown>;
   const ac = (s.attributeContext ?? {}) as Record<string, unknown>;
-  const si = (s.sendImage ?? {}) as Record<string, unknown>;
   const av = (s.availability ?? {}) as Record<string, unknown>;
   const ca = (s.contactAuth ?? {}) as Record<string, unknown>;
 
@@ -537,7 +540,7 @@ function readBehaviorState(a: Agent) {
       contact: attrKeys(ac.contact),
       task: attrKeys(ac.task),
     },
-    sendImage: { allowedHosts: attrKeys(si.allowedHosts).join("\n") },
+    sendImage: readSendImageState(s.sendImage),
     crossInboxCase: readCrossInboxCaseState(s.crossInboxCase),
     // NOTE: ON unless the stored bag says otherwise, mirroring readTakeoverConfig. A bag written
     // before this block existed has no key and must read as on, or loading an old agent would show
@@ -920,11 +923,11 @@ function AgentEditor() {
   const [modelFallback, setModelFallback] = useState<ModelFallbackState>(() =>
     modelFallbackToForm({}),
   );
-  // NOTE: Hosts the send_image tool may fetch from. Mirrors agent.settings.sendImage
-  // (modules/images/settings), edited as one host per line.
   const [takeover, setTakeover] = useState<TakeoverState>({
     onHumanReply: true,
   });
+  // NOTE: Hosts the send_image tool may fetch from. Mirrors agent.settings.sendImage
+  // (modules/images/settings), edited as one host per line on the tool's card (issue #880).
   const [sendImage, setSendImage] = useState<SendImageState>({
     allowedHosts: "",
   });
@@ -1463,6 +1466,7 @@ function AgentEditor() {
     setUpdateKanbanTaskInstructions(b.updateKanbanTaskInstructions);
     setToolPreconditions(b.toolPreconditions);
     setCrossInboxCase(b.crossInboxCase);
+    setSendImage(b.sendImage);
   }, []);
 
   // Full reset of the general + behavior form state from a synced agent. Used on load and discard-all
@@ -1496,7 +1500,6 @@ function AgentEditor() {
     setMemory(b.memory);
     setObservation(b.observation);
     setModelFallback(b.modelFallback);
-    setSendImage(b.sendImage);
     setTakeover(b.takeover);
     setAttributeContext(b.attributeContext);
     setChannelRedirect(readChannelRedirectState(a));
@@ -1538,7 +1541,6 @@ function AgentEditor() {
     setMemory(b.memory);
     setObservation(b.observation);
     setModelFallback(b.modelFallback);
-    setSendImage(b.sendImage);
     setTakeover(b.takeover);
     setAttributeContext(b.attributeContext);
   }, []);
@@ -1851,12 +1853,6 @@ function AgentEditor() {
         task: attributeContext.task,
       },
       takeover: { onHumanReply: takeover.onHumanReply },
-      sendImage: {
-        allowedHosts: sendImage.allowedHosts
-          .split("\n")
-          .map((h) => h.trim())
-          .filter(Boolean),
-      },
     };
   }
 
@@ -1891,7 +1887,6 @@ function AgentEditor() {
       vision,
       limits,
       attributeContext,
-      sendImage,
       takeover,
       observability,
       memory,
@@ -1920,6 +1915,7 @@ function AgentEditor() {
       updateKanbanTaskInstructions,
       toolPreconditions,
       crossInboxCase,
+      sendImage,
     }),
     knowledge: canonicalGrants(grants.filter((g) => g.source === "RAG")),
   };
@@ -2882,7 +2878,6 @@ function AgentEditor() {
     setMemory(b.memory);
     setObservation(b.observation);
     setModelFallback(b.modelFallback);
-    setSendImage(b.sendImage);
     setTakeover(b.takeover);
     setAttributeContext(b.attributeContext);
   };
@@ -3093,6 +3088,7 @@ function AgentEditor() {
       const handoffJson = serializeHandoff(handoff);
       const kanbanJson = { instructions: kanbanInstructions.trim() || null };
       const crossInboxCaseJson = serializeCrossInboxCase(crossInboxCase);
+      const sendImageJson = serializeSendImage(sendImage);
       // Merge the per-tool guidance map: preserve any entries for other tools, set/clear ours.
       const existingGuidance = (syncedSettings.toolGuidance ?? {}) as Record<
         string,
@@ -3142,6 +3138,7 @@ function AgentEditor() {
           outsideAllowed: outsideAllowedLabels,
         },
         crossInboxCase: crossInboxCaseJson,
+        sendImage: sendImageJson,
       };
       // Before either request: the grants PUT goes out first and the PATCH after it, and both can
       // answer a refusal about this bag.
@@ -3226,6 +3223,7 @@ function AgentEditor() {
           outsideAllowed: outsideAllowedLabels,
         },
         crossInboxCase: crossInboxCaseJson,
+        sendImage: sendImageJson,
       }));
       markSynced(String(agentRes.data.agent.updatedAt));
       bumpSync("tools", "knowledge");
@@ -3919,6 +3917,8 @@ function AgentEditor() {
                 setCustomAttributeInstructions={setCustomAttributeInstructions}
                 crossInboxCase={crossInboxCase}
                 setCrossInboxCase={setCrossInboxCase}
+                sendImage={sendImage}
+                setSendImage={setSendImage}
                 labelInstructions={labelInstructions}
                 setLabelInstructions={setLabelInstructions}
                 protectedLabels={protectedLabels}
@@ -4047,8 +4047,6 @@ function AgentEditor() {
                 setModelFallback={setModelFallback}
                 observability={observability}
                 setObservability={setObservability}
-                sendImage={sendImage}
-                setSendImage={setSendImage}
                 takeover={takeover}
                 setTakeover={setTakeover}
                 attributeContext={attributeContext}

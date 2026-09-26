@@ -135,6 +135,8 @@ function renderEditor() {
                 resolveOrigin: false,
               }}
               setCrossInboxCase={noop}
+              sendImage={{ allowedHosts: "" }}
+              setSendImage={noop}
               setCustomAttributeInstructions={noop}
               labelInstructions=""
               protectedLabels=""

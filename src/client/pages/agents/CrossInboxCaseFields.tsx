@@ -153,14 +153,6 @@ export function CrossInboxCaseFields({
           )}
         </Select>
       </FormField>
-      {!value.targetInboxId && (
-        <p className="text-warning text-xs">
-          {t(
-            "editor.crossInboxCase.noInbox",
-            "Pick a destination inbox: until then the agent is not offered this tool.",
-          )}
-        </p>
-      )}
       <div className="flex flex-col gap-1.5">
         <SwitchField
           checked={value.resolveOrigin}

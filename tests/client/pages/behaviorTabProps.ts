@@ -153,10 +153,8 @@ export function behaviorTabProps(
     },
     langfuseSendContent: false,
     setObservability: noop,
-    sendImage: { allowedHosts: "" },
     takeover: { onHumanReply: true },
     setTakeover: () => {},
-    setSendImage: noop,
     attributeContext: { conversation: [], contact: [], task: [] },
     setAttributeContext: noop,
     serviceWindow: {

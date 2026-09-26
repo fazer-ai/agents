@@ -6,7 +6,6 @@ import {
   Eye,
   Gauge,
   Image,
-  ImagePlus,
   Layers,
   LifeBuoy,
   ListChecks,
@@ -343,10 +342,6 @@ export interface ModelFallbackState {
   baseURL: string;
 }
 
-export interface SendImageState {
-  allowedHosts: string;
-}
-
 // NOTE: Mirrors agent.settings.takeover / readTakeoverConfig. Its own block rather than a field on
 // `handoff`, because the Tools tab REPLACES that one wholesale on every save.
 export interface TakeoverState {
@@ -459,8 +454,6 @@ interface BehaviorTabProps {
   // still loading, which reads as "not known yet" and never as "off".
   langfuseSendContent: boolean | null;
   setLimits: React.Dispatch<React.SetStateAction<LimitsState>>;
-  sendImage: SendImageState;
-  setSendImage: React.Dispatch<React.SetStateAction<SendImageState>>;
   takeover: TakeoverState;
   setTakeover: React.Dispatch<React.SetStateAction<TakeoverState>>;
   attributeContext: AttributeContextState;
@@ -1249,8 +1242,6 @@ export function BehaviorTab({
   langfuseSendContent,
   setObservability,
   setLimits,
-  sendImage,
-  setSendImage,
   takeover,
   setTakeover,
   attributeContext,
@@ -1631,11 +1622,6 @@ export function BehaviorTab({
       id: "attributeContext",
       icon: ListChecks,
       label: t("editor.attributeContext", "Data in context"),
-    },
-    {
-      id: "sendImage",
-      icon: ImagePlus,
-      label: t("editor.sendImage", "Sending images"),
     },
     // Last of the behaviour sections and before the operational ones: most agents never turn this
     // on, so it does not belong above the grouping/audio/memory settings every agent uses — but it
@@ -3111,32 +3097,6 @@ export function BehaviorTab({
               attributeContext={attributeContext}
               setAttributeContext={setAttributeContext}
             />
-          </Section>
-
-          <Section
-            id="sendImage"
-            hidden={watcher}
-            icon={ImagePlus}
-            title={t("editor.sendImage", "Sending images")}
-            help={t(
-              "editor.sendImageHelp",
-              'This list defines which sites the agent may fetch images from with the "Send image" tool.\n\nThe agent chooses the address, but it can only access sites on this list. An empty list blocks every attempt.\n\nOutput checks inspect the text, not the image. The list restricts the source, not its contents, and only applies when the tool is granted on the Tools tab.',
-            )}
-          >
-            <FormField
-              label={t("editor.sendImageHosts", "Allowed hosts")}
-              description={t(
-                "editor.sendImageHostsHint",
-                'One per line, e.g. cdn.minhaloja.com.br. Start with "*." to cover a domain and its subdomains (*.minhaloja.com.br). Paste a full URL and only its host is kept.',
-              )}
-            >
-              <Textarea
-                value={sendImage.allowedHosts}
-                onChange={(e) => setSendImage({ allowedHosts: e.target.value })}
-                rows={4}
-                placeholder="cdn.minhaloja.com.br"
-              />
-            </FormField>
           </Section>
 
           <Section

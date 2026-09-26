@@ -56,6 +56,11 @@ import {
   CrossInboxCaseFields,
   type CrossInboxCaseState,
 } from "./CrossInboxCaseFields";
+import {
+  SendImageFields,
+  type SendImageState,
+  sendImageHasNoHost,
+} from "./SendImageFields";
 import type {
   GrantState,
   HandoffUiState,
@@ -106,6 +111,8 @@ const LABEL_TOOL = "set_labels";
 const UPDATE_KANBAN_TOOL = "update_kanban_task";
 // open_case_in_inbox needs a destination inbox before it is offered at all (issue #700).
 const OPEN_CASE_TOOL = "open_case_in_inbox";
+// send_image refuses every call until at least one host is allowed (issue #880).
+const SEND_IMAGE_TOOL = "send_image";
 
 interface Props {
   // The agent being edited — scopes the handoff target picker to the accounts it serves.
@@ -142,6 +149,10 @@ interface Props {
   // to the switch that grants it.
   crossInboxCase: CrossInboxCaseState;
   setCrossInboxCase: (v: CrossInboxCaseState) => void;
+  // Hosts send_image may fetch from (agent.settings.sendImage). Persisted by the Tools tab's save:
+  // with an empty list the tool is offered and refuses every call, so the list belongs on its card.
+  sendImage: SendImageState;
+  setSendImage: (v: SendImageState) => void;
   // The refused note this editor draws, if the standing refusal is about one -- see ToolRefusals.
   refusals: ToolRefusals;
   setCustomAttributeInstructions: (v: string) => void;
@@ -359,6 +370,7 @@ function ConfigurableToolCard({
   icon: Icon,
   badge,
   configured,
+  warning,
   children,
 }: {
   selected: boolean;
@@ -370,6 +382,9 @@ function ConfigurableToolCard({
   // True when the config holds non-default content — shows a dot on the collapsed header so the
   // operator knows there is hidden config worth opening.
   configured?: boolean;
+  // What keeps the granted tool from working, drawn under the header whether or not the config is
+  // expanded: a tool loaded already granted starts collapsed, and a warning inside it went unseen.
+  warning?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   const { t } = useTranslation();
@@ -466,6 +481,11 @@ function ConfigurableToolCard({
           </button>
         )}
       </div>
+      {selected && warning && (
+        <p className="border-border border-t px-3 py-2 text-warning text-xs">
+          {warning}
+        </p>
+      )}
       {hasConfig && expanded && (
         <div className="flex flex-col gap-4 border-border border-t bg-bg-secondary p-3">
           {children}
@@ -506,6 +526,8 @@ export function ToolGrantsEditor({
   customAttributeInstructions,
   crossInboxCase,
   setCrossInboxCase,
+  sendImage,
+  setSendImage,
   refusals,
   setCustomAttributeInstructions,
   labelInstructions,
@@ -605,6 +627,9 @@ export function ToolGrantsEditor({
   );
   const openCaseEnabled = selectedNative.has(OPEN_CASE_TOOL);
   const openCaseEntry = catalog.native.find((n) => n.name === OPEN_CASE_TOOL);
+  const sendImageEnabled = selectedNative.has(SEND_IMAGE_TOOL);
+  const sendImageEntry = catalog.native.find((n) => n.name === SEND_IMAGE_TOOL);
+  const sendImageNoHost = sendImageHasNoHost(sendImage);
 
   // True when any ENABLED configurable native tool holds non-default config — surfaces a dot on the
   // collapsed section header so the operator knows hidden settings are in play. Mirrors each card's
@@ -621,7 +646,8 @@ export function ToolGrantsEditor({
         protectedLabels.trim() !== "" ||
         allowedLabels.trim() !== "")) ||
     (updateKanbanEnabled && updateKanbanTaskInstructions.trim() !== "") ||
-    (openCaseEnabled && crossInboxCase.targetInboxId !== "");
+    (openCaseEnabled && crossInboxCase.targetInboxId !== "") ||
+    (sendImageEnabled && !sendImageNoHost);
 
   // Agents/teams + the accounts the agent serves, for the "pinned" handoff target picker. Scoped to
   // the agent (by its bound inboxes): a pinned target is account-scoped, so it is only offered when the
@@ -1532,7 +1558,8 @@ export function ToolGrantsEditor({
                 n.name !== ATTR_TOOL &&
                 n.name !== LABEL_TOOL &&
                 n.name !== UPDATE_KANBAN_TOOL &&
-                n.name !== OPEN_CASE_TOOL,
+                n.name !== OPEN_CASE_TOOL &&
+                n.name !== SEND_IMAGE_TOOL,
             )
             .map((n) => {
               const meta = nativeToolMeta(n.name, t);
@@ -1793,6 +1820,14 @@ export function ToolGrantsEditor({
             title={nativeToolMeta(OPEN_CASE_TOOL, t).label}
             description={nativeToolMeta(OPEN_CASE_TOOL, t).description}
             configured={crossInboxCase.targetInboxId !== ""}
+            warning={
+              crossInboxCase.targetInboxId === ""
+                ? t(
+                    "editor.crossInboxCase.noInbox",
+                    "Pick a destination inbox: until then the agent is not offered this tool.",
+                  )
+                : undefined
+            }
           >
             <CrossInboxCaseFields
               value={crossInboxCase}
@@ -1800,6 +1835,30 @@ export function ToolGrantsEditor({
             />
           </ConfigurableToolCard>
         )}
+        {sendImageEntry &&
+          !(observing && sendImageEntry.deliversToCustomer) && (
+            <ConfigurableToolCard
+              selected={sendImageEnabled}
+              onToggle={() => toggleNative(SEND_IMAGE_TOOL)}
+              icon={nativeToolMeta(SEND_IMAGE_TOOL, t).icon}
+              title={nativeToolMeta(SEND_IMAGE_TOOL, t).label}
+              description={nativeToolMeta(SEND_IMAGE_TOOL, t).description}
+              configured={!sendImageNoHost}
+              warning={
+                sendImageNoHost
+                  ? t(
+                      "editor.sendImageNoHost",
+                      "No host is allowed yet, so every call is refused. Add at least one host.",
+                    )
+                  : undefined
+              }
+            >
+              <SendImageFields
+                sendImage={sendImage}
+                setSendImage={setSendImage}
+              />
+            </ConfigurableToolCard>
+          )}
         {attrEntry && (
           <ConfigurableToolCard
             selected={attrEnabled}

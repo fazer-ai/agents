@@ -398,6 +398,8 @@ function renderPinned(targetInstanceId: number | null): {
           resolveOrigin: false,
         }}
         setCrossInboxCase={noop}
+        sendImage={{ allowedHosts: "" }}
+        setSendImage={noop}
         setCustomAttributeInstructions={noop}
         labelInstructions=""
         protectedLabels=""

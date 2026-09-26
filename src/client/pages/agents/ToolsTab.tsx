@@ -11,6 +11,7 @@ import { useTranslation } from "react-i18next";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
 import type { CrossInboxCaseState } from "./CrossInboxCaseFields";
 import { SectionNav } from "./SectionNav";
+import type { SendImageState } from "./SendImageFields";
 import { TabActionBar } from "./TabActionBar";
 import { offeredPackTools, ToolGrantsEditor } from "./ToolGrantsEditor";
 import { ToolPreconditionsEditor } from "./ToolPreconditionsEditor";
@@ -40,6 +41,8 @@ interface ToolsTabProps {
   customAttributeInstructions: string;
   crossInboxCase: CrossInboxCaseState;
   setCrossInboxCase: React.Dispatch<React.SetStateAction<CrossInboxCaseState>>;
+  sendImage: SendImageState;
+  setSendImage: React.Dispatch<React.SetStateAction<SendImageState>>;
   refusals: ToolRefusals;
   setCustomAttributeInstructions: (v: string) => void;
   labelInstructions: string;
@@ -100,6 +103,8 @@ export function ToolsTab({
   customAttributeInstructions,
   crossInboxCase,
   setCrossInboxCase,
+  sendImage,
+  setSendImage,
   refusals,
   setCustomAttributeInstructions,
   labelInstructions,
@@ -218,6 +223,8 @@ export function ToolsTab({
             customAttributeInstructions={customAttributeInstructions}
             crossInboxCase={crossInboxCase}
             setCrossInboxCase={setCrossInboxCase}
+            sendImage={sendImage}
+            setSendImage={setSendImage}
             refusals={refusals}
             setCustomAttributeInstructions={setCustomAttributeInstructions}
             labelInstructions={labelInstructions}

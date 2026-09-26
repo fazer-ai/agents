@@ -393,6 +393,7 @@ function renderPinned(targetInstanceId: number | null): {
           targetInboxId: "",
           targetInstanceId: "",
           originLabel: "",
+          caseLabels: [],
           caseAttributeKey: "",
           mergeContacts: false,
           resolveOrigin: false,

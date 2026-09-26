@@ -1830,6 +1830,7 @@ export function ToolGrantsEditor({
             }
           >
             <CrossInboxCaseFields
+              agentId={agentId}
               value={crossInboxCase}
               onChange={setCrossInboxCase}
             />

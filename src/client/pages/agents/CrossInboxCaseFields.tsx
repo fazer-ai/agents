@@ -5,7 +5,9 @@ import { api } from "@/client/lib/api";
 import {
   CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE,
   destinationIdentity,
+  normalizeCaseLabels,
 } from "@/modules/cross-inbox-case/settings";
+import { type InboxLabelOption, LabelPicker } from "./LabelPicker";
 
 // NOTE: Mirrors agent.settings.crossInboxCase (modules/cross-inbox-case/settings). The inbox is kept
 // with the instance it was picked from, because an inbox id only means something inside one Chatwoot
@@ -14,6 +16,7 @@ export interface CrossInboxCaseState {
   targetInboxId: string;
   targetInstanceId: string;
   originLabel: string;
+  caseLabels: string[];
   caseAttributeKey: string;
   mergeContacts: boolean;
   resolveOrigin: boolean;
@@ -29,6 +32,7 @@ export function readCrossInboxCaseState(raw: unknown): CrossInboxCaseState {
     targetInboxId: id(o.targetInboxId),
     targetInstanceId: id(o.targetInstanceId),
     originLabel: typeof o.originLabel === "string" ? o.originLabel : "",
+    caseLabels: normalizeCaseLabels(o.caseLabels),
     caseAttributeKey:
       typeof o.caseAttributeKey === "string" ? o.caseAttributeKey : "",
     mergeContacts: o.mergeContacts === true,
@@ -52,6 +56,7 @@ export function serializeCrossInboxCase(
       ? Number(s.targetInstanceId) || null
       : null,
     originLabel: s.originLabel.trim() || null,
+    caseLabels: normalizeCaseLabels(s.caseLabels),
     ...(s.caseAttributeKey.trim()
       ? { caseAttributeKey: s.caseAttributeKey.trim() }
       : {}),
@@ -69,14 +74,38 @@ const optionValue = (instanceId: string, inboxId: string | number) =>
   `${instanceId}:${inboxId}`;
 
 export function CrossInboxCaseFields({
+  agentId,
   value,
   onChange,
 }: {
+  agentId: string;
   value: CrossInboxCaseState;
   onChange: (next: CrossInboxCaseState) => void;
 }) {
   const { t } = useTranslation();
   const [inboxes, setInboxes] = useState<Inbox[]>([]);
+  const [labels, setLabels] = useState<InboxLabelOption[]>([]);
+  const [multiAccount, setMultiAccount] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLabels([]);
+    setMultiAccount(false);
+    void (async () => {
+      try {
+        const { data } = await api.api.v1.chatwoot.labels({ agentId }).get();
+        if (!cancelled && data) {
+          setLabels(data.labels);
+          setMultiAccount(data.accountCount > 1);
+        }
+      } catch {
+        // NOTE: best-effort, the picker still takes a typed label
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -180,6 +209,25 @@ export function CrossInboxCaseFields({
           value={value.originLabel}
           onChange={(e) => onChange({ ...value, originLabel: e.target.value })}
           placeholder="caso-aberto"
+        />
+      </FormField>
+      <FormField
+        label={t("editor.crossInboxCase.caseLabels", "Labels on the case")}
+        group
+        description={t(
+          "editor.crossInboxCase.caseLabelsHint",
+          "Put on every case this tool opens, besides the ones the agent picks, so the case reaches the team's folders. A label the account does not have is left off and reported.",
+        )}
+      >
+        <LabelPicker
+          values={value.caseLabels}
+          onChange={(v) => onChange({ ...value, caseLabels: v })}
+          labels={labels}
+          multiAccount={multiAccount}
+          ariaLabel={t(
+            "editor.crossInboxCase.caseLabels",
+            "Labels on the case",
+          )}
         />
       </FormField>
       <FormField

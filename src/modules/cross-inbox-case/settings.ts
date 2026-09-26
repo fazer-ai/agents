@@ -19,6 +19,10 @@ export interface CrossInboxCaseConfig {
   targetInstanceId: number | null;
   // A label written on the ORIGIN conversation once the case is open. Null ⇒ none.
   originLabel: string | null;
+  // Labels written on every CASE this tool opens or continues, on top of the model's `labels`
+  // (issue #901). The model's choice varies per call; a team whose queue is a folder filtered by
+  // label needs one the operator controls, or the cases the agent opens never reach that folder.
+  caseLabels: string[];
   // The origin conversation's custom attribute that receives the case's conversation number.
   caseAttributeKey: string;
   mergeContacts: boolean;
@@ -39,6 +43,7 @@ export const CROSS_INBOX_CASE_DEFAULTS: CrossInboxCaseConfig = {
   targetInboxId: null,
   targetInstanceId: null,
   originLabel: null,
+  caseLabels: [],
   caseAttributeKey: CROSS_INBOX_CASE_DEFAULT_ATTRIBUTE,
   mergeContacts: false,
   resolveOrigin: false,
@@ -50,6 +55,20 @@ export const CROSS_INBOX_CASE_DEFAULTS: CrossInboxCaseConfig = {
 // saved and silently ignored.
 export const CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE = /^[a-z][a-z0-9_]{0,63}$/;
 const ATTRIBUTE_KEY_RE = CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE;
+
+// Chatwoot label titles are lowercase, and the same label twice is one label.
+export const CROSS_INBOX_CASE_MAX_LABELS = 20;
+
+export function normalizeCaseLabels(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const l of v) {
+    if (typeof l !== "string") continue;
+    const label = l.trim().toLowerCase();
+    if (label && !out.includes(label)) out.push(label);
+  }
+  return out.slice(0, CROSS_INBOX_CASE_MAX_LABELS);
+}
 
 function positiveInt(v: unknown): number | null {
   const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
@@ -74,6 +93,7 @@ export function readCrossInboxCaseConfig(
     targetInboxId: positiveInt(o.targetInboxId),
     targetInstanceId: positiveInt(o.targetInstanceId),
     originLabel: label || null,
+    caseLabels: normalizeCaseLabels(o.caseLabels),
     caseAttributeKey: ATTRIBUTE_KEY_RE.test(key)
       ? key
       : CROSS_INBOX_CASE_DEFAULT_ATTRIBUTE,

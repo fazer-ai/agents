@@ -930,6 +930,7 @@ function AgentEditor() {
     targetInboxId: "",
     targetInstanceId: "",
     originLabel: "",
+    caseLabels: [],
     caseAttributeKey: "",
     mergeContacts: false,
     resolveOrigin: false,

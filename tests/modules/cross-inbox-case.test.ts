@@ -49,6 +49,8 @@ function fakeChatwoot(
     listNewest?: number;
     // A wait inside the listing, so two concurrent calls can both list before either creates.
     listDelayMs?: number;
+    // The account's label catalog (`GET /labels`); "fail" answers it with a 500.
+    catalog?: string[] | "fail";
   } = {},
 ) {
   const calls: Array<{ fn: string; args: unknown[] }> = [];
@@ -231,6 +233,12 @@ function fakeChatwoot(
         ],
       };
     },
+    listLabels: async () => {
+      record("listLabels", []);
+      if (opts.catalog === "fail")
+        throw new ChatwootApiError(500, "GET /labels");
+      return [...(opts.catalog ?? [])];
+    },
     getConversationLabels: async (id: number) => {
       record("getConversationLabels", [id]);
       return [...conv(id).labels];
@@ -321,12 +329,36 @@ describe("settings", () => {
       caseAttributeKey: "protocolo",
       mergeContacts: false,
       resolveOrigin: false,
+      caseLabels: [],
     });
     const bad = readCrossInboxCaseConfig({
       crossInboxCase: { targetInboxId: 0, caseAttributeKey: "Protocolo X" },
     });
     expect(bad.targetInboxId).toBeNull();
     expect(bad.caseAttributeKey).toBe("case_conversation_id");
+  });
+
+  test("case labels: trimmed, lowercased, deduplicated, blanks and non-strings dropped (issue #901)", () => {
+    expect(
+      readCrossInboxCaseConfig({
+        crossInboxCase: {
+          caseLabels: [" Agente-SAC ", "agente-sac", "", 7, "veio-do-whatsapp"],
+        },
+      }).caseLabels,
+    ).toEqual(["agente-sac", "veio-do-whatsapp"]);
+    expect(
+      readCrossInboxCaseConfig({ crossInboxCase: { caseLabels: "agente-sac" } })
+        .caseLabels,
+    ).toEqual([]);
+    expect(readCrossInboxCaseConfig({}).caseLabels).toEqual([]);
+  });
+
+  test("case labels: the first 20 are kept", () => {
+    const many = Array.from({ length: 25 }, (_, i) => `etiqueta-${i}`);
+    expect(
+      readCrossInboxCaseConfig({ crossInboxCase: { caseLabels: many } })
+        .caseLabels,
+    ).toEqual(many.slice(0, 20));
   });
 });
 
@@ -1422,6 +1454,138 @@ describe("openCaseInInbox", () => {
     expect(f.convs.find((c) => c.id === 7)?.attrs).toEqual({});
   });
 
+  describe("the operator's fixed case labels (issue #901)", () => {
+    const withCaseLabels = (
+      caseLabels: string[],
+      over: Partial<OpenCaseInput> = {},
+    ) =>
+      input({
+        config: { ...CROSS_INBOX_CASE_DEFAULTS, targetInboxId: 40, caseLabels },
+        ...over,
+      });
+
+    test("applied to a new case together with the model's labels", async () => {
+      const f = fakeChatwoot({
+        catalog: ["agente-sac", "veio-do-whatsapp", "financeiro"],
+      });
+      const r = await openCaseInInbox(
+        f.client,
+        withCaseLabels(["agente-sac", "veio-do-whatsapp"], {
+          labels: ["financeiro"],
+        }),
+      );
+      expect(r).toMatchObject({ kind: "opened", partial: [] });
+      expect(
+        [...(f.convs.find((c) => c.id === 100)?.labels ?? [])].sort(),
+      ).toEqual(["agente-sac", "financeiro", "veio-do-whatsapp"]);
+    });
+
+    test("none configured: the catalog is not even read, and the case gets only the model's labels", async () => {
+      const f = fakeChatwoot({ catalog: ["financeiro"] });
+      await openCaseInInbox(f.client, input({ labels: ["financeiro"] }));
+      expect(f.calls.some((c) => c.fn === "listLabels")).toBe(false);
+      expect(f.convs.find((c) => c.id === 100)?.labels).toEqual(["financeiro"]);
+    });
+
+    test("a label the account does not have is left out and reported, the known ones still land", async () => {
+      const f = fakeChatwoot({ catalog: ["agente-sac"] });
+      const r = await openCaseInInbox(
+        f.client,
+        withCaseLabels(["agente-sac", "nao-existe"]),
+      );
+      expect(r).toMatchObject({
+        kind: "opened",
+        partial: [],
+        unknownCaseLabels: ["nao-existe"],
+      });
+      expect(f.convs.find((c) => c.id === 100)?.labels).toEqual(["agente-sac"]);
+    });
+
+    test("the catalog is matched without regard to case", async () => {
+      const f = fakeChatwoot({ catalog: ["Agente-SAC"] });
+      const r = await openCaseInInbox(f.client, withCaseLabels(["agente-sac"]));
+      expect(r).toMatchObject({ kind: "opened", partial: [] });
+      expect(r).not.toHaveProperty("unknownCaseLabels");
+      expect(f.convs.find((c) => c.id === 100)?.labels).toEqual(["agente-sac"]);
+    });
+
+    test("an unreadable catalog does not cost the label: applied as configured", async () => {
+      const f = fakeChatwoot({ catalog: "fail" });
+      const r = await openCaseInInbox(f.client, withCaseLabels(["agente-sac"]));
+      expect(r).toMatchObject({ kind: "opened", partial: [] });
+      expect(f.convs.find((c) => c.id === 100)?.labels).toEqual(["agente-sac"]);
+    });
+
+    test("a continued case gets only the labels it lacks, and none at all when it has them", async () => {
+      const convs = (labels: string[]) => [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels: [],
+        },
+        {
+          id: 60,
+          inboxId: 40,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels,
+        },
+      ];
+      const f = fakeChatwoot({
+        continueOpen: true,
+        catalog: ["agente-sac", "vip"],
+        convs: convs(["vip", "agente-sac"]),
+      });
+      const r = await openCaseInInbox(f.client, withCaseLabels(["agente-sac"]));
+      expect(r).toMatchObject({ kind: "continued", caseId: 60 });
+      expect(f.convs.find((c) => c.id === 60)?.labels).toEqual([
+        "vip",
+        "agente-sac",
+      ]);
+      expect(
+        f.calls.some(
+          (c) => c.fn === "setConversationLabels" && c.args[0] === 60,
+        ),
+      ).toBe(false);
+
+      const g = fakeChatwoot({
+        continueOpen: true,
+        catalog: ["agente-sac", "vip"],
+        convs: convs(["vip"]),
+      });
+      await openCaseInInbox(g.client, withCaseLabels(["agente-sac"]));
+      expect(g.convs.find((c) => c.id === 60)?.labels).toEqual([
+        "vip",
+        "agente-sac",
+      ]);
+    });
+
+    test("the same label from the operator and from the model is written once", async () => {
+      const f = fakeChatwoot({ catalog: ["agente-sac"] });
+      await openCaseInInbox(
+        f.client,
+        withCaseLabels(["agente-sac"], { labels: ["agente-sac"] }),
+      );
+      expect(f.convs.find((c) => c.id === 100)?.labels).toEqual(["agente-sac"]);
+    });
+
+    test("a label write that fails is a partial step, and the case stays open", async () => {
+      const f = fakeChatwoot({
+        catalog: ["agente-sac"],
+        failOn: new Set(["setConversationLabels"]),
+      });
+      const r = await openCaseInInbox(f.client, withCaseLabels(["agente-sac"]));
+      expect(r).toMatchObject({ kind: "opened", caseId: 100 });
+      expect((r as { partial: string[] }).partial).toContain(
+        "destination_labels",
+      );
+    });
+  });
+
   test("a note that does not land is reported, and the case stays open", async () => {
     const f = fakeChatwoot({ failOn: new Set(["sendPrivateNote"]) });
     const r = await openCaseInInbox(f.client, input());
@@ -1482,6 +1646,41 @@ describe("the tool", () => {
         .filter((c) => c.fn === "createConversation")
         .map((c) => (c.args[0] as { inboxId: number }).inboxId),
     ).toEqual([40]);
+  });
+
+  test("the operator's case labels reach the tool, and a label the account lacks is reported to the operator, not to the model (issue #901)", async () => {
+    const f = fakeChatwoot({ catalog: ["agente-sac"] });
+    const reported: Array<{ phase: string; detail: unknown }> = [];
+    const client = { ...f.client, muted: false } as unknown as ChatwootClient;
+    const [t] = buildNativeTools(
+      {
+        client,
+        conversationId: 7,
+        crossInboxCase: {
+          config: {
+            ...CROSS_INBOX_CASE_DEFAULTS,
+            targetInboxId: 40,
+            caseLabels: ["agente-sac", "nao-existe"],
+          },
+          contactId: 5,
+        },
+        onSideEffectError: (e: { phase: string; detail: unknown }) => {
+          reported.push({ phase: e.phase, detail: e.detail });
+        },
+      } as never,
+      ["open_case_in_inbox"],
+    );
+    if (!t) throw new Error("tool not built");
+    const out = String(await t.invoke({ reason: "x" }));
+    expect(out).toContain("Case opened: conversation #100");
+    expect(out).not.toContain("nao-existe");
+    expect(f.convs.find((c) => c.id === 100)?.labels).toEqual(["agente-sac"]);
+    expect(reported).toEqual([
+      {
+        phase: "case_labels_unknown",
+        detail: { caseId: 100, labels: ["nao-existe"] },
+      },
+    ]);
   });
 
   test("opened: the model is told to tell the customer, and that the origin is not closed", async () => {

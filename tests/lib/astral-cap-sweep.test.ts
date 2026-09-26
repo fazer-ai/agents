@@ -488,6 +488,8 @@ const BARE_SLICES: Record<
   "src/modules/conversations/service.ts": [1, "array"],
   // The newest turns' lines kept off an ARRAY of turns (issue #853), never a string.
   "src/modules/conversations/usage.ts": [1, "array"],
+  // The operator's case labels capped as an ARRAY of labels (issue #901), never a string.
+  "src/modules/cross-inbox-case/settings.ts": [1, "array"],
   "src/modules/debounce/handler.ts": [2, "array"],
   // The logo's one-shot download token is hex from randomUUID.
   "src/modules/documents/company.ts": [1, "ascii"],

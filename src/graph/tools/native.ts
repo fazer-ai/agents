@@ -2359,6 +2359,21 @@ function openCaseInInboxTool(ctx: ToolCtx) {
       });
       if (result.kind === "called_off") ctx.onNoEffect?.(OPEN_CASE_TOOL_NAME);
       if (result.kind !== "failed") {
+        // A configured case label the account does not have: the operator's to fix, so it goes to
+        // the flow log and the alert, and not to the model, which can do nothing about it.
+        if (
+          (result.kind === "opened" || result.kind === "continued") &&
+          result.unknownCaseLabels?.length
+        ) {
+          ctx.onSideEffectError?.({
+            tool: OPEN_CASE_TOOL_NAME,
+            phase: "case_labels_unknown",
+            detail: { caseId: result.caseId, labels: result.unknownCaseLabels },
+            err: new Error(
+              `case labels not in the account: ${result.unknownCaseLabels.join(", ")}`,
+            ),
+          });
+        }
         if (
           (result.kind === "opened" || result.kind === "continued") &&
           result.partial.length > 0

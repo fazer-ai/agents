@@ -290,7 +290,12 @@ const SETTINGS_DESC_CEILING = 2_000;
 // RAISED for issue #885 by `limits.retrySilence`, the switch that asks the model once more when a
 // reply turn would end silent: one boolean, 95 characters. Trimmed first, by 58: the description
 // says only the default. Re-measured on the tree that ships: 28,481.
-const SETTINGS_SCHEMA_CEILING = 28_496;
+//
+// RAISED for issue #901 by `crossInboxCase.caseLabels`, the labels the operator puts on every case
+// the tool opens: one list of strings, 119 characters. Trimmed first, by 33: the description says
+// only the cap, since what the list is for is in the key's name. Re-measured on the tree that ships:
+// 28,567.
+const SETTINGS_SCHEMA_CEILING = 28_582;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -735,6 +740,8 @@ describe("MCP tool descriptions", () => {
   // above: this tree measured 63,509 before #859; with both it measures 63,960, so 63,976 with the same 16. No description changed.
   // SCHEMA RAISED by `limits.retrySilence` (#885), the same 95 characters as the settings ceiling
   // above: this tree measures 64,055, so 64,071 with the same 16. No description changed.
+  // SCHEMA RAISED by `crossInboxCase.caseLabels` (#901), the same 86 characters as the settings
+  // ceiling above: this tree measures 64,141, so 64,157 with the same 16. No description changed.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -744,7 +751,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_503);
-    expect(schema).toBeLessThanOrEqual(64_071);
+    expect(schema).toBeLessThanOrEqual(64_157);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

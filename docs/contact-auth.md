@@ -556,6 +556,39 @@ every caller still re-fences it against the conversation's owner. What it adds i
 flow line, `reused: true`, so an operator reading the trail can tell "the endpoint allowed this"
 apart from "we did not ask".
 
+## Media waits for the gate (issue #890)
+
+With the gate on, nothing of an incoming message reaches an STT or vision provider unless the gate let
+THAT message through. It used to be the other way round: the eager media pass ran at arrival, ahead of
+the gate, so the memory thread would carry the words of a silenced message, and a refused contact's
+voice note was transcribed and their photo described anyway. That was read as a cost question (the
+LLM turn is what the gate stops) and it is not only one: an operator can build a consent flow on this
+gate with no model involved (the endpoint refuses until consent is on record, `denyMessage` is the
+consent question, `includeMessageText` carries the customer's "yes", `mode: "once"` keeps it), and
+under that flow the file sent before consenting must not reach a provider at all.
+
+`runEagerMedia` takes a required `admission` from every caller, so a new call site has to say where it
+stands:
+
+- **`allowed` / `refused`**: the gate just answered for this message. The pass that would have run
+  before the gate on a bot-held conversation now WAITS for it (`gateAsksNext`) and runs after it on
+  the gate's own answer, on both branches: after a yes it reads the media for the turn; on a message
+  the gate path consumed (the refusal, out of hours, a conversation that stopped being the bot's) it
+  reads for memory only if the verdict was a yes. On an allowed message this costs nothing, since the
+  gate and the pass already ran one after the other.
+- **`unverified`**: no verdict was asked, which is every pass the gate does not stand in front of: a
+  conversation a person holds, a late attachment on `message_updated`, an observer's route, a consumed
+  message handed to memory, a memory-only replay. The pass asks the gate itself (`mediaAdmitted`),
+  with the same agent (the one bound to the conversation's inbox) and the same request key, so a
+  stored grant answers under `mode: "once"`. It asks only when a provider call is about to happen: a
+  text message, or media already read, costs the endpoint nothing. Fail-closed like the gate.
+
+What it costs: a refused message is remembered with the unheard-audio and unread-attachment markers
+instead of its content, and a file sent before consent is not read after it (the customer resends).
+A conversation a person holds, on a gated agent, costs one endpoint call per message with unread media
+(a stored grant under `mode: "once"`), which is what keeps its transcription for the attendant. An
+agent without the gate reads media exactly as before.
+
 ## In-process state (`state.ts`)
 
 Not a cache. Three things live here, all in memory (single-replica invariant). The first two are
@@ -610,6 +643,3 @@ refused contact; the retry here is simply the contact's next message.
   contact; the gate trusts the channel's identity, it does not prove it. `message.text` in
   particular is customer-typed and must only ever be validated against the endpoint's own records
   (an unlock code), never believed as identity.
-- **Not a spend firewall for media.** Eager STT/vision run before the gate (they feed the memory
-  thread even for silenced messages), so a denied contact's voice note still gets transcribed.
-  Known, accepted: the LLM turn is the cost the gate exists to stop.

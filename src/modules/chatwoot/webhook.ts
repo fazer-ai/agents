@@ -1709,6 +1709,99 @@ export interface EagerMediaOwner {
   deliveryRowId: bigint | null;
   // Injected by a test, so the ledger fill's retries cost no wall clock. Real callers pass none.
   sleep?: (ms: number) => Promise<void>;
+  // The delivery's injectable runtime deps (tests): the Chatwoot client and the providers' fetches.
+  deps?: RuntimeDeps;
+  // WHERE THIS PASS STANDS RELATIVE TO THE CONTACT AUTHORIZATION GATE (issue #890), and required so a
+  // new call site has to answer. With the gate on, nothing of the message may reach an STT or vision
+  // provider unless the gate let THIS message through: `allowed` is a verdict the caller just got,
+  // `refused` is one it just got the other way, and `unverified` is every pass that runs where no
+  // verdict was asked (a conversation a person holds, a late attachment, an observer's route, a
+  // consumed message handed to memory). An `unverified` pass asks the gate itself, and only when a
+  // provider call is actually about to happen.
+  admission: "allowed" | "refused" | "unverified";
+}
+
+// Whether this pass may send the message's media to a provider (issue #890). The gate asked here is the
+// one the turn would ask: the agent bound to the conversation's inbox, with the same request key, so
+// under `mode: "once"` a stored grant answers and under an unlock flow the key is the message's own.
+// Fail-closed like the gate: an unreadable agent, a contact with no identity or an endpoint that does
+// not answer keeps the media unread, since the rule it exists for is "never without a yes".
+async function mediaAdmitted(
+  tenantId: bigint,
+  instanceId: bigint,
+  n: NormalizedChatwootEvent,
+  chatwootInboxId: number,
+  base: PrismaClient,
+  owner: EagerMediaOwner,
+): Promise<boolean> {
+  if (owner.admission === "allowed") return true;
+  if (owner.admission === "refused") return false;
+  const conversationId = n.conversationId as number;
+  try {
+    const ctx = await runScopedOn(base, sysCtx(tenantId), async (db) => {
+      const inbox = await db.inbox.findFirst({
+        where: { chatwootInstanceId: instanceId, chatwootInboxId },
+        select: { id: true, agentId: true, channelType: true },
+      });
+      if (!inbox?.agentId) return null;
+      const agent = await db.agent.findUnique({
+        where: { id: inbox.agentId },
+        select: { settings: true },
+      });
+      const conv = await db.conversation.findUnique({
+        where: {
+          tenantId_chatwootInstanceId_chatwootConversationId: {
+            tenantId,
+            chatwootInstanceId: instanceId,
+            chatwootConversationId: conversationId,
+          },
+        },
+        select: { id: true, contactId: true },
+      });
+      return { inbox, agentId: inbox.agentId, settings: agent?.settings, conv };
+    });
+    // No agent on the inbox: no gate governs this message.
+    if (!ctx) return true;
+    const cfg = readContactAuthConfig(ctx.settings);
+    if (!cfg.enabled) return true;
+    const verdict = await authorizeContact({
+      tenantId,
+      agentId: ctx.agentId,
+      contactDbId: ctx.conv?.contactId ?? null,
+      conversationDbId: ctx.conv?.id ?? null,
+      conversationId,
+      inboxId: chatwootInboxId,
+      channelType: ctx.inbox.channelType,
+      messageText: n.message?.content ?? null,
+      requestKey: cfg.includeMessageText
+        ? `msg:${n.message?.id ?? "none"}`
+        : "inbox",
+      cfg,
+      base,
+      fetchImpl: owner.deps?.contactAuthFetch,
+    });
+    emitFlowEvent(
+      {
+        tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: owner.conversationId,
+        agentId: ctx.agentId,
+        inboxId: ctx.inbox.id,
+        threadId: chatwootThreadId(tenantId, instanceId, conversationId),
+        base,
+      },
+      contactAuthFlowEvent(verdict),
+    );
+    return verdict.outcome === "allowed";
+  } catch (err) {
+    logger.warn(
+      "chatwoot: media left unread, the contact authorization could not be asked (conv=%s): %s",
+      String(conversationId),
+      errMsg(err),
+    );
+    return false;
+  }
 }
 
 // Eager media analysis: transcribe an incoming voice note (STT) and extract an incoming image/document
@@ -1761,10 +1854,34 @@ export async function runEagerMedia(
   // STT (audio → text). Reuse a transcription already on the attachment (re-delivered event) or
   // already stashed on the event (a prior runEagerMedia call this delivery) — never re-transcribe.
   const audio = firstAudioAttachment(n);
+  const todos = visualAttachments(n);
+  const visionPending =
+    todos.length > 0 &&
+    !n.message.imageDescription &&
+    !n.message.extractedText &&
+    // Also a mark that this event has been through the pass: without it, a message whose every
+    // extraction failed pays the whole provider bill again at the second call site.
+    !n.message.attachmentsUnread &&
+    !n.message.bodyRead;
+  const sttPending =
+    !!audio && !n.message.transcribedText && !audio.transcribedText;
+  // Asked once, and only when a provider would be paid: a text message, or media already read,
+  // costs the operator's endpoint nothing.
+  const admitted =
+    sttPending || visionPending
+      ? await mediaAdmitted(
+          tenantId,
+          instanceId,
+          n,
+          chatwootInboxId,
+          base,
+          owner,
+        )
+      : true;
   if (audio && !n.message.transcribedText) {
     if (audio.transcribedText) {
       n.message.transcribedText = audio.transcribedText;
-    } else {
+    } else if (admitted) {
       try {
         const sttCfg = await resolveSttConfig(
           tenantId,
@@ -1785,6 +1902,10 @@ export async function runEagerMedia(
             cfg: sttCfg,
             base,
             flow: flow(),
+            deps: {
+              makeClient: owner.deps?.makeClient,
+              fetchImpl: owner.deps?.sttFetch,
+            },
           });
           if (text) {
             n.message.transcribedText = text;
@@ -1812,16 +1933,7 @@ export async function runEagerMedia(
   // porque desde a issue #757 ele tem dois chamadores: este, na chegada da mensagem, e o turno que
   // relê uma thread cujos anexos nunca passaram por aqui. O que ficou deste lado é a DECISÃO de
   // rodar (esta entrega já foi extraída?) e o destino do resultado (os campos do evento).
-  const todos = visualAttachments(n);
-  if (
-    todos.length > 0 &&
-    !n.message.imageDescription &&
-    !n.message.extractedText &&
-    // Also a mark that this event has been through the pass: without it, a message whose every
-    // extraction failed pays the whole provider bill again at the second call site.
-    !n.message.attachmentsUnread &&
-    !n.message.bodyRead
-  ) {
+  if (visionPending && admitted) {
     try {
       const visionCfg = await resolveVisionConfig(
         tenantId,
@@ -1846,6 +1958,10 @@ export async function runEagerMedia(
           base,
           flow: flow(),
           convLabel,
+          deps: {
+            makeClient: owner.deps?.makeClient,
+            fetchImpl: owner.deps?.visionFetch,
+          },
         });
         if (r) {
           // The overflow is NAMED, never silently dropped: a model told "3 more files were not
@@ -1873,8 +1989,9 @@ export async function runEagerMedia(
 // Our own bot's outgoing reply is already in the thread (from the turn) and is skipped; so are
 // notes/activities/templates. The CALLER gates this on an ENABLED + PRODUCTION agent (test/disabled
 // never ingest — no cost), so a `consumed` incoming here is a message some gate silenced. Eager
-// media (run before the gate for production) means the rendered customer text carries its
-// transcription/extraction. Best-effort: a failure never strands the delivery.
+// media (run before the gate for production, and after it on its yes when the contact authorization
+// gate is on, issue #890) means the rendered customer text carries its transcription/extraction; a
+// message that gate refused carries the markers instead. Best-effort: a failure never strands the delivery.
 // The contact-inbox the mirrored conversation is known by, for a payload that names none (issue
 // #209 review, round 14). Fails OPEN to null: an unreadable row is the state a payload without a
 // contact-inbox was always in, and the observer's path has already marked the message by now, so
@@ -2328,6 +2445,10 @@ async function maybeConsumeCommandOrGate(params: {
   // in two dozen places and in nested closures of their own; the verdict is a different question
   // asked in exactly one of them.
   onAuthContext: (context: AuthContext | null) => void;
+  // Handed the gate's own answer for this message, whatever it was, so the media pass after it reads
+  // the attachments only on a yes and never asks the endpoint a second time (issue #890). Not called
+  // when the gate did not run: that pass then asks for itself.
+  onAuthVerdict?: (allowed: boolean) => void;
 }): Promise<boolean> {
   const { tenantId, instanceId, n, command, commandActive, base, deps } =
     params;
@@ -4195,6 +4316,7 @@ async function maybeConsumeCommandOrGate(params: {
         },
         contactAuthFlowEvent(verdict),
       );
+      params.onAuthVerdict?.(verdict.outcome === "allowed");
       if (verdict.outcome !== "allowed") {
         // Coalescing the QUESTION is not coalescing the ANSWER's consequences. The single-flight
         // asks the endpoint once about a contact, which is right; the copy, the handoff and the
@@ -5522,6 +5644,19 @@ export async function processChatwootDelivery(
   // (issue #476 review, round 20): the row is written without re-asking the mode, and a watcher that
   // remembers an audio as an attachment marker instead of its transcription remembers nothing of it.
   const watcherReads = observer !== null;
+  // WHEN THE CONTACT AUTHORIZATION GATE IS ABOUT TO RUN ON THIS MESSAGE, the pass waits for its answer
+  // instead of running ahead of it (issue #890): the gate below asks on exactly this condition, and
+  // with the gate on a message's media is read only on its yes. Waiting costs nothing on an allowed
+  // message, since the pass and the gate ran one after the other already; the pass after the gate
+  // reads the media on a yes, and the consumed branch below reads it for memory on the same answer.
+  const gateAsksNext =
+    (act || commandActive) &&
+    isNewIncoming &&
+    !observing &&
+    params.owesMemoryOnly !== true &&
+    rt !== null &&
+    readContactAuthConfig(rt.settings).enabled;
+  let mediaAwaitsGate = false;
   if (
     rt?.enabled &&
     !responderAnalysesMedia &&
@@ -5531,14 +5666,20 @@ export async function processChatwootDelivery(
           watcherReads ||
           activatedTestLateMedia)))
   ) {
-    await runEagerMedia(params.tenantId, params.instanceId, n, base, {
-      conversationId: mirror.conversationRowId,
-      agentId: rt.agentId,
-      inboxId: rt.inboxId,
-      chatwootInboxId: rt.chatwootInboxId,
-      deliveryRowId: params.deliveryRowId,
-      sleep: params.deps?.sleep,
-    });
+    if (gateAsksNext) {
+      mediaAwaitsGate = true;
+    } else {
+      await runEagerMedia(params.tenantId, params.instanceId, n, base, {
+        conversationId: mirror.conversationRowId,
+        agentId: rt.agentId,
+        inboxId: rt.inboxId,
+        chatwootInboxId: rt.chatwootInboxId,
+        deliveryRowId: params.deliveryRowId,
+        sleep: params.deps?.sleep,
+        deps: params.deps,
+        admission: "unverified",
+      });
+    }
   }
 
   // First-class on-reply reset: a new customer message makes any pending inactivity follow-up moot.
@@ -5674,7 +5815,14 @@ export async function processChatwootDelivery(
   let consumed = false;
   // What the contact-authorization gate below learned about this contact, for the direct turn's
   // prompt. Null when the gate is off, or when the delivery never reaches a turn.
-  const gate: { authContext: AuthContext | null } = { authContext: null };
+  const gate: {
+    authContext: AuthContext | null;
+    verdict: "allowed" | "refused" | null;
+  } = { authContext: null, verdict: null };
+  // What the media pass may do given what the gate said about THIS message (issue #890): a verdict
+  // read on the gate is final, and without one the pass asks for itself.
+  const admissionFromGate = (): EagerMediaOwner["admission"] =>
+    gate.verdict ?? "unverified";
   // NOTE: `act || commandActive`, and the second half is the whole point: a control command is the
   // OPERATOR driving the tooling, not the agent speaking, so bot ownership is not its business. The
   // conversation a human took over is exactly where /reset has to work, and it is the state `act`
@@ -5714,7 +5862,26 @@ export async function processChatwootDelivery(
       onAuthContext: (context) => {
         gate.authContext = context;
       },
+      onAuthVerdict: (allowed) => {
+        gate.verdict = allowed ? "allowed" : "refused";
+      },
     });
+    // The pass that waited for the gate, on a message the gate path consumed: out of hours, a
+    // conversation that stopped being the bot's, or the refusal itself. Memory still wants the words
+    // of a message that is not answered, and gets them only where the gate said yes, or where it was
+    // never asked and the pass asks for itself.
+    if (consumed && mediaAwaitsGate) {
+      await runEagerMedia(params.tenantId, params.instanceId, n, base, {
+        conversationId: mirror.conversationRowId,
+        agentId: rt?.agentId ?? null,
+        inboxId: rt?.inboxId ?? null,
+        chatwootInboxId: rt?.chatwootInboxId ?? null,
+        deliveryRowId: params.deliveryRowId,
+        sleep: params.deps?.sleep,
+        deps: params.deps,
+        admission: admissionFromGate(),
+      });
+    }
     if (!consumed) {
       // Eager media (STT/vision) so the debounce re-fetch (and the direct path) get text instead of an
       // empty audio/image message. For a production agent this already ran before the gate; the call
@@ -5732,6 +5899,8 @@ export async function processChatwootDelivery(
         chatwootInboxId: rt?.chatwootInboxId ?? null,
         deliveryRowId: params.deliveryRowId,
         sleep: params.deps?.sleep,
+        deps: params.deps,
+        admission: admissionFromGate(),
       });
 
       // Debounce path: an incoming message on a debounce-enabled agent re-arms the durable DEBOUNCE
@@ -6224,6 +6393,10 @@ export async function processChatwootDelivery(
       chatwootInboxId: rt.chatwootInboxId,
       deliveryRowId: params.deliveryRowId,
       sleep: params.deps?.sleep,
+      deps: params.deps,
+      // A consumption whose cause this line does not know (the refusal among them), and a replay
+      // that asked no gate at all.
+      admission: admissionFromGate(),
     });
   }
   // THE OBSERVER'S OWN REASON TO MARK is its ingestion having the message (issue #209 review,

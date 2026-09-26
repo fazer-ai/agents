@@ -280,6 +280,8 @@ export interface RuntimeDeps {
   contactAuthFetch?: typeof fetch;
   // Injectable fetch for the vision provider (tests); real fetch in production.
   visionFetch?: typeof fetch;
+  // Injectable fetch for the STT provider (tests); real fetch in production.
+  sttFetch?: typeof fetch;
   // Injectable download + SSRF assertion for send_image (tests); the real ones in production.
   imageDeps?: ImageFetchDeps;
   // Injectable for tests: where a document tool writes and reads its rendered PDF.

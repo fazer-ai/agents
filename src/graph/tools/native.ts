@@ -408,6 +408,10 @@ export interface ToolCtx {
     config: CrossInboxCaseConfig;
     contactId: number | null;
   };
+  // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself (the opening message of
+  // `open_case_in_inbox`): whether the text may go out. Bound by the runtime that owns the gate, so
+  // this file does not import it. Absent ⇒ this path screens nothing.
+  mayShowCustomer?: (text: string) => Promise<boolean>;
   // Per-agent, per-tool operator guidance (keyed by native tool name), appended to that tool's
   // model-facing description so transfer/funnel logic lives WITH the tool instead of buried in the
   // prompt. Populated at turn prep from agent.settings (handoff.instructions / kanban.instructions).
@@ -2248,7 +2252,10 @@ function openCaseOutcomeText(
       const partial = r.partial.length
         ? ` Some follow-up writes did not land (${r.partial.join(", ")}); the case itself is open.`
         : "";
-      return `${how}${partial} Tell the customer, in your reply here, that their case was opened and the team will contact them there.${close}`;
+      const blocked = r.openingBlocked
+        ? " The opening message was refused by the output check and was NOT sent; the case is open without it."
+        : "";
+      return `${how}${partial}${blocked} Tell the customer, in your reply here, that their case was opened and the team will contact them there.${close}`;
     }
     case "already_open":
       return `This conversation already opened a case that is still open: conversation #${r.caseId}. Nothing new was opened. Tell the customer their case is already with the team.${close}`;
@@ -2302,6 +2309,8 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           .map((l) => l.trim().toLowerCase())
           .filter((l) => l.length > 0),
         stillWanted: ctx.stillWanted,
+        tenantId: ctx.tenantId,
+        screenCustomerMessage: ctx.mayShowCustomer,
       });
       if (result.kind === "called_off") ctx.onNoEffect?.(OPEN_CASE_TOOL_NAME);
       if (result.kind !== "failed") {

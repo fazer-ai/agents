@@ -1198,6 +1198,10 @@ async function runTurnBody(
       documentsStorageDir: params.deps?.documentsStorageDir,
       turnState,
       handoffState,
+      // The gate is built below, and a tool only runs inside the graph's invoke, after it exists.
+      // A trip still writes its operator note and flow line, like any screening.
+      mayShowCustomer: async (text) =>
+        !guardrailTripped(await runGuardrail("output", text)),
     },
     { buildNativeTools, mcp: params.deps?.mcp, flow },
   );

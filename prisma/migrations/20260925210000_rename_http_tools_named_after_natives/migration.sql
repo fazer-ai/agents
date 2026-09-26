@@ -11,7 +11,11 @@
 --
 -- FORCE ROW LEVEL SECURITY binds the table owner too, so the owner's writes would reach zero rows
 -- and report success. Lifted on the tables this file writes or reads for the file and put back
--- (.claude/rules/prisma.md).
+-- (.claude/rules/prisma.md), inside the file's OWN transaction: without it a failure between the
+-- lift and the restore leaves the five tables without FORCE, the table owner outside the tenant
+-- policy, and `migrate deploy` does not roll that back on its own.
+BEGIN;
+
 CREATE OR REPLACE FUNCTION pg_temp.console_tool_name(label text) RETURNS text
 LANGUAGE sql IMMUTABLE AS $fn$
   SELECT coalesce(
@@ -175,3 +179,5 @@ ALTER TABLE "agents" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "code_tool_definitions" FORCE ROW LEVEL SECURITY;
 ALTER TABLE "tool_definitions" FORCE ROW LEVEL SECURITY;
+
+COMMIT;

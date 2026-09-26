@@ -106,11 +106,53 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
     expect(await seenFor(picked, 4n)).toBeUndefined();
   });
 
+  test("the turn's output screening reaches the tool", async () => {
+    let seen: Record<string, unknown> | undefined;
+    const screen = async () => false;
+    await buildToolset(
+      config(picked),
+      {
+        tenantId: 1n,
+        instanceId: 3n,
+        base: app as PrismaClient,
+        client: {} as unknown as ChatwootClient,
+        conversationId: 77,
+        threadId: `t-${process.pid}`,
+        mayShowCustomer: screen,
+      },
+      {
+        buildNativeTools: (native) => {
+          seen = native as unknown as Record<string, unknown>;
+          return [];
+        },
+      },
+    );
+    expect(seen?.mayShowCustomer).toBe(screen);
+  });
+
   test("a config written without the account is honored as-is", async () => {
     const legacy = { ...picked, targetInstanceId: null };
     expect(await seenFor(legacy, 4n)).toEqual({
       config: legacy,
       contactId: 55,
     });
+  });
+});
+
+// Review round 1: the opening message reaches the customer from inside the tool, so the screening
+// every reply passes has to be handed to it by the two runtimes that own the gate. Read off the
+// source because the binding is a closure over a gate built later in the same function.
+describe("both runtimes bind the output gate for it", () => {
+  test("the reactive turn", async () => {
+    const src = await Bun.file("src/graph/runtime.ts").text();
+    expect(src).toMatch(
+      /mayShowCustomer: async \(text\) =>\s*!guardrailTripped\(await runGuardrail\("output", text\)\)/,
+    );
+  });
+  test("the proactive turn", async () => {
+    const src = await Bun.file("src/graph/nudge.ts").text();
+    expect(src).toMatch(
+      /mayShowCustomer: async \(text\) =>\s*!guardrailTripped\(await screenOutput\(text\)\)/,
+    );
   });
 });

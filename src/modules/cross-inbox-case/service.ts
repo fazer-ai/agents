@@ -18,6 +18,7 @@ import {
   ChatwootApiError,
   type ChatwootClient,
 } from "@/modules/chatwoot/client";
+import { withConversationLabels } from "@/modules/chatwoot/labels";
 import {
   CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE,
   type CrossInboxCaseConfig,
@@ -55,8 +56,15 @@ export interface OpenCaseInput {
   customerMessage: string | null;
   email: string | null;
   labels: string[];
-  // Asked right before the first write; false ⇒ nothing is written.
+  // Asked right before the first write and again right before the create; false ⇒ nothing more is
+  // written.
   stillWanted?: () => Promise<boolean>;
+  // The turn's OUTPUT guardrail over the opening message, which reaches the customer from inside the
+  // tool and would otherwise go out unread by the moderation every reply passes. Answers whether the
+  // text may be sent. Absent ⇒ no screening configured on this path.
+  screenCustomerMessage?: (text: string) => Promise<boolean>;
+  // The label writers' shared queue is keyed by tenant (see modules/chatwoot/labels.ts).
+  tenantId?: bigint | null;
 }
 
 export type OpenCaseResult =
@@ -68,6 +76,8 @@ export type OpenCaseResult =
       identity: "held" | "written" | "merged" | "other_contact" | null;
       // Writes after the case existed that did not land. The case is open either way.
       partial: string[];
+      // The opening message the output guardrail refused, so it was not sent.
+      openingBlocked?: boolean;
     }
   | { kind: "not_configured" }
   | { kind: "unsupported_channel"; channelType: string | null }
@@ -103,9 +113,23 @@ function incomingTexts(page: unknown): string[] {
   return out;
 }
 
+// Every complete address in a text: a run with no separator around one "@", minus the sentence
+// punctuation it can end with. Compared WHOLE, because a substring match lets a truncated address
+// through — "anna@example.com" sits inside "joanna@example.com.br", and the case would then go to a
+// mailbox the customer never named.
+const ADDRESS_TOKEN_RE = /[^\s@<>"',;:()[\]]+@[^\s@<>"',;:()[\]]+/g;
+
 export function customerTyped(texts: string[], email: string): boolean {
   const wanted = email.toLowerCase();
-  return texts.some((t) => t.toLowerCase().includes(wanted));
+  return texts.some((t) =>
+    (t.match(ADDRESS_TOKEN_RE) ?? []).some(
+      (tok) =>
+        tok
+          .replace(/^mailto:/i, "")
+          .replace(/[.!?]+$/, "")
+          .toLowerCase() === wanted,
+    ),
+  );
 }
 
 function numberAttr(conv: unknown, key: string): number | null {
@@ -254,6 +278,18 @@ async function run(
       }
     }
 
+    // The opening message is screened BEFORE anything opens, like every reply the customer reads. A
+    // refused one is not sent; the case still opens, because the team still owes the customer.
+    let customerMessage = input.customerMessage;
+    let openingBlocked = false;
+    if (customerMessage && input.screenCustomerMessage) {
+      step = "screen_customer_message";
+      if (!(await input.screenCustomerMessage(customerMessage))) {
+        customerMessage = null;
+        openingBlocked = true;
+      }
+    }
+
     // 3. Open, or continue. Which of the two happened is read from the contact's conversations in
     // that inbox BEFORE the call: the create answers with a conversation either way.
     step = "list_case_conversations";
@@ -262,6 +298,12 @@ async function run(
         .filter((c) => c.inboxId === target)
         .map((c) => c.id),
     );
+    // ASKED AGAIN, after the last wait and right before the write nothing undoes: the ask above sat
+    // before the screening and this read, and a `/reset` or a withdrawal inside either of them must
+    // not still open a case and send its opening.
+    if (input.stillWanted && !(await input.stillWanted())) {
+      return { kind: "called_off" };
+    }
     step = "create_conversation";
     const created = await client.createConversation({
       inboxId: target,
@@ -293,8 +335,8 @@ async function run(
     );
     // A continued case already has its opening: repeating it would send the customer a second
     // "we opened your case" email for the same case.
-    if (!continued && input.customerMessage) {
-      const text = input.customerMessage;
+    if (!continued && customerMessage) {
+      const text = customerMessage;
       await attempt("customer_message", () =>
         client.sendMessageAsAdmin(caseId, text, { private: false }),
       );
@@ -312,25 +354,32 @@ async function run(
     await attempt("origin_link_note", () =>
       client.sendPrivateNote(origin, originLinkNote(caseUrl, inboxName)),
     );
+    // Labels are a read-modify-write of the whole set, so both go through the queue every label
+    // writer shares (`set_labels`, the observer's verdict): outside it, two writers read the same set
+    // and the one that lands last erases the other's addition.
     if (input.labels.length > 0) {
-      await attempt("destination_labels", async () => {
-        const current = continued
-          ? await client.getConversationLabels(caseId)
-          : [];
-        await client.setConversationLabels(
-          caseId,
-          [...new Set([...current, ...input.labels])],
-          { asAdmin: true },
-        );
-      });
+      await attempt("destination_labels", () =>
+        withConversationLabels(input.tenantId, caseId, async () => {
+          const current = continued
+            ? await client.getConversationLabels(caseId)
+            : [];
+          await client.setConversationLabels(
+            caseId,
+            [...new Set([...current, ...input.labels])],
+            { asAdmin: true },
+          );
+        }),
+      );
     }
     const originLabel = config.originLabel;
     if (originLabel) {
-      await attempt("origin_label", async () => {
-        const current = await client.getConversationLabels(origin);
-        if (current.includes(originLabel)) return;
-        await client.setConversationLabels(origin, [...current, originLabel]);
-      });
+      await attempt("origin_label", () =>
+        withConversationLabels(input.tenantId, origin, async () => {
+          const current = await client.getConversationLabels(origin);
+          if (current.includes(originLabel)) return;
+          await client.setConversationLabels(origin, [...current, originLabel]);
+        }),
+      );
     }
     return {
       kind: continued ? "continued" : "opened",
@@ -338,6 +387,7 @@ async function run(
       caseUrl,
       identity,
       partial,
+      ...(openingBlocked ? { openingBlocked } : {}),
     };
   } catch (error) {
     return { kind: "failed", step, error };

@@ -37,6 +37,7 @@ import {
   type GuardrailDecision,
   guardrailLeftAMark,
   guardrailRan,
+  guardrailTripped,
   screenedText,
 } from "@/modules/guardrails/gate";
 import { applyGuardrailHandoff } from "@/modules/guardrails/handoff";
@@ -1446,6 +1447,9 @@ async function runAgentNudgeBody(
         // tool re-reads the live state itself and falls back here only when that read fails.
         observed: { status: loaded.status, statusAt: loaded.statusAt },
         handoffState,
+        // Defined below; a tool only runs inside the graph's invoke, after it exists.
+        mayShowCustomer: async (text) =>
+          !guardrailTripped(await screenOutput(text)),
       },
       { buildNativeTools, mcp: params.deps?.mcp, flow },
     ),

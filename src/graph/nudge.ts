@@ -1423,7 +1423,22 @@ async function runAgentNudgeBody(
   // capability on this path — it is the protocol. Revoking it used to leave the token as the only
   // silence channel, which is the leak above; leaving it revocable now would leave the model with no
   // channel at all, and a follow-up with nothing to say would have to say something.
-  const nudgeCfg: AgentConfig = withFollowupSilenceChannel(cfg);
+  // A NOTE-ONLY NUDGE DOES NOT GET `open_case_in_inbox` (issue #700, review round 8). With a person
+  // owning the conversation (`canMessagePre` false) this run may only write notes, and contact
+  // authorization is skipped for exactly that reason; the tool sends its opening message from inside
+  // the call, where the reply's own ownership check cannot take it back. Without a destination the
+  // tool is not built.
+  const nudgeCfg: AgentConfig = withFollowupSilenceChannel(
+    canMessagePre
+      ? cfg
+      : {
+          ...cfg,
+          crossInboxCaseConfig: {
+            ...cfg.crossInboxCaseConfig,
+            targetInboxId: null,
+          },
+        },
+  );
   // ...and taken back out when it turns out to be the whole toolset: an agent whose other sources
   // yielded nothing is tool-less in practice, and binding one no-op tool at a provider that refuses
   // schemas costs the entire follow-up (round 12). `followupSilenceChannel` then reads `sentinel`

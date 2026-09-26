@@ -249,3 +249,19 @@ describe("ownTransfer", () => {
     }
   });
 });
+
+// Review round 8: a nudge that may only write notes (a person owns the conversation) must not get a
+// tool that sends to the customer from inside the call. Read off the source, since the toolset is
+// built from a config the nudge derives in the middle of a long function.
+describe("a note-only nudge does not get the tool", () => {
+  test("the destination is cleared unless this nudge may message the customer", async () => {
+    const src = await Bun.file("src/graph/nudge.ts").text();
+    const at = src.indexOf(
+      "const nudgeCfg: AgentConfig = withFollowupSilenceChannel(",
+    );
+    expect(at).toBeGreaterThan(src.indexOf("const canMessagePre ="));
+    const b = src.slice(at, at + 400);
+    expect(b).toContain("canMessagePre\n      ? cfg");
+    expect(b).toContain("targetInboxId: null");
+  });
+});

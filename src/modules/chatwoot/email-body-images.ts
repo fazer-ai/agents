@@ -13,12 +13,13 @@
 // where the dashboard renders it, and whoever downloads resolves it against the instance's address.
 
 // An `<img>` tag whose attributes may hold a quoted `>`, and the attributes inside it one at a time,
-// as HTML tokenizes them: a value is double-quoted, single-quoted or bare, and `data-src`, or a
+// as HTML tokenizes them: a value is double-quoted, single-quoted or bare (a bare one runs to
+// whitespace or `>`, keeping the `=` padding of a signed id), and `data-src`, or a
 // `src=` inside another attribute's value, is not the `src`. A quote left open runs to the end of
 // the body, as a browser reads it, so a body full of them costs one pass, not one per tag.
 const IMG_TAG = /<img\b((?:[^>"']|"[^"]*"?|'[^']*'?)*)>?/gi;
 const ATTRIBUTE =
-  /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"?|'([^']*)'?|([^\s"'=<>`]+)))?/g;
+  /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"?|'([^']*)'?|([^\s>]+)))?/g;
 const BLOB_PATH = "/rails/active_storage/";
 
 // Whether a URL, once parsed and normalized (`..`, `%2e%2e`), still names a path under Active

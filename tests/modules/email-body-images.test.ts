@@ -149,6 +149,15 @@ describe("emailBodyImageUrlsFrom", () => {
     ).toEqual([`${host}${rel}`]);
   });
 
+  test("an unquoted src keeps the padding of a signed id", () => {
+    const url =
+      "https://chat.example.com/rails/active_storage/blobs/redirect/eyJfcmFpbHMiOnt9fQ==--0a1b2c/photo.jpeg";
+    const ca = {
+      email: { html_content: { full: `<p>Oi</p><img src=${url} alt=x>` } },
+    };
+    expect(emailBodyImageUrlsFrom(ca)).toEqual([url]);
+  });
+
   test("the same blob in both bodies is one image", () => {
     const ca = {
       email: {

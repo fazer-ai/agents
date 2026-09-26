@@ -32,6 +32,9 @@ const {
   CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
 } = await import("@/graph/tools/catalog");
 const { readSendImageConfig } = await import("@/modules/images/settings");
+const { rebaseToolGrants } = await import(
+  "@/client/pages/agents/toolsBaseline"
+);
 
 const WARNING =
   "No host is allowed yet, so every call is refused. Add at least one host.";
@@ -110,6 +113,57 @@ describe("which save owns the block (source)", () => {
       "utf8",
     );
     expect(behavior).not.toContain("sendImage");
+  });
+});
+
+// Review round 1 of #887: the Knowledge save writes the grant set and none of the Tools config, so it
+// may move only the grants half of the Tools baseline. Before, it recaptured all of it, and a host list
+// typed and not saved stopped reading as unsaved.
+describe("the Knowledge save leaves unsaved tool config dirty", () => {
+  test("only the grants move", () => {
+    const baseline = JSON.stringify({
+      grants: ["old"],
+      sendImage: { allowedHosts: "" },
+    });
+    const snapshot = JSON.stringify({
+      grants: ["new"],
+      sendImage: { allowedHosts: "cdn.loja.com.br" },
+    });
+    const rebased = rebaseToolGrants(baseline, snapshot);
+    expect(JSON.parse(rebased)).toEqual({
+      grants: ["new"],
+      sendImage: { allowedHosts: "" },
+    });
+    // Still dirty against the live snapshot, and clean once the config matches again.
+    expect(rebased).not.toBe(snapshot);
+    expect(
+      rebaseToolGrants(
+        baseline,
+        JSON.stringify({ ...JSON.parse(baseline), grants: ["new"] }),
+      ),
+    ).toBe(JSON.stringify({ ...JSON.parse(baseline), grants: ["new"] }));
+  });
+
+  test("the Knowledge save asks for it, and the recapture honors it", () => {
+    const src = readFileSync(
+      "src/client/pages/agents/AgentEditorPage.tsx",
+      "utf8",
+    );
+    const start = src.indexOf("async function saveGrants(");
+    const body = src.slice(start, src.indexOf("\n  }\n", start));
+    expect(body).toContain("toolGrantsOnlyRef.current = true;");
+    expect(src).toContain(
+      "rebaseToolGrants(baselineRef.current.tools, sectionSnap.tools)",
+    );
+    // The flag is what picks that branch, and the Tools recapture is what consumes it.
+    expect(src).toContain(
+      'const grantsOnly = k === "tools" && toolGrantsOnlyRef.current;',
+    );
+    expect(src).toContain("[k]: grantsOnly");
+    const save = src.indexOf("async function saveTools(");
+    expect(src.slice(save, src.indexOf("\n  }\n", save))).not.toContain(
+      "toolGrantsOnlyRef",
+    );
   });
 });
 
@@ -249,6 +303,10 @@ describe("the send_image card", () => {
     expect(screen.queryByText(WARNING)).not.toBeNull();
     expand();
     expect(hostsField()).not.toBeNull();
+    // A single textarea keeps its label: the field is named "Allowed hosts" (review round 1 of #887).
+    expect(screen.getByLabelText("Allowed hosts")).toBe(
+      hostsField() as HTMLTextAreaElement,
+    );
   });
 
   test("granted with a host the reader accepts: no warning, the list is shown", async () => {

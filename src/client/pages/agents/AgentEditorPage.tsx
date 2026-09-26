@@ -162,6 +162,7 @@ import {
   serializeToolPreconditions,
 } from "./ToolPreconditionsEditor";
 import { ToolsTab } from "./ToolsTab";
+import { rebaseToolGrants } from "./toolsBaseline";
 import { readTtsFormState, ttsSettingsFrom } from "./ttsFormState";
 import type {
   GrantState,
@@ -1928,6 +1929,9 @@ function AgentEditor() {
     tools: -1,
     knowledge: -1,
   });
+  // Set by the Knowledge save, which writes the grants and none of the Tools tab's config: the next
+  // Tools recapture then moves only the grants half of its baseline (see ./toolsBaseline).
+  const toolGrantsOnlyRef = useRef(false);
   // Recapture each section's baseline during the render that follows ITS server sync (bumpSync for
   // that section); `sectionSnap` already reflects the freshly-synced state there. Per-section (not a
   // single token) so saving one tab leaves the others' baselines — and unsaved-changes dots — intact.
@@ -1937,7 +1941,14 @@ function AgentEditor() {
   for (const k of SECTION_KEYS) {
     if (lastSyncRef.current[k] !== sectionSync[k]) {
       lastSyncRef.current[k] = sectionSync[k];
-      baselineRef.current = { ...baselineRef.current, [k]: sectionSnap[k] };
+      const grantsOnly = k === "tools" && toolGrantsOnlyRef.current;
+      if (k === "tools") toolGrantsOnlyRef.current = false;
+      baselineRef.current = {
+        ...baselineRef.current,
+        [k]: grantsOnly
+          ? rebaseToolGrants(baselineRef.current.tools, sectionSnap.tools)
+          : sectionSnap[k],
+      };
     }
   }
   const baseline = baselineRef.current;
@@ -3050,6 +3061,7 @@ function AgentEditor() {
       setGrants(mapGrants(data.grants));
       setCatalog(data.catalog);
       markSynced(data.agentUpdatedAt ? String(data.agentUpdatedAt) : null);
+      toolGrantsOnlyRef.current = true;
       bumpSync("tools", "knowledge");
       // This is the KNOWLEDGE tab's save (it is the only caller), and it carries the grant set and
       // none of the Tools tab's notes. Both halves matter: the empty snapshot says it answers for no

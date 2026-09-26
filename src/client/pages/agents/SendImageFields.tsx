@@ -53,7 +53,6 @@ export function SendImageFields({
     <div className="flex flex-col gap-3">
       <FormField
         label={t("editor.sendImageHosts", "Allowed hosts")}
-        group
         description={t(
           "editor.sendImageHostsHint",
           'One per line, e.g. cdn.minhaloja.com.br. Start with "*." to cover a domain and its subdomains (*.minhaloja.com.br). Paste a full URL and only its host is kept.',

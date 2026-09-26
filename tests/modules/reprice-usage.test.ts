@@ -110,17 +110,32 @@ describe("arguments", () => {
     ).toThrow(/--provider is required/);
   });
 
-  test("a provider the table cannot price the model under is refused up front", () => {
+  test("an unknown provider is refused up front", () => {
     expect(() =>
+      parseRepriceArgs([
+        "--tenant",
+        "1",
+        "--provider",
+        "opnai",
+        "--model",
+        MODEL,
+      ]),
+    ).toThrow(/--provider must be one of/);
+  });
+
+  // The table has no price for an openai-compatible server, but a tenant's own price does, and
+  // pricing those rows after the price is saved is one of the reasons the command exists (review).
+  test("a model only a tenant's own price covers is accepted", () => {
+    expect(
       parseRepriceArgs([
         "--tenant",
         "1",
         "--provider",
         "openai-compatible",
         "--model",
-        MODEL,
-      ]),
-    ).toThrow(/no price/);
+        "local-model",
+      ]).provider,
+    ).toBe("openai-compatible");
   });
 
   test("any stamp targets the rows it wrote: a tenant's own price, OpenRouter's figure", () => {
@@ -339,6 +354,51 @@ describe.skipIf(!dbUp)("re-pricing the ledger (issue #867)", () => {
         cost: priced(PEAK),
         table: PRICE_TABLE_VERSION,
       });
+    } finally {
+      await suDb.tenant.update({ where: { id: tA }, data: { settings: {} } });
+    }
+  });
+
+  test("an openai-compatible model the table lacks is priced by the tenant's own price", async () => {
+    await clear();
+    const block = {
+      overrides: [
+        {
+          provider: "openai-compatible" as const,
+          model: "local-model",
+          input: 1,
+          output: 2,
+        },
+      ],
+      updatedAt: "2026-09-26T00:00:00.000Z",
+    };
+    await suDb.tenant.update({
+      where: { id: tA },
+      data: { settings: { priceOverrides: block } },
+    });
+    try {
+      const unpricedA = await seed({ model: "local-model", cost: null });
+      const unpricedB = await seed({
+        tenant: tB,
+        model: "local-model",
+        cost: null,
+      });
+      const opts = parseRepriceArgs([
+        "--tenant",
+        "all",
+        "--provider",
+        "openai-compatible",
+        "--model",
+        "local-model",
+        "--apply",
+      ]);
+      await runReprice(suDb, opts);
+      // 6,000 fresh and 4,000 cached input at the input rate (no cache rate stated), 2,000 output.
+      expect(await read(unpricedA)).toEqual({
+        cost: (0.01 + 0.004).toFixed(10),
+        table: "tenant-override@2026-09-26T00:00:00.000Z",
+      });
+      expect(await read(unpricedB)).toEqual({ cost: null, table: OLD });
     } finally {
       await suDb.tenant.update({ where: { id: tA }, data: { settings: {} } });
     }

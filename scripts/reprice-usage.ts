@@ -15,6 +15,7 @@
 
 import { parseArgs } from "node:util";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { PRICE_OVERRIDE_PROVIDERS } from "@/modules/pricing/overrides";
 import { modelRates } from "@/modules/pricing/price";
 import { type RepriceOptions, runReprice } from "@/modules/pricing/reprice";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
@@ -56,9 +57,14 @@ export function parseRepriceArgs(argv: string[]): RepriceOptions {
     throw new UsageError("--from must be before --to");
   const table = values["price-table"];
   if (table === "") throw new UsageError("--price-table needs a value");
-  if (modelRates(values.provider, values.model) === null)
+  // Only the provider is checked here. Whether the model has a price is per row: a tenant's own
+  // price can cover a model the table lacks (an `openai-compatible` server, say), and a row nothing
+  // prices is left as it was and counted in the report, never refused up front.
+  if (
+    !(PRICE_OVERRIDE_PROVIDERS as readonly string[]).includes(values.provider)
+  )
     throw new UsageError(
-      `the price table (${PRICE_TABLE_VERSION}) has no price for ${values.provider} ${values.model}: nothing it could re-price`,
+      `--provider must be one of ${PRICE_OVERRIDE_PROVIDERS.join(", ")}`,
     );
   return {
     tenant,
@@ -101,6 +107,10 @@ async function main() {
     console.log(
       `${opts.apply ? "APPLY" : "DRY RUN"} · provider ${opts.provider} · table now ${PRICE_TABLE_VERSION}`,
     );
+    if (modelRates(opts.provider, opts.model) === null)
+      console.log(
+        `The price table has no price for ${opts.provider} ${opts.model}: only rows a tenant's own price covers can change.`,
+      );
     if (report.groups.length === 0) {
       console.log("No rows match.");
       return;

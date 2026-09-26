@@ -351,8 +351,9 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/chatwoot/webhook.ts": [1, "cleared"],
   "src/modules/contact-auth/service.ts": [1, "flow-event"],
   "src/modules/conversations/error.ts": [3, "guarded + cleared"],
-  // The close that failed (issue #895): a `warn` line, so the stuck conversation reaches an alert.
-  "src/modules/conversations/nothing-to-answer.ts": [1, "flow-event"],
+  // The close that failed, and the reopen for late media that failed (issue #895): `warn` lines, so
+  // the stuck conversation reaches an alert.
+  "src/modules/conversations/nothing-to-answer.ts": [2, "flow-event"],
   "src/modules/conversations/service.ts": [12, "read"],
   // Down from 4: both roads to DEAD now write through one `finalizeDead` (issue #356).
   "src/modules/flowlog/alert-worker.ts": [3, "guarded + cleared"],

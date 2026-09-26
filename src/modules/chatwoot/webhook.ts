@@ -99,6 +99,7 @@ import {
   announceFailedTurn,
   readDirectFence,
 } from "@/modules/conversations/failure-note";
+import { reopenIfClosedForNothing } from "@/modules/conversations/nothing-to-answer";
 import {
   type ReturnToAgentOutcome,
   returnConversationToAgent,
@@ -5764,6 +5765,41 @@ export async function processChatwootDelivery(
         admission: "unverified",
       });
     }
+  }
+
+  // A late attachment on a message a nothing-to-answer close judged empty (issue #895 review, round
+  // 7): the close is undone, so the voice note is back in the queue instead of buried in a resolved
+  // conversation. Asked only of an enabled agent's own route, and cheap: one row read decides.
+  if (
+    hasLateMedia &&
+    rt?.enabled &&
+    mirror.conversationRowId !== null &&
+    n.conversationId !== null
+  ) {
+    await reopenIfClosedForNothing({
+      client: await loadChatwootClient(params.tenantId, params.instanceId, {
+        base,
+        makeClient: params.deps?.makeClient,
+      }),
+      conversationId: n.conversationId,
+      conversationDbId: mirror.conversationRowId,
+      tenantId: params.tenantId,
+      base,
+      flow: {
+        tenantId: params.tenantId,
+        turnId: crypto.randomUUID(),
+        source: "inbox",
+        conversationId: mirror.conversationRowId,
+        agentId: rt.agentId,
+        inboxId: rt.inboxId,
+        threadId: chatwootThreadId(
+          params.tenantId,
+          params.instanceId,
+          n.conversationId,
+        ),
+        base,
+      },
+    });
   }
 
   // First-class on-reply reset: a new customer message makes any pending inactivity follow-up moot.

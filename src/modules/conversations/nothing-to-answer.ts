@@ -174,3 +174,65 @@ export async function closeIfNothingToAnswer(params: {
     return false;
   }
 }
+
+// THE CLOSE UNDONE, when the message it judged turns out to have content (issue #895 review, round 7).
+// Some transports create the message empty and attach the audio just after, on `message_updated`
+// (`hasPendingInboundMediaUpdate`). With debounce on, the flush's wait covers that; on the direct
+// path the turn runs on the empty message at once, finds nothing, and the close above can run before
+// the attachment lands. A late attachment never arms a turn (the write-back loop that rule prevents),
+// so without this the voice note sits in a resolved conversation nobody looks at. Put back to
+// `pending`, it is where it was before this close existed: in the queue, visible.
+//
+// Only a close of THIS kind is undone (`resolvedBy = nothing_to_answer` on the mirror), and only while
+// Chatwoot still has the conversation resolved: an operator's close, or one a person already reopened,
+// is theirs. Admin token, because it is a conversation's state and not a persona's utterance.
+export async function reopenIfClosedForNothing(params: {
+  client: ChatwootClient;
+  conversationId: number;
+  conversationDbId: bigint;
+  tenantId: bigint;
+  base: PrismaClient;
+  flow: FlowContext;
+}): Promise<boolean> {
+  const { client, conversationId, conversationDbId, tenantId, base } = params;
+  try {
+    const row = await runScopedOn(
+      base,
+      { tenantId, userId: null, role: "TENANT_ADMIN" },
+      (db) =>
+        db.conversation.findUnique({
+          where: { id: conversationDbId },
+          select: { resolvedBy: true },
+        }),
+    );
+    if (row?.resolvedBy !== "nothing_to_answer") return false;
+    const live = parseLiveConversation(
+      await client.getConversation(conversationId),
+    );
+    if (live?.status !== "resolved") return false;
+    await client.toggleStatus(conversationId, "pending", { asAdmin: true });
+    emitFlowEvent(params.flow, {
+      stage: "route",
+      level: "info",
+      status: "ok",
+      detail: { outcome: "reopened", reason: "lateMedia" },
+    });
+    return true;
+  } catch (e) {
+    // The voice note is closed over and nothing else will surface it: this one pages.
+    const msg = e instanceof Error ? e.message : String(e);
+    logger.warn(
+      "nothing to answer: could not reopen for late media (conv=%s): %s",
+      String(conversationId),
+      msg,
+    );
+    emitFlowEvent(params.flow, {
+      stage: "route",
+      level: "warn",
+      status: "error",
+      detail: { outcome: "reopened", reason: "lateMedia" },
+      errorMessage: msg,
+    });
+    return false;
+  }
+}

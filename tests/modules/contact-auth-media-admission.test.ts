@@ -6,7 +6,7 @@ import {
   rememberMediaAdmission,
 } from "@/modules/contact-auth/state";
 
-// The per-message memory of a media admission (issue #890) is only a shortcut: it may forget, and
+// The per-message memory of a media admission is only a shortcut: it may forget, and
 // forgetting costs one more ask to the endpoint. What it must never do is answer past its window.
 describe("media admission memory", () => {
   beforeEach(() => clearContactAuthState());

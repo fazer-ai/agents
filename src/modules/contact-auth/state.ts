@@ -176,13 +176,9 @@ export async function singleFlight(
   return { verdict: await p, shared: false };
 }
 
-// Messages whose media the gate already let through (issue #890). Chatwoot follows every voice note
-// with a `message_updated`, which the receiver reads as late media, and without this the media pass
-// asked the endpoint a second time for a message it had just asked about. Per MESSAGE, so it is not
-// the verdict cache the header rules out: a yes here covers one message that already arrived, and
-// says nothing about the next one. Losing it (restart, expiry, the cap) costs one more ask and never
-// a read the gate did not allow; refusals are not kept here but on the conversation, where they
-// survive, since forgetting one of those would read a file sent before consent.
+// Messages whose media the gate let through, so the `message_updated` Chatwoot sends after a voice
+// note does not ask again. Per message, never a verdict for the next one. Losing an entry costs one
+// more ask; refusals live on the conversation instead, since forgetting one would read the file.
 const MEDIA_ADMISSION_TTL_MS = 15 * 60_000;
 const mediaAdmitted = new Map<string, number>();
 
@@ -202,7 +198,6 @@ export function rememberMediaAdmission(
     for (const [k, until] of mediaAdmitted) {
       if (until <= nowMs) mediaAdmitted.delete(k);
     }
-    // Still full of live entries: drop the oldest, which is the first in insertion order.
     if (mediaAdmitted.size >= MAX_ENTRIES) {
       const first = mediaAdmitted.keys().next().value;
       if (first !== undefined) mediaAdmitted.delete(first);

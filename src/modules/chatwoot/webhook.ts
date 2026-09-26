@@ -134,7 +134,10 @@ import {
   resolveSttConfig,
   transcribeInboundAudio,
 } from "@/modules/stt/service";
-import { extractMessageVisuals } from "@/modules/vision/extract-message";
+import {
+  extractMessageVisuals,
+  hasUnextractedVisual,
+} from "@/modules/vision/extract-message";
 import { resolveVisionConfig } from "@/modules/vision/service";
 import { hashRouteToken } from "@/modules/webhooks/inbound/route-token";
 import {
@@ -1714,21 +1717,14 @@ export interface EagerMediaOwner {
   sleep?: (ms: number) => Promise<void>;
   // The delivery's injectable runtime deps (tests): the Chatwoot client and the providers' fetches.
   deps?: RuntimeDeps;
-  // WHERE THIS PASS STANDS RELATIVE TO THE CONTACT AUTHORIZATION GATE (issue #890), and required so a
-  // new call site has to answer. With the gate on, nothing of the message may reach an STT or vision
-  // provider unless the gate let THIS message through: `allowed` is a verdict the caller just got,
-  // `refused` is one it just got the other way, and `unverified` is every pass that runs where no
-  // verdict was asked (a conversation a person holds, a late attachment, an observer's route, a
-  // consumed message handed to memory). An `unverified` pass asks the gate itself, and only when a
-  // provider call is actually about to happen.
+  // Where this pass stands relative to the contact authorization gate. `allowed`/`refused` is a verdict
+  // the caller just got; `unverified` means none was asked, and the pass asks for itself before paying
+  // a provider.
   admission: "allowed" | "refused" | "unverified";
 }
 
-// Remembers on the conversation that the gate refused this message (issue #890), so no later pass
-// sends its media to a provider on a newer yes. Raised only: `GREATEST` keeps the newest refusal, and
-// a message id is a per-account sequence, so everything at or below it arrived before that refusal.
-// Best-effort with a loud line: a write that fails leaves the late-update case to the gate's answer,
-// which is the state before this column existed.
+// Raises the conversation's media refusal mark to this message. Message ids are a per-account
+// sequence, so everything at or below the mark arrived before that refusal. Best-effort.
 async function recordMediaRefusal(
   tenantId: bigint,
   conversationDbId: bigint | null,
@@ -1755,11 +1751,8 @@ async function recordMediaRefusal(
   }
 }
 
-// Whether this pass may send the message's media to a provider (issue #890). The gate asked here is the
-// one the turn would ask: the agent bound to the conversation's inbox, with the same request key, so
-// under `mode: "once"` a stored grant answers and under an unlock flow the key is the message's own.
-// Fail-closed like the gate: an unreadable agent, a contact with no identity or an endpoint that does
-// not answer keeps the media unread, since the rule it exists for is "never without a yes".
+// Whether this pass may send the message's media to a provider: the same gate, agent and request key
+// the turn would use. Fail-closed.
 async function mediaAdmitted(
   tenantId: bigint,
   instanceId: bigint,
@@ -1797,14 +1790,11 @@ async function mediaAdmitted(
       });
       return { inbox, agentId: inbox.agentId, settings: agent?.settings, conv };
     });
-    // No agent on the inbox: no gate governs this message.
     if (!ctx) return true;
     const cfg = readContactAuthConfig(ctx.settings);
     if (!cfg.enabled) return true;
-    // A message the gate already refused stays unread, and the endpoint is not asked again: its yes
-    // now would be about a consent given after this file was sent. FIRST, ahead of every yes,
-    // including the one the caller just got (review round 2 of #892): a delivery recovered after the
-    // refusal was recorded replays the gate, and a consent given in between would answer it.
+    // NOTE: The refusal mark wins over any yes, including the caller's: a replayed delivery re-asks the
+    // gate, and a consent given since would answer for a file sent before it.
     const messageId = n.message?.id;
     const refusedThrough = ctx.conv?.mediaRefusedThroughMessageId ?? null;
     if (
@@ -1815,8 +1805,7 @@ async function mediaAdmitted(
       return false;
     }
     if (owner.admission === "allowed") return true;
-    // A message the gate let through a moment ago, on its own delivery: the update Chatwoot sends
-    // after every voice note is not a reason to ask again.
+    // NOTE: Chatwoot follows every voice note with a `message_updated`; the yes already given covers it.
     if (
       messageId != null &&
       mediaAlreadyAdmitted(mediaAdmissionKey(tenantId, instanceId, messageId))
@@ -1936,9 +1925,7 @@ export async function runEagerMedia(
     // extraction failed pays the whole provider bill again at the second call site.
     !n.message.attachmentsUnread &&
     !n.message.bodyRead;
-  // Asked at most once, and only when a provider is about to be paid: after the STT or vision config
-  // resolved (review round 1 of #892). A text message, media already read, or media nobody would
-  // read (both switched off) costs the operator's endpoint nothing.
+  // NOTE: Asked at most once, and only once a provider config resolved.
   let admittedMemo: boolean | null = null;
   const admitted = async (): Promise<boolean> => {
     admittedMemo ??= await mediaAdmitted(
@@ -2016,7 +2003,17 @@ export async function runEagerMedia(
         // The route's agent, which on an observer's route is not the inbox's (issue #476 review, round 3).
         { agentId: owner.agentId },
       );
-      if (visionCfg && (await admitted())) {
+      // NOTE: Only a new extraction waits for the gate; metadata already on an attachment is reused. Email
+      // body images are not counted as unread: telling them from an ornament needs the download.
+      const lidos = todos.filter((v) => !hasUnextractedVisual([v]));
+      const visuals =
+        visionCfg && lidos.length < todos.length && !(await admitted())
+          ? lidos
+          : todos;
+      const recusados = todos.filter(
+        (v) => v.id !== null && !visuals.includes(v),
+      ).length;
+      if (visionCfg && visuals.length > 0) {
         // Hoisted: the narrowing the guard above gives `n.message` does not survive into the call
         // below, because a mutable property can change before a deferred callback reads it.
         const conversationId = n.conversationId;
@@ -2026,7 +2023,7 @@ export async function runEagerMedia(
           instanceId,
           conversationId,
           messageId,
-          visuals: todos,
+          visuals,
           cfg: visionCfg,
           base,
           flow: flow(),
@@ -2041,8 +2038,8 @@ export async function runEagerMedia(
           // read" asks the customer to resend those three, while a model told nothing answers as
           // if the message had three files fewer, which is the failure issue #692 was about.
           // A COUNT, phrased by the renderer, because it has to survive the debounce re-fetch.
-          if (r.attachmentsUnread > 0)
-            n.message.attachmentsUnread = r.attachmentsUnread;
+          if (r.attachmentsUnread + recusados > 0)
+            n.message.attachmentsUnread = r.attachmentsUnread + recusados;
           if (r.bodyRead) n.message.bodyRead = true;
           if (r.imageDescription)
             n.message.imageDescription = r.imageDescription;
@@ -2063,7 +2060,7 @@ export async function runEagerMedia(
 // notes/activities/templates. The CALLER gates this on an ENABLED + PRODUCTION agent (test/disabled
 // never ingest — no cost), so a `consumed` incoming here is a message some gate silenced. Eager
 // media (run before the gate for production, and after it on its yes when the contact authorization
-// gate is on, issue #890) means the rendered customer text carries its transcription/extraction; a
+// gate is on) means the rendered customer text carries its transcription/extraction; a
 // message that gate refused carries the markers instead. Best-effort: a failure never strands the delivery.
 // The contact-inbox the mirrored conversation is known by, for a payload that names none (issue
 // #209 review, round 14). Fails OPEN to null: an unreadable row is the state a payload without a
@@ -2518,9 +2515,7 @@ async function maybeConsumeCommandOrGate(params: {
   // in two dozen places and in nested closures of their own; the verdict is a different question
   // asked in exactly one of them.
   onAuthContext: (context: AuthContext | null) => void;
-  // Handed the gate's own answer for this message, whatever it was, so the media pass after it reads
-  // the attachments only on a yes and never asks the endpoint a second time (issue #890). Not called
-  // when the gate did not run: that pass then asks for itself.
+  // The gate's verdict for this message, so the media pass after it does not ask again.
   onAuthVerdict?: (allowed: boolean) => void;
 }): Promise<boolean> {
   const { tenantId, instanceId, n, command, commandActive, base, deps } =
@@ -5723,11 +5718,7 @@ export async function processChatwootDelivery(
   // (issue #476 review, round 20): the row is written without re-asking the mode, and a watcher that
   // remembers an audio as an attachment marker instead of its transcription remembers nothing of it.
   const watcherReads = observer !== null;
-  // WHEN THE CONTACT AUTHORIZATION GATE IS ABOUT TO RUN ON THIS MESSAGE, the pass waits for its answer
-  // instead of running ahead of it (issue #890): the gate below asks on exactly this condition, and
-  // with the gate on a message's media is read only on its yes. Waiting costs nothing on an allowed
-  // message, since the pass and the gate ran one after the other already; the pass after the gate
-  // reads the media on a yes, and the consumed branch below reads it for memory on the same answer.
+  // NOTE: When the contact authorization gate runs on this message, the media pass waits for its verdict.
   const gateAsksNext =
     (act || commandActive) &&
     isNewIncoming &&
@@ -5898,8 +5889,7 @@ export async function processChatwootDelivery(
     authContext: AuthContext | null;
     verdict: "allowed" | "refused" | null;
   } = { authContext: null, verdict: null };
-  // What the media pass may do given what the gate said about THIS message (issue #890): a verdict
-  // read on the gate is final, and without one the pass asks for itself.
+  // NOTE: A verdict from the gate is final; without one the pass asks for itself.
   const admissionFromGate = (): EagerMediaOwner["admission"] =>
     gate.verdict ?? "unverified";
   // NOTE: `act || commandActive`, and the second half is the whole point: a control command is the
@@ -5945,10 +5935,7 @@ export async function processChatwootDelivery(
         gate.verdict = allowed ? "allowed" : "refused";
       },
     });
-    // The pass that waited for the gate, on a message the gate path consumed: out of hours, a
-    // conversation that stopped being the bot's, or the refusal itself. Memory still wants the words
-    // of a message that is not answered, and gets them only where the gate said yes, or where it was
-    // never asked and the pass asks for itself.
+    // NOTE: Consumed after the pass waited for the gate: memory reads the media only on its yes.
     if (consumed && mediaAwaitsGate) {
       await runEagerMedia(params.tenantId, params.instanceId, n, base, {
         conversationId: mirror.conversationRowId,

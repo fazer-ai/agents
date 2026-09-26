@@ -315,6 +315,38 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
     expect(linhas.length).toBe(1);
   });
 
+  test("o anexo de uma mensagem que a autorização recusou não é lido no reengage", async () => {
+    const id = await seedConversation(953);
+    await suDb.conversation.update({
+      where: { id },
+      data: { mediaRefusedThroughMessageId: 1 },
+    });
+    await clearFlowLog(suDb, { tenantId });
+    const sent: Array<[number, string]> = [];
+
+    const res = await reengageConversation(
+      ctx(),
+      id,
+      {
+        makeModel: fakeModel,
+        makeClient: makeStub({
+          page: page([
+            { id: 1, content: "", anexos: [{ id: 11 }] },
+            { id: 2, content: "", anexos: [{ id: 21 }] },
+          ]),
+          sent,
+        }),
+        checkpointer: new MemorySaver(),
+      },
+      appDb,
+    );
+
+    expect(res.outcome).toBe("posted");
+    // Só a mensagem depois da marca: a 1 ficou recusada, a 2 chegou depois.
+    const linhas = await visionLines(id);
+    expect(linhas.length).toBe(1);
+  });
+
   test("conversa sem anexo não custa nenhuma extração", async () => {
     const id = await seedConversation(941);
     await clearFlowLog(suDb, { tenantId });

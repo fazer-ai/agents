@@ -535,12 +535,19 @@ async function fillMissingVisuals(args: {
         : !m.imageDescription && !m.extractedText),
   );
   if (alvos.length === 0) return false;
+  // NOTE: Media the contact authorization refused stays unread even when the gate now says yes
+  // (docs/contact-auth.md, "Media waits for the gate").
+  const recusadaAte = await mediaRefusedThrough(args);
+  const abriveis = alvos.filter(
+    (m) => recusadaAte === null || m.id > recusadaAte,
+  );
+  if (abriveis.length === 0) return false;
 
   // UMA MENSAGEM DE CADA VEZ, e os anexos DENTRO de cada uma em paralelo (é o que
   // `extractMessageVisuals` faz). O paralelo que importa é o de arquivos da mesma mensagem, que é
   // onde o cliente anexa o comprovante, o documento e o print de uma vez; disparar as mensagens
   // todas juntas multiplicaria o teto por mensagem sem nenhum ganho de latência que o cliente veja.
-  for (const m of alvos) {
+  for (const m of abriveis) {
     try {
       const lido = await extractMessageVisuals({
         tenantId: args.tenantId,
@@ -588,6 +595,31 @@ async function fillMissingVisuals(args: {
     }
   }
   return true;
+}
+
+// The conversation's media refusal mark, or null without one. Unreadable closes everything.
+async function mediaRefusedThrough(args: {
+  tenantId: bigint;
+  fill: { convDbId: bigint };
+  base: PrismaClient;
+}): Promise<number | null> {
+  try {
+    const conv = await runScopedOn(args.base, sysCtx(args.tenantId), (db) =>
+      db.conversation.findFirst({
+        where: { id: args.fill.convDbId },
+        select: { mediaRefusedThroughMessageId: true },
+      }),
+    );
+    const marca = conv?.mediaRefusedThroughMessageId ?? null;
+    return marca === null ? null : Number(marca);
+  } catch (err) {
+    logger.warn(
+      "vision fill: media refusal mark unreadable (conv=%s), nothing is read: %s",
+      String(args.fill.convDbId),
+      err instanceof Error ? err.message : String(err),
+    );
+    return Number.POSITIVE_INFINITY;
+  }
 }
 
 // The instant of the newest message in the turn's input, or null when nothing in it carries one

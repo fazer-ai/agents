@@ -17,12 +17,8 @@ import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #890: with the contact authorization gate on, nothing of an incoming message reaches the STT
-// or vision provider unless the gate let THAT message through. The media pass used to run at arrival,
-// before the gate, and again on a refused message handed to memory, so a customer who had not
-// consented still had their voice note transcribed and their photo described. Counted at the
-// providers themselves (the injected fetches), on every entry the receiver has: a new message on a
-// bot-held conversation, a conversation a person holds (where no gate runs), and a late attachment.
+// With the contact authorization gate on, no media of an incoming message reaches the STT or vision
+// provider unless the gate let that message through. Counted at the injected provider fetches.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -129,6 +125,8 @@ async function deliver(p: {
   humanHeld?: boolean;
   textOnly?: boolean;
   owesMemoryOnly?: boolean;
+  // An image an earlier pass already described, alone or beside one nobody read yet.
+  describedImage?: "alone" | "beside-new";
 }) {
   seq += 1;
   const messageId = p.messageId ?? 9000 + seq;
@@ -140,18 +138,36 @@ async function deliver(p: {
     private: false,
     attachments: p.textOnly
       ? []
-      : [
-          {
-            id: messageId * 10 + 1,
-            file_type: "audio",
-            data_url: `${CW_BASE}/rails/active_storage/blobs/a${messageId}.ogg`,
-          },
-          {
-            id: messageId * 10 + 2,
-            file_type: "image",
-            data_url: `${CW_BASE}/rails/active_storage/blobs/i${messageId}.png`,
-          },
-        ],
+      : p.describedImage
+        ? [
+            {
+              id: messageId * 10 + 2,
+              file_type: "image",
+              data_url: `${CW_BASE}/rails/active_storage/blobs/i${messageId}.png`,
+              meta: { image_description: "Print do pedido 21607129." },
+            },
+            ...(p.describedImage === "beside-new"
+              ? [
+                  {
+                    id: messageId * 10 + 3,
+                    file_type: "image",
+                    data_url: `${CW_BASE}/rails/active_storage/blobs/j${messageId}.png`,
+                  },
+                ]
+              : []),
+          ]
+        : [
+            {
+              id: messageId * 10 + 1,
+              file_type: "audio",
+              data_url: `${CW_BASE}/rails/active_storage/blobs/a${messageId}.ogg`,
+            },
+            {
+              id: messageId * 10 + 2,
+              file_type: "image",
+              data_url: `${CW_BASE}/rails/active_storage/blobs/i${messageId}.png`,
+            },
+          ],
     conversation: {
       id: p.convId,
       inbox_id: p.chatwootInboxId,
@@ -472,8 +488,6 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
     expect(providers.vision).toBe(0);
   });
 
-  // Review round 1 of #892: the refusal lived only in the first delivery, so an update of the refused
-  // audio arriving after the customer consented asked the gate again and got the new yes.
   test("a refused message stays unread after a later consent, without asking the endpoint again", async () => {
     await seedConversation(8814, INBOX_ONCE);
     authAnswers.push(false);
@@ -545,9 +559,6 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
     expect(providers.stt).toBe(0);
   });
 
-  // Measured by the holdout verifier of #892: Chatwoot follows every voice note with a
-  // `message_updated`, read as late media, and the pass asked the endpoint again for a message the
-  // gate had just allowed.
   test("the update that follows an allowed voice note does not ask the endpoint again", async () => {
     await seedConversation(8818, INBOX_GATED);
     authAnswers.push(true);
@@ -562,8 +573,6 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
     expect(providers.auth).toBe(1);
   });
 
-  // Review round 2 of #892: a delivery recovered after the refusal was recorded replays the gate, and
-  // a consent given in between answers it with a yes.
   test("a replayed delivery of a refused message stays unread even when the gate now says yes", async () => {
     await seedConversation(8819, INBOX_GATED);
     authAnswers.push(false);
@@ -581,6 +590,43 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
     expect(providers.auth).toBe(2);
     expect(providers.stt).toBe(0);
     expect(providers.vision).toBe(0);
+  });
+
+  test("an image an earlier pass already described is reused without asking the gate", async () => {
+    await seedConversation(8820, INBOX_GATED);
+    authAnswers.push(false);
+    await deliver({
+      convId: 8820,
+      chatwootInboxId: INBOX_GATED,
+      humanHeld: true,
+      describedImage: "alone",
+    });
+    expect(providers.auth).toBe(0);
+    expect(providers.vision).toBe(0);
+  });
+
+  test("on a refusal, memory keeps what an earlier pass read and counts the rest as unread", async () => {
+    await seedConversation(8821, INBOX_GATED);
+    authAnswers.push(false);
+    const id = await deliver({
+      convId: 8821,
+      chatwootInboxId: INBOX_GATED,
+      describedImage: "beside-new",
+    });
+    expect(providers.vision).toBe(0);
+    const row = await suDb.schedulerJob.findFirst({
+      where: {
+        tenantId,
+        kind: "INGEST_MESSAGE",
+        payload: { path: ["messageId"], equals: id },
+      },
+      select: { payloadSecret: true },
+    });
+    if (!row?.payloadSecret)
+      throw new Error("the refused message was not remembered");
+    const text = decryptJson<string>(row.payloadSecret);
+    expect(text).toContain("Print do pedido 21607129.");
+    expect(text).toContain('quantidade="1"');
   });
 
   test("with STT and vision off, the gate is not asked about media nobody would read", async () => {

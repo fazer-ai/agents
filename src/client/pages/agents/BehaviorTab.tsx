@@ -310,11 +310,13 @@ interface VisionState {
   extractionPrompt: string;
 }
 
-interface LimitsState {
+export interface LimitsState {
   maxToolCalls: string;
   // Empty string = no ceiling. Kept as text so an operator can clear the field to disable it; the
   // reader turns anything non-positive into null.
   maxHistoryTokens: string;
+  // No control on the tab: carried so the save does not delete it (issue #885, ./limitsFormState).
+  retrySilence: boolean;
 }
 
 // NOTE: The allowed-host list is edited as raw textarea text (one per line) and only turns into an

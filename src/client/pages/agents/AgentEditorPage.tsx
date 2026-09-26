@@ -135,6 +135,7 @@ import { GeneralTab } from "./GeneralTab";
 import { GuardrailsTab } from "./GuardrailsTab";
 import { readGuardrailsFormState } from "./guardrailsFormState";
 import { KnowledgeTab } from "./KnowledgeTab";
+import { limitsToForm, limitsToStored } from "./limitsFormState";
 import { memoryToForm, memoryToStored } from "./memoryFormState";
 import {
   modelFallbackToForm,
@@ -410,7 +411,6 @@ function readBehaviorState(a: Agent) {
   const ho = (s.handoff ?? {}) as Record<string, unknown>;
   const ka = (s.kanban ?? {}) as Record<string, unknown>;
   const tg = (s.toolGuidance ?? {}) as Record<string, unknown>;
-  const li = (s.limits ?? {}) as Record<string, unknown>;
   const ac = (s.attributeContext ?? {}) as Record<string, unknown>;
   const av = (s.availability ?? {}) as Record<string, unknown>;
   const ca = (s.contactAuth ?? {}) as Record<string, unknown>;
@@ -530,12 +530,7 @@ function readBehaviorState(a: Agent) {
       // the real instruction; buildSettings stores null when it stays the default.
       extractionPrompt: str(vi.extractionPrompt) || DEFAULT_EXTRACTION_PROMPT,
     },
-    limits: {
-      maxToolCalls: num(li.maxToolCalls) || "10",
-      // NOTE: Empty means no ceiling, so an absent/zero value must stay empty rather than pick up a
-      // default the way maxToolCalls does.
-      maxHistoryTokens: num(li.maxHistoryTokens),
-    },
+    limits: limitsToForm(s),
     attributeContext: {
       conversation: attrKeys(ac.conversation),
       contact: attrKeys(ac.contact),
@@ -892,10 +887,7 @@ function AgentEditor() {
   });
   // Runtime limits. Mirrors agent.settings.limits (modules/agents/limits): the per-turn tool-call
   // cap and the per-turn history ceiling.
-  const [limits, setLimits] = useState({
-    maxToolCalls: "10",
-    maxHistoryTokens: "",
-  });
+  const [limits, setLimits] = useState(() => limitsToForm({}));
   // Whether this agent's tool lines log the values the model sent instead of their shape, and
   // whether the log debug mode is armed. Mirrors agent.settings.observability
   // (modules/flowlog/settings), and seeded from the reader over an empty bag rather than a literal
@@ -1823,13 +1815,9 @@ function AgentEditor() {
             ? vision.extractionPrompt.trim()
             : null,
       },
-      limits: {
-        maxToolCalls: Number(limits.maxToolCalls) || 10,
-        // NOTE: An emptied field is how the operator turns the ceiling OFF, so it has to reach the
-        // API as null. `Number("") || 0` would send 0, which the reader also reads as off, but null
-        // is what "not configured" means everywhere else in this payload.
-        maxHistoryTokens: Number(limits.maxHistoryTokens) || null,
-      },
+      // NOTE: through the pair, for the same reason as `observability` below: this save REPLACES
+      // the block, and `retrySilence` has no control to keep it (./limitsFormState).
+      limits: limitsToStored(limits),
       // NOTE: through the pair, for the same reason `memory` below is — this save REPLACES the
       // block, so a field written out by hand here is deleted from the bag the moment someone
       // forgets it. ./observabilityFormState is the round-trip guard.

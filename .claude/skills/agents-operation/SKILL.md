@@ -27,6 +27,10 @@ Siga em ordem; cada etapa é uma reference. Leia a da etapa antes de executá-la
 5. [`references/04-validate-and-apply.md`](references/04-validate-and-apply.md): re-validar no playground, conversa de teste controlada (Inbox API) quando fizer sentido, aplicar só com aprovação (audit cobre o write).
 6. [`references/05-load-sim.md`](references/05-load-sim.md): **(opcional)** simular **N clientes concorrentes** (Inbox API, `scripts/simulate-load.py`) pra validar carga + que as **ferramentas disparam**; contorna o `/teste` ativando cada conversa. Use pra estresse ou pra reproduzir bug que só aparece com concorrência.
 
+Fora do fluxo, manutenção:
+
+- [`references/06-reprice.md`](references/06-reprice.md): recalcular o custo em dólar das chamadas já gravadas quando uma release corrige o preço de um modelo (`scripts/reprice-usage.ts`, simulação por padrão, `--apply` só com OK).
+
 Fronteiras duras em [`guardrails.md`](guardrails.md); armadilhas de diagnóstico em [`gotchas.md`](gotchas.md).
 
 ## Guardrails

@@ -38,6 +38,7 @@ import {
   recordResolutionOrigin,
 } from "@/modules/conversations/record-resolution";
 import {
+  type CustomerTextVerdict,
   type OpenCaseResult,
   openCaseInInbox,
 } from "@/modules/cross-inbox-case/service";
@@ -409,9 +410,10 @@ export interface ToolCtx {
     contactId: number | null;
   };
   // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself (the opening message of
-  // `open_case_in_inbox`): whether the text may go out. Bound by the runtime that owns the gate, so
-  // this file does not import it. Absent ⇒ this path screens nothing.
-  mayShowCustomer?: (text: string) => Promise<boolean>;
+  // `open_case_in_inbox`). Bound by the runtime that owns the gate, so this file does not import it,
+  // and a `handoff` verdict is carried out THERE, through the same transfer the reply's own trip
+  // takes. Absent ⇒ this path screens nothing.
+  screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
   // Per-agent, per-tool operator guidance (keyed by native tool name), appended to that tool's
   // model-facing description so transfer/funnel logic lives WITH the tool instead of buried in the
   // prompt. Populated at turn prep from agent.settings (handoff.instructions / kanban.instructions).
@@ -2273,6 +2275,8 @@ function openCaseOutcomeText(
       return "Nothing was opened: no destination inbox is configured. Hand off to a human instead.";
     case "called_off":
       return "Did not open the case (the run was called off before anything was written).";
+    case "handed_by_policy":
+      return "Did not open the case: the output check refused the opening message and its policy handed this conversation to the human team. Do not call this tool again in this conversation.";
     case "failed":
       return "";
   }
@@ -2290,11 +2294,13 @@ function openCaseInInboxTool(ctx: ToolCtx) {
       customer_message,
       email,
       labels,
+      handoff_message,
     }: {
       reason: string;
       customer_message?: string;
       email?: string;
       labels?: string[];
+      handoff_message?: string;
     }) => {
       const cic = ctx.crossInboxCase;
       if (!cic) return openCaseOutcomeText({ kind: "not_configured" });
@@ -2310,7 +2316,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           .filter((l) => l.length > 0),
         stillWanted: ctx.stillWanted,
         tenantId: ctx.tenantId,
-        screenCustomerMessage: ctx.mayShowCustomer,
+        screenCustomerMessage: ctx.screenCustomerText,
       });
       if (result.kind === "called_off") ctx.onNoEffect?.(OPEN_CASE_TOOL_NAME);
       if (result.kind !== "failed") {
@@ -2369,9 +2375,19 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         await ownStatusChange(ctx, () =>
           ctx.client.toggleStatus(ctx.conversationId, "open"),
         );
-        if (ctx.handoffState) ctx.handoffState.completed = true;
-        fallback =
-          " This conversation was handed to the human team instead, with a note saying why. Tell the customer a person will continue here.";
+        // The customer's line goes through the handoff's own delivery: after the transfer, screened
+        // by the output check, and not dropped by the ownership recheck the transfer just tripped,
+        // which is what happens to the model's next reply here. Without a line a person still sees
+        // the conversation; the customer just reads nothing.
+        if (ctx.handoffState) {
+          const line = handoff_message?.trim() ?? "";
+          ctx.handoffState.customerMessage = line || null;
+          ctx.handoffState.declinedToSpeak = false;
+          ctx.handoffState.completed = true;
+        }
+        fallback = handoff_message?.trim()
+          ? " This conversation was handed to the human team instead, with a note saying why. Your handoff_message will be delivered to the customer; do not repeat it."
+          : " This conversation was handed to the human team instead, with a note saying why. No message will reach the customer here.";
       } catch (e) {
         ctx.onSideEffectError?.({
           tool: OPEN_CASE_TOOL_NAME,
@@ -2412,6 +2428,12 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           .array(z.string())
           .optional()
           .describe("Labels that categorize the case in the destination."),
+        handoff_message: z
+          .string()
+          .optional()
+          .describe(
+            "What the customer reads HERE if the case cannot be opened and this conversation goes to a person instead. Always provide it.",
+          ),
       }),
     },
   );

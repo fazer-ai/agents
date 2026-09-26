@@ -45,7 +45,13 @@ export type CaseClient = Pick<
   | "getConversationLabels"
   | "setConversationLabels"
   | "setConversationCustomAttributes"
+  | "toggleStatus"
 >;
+
+// What the turn's output check made of the opening message: send it, drop it, or the operator's
+// policy transferred the ORIGIN to the team over it (the check's `handoff` action), which the runtime
+// that owns the check has already carried out.
+export type CustomerTextVerdict = "send" | "drop" | "handed";
 
 export interface OpenCaseInput {
   config: CrossInboxCaseConfig;
@@ -62,7 +68,7 @@ export interface OpenCaseInput {
   // The turn's OUTPUT guardrail over the opening message, which reaches the customer from inside the
   // tool and would otherwise go out unread by the moderation every reply passes. Answers whether the
   // text may be sent. Absent ⇒ no screening configured on this path.
-  screenCustomerMessage?: (text: string) => Promise<boolean>;
+  screenCustomerMessage?: (text: string) => Promise<CustomerTextVerdict>;
   // The label writers' shared queue is keyed by tenant (see modules/chatwoot/labels.ts).
   tenantId?: bigint | null;
 }
@@ -85,6 +91,9 @@ export type OpenCaseResult =
   | { kind: "needs_phone" }
   | { kind: "rejected_email"; why: "invalid" | "not_in_conversation" }
   | { kind: "called_off" }
+  // The output check's policy transferred the origin to the team over the opening message: nothing
+  // was opened, and the conversation is the team's now.
+  | { kind: "handed_by_policy" }
   | { kind: "failed"; step: string; error: unknown };
 
 const EMAIL_RE = /^[^\s@<>"',;]+@[^\s@<>"',;]+\.[^\s@<>"',;.]{2,}$/;
@@ -284,7 +293,9 @@ async function run(
     let openingBlocked = false;
     if (customerMessage && input.screenCustomerMessage) {
       step = "screen_customer_message";
-      if (!(await input.screenCustomerMessage(customerMessage))) {
+      const verdict = await input.screenCustomerMessage(customerMessage);
+      if (verdict === "handed") return { kind: "handed_by_policy" };
+      if (verdict === "drop") {
         customerMessage = null;
         openingBlocked = true;
       }
@@ -320,18 +331,41 @@ async function run(
 
     // 4. Everything below is best-effort: the case exists, and a missing note does not undo it.
     // The case number goes first, because it is what makes the next call answer "already open".
+    //
+    // EVERY WRITE ASKS THE FENCE FIRST, because each one follows a wait: the create, and then each
+    // write before it. A `/reset`, a switch-off or a person taking the origin over inside any of them
+    // stops what is left, and the attribute writer asks again inside its own queue, after its read,
+    // so a reset that cleared the origin's attributes is not undone by this one. The case stays
+    // open, since no write here can take it back.
     const partial: string[] = [];
+    let calledOff = false;
     const attempt = async (name: string, fn: () => Promise<unknown>) => {
+      if (calledOff) return;
+      if (input.stillWanted && !(await input.stillWanted())) {
+        calledOff = true;
+        partial.push("called_off");
+        return;
+      }
       try {
         await fn();
       } catch {
         partial.push(name);
       }
     };
+    // A continued case can come back closed: an inbox locked to one conversation per contact hands
+    // back the contact's LAST conversation whatever its state, without applying the status asked
+    // for. Reopened here, because a case the team cannot see in its queue is not a case.
+    if (created.status !== "open") {
+      await attempt("reopen_case", () =>
+        client.toggleStatus(caseId, "open", { asAdmin: true }),
+      );
+    }
     await attempt("origin_attribute", () =>
-      client.setConversationCustomAttributes(origin, {
-        [config.caseAttributeKey]: caseId,
-      }),
+      client.setConversationCustomAttributes(
+        origin,
+        { [config.caseAttributeKey]: caseId },
+        { stillWanted: input.stillWanted },
+      ),
     );
     // A continued case already has its opening: repeating it would send the customer a second
     // "we opened your case" email for the same case.
@@ -355,14 +389,13 @@ async function run(
       client.sendPrivateNote(origin, originLinkNote(caseUrl, inboxName)),
     );
     // Labels are a read-modify-write of the whole set, so both go through the queue every label
-    // writer shares (`set_labels`, the observer's verdict): outside it, two writers read the same set
-    // and the one that lands last erases the other's addition.
+    // writer shares (`set_labels`, the observer's verdict), and both READ inside it, a new case
+    // included: an automation or an operator can label it between the create and this write, and
+    // serializing only preserves a change the write has read.
     if (input.labels.length > 0) {
       await attempt("destination_labels", () =>
         withConversationLabels(input.tenantId, caseId, async () => {
-          const current = continued
-            ? await client.getConversationLabels(caseId)
-            : [];
+          const current = await client.getConversationLabels(caseId);
           await client.setConversationLabels(
             caseId,
             [...new Set([...current, ...input.labels])],

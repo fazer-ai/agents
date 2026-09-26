@@ -1198,10 +1198,19 @@ async function runTurnBody(
       documentsStorageDir: params.deps?.documentsStorageDir,
       turnState,
       handoffState,
-      // The gate is built below, and a tool only runs inside the graph's invoke, after it exists.
-      // A trip still writes its operator note and flow line, like any screening.
-      mayShowCustomer: async (text) =>
-        !guardrailTripped(await runGuardrail("output", text)),
+      // The gate and the transfer are built below, and a tool only runs inside the graph's invoke,
+      // after both exist. A trip writes its operator note and flow line like any screening, and a
+      // `handoff` verdict takes the transfer the reply's own trip takes, with the policy's line
+      // delivered as the handoff's closing line.
+      screenCustomerText: async (text) => {
+        const d = await runGuardrail("output", text);
+        if (!guardrailTripped(d)) return "send";
+        if (d.kind !== "handed-off") return "drop";
+        if ((await handOverForGuardrail("output")) !== "handed") return "drop";
+        handoffState.customerMessage = d.reply;
+        handoffState.declinedToSpeak = d.reply === null;
+        return "handed";
+      },
     },
     { buildNativeTools, mcp: params.deps?.mcp, flow },
   );

@@ -37,6 +37,11 @@ function fakeChatwoot(
     incoming?: string[];
     failOn?: Set<string>;
     continueOpen?: boolean;
+    // Chatwoot's lock_to_single_conversation: the contact's LAST conversation in the inbox comes back
+    // whatever its state, and the status asked for is not applied.
+    lockToSingle?: boolean;
+    // Runs right after the create, standing for an automation or a person acting in that window.
+    afterCreate?: (id: number) => void;
   } = {},
 ) {
   const calls: Array<{ fn: string; args: unknown[] }> = [];
@@ -142,6 +147,13 @@ function fakeChatwoot(
     },
     createConversation: async (p) => {
       record("createConversation", [p]);
+      if (opts.lockToSingle) {
+        const last = convs
+          .filter((c) => c.contactId === p.contactId && c.inboxId === p.inboxId)
+          .at(-1);
+        if (last)
+          return { id: last.id, inboxId: last.inboxId, status: last.status };
+      }
       if (opts.continueOpen) {
         const open = convs
           .filter(
@@ -166,6 +178,7 @@ function fakeChatwoot(
         labels: [],
       };
       convs.push(c);
+      opts.afterCreate?.(c.id);
       return { id: c.id, inboxId: c.inboxId, status: c.status };
     },
     sendMessageAsAdmin: async (id: number, content: string, o) => {
@@ -198,11 +211,18 @@ function fakeChatwoot(
       conv(id).labels = [...labels];
       return {};
     },
+    toggleStatus: async (id: number, status: string, o?: unknown) => {
+      record("toggleStatus", [id, status, o]);
+      conv(id).status = status;
+      return {};
+    },
     setConversationCustomAttributes: async (
       id: number,
       attrs: Record<string, unknown>,
+      o?: { stillWanted?: () => Promise<boolean> },
     ) => {
       record("setConversationCustomAttributes", [id, attrs]);
+      if (o?.stillWanted && !(await o.stillWanted())) return {};
       Object.assign(conv(id).attrs, attrs);
       return {};
     },
@@ -211,6 +231,7 @@ function fakeChatwoot(
 }
 
 const WRITES = new Set([
+  "toggleStatus",
   "updateContact",
   "mergeContacts",
   "createConversation",
@@ -802,7 +823,7 @@ describe("openCaseInInbox", () => {
       input({
         screenCustomerMessage: async (text) => {
           seen.push(`${text}|writes=${writesOf(f.calls).length}`);
-          return false;
+          return "drop";
         },
       }),
     );
@@ -825,7 +846,7 @@ describe("openCaseInInbox", () => {
     const f = fakeChatwoot();
     const r = await openCaseInInbox(
       f.client,
-      input({ screenCustomerMessage: async () => true }),
+      input({ screenCustomerMessage: async () => "send" }),
     );
     expect(r).toMatchObject({ kind: "opened" });
     expect((r as { openingBlocked?: boolean }).openingBlocked).toBeUndefined();
@@ -869,6 +890,108 @@ describe("openCaseInInbox", () => {
     expect([...(f.convs.find((c) => c.id === 7)?.labels ?? [])].sort()).toEqual(
       ["caso-aberto", "vip"],
     );
+  });
+
+  test("the output check's policy transferred the origin: nothing is opened, nothing written", async () => {
+    const f = fakeChatwoot();
+    const r = await openCaseInInbox(
+      f.client,
+      input({ screenCustomerMessage: async () => "handed" }),
+    );
+    expect(r).toEqual({ kind: "handed_by_policy" });
+    expect(writesOf(f.calls)).toEqual([]);
+  });
+
+  test("a locked inbox hands back the contact's closed conversation: it is reopened, not reported open while closed", async () => {
+    const f = fakeChatwoot({
+      lockToSingle: true,
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels: [],
+        },
+        {
+          id: 60,
+          inboxId: 40,
+          contactId: 5,
+          status: "resolved",
+          attrs: {},
+          labels: [],
+        },
+      ],
+    });
+    const r = await openCaseInInbox(f.client, input());
+    expect(r).toMatchObject({ kind: "continued", caseId: 60, partial: [] });
+    expect(f.convs.find((c) => c.id === 60)?.status).toBe("open");
+    expect(f.calls.find((c) => c.fn === "toggleStatus")?.args).toEqual([
+      60,
+      "open",
+      { asAdmin: true },
+    ]);
+  });
+
+  test("an open case that comes back is not toggled again", async () => {
+    const f = fakeChatwoot();
+    await openCaseInInbox(f.client, input());
+    expect(f.calls.some((c) => c.fn === "toggleStatus")).toBe(false);
+  });
+
+  test("labels a new case got after its create are kept", async () => {
+    // Review round 2: a new case was assumed to have no labels, and the write replaced the set.
+    const f = fakeChatwoot({
+      afterCreate: (id) => {
+        const c = f.convs.find((x) => x.id === id);
+        if (c) c.labels.push("automacao");
+      },
+    });
+    await openCaseInInbox(f.client, input({ labels: ["financeiro"] }));
+    expect(f.convs.find((c) => c.id === 100)?.labels).toEqual([
+      "automacao",
+      "financeiro",
+    ]);
+  });
+
+  test("called off after the create: nothing more is written, the attribute writer is fenced too", async () => {
+    // Review round 2: the opening message, notes and labels went out after a withdrawal.
+    let wanted = true;
+    const f = fakeChatwoot({
+      afterCreate: () => {
+        wanted = false;
+      },
+    });
+    const r = await openCaseInInbox(
+      f.client,
+      input({ labels: ["x"], stillWanted: async () => wanted }),
+    );
+    expect(r).toMatchObject({ kind: "opened", partial: ["called_off"] });
+    const after = writesOf(f.calls).slice(
+      writesOf(f.calls).indexOf("createConversation") + 1,
+    );
+    expect(after).toEqual([]);
+  });
+
+  test("the attribute writer gets the fence, for the ask it makes after its own read", async () => {
+    const f = fakeChatwoot();
+    let calls = 0;
+    await openCaseInInbox(
+      f.client,
+      input({
+        stillWanted: async () => {
+          calls++;
+          // Wanted for every ask the service makes; the writer's own ask, inside its queue, says no.
+          return calls < 4;
+        },
+      }),
+    );
+    const attr = f.calls.find(
+      (c) => c.fn === "setConversationCustomAttributes",
+    );
+    expect(attr).toBeDefined();
+    expect(f.convs.find((c) => c.id === 7)?.attrs).toEqual({});
   });
 
   test("the create fails: failed at that step, and nothing claims a case", async () => {
@@ -918,6 +1041,7 @@ describe("the tool", () => {
     expect(Object.keys(shape).sort()).toEqual([
       "customer_message",
       "email",
+      "handoff_message",
       "labels",
       "reason",
     ]);
@@ -1093,9 +1217,9 @@ describe("the tool", () => {
     const f = fakeChatwoot();
     const screened: string[] = [];
     const { t } = toolFor(f, {
-      mayShowCustomer: async (text: string) => {
+      screenCustomerText: async (text: string) => {
         screened.push(text);
-        return false;
+        return "drop" as const;
       },
     });
     const out = String(
@@ -1132,6 +1256,53 @@ describe("the tool", () => {
     const note = f.calls.find((c) => c.fn === "sendPrivateNote");
     expect(note?.args[0]).toBe(7);
     expect(String(note?.args[1])).toContain("create_conversation");
+  });
+
+  test("a failed opening hands the customer's line to the handoff's own delivery", async () => {
+    const f = fakeChatwoot({ failOn: new Set(["createConversation"]) });
+    const handoffState: {
+      customerMessage: string | null;
+      completed: boolean;
+      declinedToSpeak?: boolean;
+    } = { customerMessage: null, completed: false };
+    const { t } = toolFor(f, { handoffState });
+    const out = String(
+      await t.invoke({
+        reason: "x",
+        handoff_message: "Vou passar para uma pessoa do time.",
+      }),
+    );
+    expect(handoffState).toMatchObject({
+      customerMessage: "Vou passar para uma pessoa do time.",
+      completed: true,
+      declinedToSpeak: false,
+      // The status change is marked as the turn's own, so the ownership fence does not read it as a
+      // person taking the conversation over.
+      ownerChanged: true,
+    });
+    expect(out).toContain("do not repeat it");
+  });
+
+  test("without a line, a person still gets the conversation and the model is told nothing reaches the customer", async () => {
+    const f = fakeChatwoot({ failOn: new Set(["createConversation"]) });
+    const handoffState = { customerMessage: null, completed: false };
+    const { t, toggles } = toolFor(f, { handoffState });
+    const out = String(await t.invoke({ reason: "x" }));
+    expect(toggles).toEqual(["7:open"]);
+    expect(handoffState.customerMessage).toBeNull();
+    expect(out).toContain("No message will reach the customer");
+  });
+
+  test("the output check's policy took the conversation: the model is told, and not to try again", async () => {
+    const f = fakeChatwoot();
+    const { t } = toolFor(f, {
+      screenCustomerText: async () => "handed" as const,
+    });
+    const out = String(
+      await t.invoke({ reason: "x", customer_message: "Olá" }),
+    );
+    expect(out).toContain("handed this conversation to the human team");
+    expect(writesOf(f.calls)).toEqual([]);
   });
 
   test("a failed opening is a marked failure, so the flow log carries it", async () => {

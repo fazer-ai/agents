@@ -108,7 +108,7 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
 
   test("the turn's output screening reaches the tool", async () => {
     let seen: Record<string, unknown> | undefined;
-    const screen = async () => false;
+    const screen = async () => "drop" as const;
     await buildToolset(
       config(picked),
       {
@@ -118,7 +118,7 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
         client: {} as unknown as ChatwootClient,
         conversationId: 77,
         threadId: `t-${process.pid}`,
-        mayShowCustomer: screen,
+        screenCustomerText: screen,
       },
       {
         buildNativeTools: (native) => {
@@ -127,7 +127,7 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
         },
       },
     );
-    expect(seen?.mayShowCustomer).toBe(screen);
+    expect(seen?.screenCustomerText).toBe(screen);
   });
 
   test("a config written without the account is honored as-is", async () => {
@@ -139,20 +139,29 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
   });
 });
 
-// Review round 1: the opening message reaches the customer from inside the tool, so the screening
-// every reply passes has to be handed to it by the two runtimes that own the gate. Read off the
+// Review rounds 1 and 2: the opening message reaches the customer from inside the tool, so the
+// screening every reply passes has to be handed to it by the two runtimes that own the gate, and a
+// `handoff` verdict has to take the transfer those runtimes take for their own trips. Read off the
 // source because the binding is a closure over a gate built later in the same function.
 describe("both runtimes bind the output gate for it", () => {
-  test("the reactive turn", async () => {
-    const src = await Bun.file("src/graph/runtime.ts").text();
-    expect(src).toMatch(
-      /mayShowCustomer: async \(text\) =>\s*!guardrailTripped\(await runGuardrail\("output", text\)\)/,
-    );
+  const binding = (src: string) => {
+    const at = src.indexOf("screenCustomerText: async (text) => {");
+    expect(at).toBeGreaterThan(-1);
+    return src.slice(at, src.indexOf("\n        },\n", at) + 1 || at + 900);
+  };
+  test("the reactive turn screens with its gate and transfers through its own hand-over", async () => {
+    const b = binding(await Bun.file("src/graph/runtime.ts").text());
+    expect(b).toContain('await runGuardrail("output", text)');
+    expect(b).toContain('if (!guardrailTripped(d)) return "send";');
+    expect(b).toContain('await handOverForGuardrail("output")');
+    expect(b).toContain("handoffState.customerMessage = d.reply;");
   });
-  test("the proactive turn", async () => {
-    const src = await Bun.file("src/graph/nudge.ts").text();
-    expect(src).toMatch(
-      /mayShowCustomer: async \(text\) =>\s*!guardrailTripped\(await screenOutput\(text\)\)/,
-    );
+  test("the proactive turn screens with its gate and transfers through the guardrail hand-off", async () => {
+    const b = binding(await Bun.file("src/graph/nudge.ts").text());
+    expect(b).toContain("await screenOutput(text)");
+    expect(b).toContain('if (!guardrailTripped(d)) return "send";');
+    expect(b).toContain("const handed = await applyGuardrailHandoff({");
+    expect(b).toContain('return handed ? "handed" : "drop";');
+    expect(b).toContain("handoffState.completed = handed;");
   });
 });

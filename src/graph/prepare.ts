@@ -57,6 +57,7 @@ import {
   readContactAuthConfig,
 } from "@/modules/contact-auth/settings";
 import type { ObservedConversation } from "@/modules/conversations/record-resolution";
+import type { CustomerTextVerdict } from "@/modules/cross-inbox-case/service";
 import {
   type CrossInboxCaseConfig,
   readCrossInboxCaseConfig,
@@ -970,9 +971,9 @@ export interface ToolsetCtx {
   client: ChatwootClient;
   conversationId: number;
   threadId: string;
-  // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself: whether it may go out.
-  // Absent ⇒ nothing screens it on this path.
-  mayShowCustomer?: (text: string) => Promise<boolean>;
+  // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself. Absent ⇒ nothing
+  // screens it on this path. See ToolCtx.screenCustomerText.
+  screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
   // The caller's send fence, for the one customer-facing write a tool makes on its own: the
   // slow-tool ack, whose send is a wait the graph's own ask at the tool boundary sits before
   // (issue #209 review, round 10). Asked after that send, before the typing indicator and before
@@ -1097,7 +1098,7 @@ export interface ToolBuildDeps {
         config: CrossInboxCaseConfig;
         contactId: number | null;
       };
-      mayShowCustomer?: (text: string) => Promise<boolean>;
+      screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
       fetchImpl?: typeof fetch;
       assertSafe?: ImageFetchDeps["assertSafe"];
       toolInstructions?: Partial<Record<NativeToolName, string>>;
@@ -1491,7 +1492,7 @@ export async function buildToolset(
               contactId: cfg.chatwootContactId,
             }
           : undefined,
-      mayShowCustomer: ctx.mayShowCustomer,
+      screenCustomerText: ctx.screenCustomerText,
       fetchImpl: ctx.imageDeps?.fetchImpl,
       assertSafe: ctx.imageDeps?.assertSafe,
       toolInstructions,

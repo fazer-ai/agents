@@ -1447,9 +1447,25 @@ async function runAgentNudgeBody(
         // tool re-reads the live state itself and falls back here only when that read fails.
         observed: { status: loaded.status, statusAt: loaded.statusAt },
         handoffState,
-        // Defined below; a tool only runs inside the graph's invoke, after it exists.
-        mayShowCustomer: async (text) =>
-          !guardrailTripped(await screenOutput(text)),
+        // Defined below; a tool only runs inside the graph's invoke, after it exists. A `handoff`
+        // verdict takes the transfer this path's own trip takes.
+        screenCustomerText: async (text) => {
+          const d = await screenOutput(text);
+          if (!guardrailTripped(d)) return "send";
+          if (d.kind !== "handed-off") return "drop";
+          const handed = await applyGuardrailHandoff({
+            client,
+            conversationId,
+            instanceId,
+            handoff: nudgeCfg.handoffConfig,
+            direction: "output",
+            flow,
+            stillWanted: toolFence,
+          });
+          handoffState.completed = handed;
+          if (handed) handoffState.customerMessage = d.reply;
+          return handed ? "handed" : "drop";
+        },
       },
       { buildNativeTools, mcp: params.deps?.mcp, flow },
     ),

@@ -408,8 +408,9 @@ function buildPlaygroundToolset(
     // so ToolFlowLogger sees no run either and there is nothing else to read.
     flow: FlowContext | undefined;
     // Where `reply_as_text` records its choice (issue #859). The turn passes the one its delivery
-    // reads; the listing passes a throwaway, so the panel shows the tool the model is offered.
-    replyChoice: ReplyChoice;
+    // reads; the listing passes a throwaway, so the panel shows the tool the model is offered. Absent
+    // on the simulated follow-up, which, like production's nudge, is never offered the tool.
+    replyChoice: ReplyChoice | undefined;
   },
 ): Promise<StructuredToolInterface[]> {
   return buildToolset(
@@ -490,8 +491,9 @@ async function buildPlaygroundGraph(params: {
   // it is how their agent answers "ok" with silence.
   silenceProtocol?: boolean;
   // The spoken-reply notice and the choice holder of issue #859, from the turn that will deliver the
-  // reply. Absent on the simulated follow-up, which never answers in audio.
-  spokenNotice?: string | null;
+  // reply. Absent on the simulated follow-up, which never answers in audio and, like production's
+  // nudge, is not offered reply_as_text.
+  spokenNotice?: () => string | null;
   replyChoice?: ReplyChoice;
 }) {
   const { ctx, agentId, threadId, base } = params;
@@ -511,7 +513,7 @@ async function buildPlaygroundGraph(params: {
     base,
     deps: params.deps,
     flow: params.flow,
-    replyChoice: params.replyChoice ?? { textChosen: false },
+    replyChoice: params.replyChoice,
   });
   const toolMocks = params.overrides?.toolMocks;
   // Which names are OURS in this turn's toolset rather than the operator's — the question every rule
@@ -768,7 +770,11 @@ async function runPlaygroundTurnOnce(
       turnId,
       flow,
       loaded: loadedConfig,
-      spokenNotice: spokenNoticeFor(loadedConfig.ttsConfig, plannedAudio),
+      spokenNotice: () =>
+        spokenNoticeFor(
+          loadedConfig.ttsConfig,
+          plannedAudio && !replyChoice.textChosen,
+        ),
       replyChoice,
       onModelRetry: ({ attempt, provider, model }) =>
         emitFlowEvent(flow, {

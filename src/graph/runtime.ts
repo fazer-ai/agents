@@ -1159,6 +1159,11 @@ async function runTurnBody(
     channelType: loaded.channelType,
   });
   const replyChoice: ReplyChoice = { textChosen: false };
+  // What the reply is RIGHT NOW, for the notice each round reads: the plan, until the customer's
+  // preference is changed by `set_voice_preference` during the turn (which asks `replyIsAudioWith`
+  // below) or the model chooses text. The delivery re-reads the preference itself; this only keeps
+  // the instruction from contradicting a change the model was just told about.
+  let audioNow = plannedAudio;
   const handoffState: HandoffTurnState = {
     customerMessage: null,
     completed: false,
@@ -1212,13 +1217,14 @@ async function runTurnBody(
       turnState,
       handoffState,
       replyChoice,
-      replyIsAudioWith: (voiceReply) =>
-        !replyChoice.textChosen &&
-        plannedReplyIsAudio(loaded.ttsConfig, {
+      replyIsAudioWith: (voiceReply) => {
+        audioNow = plannedReplyIsAudio(loaded.ttsConfig, {
           userSentAudio: params.userSentAudio ?? false,
           contactVoiceReply: voiceReply,
           channelType: loaded.channelType,
-        }),
+        });
+        return audioNow && !replyChoice.textChosen;
+      },
     },
     { buildNativeTools, mcp: params.deps?.mcp, flow },
   );
@@ -1227,7 +1233,8 @@ async function runTurnBody(
   const graph = await buildModelAndGraph(loaded, tools, {
     makeModel: params.deps?.makeModel,
     checkpointer: params.deps?.checkpointer,
-    spokenNotice: spokenNoticeFor(loaded.ttsConfig, plannedAudio),
+    spokenNotice: () =>
+      spokenNoticeFor(loaded.ttsConfig, audioNow && !replyChoice.textChosen),
     // THE ONE SEAM INSIDE THE INVOKE (issue #449). Every other ask this function makes sits BETWEEN
     // steps — before the divider, after the claim, before the invoke, at each outward write — and a
     // tool call happens inside one. Handed down here so the graph can ask it at the tool boundary,

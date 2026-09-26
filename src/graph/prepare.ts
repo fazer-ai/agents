@@ -1899,9 +1899,8 @@ export interface GraphBuildDeps {
   // Forwarded to the graph: this caller's turn has no reply channel, so the tool budget's wrap-up
   // must not tell the model to answer a customer (issue #629). The observation tick passes it.
   noReplyChannel?: boolean;
-  // The spoken-reply notice for this turn (issue #859), from `spokenNoticeFor`. See
-  // BuildAgentGraphParams.spokenNotice.
-  spokenNotice?: string | null;
+  // The spoken-reply notice, asked every round (issue #859). See BuildAgentGraphParams.spokenNotice.
+  spokenNotice?: () => string | null;
 }
 
 // The second provider, built or deliberately absent. Every way this returns undefined is a way an

@@ -570,6 +570,59 @@ describe.skipIf(!dbUp)("playground", () => {
     );
   });
 
+  // Codex review of #879: production's follow-up (the nudge) is never offered reply_as_text, so the
+  // simulation must not be either, and for an agent with no other tool that extra tool would also
+  // keep `skip_reply` bound and change the silence protocol.
+  test("a simulated follow-up is not offered reply_as_text (#859)", async () => {
+    await withAudioAgent(
+      { mode: "mirror", textChoice: true, spokenNotice: true },
+      async () => {
+        const m = new ScriptedCaptureModel([{ reply: "Oi, ainda por aí?" }]);
+        await runPlaygroundFollowup({
+          ctx: ctx(tenantId),
+          agentId: agentAudio,
+          base: appDb,
+          deps: {
+            makeModel: () => m as unknown as BaseChatModel,
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(m.boundToolNames ?? []).not.toContain(REPLY_AS_TEXT_TOOL);
+      },
+    );
+  });
+
+  test("after the model chooses text in the playground, the next round is not told voice (#859)", async () => {
+    await withAudioAgent(
+      {
+        mode: "mirror",
+        spokenNotice: true,
+        spokenNoticeText: "AVISO-859-PGR",
+        textChoice: true,
+      },
+      async () => {
+        const m = new ScriptedCaptureModel([
+          { call: REPLY_AS_TEXT_TOOL },
+          { reply: "A: 10" },
+        ]);
+        await runPlaygroundTurn({
+          ctx: ctx(tenantId),
+          agentId: agentAudio,
+          message: "preços?",
+          forceAudio: true,
+          base: appDb,
+          deps: {
+            makeModel: () => m as unknown as BaseChatModel,
+            checkpointer: new MemorySaver(),
+            ttsFetch: okAudio([]),
+          },
+        });
+        expect(systemOf(m.seen[0] ?? [])).toContain("AVISO-859-PGR");
+        expect(systemOf(m.seen[1] ?? [])).not.toContain("AVISO-859-PGR");
+      },
+    );
+  });
+
   test("the model chooses text in a simulated audio turn: no synthesis, one line (#859)", async () => {
     await withAudioAgent(
       { mode: "mirror", spokenNotice: true, textChoice: true },

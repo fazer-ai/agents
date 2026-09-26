@@ -4770,6 +4770,46 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     );
   });
 
+  // Codex review of #879: once the reply goes as text, the rounds after the change must not read an
+  // instruction that says it is a voice note (no lists, no formatting), which is exactly what the
+  // model chose text to write.
+  test("after the model chooses text, the next round is no longer told voice (#859)", async () => {
+    await withTtsMode(
+      "mirror",
+      async () => {
+        const m = new ScriptedCaptureModel([
+          { call: REPLY_AS_TEXT_TOOL },
+          { reply: "A: 10\nB: 20" },
+        ]);
+        await voiceTurn(859_51, m, { audio: true });
+        expect(systemOf(m.seen[0] ?? [])).toContain("AVISO-859-R");
+        expect(systemOf(m.seen[1] ?? [])).not.toContain("AVISO-859-R");
+        // Nothing before the notice moved: the first message is the same bytes in both rounds.
+        expect(String(m.seen[1]?.[0]?.content)).toBe(
+          String(m.seen[0]?.[0]?.content),
+        );
+      },
+      { ...CHOICE_ON, spokenNoticeText: "AVISO-859-R" },
+    );
+  });
+
+  test("after the customer asks for text mid-turn, the next round is no longer told voice (#859)", async () => {
+    await withTtsMode(
+      "preference",
+      async () => {
+        await seedWithVoiceReply(859_52, null);
+        const m = new ScriptedCaptureModel([
+          { call: "set_voice_preference", args: { preference: "text" } },
+          { reply: "Combinado." },
+        ]);
+        await voiceTurn(859_52, m, { audio: true, seed: false });
+        expect(systemOf(m.seen[0] ?? [])).toContain("AVISO-859-P2");
+        expect(systemOf(m.seen[1] ?? [])).not.toContain("AVISO-859-P2");
+      },
+      { ...NOTICE_ON, spokenNoticeText: "AVISO-859-P2" },
+    );
+  });
+
   test("the tool is offered on text and audio turns alike, with the operator's note (#859)", async () => {
     await withTtsMode(
       "mirror",

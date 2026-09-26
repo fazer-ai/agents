@@ -1255,8 +1255,27 @@ async function runTurnBody(
     { buildNativeTools, mcp: params.deps?.mcp, flow },
   );
 
+  // Whether this turn's unexplained silence was asked once more (issue #885), for the warn that
+  // still fires when the second answer said nothing too.
+  let silenceRetried = false;
   // Build model + graph + cost/trace callbacks.
   const graph = await buildModelAndGraph(loaded, tools, {
+    // THE RETRY OF AN UNEXPLAINED SILENCE (issue #885), asked by the graph at the moment it would
+    // run. Not a silence, and so never retried: a turn whose transfer completed (a person owns the
+    // conversation) or that already put something in front of the customer. The same two facts
+    // `silenceIsUnexplained` reads at the end of the turn, asked here before the second call is paid.
+    retrySilence: () =>
+      loaded.retrySilence &&
+      !handoffState.completed &&
+      !turnDeliveredToCustomer(turnState, handoffState),
+    onSilenceRetry: ({ outcome }) => {
+      silenceRetried = true;
+      emitFlowEvent(flow, {
+        stage: "generate",
+        status: "ok",
+        detail: { silenceRetry: outcome },
+      });
+    },
     makeModel: params.deps?.makeModel,
     checkpointer: params.deps?.checkpointer,
     spokenNotice: () =>
@@ -2963,7 +2982,11 @@ async function runTurnBody(
           stage: "generate",
           level: "warn",
           status: "ok",
-          detail: { silenceUnexplained: true, resolveDiscarded },
+          detail: {
+            silenceUnexplained: true,
+            resolveDiscarded,
+            silenceRetried,
+          },
         });
       }
       // Skipped, not returned on: closing a conversation the operator has just cleared is a write

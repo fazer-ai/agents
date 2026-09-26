@@ -104,6 +104,7 @@ export function makeConfig(
     timezone: "America/Sao_Paulo",
     maxToolCalls: 10,
     maxHistoryTokens: null,
+    retrySilence: true,
     memoryCompaction: true,
     historyDates: true,
     memoryCompactionOverride: {},

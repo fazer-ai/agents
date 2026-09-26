@@ -117,7 +117,11 @@ import {
   readModelFallbackConfig,
   resolveFallbackModel,
 } from "./fallback-settings";
-import { buildAgentGraph, type FallbackModel } from "./graph";
+import {
+  buildAgentGraph,
+  type FallbackModel,
+  type SilenceRetryInfo,
+} from "./graph";
 import { PRIMARY_MAX_RETRIES, PRIMARY_TIMEOUT_MS } from "./model-fallback";
 import type {
   ModelLabels,
@@ -322,6 +326,8 @@ export interface AgentConfig {
   // Ceiling on the history tokens sent to the model (agent.settings.limits.maxHistoryTokens).
   // null = no ceiling, send the whole thread.
   maxHistoryTokens: number | null;
+  // Retry an unexplained silence once (agent.settings.limits.retrySilence, issue #885).
+  retrySilence: boolean;
   // Whether a closed attendance gets folded into the contact's memory instead of staying raw on
   // the thread (agent.settings.memory.compaction). Read here so the turn that CROSSES an
   // attendance boundary can arm the compaction job without a second query.
@@ -916,6 +922,7 @@ export async function loadAgentConfig(
     timezone,
     maxToolCalls: limits.maxToolCalls,
     maxHistoryTokens: limits.maxHistoryTokens,
+    retrySilence: limits.retrySilence,
     memoryCompaction: memoryCfg.enabled,
     historyDates: memoryRead.historyDates.enabled,
     memoryCompactionOverride: {
@@ -1953,6 +1960,11 @@ export interface GraphBuildDeps {
   noReplyChannel?: boolean;
   // The spoken-reply notice, asked every round (issue #859). See BuildAgentGraphParams.spokenNotice.
   spokenNotice?: () => string | null;
+  // The retry of an unexplained silence (issue #885). See BuildAgentGraphParams.retrySilence. Only
+  // the reactive turn passes it; the agent's own switch is read by the caller, which also knows what
+  // the turn already delivered.
+  retrySilence?: () => boolean;
+  onSilenceRetry?: (info: SilenceRetryInfo) => void;
 }
 
 // The second provider, built or deliberately absent. Every way this returns undefined is a way an
@@ -2095,6 +2107,8 @@ export async function buildModelAndGraph(
     noReplyChannel: deps.noReplyChannel,
     spokenNotice: deps.spokenNotice,
     stillWanted: deps.stillWanted,
+    retrySilence: deps.retrySilence,
+    onSilenceRetry: deps.onSilenceRetry,
     primaryDeadlineMs: fallback
       ? PRIMARY_TIMEOUT_MS
       : config.agent.modelCallTimeoutMs,

@@ -1092,3 +1092,50 @@ export class TextBesideToolThenEmptyModel {
     };
   }
 }
+
+// A model that plays a fixed script, one step per call, and RECORDS what each call was handed
+// (issue #885). The retry of an unexplained silence is a second call inside the same agent-node
+// round, so what matters is how many calls were made and what the second one was sent: the late
+// instruction, where it travels, and that the empty answer it replaces is not in the history.
+// Past the script it answers empty, which is the defect under test.
+export class ScriptedSilenceModel {
+  seen: BaseMessage[][] = [];
+  constructor(
+    private steps: Array<{
+      text: string;
+      calls?: Array<{ name: string; args: Record<string, unknown> }>;
+      // A call the provider could not parse: it lands in `invalid_tool_calls`, and no tool runs.
+      invalid?: boolean;
+    }>,
+  ) {}
+  private next(messages: BaseMessage[]): AIMessage {
+    this.seen.push(messages);
+    const step = this.steps[this.seen.length - 1];
+    if (!step) return new AIMessage("");
+    return new AIMessage({
+      content: step.text,
+      invalid_tool_calls: step.invalid
+        ? [
+            {
+              name: "set_labels",
+              args: "{not json",
+              id: `bad_${this.seen.length}`,
+              error: "unparseable",
+              type: "invalid_tool_call",
+            },
+          ]
+        : [],
+      tool_calls: (step.calls ?? []).map((c, i) => ({
+        name: c.name,
+        args: c.args,
+        id: `call_${this.seen.length}_${i}`,
+      })),
+    });
+  }
+  async invoke(messages: BaseMessage[]): Promise<AIMessage> {
+    return this.next(messages);
+  }
+  bindTools(_tools: unknown) {
+    return { invoke: async (m: BaseMessage[]) => this.next(m) };
+  }
+}

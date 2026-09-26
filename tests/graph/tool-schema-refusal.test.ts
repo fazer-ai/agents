@@ -365,9 +365,11 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     // `generate` line is issue #773's: the call was refused, so nothing reached the customer and
     // nothing in the turn chose that silence. Both are `status: ok` — neither is an error of the
     // generation step — and they differ in level, which is what decides who hears about it.
+    // Since issue #885 the silence is asked once more before it is accepted, and that retry is its
+    // own `info` line between the two; the model here answers nothing again.
     const gen = withoutTurnEnd(t.rows).filter((r) => r.stage === "generate");
-    expect(gen.map((r) => r.status)).toEqual(["ok", "ok"]);
-    expect(gen.map((r) => r.level)).toEqual(["info", "warn"]);
+    expect(gen.map((r) => r.status)).toEqual(["ok", "ok", "ok"]);
+    expect(gen.map((r) => r.level)).toEqual(["info", "info", "warn"]);
     // And the refusal still reaches the model, unchanged: the wrapper observes, it does not answer.
     expect(t.answers.length).toBe(1);
     expect(t.answers[0]).toContain("did not match expected schema");
@@ -386,13 +388,19 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     // since issue #773 is a turn the operator is told about rather than one that disappears. And
     // nobody on our side had spoken in this conversation, so since issue #659 the silence also hands
     // it to a person: the `handoff` line is that.
+    // The second `info` is issue #885's retry of that silence, which the model answers with nothing.
     const lines = withoutTurnEnd(b.rows);
     expect(lines.map((r) => `${r.stage}/${r.status}/${r.level}`)).toEqual([
+      "generate/ok/info",
       "generate/ok/info",
       "generate/ok/warn",
       "handoff/ok/info",
     ]);
-    expect(Object.keys(det(lines[0] as Row))).toEqual(["systemPrompt"]);
+    // The retry's line can land before the prompt's: the prompt line is written after the invoke.
+    expect(lines.map((r) => Object.keys(det(r)))).toContainEqual([
+      "systemPrompt",
+    ]);
+    expect(lines.map((r) => det(r).silenceRetry)).toContain("empty");
     // And the turn closed on its own line, naming no message: it created none.
     const end = b.rows.filter(isTurnEnd);
     expect(end).toHaveLength(1);

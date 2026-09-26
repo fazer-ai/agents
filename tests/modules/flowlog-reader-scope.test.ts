@@ -214,7 +214,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   // #859: every line of one conversation, to prove the reply the model chose to send as text is in
   // none of them. #886: two more, the `replyRecovered` line of a turn whose reply was written beside a
   // tool call, and the `silenceUnexplained` warn that must not fire on it, both scoped by thread.
-  "tests/graph/runtime.test.ts": 29,
+  // #885: two more, the `silenceRetry` line of a retried silence and the warn's detail that says the
+  // retry ran, both scoped by thread.
+  "tests/graph/runtime.test.ts": 31,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/skip-handover.test.ts": 1,
   // #726: the helper that runs one tool call end to end, plus the case that asks WHEN the turn's

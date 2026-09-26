@@ -46,11 +46,30 @@ describe("readLimitsConfig — maxHistoryTokens", () => {
     expect(read({ maxToolCalls: 3, maxHistoryTokens: 12_000 })).toEqual({
       maxToolCalls: 3,
       maxHistoryTokens: 12_000,
+      retrySilence: true,
     });
     // A bag that only carries the new knob must not silently reset the old one, and vice versa.
     expect(read({ maxToolCalls: 99 })).toEqual({
       maxToolCalls: 50,
       maxHistoryTokens: null,
+      retrySilence: true,
     });
+  });
+});
+
+// ISSUE #885: the retry of an unexplained silence is ON unless the operator says `false`.
+describe("limits.retrySilence", () => {
+  const read = (limits: unknown) => readLimitsConfig({ limits });
+  test("on by default, with no settings at all", () => {
+    expect(readLimitsConfig(undefined).retrySilence).toBe(true);
+    expect(readLimitsConfig({}).retrySilence).toBe(true);
+    expect(read({}).retrySilence).toBe(true);
+  });
+
+  test("only an explicit false turns it off", () => {
+    expect(read({ retrySilence: false }).retrySilence).toBe(false);
+    expect(read({ retrySilence: true }).retrySilence).toBe(true);
+    expect(read({ retrySilence: null }).retrySilence).toBe(true);
+    expect(read({ retrySilence: "false" }).retrySilence).toBe(true);
   });
 });

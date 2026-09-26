@@ -286,7 +286,11 @@ const SETTINGS_DESC_CEILING = 2_000;
 // the type cannot (that an unset inbox turns the tool off, the attribute's default, that the merge is
 // off unless asked for, and that the close waits for the reply). Re-measured on the tree that ships:
 // 27,935 before #859's 451. With both on the tree that ships: 28,386.
-const SETTINGS_SCHEMA_CEILING = 28_401;
+//
+// RAISED for issue #885 by `limits.retrySilence`, the switch that asks the model once more when a
+// reply turn would end silent: one boolean, 95 characters. Trimmed first, by 58: the description
+// says only the default. Re-measured on the tree that ships: 28,481.
+const SETTINGS_SCHEMA_CEILING = 28_496;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -729,6 +733,8 @@ describe("MCP tool descriptions", () => {
   // above: this tree measures 62,763, so 62,779 with the same 16. No description changed.
   // SCHEMA RAISED by `crossInboxCase` (#700), the same 1,197 characters as the settings ceiling
   // above: this tree measured 63,509 before #859; with both it measures 63,960, so 63,976 with the same 16. No description changed.
+  // SCHEMA RAISED by `limits.retrySilence` (#885), the same 95 characters as the settings ceiling
+  // above: this tree measures 64,055, so 64,071 with the same 16. No description changed.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -738,7 +744,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_503);
-    expect(schema).toBeLessThanOrEqual(63_976);
+    expect(schema).toBeLessThanOrEqual(64_071);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

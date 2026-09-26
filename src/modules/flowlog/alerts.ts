@@ -62,7 +62,9 @@ const FLAG_KEYS = [
 // BOOLEANS whose `false` says as much as their `true`, so both are printed, labeled. A presence flag
 // would drop the `false`, and for `resolveDiscarded` that is the case the operator cannot find: the
 // conversation stays pending with no owner, where `true` closed it as handled with nothing sent.
-const BOOLEAN_KEYS = ["resolveDiscarded"] as const;
+// `silenceRetried` (issue #885) the same way: `true` is a silence the retry could not recover, and
+// `false` one the agent's own switch left unretried, and the operator acts differently on each.
+const BOOLEAN_KEYS = ["resolveDiscarded", "silenceRetried"] as const;
 // Every `detail` key the body can print, for the fence that holds each warn and error line to name at
 // least one (tests/modules/flowlog-alert-summary.test.ts): a line with none alerts as its bare status.
 export const ALERT_DETAIL_KEYS: readonly string[] = [

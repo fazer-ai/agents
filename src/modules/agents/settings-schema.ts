@@ -387,6 +387,10 @@ const limits = z.looseObject({
     .nullable()
     .optional()
     .describe("2000-1000000, clamped; null/0/absent = OFF"),
+  retrySilence: z
+    .boolean()
+    .optional()
+    .describe("retry a silent reply turn once; default TRUE"),
 });
 
 const availability = z.looseObject({

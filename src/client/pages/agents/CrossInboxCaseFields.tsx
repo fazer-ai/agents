@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { FormField, Input, Select, SwitchField } from "@/client/components";
 import { api } from "@/client/lib/api";
-import { destinationIdentity } from "@/modules/cross-inbox-case/settings";
+import {
+  CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE,
+  destinationIdentity,
+} from "@/modules/cross-inbox-case/settings";
 
 // NOTE: Mirrors agent.settings.crossInboxCase (modules/cross-inbox-case/settings). The inbox is kept
 // with the instance it was picked from, because an inbox id only means something inside one Chatwoot
@@ -186,6 +189,15 @@ export function CrossInboxCaseFields({
           "editor.crossInboxCase.attributeKeyHint",
           "The origin conversation's attribute that receives the case's conversation number. Default: case_conversation_id.",
         )}
+        error={
+          value.caseAttributeKey.trim() &&
+          !CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE.test(value.caseAttributeKey.trim())
+            ? t(
+                "editor.crossInboxCase.attributeKeyInvalid",
+                "Use lowercase letters, digits and _, starting with a letter.",
+              )
+            : null
+        }
       >
         <Input
           value={value.caseAttributeKey}

@@ -200,6 +200,8 @@ describe("both runtimes bind the output gate for it", () => {
     expect(b).toContain('if (!guardrailTripped(d)) return "send";');
     expect(b).toContain("applyGuardrailHandoff({");
     expect(b).toContain('return handed ? "handed" : "failed";');
+    // Review round 7: a policy with no line is a silent transfer here too.
+    expect(b).toContain("handoffState.declinedToSpeak = d.reply === null;");
     expect(b).toContain("handoffState.completed = handed;");
     // Review round 4: asked after the screening and before the transfer, since inside `ownTransfer`
     // the in-flight mark hides the turn's own change from the ownership reads.

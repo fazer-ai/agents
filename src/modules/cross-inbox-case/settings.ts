@@ -46,7 +46,10 @@ export const CROSS_INBOX_CASE_DEFAULTS: CrossInboxCaseConfig = {
 
 // Chatwoot attribute keys are lowercase snake case; anything else would be written under a key the
 // dashboard never shows.
-const ATTRIBUTE_KEY_RE = /^[a-z][a-z0-9_]{0,63}$/;
+// Exported for the write boundary and the editor: a key the reader would replace is refused there, not
+// saved and silently ignored.
+export const CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE = /^[a-z][a-z0-9_]{0,63}$/;
+const ATTRIBUTE_KEY_RE = CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE;
 
 function positiveInt(v: unknown): number | null {
   const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;

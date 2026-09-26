@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { z } from "zod";
 import {
   readCrossInboxCaseState,
   serializeCrossInboxCase,
 } from "@/client/pages/agents/CrossInboxCaseFields";
+import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { readCrossInboxCaseConfig } from "@/modules/cross-inbox-case/settings";
 
 // Issue #700: `crossInboxCase` is config OF the open_case_in_inbox tool, so it is edited on the
@@ -88,6 +90,33 @@ describe("which save owns the block (source)", () => {
     );
     expect(slice("behavior: JSON.stringify({", "}),")).not.toContain(
       "crossInboxCase",
+    );
+  });
+});
+
+// Review round 7 of #881: the reader replaces a key outside lowercase snake_case with the default, so
+// a key like that is refused where it is written instead of saved and silently ignored.
+describe("the attribute key is checked where it is written", () => {
+  const patch = z.object(BEHAVIOR_PATCH_SHAPE);
+  const accepts = (caseAttributeKey: string) =>
+    patch.safeParse({ crossInboxCase: { caseAttributeKey } }).success;
+  test("a key the reader would replace is refused", () => {
+    expect(accepts("Ticket-ID")).toBe(false);
+    expect(accepts("1protocolo")).toBe(false);
+    expect(accepts("a".repeat(65))).toBe(false);
+  });
+  test("a key the reader honors, or none, is accepted", () => {
+    expect(accepts("protocolo_caso")).toBe(true);
+    expect(accepts(" protocolo ")).toBe(true);
+    expect(accepts("")).toBe(true);
+  });
+  test("the editor flags the same keys before the save", () => {
+    const src = readFileSync(
+      "src/client/pages/agents/CrossInboxCaseFields.tsx",
+      "utf8",
+    );
+    expect(src).toContain(
+      "!CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE.test(value.caseAttributeKey.trim())",
     );
   });
 });

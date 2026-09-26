@@ -1193,6 +1193,7 @@
     "crossInboxCase": {
       "attributeKey": "Atributo do número do caso",
       "attributeKeyHint": "Atributo da conversa de origem que recebe o número da conversa do caso. Padrão: case_conversation_id.",
+      "attributeKeyInvalid": "Use letras minúsculas, dígitos e _, começando por uma letra.",
       "inbox": "Caixa de destino",
       "inboxHint": "A caixa onde o caso é aberto, na fila do time.",
       "inboxNone": "Nenhuma caixa (ferramenta desligada)",

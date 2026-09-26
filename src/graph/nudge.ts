@@ -1472,7 +1472,12 @@ async function runAgentNudgeBody(
             (r) => r,
           );
           handoffState.completed = handed;
-          if (handed) handoffState.customerMessage = d.reply;
+          if (handed) {
+            handoffState.customerMessage = d.reply;
+            // A policy with no line is a SILENT transfer: said so, as the reactive binding does, or
+            // the model's own next reply could still reach the customer before the mirror catches up.
+            handoffState.declinedToSpeak = d.reply === null;
+          }
           // Not landing is a failed transfer, not a dropped line (see the reactive binding).
           return handed ? "handed" : "failed";
         },

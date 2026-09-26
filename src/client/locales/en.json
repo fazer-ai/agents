@@ -1164,6 +1164,7 @@
     "crossInboxCase": {
       "attributeKey": "Case number attribute",
       "attributeKeyHint": "The origin conversation's attribute that receives the case's conversation number. Default: case_conversation_id.",
+      "attributeKeyInvalid": "Use lowercase letters, digits and _, starting with a letter.",
       "inbox": "Destination inbox",
       "inboxHint": "The inbox where the case is opened, in the queue of the team.",
       "inboxNone": "No inbox (tool off)",

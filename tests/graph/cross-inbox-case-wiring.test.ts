@@ -16,6 +16,7 @@ import {
 import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
 import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
+import { SIGNATURE_DEFAULTS } from "@/modules/signature/service";
 
 // Issue #700: the destination config and the origin contact reach `open_case_in_inbox` through the
 // toolset the runtime builds, and an inbox picked in one Chatwoot account never reaches a
@@ -36,7 +37,10 @@ if (appUrl) {
   }
 }
 
-function config(cic: CrossInboxCaseConfig): AgentConfig {
+function config(
+  cic: CrossInboxCaseConfig,
+  signature = SIGNATURE_DEFAULTS,
+): AgentConfig {
   return {
     agentId: 1n,
     contactDbId: null,
@@ -49,6 +53,9 @@ function config(cic: CrossInboxCaseConfig): AgentConfig {
     sendImageConfig: SEND_IMAGE_DEFAULTS,
     crossInboxCaseConfig: cic,
     chatwootContactId: 55,
+    signatureConfig: signature,
+    promptVars: {},
+    promptOpts: { now: new Date() },
     httpToolContext: {},
     codeToolDefs: [],
     httpToolDefs: [],
@@ -70,6 +77,7 @@ async function seenFor(
   cic: CrossInboxCaseConfig,
   instanceId: bigint,
   conversationId = 77,
+  signature = SIGNATURE_DEFAULTS,
 ) {
   let seen: Record<string, unknown> | undefined;
   const ctx: ToolsetCtx = {
@@ -80,7 +88,7 @@ async function seenFor(
     conversationId,
     threadId: `t-${process.pid}`,
   };
-  await buildToolset(config(cic), ctx, {
+  await buildToolset(config(cic, signature), ctx, {
     buildNativeTools: (native) => {
       seen = native as unknown as Record<string, unknown>;
       return [];
@@ -101,7 +109,7 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
   };
 
   test("the config and the contact reach the tool on the account the inbox was picked from", async () => {
-    expect(await seenFor(picked, 3n)).toEqual({
+    expect(await seenFor(picked, 3n)).toMatchObject({
       config: picked,
       contactId: 55,
     });
@@ -137,15 +145,30 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
 
   test("the playground, which belongs to no account, keeps the tool to simulate it", async () => {
     // Review round 4: the playground builds with instance 0, which matched no picked account.
-    expect(await seenFor(picked, 0n, 0)).toEqual({
+    expect(await seenFor(picked, 0n, 0)).toMatchObject({
       config: picked,
       contactId: 55,
     });
   });
 
+  test("the opening is signed with the agent's signature, and left alone without one", async () => {
+    // Review round 5: the opening reaches the customer, and Chatwoot does not sign API sends.
+    const on = (await seenFor(picked, 3n, 77, {
+      ...SIGNATURE_DEFAULTS,
+      enabled: true,
+      text: "Ana, fazer.ai",
+      position: "bottom",
+    })) as { sign?: (t: string) => string };
+    expect(on.sign?.("Abrimos seu caso.")).toBe(
+      "Abrimos seu caso.\n\nAna, fazer.ai",
+    );
+    const off = (await seenFor(picked, 3n)) as { sign?: (t: string) => string };
+    expect(off.sign?.("Abrimos seu caso.")).toBe("Abrimos seu caso.");
+  });
+
   test("a config written without the account is honored as-is", async () => {
     const legacy = { ...picked, targetInstanceId: null };
-    expect(await seenFor(legacy, 4n)).toEqual({
+    expect(await seenFor(legacy, 4n)).toMatchObject({
       config: legacy,
       contactId: 55,
     });
@@ -168,13 +191,15 @@ describe("both runtimes bind the output gate for it", () => {
     expect(b).toContain('if (!guardrailTripped(d)) return "send";');
     expect(b).toContain('() => handOverForGuardrail("output")');
     expect(b).toContain("handoffState.customerMessage = d.reply;");
+    // Review round 5: a transfer that did not land stops the opening instead of reading as a drop.
+    expect(b).toContain('if (handed === "failed") return "failed";');
   });
   test("the proactive turn screens with its gate and transfers through the guardrail hand-off", async () => {
     const b = binding(await Bun.file("src/graph/nudge.ts").text());
     expect(b).toContain("await screenOutput(text)");
     expect(b).toContain('if (!guardrailTripped(d)) return "send";');
     expect(b).toContain("applyGuardrailHandoff({");
-    expect(b).toContain('return handed ? "handed" : "drop";');
+    expect(b).toContain('return handed ? "handed" : "failed";');
     expect(b).toContain("handoffState.completed = handed;");
     // Review round 4: asked after the screening and before the transfer, since inside `ownTransfer`
     // the in-flight mark hides the turn's own change from the ownership reads.

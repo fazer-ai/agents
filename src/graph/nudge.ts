@@ -1473,7 +1473,8 @@ async function runAgentNudgeBody(
           );
           handoffState.completed = handed;
           if (handed) handoffState.customerMessage = d.reply;
-          return handed ? "handed" : "drop";
+          // Not landing is a failed transfer, not a dropped line (see the reactive binding).
+          return handed ? "handed" : "failed";
         },
       },
       { buildNativeTools, mcp: params.deps?.mcp, flow },

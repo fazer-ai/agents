@@ -99,8 +99,10 @@ import {
   type ServiceWindowConfig,
 } from "@/modules/service-window/service";
 import {
+  attachSignature,
   readSignatureConfig,
   type SignatureConfig,
+  signatureFor,
 } from "@/modules/signature/service";
 import { readSplitConfig, type SplitConfig } from "@/modules/split/service";
 import { llmNormalizeForSpeech } from "@/modules/tts/normalize";
@@ -1097,6 +1099,7 @@ export interface ToolBuildDeps {
       crossInboxCase?: {
         config: CrossInboxCaseConfig;
         contactId: number | null;
+        sign?: (text: string) => string;
       };
       screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
       fetchImpl?: typeof fetch;
@@ -1493,6 +1496,22 @@ export async function buildToolset(
           ? {
               config: cfg.crossInboxCaseConfig,
               contactId: cfg.chatwootContactId,
+              // The opening reaches the customer, so it carries the agent's signature like every reply
+              // (docs/signature.md); one message, one chunk.
+              sign: (text: string) => {
+                const sig = signatureFor(
+                  cfg.signatureConfig,
+                  cfg.promptVars,
+                  cfg.promptOpts,
+                );
+                if (!sig) return text;
+                const [out = text] = attachSignature(
+                  [text],
+                  sig,
+                  cfg.signatureConfig,
+                );
+                return out;
+              },
             }
           : undefined,
       screenCustomerText: ctx.screenCustomerText,

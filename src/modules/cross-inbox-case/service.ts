@@ -50,8 +50,9 @@ export type CaseClient = Pick<
 
 // What the turn's output check made of the opening message: send it, drop it, or the operator's
 // policy transferred the ORIGIN to the team over it (the check's `handoff` action), which the runtime
-// that owns the check has already carried out.
-export type CustomerTextVerdict = "send" | "drop" | "handed";
+// that owns the check has already carried out. `failed` is that transfer not landing: the policy asked
+// for a person and did not get one, so nothing may open as if the text had merely been dropped.
+export type CustomerTextVerdict = "send" | "drop" | "handed" | "failed";
 
 export interface OpenCaseInput {
   config: CrossInboxCaseConfig;
@@ -69,6 +70,9 @@ export interface OpenCaseInput {
   // tool and would otherwise go out unread by the moderation every reply passes. Answers whether the
   // text may be sent. Absent ⇒ no screening configured on this path.
   screenCustomerMessage?: (text: string) => Promise<CustomerTextVerdict>;
+  // The agent's signature over the opening the customer receives, applied after the screening like
+  // every reply's. Absent ⇒ sent as written.
+  signCustomerMessage?: (text: string) => string;
   // The label writers' shared queue is keyed by tenant (see modules/chatwoot/labels.ts).
   tenantId?: bigint | null;
 }
@@ -327,20 +331,27 @@ async function run(
       step = "screen_customer_message";
       const verdict = await input.screenCustomerMessage(customerMessage);
       if (verdict === "handed") return { kind: "handed_by_policy" };
+      if (verdict === "failed") {
+        return { kind: "failed", step: "guardrail_handoff", error: null };
+      }
       if (verdict === "drop") {
         customerMessage = null;
         openingBlocked = true;
       }
     }
 
-    // 3. Open, or continue. Which of the two happened is read from the contact's conversations in
-    // that inbox BEFORE the call: the create answers with a conversation either way.
+    // 3. Open, or continue. Which of the two happened is read from the contact's conversations
+    // BEFORE the call: the create answers with a conversation either way.
+    // The list is the contact's newest 25 only, so a continued case can be missing from it. The
+    // conversation number settles it: numbers come from one per-account sequence, so a conversation
+    // the create made is numbered above every one that existed, and one at or below the newest the
+    // contact already had is one it handed back.
     step = "list_case_conversations";
+    const listed = await client.listContactConversations(caseContactId);
     const before = new Set(
-      (await client.listContactConversations(caseContactId))
-        .filter((c) => c.inboxId === target)
-        .map((c) => c.id),
+      listed.filter((c) => c.inboxId === target).map((c) => c.id),
     );
+    const newestBefore = listed.reduce((m, c) => Math.max(m, c.id), 0);
     // ASKED AGAIN, after the last wait and right before the write nothing undoes: the ask above sat
     // before the screening and this read, and a `/reset` or a withdrawal inside either of them must
     // not still open a case and send its opening.
@@ -357,7 +368,7 @@ async function run(
       customAttributes: { [CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE]: origin },
     });
     const caseId = created.id;
-    const continued = before.has(caseId);
+    const continued = before.has(caseId) || caseId <= newestBefore;
     const caseUrl = client.conversationUrl(caseId);
     const originUrl = client.conversationUrl(origin);
 
@@ -427,8 +438,9 @@ async function run(
           ),
         );
       } else {
+        const signed = input.signCustomerMessage?.(text) ?? text;
         await attempt("customer_message", () =>
-          client.sendMessageAsAdmin(caseId, text, { private: false }),
+          client.sendMessageAsAdmin(caseId, signed, { private: false }),
         );
       }
     }

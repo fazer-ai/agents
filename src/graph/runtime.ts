@@ -1212,6 +1212,9 @@ async function runTurnBody(
           () => handOverForGuardrail("output"),
           (r) => r === "handed",
         );
+        // A transfer that did not land is not a dropped line: the policy asked for a person, and the
+        // case must not open (nor `resolveOrigin` close the origin) as if nothing had been asked.
+        if (handed === "failed") return "failed";
         if (handed !== "handed") return "drop";
         handoffState.customerMessage = d.reply;
         handoffState.declinedToSpeak = d.reply === null;

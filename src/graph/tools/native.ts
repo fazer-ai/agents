@@ -84,6 +84,7 @@ import { modelVisibleLabels, SHOWN_LABELS_MAX } from "./label-view";
 import {
   HANDOFF_DONE_PREFIX,
   HANDOFF_TOOL_NAME,
+  OPEN_CASE_HANDED_MARK,
   OPEN_CASE_TOOL_NAME,
   RESOLVE_DONE,
 } from "./catalog";
@@ -428,6 +429,8 @@ export interface ToolCtx {
   crossInboxCase?: {
     config: CrossInboxCaseConfig;
     contactId: number | null;
+    // The agent's signature, applied to the opening the customer receives (docs/signature.md).
+    sign?: (text: string) => string;
   };
   // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself (the opening message of
   // `open_case_in_inbox`). Bound by the runtime that owns the gate, so this file does not import it,
@@ -2300,7 +2303,7 @@ function openCaseOutcomeText(
     case "called_off":
       return "Did not open the case (the run was called off before anything was written).";
     case "handed_by_policy":
-      return "Did not open the case: the output check refused the opening message and its policy handed this conversation to the human team. Do not call this tool again in this conversation.";
+      return `Did not open the case: the output check refused the opening message. ${OPEN_CASE_HANDED_MARK} by its policy. Do not call this tool again in this conversation.`;
     case "failed":
       return "";
   }
@@ -2341,6 +2344,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         stillWanted: ctx.stillWanted,
         tenantId: ctx.tenantId,
         screenCustomerMessage: ctx.screenCustomerText,
+        signCustomerMessage: cic.sign,
       });
       if (result.kind === "called_off") ctx.onNoEffect?.(OPEN_CASE_TOOL_NAME);
       if (result.kind !== "failed") {
@@ -2420,8 +2424,8 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           ctx.handoffState.completed = true;
         }
         fallback = handoff_message?.trim()
-          ? " This conversation was handed to the human team instead, with a note saying why. Your handoff_message will be delivered to the customer; do not repeat it."
-          : " This conversation was handed to the human team instead, with a note saying why. No message will reach the customer here.";
+          ? ` ${OPEN_CASE_HANDED_MARK} instead, with a note saying why. Your handoff_message will be delivered to the customer; do not repeat it.`
+          : ` ${OPEN_CASE_HANDED_MARK} instead, with a note saying why. No message will reach the customer here.`;
       } catch (e) {
         ctx.onSideEffectError?.({
           tool: OPEN_CASE_TOOL_NAME,

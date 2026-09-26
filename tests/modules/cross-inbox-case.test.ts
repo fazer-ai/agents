@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { ToolMessage } from "@langchain/core/messages";
+import { owesHandbackNote } from "@/graph/handback";
+import { OPEN_CASE_HANDED_MARK } from "@/graph/tools/catalog";
 import { buildNativeTools } from "@/graph/tools/native";
 import { ChatwootApiError, ChatwootClient } from "@/modules/chatwoot/client";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
@@ -42,6 +45,8 @@ function fakeChatwoot(
     afterCreate?: (id: number) => void;
     // Chatwoot's `can_reply` on what the create answers.
     canReply?: boolean;
+    // The fork's contact-conversations listing answers only the newest N.
+    listNewest?: number;
   } = {},
 ) {
   const calls: Array<{ fn: string; args: unknown[] }> = [];
@@ -143,6 +148,8 @@ function fakeChatwoot(
       record("listContactConversations", [contactId]);
       return convs
         .filter((c) => c.contactId === contactId)
+        .sort((a, b) => b.id - a.id)
+        .slice(0, opts.listNewest ?? Number.MAX_SAFE_INTEGER)
         .map((c) => ({ id: c.id, inboxId: c.inboxId, status: c.status }));
     },
     createConversation: async (p) => {
@@ -669,6 +676,85 @@ describe("openCaseInInbox", () => {
         String(c.args[1]).includes("Abrimos seu atendimento"),
     );
     expect(opening?.args[2]).toEqual({ private: false });
+  });
+
+  test("a continued case older than the listing reaches is still told apart by its number", async () => {
+    // Review round 5: the listing is the newest 25, and absence from it is not a new case.
+    const f = fakeChatwoot({
+      continueOpen: true,
+      listNewest: 1,
+      convs: [
+        {
+          id: 60,
+          inboxId: 40,
+          contactId: 5,
+          status: "open",
+          attrs: {},
+          labels: [],
+        },
+        {
+          id: 70,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels: [],
+        },
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels: [],
+        },
+      ],
+    });
+    const r = await openCaseInInbox(f.client, input());
+    expect(r).toMatchObject({ kind: "continued", caseId: 60 });
+    expect(
+      f.calls.filter(
+        (c) =>
+          c.fn === "sendMessageAsAdmin" &&
+          (c.args[2] as { private: boolean }).private === false,
+      ),
+    ).toEqual([]);
+  });
+
+  test("a new case is numbered above what the contact had, and reads as opened", async () => {
+    const f = fakeChatwoot({ listNewest: 1 });
+    expect((await openCaseInInbox(f.client, input())).kind).toBe("opened");
+  });
+
+  test("a policy transfer that did not land stops the opening", async () => {
+    // Review round 5: read as a plain drop, the case opened and resolveOrigin closed the origin.
+    const f = fakeChatwoot();
+    const r = await openCaseInInbox(
+      f.client,
+      input({ screenCustomerMessage: async () => "failed" }),
+    );
+    expect(r).toMatchObject({ kind: "failed", step: "guardrail_handoff" });
+    expect(f.calls.some((c) => c.fn === "createConversation")).toBe(false);
+  });
+
+  test("the opening the customer receives is signed; the note of a closed window is not", async () => {
+    // Review round 5: Chatwoot does not sign API sends.
+    const sign = (t: string) => `${t}\n\nAna, fazer.ai`;
+    const open = fakeChatwoot();
+    await openCaseInInbox(open.client, input({ signCustomerMessage: sign }));
+    const sent = open.calls.find(
+      (c) =>
+        c.fn === "sendMessageAsAdmin" &&
+        (c.args[2] as { private: boolean }).private === false,
+    );
+    expect(sent?.args[1]).toBe(
+      "Olá! Abrimos seu atendimento por aqui.\n\nAna, fazer.ai",
+    );
+    const closed = fakeChatwoot({ canReply: false });
+    await openCaseInInbox(closed.client, input({ signCustomerMessage: sign }));
+    expect(
+      closed.calls.some((c) => String(c.args[1]).includes("Ana, fazer.ai")),
+    ).toBe(false);
   });
 
   test("a case that was resolved, or lives in another inbox, does not block a new one", async () => {
@@ -1598,6 +1684,23 @@ describe("the tool", () => {
     expect(same.toggles).toEqual([]);
   });
 
+  test("the tool hands the agent's signature to the opening", async () => {
+    const f = fakeChatwoot();
+    const { t } = toolFor(f, {
+      crossInboxCase: {
+        config: { ...CROSS_INBOX_CASE_DEFAULTS, targetInboxId: 40 },
+        contactId: 5,
+        sign: (x: string) => `${x} -- Ana`,
+      },
+    });
+    await t.invoke({ reason: "x", customer_message: "Olá" });
+    expect(
+      f.calls.some(
+        (c) => c.fn === "sendMessageAsAdmin" && c.args[1] === "Olá -- Ana",
+      ),
+    ).toBe(true);
+  });
+
   test("a failed request after the turn was withdrawn hands nothing off", async () => {
     // Review round 3: the fallback transferred a conversation the operator had just cleared.
     const f = fakeChatwoot({ failOn: new Set(["createConversation"]) });
@@ -1647,7 +1750,7 @@ describe("the tool", () => {
     const out = String(
       await t.invoke({ reason: "x", customer_message: "Olá" }),
     );
-    expect(out).toContain("handed this conversation to the human team");
+    expect(out).toContain(OPEN_CASE_HANDED_MARK);
     expect(writesOf(f.calls)).toEqual([]);
   });
 
@@ -1707,5 +1810,31 @@ describe("the client reads the create's reply window", () => {
     expect((await created({ ...base, can_reply: false })).canReply).toBe(false);
     expect((await created({ ...base, can_reply: true })).canReply).toBe(true);
     expect((await created(base)).canReply).toBeNull();
+  });
+});
+
+// Review round 5: when the tool handed the conversation to people, a later return to the bot owes the
+// thread the same hand-back note a `handoff_to_human` does.
+describe("the hand-back rule reads the tool's transfer", () => {
+  const result = (content: string, name = "open_case_in_inbox") =>
+    new ToolMessage({ content, name, tool_call_id: "c1" });
+  test("a fallback transfer is a hand-over", () => {
+    expect(
+      owesHandbackNote([
+        result(
+          `Could not open the case (failed at: x). ${OPEN_CASE_HANDED_MARK} instead.`,
+        ),
+      ]),
+    ).toBe(true);
+  });
+  test("an opened case is not, and neither is another tool saying the same", () => {
+    expect(owesHandbackNote([result("Case opened: conversation #9.")])).toBe(
+      false,
+    );
+    expect(
+      owesHandbackNote([
+        result(`${OPEN_CASE_HANDED_MARK} instead.`, "some_http_tool"),
+      ]),
+    ).toBe(false);
   });
 });

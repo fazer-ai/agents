@@ -22,6 +22,8 @@ export type TokenUsage = {
   olderTablePricedCalls: number;
   // Of the priced calls, how many the tenant's own prices priced (issue #865).
   tenantPricedCalls: number;
+  // And how many carry the cost OpenRouter reported (issue #866).
+  reportedPricedCalls: number;
 };
 
 // How long a turn took and how much of that was spent waiting on a model. Either can be unknown: the
@@ -100,8 +102,70 @@ export interface UsageDetail {
   // The day the price table was read, so a reader can tell how old the rates behind the figure are;
   // null when some calls were priced by an older table, whose date the ledger does not keep.
   priceTableDate: string | null;
-  // Where the priced calls' prices came from: the table, the tenant's own prices, or both.
-  priceSource: "table" | "tenant" | "mixed";
+  // Where the priced calls' prices came from, each source that priced at least one call: the
+  // tenant's own prices, what OpenRouter reported, the table.
+  priceSources: PriceSource[];
+}
+
+type PriceSource = "tenant" | "reported" | "table";
+
+function priceSourcesOf(usage: TokenUsage): PriceSource[] {
+  const priced = usage.calls - usage.unpricedCalls;
+  const table = priced - usage.tenantPricedCalls - usage.reportedPricedCalls;
+  const out: PriceSource[] = [];
+  if (usage.tenantPricedCalls > 0) out.push("tenant");
+  if (usage.reportedPricedCalls > 0) out.push("reported");
+  if (table > 0 || out.length === 0) out.push("table");
+  return out;
+}
+
+// One source says what it is; several are named together, in the reader's own list form. Static
+// keys, so the extractor sees them.
+function costSourceLine(
+  t: T,
+  locale: string,
+  sources: PriceSource[],
+  date: string | null,
+): string {
+  if (sources.length === 1) {
+    if (sources[0] === "tenant")
+      return t("tokenUsage.costSourceTenant", "From this tenant's own prices");
+    if (sources[0] === "reported")
+      return t(
+        "tokenUsage.costSourceReported",
+        "What OpenRouter reported it charged",
+      );
+    return date === null
+      ? t(
+          "tokenUsage.costSourceOlder",
+          "Estimated from the price tables in force when the calls were made; may differ slightly from the dashboard",
+        )
+      : t(
+          "tokenUsage.costSource",
+          "Estimated from the price table of {{date}}; may differ slightly from the dashboard",
+          { date },
+        );
+  }
+  const names = sources.map((s) =>
+    s === "tenant"
+      ? t("tokenUsage.sourceTenant", "this tenant's own prices")
+      : s === "reported"
+        ? t("tokenUsage.sourceReported", "what OpenRouter reported")
+        : date === null
+          ? t(
+              "tokenUsage.sourceTableOlder",
+              "the price tables in force when the calls were made",
+            )
+          : t("tokenUsage.sourceTable", "the price table of {{date}}", {
+              date,
+            }),
+  );
+  return t("tokenUsage.costSourceMixed", "From {{sources}}", {
+    sources: new Intl.ListFormat(locale, {
+      style: "long",
+      type: "conjunction",
+    }).format(names),
+  });
 }
 
 // Dollars to the precision a turn needs: a turn costs fractions of a cent, and "$0.00" would read as
@@ -159,12 +223,7 @@ export function usageDetail(
         ? formatUsd(locale, usage.costUsd)
         : null,
     unpriced: usage.unpricedCalls,
-    priceSource:
-      usage.tenantPricedCalls === 0
-        ? "table"
-        : usage.tenantPricedCalls >= usage.calls - usage.unpricedCalls
-          ? "tenant"
-          : "mixed",
+    priceSources: priceSourcesOf(usage),
     // Noon UTC, so the calendar day is the same in every timezone the console runs in.
     priceTableDate:
       usage.olderTablePricedCalls > 0
@@ -217,7 +276,8 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 function UsageDetailCard({ title, d }: { title: string; d: UsageDetail }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = i18n.language;
   return (
     <div className="w-64 space-y-3 text-xs" data-testid="token-usage-detail">
       <p className="flex items-center gap-1.5 font-semibold text-sm text-text-primary">
@@ -283,30 +343,7 @@ function UsageDetailCard({ title, d }: { title: string; d: UsageDetail }) {
           </p>
         )}
         <p className="text-[11px] text-text-muted">
-          {d.priceSource === "tenant" &&
-            t("tokenUsage.costSourceTenant", "From this tenant's own prices")}
-          {d.priceSource === "mixed" &&
-            (d.priceTableDate === null
-              ? t(
-                  "tokenUsage.costSourceMixedOlder",
-                  "From this tenant's own prices and the price tables in force when the calls were made",
-                )
-              : t(
-                  "tokenUsage.costSourceMixed",
-                  "From this tenant's own prices and the price table of {{date}}",
-                  { date: d.priceTableDate },
-                ))}
-          {d.priceSource === "table" &&
-            (d.priceTableDate === null
-              ? t(
-                  "tokenUsage.costSourceOlder",
-                  "Estimated from the price tables in force when the calls were made; may differ slightly from the dashboard",
-                )
-              : t(
-                  "tokenUsage.costSource",
-                  "Estimated from the price table of {{date}}; may differ slightly from the dashboard",
-                  { date: d.priceTableDate },
-                ))}
+          {costSourceLine(t, locale, d.priceSources, d.priceTableDate)}
         </p>
       </Section>
       {(d.turn || d.model) && (

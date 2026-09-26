@@ -16,6 +16,7 @@ import {
   readPriceOverrides,
 } from "@/modules/pricing/overrides";
 import { type PricedTokens, priceCall } from "@/modules/pricing/price";
+import { reportedCostFromUsage } from "@/modules/pricing/reported";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 import { emitOutbound } from "@/modules/webhooks/outbound/service";
 
@@ -66,9 +67,11 @@ export interface UsageRow {
   cacheCreationTokens: number;
   // How long the call took, as the capture measured it (issue #855). Null when nothing measured it.
   durationMs: number | null;
-  // What the call cost in USD, from the price table (issue #863). Null when the table could not price it.
+  // What the call cost in USD, from the price table (issue #863) or as the provider reported it
+  // (issue #866). Null when neither could price it.
   costUsd: number | null;
-  // What priced it: the table (`litellm@<commit>`) or the tenant's own price (issue #865).
+  // What priced it: the table (`litellm@<commit>`), the tenant's own price (issue #865), or the
+  // cost OpenRouter reported (`openrouter:reported`, issue #866).
   priceTable: string;
 }
 
@@ -102,6 +105,8 @@ export interface TurnUsage {
   // Of the priced calls, how many the tenant's own prices priced rather than the table (issue #865),
   // so the popover can say where its figure came from.
   tenantPricedCalls: number;
+  // And how many carry the cost OpenRouter reported for them (issue #866).
+  reportedPricedCalls: number;
 }
 
 export function emptyTurnUsage(): TurnUsage {
@@ -116,6 +121,7 @@ export function emptyTurnUsage(): TurnUsage {
     unpricedCalls: 0,
     olderTablePricedCalls: 0,
     tenantPricedCalls: 0,
+    reportedPricedCalls: 0,
   };
 }
 
@@ -167,6 +173,8 @@ export function addUsageGroup(
   into.unpricedCalls += g.calls - g.pricedCalls;
   if (isOlderTable(g.priceTable)) into.olderTablePricedCalls += g.pricedCalls;
   if (isTenantPrice(g.priceTable)) into.tenantPricedCalls += g.pricedCalls;
+  if (g.priceTable === OPENROUTER_REPORTED_PRICE_TABLE)
+    into.reportedPricedCalls += g.pricedCalls;
   const node = usageNode(g.node);
   into.byNode[node] = (into.byNode[node] ?? 0) + g.calls;
 }
@@ -220,6 +228,8 @@ export async function sumTurnUsage<T>(
         olderTablePricedCalls:
           after.olderTablePricedCalls - before.olderTablePricedCalls,
         tenantPricedCalls: after.tenantPricedCalls - before.tenantPricedCalls,
+        reportedPricedCalls:
+          after.reportedPricedCalls - before.reportedPricedCalls,
         byNode: Object.fromEntries(
           Object.entries(after.byNode)
             .map(([n, c]) => [n, c - (before.byNode[n] ?? 0)] as const)
@@ -253,6 +263,8 @@ function noteTurnUsage(row: UsageRow): void {
   else {
     sink.usage.costUsd += row.costUsd;
     if (isTenantPrice(row.priceTable)) sink.usage.tenantPricedCalls += 1;
+    if (row.priceTable === OPENROUTER_REPORTED_PRICE_TABLE)
+      sink.usage.reportedPricedCalls += 1;
   }
   const node = usageNode(row.node);
   sink.usage.byNode[node] = (sink.usage.byNode[node] ?? 0) + 1;
@@ -308,6 +320,7 @@ async function priceRow(
   model: string,
   tokens: PricedTokens,
   base: PrismaClient | undefined,
+  reported: number | null = null,
 ): Promise<{ costUsd: number | null; priceTable: string }> {
   let overrides: PriceOverridesBlock | null = null;
   try {
@@ -331,7 +344,11 @@ async function priceRow(
       "usage: tenant prices unreadable, pricing from the table",
     );
   }
-  return priceCall(provider, model, tokens, new Date(), overrides);
+  // The tenant's own price first, because it is what the account says it pays; then what OpenRouter
+  // said it charged (issue #866); then the table.
+  const priced = priceCall(provider, model, tokens, new Date(), overrides);
+  if (isTenantPrice(priced.priceTable) || reported === null) return priced;
+  return { costUsd: reported, priceTable: OPENROUTER_REPORTED_PRICE_TABLE };
 }
 
 // Default sink: a short scoped tx (no network) appending the row. tenant_id is re-pinned by the
@@ -490,6 +507,38 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
   };
 }
 
+// The `price_table` of a row whose cost OpenRouter itself reported (issue #866).
+export const OPENROUTER_REPORTED_PRICE_TABLE = "openrouter:reported";
+
+// WHAT OPENROUTER SAID THE CALL COST, when it said so in a way that can stand for the whole charge.
+//
+// OpenRouter returns `usage.cost` on every chat completion, streamed or not, without being asked
+// (its usage-accounting page: `usage: { include: true }` is "deprecated and [has] no effect"), and
+// `ChatOpenAI` copies the raw `usage` object whole into the AI message's `response_metadata.usage`,
+// on the non-streamed path and on the streamed one's final chunk alike. The unit is credits, and its
+// FAQ says the credit system's "base currency is US dollars".
+//
+// What the figure is, and when it cannot stand, is `reportedCostFromUsage`'s
+// (src/modules/pricing/reported.ts), shared with the image reader's direct call.
+export function reportedCostUsd(
+  provider: string,
+  output: LLMResult,
+): number | null {
+  if (provider !== "openrouter") return null;
+  for (const gens of output.generations ?? []) {
+    for (const gen of gens) {
+      // biome-ignore lint/suspicious/noExplicitAny: response_metadata is a provider bag.
+      const usage = (gen as any).message?.response_metadata?.usage;
+      const cost = reportedCostFromUsage(provider, usage);
+      if (cost === undefined) continue;
+      // NOTE: the first generation carrying it answers for the call. With `n > 1` every choice
+      // carries the same response-level `usage`, so a sum would bill the call once per choice.
+      return cost;
+    }
+  }
+  return null;
+}
+
 // The attribution a SECONDARY billed call inherits from the turn it belongs to. A turn's own call
 // gets these from the loaded agent config; a call made beside it (the guardrail analysis, a vision
 // extraction) holds a FlowContext and nothing else, and that context already carries exactly the
@@ -545,6 +594,8 @@ export async function recordDirectUsage(
     cacheCreationTokens?: number;
     // How long the caller waited on the provider, retries included, when it measured it.
     durationMs?: number;
+    // What the provider said the call cost, when it did (issue #866).
+    reportedCostUsd?: number | null;
   },
 ): Promise<void> {
   if (row.promptTokens === 0 && row.completionTokens === 0) return;
@@ -569,6 +620,7 @@ export async function recordDirectUsage(
         completionTokens: row.completionTokens,
       },
       attr.base,
+      row.reportedCostUsd ?? null,
     )),
   };
   noteTurnUsage(usageRow);
@@ -713,6 +765,7 @@ export class UsageCapture extends BaseCallbackHandler {
     const durationMs =
       started === undefined ? null : performance.now() - started;
     if (promptTokens === 0 && completionTokens === 0) return;
+    const reported = reportedCostUsd(provider, output);
     const row: UsageRow = {
       tenantId: this.tenantId,
       agentId: this.agentId,
@@ -739,6 +792,7 @@ export class UsageCapture extends BaseCallbackHandler {
           completionTokens,
         },
         this.base,
+        reported,
       )),
     };
     noteTurnUsage(row);

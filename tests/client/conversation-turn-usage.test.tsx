@@ -73,6 +73,7 @@ function turn(
       unpricedCalls: 2,
       olderTablePricedCalls: 0,
       tenantPricedCalls: 0,
+      reportedPricedCalls: 0,
     },
   };
 }
@@ -243,6 +244,46 @@ describe("the figure itself", () => {
     );
   });
 
+  // Issue #866: an OpenRouter call carries what OpenRouter charged, which is no table estimate.
+  test("a figure OpenRouter reported says so, and three sources are named together", async () => {
+    await inLanguage(
+      "en",
+      <UsageFigure usage={{ ...priced(0.25, 0), reportedPricedCalls: 2 }} />,
+    );
+    const reported = open();
+    expect(reported).toContain("What OpenRouter reported it charged");
+    expect(reported).not.toContain("price table of");
+    cleanup();
+    await inLanguage(
+      "en",
+      <UsageFigure
+        usage={{
+          ...priced(0.25, 0),
+          calls: 3,
+          tenantPricedCalls: 1,
+          reportedPricedCalls: 1,
+        }}
+      />,
+    );
+    expect(open()).toContain(
+      "From this tenant's own prices, what OpenRouter reported, and the price table of",
+    );
+    cleanup();
+    await inLanguage(
+      "pt-BR",
+      <UsageFigure
+        usage={{
+          ...priced(0.25, 0),
+          tenantPricedCalls: 1,
+          reportedPricedCalls: 1,
+        }}
+      />,
+    );
+    expect(open()).toContain(
+      "Calculado pelos preços próprios deste tenant e pelo que a OpenRouter informou",
+    );
+  });
+
   test("a total with no call renders nothing, not a zero", async () => {
     await inLanguage(
       "en",
@@ -258,6 +299,7 @@ describe("the figure itself", () => {
           unpricedCalls: 0,
           olderTablePricedCalls: 0,
           tenantPricedCalls: 0,
+          reportedPricedCalls: 0,
         }}
         label="Tokens"
       />,

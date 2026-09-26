@@ -58,6 +58,7 @@ import {
   isRedirectEntryInbox,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
+import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
 import {
   recordTurnCoverage,
   retireCoveredDeliveries,
@@ -81,8 +82,10 @@ import {
   contactAuthNoticeKey,
   mediaAdmissionKey,
   mediaAlreadyAdmitted,
+  mediaRefusedHereThrough,
   releaseContactAuthNotice,
   rememberMediaAdmission,
+  rememberMediaRefusal,
 } from "@/modules/contact-auth/state";
 import { recordConversationAction } from "@/modules/conversations/audit";
 import {
@@ -1730,25 +1733,72 @@ async function recordMediaRefusal(
   conversationDbId: bigint | null,
   messageId: number | null | undefined,
   base: PrismaClient,
+  sleep?: (ms: number) => Promise<void>,
 ): Promise<void> {
   if (conversationDbId === null || messageId == null) return;
-  try {
-    await runScopedOn(
-      base,
-      sysCtx(tenantId),
-      (db) =>
-        db.$executeRaw`UPDATE conversations
-        SET media_refused_through_message_id = GREATEST(COALESCE(media_refused_through_message_id, 0), ${messageId}::bigint)
-        WHERE id = ${conversationDbId} AND tenant_id = ${tenantId}`,
-    );
-  } catch (err) {
-    logger.warn(
-      "chatwoot: could not record the media refusal (conv=%s msg=%s): %s",
-      String(conversationDbId),
-      String(messageId),
-      errMsg(err),
-    );
+  const nap = sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= LEDGER_CLAIM_ATTEMPTS; attempt++) {
+    try {
+      await runScopedOn(
+        base,
+        sysCtx(tenantId),
+        (db) =>
+          db.$executeRaw`UPDATE conversations
+          SET media_refused_through_message_id = GREATEST(COALESCE(media_refused_through_message_id, 0), ${messageId}::bigint)
+          WHERE id = ${conversationDbId} AND tenant_id = ${tenantId}`,
+      );
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < LEDGER_CLAIM_ATTEMPTS)
+        await nap(LEDGER_CLAIM_BACKOFF_MS * attempt);
+    }
   }
+  rememberMediaRefusal(mediaRefusalKey(tenantId, conversationDbId), messageId);
+  logger.error(
+    "chatwoot: the media refusal of message %d (conv=%s) was not recorded in %d attempts; this process still honours it, a restart does not: %s",
+    messageId,
+    String(conversationDbId),
+    LEDGER_CLAIM_ATTEMPTS,
+    errMsg(lastErr),
+  );
+}
+
+function mediaRefusalKey(tenantId: bigint, conversationDbId: bigint): string {
+  return `${tenantId}:${conversationDbId}`;
+}
+
+// The conversation's media refusal mark: the column, or the refusal this process could not write.
+async function refusedThrough(
+  tenantId: bigint,
+  conversationDbId: bigint,
+  base: PrismaClient,
+  stored?: bigint | null,
+): Promise<number | null> {
+  const column =
+    stored !== undefined
+      ? stored
+      : ((
+          await runScopedOn(base, sysCtx(tenantId), (db) =>
+            db.conversation.findUnique({
+              where: { id: conversationDbId },
+              select: { mediaRefusedThroughMessageId: true },
+            }),
+          )
+        )?.mediaRefusedThroughMessageId ?? null);
+  const here = mediaRefusedHereThrough(
+    mediaRefusalKey(tenantId, conversationDbId),
+  );
+  if (column === null) return here;
+  return Math.max(Number(column), here ?? 0);
+}
+
+function refusedCovers(
+  mark: number | null,
+  messageId: number | null | undefined,
+): boolean {
+  return mark !== null && messageId != null && messageId <= mark;
 }
 
 // Whether this pass may send the message's media to a provider: the same gate, agent and request key
@@ -1796,11 +1846,18 @@ async function mediaAdmitted(
     // NOTE: The refusal mark wins over any yes, including the caller's: a replayed delivery re-asks the
     // gate, and a consent given since would answer for a file sent before it.
     const messageId = n.message?.id;
-    const refusedThrough = ctx.conv?.mediaRefusedThroughMessageId ?? null;
+    const convDbId = ctx.conv?.id ?? null;
     if (
-      refusedThrough !== null &&
-      messageId != null &&
-      messageId <= Number(refusedThrough)
+      convDbId !== null &&
+      refusedCovers(
+        await refusedThrough(
+          tenantId,
+          convDbId,
+          base,
+          ctx.conv?.mediaRefusedThroughMessageId ?? null,
+        ),
+        messageId,
+      )
     ) {
       return false;
     }
@@ -1844,10 +1901,18 @@ async function mediaAdmitted(
     if (verdict.outcome !== "allowed") {
       await recordMediaRefusal(
         tenantId,
-        ctx.conv?.id ?? null,
+        convDbId,
         n.message?.id,
         base,
+        owner.sleep,
       );
+      return false;
+    }
+    // NOTE: Re-read after the round trip: a newer message may have been refused meanwhile.
+    if (
+      convDbId !== null &&
+      refusedCovers(await refusedThrough(tenantId, convDbId, base), messageId)
+    ) {
       return false;
     }
     if (messageId != null) {
@@ -2033,6 +2098,11 @@ export async function runEagerMedia(
             fetchImpl: owner.deps?.visionFetch,
           },
         });
+        if (r && recusados > 0)
+          stashMediaAnnotation(
+            { tenantId, instanceId, messageId },
+            { attachmentsUnread: r.attachmentsUnread + recusados },
+          );
         if (r) {
           // The overflow is NAMED, never silently dropped: a model told "3 more files were not
           // read" asks the customer to resend those three, while a model told nothing answers as

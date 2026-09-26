@@ -219,11 +219,31 @@ export function mediaAlreadyAdmitted(
   return true;
 }
 
+// A refusal whose write to the conversation failed, kept so this process still honours it. Keyed by
+// conversation, holding the newest refused message id, like the column it stands in for.
+const mediaRefusedHere = new Map<string, number>();
+
+export function rememberMediaRefusal(key: string, messageId: number): void {
+  if (mediaRefusedHere.size >= MAX_ENTRIES && !mediaRefusedHere.has(key)) {
+    const first = mediaRefusedHere.keys().next().value;
+    if (first !== undefined) mediaRefusedHere.delete(first);
+  }
+  mediaRefusedHere.set(
+    key,
+    Math.max(mediaRefusedHere.get(key) ?? 0, messageId),
+  );
+}
+
+export function mediaRefusedHereThrough(key: string): number | null {
+  return mediaRefusedHere.get(key) ?? null;
+}
+
 // NOTE: Test isolation only. Production never clears the state wholesale; the sweep does.
 export function clearContactAuthState(): void {
   notices.clear();
   inFlight.clear();
   mediaAdmitted.clear();
+  mediaRefusedHere.clear();
   if (sweepTimer) {
     clearTimeout(sweepTimer);
     sweepTimer = undefined;

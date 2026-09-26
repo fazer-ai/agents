@@ -3,7 +3,9 @@ import {
   clearContactAuthState,
   mediaAdmissionKey,
   mediaAlreadyAdmitted,
+  mediaRefusedHereThrough,
   rememberMediaAdmission,
+  rememberMediaRefusal,
 } from "@/modules/contact-auth/state";
 
 // The per-message memory of a media admission is only a shortcut: it may forget, and
@@ -26,5 +28,12 @@ describe("media admission memory", () => {
     expect(mediaAlreadyAdmitted(mediaAdmissionKey(1n, 2n, 4), 0)).toBe(false);
     expect(mediaAlreadyAdmitted(mediaAdmissionKey(1n, 9n, 3), 0)).toBe(false);
     expect(mediaAlreadyAdmitted(mediaAdmissionKey(9n, 2n, 3), 0)).toBe(false);
+  });
+
+  test("a refusal kept in process only moves up", () => {
+    rememberMediaRefusal("1:2", 50);
+    rememberMediaRefusal("1:2", 40);
+    expect(mediaRefusedHereThrough("1:2")).toBe(50);
+    expect(mediaRefusedHereThrough("1:3")).toBeNull();
   });
 });

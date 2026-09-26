@@ -11,6 +11,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
+import { mediaAnnotationFor } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
@@ -61,7 +62,7 @@ let instanceId = 0n;
 const inboxDb = new Map<number, bigint>();
 
 const providers = { stt: 0, vision: 0, auth: 0 };
-const authAnswers: boolean[] = [];
+const authAnswers: Array<boolean | (() => Promise<boolean>)> = [];
 
 const sttFetch = (async () => {
   providers.stt += 1;
@@ -79,8 +80,9 @@ const visionFetch = (async () => {
 }) as unknown as typeof fetch;
 const authFetch = (async () => {
   providers.auth += 1;
-  const allow = authAnswers.shift();
-  if (allow === undefined) throw new Error("auth: no answer queued");
+  const next = authAnswers.shift();
+  if (next === undefined) throw new Error("auth: no answer queued");
+  const allow = typeof next === "function" ? await next() : next;
   return new Response(JSON.stringify({ authorized: allow }), { status: 200 });
 }) as unknown as typeof fetch;
 
@@ -627,6 +629,58 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
     const text = decryptJson<string>(row.payloadSecret);
     expect(text).toContain("Print do pedido 21607129.");
     expect(text).toContain('quantidade="1"');
+    // What a later re-fetch of the thread reads.
+    expect(
+      mediaAnnotationFor(tenantId, instanceId, id)?.attachmentsUnread,
+    ).toBe(1);
+  });
+
+  test("a refusal that lands while the endpoint is answering wins over that yes", async () => {
+    await seedConversation(8822, INBOX_GATED);
+    const id = 72_000;
+    authAnswers.push(async () => {
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: 8822 },
+        data: { mediaRefusedThroughMessageId: id + 1 },
+      });
+      return true;
+    });
+    await deliver({
+      convId: 8822,
+      chatwootInboxId: INBOX_GATED,
+      humanHeld: true,
+      messageId: id,
+    });
+    expect(providers.auth).toBe(1);
+    expect(providers.stt).toBe(0);
+    expect(providers.vision).toBe(0);
+  });
+
+  test("a refusal the conversation could not store is still honoured by this process", async () => {
+    await seedConversation(8823, INBOX_GATED);
+    await suDb.$executeRawUnsafe(`CREATE OR REPLACE FUNCTION cam_refusal_fails() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'injected'; END $$ LANGUAGE plpgsql`);
+    await suDb.$executeRawUnsafe(`CREATE TRIGGER cam_refusal_fails BEFORE UPDATE OF media_refused_through_message_id
+      ON conversations FOR EACH ROW WHEN (NEW.chatwoot_conversation_id = 8823) EXECUTE FUNCTION cam_refusal_fails()`);
+    try {
+      authAnswers.push(false, true);
+      const id = await deliver({ convId: 8823, chatwootInboxId: INBOX_GATED });
+      await deliver({
+        convId: 8823,
+        chatwootInboxId: INBOX_GATED,
+        event: "message_updated",
+        messageId: id,
+      });
+      expect(providers.stt).toBe(0);
+      expect(providers.vision).toBe(0);
+    } finally {
+      await suDb.$executeRawUnsafe(
+        "DROP TRIGGER IF EXISTS cam_refusal_fails ON conversations",
+      );
+      await suDb.$executeRawUnsafe(
+        "DROP FUNCTION IF EXISTS cam_refusal_fails()",
+      );
+    }
   });
 
   test("with STT and vision off, the gate is not asked about media nobody would read", async () => {

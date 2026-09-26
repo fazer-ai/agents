@@ -562,6 +562,27 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
     expect(providers.auth).toBe(1);
   });
 
+  // Review round 2 of #892: a delivery recovered after the refusal was recorded replays the gate, and
+  // a consent given in between answers it with a yes.
+  test("a replayed delivery of a refused message stays unread even when the gate now says yes", async () => {
+    await seedConversation(8819, INBOX_GATED);
+    authAnswers.push(false);
+    const refused = await deliver({
+      convId: 8819,
+      chatwootInboxId: INBOX_GATED,
+    });
+    expect(providers.stt).toBe(0);
+    authAnswers.push(true);
+    await deliver({
+      convId: 8819,
+      chatwootInboxId: INBOX_GATED,
+      messageId: refused,
+    });
+    expect(providers.auth).toBe(2);
+    expect(providers.stt).toBe(0);
+    expect(providers.vision).toBe(0);
+  });
+
   test("with STT and vision off, the gate is not asked about media nobody would read", async () => {
     await seedConversation(8815, INBOX_NO_MEDIA);
     await deliver({

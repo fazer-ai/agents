@@ -1768,7 +1768,6 @@ async function mediaAdmitted(
   base: PrismaClient,
   owner: EagerMediaOwner,
 ): Promise<boolean> {
-  if (owner.admission === "allowed") return true;
   if (owner.admission === "refused") return false;
   const conversationId = n.conversationId as number;
   try {
@@ -1803,8 +1802,19 @@ async function mediaAdmitted(
     const cfg = readContactAuthConfig(ctx.settings);
     if (!cfg.enabled) return true;
     // A message the gate already refused stays unread, and the endpoint is not asked again: its yes
-    // now would be about a consent given after this file was sent.
+    // now would be about a consent given after this file was sent. FIRST, ahead of every yes,
+    // including the one the caller just got (review round 2 of #892): a delivery recovered after the
+    // refusal was recorded replays the gate, and a consent given in between would answer it.
     const messageId = n.message?.id;
+    const refusedThrough = ctx.conv?.mediaRefusedThroughMessageId ?? null;
+    if (
+      refusedThrough !== null &&
+      messageId != null &&
+      messageId <= Number(refusedThrough)
+    ) {
+      return false;
+    }
+    if (owner.admission === "allowed") return true;
     // A message the gate let through a moment ago, on its own delivery: the update Chatwoot sends
     // after every voice note is not a reason to ask again.
     if (
@@ -1812,14 +1822,6 @@ async function mediaAdmitted(
       mediaAlreadyAdmitted(mediaAdmissionKey(tenantId, instanceId, messageId))
     ) {
       return true;
-    }
-    const refusedThrough = ctx.conv?.mediaRefusedThroughMessageId ?? null;
-    if (
-      refusedThrough !== null &&
-      n.message?.id != null &&
-      n.message.id <= Number(refusedThrough)
-    ) {
-      return false;
     }
     const verdict = await authorizeContact({
       tenantId,

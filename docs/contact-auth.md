@@ -591,7 +591,7 @@ audio arriving after the customer consented (any `message_updated` of an untrans
 as late media) asked the gate again, got the new yes, and read a file sent before consent (review
 round 1 of #892). Message ids are a per-account sequence, so everything at or below the mark arrived
 no later than that refusal; a message allowed before a later refusal (a revocation) is kept unread on
-a late update too, which is the fail-closed side. The pass also asks the gate only after the STT or
+a late update too, which is the fail-closed side. The mark is read before ANY yes, the remembered one and the one the gate has just given: a delivery recovered after the refusal was recorded replays the gate, and a consent given in between would answer it (review round 2 of #892). The pass also asks the gate only after the STT or
 vision config resolved: media nobody would read costs the endpoint nothing. A yes is remembered too, per
 message and in process only (`rememberMediaAdmission`, 15 minutes): Chatwoot follows every voice
 note with a `message_updated`, which reads as late media, and without it each voice note cost the

@@ -340,162 +340,174 @@ async function run(
       }
     }
 
-    // 3. Open, or continue. Which of the two happened is read from the contact's conversations
-    // BEFORE the call: the create answers with a conversation either way.
-    // The list is the contact's newest 25 only, so a continued case can be missing from it. The
-    // conversation number settles it: numbers come from one per-account sequence, so a conversation
-    // the create made is numbered above every one that existed, and one at or below the newest the
-    // contact already had is one it handed back.
-    step = "list_case_conversations";
-    const listed = await client.listContactConversations(caseContactId);
-    const before = new Set(
-      listed.filter((c) => c.inboxId === target).map((c) => c.id),
-    );
-    const newestBefore = listed.reduce((m, c) => Math.max(m, c.id), 0);
-    // ASKED AGAIN, after the last wait and right before the write nothing undoes: the ask above sat
-    // before the screening and this read, and a `/reset` or a withdrawal inside either of them must
-    // not still open a case and send its opening.
-    if (input.stillWanted && !(await input.stillWanted())) {
-      return { kind: "called_off" };
-    }
-    step = "create_conversation";
-    const created = await client.createConversation({
-      inboxId: target,
-      contactId: caseContactId,
-      // Open, not pending: the case lands in the team's queue, and an agent bound to the destination
-      // inbox does not pick it up and triage it again (shouldBotHandle needs `pending`).
-      status: "open",
-      customAttributes: { [CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE]: origin },
-    });
-    const caseId = created.id;
-    const continued = before.has(caseId) || caseId <= newestBefore;
-    const caseUrl = client.conversationUrl(caseId);
-    const originUrl = client.conversationUrl(origin);
-
-    // 4. Everything below is best-effort: the case exists, and a missing note does not undo it.
-    // The case number goes first, because it is what makes the next call answer "already open".
-    //
-    // EVERY WRITE ASKS THE FENCE FIRST, because each one follows a wait: the create, and then each
-    // write before it. A `/reset`, a switch-off or a person taking the origin over inside any of them
-    // stops what is left, and the attribute writer asks again inside its own queue, after its read,
-    // so a reset that cleared the origin's attributes is not undone by this one. The case stays
-    // open, since no write here can take it back.
-    const partial: string[] = [];
-    let calledOff = false;
-    const withdrawn = async (): Promise<boolean> => {
-      if (calledOff) return true;
-      if (input.stillWanted && !(await input.stillWanted())) {
-        calledOff = true;
-        partial.push("called_off");
-      }
-      return calledOff;
-    };
-    const attempt = async (name: string, fn: () => Promise<unknown>) => {
-      if (await withdrawn()) return;
-      try {
-        await fn();
-      } catch {
-        partial.push(name);
-      }
-    };
-    // A continued case can come back closed: an inbox locked to one conversation per contact hands
-    // back the contact's LAST conversation whatever its state, without applying the status asked
-    // for. Reopened here, because a case the team cannot see in its queue is not a case.
-    // NOT best-effort, unlike everything after it: a case that could not be reopened is not a case,
-    // and reporting it open would tell the customer so and, under `resolveOrigin`, close the origin
-    // too, leaving both conversations closed. It fails the opening instead, which hands the origin
-    // to people.
-    if (created.status !== "open") {
-      step = "reopen_case";
+    // ONE CASE CONTACT AT A TIME, from the listing to the opening message (review round 9 of #881).
+    // The queue around this call is per ORIGIN, and two origins of the same contact can both list the
+    // contact's conversations before either creates: an inbox that continues open conversations then
+    // hands both the same case, and both would send it an opening. Keyed by the account, the inbox
+    // and the contact the case opens on, so the second one lists after the first created, and reads
+    // its case as continued.
+    const caseKey = `cross-inbox-case-contact:${client.conversationUrl(0)}:${target}:${caseContactId}`;
+    return await withKeyedQueue(caseKey, async (): Promise<OpenCaseResult> => {
+      // 3. Open, or continue. Which of the two happened is read from the contact's conversations
+      // BEFORE the call: the create answers with a conversation either way.
+      // The list is the contact's newest 25 only, so a continued case can be missing from it. The
+      // conversation number settles it: numbers come from one per-account sequence, so a conversation
+      // the create made is numbered above every one that existed, and one at or below the newest the
+      // contact already had is one it handed back.
+      step = "list_case_conversations";
+      const listed = await client.listContactConversations(caseContactId);
+      const before = new Set(
+        listed.filter((c) => c.inboxId === target).map((c) => c.id),
+      );
+      const newestBefore = listed.reduce((m, c) => Math.max(m, c.id), 0);
+      // ASKED AGAIN, after the last wait and right before the write nothing undoes: the ask above sat
+      // before the screening and this read, and a `/reset` or a withdrawal inside either of them must
+      // not still open a case and send its opening.
       if (input.stillWanted && !(await input.stillWanted())) {
         return { kind: "called_off" };
       }
-      await client.toggleStatus(caseId, "open", { asAdmin: true });
-    }
-    await attempt("origin_attribute", () =>
-      client.setConversationCustomAttributes(
-        origin,
-        { [config.caseAttributeKey]: caseId },
-        { stillWanted: input.stillWanted },
-      ),
-    );
-    // A continued case already has its opening: repeating it would send the customer a second
-    // "we opened your case" email for the same case.
-    // A channel with a reply window (official WhatsApp, Twilio on WhatsApp, an API inbox with one
-    // set) refuses a free-form first message to a customer who has not written there lately, and a
-    // new case has, by construction, no message from them. Chatwoot's own `can_reply` says so; the
-    // opening then goes to the case as an explained note, the service-window fallback.
-    let openingOutsideWindow = false;
-    if (!continued && customerMessage) {
-      const text = customerMessage;
-      if (created.canReply === false) {
-        openingOutsideWindow = true;
-        await attempt("customer_message", () =>
-          client.sendMessageAsAdmin(
-            caseId,
-            `${OPENING_OUTSIDE_WINDOW_PREFIX}${text}`,
-            { private: true },
-          ),
-        );
-      } else {
-        const signed = input.signCustomerMessage?.(text) ?? text;
-        await attempt("customer_message", () =>
-          client.sendMessageAsAdmin(caseId, signed, { private: false }),
+      step = "create_conversation";
+      const created = await client.createConversation({
+        inboxId: target,
+        contactId: caseContactId,
+        // Open, not pending: the case lands in the team's queue, and an agent bound to the destination
+        // inbox does not pick it up and triage it again (shouldBotHandle needs `pending`).
+        status: "open",
+        customAttributes: { [CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE]: origin },
+      });
+      const caseId = created.id;
+      const continued = before.has(caseId) || caseId <= newestBefore;
+      const caseUrl = client.conversationUrl(caseId);
+      const originUrl = client.conversationUrl(origin);
+
+      // 4. Everything below is best-effort: the case exists, and a missing note does not undo it.
+      // The case number goes first, because it is what makes the next call answer "already open".
+      //
+      // EVERY WRITE ASKS THE FENCE FIRST, because each one follows a wait: the create, and then each
+      // write before it. A `/reset`, a switch-off or a person taking the origin over inside any of them
+      // stops what is left, and the attribute writer asks again inside its own queue, after its read,
+      // so a reset that cleared the origin's attributes is not undone by this one. The case stays
+      // open, since no write here can take it back.
+      const partial: string[] = [];
+      let calledOff = false;
+      const withdrawn = async (): Promise<boolean> => {
+        if (calledOff) return true;
+        if (input.stillWanted && !(await input.stillWanted())) {
+          calledOff = true;
+          partial.push("called_off");
+        }
+        return calledOff;
+      };
+      const attempt = async (name: string, fn: () => Promise<unknown>) => {
+        if (await withdrawn()) return;
+        try {
+          await fn();
+        } catch {
+          partial.push(name);
+        }
+      };
+      // A continued case can come back closed: an inbox locked to one conversation per contact hands
+      // back the contact's LAST conversation whatever its state, without applying the status asked
+      // for. Reopened here, because a case the team cannot see in its queue is not a case.
+      // NOT best-effort, unlike everything after it: a case that could not be reopened is not a case,
+      // and reporting it open would tell the customer so and, under `resolveOrigin`, close the origin
+      // too, leaving both conversations closed. It fails the opening instead, which hands the origin
+      // to people.
+      if (created.status !== "open") {
+        step = "reopen_case";
+        if (input.stillWanted && !(await input.stillWanted())) {
+          return { kind: "called_off" };
+        }
+        await client.toggleStatus(caseId, "open", { asAdmin: true });
+      }
+      await attempt("origin_attribute", () =>
+        client.setConversationCustomAttributes(
+          origin,
+          { [config.caseAttributeKey]: caseId },
+          { stillWanted: input.stillWanted },
+        ),
+      );
+      // A continued case already has its opening: repeating it would send the customer a second
+      // "we opened your case" email for the same case.
+      // A channel with a reply window (official WhatsApp, Twilio on WhatsApp, an API inbox with one
+      // set) refuses a free-form first message to a customer who has not written there lately, and a
+      // new case has, by construction, no message from them. Chatwoot's own `can_reply` says so; the
+      // opening then goes to the case as an explained note, the service-window fallback.
+      let openingOutsideWindow = false;
+      if (!continued && customerMessage) {
+        const text = customerMessage;
+        if (created.canReply === false) {
+          openingOutsideWindow = true;
+          await attempt("customer_message", () =>
+            client.sendMessageAsAdmin(
+              caseId,
+              `${OPENING_OUTSIDE_WINDOW_PREFIX}${text}`,
+              { private: true },
+            ),
+          );
+        } else {
+          const signed = input.signCustomerMessage?.(text) ?? text;
+          await attempt("customer_message", () =>
+            client.sendMessageAsAdmin(caseId, signed, { private: false }),
+          );
+        }
+      }
+      await attempt("destination_reason_note", () =>
+        client.sendMessageAsAdmin(caseId, destinationReasonNote(input.reason), {
+          private: true,
+        }),
+      );
+      await attempt("destination_link_note", () =>
+        client.sendMessageAsAdmin(caseId, destinationLinkNote(originUrl), {
+          private: true,
+        }),
+      );
+      await attempt("origin_link_note", () =>
+        client.sendPrivateNote(origin, originLinkNote(caseUrl, inboxName)),
+      );
+      // Labels are a read-modify-write of the whole set, so both go through the queue every label
+      // writer shares (`set_labels`, the observer's verdict), and both READ inside it, a new case
+      // included: an automation or an operator can label it between the create and this write, and
+      // serializing only preserves a change the write has read.
+      if (input.labels.length > 0) {
+        await attempt("destination_labels", () =>
+          withConversationLabels(input.tenantId, caseId, async () => {
+            const current = await client.getConversationLabels(caseId);
+            // Asked again after the queue's wait and the read: a reset queued ahead of this write clears
+            // the labels and withdraws the turn, and this write must not put them back.
+            if (await withdrawn()) return;
+            await client.setConversationLabels(
+              caseId,
+              [...new Set([...current, ...input.labels])],
+              { asAdmin: true },
+            );
+          }),
         );
       }
-    }
-    await attempt("destination_reason_note", () =>
-      client.sendMessageAsAdmin(caseId, destinationReasonNote(input.reason), {
-        private: true,
-      }),
-    );
-    await attempt("destination_link_note", () =>
-      client.sendMessageAsAdmin(caseId, destinationLinkNote(originUrl), {
-        private: true,
-      }),
-    );
-    await attempt("origin_link_note", () =>
-      client.sendPrivateNote(origin, originLinkNote(caseUrl, inboxName)),
-    );
-    // Labels are a read-modify-write of the whole set, so both go through the queue every label
-    // writer shares (`set_labels`, the observer's verdict), and both READ inside it, a new case
-    // included: an automation or an operator can label it between the create and this write, and
-    // serializing only preserves a change the write has read.
-    if (input.labels.length > 0) {
-      await attempt("destination_labels", () =>
-        withConversationLabels(input.tenantId, caseId, async () => {
-          const current = await client.getConversationLabels(caseId);
-          // Asked again after the queue's wait and the read: a reset queued ahead of this write clears
-          // the labels and withdraws the turn, and this write must not put them back.
-          if (await withdrawn()) return;
-          await client.setConversationLabels(
-            caseId,
-            [...new Set([...current, ...input.labels])],
-            { asAdmin: true },
-          );
-        }),
-      );
-    }
-    const originLabel = config.originLabel;
-    if (originLabel) {
-      await attempt("origin_label", () =>
-        withConversationLabels(input.tenantId, origin, async () => {
-          const current = await client.getConversationLabels(origin);
-          if (current.includes(originLabel)) return;
-          if (await withdrawn()) return;
-          await client.setConversationLabels(origin, [...current, originLabel]);
-        }),
-      );
-    }
-    return {
-      kind: continued ? "continued" : "opened",
-      caseId,
-      caseUrl,
-      identity,
-      partial,
-      ...(openingBlocked ? { openingBlocked } : {}),
-      ...(openingOutsideWindow ? { openingOutsideWindow } : {}),
-    };
+      const originLabel = config.originLabel;
+      if (originLabel) {
+        await attempt("origin_label", () =>
+          withConversationLabels(input.tenantId, origin, async () => {
+            const current = await client.getConversationLabels(origin);
+            if (current.includes(originLabel)) return;
+            if (await withdrawn()) return;
+            await client.setConversationLabels(origin, [
+              ...current,
+              originLabel,
+            ]);
+          }),
+        );
+      }
+      return {
+        kind: continued ? "continued" : "opened",
+        caseId,
+        caseUrl,
+        identity,
+        partial,
+        ...(openingBlocked ? { openingBlocked } : {}),
+        ...(openingOutsideWindow ? { openingOutsideWindow } : {}),
+      };
+    });
   } catch (error) {
     return { kind: "failed", step, error };
   }

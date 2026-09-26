@@ -47,6 +47,8 @@ function fakeChatwoot(
     canReply?: boolean;
     // The fork's contact-conversations listing answers only the newest N.
     listNewest?: number;
+    // A wait inside the listing, so two concurrent calls can both list before either creates.
+    listDelayMs?: number;
   } = {},
 ) {
   const calls: Array<{ fn: string; args: unknown[] }> = [];
@@ -146,11 +148,16 @@ function fakeChatwoot(
     },
     listContactConversations: async (contactId: number) => {
       record("listContactConversations", [contactId]);
-      return convs
+      // Read first, answered after the wait: what the server saw when the request arrived.
+      const listed = convs
         .filter((c) => c.contactId === contactId)
         .sort((a, b) => b.id - a.id)
         .slice(0, opts.listNewest ?? Number.MAX_SAFE_INTEGER)
         .map((c) => ({ id: c.id, inboxId: c.inboxId, status: c.status }));
+      if (opts.listDelayMs) {
+        await new Promise((res) => setTimeout(res, opts.listDelayMs));
+      }
+      return listed;
     },
     createConversation: async (p) => {
       record("createConversation", [p]);
@@ -719,6 +726,44 @@ describe("openCaseInInbox", () => {
           (c.args[2] as { private: boolean }).private === false,
       ),
     ).toEqual([]);
+  });
+
+  test("two origins of one contact opening at once send one opening, to one case", async () => {
+    // Review round 9: the per-origin queues ran side by side, both listed before either created, and
+    // an inbox that continues open conversations handed both the same case as "opened".
+    const f = fakeChatwoot({
+      continueOpen: true,
+      listDelayMs: 30,
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels: [],
+        },
+        {
+          id: 8,
+          inboxId: 11,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels: [],
+        },
+      ],
+    });
+    const [a, b] = await Promise.all([
+      openCaseInInbox(f.client, input({ originConversationId: 7 })),
+      openCaseInInbox(f.client, input({ originConversationId: 8 })),
+    ]);
+    expect([a.kind, b.kind].sort()).toEqual(["continued", "opened"]);
+    const openings = f.calls.filter(
+      (c) =>
+        c.fn === "sendMessageAsAdmin" &&
+        (c.args[2] as { private: boolean }).private === false,
+    );
+    expect(openings).toHaveLength(1);
   });
 
   test("a new case is numbered above what the contact had, and reads as opened", async () => {

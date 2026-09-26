@@ -1,7 +1,9 @@
 import type { VisualAttachment } from "@/modules/vision/extract-message";
 import { CHATWOOT_SEND_ID_KEY } from "./constants";
+import { bodyImagesBesides, emailBodyImageUrlsFrom } from "./email-body-images";
 import {
   activityTypeFrom,
+  bodyImageVisuals,
   chatwootTimestamp,
   emailSubjectFrom,
   firstLocationAttachment,
@@ -55,6 +57,12 @@ export interface ChatwootMessageRow {
   // antes de o agente observar a caixa nunca passou pelo caminho eager, e sem isto ela chega ao
   // modelo como "o usuário enviou uma imagem" e nada mais.
   visuals: VisualAttachment[];
+  // How many of `visuals` are images the mailbox kept in the email body (issue #864). They carry no
+  // attachment type, so this is what makes a message whose only content is one of them answerable.
+  bodyImages?: number;
+  // True when a vision pass already went through the body images (in-process stash): attachment
+  // meta never covers them, since they have no attachment to carry it (issue #864).
+  bodyRead?: boolean;
   // NOTE: The first usable location attachment's content (coordinates/title), for the
   // <localização> marker — mirrors the direct webhook path (issue #45). Null when absent/unusable.
   location: RenderableLocation | null;
@@ -247,6 +255,24 @@ function visualsFrom(attachments: unknown): VisualAttachment[] {
   return out;
 }
 
+// The attachments, then the images the mailbox kept in the email body (issue #864).
+function visualsWithBody(
+  attachments: unknown,
+  ca: Record<string, unknown> | null,
+): { visuals: VisualAttachment[]; bodyImages?: number } {
+  const anexos = visualsFrom(attachments);
+  const corpo = bodyImageVisuals(
+    bodyImagesBesides(
+      emailBodyImageUrlsFrom(ca),
+      anexos.map((v) => v.dataUrl),
+    ),
+  );
+  // The count only when there is one: every other channel's row stays exactly what it was.
+  return corpo.length > 0
+    ? { visuals: [...anexos, ...corpo], bodyImages: corpo.length }
+    : { visuals: anexos };
+}
+
 function attachmentTypesFrom(attachments: unknown): string[] {
   if (!Array.isArray(attachments)) return [];
   const out: string[] = [];
@@ -302,7 +328,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       imageDescription: metaJoinedFrom(item.attachments, "image_description"),
       extractedText: metaJoinedFrom(item.attachments, "extracted_text"),
       attachmentName: fileNameFrom(item.attachments),
-      visuals: visualsFrom(item.attachments),
+      ...visualsWithBody(item.attachments, ca),
       location: locationFrom(item.attachments),
       inReplyTo: ca ? num(ca.in_reply_to) : null,
       isReaction: ca?.is_reaction === true,
@@ -351,6 +377,7 @@ export function toRenderable(row: ChatwootMessageRow): RenderableMessage {
     extractedText: row.extractedText,
     attachmentsUnread: row.attachmentsUnread,
     attachmentTypes: row.attachmentTypes,
+    bodyImages: row.bodyImages,
     attachmentName: row.attachmentName,
     location: row.location,
     inReplyTo: row.inReplyTo,
@@ -366,12 +393,16 @@ export function toRenderable(row: ChatwootMessageRow): RenderableMessage {
 // another is not: the burst would drop the message the renderer had just learned to read. One
 // function, three callers, and a fence test that walks the shapes and asserts they answer alike.
 export function hasAnswerableContent(
-  m: Pick<ChatwootMessageRow, "content" | "attachmentTypes" | "emailSubject">,
+  m: Pick<
+    ChatwootMessageRow,
+    "content" | "attachmentTypes" | "emailSubject" | "bodyImages"
+  >,
 ): boolean {
   return (
     m.content.trim().length > 0 ||
     m.attachmentTypes.length > 0 ||
-    (m.emailSubject ?? "").trim().length > 0
+    (m.emailSubject ?? "").trim().length > 0 ||
+    (m.bodyImages ?? 0) > 0
   );
 }
 

@@ -58,6 +58,22 @@ export async function loadChatwootClient(
   });
 }
 
+// The instance's Chatwoot base URL, without building a client (no token decrypted, no DNS). What an
+// email body image is compared against before it is read (issue #864).
+export async function chatwootBaseUrl(
+  tenantId: bigint,
+  instanceId: bigint,
+  base: PrismaClient = basePrisma,
+): Promise<string> {
+  const instance = await runScopedOn(base, sysCtx(tenantId), (db) =>
+    db.chatwootInstance.findUniqueOrThrow({
+      where: { id: instanceId },
+      select: { deployment: { select: { baseUrl: true } } },
+    }),
+  );
+  return instance.deployment.baseUrl;
+}
+
 // Resolves the persona's Chatwoot Agent Bot for an instance: its numeric id (the gate's "our bot")
 // + decrypted access token (used to post the persona's replies / act on its conversations). null
 // when the persona has no bot on this instance yet (never bound here). Scoped (RLS).

@@ -1,5 +1,6 @@
 import { closedByTheAgentSide } from "@/modules/conversations/resolution-origin";
 import { CHATWOOT_REPLY_TEXT_KEY } from "./constants";
+import { bodyImagesBesides, emailBodyImageUrlsFrom } from "./email-body-images";
 import type { RenderableLocation, RenderableMessage } from "./render";
 import type {
   NormalizedChatwootAttachment,
@@ -266,6 +267,7 @@ export function normalizeChatwootEvent(
       // NOTE: The Subject header of an inbound email (issue #598). Read through the shared reader so
       // the delivered event and the REST page cannot disagree about what the subject is.
       emailSubject: emailSubjectFrom(ca),
+      emailBodyImages: emailBodyImageUrlsFrom(ca),
       imported: ca?.imported === true,
       externalError: ca ? str(ca.external_error) || null : null,
       replyText: ca ? str(ca[CHATWOOT_REPLY_TEXT_KEY]) || null : null,
@@ -893,6 +895,7 @@ export function incomingRenderable(
     attachmentTypes: (n.message?.attachments ?? [])
       .map((a) => a.fileType)
       .filter((t): t is string => t !== null),
+    bodyImages: visualAttachments(n).filter((v) => v.id === null).length,
     location: firstLocationAttachment(n.message?.attachments),
     inReplyTo: n.message?.inReplyTo,
     isReaction: n.message?.isReaction,
@@ -999,7 +1002,7 @@ export function isVisualFileType(fileType: string | null): boolean {
 }
 
 export function visualAttachments(e: NormalizedChatwootEvent): {
-  id: number;
+  id: number | null;
   dataUrl: string;
   name: string | null;
   // What a previous pass already extracted from THIS attachment, when the write-back landed.
@@ -1018,7 +1021,33 @@ export function visualAttachments(e: NormalizedChatwootEvent): {
       });
     }
   }
-  return out;
+  return [
+    ...out,
+    ...bodyImageVisuals(
+      bodyImagesBesides(
+        e.message?.emailBodyImages ?? [],
+        out.map((v) => v.dataUrl),
+      ),
+    ),
+  ];
+}
+
+// The images a mailbox kept in the email body (issue #864), after the real attachments so they
+// never take a slot of the per-message cap from one. Shared with the REST reader (./messages.ts).
+export function bodyImageVisuals(urls: string[] | undefined): {
+  id: null;
+  dataUrl: string;
+  name: string | null;
+  imageDescription: null;
+  extractedText: null;
+}[] {
+  return (urls ?? []).map((dataUrl) => ({
+    id: null,
+    dataUrl,
+    name: fileNameOf(dataUrl),
+    imageDescription: null,
+    extractedText: null,
+  }));
 }
 
 // The basename of the data url, query stripped. It labels each extraction so the model can tell

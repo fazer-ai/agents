@@ -27,6 +27,8 @@ export interface RenderableMessage {
   attachmentsUnread?: number | null;
   // Chatwoot file_type of each attachment ("audio" | "image" | "file" | "video" | ...).
   attachmentTypes: string[];
+  // Images the mailbox kept in the email body (issue #864): no attachment type, read by vision.
+  bodyImages?: number | null;
   // Best-effort file name of the first attachment (for the "could not extract" marker).
   attachmentName?: string | null;
   // NOTE: The first usable location attachment's content (coordinates/title), or null/absent.
@@ -115,6 +117,13 @@ export function cleanTranscription(s: string): string {
 
 const QUOTE_MAX = 200;
 
+// O PREFIXO É CONTRATO: `unwrapFileMarker` (../playground/sessions.ts) reconhece este marcador por
+// `startsWith`; ver a nota no ramo de imagem de `renderInboundMessage`.
+const CORPO_SEM_CONTEUDO =
+  "<e-mail sem texto; as imagens do corpo não trouxeram conteúdo legível>";
+const IMAGEM_ILEGIVEL =
+  "<usuário enviou uma imagem; não foi possível ler o conteúdo, peça que o cliente reenvie o arquivo ou escreva a informação>";
+
 export function renderInboundMessage(
   m: RenderableMessage,
   ctx: { resolveQuoted?: (id: number) => string | null } = {},
@@ -168,6 +177,8 @@ export function renderInboundMessage(
       ? `<anexos-nao-lidos quantidade="${pulados}">não foi possível ler; se a resposta depender deles, peça ao cliente que reenvie o que falta</anexos-nao-lidos>`
       : "";
   let body: string;
+  // Whether a branch below already told the model a file could not be read.
+  let pediuReenvio = false;
   if (types.has("audio")) {
     const tr = cleanTranscription(m.transcribedText ?? text);
     body = tr
@@ -202,9 +213,8 @@ export function renderInboundMessage(
     // O PREFIXO É CONTRATO: `unwrapFileMarker` (../playground/sessions.ts) reconhece este marcador
     // por `startsWith` para remontar o anexo na tela do operador, e uma reescrita da frase inteira
     // quebraria aquele lado em silêncio. Cercado em `tests/modules/chatwoot-render.test.ts`.
-    body = withText(
-      "<usuário enviou uma imagem; não foi possível ler o conteúdo, peça que o cliente reenvie o arquivo ou escreva a informação>",
-    );
+    body = withText(IMAGEM_ILEGIVEL);
+    pediuReenvio = true;
   } else if (m.location) {
     // NOTE: A WhatsApp location pin: surfaced as attributes (mirroring the reaction marker) so the
     // model reads the coordinates and forwards them as ordinary tool arguments (issue #45). A pin
@@ -229,10 +239,16 @@ export function renderInboundMessage(
       ? ` chamado '${m.attachmentName.trim()}'`
       : "";
     body = `<usuário enviou um arquivo do tipo '${ty}'${named}; não foi possível extrair o conteúdo>`;
+    pediuReenvio = true;
   } else if (subject) {
     // The subject is the whole message. An email whose body is empty or a client footer is NOT a
     // blank message, and the branch below would have dropped the turn with the request in it.
     body = "";
+  } else if (m.bodyImages) {
+    // An email whose only content is an image in its body (issue #864). Unread ones are named
+    // below. Nothing read and nothing unread is every image an ornament, or vision off, and neither
+    // is a file to ask for again: the marker says only that there is nothing to read.
+    body = naoLidos ? "" : CORPO_SEM_CONTEUDO;
   } else {
     return ""; // nothing renderable → skip
   }
@@ -242,7 +258,9 @@ export function renderInboundMessage(
   // noise the model has to reconcile. The case this exists for is the PARTIAL one: some files read,
   // others over the cap or unreadable, where the extraction that succeeded would otherwise make the
   // message look complete (PR #692 review, rounds 1 and 3).
-  if (naoLidos && (imageDescription || extractedText))
+  // Or when that marker was NOT emitted: an image in an email body has no attachment type, so beside
+  // text, an audio or a pin a failed one would otherwise leave no trace (issue #864).
+  if (naoLidos && (imageDescription || extractedText || !pediuReenvio))
     body = body ? `${body}\n${naoLidos}` : naoLidos;
 
   if (m.inReplyTo != null && ctx.resolveQuoted) {

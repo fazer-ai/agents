@@ -19,6 +19,7 @@ import {
 } from "@/modules/spend-ceiling/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 import { MediaSourceMismatchError, runMediaConverter } from "./convert";
+import { isDecorativeImage } from "./decorative";
 import { visionAcceptsDocuments } from "./document-support";
 import { normalizeMediaType, planImageConversion } from "./media-conversion";
 import {
@@ -188,7 +189,8 @@ export interface ExtractInboundParams {
   instanceId: bigint;
   conversationId: number;
   messageId: number;
-  attachmentId: number;
+  // Null for an image kept inside an email body (#864): there is no attachment to write back to.
+  attachmentId: number | null;
   dataUrl: string;
   cfg: VisionConfig;
   base?: PrismaClient;
@@ -307,9 +309,52 @@ async function convertForProvider(args: {
   }
 }
 
+// What an email body image comes back as when it is an ornament (a signature icon, the logo of a
+// quoted email). Not a failure, so it is neither extracted nor counted among the files the model is
+// told were not read (#864). A URL that is not this Chatwoot's never gets here: the caller drops it
+// before the per-message cap is applied.
+export const BODY_IMAGE_IGNORED = "ignored" as const;
+
 export async function extractInboundFile(
   params: ExtractInboundParams,
 ): Promise<ExtractResult | null> {
+  const r = await extractInbound(params);
+  return r === BODY_IMAGE_IGNORED || r === BODY_IMAGE_OVER_CAP ? null : r;
+}
+
+// An image Chatwoot's mailbox kept inside the email body instead of making it an attachment (#864).
+export function extractBodyImage(
+  params: Omit<ExtractInboundParams, "attachmentId">,
+): Promise<ExtractResult | null | typeof BODY_IMAGE_IGNORED> {
+  return extractInbound({
+    ...params,
+    attachmentId: null,
+    bodyImage: true,
+  }) as Promise<ExtractResult | null | typeof BODY_IMAGE_IGNORED>;
+}
+
+// A body image past the per-message cap, downloaded only to know whether it is an ornament: it is
+// never sent to the provider, and what is not an ornament is what the model is told was not read.
+export const BODY_IMAGE_OVER_CAP = "over_cap" as const;
+export function classifyBodyImage(
+  params: Omit<ExtractInboundParams, "attachmentId">,
+): Promise<null | typeof BODY_IMAGE_IGNORED | typeof BODY_IMAGE_OVER_CAP> {
+  return extractInbound({
+    ...params,
+    attachmentId: null,
+    bodyImage: true,
+    classifyOnly: true,
+  }) as Promise<null | typeof BODY_IMAGE_IGNORED | typeof BODY_IMAGE_OVER_CAP>;
+}
+
+async function extractInbound(
+  params: ExtractInboundParams & {
+    bodyImage?: boolean;
+    classifyOnly?: boolean;
+  },
+): Promise<
+  ExtractResult | null | typeof BODY_IMAGE_IGNORED | typeof BODY_IMAGE_OVER_CAP
+> {
   const { cfg } = params;
   const base = params.base ?? basePrisma;
 
@@ -367,8 +412,10 @@ export async function extractInboundFile(
   let bytes: ArrayBuffer;
   let contentType: string | null;
   try {
+    // A body image was stored by the mailbox before the message existed: its 404 will not heal, and
+    // retrying it would multiply whatever a crafted body asks for.
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
-      retryOnMissing: true,
+      retryOnMissing: !params.bodyImage,
     }));
   } catch (err) {
     if (params.flow) {
@@ -384,7 +431,12 @@ export async function extractInboundFile(
     throw err;
   }
   const kind = visionKindForMime(contentType);
+  // Only a positively identified ornament; a type vision cannot read is the unsupported skip below,
+  // counted as unread like any other file that was sent and not read.
+  if (params.bodyImage && kind === "image" && isDecorativeImage(bytes))
+    return BODY_IMAGE_IGNORED;
   if (!kind) return skip("unsupported_mime"); // unsupported mime → marker
+  if (params.classifyOnly) return BODY_IMAGE_OVER_CAP;
   // The ENDPOINT decides, not the provider name: the same base URL that the call below posts to is
   // what has to be known to read a PDF (see ./document-support).
   if (
@@ -533,31 +585,32 @@ export async function extractInboundFile(
 
   // NOTE: Write back so the debounce re-fetch (and human agents) see it. Best-effort; surfaced on
   // the flow log so a meta that never lands is visible to the operator.
-  try {
-    await client.updateAttachmentMeta(
-      params.conversationId,
-      params.messageId,
-      params.attachmentId,
-      { [metaKeyFor(kind)]: text },
-    );
-  } catch (e) {
-    if (params.flow) {
-      emitFlowEvent(params.flow, {
-        stage: "vision",
-        level: "warn",
-        status: "error",
-        provider: cfg.provider,
-        detail: { step: "write_back" },
-        errorMessage: e instanceof Error ? e.message : String(e),
-      });
+  if (params.attachmentId !== null)
+    try {
+      await client.updateAttachmentMeta(
+        params.conversationId,
+        params.messageId,
+        params.attachmentId,
+        { [metaKeyFor(kind)]: text },
+      );
+    } catch (e) {
+      if (params.flow) {
+        emitFlowEvent(params.flow, {
+          stage: "vision",
+          level: "warn",
+          status: "error",
+          provider: cfg.provider,
+          detail: { step: "write_back" },
+          errorMessage: e instanceof Error ? e.message : String(e),
+        });
+      }
+      logger.warn(
+        "vision: write-back failed (conv=%s msg=%d): %s",
+        String(params.conversationId),
+        params.messageId,
+        e instanceof Error ? e.message : String(e),
+      );
     }
-    logger.warn(
-      "vision: write-back failed (conv=%s msg=%d): %s",
-      String(params.conversationId),
-      params.messageId,
-      e instanceof Error ? e.message : String(e),
-    );
-  }
   return { kind, text };
 }
 

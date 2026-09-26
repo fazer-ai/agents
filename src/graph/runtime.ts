@@ -75,6 +75,7 @@ import { armCompaction } from "@/modules/memory/compact";
 import { signatureFor } from "@/modules/signature/service";
 import { deliverReply, type ReplyDelivery } from "@/modules/split/service";
 import type { TtsCheckConfig } from "@/modules/tts/check";
+import { plannedReplyIsAudio, spokenNoticeFor } from "@/modules/tts/modality";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import { logTextInsteadOfAudio, planAudioReply } from "@/modules/tts/speakable";
@@ -140,6 +141,7 @@ import {
   turnDeliveredToCustomer,
   turnReachedTheCustomer,
 } from "./tools/native";
+import type { ReplyChoice } from "./tools/reply-as-text";
 import type { UsagePersist } from "./usage";
 
 // The agent runtime: an incoming Chatwoot message (gate=act) → resolve the inbox's Agent config
@@ -1146,6 +1148,17 @@ async function runTurnBody(
     documentsInFlight: 0,
     attachmentsSeq: 0,
   };
+  // THE REPLY'S MODALITY, DECIDED ONCE (issue #859): before the model runs, from the mode, what the
+  // customer sent, their stored preference and what can be known not to work. The model is told from
+  // this answer. The delivery re-asks with the preference as it stands at the end of the turn, and
+  // when the two differ it says so in a `tts` line, so a notice and a delivery never disagree
+  // without a record of why.
+  const plannedAudio = plannedReplyIsAudio(loaded.ttsConfig, {
+    userSentAudio: params.userSentAudio ?? false,
+    contactVoiceReply: loaded.contactVoiceReply,
+    channelType: loaded.channelType,
+  });
+  const replyChoice: ReplyChoice = { textChosen: false };
   const handoffState: HandoffTurnState = {
     customerMessage: null,
     completed: false,
@@ -1198,6 +1211,14 @@ async function runTurnBody(
       documentsStorageDir: params.deps?.documentsStorageDir,
       turnState,
       handoffState,
+      replyChoice,
+      replyIsAudioWith: (voiceReply) =>
+        !replyChoice.textChosen &&
+        plannedReplyIsAudio(loaded.ttsConfig, {
+          userSentAudio: params.userSentAudio ?? false,
+          contactVoiceReply: voiceReply,
+          channelType: loaded.channelType,
+        }),
     },
     { buildNativeTools, mcp: params.deps?.mcp, flow },
   );
@@ -1206,6 +1227,7 @@ async function runTurnBody(
   const graph = await buildModelAndGraph(loaded, tools, {
     makeModel: params.deps?.makeModel,
     checkpointer: params.deps?.checkpointer,
+    spokenNotice: spokenNoticeFor(loaded.ttsConfig, plannedAudio),
     // THE ONE SEAM INSIDE THE INVOKE (issue #449). Every other ask this function makes sits BETWEEN
     // steps — before the divider, after the claim, before the invoke, at each outward write — and a
     // tool call happens inside one. Handed down here so the graph can ask it at the tool boundary,
@@ -1430,15 +1452,33 @@ async function runTurnBody(
   // a partial send by throwing (issue #429), so the two have to travel together for the callers
   // below to keep deciding what a total failure means. TTS is best-effort — a synthesis failure
   // falls back to text and never drops the message.
+  const sentAsTextNoted = new Set<string>();
+  const noteSentAsText = (reason: "contact_preference" | "model_choice") => {
+    if (sentAsTextNoted.has(reason)) return;
+    sentAsTextNoted.add(reason);
+    emitFlowEvent(flow, {
+      stage: "tts",
+      level: "info",
+      status: "skipped",
+      detail: { sentAsText: reason },
+    });
+  };
   const deliverText = async (
     text: string,
     voiceReply: boolean | null,
   ): Promise<ReplyDelivery | "stale" | "superseded"> => {
-    const wantAudio = shouldReplyWithAudio(
+    const asked = shouldReplyWithAudio(
       loaded.ttsConfig.mode,
       params.userSentAudio ?? false,
       voiceReply,
     );
+    // Two reasons the reply leaves the modality it was planned in, each written once per turn
+    // (issue #859): the customer's preference changed while the model ran (it wins, as it always
+    // has, and the model was told by the tool that saved it), or the model chose text for it.
+    if (plannedAudio && !asked) noteSentAsText("contact_preference");
+    const chosenText = asked && replyChoice.textChosen;
+    if (chosenText) noteSentAsText("model_choice");
+    const wantAudio = asked && !chosenText;
     // A URL or an e-mail address is never said: it follows the voice note in writing, or the whole
     // reply goes as text when nothing but its introduction would be said (issue #787), or when the
     // reply is built to be read, not heard: too long, a list, a run of prices (issue #856).

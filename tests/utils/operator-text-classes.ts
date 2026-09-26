@@ -22,6 +22,19 @@ export const NAMES_AGENT_TOOLS = [
   "handoff.instructions",
   "kanban.instructions",
   "toolGuidance.*",
+  // Issue #859: the notice the agent reads on an audio turn and the note on reply_as_text, both read
+  // by the tool-calling model, where a tool name means the agent's toolset.
+  "tts.spokenNoticeText",
+  "tts.textChoiceNote",
+];
+
+// The sites of the class above that did not exist when the one rename migration so far ran
+// (`20260909120000`, `assign_label` → `set_labels`): no row could have held the old name there, so
+// that migration was right not to read them, and its test asks only for the sites it could meet. The
+// NEXT rename of a native is written after them and has to cover them like the rest of the class.
+export const NEWER_THAN_THE_LAST_RENAME = [
+  "tts.spokenNoticeText",
+  "tts.textChoiceNote",
 ];
 
 // Reaches a model AND names nothing: the vision extraction prompt instructs a model that is handed

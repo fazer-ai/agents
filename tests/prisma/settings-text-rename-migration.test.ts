@@ -4,7 +4,11 @@ import { buildNativeTools } from "@/graph/tools/native";
 import { readToolGuidance } from "@/modules/agents/tool-guidance";
 import { readHandoffConfig } from "@/modules/handoff/settings";
 import { readKanbanConfig } from "@/modules/kanban/settings";
-import { classOf, NAMES_AGENT_TOOLS } from "../utils/operator-text-classes";
+import {
+  classOf,
+  NAMES_AGENT_TOOLS,
+  NEWER_THAN_THE_LAST_RENAME,
+} from "../utils/operator-text-classes";
 
 // Runs the ACTUAL migration file, for the reason the sibling file gives: a copy pasted here would
 // drift, and `$executeRawUnsafe` rejects multiple statements.
@@ -757,7 +761,13 @@ describe.skipIf(!dbUp)(
       expect(
         Object.values(before).every((v) => v.includes("assign_label")),
       ).toBeTrue();
-      expect(shouldChange.length).toBe(NAMES_AGENT_TOOLS.length);
+      // Every site of the class that existed when this migration ran; the ones added since cannot
+      // have held the old name (see NEWER_THAN_THE_LAST_RENAME).
+      expect(shouldChange.length).toBe(
+        NAMES_AGENT_TOOLS.filter(
+          (site) => !NEWER_THAN_THE_LAST_RENAME.includes(site),
+        ).length,
+      );
     });
 
     test("a note whose only occurrence follows a newline is still rewritten", async () => {

@@ -173,6 +173,13 @@ function cappedFields(settings: unknown): CappedField[] {
   if (signature) {
     add(signature, "text", "signature.text", SIGNATURE_MAX);
   }
+  // The notice the model reads on an audio turn and the note on `reply_as_text` (issue #859): a
+  // paragraph of guidance each, like a native tool's note, so the same ceiling.
+  const tts = bagOf(root.tts);
+  if (tts) {
+    add(tts, "spokenNoticeText", "tts.spokenNoticeText", TOOL_INSTRUCTIONS_MAX);
+    add(tts, "textChoiceNote", "tts.textChoiceNote", TOOL_INSTRUCTIONS_MAX);
+  }
   const vision = bagOf(root.vision);
   if (vision) {
     add(

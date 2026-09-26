@@ -18,9 +18,11 @@ import {
 import {
   getTtsProvider,
   pickTtsFormat,
+  type TtsProvider,
   type TtsResult,
 } from "@/modules/tts/providers";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
+import { staticTtsImpossibility } from "./modality";
 import { type TtsConfig, voiceSettingsOf } from "./settings";
 
 // Text-to-speech orchestration: normalize the reply for speech, synthesize via the configured
@@ -110,35 +112,30 @@ export async function synthesizeReply(
     return null;
   };
 
-  const provider = getTtsProvider(cfg.provider);
-  if (!provider) {
-    logger.warn("tts: unknown provider %s", cfg.provider);
-    return skip("unknown_provider");
-  }
-  const voice = cfg.voice || provider.defaultVoice;
-  if (provider.requiresVoice && !voice) {
-    logger.warn("tts: provider %s requires a voice — skipping", cfg.provider);
-    return skip("no_voice");
-  }
+  // The checks that need no network, in the order a skip reports them. Shared with the turn's plan
+  // (./modality.ts, issue #859), so a reply these refuse is also one the model was never told would
+  // be spoken.
   // NOTE: container per destination channel. Like every other check here it runs BEFORE the paid
   // rewrite below, so an unsupported combination skips without burning a call whose output would be
-  // discarded. null = the provider cannot emit anything this channel accepts (openrouter on
+  // discarded. No format = the provider cannot emit anything this channel accepts (openrouter on
   // Instagram: mp3-only, and Meta refuses mp3) — synthesizing would produce a message Chatwoot shows
   // as sent and Meta then rejects, so degrade to a text reply with a visible skip.
-  const format = pickTtsFormat(provider, params.channelType ?? null);
-  if (!format) {
+  const impossible = staticTtsImpossibility(cfg, params.channelType);
+  if (impossible) {
     logger.warn(
-      "tts: provider %s has no output format accepted on %s — falling back to text",
+      "tts: %s (provider %s, channel %s) — falling back to text",
+      impossible,
       cfg.provider,
       params.channelType,
     );
-    return skip("channel_format_unsupported");
+    return skip(impossible);
   }
-
-  if (!cfg.credentialRef) {
-    logger.warn("tts: no credentialRef configured — skipping");
-    return skip("no_credential");
-  }
+  const provider = getTtsProvider(cfg.provider) as TtsProvider;
+  const voice = cfg.voice || provider.defaultVoice;
+  const format = pickTtsFormat(
+    provider,
+    params.channelType ?? null,
+  ) as NonNullable<ReturnType<typeof pickTtsFormat>>;
   const entry = await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     tryResolveApiKeyEntry(db, cfg.credentialRef as string),
   );

@@ -11,6 +11,7 @@ import { stampedSentAt } from "@/graph/markers";
 import { loadAgentConfig } from "@/graph/prepare";
 import { FOLLOWUP_SKIP_SENTINEL, SKIP_REPLY_TOOL } from "@/graph/silence";
 import { buildThreadStateGraph } from "@/graph/thread-state";
+import { REPLY_AS_TEXT_TOOL } from "@/graph/tools/reply-as-text";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import {
   listPlaygroundTools,
@@ -19,7 +20,11 @@ import {
   runPlaygroundTurn,
   toPlaygroundInvokeError,
 } from "@/modules/playground/service";
-import { UsageReportingModel } from "../utils/scripted-models";
+import { flowLogRows } from "../utils/flowlog";
+import {
+  ScriptedCaptureModel,
+  UsageReportingModel,
+} from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -478,6 +483,143 @@ describe.skipIf(!dbUp)("playground", () => {
         data: { settings },
       });
     }
+  });
+
+  // Issue #859: the playground asks production's plan, so its "answer in audio" switch tells the model
+  // the same thing a customer's voice note does, and the model's choice of text is honoured the same.
+  async function withAudioAgent(
+    extra: Record<string, unknown>,
+    fn: () => Promise<void>,
+  ) {
+    const agent = await suDb.agent.findUniqueOrThrow({
+      where: { id: agentAudio },
+      select: { settings: true },
+    });
+    const settings = agent.settings as { tts: Record<string, unknown> };
+    await suDb.agent.update({
+      where: { id: agentAudio },
+      data: {
+        settings: { ...settings, tts: { ...settings.tts, ...extra } } as never,
+      },
+    });
+    try {
+      await fn();
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentAudio },
+        data: { settings: settings as never },
+      });
+    }
+  }
+
+  const okAudio = (spoken: string[]) =>
+    (async (_url: unknown, init?: RequestInit) => {
+      spoken.push(String(init?.body ?? ""));
+      return new Response(new ArrayBuffer(16), {
+        status: 200,
+        headers: { "content-type": "audio/ogg" },
+      });
+    }) as unknown as typeof fetch;
+
+  const systemOf = (messages: BaseMessage[]) =>
+    messages
+      .filter((m) => m.getType() === "system")
+      .map((m) => String(m.content))
+      .join("\n\n");
+
+  test("a simulated audio turn tells the model, a plain one does not (#859)", async () => {
+    await withAudioAgent(
+      { spokenNotice: true, spokenNoticeText: "AVISO-859-PG" },
+      async () => {
+        const spoken: string[] = [];
+        const audio = new ScriptedCaptureModel([
+          { reply: "Custa R$ 10." },
+          { reply: "Custa dez reais." },
+        ]);
+        const r = await runPlaygroundTurn({
+          ctx: ctx(tenantId),
+          agentId: agentAudio,
+          message: "quanto custa?",
+          forceAudio: true,
+          base: appDb,
+          deps: {
+            makeModel: () => audio as unknown as BaseChatModel,
+            checkpointer: new MemorySaver(),
+            ttsFetch: okAudio(spoken),
+          },
+        });
+        expect(systemOf(audio.seen[0] ?? []).endsWith("AVISO-859-PG")).toBe(
+          true,
+        );
+        expect(r.ttsMediaId).toBeDefined();
+        const plain = new ScriptedCaptureModel([{ reply: "Custa R$ 10." }]);
+        const r2 = await runPlaygroundTurn({
+          ctx: ctx(tenantId),
+          agentId: agentAudio,
+          message: "quanto custa?",
+          base: appDb,
+          deps: {
+            makeModel: () => plain as unknown as BaseChatModel,
+            checkpointer: new MemorySaver(),
+            ttsFetch: okAudio(spoken),
+          },
+        });
+        expect(systemOf(plain.seen[0] ?? [])).not.toContain("AVISO-859-PG");
+        expect(r2.ttsMediaId).toBeUndefined();
+      },
+    );
+  });
+
+  test("the model chooses text in a simulated audio turn: no synthesis, one line (#859)", async () => {
+    await withAudioAgent(
+      { mode: "mirror", spokenNotice: true, textChoice: true },
+      async () => {
+        const spoken: string[] = [];
+        const table = "Preços:\n- A: R$ 10,00\n- B: R$ 20,00\nREPLY-859-PG";
+        const m = new ScriptedCaptureModel([
+          { call: REPLY_AS_TEXT_TOOL },
+          { reply: table },
+        ]);
+        const r = await runPlaygroundTurn({
+          ctx: ctx(tenantId),
+          agentId: agentAudio,
+          message: "quais os preços?",
+          forceAudio: true,
+          base: appDb,
+          deps: {
+            makeModel: () => m as unknown as BaseChatModel,
+            checkpointer: new MemorySaver(),
+            ttsFetch: okAudio(spoken),
+          },
+        });
+        expect(m.boundToolNames).toContain(REPLY_AS_TEXT_TOOL);
+        expect(r.reply).toBe(table);
+        expect(r.ttsMediaId).toBeUndefined();
+        expect(spoken).toEqual([]);
+        const lines = await flowLogRows(suDb, {
+          where: { tenantId, threadId: r.threadId },
+        });
+        expect(
+          lines
+            .filter((l) => l.stage === "tts")
+            .map((l) => ({ source: l.source, detail: l.detail })),
+        ).toEqual([
+          { source: "playground", detail: { sentAsText: "model_choice" } },
+        ]);
+        expect(
+          JSON.stringify(lines, (_k, v) =>
+            typeof v === "bigint" ? String(v) : v,
+          ),
+        ).not.toContain("REPLY-859-PG");
+        // The tool panel lists what the model is offered.
+        const listed = await listPlaygroundTools({
+          ctx: ctx(tenantId),
+          agentId: agentAudio,
+          base: appDb,
+        });
+        expect(listed.map((t) => t.name)).toContain(REPLY_AS_TEXT_TOOL);
+      },
+    );
   });
 
   // Issue #755: the playground dates what the operator types with the instant it says it was

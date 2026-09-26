@@ -1011,3 +1011,45 @@ export class SlowReplyModel extends BaseChatModel {
     };
   }
 }
+
+// Plays a fixed script, one step per model round, and records every message list it was asked with
+// and the names of the tools it was bound to (issue #859: what the model is TOLD about a spoken
+// reply is a property of the request, so the request is what a test has to read). A step is either a
+// tool call or the reply that ends the turn; the last step repeats if the graph asks again.
+export type ScriptStep =
+  | { call: string; args?: Record<string, unknown> }
+  | { reply: string };
+
+export class ScriptedCaptureModel {
+  seen: BaseMessage[][] = [];
+  boundToolNames: string[] | null = null;
+  boundTools: Array<{ name: string; description: string }> = [];
+  private n = 0;
+  constructor(private readonly steps: ScriptStep[]) {}
+  private next(messages: BaseMessage[]): AIMessage {
+    this.seen.push(messages);
+    const step = this.steps[Math.min(this.n, this.steps.length - 1)];
+    this.n++;
+    if (!step || "reply" in step) return new AIMessage(step?.reply ?? "");
+    return new AIMessage({
+      content: "",
+      tool_calls: [
+        { name: step.call, args: step.args ?? {}, id: `call_${this.n}` },
+      ],
+    });
+  }
+  async invoke(messages: BaseMessage[]) {
+    return this.next(messages);
+  }
+  bindTools(tools: unknown) {
+    const list = tools as Array<{ name: string; description?: string }>;
+    this.boundToolNames = list.map((t) => t.name);
+    this.boundTools = list.map((t) => ({
+      name: t.name,
+      description: t.description ?? "",
+    }));
+    return {
+      invoke: async (messages: BaseMessage[]) => this.next(messages),
+    };
+  }
+}

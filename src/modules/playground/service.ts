@@ -38,6 +38,7 @@ import {
 import type { McpLoadDeps } from "@/graph/tools/mcp";
 import { buildSimulatedNativeTools } from "@/graph/tools/native";
 import { logSchemaRefusals } from "@/graph/tools/refusal-log";
+import type { ReplyChoice } from "@/graph/tools/reply-as-text";
 import {
   buildPlaygroundTrace,
   buildVisionTraceEntry,
@@ -73,6 +74,7 @@ import {
 import { attachSignature, signatureFor } from "@/modules/signature/service";
 import { assertPlaygroundSpendCeiling } from "@/modules/spend-ceiling/service";
 import { transcribePlaygroundAudio } from "@/modules/stt/service";
+import { plannedReplyIsAudio, spokenNoticeFor } from "@/modules/tts/modality";
 import { synthesizeReply } from "@/modules/tts/service";
 import { shouldReplyWithAudio } from "@/modules/tts/settings";
 import { logTextInsteadOfAudio, planAudioReply } from "@/modules/tts/speakable";
@@ -405,6 +407,9 @@ function buildPlaygroundToolset(
     // operator goes to find out what their agent does — a refused call never reaches the inner tool,
     // so ToolFlowLogger sees no run either and there is nothing else to read.
     flow: FlowContext | undefined;
+    // Where `reply_as_text` records its choice (issue #859). The turn passes the one its delivery
+    // reads; the listing passes a throwaway, so the panel shows the tool the model is offered.
+    replyChoice: ReplyChoice;
   },
 ): Promise<StructuredToolInterface[]> {
   return buildToolset(
@@ -416,6 +421,7 @@ function buildPlaygroundToolset(
       client: {} as ChatwootClient,
       conversationId: 0,
       threadId: params.threadId,
+      replyChoice: params.replyChoice,
     },
     {
       // Conversation tools (handoff/resolve/…) are SIMULATED (no real effect); utility tools
@@ -483,6 +489,10 @@ async function buildPlaygroundGraph(params: {
   // reactive turn an agent granted `skip_reply` and nothing else is the operator's own choice, and
   // it is how their agent answers "ok" with silence.
   silenceProtocol?: boolean;
+  // The spoken-reply notice and the choice holder of issue #859, from the turn that will deliver the
+  // reply. Absent on the simulated follow-up, which never answers in audio.
+  spokenNotice?: string | null;
+  replyChoice?: ReplyChoice;
 }) {
   const { ctx, agentId, threadId, base } = params;
   const tenantId = ctx.tenantId as bigint;
@@ -501,6 +511,7 @@ async function buildPlaygroundGraph(params: {
     base,
     deps: params.deps,
     flow: params.flow,
+    replyChoice: params.replyChoice ?? { textChosen: false },
   });
   const toolMocks = params.overrides?.toolMocks;
   // Which names are OURS in this turn's toolset rather than the operator's — the question every rule
@@ -543,6 +554,7 @@ async function buildPlaygroundGraph(params: {
   const graph = await buildModelAndGraph(loaded, tools, {
     makeModel: params.deps?.makeModel,
     checkpointer: params.deps?.checkpointer,
+    spokenNotice: params.spokenNotice,
     onModelRetry: params.onModelRetry,
     onModelFallback: params.onModelFallback,
     onModelFallbackFailed: params.onModelFallbackFailed,
@@ -612,6 +624,7 @@ export async function listPlaygroundTools(params: {
     // write and no FlowContext to write it to. Spelled out rather than omitted because the field is
     // required — the next caller has to answer the same question instead of inheriting a default.
     flow: undefined,
+    replyChoice: { textChosen: false },
   });
 
   const conversation = new Set<string>(CONVERSATION_NATIVE_TOOL_NAMES);
@@ -733,6 +746,17 @@ async function runPlaygroundTurnOnce(
   // silence the agent for customers, and the two ledgers are already told apart by `source`.
   await assertPlaygroundSpendCeiling({ tenantId, base, flow });
 
+  // The reply's modality, decided once and by production's function (issue #859), with the
+  // operator's "answer in audio" switch standing in for the customer's voice note. No channel: the
+  // playground plays the audio itself, in the default container.
+  const plannedAudio = plannedReplyIsAudio(loadedConfig.ttsConfig, {
+    userSentAudio: params.userSentAudio ?? false,
+    contactVoiceReply: loadedConfig.contactVoiceReply,
+    channelType: null,
+    forceAudio: params.forceAudio,
+  });
+  const replyChoice: ReplyChoice = { textChosen: false };
+
   const { graph, callbacks, loaded, tools, traceLabels } =
     await buildPlaygroundGraph({
       ctx,
@@ -744,6 +768,8 @@ async function runPlaygroundTurnOnce(
       turnId,
       flow,
       loaded: loadedConfig,
+      spokenNotice: spokenNoticeFor(loadedConfig.ttsConfig, plannedAudio),
+      replyChoice,
       onModelRetry: ({ attempt, provider, model }) =>
         emitFlowEvent(flow, {
           stage: "generate",
@@ -1037,7 +1063,7 @@ async function runPlaygroundTurnOnce(
   // and a reply that is only the introduction of its link, or one built to be read (too long, a
   // list, a run of prices), gets no audio. The items stay in `reply`.
   const spoken = planAudioReply(reply ?? "", loaded.ttsConfig);
-  const audioAsked =
+  const asked =
     !!reply &&
     (params.forceAudio ||
       shouldReplyWithAudio(
@@ -1045,6 +1071,18 @@ async function runPlaygroundTurnOnce(
         params.userSentAudio ?? false,
         loaded.contactVoiceReply,
       ));
+  // The model chose text for this reply (issue #859): the same line production writes, and no
+  // synthesis. Checked before the #856 gate, which only measures a reply still going as audio.
+  const chosenText = asked && replyChoice.textChosen;
+  if (chosenText) {
+    emitFlowEvent(flow, {
+      stage: "tts",
+      level: "info",
+      status: "skipped",
+      detail: { sentAsText: "model_choice" },
+    });
+  }
+  const audioAsked = asked && !chosenText;
   if (audioAsked) logTextInsteadOfAudio(flow, spoken);
   const wantAudio = audioAsked && !spoken.textOnly;
   if (wantAudio) {

@@ -27,7 +27,8 @@ import { burnSchedulerJobId } from "../utils/scheduler";
 // leu antes do carimbo, e o `leaveLaterRun` recusava toda linha de passo > 0 como "sobra de outro
 // episódio": o payload virava `{ threadId, episode }` e o run_at, agora. O tick seguinte rodava
 // "passo 0", via o episódio carimbado e saía `done`; o último passo (etiqueta e resolve) nunca
-// rodava, e nada registrava a perda.
+// rodava, e nada registrava a perda. O conserto pergunta de novo, no arme e sob a trava da linha, se o
+// episódio continua sem carimbo (`stillWanted`).
 //
 // A intercalação é determinística: o banco que a varredura recebe roda o passo 0 inteiro no instante
 // em que a varredura abre a transação do PRIMEIRO arme, que é depois da leitura das conversas. As duas
@@ -64,6 +65,7 @@ const CONV_CORRIDA = 89_601;
 const CONV_OUTRO_EPISODIO = 89_602;
 const CONV_CARIMBADA = 89_603;
 const CONV_UM_PASSO = 89_604;
+const CONV_EPISODIO_NOVO = 89_605;
 
 let tenantId = 0n;
 let instanceId = 0n;
@@ -345,6 +347,20 @@ describe.skipIf(!dbUp)(
       expect(s.resolved).toEqual([CONV_CORRIDA]);
     });
 
+    // The re-check must not refuse a NEW episode: a conversation followed up before, whose customer
+    // spoke after that stamp, is unstamped for the episode the sweep read, and is armed as always.
+    test("a conversation that spoke after its last follow-up is armed for its new episode", async () => {
+      await seedIdle(CONV_EPISODIO_NOVO);
+      await suDb.conversation.updateMany({
+        where: { tenantId, chatwootConversationId: CONV_EPISODIO_NOVO },
+        data: { lastFollowUpAt: new Date(Date.now() - 10 * 60_000) },
+      });
+      await runSweep();
+      const row = await rowOf(CONV_EPISODIO_NOVO);
+      expect(row.status).toBe("PENDING");
+      expect(row.payload).not.toHaveProperty("stepIndex");
+    });
+
     test("a later step left by ANOTHER episode is still replaced by the new episode's step 0", async () => {
       await seedIdle(CONV_OUTRO_EPISODIO);
       // A escada de um episódio anterior ficou pendente para amanhã, e o nosso último envio abriu
@@ -411,11 +427,11 @@ describe.skipIf(!dbUp)(
       });
     });
 
-    // Review round 1: a ladder of ONE step has nothing after step 0. When that step ends between the
-    // sweep's read and its arm, the arm puts the DONE row back and step 0 runs again on the stamped
-    // episode, but no step was skipped: the sequence was already over. A warn there would page an
-    // alert channel for a conversation that lost nothing.
-    test("a one-step ladder whose only step already ran ends quietly", async () => {
+    // Review rounds 1 and 2: step 0 can END the sequence on purpose inside the window between the
+    // sweep's read and its arm: the only step of a one-step ladder, a noted window, a schedule that
+    // never opens, retries spent. Each stamps the episode. The arm asks again whether the episode is
+    // still unstamped, so the finished row stays finished instead of going back to step 0.
+    test("a ladder that ended between the sweep's read and its arm stays ended", async () => {
       await clearFlowLog(suDb, { tenantId });
       const agent = await suDb.agent.findFirstOrThrow({ where: { tenantId } });
       await suDb.agent.update({
@@ -433,32 +449,23 @@ describe.skipIf(!dbUp)(
       });
       try {
         await seedIdle(CONV_UM_PASSO);
-        await suDb.conversation.updateMany({
-          where: { tenantId, chatwootConversationId: CONV_UM_PASSO },
-          data: { lastFollowUpAt: new Date(Date.now() - 60_000) },
-        });
-        await suDb.schedulerJob.create({
-          data: {
-            tenantId,
-            kind: "FOLLOWUP",
-            dedupeKey: keyOf(CONV_UM_PASSO),
-            status: "PENDING",
-            runAt: new Date(Date.now() - 1_000),
-            payload: { threadId: threadOf(CONV_UM_PASSO), episode: "1" },
-          },
-        });
+        await runSweep();
+        const [step0] = await claimOwn(CONV_UM_PASSO);
+        expect(step0).toBeDefined();
+        if (!step0) return;
         const s = stubClient();
         registerStubbedFollowUp(s);
-        const [job] = await claimOwn(CONV_UM_PASSO);
-        expect(job).toBeDefined();
-        if (!job) return;
-        await runClaimed(job, appDb);
-
-        expect(s.sent).toHaveLength(0);
+        await runSweep(
+          withHookBeforeTransaction(appDb, 3, async () => {
+            await runClaimed(step0, appDb);
+          }),
+        );
+        expect(s.sent).toHaveLength(1);
         expect((await rowOf(CONV_UM_PASSO)).status).toBe("DONE");
+        expect(await claimOwn(CONV_UM_PASSO)).toHaveLength(0);
         const lines = await flowLogRows(suDb, {
           // flowlog-scope: tenant-wide — o tenant é deste arquivo e o caso esvazia o log antes; o
-          // sujeito é QUANTAS linhas um passo único já rodado escreveu.
+          // sujeito é QUANTAS linhas um fim de sequência de propósito escreveu.
           where: { tenantId, stage: "dead_letter" },
         });
         expect(lines).toHaveLength(0);

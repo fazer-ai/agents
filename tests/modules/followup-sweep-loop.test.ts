@@ -396,11 +396,9 @@ describe.skipIf(!dbUp)(
       expect(due?.attempts).toBe(2);
     });
 
-    // Review round 3: our own reply opens a new episode without cancelling the old one's later step,
-    // and waiting for that step (days of cadence) would hold back the new episode's first follow-up.
-    // The sweep replaces it with step 0. The row carries the episode it was climbing, which is what
-    // tells it apart from a later step of THIS episode: that one is the ladder already under way, and
-    // is kept (issue #896, tests/modules/followup-sweep-later-step.test.ts).
+    // Review round 3: only a STEP-0 deferral is this episode's. Our own reply opens a new episode
+    // without cancelling the old one's later step, and waiting for that step (days of cadence) would
+    // hold back the new episode's first follow-up. The sweep replaces it with step 0.
     test("a later step left over from an earlier episode is replaced by this episode's step 0", async () => {
       await seedIdle(CONV_OLD_STEP, INBOX_ON);
       await enqueueJob({
@@ -408,10 +406,10 @@ describe.skipIf(!dbUp)(
         kind: "FOLLOWUP",
         dedupeKey: keyOf(CONV_OLD_STEP),
         runAt: new Date(Date.now() + 3 * 24 * 60 * 60_000),
-        // Marked as a backoff and armed for the episode before this one, so what decides is that.
+        // Marked as a backoff and with this episode, so what decides is the step alone.
         payload: {
           threadId: threadOf(CONV_OLD_STEP),
-          episode: String(Number(await episodeOf(CONV_OLD_STEP)) - 60_000),
+          episode: await episodeOf(CONV_OLD_STEP),
           stepIndex: 2,
           deferredUnder: "backoff",
         },

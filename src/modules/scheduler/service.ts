@@ -325,12 +325,19 @@ export async function enqueueJob(params: EnqueueParams): Promise<bigint> {
 // arm must replace it instead of waiting days for a step that no longer applies. Read first, then the
 // UPDATE is pinned to the `run_at` that was read, so a handler rescheduling in between makes it match
 // nothing, and the INSERT skips.
+//
+// NOR WHEN THE DECISION TO ARM WENT STALE, when the caller asks (issue #896). A caller that decided
+// from a read taken earlier (the sweep reads a whole batch, then arms thread by thread) passes
+// `stillWanted`, the same question asked again at the write. It is asked holding the key's row lock,
+// so the run it races cannot finish in between: a run that finished first is visible to the question,
+// and one still running holds a CLAIMED row this arm will not touch.
 export async function enqueueJobUnlessClaimed(
   params: EnqueueParams & {
     leaveLaterRun?: (row: {
       payload: Prisma.JsonValue;
       lastError: string | null;
     }) => boolean | Promise<boolean>;
+    stillWanted?: (db: ScopedDb) => Promise<boolean>;
   },
 ): Promise<boolean> {
   const base = params.base ?? basePrisma;
@@ -341,6 +348,15 @@ export async function enqueueJobUnlessClaimed(
       kind: params.kind,
       dedupeKey: params.dedupeKey,
     };
+    if (params.stillWanted) {
+      await db.$queryRaw`
+        SELECT id FROM scheduler_jobs
+         WHERE tenant_id = ${params.tenantId}
+           AND kind = ${params.kind}::"SchedulerJobKind"
+           AND dedupe_key = ${params.dedupeKey}
+         FOR UPDATE`;
+      if (!(await params.stillWanted(db))) return false;
+    }
     const later = params.leaveLaterRun
       ? await db.schedulerJob.findFirst({
           where: { ...key, status: "PENDING", runAt: { gt: new Date() } },

@@ -5,6 +5,7 @@ import {
   Calculator,
   CheckCircle2,
   Clock,
+  FolderInput,
   Image as ImageIcon,
   LayoutGrid,
   type LucideIcon,
@@ -31,6 +32,7 @@ export const NATIVE_TOOL_ICONS: Record<string, LucideIcon> = {
   set_voice_preference: Mic,
   react_to_message: Smile,
   send_image: ImageIcon,
+  open_case_in_inbox: FolderInput,
   skip_reply: BellOff,
   calculator: Calculator,
   get_current_time: Clock,
@@ -134,6 +136,18 @@ export function nativeToolMeta(name: string, t: TFunction): NativeToolMeta {
         description: t(
           "nativeTools.send_image.desc",
           "Deliver an image to the customer from its URL, limited to the hosts you allow.",
+        ),
+      };
+    case "open_case_in_inbox":
+      return {
+        icon,
+        label: t(
+          "nativeTools.open_case_in_inbox.label",
+          "Open case in another inbox",
+        ),
+        description: t(
+          "nativeTools.open_case_in_inbox.desc",
+          "Open the customer's case in the inbox your team works in, with notes linking both conversations.",
         ),
       };
     case "skip_reply":

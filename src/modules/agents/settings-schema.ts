@@ -17,6 +17,7 @@ import {
   PROTECTED_LABELS_MAX,
 } from "@/modules/agents/tool-guidance";
 import { REDIRECT_DELAY_UNITS } from "@/modules/channel-redirect/service";
+import { CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE } from "@/modules/cross-inbox-case/settings";
 import {
   FULL_DETAIL_MAX_HOURS,
   parseIsoInstant,
@@ -510,6 +511,33 @@ const attributeContext = z.looseObject({
   task: attributeKeys(),
 });
 
+const crossInboxCase = z.looseObject({
+  targetInboxId: chatwootId().describe(
+    "chatwootInboxId the case opens in; unset = tool not offered",
+  ),
+  targetInstanceId: chatwootId().describe("our instance id of that inbox"),
+  originLabel: z.string().nullable().optional(),
+  // Checked with `refine`, not `regex`: a pattern would enter the published JSON Schema and its
+  // ceiling, and the refusal message already names the rule to whoever sends a bad key.
+  caseAttributeKey: z
+    .string()
+    .trim()
+    .refine(
+      (k) => k === "" || CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE.test(k),
+      "caseAttributeKey must be lowercase snake_case (a-z, 0-9, _), starting with a letter, up to 64 characters",
+    )
+    .optional()
+    .describe("default case_conversation_id"),
+  mergeContacts: z
+    .boolean()
+    .optional()
+    .describe("merge into the contact holding the typed email; default false"),
+  resolveOrigin: z
+    .boolean()
+    .optional()
+    .describe("close the origin after the reply once the case is open"),
+});
+
 const sendImage = z.looseObject({
   allowedHosts: z
     .array(z.string())
@@ -915,6 +943,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   channelRedirect: channelRedirect.optional(),
   attributeContext: attributeContext.optional(),
   sendImage: sendImage.optional(),
+  crossInboxCase: crossInboxCase.optional(),
   observability: observability.optional(),
   memory: memory.optional(),
   modelFallback: modelFallback.optional(),

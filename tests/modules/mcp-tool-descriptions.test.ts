@@ -279,7 +279,14 @@ const SETTINGS_DESC_CEILING = 2_000;
 // what the model is told about a spoken reply: two booleans and two nullable texts, 451 characters.
 // Trimmed first, by 95: each description says only the default or what null means. Re-measured on
 // the tree that ships: 27,189.
-const SETTINGS_SCHEMA_CEILING = 27_204;
+//
+// RAISED for issue #700 by `crossInboxCase`, where `open_case_in_inbox` opens the case: the inbox, the
+// instance it was picked from, the origin label, the attribute key, the merge switch and the switch
+// that closes the origin, 1,197 characters. Trimmed first, by 303: each description says only what
+// the type cannot (that an unset inbox turns the tool off, the attribute's default, that the merge is
+// off unless asked for, and that the close waits for the reply). Re-measured on the tree that ships:
+// 27,935 before #859's 451. With both on the tree that ships: 28,386.
+const SETTINGS_SCHEMA_CEILING = 28_401;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -720,6 +727,8 @@ describe("MCP tool descriptions", () => {
   //
   // SCHEMA RAISED by the four `tts` keys of #859, the same 451 characters as the settings ceiling
   // above: this tree measures 62,763, so 62,779 with the same 16. No description changed.
+  // SCHEMA RAISED by `crossInboxCase` (#700), the same 1,197 characters as the settings ceiling
+  // above: this tree measured 63,509 before #859; with both it measures 63,960, so 63,976 with the same 16. No description changed.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -729,7 +738,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_503);
-    expect(schema).toBeLessThanOrEqual(62_779);
+    expect(schema).toBeLessThanOrEqual(63_976);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

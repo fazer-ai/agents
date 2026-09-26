@@ -112,6 +112,15 @@ function renderEditor(observing: boolean) {
               kanbanInstructions=""
               setKanbanInstructions={noop}
               customAttributeInstructions=""
+              crossInboxCase={{
+                targetInboxId: "",
+                targetInstanceId: "",
+                originLabel: "",
+                caseAttributeKey: "",
+                mergeContacts: false,
+                resolveOrigin: false,
+              }}
+              setCrossInboxCase={noop}
               setCustomAttributeInstructions={noop}
               labelInstructions=""
               protectedLabels=""
@@ -245,6 +254,15 @@ function renderToolsTab(
               kanbanInstructions=""
               setKanbanInstructions={noop}
               customAttributeInstructions=""
+              crossInboxCase={{
+                targetInboxId: "",
+                targetInstanceId: "",
+                originLabel: "",
+                caseAttributeKey: "",
+                mergeContacts: false,
+                resolveOrigin: false,
+              }}
+              setCrossInboxCase={noop}
               refusals={{
                 handoffInstructions: null,
                 kanbanInstructions: null,

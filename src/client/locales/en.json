@@ -560,6 +560,7 @@
       "delivering": "Delivering the reply",
       "handoff": "Transferring to a human",
       "note": "Writing an internal note",
+      "openCase": "Opening the case in another inbox",
       "react": "Reacting to a message",
       "resolve": "Wrapping up the conversation",
       "search": "Searching the knowledge base",
@@ -1160,6 +1161,22 @@
     "contactAuthUrlHint": "Receives a POST with the identity in a JSON body (contact, conversation, message) and answers { \"authorized\": true | false }.",
     "contactAuthUrlInvalid": "Required: a valid http(s) URL, with any credential in the vault rather than in the URL.",
     "credential": "API key",
+    "crossInboxCase": {
+      "attributeKey": "Case number attribute",
+      "attributeKeyHint": "The origin conversation's attribute that receives the case's conversation number. Default: case_conversation_id.",
+      "attributeKeyInvalid": "Use lowercase letters, digits and _, starting with a letter.",
+      "inbox": "Destination inbox",
+      "inboxHint": "The inbox where the case is opened, in the queue of the team.",
+      "inboxNone": "No inbox (tool off)",
+      "inboxSaved": "Saved inbox #{{id}}",
+      "merge": "Merge contacts when the email belongs to another one",
+      "mergeHint": "Off: the case opens on the contact that already has the email. On: the two become one contact, irreversibly, and the other contact's data reaches this agent.",
+      "noInbox": "Pick a destination inbox: until then the agent is not offered this tool.",
+      "originLabel": "Label on the origin",
+      "originLabelHint": "Written on the conversation the case came from, once the case is open. Leave empty for none.",
+      "resolveOrigin": "Close the origin conversation once the case is open",
+      "resolveOriginHint": "Closed after the reply that tells the customer where the case went, and kept open if they write again first. Never on a failed opening."
+    },
     "dangerZone": "Danger zone",
     "dangerZoneHint": "Permanently delete this agent. This cannot be undone.",
     "debounce": "Message grouping (debounce)",
@@ -2265,6 +2282,10 @@
     "kanban_move_card": {
       "desc": "Move a funnel card (task) to another board step.",
       "label": "Move kanban card"
+    },
+    "open_case_in_inbox": {
+      "desc": "Open the customer's case in the inbox your team works in, with notes linking both conversations.",
+      "label": "Open case in another inbox"
     },
     "private_note": {
       "desc": "Post an internal note visible only to human agents, not the customer.",

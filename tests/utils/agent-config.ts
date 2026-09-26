@@ -1,5 +1,6 @@
 import type { AgentConfig } from "@/graph/prepare";
 import { CONTACT_AUTH_DEFAULTS } from "@/modules/contact-auth/settings";
+import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
 import { GUARDRAILS_DEFAULTS } from "@/modules/guardrails/settings";
 import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
 import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
@@ -90,6 +91,8 @@ export function makeConfig(
     contactAuthConfig: CONTACT_AUTH_DEFAULTS,
     handoffConfig: HANDOFF_DEFAULTS,
     sendImageConfig: SEND_IMAGE_DEFAULTS,
+    crossInboxCaseConfig: { ...CROSS_INBOX_CASE_DEFAULTS },
+    chatwootContactId: null,
     kanbanConfig: KANBAN_DEFAULTS,
     toolGuidance: {},
     protectedLabels: [],

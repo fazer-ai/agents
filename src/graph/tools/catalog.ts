@@ -14,6 +14,7 @@ export const NATIVE_TOOL_NAMES = [
   "set_voice_preference",
   "react_to_message",
   "send_image",
+  "open_case_in_inbox",
   "skip_reply",
   "calculator",
   "get_current_time",
@@ -72,6 +73,7 @@ export const NATIVE_TOOL_CATEGORY: Record<NativeToolName, NativeToolCategory> =
     set_voice_preference: "conversation",
     react_to_message: "conversation",
     send_image: "conversation",
+    open_case_in_inbox: "conversation",
     skip_reply: "conversation",
     calculator: "utility",
     get_current_time: "utility",
@@ -96,7 +98,17 @@ export const CONVERSATION_NATIVE_TOOL_NAMES = NATIVE_TOOL_NAMES.filter(
 export const CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES: readonly NativeToolName[] = [
   "react_to_message",
   "send_image",
+  // Its opening message reaches the customer in the destination inbox (issue #700).
+  "open_case_in_inbox",
 ];
+
+// The tool that opens the customer's case in another inbox (issue #700).
+export const OPEN_CASE_TOOL_NAME = "open_case_in_inbox";
+// The sentence that tool's result carries when it handed the conversation to people instead (its
+// failure fallback, or the output check's policy), read by the hand-back rule (graph/handback.ts)
+// the way `HANDOFF_DONE_PREFIX` is read off `handoff_to_human`.
+export const OPEN_CASE_HANDED_MARK =
+  "This conversation was handed to the human team";
 
 export const RAG_TOOL_NAMES = ["search_knowledge", "suggest_kb_entry"] as const;
 export type RagToolName = (typeof RAG_TOOL_NAMES)[number];

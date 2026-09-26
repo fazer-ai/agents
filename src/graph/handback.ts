@@ -5,7 +5,12 @@ import {
   isHumanHandback,
 } from "./markers";
 import { chosenSilence, skipReplyRan } from "./silence";
-import { HANDOFF_DONE_PREFIX, HANDOFF_TOOL_NAME } from "./tools/catalog";
+import {
+  HANDOFF_DONE_PREFIX,
+  HANDOFF_TOOL_NAME,
+  OPEN_CASE_HANDED_MARK,
+  OPEN_CASE_TOOL_NAME,
+} from "./tools/catalog";
 
 // DOES THIS TURN OWE THE THREAD A HAND-BACK NOTE? (issue #457)
 //
@@ -50,6 +55,7 @@ export function owesHandbackNote(messages: BaseMessage[]): boolean {
     if (isHumanHandback(m)) return false;
     if (isHumanAgentTurn(m)) return true;
     if (handoffSucceeded(m)) return true;
+    if (openCaseHandedOver(m)) return true;
     if (skipHandedOver(m)) return true;
     // The compacted form of the same evidence, and it is reached LAST by construction: the head sits
     // at the front of the channel, so anything after it decides first.
@@ -77,6 +83,18 @@ function skipHandedOver(message: BaseMessage): boolean {
   if (!skipReplyRan(message)) return false;
   const reason = chosenSilence([message])?.reason;
   return reason === "not_for_us" || reason === "needs_human";
+}
+
+// `open_case_in_inbox` hands the conversation to people when the case cannot be opened, and the
+// model reads its result as a transfer just like `handoff_to_human`'s (issue #700, review round 5).
+// Same trust in the name, for the same reason: it is a native name, reserved in the assembly.
+function openCaseHandedOver(message: BaseMessage): boolean {
+  return (
+    message.getType() === "tool" &&
+    message.name === OPEN_CASE_TOOL_NAME &&
+    typeof message.content === "string" &&
+    message.content.includes(OPEN_CASE_HANDED_MARK)
+  );
 }
 
 function handoffSucceeded(message: BaseMessage): boolean {

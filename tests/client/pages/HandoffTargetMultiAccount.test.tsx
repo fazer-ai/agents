@@ -389,6 +389,15 @@ function renderPinned(targetInstanceId: number | null): {
         kanbanInstructions=""
         setKanbanInstructions={noop}
         customAttributeInstructions=""
+        crossInboxCase={{
+          targetInboxId: "",
+          targetInstanceId: "",
+          originLabel: "",
+          caseAttributeKey: "",
+          mergeContacts: false,
+          resolveOrigin: false,
+        }}
+        setCrossInboxCase={noop}
         setCustomAttributeInstructions={noop}
         labelInstructions=""
         protectedLabels=""

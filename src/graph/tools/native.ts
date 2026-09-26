@@ -37,6 +37,12 @@ import {
   observeBeforeClose,
   recordResolutionOrigin,
 } from "@/modules/conversations/record-resolution";
+import {
+  type CustomerTextVerdict,
+  type OpenCaseResult,
+  openCaseInInbox,
+} from "@/modules/cross-inbox-case/service";
+import type { CrossInboxCaseConfig } from "@/modules/cross-inbox-case/settings";
 import type { HandoffConfig } from "@/modules/handoff/settings";
 import {
   type HandoffTargets,
@@ -78,6 +84,8 @@ import { modelVisibleLabels, SHOWN_LABELS_MAX } from "./label-view";
 import {
   HANDOFF_DONE_PREFIX,
   HANDOFF_TOOL_NAME,
+  OPEN_CASE_HANDED_MARK,
+  OPEN_CASE_TOOL_NAME,
   RESOLVE_DONE,
 } from "./catalog";
 import type { NoEffectReporter } from "./effect-free";
@@ -168,6 +176,26 @@ export function ownerChangedByTurn(state: HandoffTurnState): boolean {
 
 // The status change a tool of this turn makes on purpose, marked from before the call so the tool
 // boundary's ownership question does not read it as somebody else's.
+// The same bookkeeping for a transfer made by a caller OUTSIDE this file (the output check's `handoff`
+// verdict on text a tool sends, issue #700), whose result says whether the owner actually changed.
+// Counted in flight while it runs, so a sibling call's fence does not read the transfer's own status
+// webhook as a person taking over and skip the pinned assignment.
+export async function ownTransfer<T>(
+  state: HandoffTurnState | undefined,
+  transfer: () => Promise<T>,
+  changed: (result: T) => boolean,
+): Promise<T> {
+  if (state) state.ownerChangesInFlight = (state.ownerChangesInFlight ?? 0) + 1;
+  try {
+    const result = await transfer();
+    if (state && changed(result)) state.ownerChanged = true;
+    return result;
+  } finally {
+    if (state)
+      state.ownerChangesInFlight = (state.ownerChangesInFlight ?? 1) - 1;
+  }
+}
+
 async function ownStatusChange(
   ctx: { handoffState?: HandoffTurnState },
   write: () => Promise<unknown>,
@@ -402,6 +430,19 @@ export interface ToolCtx {
   // convention as ToolpackCtx: the SSRF assertion resolves DNS, so a hermetic test has to stub it.
   fetchImpl?: typeof fetch;
   assertSafe?: ImageFetchDeps["assertSafe"];
+  // `open_case_in_inbox` (issue #700): the agent's destination config and the origin conversation's
+  // contact, as Chatwoot knows it. Absent, or with no destination inbox, the tool is not built.
+  crossInboxCase?: {
+    config: CrossInboxCaseConfig;
+    contactId: number | null;
+    // The agent's signature, applied to the opening the customer receives (docs/signature.md).
+    sign?: (text: string) => string;
+  };
+  // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself (the opening message of
+  // `open_case_in_inbox`). Bound by the runtime that owns the gate, so this file does not import it,
+  // and a `handoff` verdict is carried out THERE, through the same transfer the reply's own trip
+  // takes. Absent ⇒ this path screens nothing.
+  screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
   // Per-agent, per-tool operator guidance (keyed by native tool name), appended to that tool's
   // model-facing description so transfer/funnel logic lives WITH the tool instead of buried in the
   // prompt. Populated at turn prep from agent.settings (handoff.instructions / kanban.instructions).
@@ -2224,6 +2265,231 @@ function getCurrentTimeTool(ctx: ToolCtx) {
 //
 // A private note is NOT here, and that is the same isention the mute itself makes: it is the one
 // thing an observer legitimately writes where a person will read it.
+// What the model reads after `open_case_in_inbox`, one sentence per outcome. The ones that ask for
+// something are instructions the model acts on in its reply; none of them tells it to stay silent,
+// because the customer still has to hear, on the channel they are on, where their case went.
+function openCaseOutcomeText(
+  r: OpenCaseResult,
+  closing: "scheduled" | "not_here" | null = null,
+): string {
+  const close =
+    closing === "scheduled"
+      ? " This conversation will be marked resolved after your reply in this turn is delivered."
+      : closing === "not_here"
+        ? " This conversation is NOT closed by this tool."
+        : "";
+  switch (r.kind) {
+    case "opened":
+    case "continued": {
+      const how =
+        r.kind === "opened"
+          ? `Case opened: conversation #${r.caseId} in the destination inbox.`
+          : `The customer already had an open case there, so it was continued: conversation #${r.caseId}. No new opening message was sent.`;
+      const partial = r.partial.length
+        ? ` Some follow-up writes did not land (${r.partial.join(", ")}); the case itself is open.`
+        : "";
+      const blocked = r.openingBlocked
+        ? " The opening message was refused by the output check and was NOT sent; the case is open without it."
+        : r.openingOutsideWindow
+          ? " The opening message was NOT sent: that channel only lets the team write first with an approved template, so it was left for the team as a note. Do not say a message was sent to them there."
+          : "";
+      return `${how}${partial}${blocked} Tell the customer, in your reply here, that their case was opened and the team will contact them there.${close}`;
+    }
+    case "already_open":
+      return `This conversation already opened a case that is still open: conversation #${r.caseId}. Nothing new was opened. Tell the customer their case is already with the team.${close}`;
+    case "needs_email":
+      return "Nothing was opened: the destination is an email inbox and this contact has no email address. Ask the customer for their email, then call this tool again with `email` set to exactly what they typed.";
+    case "needs_phone":
+      return "Nothing was opened: the destination needs the contact's phone number, and this contact has none. Hand off to a human instead.";
+    case "rejected_email":
+      return r.why === "invalid"
+        ? "Nothing was opened: that is not a valid email address. Ask the customer to type their email again."
+        : "Nothing was opened: `email` must be an address the customer typed in this conversation, and this one is not among their messages. Ask the customer for their email and pass exactly what they typed.";
+    case "unsupported_channel":
+      return "Nothing was opened: the configured destination inbox cannot start conversations. Hand off to a human instead.";
+    case "same_inbox":
+      return "Nothing was opened: this conversation is already in the destination inbox, so there is nowhere to move it. If the customer needs the team, hand off to a human instead.";
+    case "not_configured":
+      return "Nothing was opened: no destination inbox is configured. Hand off to a human instead.";
+    case "called_off":
+      return "Did not open the case (the run was called off before anything was written).";
+    case "handed_by_policy":
+      return `Did not open the case: the output check refused the opening message. ${OPEN_CASE_HANDED_MARK} by its policy. Do not call this tool again in this conversation.`;
+    case "failed":
+      return "";
+  }
+}
+
+function openCaseInInboxTool(ctx: ToolCtx) {
+  const description =
+    "Open the customer's case in the team's other inbox (configured by the operator: you choose WHETHER to open it, never where), without asking the customer to switch channels. Use it when the request has to be handled by the team that works in that inbox. `reason` becomes an internal note on the case. `customer_message` is the first message the customer receives THERE (for an email inbox, the opening email), so write it as that message. The destination needs a way to reach the customer: when it asks for an email, ask the customer and pass exactly the address they typed. Tell the customer here where their case went." +
+    (ctx.crossInboxCase?.config.resolveOrigin && ctx.turnState
+      ? " Once the case is open, this conversation is closed after your reply is delivered."
+      : " This tool does NOT close this conversation; close with resolve_conversation if that is the next step.");
+  return failableTool(
+    async ({
+      reason,
+      customer_message,
+      email,
+      labels,
+      handoff_message,
+    }: {
+      reason: string;
+      customer_message?: string;
+      email?: string;
+      labels?: string[];
+      handoff_message?: string;
+    }) => {
+      const cic = ctx.crossInboxCase;
+      if (!cic) return openCaseOutcomeText({ kind: "not_configured" });
+      const result = await openCaseInInbox(ctx.client, {
+        config: cic.config,
+        originConversationId: ctx.conversationId,
+        originContactId: cic.contactId,
+        reason: reason.trim(),
+        customerMessage: customer_message?.trim() || null,
+        email: email?.trim() || null,
+        labels: (labels ?? [])
+          .map((l) => l.trim().toLowerCase())
+          .filter((l) => l.length > 0),
+        stillWanted: ctx.stillWanted,
+        tenantId: ctx.tenantId,
+        screenCustomerMessage: ctx.screenCustomerText,
+        signCustomerMessage: cic.sign,
+      });
+      if (result.kind === "called_off") ctx.onNoEffect?.(OPEN_CASE_TOOL_NAME);
+      if (result.kind !== "failed") {
+        if (
+          (result.kind === "opened" || result.kind === "continued") &&
+          result.partial.length > 0
+        ) {
+          ctx.onSideEffectError?.({
+            tool: OPEN_CASE_TOOL_NAME,
+            phase: "follow_up_writes",
+            detail: { caseId: result.caseId, failed: result.partial },
+            err: new Error(`writes did not land: ${result.partial.join(", ")}`),
+          });
+        }
+        const caseOpen =
+          result.kind === "opened" ||
+          result.kind === "continued" ||
+          result.kind === "already_open";
+        // THE OPERATOR'S CLOSE RIDES THE SAME DEFERRED PATH `resolve_conversation` USES: after the
+        // reply that tells the customer where the case went, and dropped when they write again
+        // first. Only with a turn to defer to; a proactive turn has none, and closing immediately
+        // there would take the conversation away before anything was said in it.
+        let closing: "scheduled" | "not_here" | null = null;
+        if (caseOpen) {
+          if (
+            cic.config.resolveOrigin &&
+            ctx.turnState &&
+            !ctx.handoffState?.completed
+          ) {
+            ctx.turnState.resolveRequested = true;
+            closing = "scheduled";
+          } else {
+            closing = "not_here";
+          }
+        }
+        return openCaseOutcomeText(result, closing);
+      }
+      // THE FAILURE BRANCH IS A REQUIREMENT, NOT A DETAIL: the customer asked for help, and a case
+      // that did not open must not leave them talking to a bot that cannot deliver it. The
+      // conversation goes to the human queue (`open`, which also stops the bot here) with a note
+      // saying why, and the tool result is marked as a failure so the flow log carries it.
+      logger.warn(
+        "open_case_in_inbox failed (conv=%s, step=%s): %s",
+        String(ctx.conversationId),
+        result.step,
+        result.error instanceof Error
+          ? result.error.message
+          : String(result.error),
+      );
+      let fallback = "";
+      try {
+        // FENCED LIKE handoff_to_human: before the note, and again between the note and the status
+        // change, which cannot be undone. A request that failed because the turn was reset or
+        // withdrawn must not transfer the conversation the operator just cleared.
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          ctx.onNoEffect?.(OPEN_CASE_TOOL_NAME);
+          return "Did not open the case, and did not hand off (the run was called off).";
+        }
+        await ctx.client.sendPrivateNote(
+          ctx.conversationId,
+          `⚠️ Não consegui abrir o caso na outra caixa (etapa: ${result.step}). O cliente está aguardando atendimento aqui. Motivo informado: ${reason.trim()}`,
+        );
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          return "Did not hand off (the run was called off while the note was in flight); the note was already filed.";
+        }
+        await ownStatusChange(ctx, () =>
+          ctx.client.toggleStatus(ctx.conversationId, "open"),
+        );
+        // The customer's line goes through the handoff's own delivery: after the transfer, screened
+        // by the output check, and not dropped by the ownership recheck the transfer just tripped,
+        // which is what happens to the model's next reply here. Without a line a person still sees
+        // the conversation; the customer just reads nothing.
+        if (ctx.handoffState) {
+          const line = handoff_message?.trim() ?? "";
+          ctx.handoffState.customerMessage = line || null;
+          // No line is a SILENT transfer, said so as `handoff_to_human` says it: otherwise the model's
+          // next reply could still go out before the status webhook reaches the mirror.
+          ctx.handoffState.declinedToSpeak = !line;
+          ctx.handoffState.completed = true;
+        }
+        fallback = handoff_message?.trim()
+          ? ` ${OPEN_CASE_HANDED_MARK} instead, with a note saying why. Your handoff_message will be delivered to the customer; do not repeat it.`
+          : ` ${OPEN_CASE_HANDED_MARK} instead, with a note saying why. No message will reach the customer here.`;
+      } catch (e) {
+        ctx.onSideEffectError?.({
+          tool: OPEN_CASE_TOOL_NAME,
+          phase: "fallback_handoff",
+          detail: { step: result.step },
+          err: e,
+        });
+        fallback =
+          " Handing the conversation to the human team also failed; call handoff_to_human.";
+      }
+      return toolFailure(
+        `Could not open the case (failed at: ${result.step}).${fallback}`,
+      );
+    },
+    {
+      name: OPEN_CASE_TOOL_NAME,
+      description: withOperatorNote(description, ctx, OPEN_CASE_TOOL_NAME),
+      schema: z.object({
+        reason: z
+          .string()
+          .min(1)
+          .describe(
+            "Why the case is being opened, for the team (internal note on the case).",
+          ),
+        customer_message: z
+          .string()
+          .optional()
+          .describe(
+            "The first message the customer receives in the destination inbox. Omit to open the case without one.",
+          ),
+        email: z
+          .string()
+          .optional()
+          .describe(
+            "Only when the tool asked for it: the email address exactly as the customer typed it in this conversation.",
+          ),
+        labels: z
+          .array(z.string())
+          .optional()
+          .describe("Labels that categorize the case in the destination."),
+        handoff_message: z
+          .string()
+          .optional()
+          .describe(
+            "What the customer reads HERE if the case cannot be opened and this conversation goes to a person instead. Always provide it.",
+          ),
+      }),
+    },
+  );
+}
+
 const MUTED_CANNOT_COMPLETE = new Set<string>(
   CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
 );
@@ -2247,6 +2513,9 @@ export function buildNativeTools(
     setVoicePreferenceTool(ctx),
     reactToMessageTool(ctx),
     sendImageTool(ctx),
+    ...(ctx.crossInboxCase?.config.targetInboxId != null
+      ? [openCaseInInboxTool(ctx)]
+      : []),
     skipReplyTool(ctx),
     calculatorTool(ctx),
     getCurrentTimeTool(ctx),

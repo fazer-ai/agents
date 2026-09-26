@@ -137,6 +137,7 @@ import {
   handoffAnsweredTheTurn,
   handoffDeclaredSilence,
   ownerChangedByTurn,
+  ownTransfer,
   type TurnState,
   turnDeliveredToCustomer,
   turnReachedTheCustomer,
@@ -1224,6 +1225,27 @@ async function runTurnBody(
           channelType: loaded.channelType,
         });
         return audioNow && !replyChoice.textChosen;
+      },
+      // The gate and the transfer are built below, and a tool only runs inside the graph's invoke,
+      // after both exist. A trip writes its operator note and flow line like any screening, and a
+      // `handoff` verdict takes the transfer the reply's own trip takes, with the policy's line
+      // delivered as the handoff's closing line.
+      screenCustomerText: async (text) => {
+        const d = await runGuardrail("output", text);
+        if (!guardrailTripped(d)) return "send";
+        if (d.kind !== "handed-off") return "drop";
+        const handed = await ownTransfer(
+          handoffState,
+          () => handOverForGuardrail("output"),
+          (r) => r === "handed",
+        );
+        // A transfer that did not land is not a dropped line: the policy asked for a person, and the
+        // case must not open (nor `resolveOrigin` close the origin) as if nothing had been asked.
+        if (handed === "failed") return "failed";
+        if (handed !== "handed") return "drop";
+        handoffState.customerMessage = d.reply;
+        handoffState.declinedToSpeak = d.reply === null;
+        return "handed";
       },
     },
     { buildNativeTools, mcp: params.deps?.mcp, flow },

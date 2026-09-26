@@ -11,6 +11,7 @@ import {
 } from "@/graph/tools/native";
 import { applyToolPreconditions } from "@/graph/tools/precondition";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
 
 function recordingClient() {
   const calls: Array<[string, unknown[]]> = [];
@@ -54,8 +55,24 @@ function fakeContactDb(chatwootContactId: number): PrismaClient {
 describe("native tools", () => {
   test("exposes all tools by default; the allowlist filters (fail-closed)", () => {
     const { client } = recordingClient();
+    // `open_case_in_inbox` is the one native that needs its config to exist: with no destination
+    // inbox there is nothing it could do, so it is not offered (issue #700).
     expect(
       buildNativeTools({ client, conversationId: 1 })
+        .map((t) => t.name)
+        .sort(),
+    ).toEqual(
+      NATIVE_TOOL_NAMES.filter((n) => n !== "open_case_in_inbox").sort(),
+    );
+    expect(
+      buildNativeTools({
+        client,
+        conversationId: 1,
+        crossInboxCase: {
+          config: { ...CROSS_INBOX_CASE_DEFAULTS, targetInboxId: 9 },
+          contactId: 55,
+        },
+      })
         .map((t) => t.name)
         .sort(),
     ).toEqual([...NATIVE_TOOL_NAMES].sort());
@@ -2636,12 +2653,21 @@ describe("a muted turn is not offered what it cannot complete", () => {
 
 describe("the fence rule, over every native tool", () => {
   const CLIENT_READS = [
+    "getInbox",
+    "getContact",
+    "getMessages",
+    "listContactConversations",
+    "findContactIdByEmail",
     "getConversation",
     "getConversationLabels",
     "getContactLabels",
     "getLatestIncomingMessage",
   ];
   const CLIENT_WRITES = [
+    "updateContact",
+    "mergeContacts",
+    "createConversation",
+    "sendMessageAsAdmin",
     "sendMessage",
     "sendPrivateNote",
     "toggleStatus",
@@ -2676,6 +2702,9 @@ describe("the fence rule, over every native tool", () => {
         get(_t, prop: string) {
           if (prop === "muted") return false;
           if (typeof prop !== "string") return undefined;
+          // Pure string building, not a call to Chatwoot.
+          if (prop === "conversationUrl")
+            return (id: number) => `https://cw.example/conversations/${id}`;
           const kind = CLIENT_READS.includes(prop)
             ? "read"
             : CLIENT_WRITES.includes(prop)
@@ -2688,6 +2717,8 @@ describe("the fence rule, over every native tool", () => {
               return { id: 99, isReaction: false };
             if (prop === "getConversation")
               return { status: "open", meta: { assignee: null } };
+            if (prop === "getInbox")
+              return { name: "E-mail", channel_type: "Channel::Api" };
             if (prop === "getConversationLabels" || prop === "getContactLabels")
               return ["ja-existente"];
             return args.length >= 0 ? {} : {};
@@ -2853,6 +2884,17 @@ describe("the fence rule, over every native tool", () => {
       tool: "send_image",
       label: "",
       args: { url: "https://imgs.example/x.png" },
+    },
+    {
+      tool: "open_case_in_inbox",
+      label: "",
+      args: { reason: "cliente pediu atendente" },
+      ctx: {
+        crossInboxCase: {
+          config: { ...CROSS_INBOX_CASE_DEFAULTS, targetInboxId: 9 },
+          contactId: 55,
+        },
+      },
     },
     { tool: "skip_reply", label: "", args: { reason: "acknowledged" } },
     { tool: "calculator", label: "", args: { expression: "1+1" } },

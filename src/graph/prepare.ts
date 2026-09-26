@@ -57,6 +57,11 @@ import {
   readContactAuthConfig,
 } from "@/modules/contact-auth/settings";
 import type { ObservedConversation } from "@/modules/conversations/record-resolution";
+import type { CustomerTextVerdict } from "@/modules/cross-inbox-case/service";
+import {
+  type CrossInboxCaseConfig,
+  readCrossInboxCaseConfig,
+} from "@/modules/cross-inbox-case/settings";
 import { resolveVariantOverride } from "@/modules/experiments/service";
 import {
   emitFlowEvent,
@@ -94,8 +99,10 @@ import {
   type ServiceWindowConfig,
 } from "@/modules/service-window/service";
 import {
+  attachSignature,
   readSignatureConfig,
   type SignatureConfig,
+  signatureFor,
 } from "@/modules/signature/service";
 import { readSplitConfig, type SplitConfig } from "@/modules/split/service";
 import { llmNormalizeForSpeech } from "@/modules/tts/normalize";
@@ -282,6 +289,10 @@ export interface AgentConfig {
   contactAuthConfig: ContactAuthConfig;
   // Hosts the send_image tool may fetch an image from (operator-set; empty = the tool refuses).
   sendImageConfig: SendImageConfig;
+  // Where `open_case_in_inbox` opens the case (operator-set; no inbox = the tool is not built).
+  crossInboxCaseConfig: CrossInboxCaseConfig;
+  // The origin contact as Chatwoot knows it; what `open_case_in_inbox` settles the identity on.
+  chatwootContactId: number | null;
   // Per-agent kanban guidance (operator funnel note), surfaced in the kanban_move_card description.
   kanbanConfig: KanbanConfig;
   // Operator-authored guidance for tools whose only config is the note (set_custom_attribute,
@@ -879,6 +890,8 @@ export async function loadAgentConfig(
     handoffConfig: readHandoffConfig(effSettings),
     contactAuthConfig: readContactAuthConfig(effSettings),
     sendImageConfig: readSendImageConfig(effSettings),
+    crossInboxCaseConfig: readCrossInboxCaseConfig(effSettings),
+    chatwootContactId: conv?.contact?.chatwootContactId ?? null,
     kanbanConfig: readKanbanConfig(effSettings),
     toolGuidance: readToolGuidance(effSettings),
     protectedLabels: readProtectedLabels(effSettings),
@@ -961,6 +974,9 @@ export interface ToolsetCtx {
   client: ChatwootClient;
   conversationId: number;
   threadId: string;
+  // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself. Absent ⇒ nothing
+  // screens it on this path. See ToolCtx.screenCustomerText.
+  screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
   // The caller's send fence, for the one customer-facing write a tool makes on its own: the
   // slow-tool ack, whose send is a wait the graph's own ask at the tool boundary sits before
   // (issue #209 review, round 10). Asked after that send, before the typing indicator and before
@@ -1089,6 +1105,12 @@ export interface ToolBuildDeps {
       stillWanted?: () => Promise<boolean>;
       kanban?: KanbanContext;
       sendImage?: SendImageConfig;
+      crossInboxCase?: {
+        config: CrossInboxCaseConfig;
+        contactId: number | null;
+        sign?: (text: string) => string;
+      };
+      screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
       fetchImpl?: typeof fetch;
       assertSafe?: ImageFetchDeps["assertSafe"];
       toolInstructions?: Partial<Record<NativeToolName, string>>;
@@ -1473,6 +1495,36 @@ export async function buildToolset(
           : undefined),
       kanban,
       sendImage: cfg.sendImageConfig,
+      // The inbox id is account-scoped: on a conversation of another account it names a different
+      // inbox or none, so the tool is not built there (same drift the pinned handoff covers above).
+      // The playground (conversationId 0, instance 0) belongs to no account and only simulates the
+      // tool, so it keeps it: an operator testing the escalation is what the playground is for.
+      crossInboxCase:
+        ctx.conversationId === 0 ||
+        cfg.crossInboxCaseConfig.targetInstanceId == null ||
+        cfg.crossInboxCaseConfig.targetInstanceId === Number(ctx.instanceId)
+          ? {
+              config: cfg.crossInboxCaseConfig,
+              contactId: cfg.chatwootContactId,
+              // The opening reaches the customer, so it carries the agent's signature like every reply
+              // (docs/signature.md); one message, one chunk.
+              sign: (text: string) => {
+                const sig = signatureFor(
+                  cfg.signatureConfig,
+                  cfg.promptVars,
+                  cfg.promptOpts,
+                );
+                if (!sig) return text;
+                const [out = text] = attachSignature(
+                  [text],
+                  sig,
+                  cfg.signatureConfig,
+                );
+                return out;
+              },
+            }
+          : undefined,
+      screenCustomerText: ctx.screenCustomerText,
       fetchImpl: ctx.imageDeps?.fetchImpl,
       assertSafe: ctx.imageDeps?.assertSafe,
       toolInstructions,

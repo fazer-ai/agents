@@ -578,6 +578,7 @@
       "delivering": "Entregando a resposta",
       "handoff": "Transferindo para um humano",
       "note": "Escrevendo uma nota interna",
+      "openCase": "Abrindo o caso em outra caixa",
       "react": "Reagindo a uma mensagem",
       "resolve": "Encerrando o atendimento",
       "search": "Consultando a base de conhecimento",
@@ -1189,6 +1190,22 @@
     "contactAuthUrlHint": "Recebe um POST com a identidade em um corpo JSON (contact, conversation, message) e responde { \"authorized\": true | false }.",
     "contactAuthUrlInvalid": "Obrigatória: uma URL http(s) válida, com credencial no cofre em vez de na URL.",
     "credential": "Chave de API",
+    "crossInboxCase": {
+      "attributeKey": "Atributo do número do caso",
+      "attributeKeyHint": "Atributo da conversa de origem que recebe o número da conversa do caso. Padrão: case_conversation_id.",
+      "attributeKeyInvalid": "Use letras minúsculas, dígitos e _, começando por uma letra.",
+      "inbox": "Caixa de destino",
+      "inboxHint": "A caixa onde o caso é aberto, na fila do time.",
+      "inboxNone": "Nenhuma caixa (ferramenta desligada)",
+      "inboxSaved": "Caixa salva #{{id}}",
+      "merge": "Fundir contatos quando o e-mail pertencer a outro",
+      "mergeHint": "Desligado: o caso abre no contato que já tem o e-mail. Ligado: os dois viram um contato só, sem volta, e os dados do outro contato chegam a este agente.",
+      "noInbox": "Escolha uma caixa de destino: até lá, a ferramenta não é oferecida ao agente.",
+      "originLabel": "Etiqueta na origem",
+      "originLabelHint": "Escrita na conversa de onde o caso saiu, depois que o caso abre. Deixe vazio para nenhuma.",
+      "resolveOrigin": "Encerrar a conversa de origem quando o caso abrir",
+      "resolveOriginHint": "Encerrada depois da resposta que diz ao cliente para onde o caso foi, e mantida aberta se ele escrever antes. Nunca quando a abertura falha."
+    },
     "dangerZone": "Zona de perigo",
     "dangerZoneHint": "Exclui este agente permanentemente. Não é possível desfazer.",
     "debounce": "Agrupamento de mensagens (debounce)",
@@ -2331,6 +2348,10 @@
     "kanban_move_card": {
       "desc": "Move um card (tarefa) do funil para outra etapa.",
       "label": "Mover card do kanban"
+    },
+    "open_case_in_inbox": {
+      "desc": "Abre o caso do cliente na caixa onde o time trabalha, com notas ligando as duas conversas.",
+      "label": "Abrir caso em outra caixa"
     },
     "private_note": {
       "desc": "Publica uma nota interna visível só para os atendentes, não para o cliente.",

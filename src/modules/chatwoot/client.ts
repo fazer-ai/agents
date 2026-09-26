@@ -341,6 +341,56 @@ function normalizeIdName(res: unknown): Array<{ id: number; name: string }> {
 // (_inbox.json.jbuilder). `hmacToken` is serialized ONLY when the admin token belongs to an account
 // administrator (jbuilder gate); it is null otherwise. The WhatsApp→chat redirect merge needs it (to
 // compute the per-lead identifier_hash), so provisioning must verify it came back non-null.
+export interface ChatwootContact {
+  id: number;
+  name: string | null;
+  email: string | null;
+  phoneNumber: string | null;
+}
+
+// `id` is the conversation's display_id: the API serializes `display_id` under that name.
+export interface ChatwootConversationRef {
+  id: number;
+  inboxId: number | null;
+  status: string | null;
+  // Chatwoot's own reading of the channel's reply window (`can_reply`): false on an official WhatsApp
+  // inbox, or a Twilio one on WhatsApp, where the customer has not written in the last 24h.
+  canReply: boolean | null;
+}
+
+// A search that has not found an exact address in this many pages of 15 is not going to: the query
+// is the full address, and only substrings of it can match.
+const CONTACT_SEARCH_MAX_PAGES = 5;
+
+function parseContact(raw: unknown): ChatwootContact | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const id = Number(o.id);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const s = (v: unknown): string | null =>
+    typeof v === "string" && v.trim().length > 0 ? v.trim() : null;
+  return {
+    id,
+    name: s(o.name),
+    email: s(o.email),
+    phoneNumber: s(o.phone_number),
+  };
+}
+
+function parseConversationRef(raw: unknown): ChatwootConversationRef | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const id = Number(o.id);
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const inboxId = Number(o.inbox_id);
+  return {
+    id,
+    inboxId: Number.isInteger(inboxId) && inboxId > 0 ? inboxId : null,
+    status: typeof o.status === "string" ? o.status : null,
+    canReply: typeof o.can_reply === "boolean" ? o.can_reply : null,
+  };
+}
+
 export interface WebWidgetInbox {
   inboxId: number;
   name: string;
@@ -1433,6 +1483,104 @@ export class ChatwootClient {
       "POST",
       "/actions/contact_merge",
       { base_contact_id: baseContactId, mergee_contact_id: mergeeContactId },
+    );
+  }
+
+  // ── admin-token: opening a case in another inbox (issue #700) ──
+  // Every write on the DESTINATION side goes through the admin token. The persona's bot is not a
+  // member of the destination inbox, and the fork's conversation reuse (`continue_open_conversation`)
+  // asks `ConversationPolicy#show?` about the caller: a credential that is neither an administrator
+  // nor a member of that inbox has the reuse refused in silence and gets a second conversation.
+
+  // The operator-facing dashboard link of a conversation of this account. `displayId` is the number
+  // the API calls `id` (the fork serializes `display_id` there), never the internal row id.
+  conversationUrl(displayId: number): string {
+    return `${this.config.baseUrl.replace(/\/+$/, "")}/app/accounts/${this.config.accountId}/conversations/${displayId}`;
+  }
+
+  async getContact(contactId: number): Promise<ChatwootContact | null> {
+    const res = (await this.request(
+      this.config.adminToken,
+      "GET",
+      `/contacts/${contactId}`,
+    )) as { payload?: unknown } | null;
+    return parseContact(res?.payload);
+  }
+
+  // The contact holding exactly this address, or null. `/contacts/search` matches a substring across
+  // several fields and pages by 15, so the rows are compared here, case-insensitively (the fork's
+  // uniqueness on email is case-insensitive too), and the walk stops at the first page without rows.
+  async findContactIdByEmail(email: string): Promise<number | null> {
+    const wanted = email.trim().toLowerCase();
+    for (let page = 1; page <= CONTACT_SEARCH_MAX_PAGES; page++) {
+      const res = (await this.request(
+        this.config.adminToken,
+        "GET",
+        `/contacts/search?q=${encodeURIComponent(wanted)}&page=${page}`,
+      )) as { payload?: unknown } | null;
+      const rows = Array.isArray(res?.payload) ? res.payload : [];
+      if (rows.length === 0) return null;
+      for (const row of rows) {
+        const c = parseContact(row);
+        if (c?.email && c.email.toLowerCase() === wanted) return c.id;
+      }
+    }
+    return null;
+  }
+
+  // The contact's conversations as `{ id: display_id, inboxId, status }`.
+  async listContactConversations(
+    contactId: number,
+  ): Promise<ChatwootConversationRef[]> {
+    const res = (await this.request(
+      this.config.adminToken,
+      "GET",
+      `/contacts/${contactId}/conversations`,
+    )) as { payload?: unknown } | null;
+    const rows = Array.isArray(res?.payload) ? res.payload : [];
+    return rows.flatMap((row) => {
+      const ref = parseConversationRef(row);
+      return ref ? [ref] : [];
+    });
+  }
+
+  // Opens (or, when the inbox is set to continue the contact's open case, continues) a conversation
+  // for the contact in the inbox. No message rides along: on a continued case the fork would post it
+  // into the existing thread, and the caller decides whether an opening message is owed.
+  async createConversation(p: {
+    inboxId: number;
+    contactId: number;
+    status: "open" | "pending";
+    customAttributes: Record<string, unknown>;
+  }): Promise<ChatwootConversationRef> {
+    const res = await this.request(
+      this.config.adminToken,
+      "POST",
+      "/conversations",
+      {
+        inbox_id: p.inboxId,
+        contact_id: p.contactId,
+        status: p.status,
+        custom_attributes: p.customAttributes,
+      },
+    );
+    const ref = parseConversationRef(res);
+    if (!ref) {
+      throw new ChatwootApiError(502, "POST /conversations: missing id");
+    }
+    return ref;
+  }
+
+  sendMessageAsAdmin(
+    conversationId: number,
+    content: string,
+    opts: { private: boolean },
+  ): Promise<unknown> {
+    return this.request(
+      this.config.adminToken,
+      "POST",
+      `/conversations/${conversationId}/messages`,
+      { content, private: opts.private, message_type: "outgoing" },
     );
   }
 

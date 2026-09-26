@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { DiscoveredMcpTool } from "@/client/components/mcp/DiscoveredMcpTools";
+import type { CrossInboxCaseState } from "./CrossInboxCaseFields";
 import { SectionNav } from "./SectionNav";
 import { TabActionBar } from "./TabActionBar";
 import { offeredPackTools, ToolGrantsEditor } from "./ToolGrantsEditor";
@@ -37,6 +38,8 @@ interface ToolsTabProps {
   kanbanInstructions: string;
   setKanbanInstructions: (v: string) => void;
   customAttributeInstructions: string;
+  crossInboxCase: CrossInboxCaseState;
+  setCrossInboxCase: React.Dispatch<React.SetStateAction<CrossInboxCaseState>>;
   refusals: ToolRefusals;
   setCustomAttributeInstructions: (v: string) => void;
   labelInstructions: string;
@@ -95,6 +98,8 @@ export function ToolsTab({
   kanbanInstructions,
   setKanbanInstructions,
   customAttributeInstructions,
+  crossInboxCase,
+  setCrossInboxCase,
   refusals,
   setCustomAttributeInstructions,
   labelInstructions,
@@ -211,6 +216,8 @@ export function ToolsTab({
             kanbanInstructions={kanbanInstructions}
             setKanbanInstructions={setKanbanInstructions}
             customAttributeInstructions={customAttributeInstructions}
+            crossInboxCase={crossInboxCase}
+            setCrossInboxCase={setCrossInboxCase}
             refusals={refusals}
             setCustomAttributeInstructions={setCustomAttributeInstructions}
             labelInstructions={labelInstructions}

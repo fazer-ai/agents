@@ -31,6 +31,7 @@ export interface TurnFacts {
 // t('conversation.activity.note', 'Writing an internal note')
 // t('conversation.activity.attr', 'Updating details')
 // t('conversation.activity.resolve', 'Wrapping up the conversation')
+// t('conversation.activity.openCase', 'Opening the case in another inbox')
 // t('conversation.activity.react', 'Reacting to a message')
 // t('conversation.activity.skip', 'Decided not to respond')
 // t('conversation.activity.skipAfterDelivery', 'Nothing further to add')
@@ -57,6 +58,10 @@ const BY_TOOL = new Map<string, ToolLabel>(
     resolve_conversation: {
       key: "conversation.activity.resolve",
       fallback: "Wrapping up the conversation",
+    },
+    open_case_in_inbox: {
+      key: "conversation.activity.openCase",
+      fallback: "Opening the case in another inbox",
     },
     react_to_message: {
       key: "conversation.activity.react",

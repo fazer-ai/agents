@@ -79,7 +79,10 @@ import {
   type ContactAuthNotice,
   claimContactAuthNotice,
   contactAuthNoticeKey,
+  mediaAdmissionKey,
+  mediaAlreadyAdmitted,
   releaseContactAuthNotice,
+  rememberMediaAdmission,
 } from "@/modules/contact-auth/state";
 import { recordConversationAction } from "@/modules/conversations/audit";
 import {
@@ -1721,6 +1724,37 @@ export interface EagerMediaOwner {
   admission: "allowed" | "refused" | "unverified";
 }
 
+// Remembers on the conversation that the gate refused this message (issue #890), so no later pass
+// sends its media to a provider on a newer yes. Raised only: `GREATEST` keeps the newest refusal, and
+// a message id is a per-account sequence, so everything at or below it arrived before that refusal.
+// Best-effort with a loud line: a write that fails leaves the late-update case to the gate's answer,
+// which is the state before this column existed.
+async function recordMediaRefusal(
+  tenantId: bigint,
+  conversationDbId: bigint | null,
+  messageId: number | null | undefined,
+  base: PrismaClient,
+): Promise<void> {
+  if (conversationDbId === null || messageId == null) return;
+  try {
+    await runScopedOn(
+      base,
+      sysCtx(tenantId),
+      (db) =>
+        db.$executeRaw`UPDATE conversations
+        SET media_refused_through_message_id = GREATEST(COALESCE(media_refused_through_message_id, 0), ${messageId}::bigint)
+        WHERE id = ${conversationDbId} AND tenant_id = ${tenantId}`,
+    );
+  } catch (err) {
+    logger.warn(
+      "chatwoot: could not record the media refusal (conv=%s msg=%s): %s",
+      String(conversationDbId),
+      String(messageId),
+      errMsg(err),
+    );
+  }
+}
+
 // Whether this pass may send the message's media to a provider (issue #890). The gate asked here is the
 // one the turn would ask: the agent bound to the conversation's inbox, with the same request key, so
 // under `mode: "once"` a stored grant answers and under an unlock flow the key is the message's own.
@@ -1756,7 +1790,11 @@ async function mediaAdmitted(
             chatwootConversationId: conversationId,
           },
         },
-        select: { id: true, contactId: true },
+        select: {
+          id: true,
+          contactId: true,
+          mediaRefusedThroughMessageId: true,
+        },
       });
       return { inbox, agentId: inbox.agentId, settings: agent?.settings, conv };
     });
@@ -1764,6 +1802,25 @@ async function mediaAdmitted(
     if (!ctx) return true;
     const cfg = readContactAuthConfig(ctx.settings);
     if (!cfg.enabled) return true;
+    // A message the gate already refused stays unread, and the endpoint is not asked again: its yes
+    // now would be about a consent given after this file was sent.
+    const messageId = n.message?.id;
+    // A message the gate let through a moment ago, on its own delivery: the update Chatwoot sends
+    // after every voice note is not a reason to ask again.
+    if (
+      messageId != null &&
+      mediaAlreadyAdmitted(mediaAdmissionKey(tenantId, instanceId, messageId))
+    ) {
+      return true;
+    }
+    const refusedThrough = ctx.conv?.mediaRefusedThroughMessageId ?? null;
+    if (
+      refusedThrough !== null &&
+      n.message?.id != null &&
+      n.message.id <= Number(refusedThrough)
+    ) {
+      return false;
+    }
     const verdict = await authorizeContact({
       tenantId,
       agentId: ctx.agentId,
@@ -1793,7 +1850,21 @@ async function mediaAdmitted(
       },
       contactAuthFlowEvent(verdict),
     );
-    return verdict.outcome === "allowed";
+    if (verdict.outcome !== "allowed") {
+      await recordMediaRefusal(
+        tenantId,
+        ctx.conv?.id ?? null,
+        n.message?.id,
+        base,
+      );
+      return false;
+    }
+    if (messageId != null) {
+      rememberMediaAdmission(
+        mediaAdmissionKey(tenantId, instanceId, messageId),
+      );
+    }
+    return true;
   } catch (err) {
     logger.warn(
       "chatwoot: media left unread, the contact authorization could not be asked (conv=%s): %s",
@@ -1863,25 +1934,25 @@ export async function runEagerMedia(
     // extraction failed pays the whole provider bill again at the second call site.
     !n.message.attachmentsUnread &&
     !n.message.bodyRead;
-  const sttPending =
-    !!audio && !n.message.transcribedText && !audio.transcribedText;
-  // Asked once, and only when a provider would be paid: a text message, or media already read,
-  // costs the operator's endpoint nothing.
-  const admitted =
-    sttPending || visionPending
-      ? await mediaAdmitted(
-          tenantId,
-          instanceId,
-          n,
-          chatwootInboxId,
-          base,
-          owner,
-        )
-      : true;
+  // Asked at most once, and only when a provider is about to be paid: after the STT or vision config
+  // resolved (review round 1 of #892). A text message, media already read, or media nobody would
+  // read (both switched off) costs the operator's endpoint nothing.
+  let admittedMemo: boolean | null = null;
+  const admitted = async (): Promise<boolean> => {
+    admittedMemo ??= await mediaAdmitted(
+      tenantId,
+      instanceId,
+      n,
+      chatwootInboxId,
+      base,
+      owner,
+    );
+    return admittedMemo;
+  };
   if (audio && !n.message.transcribedText) {
     if (audio.transcribedText) {
       n.message.transcribedText = audio.transcribedText;
-    } else if (admitted) {
+    } else {
       try {
         const sttCfg = await resolveSttConfig(
           tenantId,
@@ -1891,7 +1962,7 @@ export async function runEagerMedia(
           // The route's agent, which on an observer's route is not the inbox's (issue #476 review, round 3).
           { agentId: owner.agentId },
         );
-        if (sttCfg) {
+        if (sttCfg && (await admitted())) {
           const text = await transcribeInboundAudio({
             tenantId,
             instanceId,
@@ -1933,7 +2004,7 @@ export async function runEagerMedia(
   // porque desde a issue #757 ele tem dois chamadores: este, na chegada da mensagem, e o turno que
   // relê uma thread cujos anexos nunca passaram por aqui. O que ficou deste lado é a DECISÃO de
   // rodar (esta entrega já foi extraída?) e o destino do resultado (os campos do evento).
-  if (visionPending && admitted) {
+  if (visionPending) {
     try {
       const visionCfg = await resolveVisionConfig(
         tenantId,
@@ -1943,7 +2014,7 @@ export async function runEagerMedia(
         // The route's agent, which on an observer's route is not the inbox's (issue #476 review, round 3).
         { agentId: owner.agentId },
       );
-      if (visionCfg) {
+      if (visionCfg && (await admitted())) {
         // Hoisted: the narrowing the guard above gives `n.message` does not survive into the call
         // below, because a mutable property can change before a deferred callback reads it.
         const conversationId = n.conversationId;
@@ -4317,7 +4388,13 @@ async function maybeConsumeCommandOrGate(params: {
         contactAuthFlowEvent(verdict),
       );
       params.onAuthVerdict?.(verdict.outcome === "allowed");
+      if (verdict.outcome === "allowed" && n.message?.id != null) {
+        rememberMediaAdmission(
+          mediaAdmissionKey(tenantId, instanceId, n.message.id),
+        );
+      }
       if (verdict.outcome !== "allowed") {
+        await recordMediaRefusal(tenantId, ctx.conv.id, n.message?.id, base);
         // Coalescing the QUESTION is not coalescing the ANSWER's consequences. The single-flight
         // asks the endpoint once about a contact, which is right; the copy, the handoff and the
         // note belong to a CONVERSATION, and one contact can have two open ones. Gating these on

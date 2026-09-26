@@ -56,6 +56,7 @@ const INBOX_OPEN = 883;
 const INBOX_DEBOUNCE = 884;
 const INBOX_CLOSED = 885;
 const INBOX_TEST = 886;
+const INBOX_NO_MEDIA = 887;
 const TRANSCRIPT = "SENTINELA-STT";
 const DESCRIPTION = "SENTINELA-VISAO";
 
@@ -270,6 +271,7 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
       [INBOX_DEBOUNCE, 34, gate],
       [INBOX_CLOSED, 35, gate],
       [INBOX_TEST, 36, gate],
+      [INBOX_NO_MEDIA, 37, gate],
     ];
     for (const [inboxId, botId, contactAuth] of agents) {
       const agent = await suDb.agent.create({
@@ -287,7 +289,9 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
           settings: {
             debounce: { enabled: inboxId === INBOX_DEBOUNCE },
             split: { enabled: false },
-            ...media,
+            ...(inboxId === INBOX_NO_MEDIA
+              ? { stt: { enabled: false }, vision: { enabled: false } }
+              : media),
             ...(contactAuth ? { contactAuth } : {}),
           },
         },
@@ -466,6 +470,106 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
     expect(providers.auth).toBe(1);
     expect(providers.stt).toBe(0);
     expect(providers.vision).toBe(0);
+  });
+
+  // Review round 1 of #892: the refusal lived only in the first delivery, so an update of the refused
+  // audio arriving after the customer consented asked the gate again and got the new yes.
+  test("a refused message stays unread after a later consent, without asking the endpoint again", async () => {
+    await seedConversation(8814, INBOX_ONCE);
+    authAnswers.push(false);
+    const refused = await deliver({
+      convId: 8814,
+      chatwootInboxId: INBOX_ONCE,
+    });
+    expect(providers.stt).toBe(0);
+    // The customer says yes: the next message is read, and the grant is stored.
+    authAnswers.push(true);
+    await deliver({ convId: 8814, chatwootInboxId: INBOX_ONCE });
+    expect(providers.stt).toBe(1);
+    expect(providers.auth).toBe(2);
+    // A late update of the refused audio: not read, and not asked about.
+    await deliver({
+      convId: 8814,
+      chatwootInboxId: INBOX_ONCE,
+      event: "message_updated",
+      messageId: refused,
+    });
+    expect(providers.stt).toBe(1);
+    expect(providers.auth).toBe(2);
+  });
+
+  test("a refusal the media pass got for itself is remembered the same way", async () => {
+    await seedConversation(8816, INBOX_GATED);
+    authAnswers.push(false);
+    const refused = await deliver({
+      convId: 8816,
+      chatwootInboxId: INBOX_GATED,
+      humanHeld: true,
+    });
+    expect(providers.auth).toBe(1);
+    // Queued in case the pass asks again; it must not.
+    authAnswers.push(true);
+    await deliver({
+      convId: 8816,
+      chatwootInboxId: INBOX_GATED,
+      event: "message_updated",
+      messageId: refused,
+      humanHeld: true,
+    });
+    expect(providers.auth).toBe(1);
+    expect(providers.stt).toBe(0);
+  });
+
+  test("the remembered refusal only moves up, so a refusal delivered out of order does not lower it", async () => {
+    await seedConversation(8817, INBOX_GATED);
+    authAnswers.push(false, false);
+    await deliver({
+      convId: 8817,
+      chatwootInboxId: INBOX_GATED,
+      messageId: 70_900,
+    });
+    await deliver({
+      convId: 8817,
+      chatwootInboxId: INBOX_GATED,
+      messageId: 70_100,
+    });
+    expect(providers.auth).toBe(2);
+    authAnswers.push(true);
+    await deliver({
+      convId: 8817,
+      chatwootInboxId: INBOX_GATED,
+      event: "message_updated",
+      messageId: 70_500,
+    });
+    expect(providers.auth).toBe(2);
+    expect(providers.stt).toBe(0);
+  });
+
+  // Measured by the holdout verifier of #892: Chatwoot follows every voice note with a
+  // `message_updated`, read as late media, and the pass asked the endpoint again for a message the
+  // gate had just allowed.
+  test("the update that follows an allowed voice note does not ask the endpoint again", async () => {
+    await seedConversation(8818, INBOX_GATED);
+    authAnswers.push(true);
+    const id = await deliver({ convId: 8818, chatwootInboxId: INBOX_GATED });
+    expect(providers.auth).toBe(1);
+    await deliver({
+      convId: 8818,
+      chatwootInboxId: INBOX_GATED,
+      event: "message_updated",
+      messageId: id,
+    });
+    expect(providers.auth).toBe(1);
+  });
+
+  test("with STT and vision off, the gate is not asked about media nobody would read", async () => {
+    await seedConversation(8815, INBOX_NO_MEDIA);
+    await deliver({
+      convId: 8815,
+      chatwootInboxId: INBOX_NO_MEDIA,
+      humanHeld: true,
+    });
+    expect(providers.auth).toBe(0);
   });
 
   test("without the gate, the media is read as before, even on a conversation a person holds", async () => {

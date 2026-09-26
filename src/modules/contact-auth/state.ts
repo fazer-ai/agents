@@ -176,10 +176,59 @@ export async function singleFlight(
   return { verdict: await p, shared: false };
 }
 
+// Messages whose media the gate already let through (issue #890). Chatwoot follows every voice note
+// with a `message_updated`, which the receiver reads as late media, and without this the media pass
+// asked the endpoint a second time for a message it had just asked about. Per MESSAGE, so it is not
+// the verdict cache the header rules out: a yes here covers one message that already arrived, and
+// says nothing about the next one. Losing it (restart, expiry, the cap) costs one more ask and never
+// a read the gate did not allow; refusals are not kept here but on the conversation, where they
+// survive, since forgetting one of those would read a file sent before consent.
+const MEDIA_ADMISSION_TTL_MS = 15 * 60_000;
+const mediaAdmitted = new Map<string, number>();
+
+export function mediaAdmissionKey(
+  tenantId: bigint,
+  instanceId: bigint,
+  messageId: number,
+): string {
+  return `${tenantId}:${instanceId}:${messageId}`;
+}
+
+export function rememberMediaAdmission(
+  key: string,
+  nowMs: number = Date.now(),
+): void {
+  if (mediaAdmitted.size >= MAX_ENTRIES) {
+    for (const [k, until] of mediaAdmitted) {
+      if (until <= nowMs) mediaAdmitted.delete(k);
+    }
+    // Still full of live entries: drop the oldest, which is the first in insertion order.
+    if (mediaAdmitted.size >= MAX_ENTRIES) {
+      const first = mediaAdmitted.keys().next().value;
+      if (first !== undefined) mediaAdmitted.delete(first);
+    }
+  }
+  mediaAdmitted.set(key, nowMs + MEDIA_ADMISSION_TTL_MS);
+}
+
+export function mediaAlreadyAdmitted(
+  key: string,
+  nowMs: number = Date.now(),
+): boolean {
+  const until = mediaAdmitted.get(key);
+  if (until === undefined) return false;
+  if (until <= nowMs) {
+    mediaAdmitted.delete(key);
+    return false;
+  }
+  return true;
+}
+
 // NOTE: Test isolation only. Production never clears the state wholesale; the sweep does.
 export function clearContactAuthState(): void {
   notices.clear();
   inFlight.clear();
+  mediaAdmitted.clear();
   if (sweepTimer) {
     clearTimeout(sweepTimer);
     sweepTimer = undefined;

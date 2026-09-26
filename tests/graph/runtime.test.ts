@@ -85,6 +85,7 @@ import {
   SkipThenHandoffModel,
   SkipThenImageModel,
   SkipThenResolveModel,
+  TextBesideToolThenEmptyModel,
 } from "../utils/scripted-models";
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -3601,6 +3602,333 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // No intent existed, so nothing was thrown away — and the line says so rather than leaving the
     // operator to guess which of the two exits they are looking at.
     expect(warned?.resolveDiscarded).toBe(false);
+  });
+
+  // ISSUE #886. The reply WAS written, in the same assistant message as a tool call, and the turn
+  // then ended on an empty message. The runtime posted the LAST assistant message, so the answer the
+  // model wrote never left, and the turn read as an unexplained silence (#773). Measured on 51 real
+  // `silenceUnexplained` turns read from the checkpoint: 8 were this, every one a complete answer.
+  // The trigger is in the tool's own result: `resolve_conversation` says the close waits for "your
+  // final reply", and a model that already wrote it reads that as done.
+  async function recoveredLine(threadConv: number) {
+    for (let i = 0; i < 30; i++) {
+      const rows = await flowLogRows(suDb, {
+        where: {
+          tenantId,
+          stage: "generate",
+          threadId: `${tenantId}:${instanceId}:${threadConv}`,
+        },
+        select: { detail: true, level: true },
+      });
+      const hit = rows.find(
+        (r) =>
+          (r.detail as Record<string, unknown> | null)?.replyRecovered === true,
+      );
+      if (hit) return hit;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return null;
+  }
+  async function unexplainedWarned(threadConv: number) {
+    await new Promise((r) => setTimeout(r, 300));
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        level: "warn",
+        threadId: `${tenantId}:${instanceId}:${threadConv}`,
+      },
+      select: { detail: true },
+    });
+    return rows.some(
+      (r) =>
+        (r.detail as Record<string, unknown> | null)?.silenceUnexplained ===
+        true,
+    );
+  }
+
+  test("a reply written beside resolve_conversation is delivered, then the close runs", async () => {
+    await seedConversation(98861, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98861 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new TextBesideToolThenEmptyModel([
+            {
+              text: "O prazo de cancelamento é de 7 dias a partir da compra.",
+              calls: [{ name: "resolve_conversation", args: {} }],
+            },
+          ]) as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    // The answer reaches the customer ONCE, and the deferred close runs after it, the order every
+    // reply keeps.
+    expect(calls).toEqual([
+      [
+        "sendMessage",
+        98861,
+        "O prazo de cancelamento é de 7 dias a partir da compra.",
+      ],
+      ["toggleStatus", 98861, "resolved"],
+    ]);
+    // The flow log says the reply came from an earlier message, and nothing is paged as silence.
+    const line = await recoveredLine(98861);
+    expect(line).not.toBeNull();
+    expect(await unexplainedWarned(98861)).toBe(false);
+  });
+
+  test("a reply beside set_labels survives a bare resolve after it", async () => {
+    await seedConversation(98862, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98862 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new TextBesideToolThenEmptyModel([
+            {
+              text: "Olá! Como posso ajudar?",
+              calls: [{ name: "set_labels", args: { labels: ["duvida"] } }],
+            },
+            { text: "", calls: [{ name: "resolve_conversation", args: {} }] },
+          ]) as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(calls.filter(([op]) => op === "sendMessage")).toEqual([
+      ["sendMessage", 98862, "Olá! Como posso ajudar?"],
+    ]);
+    expect(calls.at(-1)).toEqual(["toggleStatus", 98862, "resolved"]);
+  });
+
+  test("with two texts earlier in the turn, the LAST one is the reply, sent once", async () => {
+    await seedConversation(98863, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98863 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new TextBesideToolThenEmptyModel([
+            {
+              text: "Vou verificar.",
+              calls: [{ name: "set_labels", args: { labels: ["duvida"] } }],
+            },
+            {
+              text: "Pronto: o evento começa às 21h.",
+              calls: [{ name: "resolve_conversation", args: {} }],
+            },
+          ]) as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(calls.filter(([op]) => op === "sendMessage")).toEqual([
+      ["sendMessage", 98863, "Pronto: o evento começa às 21h."],
+    ]);
+  });
+
+  // The control that must NOT move: text beside `skip_reply` is withdrawn on purpose (graph.ts), and
+  // the declared silence stands.
+  test("text beside skip_reply is never recovered", async () => {
+    await seedConversation(98864, null);
+    const calls: Array<[string, number, string]> = [];
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98864 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new TextBesideToolThenEmptyModel([
+            {
+              text: "Vou deixar quieto por ora.",
+              calls: [{ name: "skip_reply", args: { reason: "acknowledged" } }],
+            },
+          ]) as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls.filter(([op]) => op === "sendMessage")).toEqual([]);
+    expect(await recoveredLine(98864)).toBeNull();
+  });
+
+  // A transfer that declared silence is a person owning the case with nothing to say: an earlier
+  // line of the model does not come back on top of it.
+  test("an earlier text is not recovered over a handoff that declared silence", async () => {
+    await seedConversation(98865, null);
+    const calls: Array<[string, number, string]> = [];
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98865 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new TextBesideToolThenEmptyModel([
+            {
+              text: "Um momento.",
+              calls: [{ name: "set_labels", args: { labels: ["duvida"] } }],
+            },
+            {
+              text: "",
+              calls: [
+                {
+                  name: "handoff_to_human",
+                  args: { reason: "notificação formal", customerMessage: "" },
+                },
+              ],
+            },
+          ]) as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls.filter(([op]) => op === "sendMessage")).toEqual([]);
+  });
+
+  // Something else already answers the turn: the picture the model queued. The text it wrote beside
+  // the call is not brought back on top of it, which keeps the recovery to the one shape measured
+  // (nothing at all reached the customer).
+  test("an earlier text is not recovered when an attachment answers the turn", async () => {
+    await allowImageHost();
+    await seedConversation(98866, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98866 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new TextBesideToolThenEmptyModel([
+            {
+              text: "Segue a foto.",
+              calls: [
+                {
+                  name: "send_image",
+                  args: { url: IMG_URL, caption: "Camiseta azul" },
+                },
+              ],
+            },
+          ]) as unknown as BaseChatModel,
+        makeClient: makeImageClient(calls),
+        checkpointer: new MemorySaver(),
+        imageDeps,
+      },
+    });
+    expect(outcome).toBe("posted");
+    expect(calls).toEqual([["sendFileAttachment", 98866, "imagem.png"]]);
+  });
+
+  // The follow-up silence token as the closing message is silence the model produced, and an
+  // earlier line does not override it.
+  test("an earlier text is not recovered over the silence token", async () => {
+    await seedConversation(98867, null);
+    const calls: Array<[string, number, string]> = [];
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98867 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new TextBesideToolThenEmptyModel(
+            [
+              {
+                text: "Tudo certo.",
+                calls: [{ name: "set_labels", args: { labels: ["duvida"] } }],
+              },
+            ],
+            FOLLOWUP_SKIP_SENTINEL,
+          ) as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls.filter(([op]) => op === "sendMessage")).toEqual([]);
+    expect(await recoveredLine(98867)).toBeNull();
+  });
+
+  // An earlier line that reduces to the silence token is silence too: recovered through the same
+  // filter as any reply, it comes back as nothing, and the token never reaches the customer.
+  test("an earlier line that is only the silence token is not recovered", async () => {
+    await seedConversation(98868, null);
+    const calls: Array<[string, number, string]> = [];
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98868 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new TextBesideToolThenEmptyModel([
+            {
+              text: FOLLOWUP_SKIP_SENTINEL,
+              calls: [{ name: "set_labels", args: { labels: ["duvida"] } }],
+            },
+          ]) as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls.filter(([op]) => op === "sendMessage")).toEqual([]);
+    expect(await recoveredLine(98868)).toBeNull();
+  });
+
+  // The ordinary turn: a line beside a tool, then a real final reply. The final reply is the answer,
+  // and the earlier line stays where it was (a preamble the reply may lean on).
+  test("a final reply with text is sent as is, never replaced by an earlier line", async () => {
+    await seedConversation(98869, null);
+    const calls: Array<[string, number, string]> = [];
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98869 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new TextBesideToolThenEmptyModel(
+            [
+              {
+                text: "Vou verificar.",
+                calls: [{ name: "set_labels", args: { labels: ["duvida"] } }],
+              },
+            ],
+            "O evento começa às 21h.",
+          ) as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls.filter(([op]) => op === "sendMessage")).toEqual([
+      ["sendMessage", 98869, "O evento começa às 21h."],
+    ]);
+    expect(await recoveredLine(98869)).toBeNull();
   });
 
   // ISSUE #717. A person taking the conversation over WHILE the model runs: the gates before the

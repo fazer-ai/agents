@@ -1053,3 +1053,42 @@ export class ScriptedCaptureModel {
     };
   }
 }
+
+// Writes the whole reply BESIDE a tool call and then ends the turn on an EMPTY message (issue #886).
+// `steps` is what the model does before the empty close: each step is one assistant message, with
+// the text it carries and the tool calls beside it. Measured on real turns in three shapes: the text
+// beside `resolve_conversation` alone, beside `set_labels` with a bare `resolve_conversation` after
+// it, and beside a `private_note`.
+export class TextBesideToolThenEmptyModel {
+  constructor(
+    private steps: Array<{
+      text: string;
+      calls: Array<{ name: string; args: Record<string, unknown> }>;
+    }>,
+    // What the closing message carries: empty is the defect; the follow-up silence token is the
+    // model declaring silence the other way.
+    private final = "",
+  ) {}
+  async invoke(): Promise<AIMessage> {
+    return new AIMessage("");
+  }
+  bindTools(_tools: unknown) {
+    const self = this;
+    let n = 0;
+    return {
+      async invoke(): Promise<AIMessage> {
+        const step = self.steps[n];
+        n++;
+        if (!step) return new AIMessage(self.final);
+        return new AIMessage({
+          content: step.text,
+          tool_calls: step.calls.map((c, i) => ({
+            name: c.name,
+            args: c.args,
+            id: `call_${n}_${i}`,
+          })),
+        });
+      },
+    };
+  }
+}

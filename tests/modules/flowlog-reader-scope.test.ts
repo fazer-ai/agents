@@ -212,8 +212,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   // turno num turno que nao decidiu silencio. #856: mais um, a linha `tts` da resposta que foi como
   // texto em vez de audio, escopada por tenant e conversa.
   // #859: every line of one conversation, to prove the reply the model chose to send as text is in
-  // none of them.
-  "tests/graph/runtime.test.ts": 27,
+  // none of them. #886: two more, the `replyRecovered` line of a turn whose reply was written beside a
+  // tool call, and the `silenceUnexplained` warn that must not fire on it, both scoped by thread.
+  "tests/graph/runtime.test.ts": 29,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/skip-handover.test.ts": 1,
   // #726: the helper that runs one tool call end to end, plus the case that asks WHEN the turn's

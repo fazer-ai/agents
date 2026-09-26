@@ -89,7 +89,11 @@ import {
   getCheckpointer,
   resolveGraphThreadId,
 } from "./checkpointer";
-import { lastAssistantText, recursionLimitFor } from "./graph";
+import {
+  lastAssistantText,
+  recursionLimitFor,
+  replyWrittenThisTurn,
+} from "./graph";
 import { owesHandbackNote } from "./handback";
 import { clearTurnInFlight, markTurnInFlight } from "./inflight";
 import { drainPendingIngest } from "./ingest-drain";
@@ -2669,6 +2673,39 @@ async function runTurnBody(
         String(conversationId),
         dropped,
       );
+    }
+    // THE REPLY THE MODEL WROTE BESIDE A TOOL CALL (issue #886). The turn ended on an empty message,
+    // but an earlier assistant message of THIS turn carries the answer, and posting only the last
+    // message would drop it and leave the customer with nothing (measured: 8 of 51 unexplained
+    // silences). It becomes the reply here, above every gate below, so it goes out exactly like any
+    // reply: output guardrail, modality, split, and the deferred resolve after it.
+    //
+    // Only when nothing else answers the turn: no transfer (its line or its declared silence is the
+    // answer), nothing already put in front of the customer or queued for them, and no silence the
+    // model declared (`replyWrittenThisTurn` refuses a turn that called `skip_reply`). The words are already
+    // in the thread, in the message that carried them, so the next turn reads them as said, which is
+    // now true.
+    // `wroteText`, not `reply`: the final message has to have said NOTHING. One that said the
+    // follow-up silence token is silence the model produced, and one whose reply a transfer blanked
+    // said something too.
+    if (
+      !drafted.wroteText &&
+      !handoffState.completed &&
+      !turnDeliveredToCustomer(turnState, handoffState)
+    ) {
+      // Through the same filter as any reply: an earlier line that reduces to the silence token is
+      // silence, and comes back as "".
+      const recovered = customerFacingReply(
+        replyWrittenThisTurn(result.messages as BaseMessage[]),
+      );
+      if (recovered.text) {
+        reply = recovered.text;
+        emitFlowEvent(flow, {
+          stage: "generate",
+          status: "ok",
+          detail: { replyRecovered: true },
+        });
+      }
     }
     await deliverHandoffPromise();
 

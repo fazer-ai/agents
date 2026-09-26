@@ -1075,3 +1075,37 @@ export function lastAssistantText(messages: BaseMessage[]): string {
   if (typeof content === "string") return content;
   return contentToText(content).trim();
 }
+
+// THE REPLY THE MODEL ALREADY WROTE, when the turn ends on an empty message (issue #886). A model
+// can put its whole answer in the same assistant message that calls a tool (`resolve_conversation`,
+// `set_labels`, `private_note`) and then close the turn with an empty one: `resolve_conversation`
+// answers that the close waits for "your final reply", and a model that already wrote it reads that
+// as done. `lastAssistantText` reads only the LAST message, so the answer never left and the turn
+// looked like an unexplained silence (#773). Measured on 51 real `silenceUnexplained` turns read
+// from the checkpoint: 8 were this, every one a complete answer to the customer's message.
+//
+// The FINAL message is not read here: whether it said anything is the caller's question, asked of
+// the text it already drafted (`customerFacingReply(...).wroteText`), so the one reader of the turn's
+// final text stays the guarded one. Returns "" when there is nothing to recover:
+// - no earlier assistant message IN THIS TURN carries text. The bound is the last human message, as
+//   in `silenceWasChosen`: the thread is checkpointed per contact-inbox, and an answer given in an
+//   earlier turn was already delivered then;
+// - the turn called `skip_reply`. Text beside that call is withdrawn on purpose (above), and a
+//   declared silence is never overridden by something the model wrote before declaring it. Read from
+//   the CALL, not the ack, because this is the conservative side: a refused `skip_reply` still means
+//   the model was deciding to say nothing, and recovering against that would speak for it.
+// The LAST earlier text wins: it is the latest thing the model meant to say.
+export function replyWrittenThisTurn(messages: BaseMessage[]): string {
+  let found = "";
+  for (let i = messages.length - 2; i >= 0; i--) {
+    const m = messages[i];
+    if (!m) continue;
+    if (m.getType() === "human") break;
+    if (m.getType() !== "ai") continue;
+    const ai = m as AIMessage;
+    if ((ai.tool_calls ?? []).some((c) => c.name === SKIP_REPLY_TOOL))
+      return "";
+    if (!found) found = contentToText(ai.content).trim();
+  }
+  return found;
+}

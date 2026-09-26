@@ -11,6 +11,7 @@ import { readAvailabilityConfig } from "@/modules/availability/away";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
 import { readAttributeContextConfig } from "@/modules/chatwoot/attributes";
 import { readContactAuthConfig } from "@/modules/contact-auth/settings";
+import { readCrossInboxCaseConfig } from "@/modules/cross-inbox-case/settings";
 import { readDebounceConfig } from "@/modules/debounce/settings";
 import {
   readObservabilityConfig,
@@ -68,6 +69,7 @@ export interface BehaviorSettings {
   // apart from `handoff` above because the Tools tab REPLACES that one wholesale.
   takeover: ReturnType<typeof readTakeoverConfig>;
   sendImage: ReturnType<typeof readSendImageConfig>;
+  crossInboxCase: ReturnType<typeof readCrossInboxCaseConfig>;
   limits: ReturnType<typeof readLimitsConfig>;
   availability: ReturnType<typeof readAvailabilityConfig>;
   contactAuth: ReturnType<typeof readContactAuthConfig>;
@@ -114,6 +116,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "handoff",
   "takeover",
   "sendImage",
+  "crossInboxCase",
   "limits",
   "availability",
   "contactAuth",
@@ -155,6 +158,7 @@ export function readBehaviorSettings(
     handoff: readHandoffConfig(settings),
     takeover: readTakeoverConfig(settings),
     sendImage: readSendImageConfig(settings),
+    crossInboxCase: readCrossInboxCaseConfig(settings),
     limits: readLimitsConfig(settings),
     availability: readAvailabilityConfig(settings),
     contactAuth: readContactAuthConfig(settings),
@@ -191,6 +195,7 @@ export interface BehaviorSettingsPatch {
   handoff?: Record<string, unknown>;
   takeover?: Record<string, unknown>;
   sendImage?: Record<string, unknown>;
+  crossInboxCase?: Record<string, unknown>;
   limits?: Record<string, unknown>;
   availability?: Record<string, unknown>;
   contactAuth?: Record<string, unknown>;

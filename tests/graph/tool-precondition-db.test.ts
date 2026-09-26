@@ -12,6 +12,7 @@ import {
 import type { ToolPrecondition } from "@/modules/agents/tool-preconditions";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { CONTACT_AUTH_DEFAULTS } from "@/modules/contact-auth/settings";
+import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
 import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
 import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
@@ -207,6 +208,8 @@ describe.skipIf(!dbUp)(
         kanbanConfig: KANBAN_DEFAULTS,
         contactAuth: CONTACT_AUTH_DEFAULTS,
         sendImageConfig: SEND_IMAGE_DEFAULTS,
+        crossInboxCaseConfig: CROSS_INBOX_CASE_DEFAULTS,
+        chatwootContactId: null,
         httpToolContext: {},
         codeToolDefs: [],
         httpToolDefs: [],

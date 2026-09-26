@@ -120,6 +120,11 @@ import {
 } from "./ChannelRedirectTab";
 import { ChannelsTab } from "./ChannelsTab";
 import {
+  type CrossInboxCaseState,
+  readCrossInboxCaseState,
+  serializeCrossInboxCase,
+} from "./CrossInboxCaseFields";
+import {
   contactAuthRuleToSave,
   EMPTY_CONTACT_AUTH_RULE_FORM,
   readContactAuthRuleForm,
@@ -532,6 +537,7 @@ function readBehaviorState(a: Agent) {
       task: attrKeys(ac.task),
     },
     sendImage: { allowedHosts: attrKeys(si.allowedHosts).join("\n") },
+    crossInboxCase: readCrossInboxCaseState(s.crossInboxCase),
     // NOTE: ON unless the stored bag says otherwise, mirroring readTakeoverConfig. A bag written
     // before this block existed has no key and must read as on, or loading an old agent would show
     // the switch off while the runtime has it on.
@@ -920,6 +926,16 @@ function AgentEditor() {
   });
   const [sendImage, setSendImage] = useState<SendImageState>({
     allowedHosts: "",
+  });
+  // NOTE: Where open_case_in_inbox opens the case. Mirrors agent.settings.crossInboxCase
+  // (modules/cross-inbox-case/settings).
+  const [crossInboxCase, setCrossInboxCase] = useState<CrossInboxCaseState>({
+    targetInboxId: "",
+    targetInstanceId: "",
+    originLabel: "",
+    caseAttributeKey: "",
+    mergeContacts: false,
+    resolveOrigin: false,
   });
   // NOTE: Which Chatwoot custom attributes are injected into the prompt as current values, per
   // scope. Mirrors agent.settings.attributeContext (modules/chatwoot/attributes).
@@ -1440,6 +1456,7 @@ function AgentEditor() {
     setOutsideAllowedLabels(b.outsideAllowedLabels);
     setUpdateKanbanTaskInstructions(b.updateKanbanTaskInstructions);
     setToolPreconditions(b.toolPreconditions);
+    setCrossInboxCase(b.crossInboxCase);
   }, []);
 
   // Full reset of the general + behavior form state from a synced agent. Used on load and discard-all
@@ -1896,6 +1913,7 @@ function AgentEditor() {
       outsideAllowedLabels,
       updateKanbanTaskInstructions,
       toolPreconditions,
+      crossInboxCase,
     }),
     knowledge: canonicalGrants(grants.filter((g) => g.source === "RAG")),
   };
@@ -3068,6 +3086,7 @@ function AgentEditor() {
       >;
       const handoffJson = serializeHandoff(handoff);
       const kanbanJson = { instructions: kanbanInstructions.trim() || null };
+      const crossInboxCaseJson = serializeCrossInboxCase(crossInboxCase);
       // Merge the per-tool guidance map: preserve any entries for other tools, set/clear ours.
       const existingGuidance = (syncedSettings.toolGuidance ?? {}) as Record<
         string,
@@ -3116,6 +3135,7 @@ function AgentEditor() {
           allowed: allowedList,
           outsideAllowed: outsideAllowedLabels,
         },
+        crossInboxCase: crossInboxCaseJson,
       };
       // Before either request: the grants PUT goes out first and the PATCH after it, and both can
       // answer a refusal about this bag.
@@ -3191,6 +3211,7 @@ function AgentEditor() {
           allowed: allowedList,
           outsideAllowed: outsideAllowedLabels,
         },
+        crossInboxCase: crossInboxCaseJson,
       }));
       markSynced(String(agentRes.data.agent.updatedAt));
       bumpSync("tools", "knowledge");
@@ -3882,6 +3903,8 @@ function AgentEditor() {
                 setKanbanInstructions={setKanbanInstructions}
                 customAttributeInstructions={customAttributeInstructions}
                 setCustomAttributeInstructions={setCustomAttributeInstructions}
+                crossInboxCase={crossInboxCase}
+                setCrossInboxCase={setCrossInboxCase}
                 labelInstructions={labelInstructions}
                 setLabelInstructions={setLabelInstructions}
                 protectedLabels={protectedLabels}

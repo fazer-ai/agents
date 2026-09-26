@@ -126,6 +126,15 @@ function renderEditor() {
               kanbanInstructions=""
               setKanbanInstructions={noop}
               customAttributeInstructions=""
+              crossInboxCase={{
+                targetInboxId: "",
+                targetInstanceId: "",
+                originLabel: "",
+                caseAttributeKey: "",
+                mergeContacts: false,
+                resolveOrigin: false,
+              }}
+              setCrossInboxCase={noop}
               setCustomAttributeInstructions={noop}
               labelInstructions=""
               protectedLabels=""

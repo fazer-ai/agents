@@ -9,6 +9,7 @@ import {
 } from "@/graph/prepare";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { CONTACT_AUTH_DEFAULTS } from "@/modules/contact-auth/settings";
+import { CROSS_INBOX_CASE_DEFAULTS } from "@/modules/cross-inbox-case/settings";
 import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import type { FlowContext } from "@/modules/flowlog/service";
 import { HANDOFF_DEFAULTS } from "@/modules/handoff/settings";
@@ -76,6 +77,8 @@ function config(): AgentConfig {
     kanbanConfig: KANBAN_DEFAULTS,
     contactAuth: CONTACT_AUTH_DEFAULTS,
     sendImageConfig: SEND_IMAGE_DEFAULTS,
+    crossInboxCaseConfig: CROSS_INBOX_CASE_DEFAULTS,
+    chatwootContactId: null,
     httpToolContext: {},
     codeToolDefs: [],
     // The second claimant. `buildNativeTools` below is the first, and native goes first in the

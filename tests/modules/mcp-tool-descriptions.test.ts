@@ -274,7 +274,14 @@ const SETTINGS_DESC_CEILING = 2_000;
 // limits: a boolean and three nullable numbers, 548 characters. Trimmed first, by 41: each
 // description is the band, the default and what null means, since the reader clamps and a caller
 // cannot see either off the type. Re-measured on the tree that ships: 26,738.
-const SETTINGS_SCHEMA_CEILING = 26_753;
+//
+// RAISED for issue #700 by `crossInboxCase`, where `open_case_in_inbox` opens the case: the inbox, the
+// instance it was picked from, the origin label, the attribute key, the merge switch and the switch
+// that closes the origin, 1,197 characters. Trimmed first, by 303: each description says only what
+// the type cannot (that an unset inbox turns the tool off, the attribute's default, that the merge is
+// off unless asked for, and that the close waits for the reply). Re-measured on the tree that ships:
+// 27,935.
+const SETTINGS_SCHEMA_CEILING = 27_950;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -712,6 +719,9 @@ describe("MCP tool descriptions", () => {
   // meaning "update this one", would silently misprice or delete). The provider is a plain string
   // (the service refuses an unknown one with the same message as the REST route); descriptions are
   // unchanged. On top of #856 and #857 this tree measures 62,312, so 62,328 with the same 16.
+  //
+  // SCHEMA RAISED by `crossInboxCase` (#700), the same 1,197 characters as the settings ceiling
+  // above: this tree measures 63,509, so 63,525 with the same 16. No description changed.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -721,7 +731,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_503);
-    expect(schema).toBeLessThanOrEqual(62_328);
+    expect(schema).toBeLessThanOrEqual(63_525);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

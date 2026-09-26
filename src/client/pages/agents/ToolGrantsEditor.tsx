@@ -52,6 +52,10 @@ import { IntegrationEditModal } from "@/client/pages/resources/IntegrationEditMo
 import { McpEditModal } from "@/client/pages/resources/McpEditModal";
 import { ToolEditModal } from "@/client/pages/resources/ToolEditModal";
 import { TOOL_INSTRUCTIONS_MAX } from "@/modules/agents/text-caps";
+import {
+  CrossInboxCaseFields,
+  type CrossInboxCaseState,
+} from "./CrossInboxCaseFields";
 import type {
   GrantState,
   HandoffUiState,
@@ -100,6 +104,8 @@ const LABEL_TOOL = "set_labels";
 // update_kanban_task (edit the linked card's title/description/priority/dates) also takes optional
 // operator guidance, so it renders as a configurable card next to kanban_move_card.
 const UPDATE_KANBAN_TOOL = "update_kanban_task";
+// open_case_in_inbox needs a destination inbox before it is offered at all (issue #700).
+const OPEN_CASE_TOOL = "open_case_in_inbox";
 
 interface Props {
   // The agent being edited — scopes the handoff target picker to the accounts it serves.
@@ -131,6 +137,11 @@ interface Props {
   // Operator-authored guidance for set_custom_attribute + set_labels (when to use each scope/label/
   // attribute), appended to their model-facing descriptions. Persisted in agent.settings.toolGuidance.
   customAttributeInstructions: string;
+  // Config of open_case_in_inbox (agent.settings.crossInboxCase). Persisted by the Tools tab's save,
+  // like the handoff: with no destination inbox the tool is not offered, so the inbox belongs next
+  // to the switch that grants it.
+  crossInboxCase: CrossInboxCaseState;
+  setCrossInboxCase: (v: CrossInboxCaseState) => void;
   // The refused note this editor draws, if the standing refusal is about one -- see ToolRefusals.
   refusals: ToolRefusals;
   setCustomAttributeInstructions: (v: string) => void;
@@ -493,6 +504,8 @@ export function ToolGrantsEditor({
   kanbanInstructions,
   setKanbanInstructions,
   customAttributeInstructions,
+  crossInboxCase,
+  setCrossInboxCase,
   refusals,
   setCustomAttributeInstructions,
   labelInstructions,
@@ -590,6 +603,8 @@ export function ToolGrantsEditor({
   const updateKanbanEntry = catalog.native.find(
     (n) => n.name === UPDATE_KANBAN_TOOL,
   );
+  const openCaseEnabled = selectedNative.has(OPEN_CASE_TOOL);
+  const openCaseEntry = catalog.native.find((n) => n.name === OPEN_CASE_TOOL);
 
   // True when any ENABLED configurable native tool holds non-default config — surfaces a dot on the
   // collapsed section header so the operator knows hidden settings are in play. Mirrors each card's
@@ -605,7 +620,8 @@ export function ToolGrantsEditor({
       (labelInstructions.trim() !== "" ||
         protectedLabels.trim() !== "" ||
         allowedLabels.trim() !== "")) ||
-    (updateKanbanEnabled && updateKanbanTaskInstructions.trim() !== "");
+    (updateKanbanEnabled && updateKanbanTaskInstructions.trim() !== "") ||
+    (openCaseEnabled && crossInboxCase.targetInboxId !== "");
 
   // Agents/teams + the accounts the agent serves, for the "pinned" handoff target picker. Scoped to
   // the agent (by its bound inboxes): a pinned target is account-scoped, so it is only offered when the
@@ -1515,7 +1531,8 @@ export function ToolGrantsEditor({
                 n.name !== KANBAN_TOOL &&
                 n.name !== ATTR_TOOL &&
                 n.name !== LABEL_TOOL &&
-                n.name !== UPDATE_KANBAN_TOOL,
+                n.name !== UPDATE_KANBAN_TOOL &&
+                n.name !== OPEN_CASE_TOOL,
             )
             .map((n) => {
               const meta = nativeToolMeta(n.name, t);
@@ -1766,6 +1783,21 @@ export function ToolGrantsEditor({
                 )}
               />
             </FormField>
+          </ConfigurableToolCard>
+        )}
+        {openCaseEntry && !(observing && openCaseEntry.deliversToCustomer) && (
+          <ConfigurableToolCard
+            selected={openCaseEnabled}
+            onToggle={() => toggleNative(OPEN_CASE_TOOL)}
+            icon={nativeToolMeta(OPEN_CASE_TOOL, t).icon}
+            title={nativeToolMeta(OPEN_CASE_TOOL, t).label}
+            description={nativeToolMeta(OPEN_CASE_TOOL, t).description}
+            configured={crossInboxCase.targetInboxId !== ""}
+          >
+            <CrossInboxCaseFields
+              value={crossInboxCase}
+              onChange={setCrossInboxCase}
+            />
           </ConfigurableToolCard>
         )}
         {attrEntry && (

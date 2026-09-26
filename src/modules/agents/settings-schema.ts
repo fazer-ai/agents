@@ -493,6 +493,26 @@ const attributeContext = z.looseObject({
   task: attributeKeys(),
 });
 
+const crossInboxCase = z.looseObject({
+  targetInboxId: chatwootId().describe(
+    "chatwootInboxId the case opens in; unset = tool not offered",
+  ),
+  targetInstanceId: chatwootId().describe("our instance id of that inbox"),
+  originLabel: z.string().nullable().optional(),
+  caseAttributeKey: z
+    .string()
+    .optional()
+    .describe("default case_conversation_id"),
+  mergeContacts: z
+    .boolean()
+    .optional()
+    .describe("merge into the contact holding the typed email; default false"),
+  resolveOrigin: z
+    .boolean()
+    .optional()
+    .describe("close the origin after the reply once the case is open"),
+});
+
 const sendImage = z.looseObject({
   allowedHosts: z
     .array(z.string())
@@ -898,6 +918,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   channelRedirect: channelRedirect.optional(),
   attributeContext: attributeContext.optional(),
   sendImage: sendImage.optional(),
+  crossInboxCase: crossInboxCase.optional(),
   observability: observability.optional(),
   memory: memory.optional(),
   modelFallback: modelFallback.optional(),

@@ -601,7 +601,7 @@ What it costs: a refused message is remembered with the unheard-audio and unread
 instead of its content, and a file sent before consent is not read after it (the customer resends).
 A conversation a person holds, on a gated agent, costs one endpoint call per message with unread media
 (a stored grant under `mode: "once"`), which is what keeps its transcription for the attendant. An
-agent without the gate reads media exactly as before.
+agent without the gate reads media exactly as before, except a message a gate refused earlier on the same conversation: switching the gate off does not reopen it.
 
 ## In-process state (`state.ts`)
 

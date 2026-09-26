@@ -69,6 +69,11 @@ import {
 } from "@/modules/chatwoot/gate-close";
 import type { AuthContext } from "@/modules/contact-auth/check";
 import {
+  mediaRefusedThrough,
+  recordMediaRefusal,
+  refusedCovers,
+} from "@/modules/contact-auth/media-refusal";
+import {
   authorizeContact,
   type ContactAuthOutcome,
   contactAuthFlowEvent,
@@ -82,10 +87,8 @@ import {
   contactAuthNoticeKey,
   mediaAdmissionKey,
   mediaAlreadyAdmitted,
-  mediaRefusedHereThrough,
   releaseContactAuthNotice,
   rememberMediaAdmission,
-  rememberMediaRefusal,
 } from "@/modules/contact-auth/state";
 import { recordConversationAction } from "@/modules/conversations/audit";
 import {
@@ -1726,81 +1729,6 @@ export interface EagerMediaOwner {
   admission: "allowed" | "refused" | "unverified";
 }
 
-// Raises the conversation's media refusal mark to this message. Message ids are a per-account
-// sequence, so everything at or below the mark arrived before that refusal. Best-effort.
-async function recordMediaRefusal(
-  tenantId: bigint,
-  conversationDbId: bigint | null,
-  messageId: number | null | undefined,
-  base: PrismaClient,
-  sleep?: (ms: number) => Promise<void>,
-): Promise<void> {
-  if (conversationDbId === null || messageId == null) return;
-  const nap = sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= LEDGER_CLAIM_ATTEMPTS; attempt++) {
-    try {
-      await runScopedOn(
-        base,
-        sysCtx(tenantId),
-        (db) =>
-          db.$executeRaw`UPDATE conversations
-          SET media_refused_through_message_id = GREATEST(COALESCE(media_refused_through_message_id, 0), ${messageId}::bigint)
-          WHERE id = ${conversationDbId} AND tenant_id = ${tenantId}`,
-      );
-      return;
-    } catch (err) {
-      lastErr = err;
-      if (attempt < LEDGER_CLAIM_ATTEMPTS)
-        await nap(LEDGER_CLAIM_BACKOFF_MS * attempt);
-    }
-  }
-  rememberMediaRefusal(mediaRefusalKey(tenantId, conversationDbId), messageId);
-  logger.error(
-    "chatwoot: the media refusal of message %d (conv=%s) was not recorded in %d attempts; this process still honours it, a restart does not: %s",
-    messageId,
-    String(conversationDbId),
-    LEDGER_CLAIM_ATTEMPTS,
-    errMsg(lastErr),
-  );
-}
-
-function mediaRefusalKey(tenantId: bigint, conversationDbId: bigint): string {
-  return `${tenantId}:${conversationDbId}`;
-}
-
-// The conversation's media refusal mark: the column, or the refusal this process could not write.
-async function refusedThrough(
-  tenantId: bigint,
-  conversationDbId: bigint,
-  base: PrismaClient,
-  stored?: bigint | null,
-): Promise<number | null> {
-  const column =
-    stored !== undefined
-      ? stored
-      : ((
-          await runScopedOn(base, sysCtx(tenantId), (db) =>
-            db.conversation.findUnique({
-              where: { id: conversationDbId },
-              select: { mediaRefusedThroughMessageId: true },
-            }),
-          )
-        )?.mediaRefusedThroughMessageId ?? null);
-  const here = mediaRefusedHereThrough(
-    mediaRefusalKey(tenantId, conversationDbId),
-  );
-  if (column === null) return here;
-  return Math.max(Number(column), here ?? 0);
-}
-
-function refusedCovers(
-  mark: number | null,
-  messageId: number | null | undefined,
-): boolean {
-  return mark !== null && messageId != null && messageId <= mark;
-}
-
 // Whether this pass may send the message's media to a provider: the same gate, agent and request key
 // the turn would use. Fail-closed.
 async function mediaAdmitted(
@@ -1819,11 +1747,12 @@ async function mediaAdmitted(
         where: { chatwootInstanceId: instanceId, chatwootInboxId },
         select: { id: true, agentId: true, channelType: true },
       });
-      if (!inbox?.agentId) return null;
-      const agent = await db.agent.findUnique({
-        where: { id: inbox.agentId },
-        select: { settings: true },
-      });
+      const agent = inbox?.agentId
+        ? await db.agent.findUnique({
+            where: { id: inbox.agentId },
+            select: { settings: true },
+          })
+        : null;
       const conv = await db.conversation.findUnique({
         where: {
           tenantId_chatwootInstanceId_chatwootConversationId: {
@@ -1838,19 +1767,17 @@ async function mediaAdmitted(
           mediaRefusedThroughMessageId: true,
         },
       });
-      return { inbox, agentId: inbox.agentId, settings: agent?.settings, conv };
+      return { inbox, settings: agent?.settings, conv };
     });
-    if (!ctx) return true;
-    const cfg = readContactAuthConfig(ctx.settings);
-    if (!cfg.enabled) return true;
-    // NOTE: The refusal mark wins over any yes, including the caller's: a replayed delivery re-asks the
-    // gate, and a consent given since would answer for a file sent before it.
+    // NOTE: The refusal mark wins over any yes, including the caller's and a gate switched off since:
+    // a replayed delivery re-asks the gate, and a consent given since would answer for a file sent
+    // before it.
     const messageId = n.message?.id;
     const convDbId = ctx.conv?.id ?? null;
     if (
       convDbId !== null &&
       refusedCovers(
-        await refusedThrough(
+        await mediaRefusedThrough(
           tenantId,
           convDbId,
           base,
@@ -1861,6 +1788,10 @@ async function mediaAdmitted(
     ) {
       return false;
     }
+    const agentId = ctx.inbox?.agentId;
+    if (!ctx.inbox || !agentId) return true;
+    const cfg = readContactAuthConfig(ctx.settings);
+    if (!cfg.enabled) return true;
     if (owner.admission === "allowed") return true;
     // NOTE: Chatwoot follows every voice note with a `message_updated`; the yes already given covers it.
     if (
@@ -1871,7 +1802,7 @@ async function mediaAdmitted(
     }
     const verdict = await authorizeContact({
       tenantId,
-      agentId: ctx.agentId,
+      agentId,
       contactDbId: ctx.conv?.contactId ?? null,
       conversationDbId: ctx.conv?.id ?? null,
       conversationId,
@@ -1891,7 +1822,7 @@ async function mediaAdmitted(
         turnId: crypto.randomUUID(),
         source: "inbox",
         conversationId: owner.conversationId,
-        agentId: ctx.agentId,
+        agentId,
         inboxId: ctx.inbox.id,
         threadId: chatwootThreadId(tenantId, instanceId, conversationId),
         base,
@@ -1911,7 +1842,10 @@ async function mediaAdmitted(
     // NOTE: Re-read after the round trip: a newer message may have been refused meanwhile.
     if (
       convDbId !== null &&
-      refusedCovers(await refusedThrough(tenantId, convDbId, base), messageId)
+      refusedCovers(
+        await mediaRefusedThrough(tenantId, convDbId, base),
+        messageId,
+      )
     ) {
       return false;
     }

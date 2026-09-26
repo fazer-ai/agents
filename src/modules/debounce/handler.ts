@@ -50,6 +50,7 @@ import {
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { turnHadTheWords } from "@/modules/chatwoot/webhook";
 import type { AuthContext } from "@/modules/contact-auth/check";
+import { mediaRefusedThrough } from "@/modules/contact-auth/media-refusal";
 import {
   authorizeContact,
   contactAuthFlowEvent,
@@ -537,7 +538,7 @@ async function fillMissingVisuals(args: {
   if (alvos.length === 0) return false;
   // NOTE: Media the contact authorization refused stays unread even when the gate now says yes
   // (docs/contact-auth.md, "Media waits for the gate").
-  const recusadaAte = await mediaRefusedThrough(args);
+  const recusadaAte = await refusalMarkOrClosed(args);
   const abriveis = alvos.filter(
     (m) => recusadaAte === null || m.id > recusadaAte,
   );
@@ -598,20 +599,17 @@ async function fillMissingVisuals(args: {
 }
 
 // The conversation's media refusal mark, or null without one. Unreadable closes everything.
-async function mediaRefusedThrough(args: {
+async function refusalMarkOrClosed(args: {
   tenantId: bigint;
   fill: { convDbId: bigint };
   base: PrismaClient;
 }): Promise<number | null> {
   try {
-    const conv = await runScopedOn(args.base, sysCtx(args.tenantId), (db) =>
-      db.conversation.findFirst({
-        where: { id: args.fill.convDbId },
-        select: { mediaRefusedThroughMessageId: true },
-      }),
+    return await mediaRefusedThrough(
+      args.tenantId,
+      args.fill.convDbId,
+      args.base,
     );
-    const marca = conv?.mediaRefusedThroughMessageId ?? null;
-    return marca === null ? null : Number(marca);
   } catch (err) {
     logger.warn(
       "vision fill: media refusal mark unreadable (conv=%s), nothing is read: %s",

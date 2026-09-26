@@ -683,6 +683,24 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
     }
   });
 
+  test("a refusal recorded before the gate was switched off keeps that message unread", async () => {
+    await seedConversation(8824, INBOX_OPEN);
+    await suDb.conversation.updateMany({
+      where: { tenantId, chatwootConversationId: 8824 },
+      data: { mediaRefusedThroughMessageId: 73_000 },
+    });
+    await deliver({
+      convId: 8824,
+      chatwootInboxId: INBOX_OPEN,
+      event: "message_updated",
+      humanHeld: true,
+      messageId: 73_000,
+    });
+    expect(providers.auth).toBe(0);
+    expect(providers.stt).toBe(0);
+    expect(providers.vision).toBe(0);
+  });
+
   test("with STT and vision off, the gate is not asked about media nobody would read", async () => {
     await seedConversation(8815, INBOX_NO_MEDIA);
     await deliver({

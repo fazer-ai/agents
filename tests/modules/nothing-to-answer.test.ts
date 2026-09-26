@@ -720,8 +720,12 @@ describe.skipIf(!dbUp)(
       const conv = await seedConversation(89_529);
       const msgs: Msg[] = [{ id: 2, content: "" }];
       const cw = chatwoot(msgs, {
-        onLive: () => {
+        // Lands after the first full read returned, before the last one.
+        onFullRead: (nth) => {
+          if (nth !== 1) return undefined;
+          const judged = page([...msgs]);
           msgs.push({ id: 3, content: "esqueci de escrever: quero cancelar" });
+          return judged;
         },
       });
       await flush(89_529, cw, new NeverCalled());
@@ -775,8 +779,11 @@ describe.skipIf(!dbUp)(
       await seedConversation(89_532);
       const msgs: Msg[] = [{ id: 2, content: "" }];
       const late = chatwoot(msgs, {
-        onLive: () => {
+        onFullRead: (nth) => {
+          if (nth !== 1) return undefined;
+          const judged = page([...msgs]);
           msgs.push({ id: 3, content: "Oi! Ainda precisa de ajuda?", type: 1 });
+          return judged;
         },
       });
       await flush(89_532, late, new NeverCalled());
@@ -811,12 +818,15 @@ describe.skipIf(!dbUp)(
       await seedConversation(89_538);
       const msgs: Msg[] = [{ id: 2, content: "" }];
       const cw = chatwoot(msgs, {
-        onLive: () => {
+        onFullRead: (nth) => {
+          if (nth !== 1) return undefined;
+          const judged = page([...msgs]);
           msgs[0] = {
             id: 2,
             content: "",
             attachments: [{ file_type: "audio" }],
           };
+          return judged;
         },
       });
       await flush(89_538, cw, new NeverCalled());
@@ -846,6 +856,39 @@ describe.skipIf(!dbUp)(
         },
       });
       await flush(89_533, cw, new NeverCalled());
+      expect(cw.toggles).toEqual([]);
+    });
+
+    test("an operator who takes it during the final history read keeps it", async () => {
+      await seedConversation(89_539);
+      const holder: { cw?: ReturnType<typeof chatwoot> } = {};
+      holder.cw = chatwoot([{ id: 2, content: "" }], {
+        onFullRead: (nth) => {
+          if (nth === 2 && holder.cw) {
+            holder.cw.state.status = "open";
+            holder.cw.state.assigneeType = "User";
+            holder.cw.state.assigneeId = 9;
+          }
+          return undefined;
+        },
+      });
+      await flush(89_539, holder.cw, new NeverCalled());
+      expect(holder.cw.toggles).toEqual([]);
+    });
+
+    test("a /reset that lands during the direct path's final read closes nothing", async () => {
+      const conv = await seedConversation(89_540);
+      const cw = chatwoot([{ id: 2, content: "" }], {
+        onFullRead: async (nth) => {
+          if (nth !== 2) return undefined;
+          await suDb.conversation.update({
+            where: { id: conv.id },
+            data: { resetAtMessageId: 2 },
+          });
+          return undefined;
+        },
+      });
+      await direct(89_540, cw);
       expect(cw.toggles).toEqual([]);
     });
 

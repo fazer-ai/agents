@@ -5772,9 +5772,14 @@ export async function processChatwootDelivery(
   // resolved conversation. Late CONTENT, whether or not STT still has work on it: an audio that
   // arrives already transcribed is the same customer speaking. Asked only of an enabled agent's own
   // route, and cheap: one row read decides before any client is built.
+  // The RESPONDER's route, and only while it can still answer (round 9): `rt` is the observer where
+  // there is one, and reopening for an observer beside a responder that was switched off, flipped to
+  // monitoring or unbound since the close would park the conversation pending on nobody, the state
+  // the return-to-agent guard refuses (#495).
   if (
     (hasLateMedia || inboundTranscriptionOnUpdate(n) !== null) &&
-    rt?.enabled &&
+    responderRt?.enabled === true &&
+    !isMonitoring(responderRt.mode) &&
     mirror.conversationRowId !== null &&
     n.conversationId !== null
   ) {
@@ -5793,8 +5798,8 @@ export async function processChatwootDelivery(
         turnId: crypto.randomUUID(),
         source: "inbox",
         conversationId: mirror.conversationRowId,
-        agentId: rt.agentId,
-        inboxId: rt.inboxId,
+        agentId: responderRt.agentId,
+        inboxId: responderRt.inboxId,
         threadId: chatwootThreadId(
           params.tenantId,
           params.instanceId,

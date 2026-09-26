@@ -3394,8 +3394,18 @@ async function closeIfNothingToAnswerDirect(
       base,
     },
     stage: "route",
-    // No job to retire on this path; the agent can still be switched off while the helper reads.
-    stillWanted: () => agentStillSpeaks(tenantId, loaded.agentId, base),
+    // No job to retire on this path. What names the run is the EPISODE of the message it judged,
+    // the same fence an ordinary direct turn writes under (a /reset processed while the helper reads
+    // withdraws it); and the agent can still be switched off meanwhile.
+    stillWanted: async () =>
+      (loaded.conversationDbId === null ||
+        (await stillInSameEpisode({
+          tenantId,
+          conversationDbId: loaded.conversationDbId,
+          triggerMessageId: params.event.message?.id ?? null,
+          base,
+        })({ strict: false }))) &&
+      (await agentStillSpeaks(tenantId, loaded.agentId, base)),
   });
 }
 

@@ -113,15 +113,6 @@ export async function closeIfNothingToAnswer(params: {
     )
       return false;
 
-    const live = parseLiveConversation(
-      await client.getConversation(conversationId),
-    );
-    if (
-      !live ||
-      !shouldBotHandle(live, { ourAgentBotId: params.ourAgentBotId })
-    )
-      return false;
-
     // The supersede re-read, the same one the reply's post gate makes, and of the WHOLE history again
     // rather than past the last id: a message that landed meanwhile is answerable work for its own
     // flush (created on a PENDING conversation, so Chatwoot does not reopen for it), a reply of ours
@@ -134,6 +125,17 @@ export async function closeIfNothingToAnswer(params: {
       !nothingToAnswerIn(await client.getMessages(conversationId, { after: 0 }))
     )
       return false;
+    // Ownership last among the network reads (issue #895 review, round 9): an operator who takes
+    // the conversation while the history reads are in flight is never overruled.
+    const live = parseLiveConversation(
+      await client.getConversation(conversationId),
+    );
+    if (
+      !live ||
+      !shouldBotHandle(live, { ourAgentBotId: params.ourAgentBotId })
+    )
+      return false;
+
     // The caller's fences, asked after the last read and right before the write: every await above
     // is a wait a /reset, a switched-off agent or the job's deadline can land in.
     if (!(await params.stillWanted())) return false;

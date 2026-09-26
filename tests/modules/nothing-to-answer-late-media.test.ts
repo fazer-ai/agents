@@ -277,6 +277,26 @@ describe.skipIf(!dbUp)(
       expect((await reopenLines(conv)).map((l) => l.level)).toEqual(["warn"]);
     });
 
+    test("a responder switched off or flipped to monitoring since the close gets nothing back", async () => {
+      for (const [convId, data] of [
+        [9807, { enabled: false }],
+        [9808, { mode: "monitoring" }],
+      ] as const) {
+        await seedConversation(convId, "nothing_to_answer");
+        await suDb.agent.update({ where: { id: agentId }, data });
+        try {
+          const cw = client({ status: "resolved" });
+          await deliverLateAudio(convId, cw);
+          expect(cw.toggles).toEqual([]);
+        } finally {
+          await suDb.agent.update({
+            where: { id: agentId },
+            data: { enabled: true, mode: "production" },
+          });
+        }
+      }
+    });
+
     test("a reopen that fails is a warn, so the buried voice note pages", async () => {
       const conv = await seedConversation(9804, "nothing_to_answer");
       const cw = client({ status: "resolved", toggleFails: true });

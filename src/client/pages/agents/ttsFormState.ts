@@ -8,6 +8,7 @@ import {
   clampSpeakableLimit,
   clampVoiceSetting,
   readSpeakableLimits,
+  readVoiceChoiceSettings,
   readVoiceSettings,
   TTS_CHECK_MODES,
   TTS_DEFAULTS,
@@ -64,6 +65,12 @@ export interface TtsFormState {
   textOverChars: string;
   textOverListItems: string;
   textOverNumbers: string;
+  // What the model is told about a spoken reply (issue #859): the notice and its wording ("" = the
+  // built-in default, stored as null), and the reply_as_text tool and its note.
+  spokenNotice: boolean;
+  spokenNoticeText: string;
+  textChoice: boolean;
+  textChoiceNote: string;
 }
 
 function str(v: unknown): string {
@@ -94,6 +101,7 @@ export function readTtsFormState(block: unknown): TtsFormState {
   const mode = str(tt.mode);
   const provider = str(tt.provider);
   const limits = readSpeakableLimits(tt);
+  const choice = readVoiceChoiceSettings(tt);
   return {
     mode: mode && TTS_MODES.includes(mode as TtsMode) ? mode : "never",
     provider:
@@ -122,6 +130,12 @@ export function readTtsFormState(block: unknown): TtsFormState {
     textOverChars: num(limits.textOverChars),
     textOverListItems: num(limits.textOverListItems),
     textOverNumbers: num(limits.textOverNumbers),
+    // The switches through the runtime's reader (on only when stored as true); the texts raw, so the
+    // operator edits what is stored and not a trimmed copy of it.
+    spokenNotice: choice.spokenNotice,
+    spokenNoticeText: str(tt.spokenNoticeText),
+    textChoice: choice.textChoice,
+    textChoiceNote: str(tt.textChoiceNote),
   };
 }
 
@@ -164,6 +178,10 @@ export function ttsSettingsFrom(tts: TtsFormState): Record<string, unknown> {
       "textOverNumbers",
       numOrNull(tts.textOverNumbers),
     ),
+    spokenNotice: tts.spokenNotice,
+    spokenNoticeText: tts.spokenNoticeText.trim() || null,
+    textChoice: tts.textChoice,
+    textChoiceNote: tts.textChoiceNote.trim() || null,
   };
 }
 

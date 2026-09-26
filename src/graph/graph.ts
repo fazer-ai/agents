@@ -131,6 +131,15 @@ export interface BuildAgentGraphParams {
   // prose that goes nowhere and is paid for by the token. Absent means the ordinary turn, which does
   // answer somebody.
   noReplyChannel?: boolean;
+  // WHAT THE MODEL IS TOLD ABOUT A SPOKEN REPLY (issue #859): asked on EVERY round, and answering the
+  // notice's text while the reply still goes as a voice note, null once it does not (the model chose
+  // text, or the customer asked for text mid-turn), so no round after the change reads an instruction
+  // forbidding the lists it chose text to write. It travels exactly where the tool budget's wrap-up
+  // does (see `LATE_SYSTEM_MESSAGE`): a system message after the history where the provider keeps one
+  // there, the end of the system prompt where it does not, and a human message never. Either way
+  // everything before it is the same bytes a text turn sends, so the cached prefix survives, and it
+  // is persisted on no round.
+  spokenNotice?: () => string | null;
   // The deadline on each call to the PRIMARY, retries included (issue #809): the fallback's 45 s when
   // one was built (the primary then has one attempt), the agent's `modelCallTimeoutMs` when none was
   // (see buildModelAndGraph). Absent means that same default (issue #819: no call runs unbounded).
@@ -596,6 +605,7 @@ export function buildAgentGraph({
   onHistoryTrim,
   stillWanted,
   noReplyChannel,
+  spokenNotice,
   primaryDeadlineMs,
   signal: jobSignal,
 }: BuildAgentGraphParams) {
@@ -776,12 +786,17 @@ export function buildAgentGraph({
     const wrapUpText = noReplyChannel
       ? `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: se ainda falta registrar algo, use a última ferramenta; se não, encerre sem escrever nada.`
       : `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: responda ao cliente com as informações que já tem. Só use outra ferramenta se for absolutamente imprescindível.`;
-    const prompt =
-      softLimit && !lateSystemAccepted
-        ? `${systemPrompt}\n\n${wrapUpText}`
-        : systemPrompt;
-    const wrapUp =
-      softLimit && lateSystemAccepted ? [new SystemMessage(wrapUpText)] : [];
+    // The spoken-reply notice (issue #859) rides the same way, first. Only the callers that deliver
+    // a reply which can be spoken pass one, so an observation never carries it.
+    const noticeText = spokenNotice?.()?.trim();
+    const notice = noticeText ? [noticeText] : [];
+    const lateTexts = [...notice, ...(softLimit ? [wrapUpText] : [])];
+    const prompt = lateSystemAccepted
+      ? systemPrompt
+      : [systemPrompt, ...lateTexts].join("\n\n");
+    const wrapUp = lateSystemAccepted
+      ? lateTexts.map((t) => new SystemMessage(t))
+      : [];
     if (hardLimit) {
       reportToolLimit({ maxToolCalls: max, toolCalls });
     }

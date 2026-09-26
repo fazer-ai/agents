@@ -155,6 +155,7 @@ import {
 } from "./tools/mcp";
 import { buildRagTools } from "./tools/rag";
 import { logSchemaRefusals } from "./tools/refusal-log";
+import { buildReplyAsTextTool, type ReplyChoice } from "./tools/reply-as-text";
 import {
   dropDuplicateToolNames,
   droppedToolNamesEvent,
@@ -1029,6 +1030,13 @@ export interface ToolsetCtx {
   // Structural mirror of HandoffTurnState in tools/native.ts, for the same reason as turnState.
   // Two fields, not one: the line the model wants delivered, and whether the transfer completed.
   handoffState?: { customerMessage: string | null; completed: boolean };
+  // Where `reply_as_text` records the model's choice (issue #859), passed by the callers that deliver
+  // a reply that can be spoken: the reactive turn and the playground. Absent, the tool is not built,
+  // which is every path that never synthesizes (nudge, observation).
+  replyChoice?: ReplyChoice;
+  // What the reply of THIS turn would be once the customer's stored preference is `voiceReply`, for
+  // `set_voice_preference` to tell the model how the reply it is writing will go out (issue #859).
+  replyIsAudioWith?: (voiceReply: boolean | null) => boolean;
 }
 
 export interface ToolBuildDeps {
@@ -1066,6 +1074,7 @@ export interface ToolBuildDeps {
       // there has to be added here too or the call below stops type-checking).
       observed?: ObservedConversation;
       contactVoiceReply?: boolean | null;
+      replyIsAudioWith?: (voiceReply: boolean | null) => boolean;
       timezone?: string;
       vocab?: ChatwootVocab;
       shownLabels?: {
@@ -1436,6 +1445,7 @@ export async function buildToolset(
       conversationDbId: cfg.conversationDbId,
       observed: ctx.observed,
       contactVoiceReply: cfg.contactVoiceReply,
+      replyIsAudioWith: ctx.replyIsAudioWith,
       timezone: cfg.timezone,
       vocab,
       shownLabels,
@@ -1485,9 +1495,25 @@ export async function buildToolset(
       : {}),
     ...cfg.httpToolContext,
   };
+  // `reply_as_text` (issue #859), on every turn of an agent that turned it on, text and audio alike.
+  // Only a caller that delivers a reply which can be spoken hands over the holder (the reactive turn
+  // and the playground), so the observer and the nudge, which never synthesize, are not offered it.
+  // Placed with the natives so a tenant tool that happens to share the name is the one dropped: the
+  // operator switched this one on in the audio settings.
+  const tts = cfg.ttsConfig;
+  const replyAsText =
+    ctx.replyChoice && tts.textChoice && tts.mode !== "never"
+      ? [
+          buildReplyAsTextTool({
+            choice: ctx.replyChoice,
+            note: tts.textChoiceNote,
+          }),
+        ]
+      : [];
   const { tools, dropped } = dropDuplicateToolNames(
     [
       ...nativeTools,
+      ...replyAsText,
       // A DOCUMENT IS AN ATTACHMENT TO THE CUSTOMER, so a muted turn is not offered one: without a
       // turnState to queue into it refuses every call anyway, and with one it would deliver through
       // the very send this client exists to refuse. Same reading `buildNativeTools` and the
@@ -1873,6 +1899,8 @@ export interface GraphBuildDeps {
   // Forwarded to the graph: this caller's turn has no reply channel, so the tool budget's wrap-up
   // must not tell the model to answer a customer (issue #629). The observation tick passes it.
   noReplyChannel?: boolean;
+  // The spoken-reply notice, asked every round (issue #859). See BuildAgentGraphParams.spokenNotice.
+  spokenNotice?: () => string | null;
 }
 
 // The second provider, built or deliberately absent. Every way this returns undefined is a way an
@@ -2013,6 +2041,7 @@ export async function buildModelAndGraph(
     historyDates: cfg.historyDates ? { timezone: cfg.timezone } : null,
     onHistoryTrim: deps.onHistoryTrim,
     noReplyChannel: deps.noReplyChannel,
+    spokenNotice: deps.spokenNotice,
     stillWanted: deps.stillWanted,
     primaryDeadlineMs: fallback
       ? PRIMARY_TIMEOUT_MS

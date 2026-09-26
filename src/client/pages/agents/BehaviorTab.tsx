@@ -86,8 +86,10 @@ import {
 } from "@/modules/flowlog/settings";
 import { FOLLOW_UP_MAX_STEPS } from "@/modules/followups/settings";
 import {
+  SPOKEN_NOTICE_DEFAULT,
   TTS_CHECK_MODES,
   type TtsCheckMode,
+  VOICE_CHOICE_TEXT_MAX,
 } from "@/modules/tts/settings-shared";
 import { visionAcceptsDocuments } from "@/modules/vision/document-support";
 import { DEFAULT_EXTRACTION_PROMPT } from "@/modules/vision/prompt-default";
@@ -2691,6 +2693,72 @@ export function BehaviorTab({
                         />
                       </FormField>
                     </div>
+                  )}
+                </div>
+                {/* Issue #859: the model is told its reply will be spoken, and may choose text. */}
+                <div className="flex flex-col gap-3">
+                  <SwitchField
+                    checked={tts.spokenNotice}
+                    onCheckedChange={(v) => setTts({ ...tts, spokenNotice: v })}
+                    label={t(
+                      "editor.ttsSpokenNotice",
+                      "Tell the agent when its reply will be a voice note",
+                    )}
+                    help={t(
+                      "editor.ttsSpokenNoticeHelp",
+                      "On a turn that will be answered in audio, the agent reads a notice saying so, and writes for the ear: short, no lists, the essential first.",
+                    )}
+                  />
+                  {tts.spokenNotice && (
+                    <FormField
+                      label={t("editor.ttsSpokenNoticeText", "Notice")}
+                      error={refusals.ttsSpokenNoticeText}
+                      description={t(
+                        "editor.ttsSpokenNoticeTextHint",
+                        "Leave empty to use the default shown here.",
+                      )}
+                    >
+                      <Textarea
+                        rows={3}
+                        maxLength={VOICE_CHOICE_TEXT_MAX}
+                        value={tts.spokenNoticeText}
+                        placeholder={SPOKEN_NOTICE_DEFAULT}
+                        onChange={(e) =>
+                          setTts({ ...tts, spokenNoticeText: e.target.value })
+                        }
+                      />
+                    </FormField>
+                  )}
+                  <SwitchField
+                    checked={tts.textChoice}
+                    onCheckedChange={(v) => setTts({ ...tts, textChoice: v })}
+                    label={t(
+                      "editor.ttsTextChoice",
+                      "Let the agent send a reply as text",
+                    )}
+                    help={t(
+                      "editor.ttsTextChoiceHelp",
+                      "Offers the agent a tool to send one reply as a text message instead of a voice note, when the customer needs to read it: prices, steps, a code to copy.",
+                    )}
+                  />
+                  {tts.textChoice && (
+                    <FormField
+                      label={t("editor.ttsTextChoiceNote", "When to use it")}
+                      error={refusals.ttsTextChoiceNote}
+                      description={t(
+                        "editor.ttsTextChoiceNoteHint",
+                        "Optional. Added to the tool's description, like the notes on the other tools.",
+                      )}
+                    >
+                      <Textarea
+                        rows={2}
+                        maxLength={VOICE_CHOICE_TEXT_MAX}
+                        value={tts.textChoiceNote}
+                        onChange={(e) =>
+                          setTts({ ...tts, textChoiceNote: e.target.value })
+                        }
+                      />
+                    </FormField>
                   )}
                 </div>
               </>

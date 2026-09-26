@@ -148,6 +148,8 @@ function view(over: Partial<EditorControlsShown> = {}): EditorControlsShown {
     sttEnabled: true,
     ttsOn: true,
     ttsNormalize: true,
+    ttsSpokenNoticeShown: true,
+    ttsTextChoiceShown: true,
     visionEnabled: true,
     contactAuthEnabled: true,
     memoryCompactionEnabled: true,

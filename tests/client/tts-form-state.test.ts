@@ -42,6 +42,10 @@ const SAVED = {
   textOverChars: 600,
   textOverListItems: null,
   textOverNumbers: 5,
+  spokenNotice: true,
+  spokenNoticeText: "Fale curto, é áudio.",
+  textChoice: true,
+  textChoiceNote: "Tabela de preços vai por escrito.",
 };
 
 describe("agent editor TTS round-trip", () => {
@@ -87,6 +91,24 @@ describe("agent editor TTS round-trip", () => {
   test("an agent's saved block survives load → save unchanged", () => {
     const form = readTtsFormState(SAVED);
     expect(ttsSettingsFrom(form)).toEqual(SAVED);
+  });
+
+  // Issue #859: an agent saved before the two switches existed is saved back with both off and no
+  // text, so opening and saving the tab after an upgrade changes nothing the model reads.
+  test("an agent saved before the spoken-reply switches keeps them off after a save", () => {
+    const out = ttsSettingsFrom(readTtsFormState({ mode: "mirror" }));
+    expect([
+      out.spokenNotice,
+      out.spokenNoticeText,
+      out.textChoice,
+      out.textChoiceNote,
+    ]).toEqual([false, null, false, null]);
+    // A blank text is stored as null, which the reader turns into the default notice.
+    const blank = ttsSettingsFrom({
+      ...readTtsFormState({ mode: "mirror", spokenNotice: true }),
+      spokenNoticeText: "   ",
+    });
+    expect(blank.spokenNoticeText).toBeNull();
   });
 
   test("every key the settings reader knows about is carried by the form", () => {

@@ -274,7 +274,12 @@ const SETTINGS_DESC_CEILING = 2_000;
 // limits: a boolean and three nullable numbers, 548 characters. Trimmed first, by 41: each
 // description is the band, the default and what null means, since the reader clamps and a caller
 // cannot see either off the type. Re-measured on the tree that ships: 26,738.
-const SETTINGS_SCHEMA_CEILING = 26_753;
+//
+// RAISED for issue #859 by `tts.spokenNotice`, `spokenNoticeText`, `textChoice` and `textChoiceNote`,
+// what the model is told about a spoken reply: two booleans and two nullable texts, 451 characters.
+// Trimmed first, by 95: each description says only the default or what null means. Re-measured on
+// the tree that ships: 27,189.
+const SETTINGS_SCHEMA_CEILING = 27_204;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -712,6 +717,9 @@ describe("MCP tool descriptions", () => {
   // meaning "update this one", would silently misprice or delete). The provider is a plain string
   // (the service refuses an unknown one with the same message as the REST route); descriptions are
   // unchanged. On top of #856 and #857 this tree measures 62,312, so 62,328 with the same 16.
+  //
+  // SCHEMA RAISED by the four `tts` keys of #859, the same 451 characters as the settings ceiling
+  // above: this tree measures 62,763, so 62,779 with the same 16. No description changed.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -721,7 +729,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_503);
-    expect(schema).toBeLessThanOrEqual(62_328);
+    expect(schema).toBeLessThanOrEqual(62_779);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

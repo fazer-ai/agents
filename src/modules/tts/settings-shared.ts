@@ -8,6 +8,8 @@
 // no caller for either. The editor needs the shape and the clamps; it has no business shipping the
 // code that talks to the vendors.
 
+import { clipText } from "@/lib/text";
+
 export type TtsMode = "never" | "mirror" | "preference";
 
 export const TTS_MODES: TtsMode[] = ["never", "mirror", "preference"];
@@ -84,6 +86,44 @@ export interface TtsConfig extends TtsVoiceSettings {
   textOverChars: number | null;
   textOverListItems: number | null;
   textOverNumbers: number | null;
+  // What the MODEL is told about its reply being spoken (issue #859), both OFF by default so an
+  // upgrade changes nothing. `spokenNotice`: when this turn's reply is planned as a voice note, a
+  // system notice saying so goes at the end of what the model reads; `spokenNoticeText` is the
+  // operator's wording, null = SPOKEN_NOTICE_DEFAULT. `textChoice`: the model is offered
+  // `reply_as_text`, to send this one reply as text when it has to be read; `textChoiceNote` is the
+  // operator's note on when to use it, appended to the tool's description like a native tool's.
+  spokenNotice: boolean;
+  spokenNoticeText: string | null;
+  textChoice: boolean;
+  textChoiceNote: string | null;
+}
+
+// The notice an agent gets when its operator turns it on without writing one (issue #859). Written
+// for the case measured on a production deployment: of 27 voice replies reviewed by hand, 17 were
+// better as text, mostly long answers and lists, and most did not need to be long at all.
+export const SPOKEN_NOTICE_DEFAULT =
+  "[Sistema] Esta resposta será enviada ao cliente como mensagem de voz. Escreva para ser ouvida: curta, sem listas, tabelas nem formatação, com o essencial primeiro. Se o cliente precisar de detalhes para ler ou copiar (valores, passos, links), ofereça mandar por escrito.";
+
+// The ceiling on both texts above, the same one a native tool's note has: each is a paragraph of
+// guidance, and the notice is read on every audio turn.
+export const VOICE_CHOICE_TEXT_MAX = 1500;
+
+// The two switches and their texts (issue #859). A switch is on only when stored as `true`, so an
+// agent saved before it existed keeps its prompt and its toolset byte for byte. A text is kept only
+// when it has something besides whitespace, so a blank one falls back to the default instead of
+// appending an empty block; clamped to the ceiling, like every operator text a reader hands a model.
+export function readVoiceChoiceSettings(bag: Record<string, unknown>) {
+  const text = (v: unknown): string | null => {
+    if (typeof v !== "string") return null;
+    const t = v.trim();
+    return t ? clipText(t, VOICE_CHOICE_TEXT_MAX) : null;
+  };
+  return {
+    spokenNotice: bag.spokenNotice === true,
+    spokenNoticeText: text(bag.spokenNoticeText),
+    textChoice: bag.textChoice === true,
+    textChoiceNote: text(bag.textChoiceNote),
+  };
 }
 
 // The limits a reply is measured against before it is synthesized (issue #856), set from what was
@@ -151,6 +191,10 @@ export const TTS_DEFAULTS: TtsConfig = {
   checkMode: null,
   textInstead: false,
   ...SPEAKABLE_DEFAULTS,
+  spokenNotice: false,
+  spokenNoticeText: null,
+  textChoice: false,
+  textChoiceNote: null,
   ...VOICE_SETTINGS_DEFAULTS,
 };
 

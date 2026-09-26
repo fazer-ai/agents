@@ -412,8 +412,10 @@ async function extractInbound(
   let bytes: ArrayBuffer;
   let contentType: string | null;
   try {
+    // A body image was stored by the mailbox before the message existed: its 404 will not heal, and
+    // retrying it would multiply whatever a crafted body asks for.
     ({ bytes, contentType } = await client.downloadAttachment(params.dataUrl, {
-      retryOnMissing: true,
+      retryOnMissing: !params.bodyImage,
     }));
   } catch (err) {
     if (params.flow) {

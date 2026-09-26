@@ -131,6 +131,7 @@ function stub(opts: {
   metaWrites: number[];
   fail?: Set<string>;
   types?: Record<string, string>;
+  retries?: boolean[];
 }) {
   const client = {
     getMessages: async () => opts.page,
@@ -143,8 +144,12 @@ function stub(opts: {
         return false;
       }
     },
-    downloadAttachment: async (dataUrl: string) => {
+    downloadAttachment: async (
+      dataUrl: string,
+      o?: { retryOnMissing?: boolean },
+    ) => {
       opts.downloads.push(dataUrl);
+      opts.retries?.push(o?.retryOnMissing === true);
       if (opts.fail?.has(dataUrl)) throw new Error("404 on the blob");
       const [w, h] = opts.sizes[dataUrl] ?? [1200, 1600];
       return {
@@ -312,6 +317,7 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
       texts?: string[];
       fail?: Set<string>;
       types?: Record<string, string>;
+      retries?: boolean[];
     } = {},
   ) {
     const id = await seedConversation(convId);
@@ -339,6 +345,7 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
           metaWrites,
           fail: opts.fail,
           types: opts.types,
+          retries: opts.retries,
         }),
         visionFetch: visionFetch(opts.texts ?? ["Foto de um RG."]),
         checkpointer: new MemorySaver(),
@@ -497,6 +504,91 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     });
     expect(provider.calls).toBe(8);
     expect(out.turn).toContain(unreadMarker(2));
+  });
+
+  test("a body full of blob URLs downloads a bounded number of them and names the rest as unread", async () => {
+    await setVision(true);
+    const icons = Array.from({ length: 40 }, (_, i) =>
+      blob(300 + i, `i${i}.png`),
+    );
+    const out = await reengage(
+      1043,
+      {
+        content: "Oi",
+        content_attributes: emailBag({
+          html: `<p>Oi</p>${icons.map((u) => `<img src="${u}">`).join("")}`,
+        }),
+      },
+      {
+        sizes: Object.fromEntries(
+          icons.map((u) => [u, [144, 144] as [number, number]]),
+        ),
+      },
+    );
+    // Three times the cap, then nothing: what was never looked at cannot be called an ornament.
+    expect(out.downloads.length).toBe(24);
+    expect(provider.calls).toBe(0);
+    expect(out.turn).toContain(unreadMarker(16));
+  });
+
+  test("the download budget holds when photos keep their slots and ornaments give theirs back", async () => {
+    await setVision(true);
+    const photos = [blob(360, "p0.jpeg"), blob(361, "p1.jpeg")];
+    const icons = Array.from({ length: 40 }, (_, i) =>
+      blob(370 + i, `i${i}.png`),
+    );
+    const out = await reengage(
+      1045,
+      {
+        content: "Oi",
+        content_attributes: emailBag({
+          html: [...photos, ...icons].map((u) => `<img src="${u}">`).join(""),
+        }),
+      },
+      {
+        sizes: Object.fromEntries(
+          icons.map((u) => [u, [144, 144] as [number, number]]),
+        ),
+        texts: ["Foto A.", "Foto B."],
+      },
+    );
+    // Batches of 8, then 6, 6, 6 as the ornaments return their slots: the budget cuts the last
+    // batch short instead of letting a whole one through.
+    expect(out.downloads.length).toBe(24);
+    expect(provider.calls).toBe(2);
+    expect(out.turn).toContain(unreadMarker(18));
+  });
+
+  test("a body image that 404s is not retried as a freshly posted attachment", async () => {
+    await setVision(true);
+    const gone = blob(44, "gone.png");
+    const retries: boolean[] = [];
+    await reengage(
+      1044,
+      {
+        content: "Oi",
+        content_attributes: emailBag({ html: `<p>Oi</p><img src="${gone}">` }),
+      },
+      { fail: new Set([gone]), retries },
+    );
+    // The mailbox stored the blob before the message existed; a 404 will not heal on retry.
+    expect(retries).toEqual([false]);
+    // A real attachment still gets the retry that absorbs Chatwoot's write race. The stash is keyed
+    // by message id, which the stub reuses, so the first message's reading is dropped first.
+    clearMediaAnnotations();
+    const beside: boolean[] = [];
+    await reengage(
+      1046,
+      {
+        content: "Oi",
+        content_attributes: emailBag({ html: `<p>Oi</p><img src="${gone}">` }),
+        attachments: [
+          { id: 146, file_type: "image", data_url: blob(46, "a.png") },
+        ],
+      } as never,
+      { fail: new Set([gone]), retries: beside },
+    );
+    expect(beside).toEqual([true, false]);
   });
 
   test("an email whose only content is a body image is answered", async () => {

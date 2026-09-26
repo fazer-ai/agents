@@ -41,6 +41,11 @@ import type { VisionConfig } from "./settings";
 // reportado ao modelo, não descartado em silêncio.
 export const VISION_MAX_ATTACHMENTS = 8;
 
+// Quantas imagens do corpo de um e-mail podem ser BAIXADAS por mensagem, lidas ou só classificadas
+// (#864). Um corpo normal traz uma (3.181 de 3.801 mensagens medidas); três tetos cobrem as fotos e
+// os ornamentos que dividem o corpo com elas, e param o corpo forjado com milhares de URLs de blob.
+export const BODY_IMAGE_MAX_DOWNLOADS = 3 * VISION_MAX_ATTACHMENTS;
+
 // Um anexo visual (imagem ou documento) com o que já se sabe dele.
 export interface VisualAttachment {
   // Null for an image Chatwoot's mailbox kept inside the email body (#864): no attachment row.
@@ -186,16 +191,25 @@ export async function extractMessageVisuals(params: {
 
   // EM PARALELO, porque o orçamento por arquivo é de 20s para imagem e 60s para documento: cinco
   // deles em série é um turno que ninguém espera, cinco de uma vez custam um.
+  // Teto de downloads de imagem do corpo por mensagem, somando os dois laços abaixo: o teto de 8
+  // limita o que vai ao provedor, não o que se baixa, e um corpo com mil URLs de blob faria mil
+  // downloads. O que sobra sem ser olhado conta como não lido: não dá para chamar de ornamento.
+  let orcamento = BODY_IMAGE_MAX_DOWNLOADS;
+  const tirar = (n: number) => {
+    const fatia = corpo.splice(0, Math.min(n, orcamento));
+    orcamento -= fatia.length;
+    return fatia;
+  };
   let vagas = Math.max(0, VISION_MAX_ATTACHMENTS - novasExtracoes);
-  let lote = corpo.splice(0, vagas);
+  let lote = tirar(vagas);
   const [dosAnexos, primeiroLote] = await Promise.all([
     Promise.all(visuais.map(ler)),
     Promise.all(lote.map(ler)),
   ]);
   const extraidos = [...dosAnexos, ...primeiroLote];
   vagas = primeiroLote.filter((e) => e.r === BODY_IMAGE_IGNORED).length;
-  while (corpo.length > 0 && vagas > 0) {
-    lote = corpo.splice(0, vagas);
+  while (corpo.length > 0 && vagas > 0 && orcamento > 0) {
+    lote = tirar(vagas);
     const lidos = await Promise.all(lote.map(ler));
     extraidos.push(...lidos);
     vagas = lidos.filter((e) => e.r === BODY_IMAGE_IGNORED).length;
@@ -203,9 +217,9 @@ export async function extractMessageVisuals(params: {
   // O que passou do teto é baixado só para saber se é ornamento, sem ir ao provedor: um logotipo de
   // assinatura depois de oito fotos não é arquivo a pedir de novo.
   // Em lotes do tamanho do teto, porque cada download fica inteiro em memória.
-  while (corpo.length > 0) {
+  while (corpo.length > 0 && orcamento > 0) {
     const alemDoTeto = await Promise.all(
-      corpo.splice(0, VISION_MAX_ATTACHMENTS).map((visual) =>
+      tirar(VISION_MAX_ATTACHMENTS).map((visual) =>
         classifyBodyImage({
           tenantId,
           instanceId,
@@ -222,6 +236,7 @@ export async function extractMessageVisuals(params: {
     );
     sobraram += alemDoTeto.filter((r) => r !== BODY_IMAGE_IGNORED).length;
   }
+  sobraram += corpo.length;
 
   const imagens: string[] = [];
   const documentos: string[] = [];

@@ -1763,6 +1763,22 @@ describe("the tool", () => {
     ).toBe(true);
   });
 
+  test("the model is told to call it directly, not to ask for an email first", () => {
+    // Issue #882: told only "when it asks for an email, ask the customer", a model asked for an
+    // address the contact already had, before calling the tool at all.
+    const { t } = toolFor(fakeChatwoot());
+    expect(t.description).toContain(
+      "Call it directly: it reads the contact's email and phone itself, so do not ask the customer for them first.",
+    );
+    expect(t.description).toContain(
+      "Only when the result says an email is missing",
+    );
+    const email = (
+      t.schema as unknown as { shape: Record<string, { description?: string }> }
+    ).shape.email;
+    expect(email?.description).toStartWith("Leave it out on the first call.");
+  });
+
   test("a failed request after the turn was withdrawn hands nothing off", async () => {
     // Review round 3: the fallback transferred a conversation the operator had just cleared.
     const f = fakeChatwoot({ failOn: new Set(["createConversation"]) });

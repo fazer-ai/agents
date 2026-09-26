@@ -2322,7 +2322,7 @@ function openCaseOutcomeText(
 
 function openCaseInInboxTool(ctx: ToolCtx) {
   const description =
-    "Open the customer's case in the team's other inbox (configured by the operator: you choose WHETHER to open it, never where), without asking the customer to switch channels. Use it when the request has to be handled by the team that works in that inbox. `reason` becomes an internal note on the case. `customer_message` is the first message the customer receives THERE (for an email inbox, the opening email), so write it as that message. The destination needs a way to reach the customer: when it asks for an email, ask the customer and pass exactly the address they typed. Tell the customer here where their case went." +
+    "Open the customer's case in the team's other inbox (configured by the operator: you choose WHETHER to open it, never where), without asking the customer to switch channels. Use it when the request has to be handled by the team that works in that inbox. `reason` becomes an internal note on the case. `customer_message` is the first message the customer receives THERE (for an email inbox, the opening email), so write it as that message. Call it directly: it reads the contact's email and phone itself, so do not ask the customer for them first. Only when the result says an email is missing, ask for it and call again with exactly the address they typed. Tell the customer here where their case went." +
     (ctx.crossInboxCase?.config.resolveOrigin && ctx.turnState
       ? " Once the case is open, this conversation is closed after your reply is delivered."
       : " This tool does NOT close this conversation; close with resolve_conversation if that is the next step.");
@@ -2473,7 +2473,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           .string()
           .optional()
           .describe(
-            "Only when the tool asked for it: the email address exactly as the customer typed it in this conversation.",
+            "Leave it out on the first call. Only after a result said an email is missing: the address exactly as the customer typed it in this conversation.",
           ),
         labels: z
           .array(z.string())

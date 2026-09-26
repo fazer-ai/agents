@@ -126,7 +126,7 @@ async function main() {
     }
     console.log(
       opts.apply
-        ? `Wrote ${report.written} rows, stamped ${PRICE_TABLE_VERSION}.`
+        ? `Wrote ${report.written} rows, each stamped with what priced it now (the tenant's own price, or ${PRICE_TABLE_VERSION}).`
         : "Nothing written. Re-run with --apply to write.",
     );
   } finally {

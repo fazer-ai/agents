@@ -278,6 +278,12 @@ async function run(
           // The ORIGIN contact is the base: it is the one this conversation, and the platform's
           // mirror of it, point at. The holder's conversations and address move onto it.
           step = "merge_contacts";
+          // Asked right before the one write nothing can undo: the address write and the holder
+          // search above were both waits, and a withdrawal inside them must not still move another
+          // contact's history onto this one.
+          if (input.stillWanted && !(await input.stillWanted())) {
+            return { kind: "called_off" };
+          }
           await client.mergeContacts(contactId, holder);
           identity = "merged";
         } else {
@@ -339,13 +345,16 @@ async function run(
     // open, since no write here can take it back.
     const partial: string[] = [];
     let calledOff = false;
-    const attempt = async (name: string, fn: () => Promise<unknown>) => {
-      if (calledOff) return;
+    const withdrawn = async (): Promise<boolean> => {
+      if (calledOff) return true;
       if (input.stillWanted && !(await input.stillWanted())) {
         calledOff = true;
         partial.push("called_off");
-        return;
       }
+      return calledOff;
+    };
+    const attempt = async (name: string, fn: () => Promise<unknown>) => {
+      if (await withdrawn()) return;
       try {
         await fn();
       } catch {
@@ -355,10 +364,16 @@ async function run(
     // A continued case can come back closed: an inbox locked to one conversation per contact hands
     // back the contact's LAST conversation whatever its state, without applying the status asked
     // for. Reopened here, because a case the team cannot see in its queue is not a case.
+    // NOT best-effort, unlike everything after it: a case that could not be reopened is not a case,
+    // and reporting it open would tell the customer so and, under `resolveOrigin`, close the origin
+    // too, leaving both conversations closed. It fails the opening instead, which hands the origin
+    // to people.
     if (created.status !== "open") {
-      await attempt("reopen_case", () =>
-        client.toggleStatus(caseId, "open", { asAdmin: true }),
-      );
+      step = "reopen_case";
+      if (input.stillWanted && !(await input.stillWanted())) {
+        return { kind: "called_off" };
+      }
+      await client.toggleStatus(caseId, "open", { asAdmin: true });
     }
     await attempt("origin_attribute", () =>
       client.setConversationCustomAttributes(
@@ -396,6 +411,9 @@ async function run(
       await attempt("destination_labels", () =>
         withConversationLabels(input.tenantId, caseId, async () => {
           const current = await client.getConversationLabels(caseId);
+          // Asked again after the queue's wait and the read: a reset queued ahead of this write clears
+          // the labels and withdraws the turn, and this write must not put them back.
+          if (await withdrawn()) return;
           await client.setConversationLabels(
             caseId,
             [...new Set([...current, ...input.labels])],
@@ -410,6 +428,7 @@ async function run(
         withConversationLabels(input.tenantId, origin, async () => {
           const current = await client.getConversationLabels(origin);
           if (current.includes(originLabel)) return;
+          if (await withdrawn()) return;
           await client.setConversationLabels(origin, [...current, originLabel]);
         }),
       );

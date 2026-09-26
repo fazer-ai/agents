@@ -136,6 +136,7 @@ import {
   handoffAnsweredTheTurn,
   handoffDeclaredSilence,
   ownerChangedByTurn,
+  ownTransfer,
   type TurnState,
   turnDeliveredToCustomer,
   turnReachedTheCustomer,
@@ -1206,7 +1207,12 @@ async function runTurnBody(
         const d = await runGuardrail("output", text);
         if (!guardrailTripped(d)) return "send";
         if (d.kind !== "handed-off") return "drop";
-        if ((await handOverForGuardrail("output")) !== "handed") return "drop";
+        const handed = await ownTransfer(
+          handoffState,
+          () => handOverForGuardrail("output"),
+          (r) => r === "handed",
+        );
+        if (handed !== "handed") return "drop";
         handoffState.customerMessage = d.reply;
         handoffState.declinedToSpeak = d.reply === null;
         return "handed";

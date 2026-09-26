@@ -118,6 +118,7 @@ import {
   handoffAnsweredTheTurn,
   handoffDeclaredSilence,
   ownerChangedByTurn,
+  ownTransfer,
 } from "./tools/native";
 
 // agentNudge consumption: an inbound domain event (correlated to a conversation thread) is
@@ -1453,15 +1454,20 @@ async function runAgentNudgeBody(
           const d = await screenOutput(text);
           if (!guardrailTripped(d)) return "send";
           if (d.kind !== "handed-off") return "drop";
-          const handed = await applyGuardrailHandoff({
-            client,
-            conversationId,
-            instanceId,
-            handoff: nudgeCfg.handoffConfig,
-            direction: "output",
-            flow,
-            stillWanted: toolFence,
-          });
+          const handed = await ownTransfer(
+            handoffState,
+            () =>
+              applyGuardrailHandoff({
+                client,
+                conversationId,
+                instanceId,
+                handoff: nudgeCfg.handoffConfig,
+                direction: "output",
+                flow,
+                stillWanted: toolFence,
+              }),
+            (r) => r,
+          );
           handoffState.completed = handed;
           if (handed) handoffState.customerMessage = d.reply;
           return handed ? "handed" : "drop";

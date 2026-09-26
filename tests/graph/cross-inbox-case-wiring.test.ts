@@ -6,6 +6,7 @@ import {
   buildToolset,
   type ToolsetCtx,
 } from "@/graph/prepare";
+import { ownTransfer } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { CONTACT_AUTH_DEFAULTS } from "@/modules/contact-auth/settings";
 import {
@@ -153,15 +154,54 @@ describe("both runtimes bind the output gate for it", () => {
     const b = binding(await Bun.file("src/graph/runtime.ts").text());
     expect(b).toContain('await runGuardrail("output", text)');
     expect(b).toContain('if (!guardrailTripped(d)) return "send";');
-    expect(b).toContain('await handOverForGuardrail("output")');
+    expect(b).toContain('() => handOverForGuardrail("output")');
     expect(b).toContain("handoffState.customerMessage = d.reply;");
   });
   test("the proactive turn screens with its gate and transfers through the guardrail hand-off", async () => {
     const b = binding(await Bun.file("src/graph/nudge.ts").text());
     expect(b).toContain("await screenOutput(text)");
     expect(b).toContain('if (!guardrailTripped(d)) return "send";');
-    expect(b).toContain("const handed = await applyGuardrailHandoff({");
+    expect(b).toContain("applyGuardrailHandoff({");
     expect(b).toContain('return handed ? "handed" : "drop";');
     expect(b).toContain("handoffState.completed = handed;");
+  });
+});
+
+// Review round 3: a transfer the output check asks for, made from inside a tool call, has to wear the
+// turn's own ownership marks, or a sibling call's fence reads its status webhook as a takeover.
+describe("ownTransfer", () => {
+  test("in flight while it runs, and marked changed only when it changed", async () => {
+    const state: {
+      customerMessage: string | null;
+      completed: boolean;
+      ownerChanged?: boolean;
+      ownerChangesInFlight?: number;
+    } = { customerMessage: null, completed: false };
+    let seenInFlight = -1;
+    await ownTransfer(
+      state,
+      async () => {
+        seenInFlight = state.ownerChangesInFlight ?? 0;
+        return "failed";
+      },
+      (r) => r === "handed",
+    );
+    expect(seenInFlight).toBe(1);
+    expect(state.ownerChangesInFlight).toBe(0);
+    expect(state.ownerChanged).toBeUndefined();
+    await ownTransfer(
+      state,
+      async () => "handed",
+      (r) => r === "handed",
+    );
+    expect(state.ownerChanged).toBe(true);
+  });
+
+  test("both runtimes wrap the guardrail transfer in it", async () => {
+    for (const f of ["src/graph/runtime.ts", "src/graph/nudge.ts"]) {
+      const src = await Bun.file(f).text();
+      const at = src.indexOf("screenCustomerText: async (text) => {");
+      expect(src.slice(at, at + 900)).toContain("await ownTransfer(");
+    }
   });
 });

@@ -175,6 +175,26 @@ export function ownerChangedByTurn(state: HandoffTurnState): boolean {
 
 // The status change a tool of this turn makes on purpose, marked from before the call so the tool
 // boundary's ownership question does not read it as somebody else's.
+// The same bookkeeping for a transfer made by a caller OUTSIDE this file (the output check's `handoff`
+// verdict on text a tool sends, issue #700), whose result says whether the owner actually changed.
+// Counted in flight while it runs, so a sibling call's fence does not read the transfer's own status
+// webhook as a person taking over and skip the pinned assignment.
+export async function ownTransfer<T>(
+  state: HandoffTurnState | undefined,
+  transfer: () => Promise<T>,
+  changed: (result: T) => boolean,
+): Promise<T> {
+  if (state) state.ownerChangesInFlight = (state.ownerChangesInFlight ?? 0) + 1;
+  try {
+    const result = await transfer();
+    if (state && changed(result)) state.ownerChanged = true;
+    return result;
+  } finally {
+    if (state)
+      state.ownerChangesInFlight = (state.ownerChangesInFlight ?? 1) - 1;
+  }
+}
+
 async function ownStatusChange(
   ctx: { handoffState?: HandoffTurnState },
   write: () => Promise<unknown>,
@@ -2368,10 +2388,20 @@ function openCaseInInboxTool(ctx: ToolCtx) {
       );
       let fallback = "";
       try {
+        // FENCED LIKE handoff_to_human: before the note, and again between the note and the status
+        // change, which cannot be undone. A request that failed because the turn was reset or
+        // withdrawn must not transfer the conversation the operator just cleared.
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          ctx.onNoEffect?.(OPEN_CASE_TOOL_NAME);
+          return "Did not open the case, and did not hand off (the run was called off).";
+        }
         await ctx.client.sendPrivateNote(
           ctx.conversationId,
           `⚠️ Não consegui abrir o caso na outra caixa (etapa: ${result.step}). O cliente está aguardando atendimento aqui. Motivo informado: ${reason.trim()}`,
         );
+        if (ctx.stillWanted && !(await ctx.stillWanted())) {
+          return "Did not hand off (the run was called off while the note was in flight); the note was already filed.";
+        }
         await ownStatusChange(ctx, () =>
           ctx.client.toggleStatus(ctx.conversationId, "open"),
         );

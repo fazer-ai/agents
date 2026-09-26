@@ -760,6 +760,36 @@ describe("openCaseInInbox", () => {
       expect(f.calls.some((c) => c.fn === "createConversation")).toBe(false);
     });
 
+    test("called off during the holder search, merge on: nothing is merged", async () => {
+      // Review round 3: the merge is the one write nothing undoes.
+      let wanted = true;
+      const f = fakeChatwoot({
+        contacts: { ...noEmail, 9: { email: "ana@exemplo.com" } },
+        incoming: ["ana@exemplo.com"],
+      });
+      const find = f.client.findContactIdByEmail;
+      f.client.findContactIdByEmail = async (e: string) => {
+        const r = await find(e);
+        wanted = false;
+        return r;
+      };
+      const r = await openCaseInInbox(
+        f.client,
+        input({
+          email: "ana@exemplo.com",
+          stillWanted: async () => wanted,
+          config: {
+            ...CROSS_INBOX_CASE_DEFAULTS,
+            targetInboxId: 40,
+            mergeContacts: true,
+          },
+        }),
+      );
+      expect(r.kind).toBe("called_off");
+      expect(f.calls.some((c) => c.fn === "mergeContacts")).toBe(false);
+      expect(f.contacts.size).toBe(2);
+    });
+
     test("a 422 nobody explains is a failure, not a guess", async () => {
       const f = fakeChatwoot({
         contacts: noEmail,
@@ -859,6 +889,61 @@ describe("openCaseInInbox", () => {
     ).toHaveLength(1);
   });
 
+  test("a withdrawal queued ahead of the label write keeps it from putting a label back", async () => {
+    // Review round 3: the fence ran before the queue's wait, and a reset inside it was undone.
+    const f = fakeChatwoot();
+    let wanted = true;
+    const reset = withConversationLabels(1n, 7, async () => {
+      await new Promise((res) => setTimeout(res, 30));
+      wanted = false;
+    });
+    await Promise.all([
+      reset,
+      openCaseInInbox(
+        f.client,
+        input({
+          tenantId: 1n,
+          customerMessage: null,
+          stillWanted: async () => wanted,
+          config: {
+            ...CROSS_INBOX_CASE_DEFAULTS,
+            targetInboxId: 40,
+            originLabel: "caso-aberto",
+          },
+        }),
+      ),
+    ]);
+    expect(f.convs.find((c) => c.id === 7)?.labels).toEqual([]);
+  });
+
+  test("a withdrawal queued ahead of the case's label write keeps the case unlabelled", async () => {
+    const f = fakeChatwoot();
+    let wanted = true;
+    let caseId = 0;
+    const create = f.client.createConversation;
+    f.client.createConversation = async (p) => {
+      const r = await create(p);
+      caseId = r.id;
+      // A reset on the case itself, queued before the tool's label write reaches the queue.
+      void withConversationLabels(1n, caseId, async () => {
+        await new Promise((res) => setTimeout(res, 30));
+        wanted = false;
+      });
+      return r;
+    };
+    await openCaseInInbox(
+      f.client,
+      input({
+        tenantId: 1n,
+        customerMessage: null,
+        labels: ["urgente"],
+        stillWanted: async () => wanted,
+      }),
+    );
+    expect(caseId).toBeGreaterThan(0);
+    expect(f.convs.find((c) => c.id === caseId)?.labels ?? []).toEqual([]);
+  });
+
   test("the origin label waits in the queue every label writer shares", async () => {
     // Review round 1: a `set_labels` beside it read the same set, and the last write erased the other.
     const f = fakeChatwoot();
@@ -932,6 +1017,35 @@ describe("openCaseInInbox", () => {
       "open",
       { asAdmin: true },
     ]);
+  });
+
+  test("a closed case that cannot be reopened fails the opening, and nothing claims it", async () => {
+    // Review round 3: a swallowed reopen reported an open case, and resolveOrigin closed the origin.
+    const f = fakeChatwoot({
+      lockToSingle: true,
+      failOn: new Set(["toggleStatus"]),
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels: [],
+        },
+        {
+          id: 60,
+          inboxId: 40,
+          contactId: 5,
+          status: "resolved",
+          attrs: {},
+          labels: [],
+        },
+      ],
+    });
+    const r = await openCaseInInbox(f.client, input());
+    expect(r).toMatchObject({ kind: "failed", step: "reopen_case" });
+    expect(f.convs.find((c) => c.id === 7)?.attrs).toEqual({});
   });
 
   test("an open case that comes back is not toggled again", async () => {
@@ -1281,6 +1395,37 @@ describe("the tool", () => {
       ownerChanged: true,
     });
     expect(out).toContain("do not repeat it");
+  });
+
+  test("a failed request after the turn was withdrawn hands nothing off", async () => {
+    // Review round 3: the fallback transferred a conversation the operator had just cleared.
+    const f = fakeChatwoot({ failOn: new Set(["createConversation"]) });
+    let wanted = true;
+    const create = f.client.createConversation;
+    f.client.createConversation = async (p) => {
+      wanted = false;
+      return create(p);
+    };
+    const { t, toggles } = toolFor(f, { stillWanted: async () => wanted });
+    const out = String(await t.invoke({ reason: "x" }));
+    expect(toggles).toEqual([]);
+    expect(f.calls.some((c) => c.fn === "sendPrivateNote")).toBe(false);
+    expect(out).toContain("called off");
+  });
+
+  test("withdrawn while the fallback note was in flight: the note stays, the transfer does not happen", async () => {
+    const f = fakeChatwoot({ failOn: new Set(["createConversation"]) });
+    let wanted = true;
+    const note = f.client.sendPrivateNote;
+    f.client.sendPrivateNote = async (id: number, c: string) => {
+      const r = await note(id, c);
+      wanted = false;
+      return r;
+    };
+    const { t, toggles } = toolFor(f, { stillWanted: async () => wanted });
+    await t.invoke({ reason: "x" });
+    expect(f.calls.some((c) => c.fn === "sendPrivateNote")).toBe(true);
+    expect(toggles).toEqual([]);
   });
 
   test("without a line, a person still gets the conversation and the model is told nothing reaches the customer", async () => {

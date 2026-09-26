@@ -214,7 +214,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   // #859: every line of one conversation, to prove the reply the model chose to send as text is in
   // none of them. #886: two more, the `replyRecovered` line of a turn whose reply was written beside a
   // tool call, and the `silenceUnexplained` warn that must not fire on it, both scoped by thread.
-  "tests/graph/runtime.test.ts": 29,
+  // #885: two more, the `silenceRetry` line of a retried silence and the warn's detail that says the
+  // retry ran, both scoped by thread.
+  "tests/graph/runtime.test.ts": 31,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/skip-handover.test.ts": 1,
   // #726: the helper that runs one tool call end to end, plus the case that asks WHEN the turn's
@@ -251,6 +253,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/flowlog-retention.test.ts": 1,
   "tests/modules/flowlog-settle.test.ts": 1,
   "tests/modules/flowlog.test.ts": 1,
+  // #896: two reads, tenant-wide on purpose. Their subject is HOW MANY lines a lost follow-up sequence
+  // wrote (one), and a one-step ladder re-run (none); each case empties this file's tenant first.
+  "tests/modules/followup-sweep-later-step.test.ts": 2,
   "tests/modules/guardrail-health.test.ts": 1,
   // #720: one reader, and it answers both directions on the same query — the line that names a
   // colleague's reply nobody remembered, and its absence on the customer's own lost ingestion, which
@@ -274,6 +279,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   // uma morte escreveu, e o da outra é sob QUAL tenant a linha caiu; nenhuma das unidades que morrem
   // ali tem turno para uma leitura mais estreita se prender.
   "tests/modules/scheduler-dead-letter-erased.test.ts": 2,
+  // #896: one reader, tenant-wide on purpose: its subject is HOW MANY lines a discarded outcome wrote,
+  // and each case empties this file's tenant first.
+  "tests/modules/scheduler-discard-announced.test.ts": 1,
   "tests/modules/spend-ceiling-gate-e2e.test.ts": 1,
   "tests/modules/spend-ceiling-paths-e2e.test.ts": 4,
   "tests/modules/spend-ceiling-poll.test.ts": 6,

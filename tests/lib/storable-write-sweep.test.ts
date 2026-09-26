@@ -354,8 +354,9 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/conversations/service.ts": [12, "read"],
   // Down from 4: both roads to DEAD now write through one `finalizeDead` (issue #356).
   "src/modules/flowlog/alert-worker.ts": [3, "guarded + cleared"],
-  // The sweep's reading of that backoff (issue #796): the type of the row it is handed.
-  "src/modules/followups/handlers.ts": [1, "read"],
+  // The sweep's reading of that backoff (issue #796): the type of the row it is handed. And the
+  // line a lost follow-up sequence writes (issue #896), a fixed English sentence.
+  "src/modules/followups/handlers.ts": [2, "read + flow-event"],
   "src/modules/flowlog/dead-letter.ts": [1, "flow-event"],
   "src/modules/flowlog/read.ts": [4, "read"],
   "src/modules/flowlog/service.ts": [2, "guarded"],

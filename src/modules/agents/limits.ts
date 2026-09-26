@@ -8,12 +8,17 @@
 // - maxHistoryTokens: ceiling on the persisted history handed to the model each turn. null = no
 //   ceiling, which is the historical behavior and stays the default: an instance that upgrades must
 //   never silently start forgetting. See src/graph/history-window.ts for what the ceiling buys.
+// - retrySilence: a reactive turn that would end with nothing for the customer, no handoff and no
+//   `skip_reply` is asked once more, with an instruction naming both exits (issue #885). ON unless
+//   set to `false`: an unanswered customer is the worse failure, and the switch keeps the upgrade
+//   reversible.
 
 export interface LimitsConfig {
   maxToolCalls: number;
   // Token ceiling for the message history only. The system prompt and the tool definitions are NOT
   // counted: they are not trimmable, and the operator's budget has to sit above them.
   maxHistoryTokens: number | null;
+  retrySilence: boolean;
 }
 
 export const DEFAULT_MAX_TOOL_CALLS = 10;
@@ -31,6 +36,7 @@ export function readLimitsConfig(settings: unknown): LimitsConfig {
   const def: LimitsConfig = {
     maxToolCalls: DEFAULT_MAX_TOOL_CALLS,
     maxHistoryTokens: null,
+    retrySilence: true,
   };
   if (!settings || typeof settings !== "object") return def;
   const l = (settings as Record<string, unknown>).limits;
@@ -54,5 +60,8 @@ export function readLimitsConfig(settings: unknown): LimitsConfig {
       ? Math.min(MAX_HISTORY_TOKENS, Math.max(MIN_HISTORY_TOKENS, rounded))
       : null;
 
-  return { maxToolCalls, maxHistoryTokens };
+  // Only an explicit `false` turns it off: absent, null or anything else keeps the default.
+  const retrySilence = bag.retrySilence !== false;
+
+  return { maxToolCalls, maxHistoryTokens, retrySilence };
 }

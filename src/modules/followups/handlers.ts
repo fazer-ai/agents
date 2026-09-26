@@ -5,7 +5,12 @@ import { isTurnInFlight } from "@/graph/inflight";
 import { type AgentNudge, parseThreadId, runAgentNudge } from "@/graph/nudge";
 import { isRepairableNudgeRefusal, nextNudgeRetry } from "@/graph/nudge-retry";
 import type { RuntimeDeps } from "@/graph/runtime";
-import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
+import {
+  asSuperAdminOn,
+  runScopedOn,
+  type ScopedDb,
+  type TenantContext,
+} from "@/lib/tenancy";
 import { hasLiveAppointment } from "@/modules/appointments/reminders";
 import {
   isOpenAt,
@@ -14,6 +19,8 @@ import {
   parseSchedule,
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
+import { readDebugModes } from "@/modules/flowlog/debug-mode";
+import { emitFlowEvent } from "@/modules/flowlog/service";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
 import {
   isFollowUpLive,
@@ -378,6 +385,12 @@ async function sweepHandler(
           t.episode,
           followUpConfigVersion(t.agent_updated_at, t.hours_updated_at),
         ),
+      // This pass read the thread as not yet followed up in its episode, and a batch is read before
+      // any of it is armed (issue #896). Step 0 may have run in between and ended the sequence on
+      // purpose (a noted window, a schedule that never opens, retries spent, the last step) or moved
+      // it on; every one of those stamps. Re-armed, the row went back to step 0 on a stamped episode.
+      // The sweep's own eligibility, asked again at the write.
+      stillWanted: (db) => episodeStillUnstamped(db, tenantId, t.thread_id),
       base,
     });
   }
@@ -385,6 +398,72 @@ async function sweepHandler(
     outcome: "reschedule",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
   };
+}
+
+// The sweep's "not yet followed up in this episode", read from the conversation row. The same
+// comparison as its SQL above and as `isNewFollowUpEpisode`: no stamp, or someone spoke after it.
+async function episodeStillUnstamped(
+  db: ScopedDb,
+  tenantId: bigint,
+  threadId: string,
+): Promise<boolean> {
+  const rows = await db.$queryRaw<unknown[]>`
+    SELECT 1 FROM conversations
+     WHERE tenant_id = ${tenantId}
+       AND thread_id = ${threadId}
+       AND GREATEST(last_inbound_at, last_replied_at) IS NOT NULL
+       AND (last_follow_up_at IS NULL
+            OR GREATEST(last_inbound_at, last_replied_at) > last_follow_up_at)`;
+  return rows.length > 0;
+}
+
+// A STEP 0 THAT FINDS ITS EPISODE ALREADY FOLLOWED UP (issue #896). The row is the ladder, one per
+// conversation, and the sweep no longer re-arms it once the episode is stamped (`stillWanted`) nor
+// pulls back a later step, so a step 0 running after the stamp means something re-armed a ladder
+// under way. If that ladder had steps left, ending here ends it before the step that labels and
+// resolves: the conversation stays
+// pending with nothing scheduled, and the sweep will not select it again. Before this line the exit
+// was an ordinary `done`, the loss had no trace anywhere, and ten conversations of one deployment sat
+// two days before anyone looked. `dead_letter` because that is what it is, work nothing will bring
+// back, and the stage alert channels subscribe to; `warn` because the conversation is still there for
+// the operator to pick up.
+function announceLostLadder(
+  job: ClaimedJob,
+  base: PrismaClient,
+  at: {
+    conversationId: bigint;
+    agentId: bigint;
+    inboxId: bigint | null;
+    threadId: string;
+    fullDetail: boolean;
+  },
+): void {
+  emitFlowEvent(
+    {
+      tenantId: job.tenantId,
+      turnId: crypto.randomUUID(),
+      source: "inbox",
+      conversationId: at.conversationId,
+      agentId: at.agentId,
+      inboxId: at.inboxId,
+      threadId: at.threadId,
+      fullDetail: at.fullDetail,
+      base,
+    },
+    {
+      stage: "dead_letter",
+      level: "warn",
+      status: "error",
+      detail: {
+        unit: "job",
+        kind: job.kind,
+        jobId: String(job.id),
+        ...(job.dedupeKey ? { dedupeKey: job.dedupeKey } : {}),
+      },
+      errorMessage:
+        "follow-up step 0 ran on an episode already followed up: the sequence ends before its last step",
+    },
+  );
 }
 
 // WHICH CONFIGURATION A DEFERRAL WAS COMPUTED FROM (issue #796, review round 4). The cadence and the
@@ -581,6 +660,9 @@ export async function followUpHandler(
       : null;
     return {
       conv,
+      agentId: inbox.agentId,
+      // Through the shared derivation: only the agent's own switch matters to a line this short.
+      fullDetail: readDebugModes(agent.settings, null).fullDetail,
       followUpCfg,
       hours,
       armedAt: agent.followUpArmedAt,
@@ -643,7 +725,16 @@ export async function followUpHandler(
   if (stepIndex === 0) {
     // Step 0 (sequence start) only proceeds for a fresh episode — the sweep's SQL filter already
     // enforces this; re-checking here blocks a stale step-0 job on an already-handled conversation.
-    if (!newEpisode) return { outcome: "done" };
+    if (!newEpisode) {
+      announceLostLadder(job, base, {
+        conversationId: ctx.conv.id,
+        agentId: ctx.agentId,
+        inboxId: ctx.conv.inboxId,
+        threadId,
+        fullDetail: ctx.fullDetail,
+      });
+      return { outcome: "done" };
+    }
     // NOTE: Activation fence (mirrors the sweep SQL): a sequence only STARTS for an episode that began
     // after follow-up was armed. Catches a step-0 job enqueued before a re-arm (disable → re-enable)
     // and any agent never armed (NULL → fail-safe). Later steps are exempt: an in-flight sequence

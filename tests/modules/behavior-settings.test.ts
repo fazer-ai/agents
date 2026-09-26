@@ -167,8 +167,13 @@ describe("behavior-settings — observability", () => {
       fullDetailUntil: null,
     });
     // The limits block is re-read through its typed reader, so it comes back normalized in full:
-    // the untouched tool-call cap plus the history ceiling explicitly at "off".
-    expect(next.limits).toEqual({ maxToolCalls: 7, maxHistoryTokens: null });
+    // the untouched tool-call cap plus the history ceiling explicitly at "off", and the silence
+    // retry at its default.
+    expect(next.limits).toEqual({
+      maxToolCalls: 7,
+      maxHistoryTokens: null,
+      retrySilence: true,
+    });
   });
 });
 

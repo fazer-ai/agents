@@ -93,6 +93,7 @@ import {
   lastAssistantText,
   recursionLimitFor,
   replyWrittenThisTurn,
+  type SilenceRetryOutcome,
 } from "./graph";
 import { owesHandbackNote } from "./handback";
 import { clearTurnInFlight, markTurnInFlight } from "./inflight";
@@ -1257,8 +1258,26 @@ async function runTurnBody(
     { buildNativeTools, mcp: params.deps?.mcp, flow },
   );
 
+  // Whether this turn's unexplained silence was asked once more (issue #885), for the warn that
+  // still fires when the second answer said nothing too.
+  let silenceRetried = false;
+  let silenceRetryOutcome: SilenceRetryOutcome | null = null;
   // Build model + graph + cost/trace callbacks.
   const graph = await buildModelAndGraph(loaded, tools, {
+    // THE RETRY OF AN UNEXPLAINED SILENCE (issue #885), asked by the graph at the moment it would
+    // run. Not a silence, and so never retried: a turn whose transfer completed (a person owns the
+    // conversation) or that already put something in front of the customer. The same two facts
+    // `silenceIsUnexplained` reads at the end of the turn, asked here before the second call is paid.
+    retrySilence: () =>
+      loaded.retrySilence &&
+      !handoffState.completed &&
+      !turnDeliveredToCustomer(turnState, handoffState),
+    // Recorded here and WRITTEN after the invoke: a retry that called tools is only known to have
+    // declared silence once `skip_reply` ran and left its mark.
+    onSilenceRetry: ({ outcome }) => {
+      silenceRetried = true;
+      silenceRetryOutcome = outcome;
+    },
     makeModel: params.deps?.makeModel,
     checkpointer: params.deps?.checkpointer,
     spokenNotice: () =>
@@ -2513,6 +2532,23 @@ async function runTurnBody(
     // catch above without reaching this, and every refusal below rolls back what the MODEL produced,
     // never what the customer said.
     await reportFoldedIn();
+    // THE RETRY'S OUTCOME (issue #885), settled against what actually ran. A batch that called tools
+    // is a declared silence only if `skip_reply` ran and left its MARK, the same reading
+    // `silenceWasChosen` makes for the close below, so a `skip_reply` beside another call is recorded
+    // as the silence it was, and one a precondition refused is recorded as tools.
+    if (silenceRetryOutcome) {
+      const outcome =
+        silenceRetryOutcome === "skip_reply" || silenceRetryOutcome === "tools"
+          ? silenceWasChosen(result.messages as BaseMessage[])
+            ? "skip_reply"
+            : "tools"
+          : silenceRetryOutcome;
+      emitFlowEvent(flow, {
+        stage: "generate",
+        status: "ok",
+        detail: { silenceRetry: outcome },
+      });
+    }
     // EVERY REFUSAL FROM HERE DOWN GOES OUT THROUGH THIS, and the fence in
     // tests/graph/refused-turn-callsites.test.ts is what keeps that true.
     //
@@ -2965,7 +3001,11 @@ async function runTurnBody(
           stage: "generate",
           level: "warn",
           status: "ok",
-          detail: { silenceUnexplained: true, resolveDiscarded },
+          detail: {
+            silenceUnexplained: true,
+            resolveDiscarded,
+            silenceRetried,
+          },
         });
       }
       // Skipped, not returned on: closing a conversation the operator has just cleared is a write

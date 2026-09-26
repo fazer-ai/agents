@@ -151,7 +151,27 @@ export interface BuildAgentGraphParams {
   // reaches the model call, and the tool boundary refuses calls once it has aborted, the same way a
   // called-off turn does, so the graph ends in a consistent state and only after its work has stopped.
   signal?: AbortSignal;
+  // AN UNEXPLAINED SILENCE IS ASKED ONCE MORE (issue #885). A turn that would end with nothing for
+  // the customer, no handoff and no `skip_reply` is sent back to the model in the same round, with a
+  // late instruction naming both exits: answer, or declare the silence. Asked at the moment it would
+  // run, because only the caller knows whether the turn already reached the customer or handed the
+  // conversation to a person, and those turns are not silences. Absent means never: the nudge and
+  // the playground pass none, and a caller with no reply channel must not be told to answer.
+  retrySilence?: () => boolean;
+  // Fired once when that retry ran, with what the second answer did, for the turn's trail.
+  onSilenceRetry?: (info: SilenceRetryInfo) => void;
 }
+
+// What the retry of an unexplained silence got back (issue #885): text for the customer, the
+// declared silence, other tool calls (the turn goes on), or nothing again.
+export type SilenceRetryOutcome = "answered" | "skip_reply" | "tools" | "empty";
+export interface SilenceRetryInfo {
+  outcome: SilenceRetryOutcome;
+}
+
+// The opening of the retry instruction, exported so a test can find it wherever it travels.
+export const SILENCE_RETRY_MARK =
+  "[Sistema] Este turno terminou sem mensagem para o cliente";
 
 const DEFAULT_MAX_TOOL_CALLS = 10;
 
@@ -608,6 +628,8 @@ export function buildAgentGraph({
   spokenNotice,
   primaryDeadlineMs,
   signal: jobSignal,
+  retrySilence,
+  onSilenceRetry,
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
@@ -658,6 +680,9 @@ export function buildAgentGraph({
   // reaffirmation round re-enters the terminal branch and reports it again, with a bigger count. Two
   // warnings for one event, the second one describing a round that spent nothing.
   let toolLimitReported = false;
+  // ONCE PER TURN, the same closure argument: the silence retry (issue #885) runs at most once in
+  // this invocation, however many rounds follow it.
+  let silenceRetried = false;
   const reportToolLimit = (info: {
     maxToolCalls: number;
     toolCalls: number;
@@ -848,7 +873,7 @@ export function buildAgentGraph({
     const messages = [new SystemMessage(prompt), ...shown, ...wrapUp];
     // The SAME question, to the other provider, when there is one. Same messages and same prompt:
     // this is not a second, cheaper attempt, it is the attempt the customer is waiting for.
-    const second =
+    const secondFor = (msgs: BaseMessage[]) =>
       fallback && fallbackLlm
         ? {
             labels: { provider: fallback.provider, model: fallback.modelId },
@@ -863,7 +888,7 @@ export function buildAgentGraph({
                 : deadline;
               return (
                 hardLimit ? (cappedFallback ?? fallback.model) : fallbackLlm
-              ).invoke(messages, {
+              ).invoke(msgs, {
                 signal,
                 // Metadata rather than callbacks, and measured: metadata MERGES with the turn's and
                 // reaches the handlers it already had, while `callbacks` replaces them — which
@@ -877,79 +902,109 @@ export function buildAgentGraph({
           }
         : null;
 
-    // Already demoted this invocation: the fallback IS the model now, so it gets the
-    // empty-completion retry under its own name, and a failure of its own is reported as that
-    // rather than as a second failover the operator never caused.
-    if (second && fallbackHasTheTurn) {
-      try {
-        return {
-          messages: [
-            ...narration,
-            silenced(
-              await runModelCall(second.run, {
-                deadlineMs: second.deadlineMs,
-                signal: jobSignal,
-                primary: second.labels,
-                onRetry: onModelRetry,
-                onPermitWait: onModelPermitWait,
-              }),
-            ),
-          ],
-        };
-      } catch (err) {
-        // NOTE: a call the job's deadline ended failed on the job, not on the provider (issue #811).
-        if (!jobSignal?.aborted) {
-          onModelFallbackFailed?.({
-            ...second.labels,
-            reason: err instanceof Error ? err.message : "provider error",
+    // One question to the model, the fallback's rules included. A function because the silence
+    // retry below (issue #885) asks it a second time, with different messages, under the same rules.
+    const ask = async (msgs: BaseMessage[]): Promise<BaseMessage> => {
+      const second = secondFor(msgs);
+      // Already demoted this invocation: the fallback IS the model now, so it gets the
+      // empty-completion retry under its own name, and a failure of its own is reported as that
+      // rather than as a second failover the operator never caused.
+      if (second && fallbackHasTheTurn) {
+        try {
+          return await runModelCall(second.run, {
+            deadlineMs: second.deadlineMs,
+            signal: jobSignal,
+            primary: second.labels,
+            onRetry: onModelRetry,
+            onPermitWait: onModelPermitWait,
           });
+        } catch (err) {
+          // NOTE: a call the job's deadline ended failed on the job, not on the provider (issue #811).
+          if (!jobSignal?.aborted) {
+            onModelFallbackFailed?.({
+              ...second.labels,
+              reason: err instanceof Error ? err.message : "provider error",
+            });
+          }
+          throw err;
         }
-        throw err;
       }
-    }
 
-    const primaryLlm = hardLimit ? capped : llm;
-    // NOTE: an explicit `signal` REPLACES the one LangGraph propagates to this call instead of joining
-    // it (measured). The job's deadline is joined here with the call's own, which `runModelCall`
-    // hands in, so a deadline that ends the job ends this call too (issue #811).
-    const response = await runModelCall(
-      (deadline) => {
-        // NOTE: a job past its deadline starts no primary call, which a permit wait or a slow tool can
-        // otherwise reach with the signal already aborted: an adapter that ignores the signal would
-        // still bill a reply nobody can deliver (issue #811).
-        if (jobSignal?.aborted) return Promise.reject(jobSignal.reason);
-        const signal = jobSignal
-          ? AbortSignal.any([deadline, jobSignal])
-          : deadline;
-        return primaryLlm.invoke(messages, { signal });
-      },
-      {
-        deadlineMs: primaryDeadlineMs,
-        signal: jobSignal,
-        primary,
-        onRetry: onModelRetry,
-        onPermitWait: onModelPermitWait,
-        fallback: second
-          ? {
-              labels: second.labels,
-              run: second.run,
-              deadlineMs: second.deadlineMs,
-              // NOTE: after the job's deadline no fallback starts (see `second.run`), so there is no
-              // failover to report and no failed provider: the primary failed on the job's deadline
-              // (issue #811).
-              onFallback: ({ reason }) => {
-                if (jobSignal?.aborted) return;
-                fallbackHasTheTurn = true;
-                onModelFallback?.({ ...second.labels, reason });
-              },
-              onFallbackFailed: ({ reason }) => {
-                if (jobSignal?.aborted) return;
-                onModelFallbackFailed?.({ ...second.labels, reason });
-              },
-            }
-          : undefined,
-      },
-    );
+      const primaryLlm = hardLimit ? capped : llm;
+      // NOTE: an explicit `signal` REPLACES the one LangGraph propagates to this call instead of joining
+      // it (measured). The job's deadline is joined here with the call's own, which `runModelCall`
+      // hands in, so a deadline that ends the job ends this call too (issue #811).
+      return runModelCall(
+        (deadline) => {
+          // NOTE: a job past its deadline starts no primary call, which a permit wait or a slow tool can
+          // otherwise reach with the signal already aborted: an adapter that ignores the signal would
+          // still bill a reply nobody can deliver (issue #811).
+          if (jobSignal?.aborted) return Promise.reject(jobSignal.reason);
+          const signal = jobSignal
+            ? AbortSignal.any([deadline, jobSignal])
+            : deadline;
+          return primaryLlm.invoke(msgs, { signal });
+        },
+        {
+          deadlineMs: primaryDeadlineMs,
+          signal: jobSignal,
+          primary,
+          onRetry: onModelRetry,
+          onPermitWait: onModelPermitWait,
+          fallback: second
+            ? {
+                labels: second.labels,
+                run: second.run,
+                deadlineMs: second.deadlineMs,
+                // NOTE: after the job's deadline no fallback starts (see `second.run`), so there is no
+                // failover to report and no failed provider: the primary failed on the job's deadline
+                // (issue #811).
+                onFallback: ({ reason }) => {
+                  if (jobSignal?.aborted) return;
+                  fallbackHasTheTurn = true;
+                  onModelFallback?.({ ...second.labels, reason });
+                },
+                onFallbackFailed: ({ reason }) => {
+                  if (jobSignal?.aborted) return;
+                  onModelFallbackFailed?.({ ...second.labels, reason });
+                },
+              }
+            : undefined,
+        },
+      );
+    };
+
+    let response = await ask(messages);
+    // THE UNEXPLAINED SILENCE, ASKED ONCE MORE (issue #885). Only a final answer that says nothing:
+    // no text, no calls, in a turn that declared no silence (`calledSkipThisTurn` covers the round
+    // right after the decision too), whose reply the model did not already write beside a tool call
+    // (issue #886 delivers that one), and not at the hard limit, where the model runs without the
+    // tools the instruction names. The caller's predicate is asked last, at the moment it would run:
+    // it knows what this node cannot (a transfer that completed, something already delivered).
+    if (
+      retrySilence &&
+      !silenceRetried &&
+      !noReplyChannel &&
+      !hardLimit &&
+      saidNothing(response) &&
+      !calledSkipThisTurn(history) &&
+      replyWrittenThisTurn([...history, response]) === "" &&
+      retrySilence()
+    ) {
+      silenceRetried = true;
+      const canSkip = (tools ?? []).some((t) => t.name === SKIP_REPLY_TOOL);
+      const text = silenceRetryText(canSkip);
+      // WHERE IT TRAVELS is where the tool budget's wrap-up does (issue #628), and for the same
+      // reasons: after the history as a system message where every destination keeps one there,
+      // inside the one system prompt everywhere else, and in a human message never. The empty
+      // answer is NOT sent back: it said nothing, and an empty assistant turn is the shape some
+      // providers refuse. Neither is persisted: only the second answer returns to the thread.
+      const retried = lateSystemAccepted
+        ? [...messages, new SystemMessage(text)]
+        : [new SystemMessage(`${prompt}\n\n${text}`), ...shown, ...wrapUp];
+      response = await ask(retried);
+      onSilenceRetry?.({ outcome: silenceRetryOutcome(response) });
+    }
     return { messages: [...narration, silenced(response)] };
   };
 
@@ -1108,4 +1163,59 @@ export function replyWrittenThisTurn(messages: BaseMessage[]): string {
     if (!found) found = contentToText(ai.content).trim();
   }
   return found;
+}
+
+// THE RETRY OF AN UNEXPLAINED SILENCE (issue #885), the helpers the agent node asks.
+//
+// A final answer that says nothing: no text and no tool call. A call the provider could not parse
+// (`invalid_tool_calls`) counts as nothing too: no tool runs for it and the turn ends there, so the
+// customer is exactly as unanswered, and the retry is the model's one chance to act properly.
+function saidNothing(m: BaseMessage): boolean {
+  const ai = m as AIMessage;
+  if ((ai.tool_calls?.length ?? 0) > 0) return false;
+  return contentToText(ai.content).trim() === "";
+}
+
+// Whether this turn already DECLARED silence, bounded at the last human message like
+// `replyWrittenThisTurn`: an earlier "ok" answered with `skip_reply` is in this thread, and a
+// decision taken then says nothing about now. Read from the CALL, the conservative side: a refused
+// `skip_reply` is still the model choosing to say nothing, and a retry would argue with it.
+function calledSkipThisTurn(history: BaseMessage[]): boolean {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i];
+    if (!m) continue;
+    if (m.getType() === "human") return false;
+    if (m.getType() !== "ai") continue;
+    if (
+      ((m as AIMessage).tool_calls ?? []).some(
+        (c) => c.name === SKIP_REPLY_TOOL,
+      )
+    )
+      return true;
+  }
+  return false;
+}
+
+// BOTH EXITS, NAMED, and the second one is the point. Measured on 51 real turns, most of these
+// silences follow a thank-you and were RIGHT, only undeclared; a few were customers owed an answer.
+// An instruction that only said "answer" would turn the first group into replies nobody asked for,
+// so it names the silence as an equal exit and says what separates the two. Where `skip_reply` is not
+// granted there is only one exit to name, and a turn that stays empty after it keeps today's ending.
+function silenceRetryText(canSkip: boolean): string {
+  return canSkip
+    ? `${SILENCE_RETRY_MARK} e sem \`skip_reply\`, e um turno assim deixa o cliente sem saber se foi atendido. Decida agora, uma coisa só: se a última mensagem do cliente pede ou espera algo de você, responda; se não há nada a dizer (um agradecimento, um ok, uma despedida), chame \`skip_reply\` com o motivo. Não escreva só para não ficar em silêncio.`
+    : `${SILENCE_RETRY_MARK}. Decida agora: se a última mensagem do cliente pede ou espera algo de você, responda; se não há nada a dizer, encerre sem escrever nada.`;
+}
+
+// A batch that CONTAINS `skip_reply` is a declared silence, alone or beside other calls (a model
+// declares it next to `resolve_conversation`). Read here from the call, because the tool has not run
+// yet; the runtime confirms it from the tool's MARK once it has (see its `onSilenceRetry`), so a
+// `skip_reply` a precondition refused is not reported as a silence the model chose.
+function silenceRetryOutcome(m: BaseMessage): SilenceRetryOutcome {
+  const calls = (m as AIMessage).tool_calls ?? [];
+  if (calls.length > 0)
+    return calls.some((c) => c.name === SKIP_REPLY_TOOL)
+      ? "skip_reply"
+      : "tools";
+  return contentToText(m.content).trim() ? "answered" : "empty";
 }

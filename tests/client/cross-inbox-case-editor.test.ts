@@ -24,6 +24,7 @@ describe("the form round-trips what is stored", () => {
       caseAttributeKey: "protocolo",
       mergeContacts: true,
       resolveOrigin: true,
+      caseLabels: ["agente-sac", "veio-do-whatsapp"],
     };
     const saved = serializeCrossInboxCase(readCrossInboxCaseState(stored));
     expect(readCrossInboxCaseConfig({ crossInboxCase: saved })).toEqual(stored);
@@ -46,6 +47,22 @@ describe("the form round-trips what is stored", () => {
       readCrossInboxCaseConfig({ crossInboxCase: saved }).caseAttributeKey,
     ).toBe("case_conversation_id");
   });
+});
+
+test("case labels picked on the card are saved, and an empty pick saves an empty list (issue #901)", () => {
+  const state = readCrossInboxCaseState({
+    targetInboxId: 40,
+    targetInstanceId: 3,
+  });
+  expect(state.caseLabels).toEqual([]);
+  const saved = serializeCrossInboxCase({
+    ...state,
+    caseLabels: [" Agente-SAC ", "agente-sac", ""],
+  });
+  expect(
+    readCrossInboxCaseConfig({ crossInboxCase: saved }).caseLabels,
+  ).toEqual(["agente-sac"]);
+  expect(serializeCrossInboxCase(state).caseLabels).toEqual([]);
 });
 
 describe("which save owns the block (source)", () => {

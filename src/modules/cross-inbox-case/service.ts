@@ -44,6 +44,7 @@ export type CaseClient = Pick<
   | "getMessages"
   | "getConversationLabels"
   | "setConversationLabels"
+  | "listLabels"
   | "setConversationCustomAttributes"
   | "toggleStatus"
 >;
@@ -91,6 +92,8 @@ export type OpenCaseResult =
       // The destination's reply window was closed (Chatwoot's `can_reply`), so the opening went to
       // the case as an explained private note instead of to the customer.
       openingOutsideWindow?: boolean;
+      // Operator case labels the account does not have, left off the case (issue #901).
+      unknownCaseLabels?: string[];
     }
   | { kind: "not_configured" }
   | { kind: "unsupported_channel"; channelType: string | null }
@@ -469,17 +472,42 @@ async function run(
       // writer shares (`set_labels`, the observer's verdict), and both READ inside it, a new case
       // included: an automation or an operator can label it between the create and this write, and
       // serializing only preserves a change the write has read.
-      if (input.labels.length > 0) {
+      //
+      // THE OPERATOR'S LABELS ARE CHECKED AGAINST THE ACCOUNT, the model's are not (issue #901). A
+      // label Chatwoot does not know is still stored as a tag, one the folders never list, so a typo
+      // in the configuration would pass as labelled while no queue shows the case. It is left off
+      // and reported to the operator. An unreadable catalog does not cost the label: the label is
+      // what puts the case in the team's queue, so it is written as configured.
+      let unknownCaseLabels: string[] = [];
+      let caseLabels = config.caseLabels;
+      if (caseLabels.length > 0) {
+        try {
+          const known = new Set(
+            (await client.listLabels()).map((l) => l.toLowerCase()),
+          );
+          unknownCaseLabels = caseLabels.filter((l) => !known.has(l));
+          caseLabels = caseLabels.filter((l) => known.has(l));
+        } catch {
+          // NOTE: catalog unread, applied as configured (above)
+        }
+      }
+      const wanted = [...new Set([...caseLabels, ...input.labels])];
+      if (wanted.length > 0) {
         await attempt("destination_labels", () =>
           withConversationLabels(input.tenantId, caseId, async () => {
             const current = await client.getConversationLabels(caseId);
             // Asked again after the queue's wait and the read: a reset queued ahead of this write clears
             // the labels and withdraws the turn, and this write must not put them back.
             if (await withdrawn()) return;
+            // Only what is missing: a continued case that already carries every label is not written.
+            const missing = wanted.filter((l) => !current.includes(l));
+            if (missing.length === 0) return;
             await client.setConversationLabels(
               caseId,
-              [...new Set([...current, ...input.labels])],
-              { asAdmin: true },
+              [...current, ...missing],
+              {
+                asAdmin: true,
+              },
             );
           }),
         );
@@ -506,6 +534,7 @@ async function run(
         partial,
         ...(openingBlocked ? { openingBlocked } : {}),
         ...(openingOutsideWindow ? { openingOutsideWindow } : {}),
+        ...(unknownCaseLabels.length > 0 ? { unknownCaseLabels } : {}),
       };
     });
   } catch (error) {

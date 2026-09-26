@@ -34,6 +34,9 @@ export function emitDeadLetter(args: {
   error: string;
   // Ids and enums that say WHICH unit died. Never the work's own payload.
   detail: Record<string, unknown>;
+  // The conversation thread the unit was working for, when it has one (a follow-up job does): it is
+  // what the Logs page filters a conversation by. Absent for units that serve no conversation.
+  threadId?: string | null;
   base?: PrismaClient;
 }): void {
   emitFlowEvent(
@@ -44,6 +47,7 @@ export function emitDeadLetter(args: {
       // required, because it is what the Logs page groups by.
       turnId: crypto.randomUUID(),
       source: "inbox",
+      threadId: args.threadId ?? undefined,
       base: args.base,
     },
     {

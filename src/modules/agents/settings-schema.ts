@@ -387,6 +387,10 @@ const limits = z.looseObject({
     .nullable()
     .optional()
     .describe("2000-1000000, clamped; null/0/absent = OFF"),
+  retrySilence: z
+    .boolean()
+    .optional()
+    .describe("retry a silent reply turn once; default TRUE"),
 });
 
 const availability = z.looseObject({
@@ -517,6 +521,7 @@ const crossInboxCase = z.looseObject({
   ),
   targetInstanceId: chatwootId().describe("our instance id of that inbox"),
   originLabel: z.string().nullable().optional(),
+  caseLabels: z.array(z.string()).optional().describe("first 20 kept"),
   // Checked with `refine`, not `regex`: a pattern would enter the published JSON Schema and its
   // ceiling, and the refusal message already names the rule to whoever sends a bad key.
   caseAttributeKey: z

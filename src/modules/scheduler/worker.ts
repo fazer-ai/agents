@@ -1,4 +1,7 @@
-import type { PrismaClient } from "@/../generated/prisma/client";
+import type {
+  PrismaClient,
+  SchedulerJobKind,
+} from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import config from "@/config";
@@ -19,6 +22,7 @@ import {
   claimDueTrafficJobs,
   completeJob,
   failJob,
+  jobCancelledOnPurpose,
   REAPED_DEATH_ERROR,
   type ReapedJob,
   reapStaleJobs,
@@ -282,7 +286,7 @@ async function fail(
     error,
     base,
   );
-  if (!applied) supersededWarning(job, "fail");
+  if (!applied) await supersededWarning(job, "fail", base);
   if (deadLettered) await dispatchDeadLetter(job, error, base);
 }
 
@@ -335,7 +339,7 @@ export async function runClaimed(
       if (committed && late && late.outcome !== "fail") {
         await settleAfterDeadline(job, late, base, startedAt, failedWith);
       } else {
-        lateOutcomeDiscarded(job, startedAt);
+        lateOutcomeDiscarded(job, startedAt, base);
       }
     })
     .catch((err) =>
@@ -376,7 +380,7 @@ async function settle(
       job.kind,
       base,
     );
-    if (!applied) supersededWarning(job, "done");
+    if (!applied) await supersededWarning(job, "done", base);
   } else if (result.outcome === "reschedule") {
     const { applied } = await rescheduleJob(
       job.tenantId,
@@ -387,7 +391,7 @@ async function settle(
       base,
       result.payloadPatch,
     );
-    if (!applied) supersededWarning(job, "reschedule");
+    if (!applied) await supersededWarning(job, "reschedule", base);
   } else {
     await fail(job, result.error ?? "failed", base);
   }
@@ -420,7 +424,7 @@ async function settleAfterDeadline(
     base,
   );
   if (!applied) {
-    lateOutcomeDiscarded(job, startedAt);
+    lateOutcomeDiscarded(job, startedAt, base);
     return;
   }
   logger.warn(
@@ -439,23 +443,80 @@ async function settleAfterDeadline(
 // A handler that returned after its deadline had already ended its run: whatever it returned was not
 // recorded, because the run was failed at the deadline. Worth a line for the same reason the
 // superseded one is: it is the only trace of how long the handler really held on.
-function lateOutcomeDiscarded(job: ClaimedJob, startedAt: number): void {
+function lateOutcomeDiscarded(
+  job: ClaimedJob,
+  startedAt: number,
+  base: PrismaClient,
+): void {
+  const heldMs = Date.now() - startedAt;
   logger.warn(
-    {
-      kind: job.kind,
-      jobId: String(job.id),
-      claimSeq: job.claimSeq,
-      heldMs: Date.now() - startedAt,
-    },
+    { kind: job.kind, jobId: String(job.id), claimSeq: job.claimSeq, heldMs },
     "scheduler: handler returned after its deadline, outcome discarded",
   );
+  announceDiscardedOutcome(job, "deadline", base, { heldMs });
 }
 
-function supersededWarning(job: ClaimedJob, outcome: string): void {
+async function supersededWarning(
+  job: ClaimedJob,
+  outcome: string,
+  base: PrismaClient,
+): Promise<void> {
   logger.warn(
     { kind: job.kind, jobId: String(job.id), claimSeq: job.claimSeq, outcome },
     "scheduler: claim superseded, outcome discarded",
   );
+  // A row retired on purpose while this run held it (/reset, the episode ending) fences the run by
+  // design, and says so with `cancelledAt` (review round 1): nothing was lost, so nothing to announce.
+  if (
+    SUPERSEDE_ANNOUNCED.has(job.kind) &&
+    !(await jobCancelledOnPurpose(job, base))
+  ) {
+    announceDiscardedOutcome(job, "superseded", base, { outcome });
+  }
+}
+
+// WHICH SUPERSEDED CLAIMS ARE WORTH A FLOW LINE (issue #896). A superseded claim is usually the guard
+// working: a debounce flush is superseded by every message that lands while it runs, and a line per
+// burst would page an alert channel all day. A FOLLOWUP is different: since #786 nothing re-arms a
+// claimed follow-up, so a superseded one is an ordering nobody designed, and the outcome it loses can
+// be the reschedule to the step that labels and resolves. A kind joins this set when its supersede
+// stops being routine.
+const SUPERSEDE_ANNOUNCED: ReadonlySet<SchedulerJobKind> = new Set([
+  "FOLLOWUP",
+]);
+
+// A DISCARDED OUTCOME, ON THE RECORD OPERATORS READ (issue #896). Both discards used to reach stdout
+// only, where no alert channel looks, so a follow-up whose next step was dropped left no trace an
+// operator could find. `dead_letter` because the outcome the handler produced is gone and nothing
+// brings it back (the retry, when there is one, recomputes from scratch), and because that is the
+// stage alert channels subscribe to for lost work; `warn` because the row itself is still live and
+// the scheduler moves on. `detail.discarded` says which road.
+function announceDiscardedOutcome(
+  job: ClaimedJob,
+  discarded: "deadline" | "superseded",
+  base: PrismaClient,
+  extra: Record<string, unknown>,
+): void {
+  const threadId =
+    typeof job.payload.threadId === "string" ? job.payload.threadId : null;
+  emitDeadLetter({
+    tenantId: job.tenantId,
+    unit: "job",
+    level: "warn",
+    error:
+      discarded === "deadline"
+        ? "scheduler: handler returned after its deadline, outcome discarded"
+        : "scheduler: claim superseded, outcome discarded",
+    detail: {
+      kind: job.kind,
+      jobId: String(job.id),
+      discarded,
+      ...(job.dedupeKey ? { dedupeKey: job.dedupeKey } : {}),
+      ...extra,
+    },
+    threadId,
+    base,
+  });
 }
 
 export interface TickOptions {

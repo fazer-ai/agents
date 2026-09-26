@@ -100,6 +100,9 @@ function chatwoot(
     onLive?: () => Promise<void> | void;
     // History older than the default page: only the full catch-up read (`after`) returns it.
     older?: Msg[];
+    // Runs on every full-history read (`after: 0`), counted from 1; a value it returns replaces the
+    // body, so a test can degrade one read or land an event inside it.
+    onFullRead?: (nth: number) => unknown | Promise<unknown>;
   } = {},
 ) {
   const state = {
@@ -109,10 +112,15 @@ function chatwoot(
   };
   const toggles: string[] = [];
   const sent: string[] = [];
+  let fullReads = 0;
   const client = {
     getMessages: async (_id: number, o?: { after?: number }) => {
       live.onRead?.();
       const after = o?.after;
+      if (after === 0 && live.onFullRead) {
+        const r = await live.onFullRead(++fullReads);
+        if (r !== undefined) return r;
+      }
       return after != null
         ? page([...(live.older ?? []), ...msgs].filter((m) => m.id > after))
         : page(msgs);
@@ -776,40 +784,43 @@ describe.skipIf(!dbUp)(
     });
 
     test("a history read that could not tell closes nothing", async () => {
-      // A body that is not a list, or a row the parser cannot read, on the full read or on the final
-      // re-read. Each is "could not tell", never "the customer said nothing".
-      const cases: Array<[number, (after: number) => unknown]> = [
-        [89_535, (after) => (after === 0 ? {} : undefined)],
+      // A body that is not a list, or a row the parser cannot read, on the first full read or on the
+      // final one. Each is "could not tell", never "the customer said nothing".
+      const cases: Array<[number, (nth: number) => unknown]> = [
+        [89_535, (nth) => (nth === 1 ? {} : undefined)],
         [
           89_536,
-          (after) =>
-            after === 0
+          (nth) =>
+            nth === 1
               ? { payload: [{}, { id: 2, content: "", message_type: 0 }] }
               : undefined,
         ],
-        [89_537, (after) => (after > 0 ? {} : undefined)],
+        [89_537, (nth) => (nth === 2 ? {} : undefined)],
       ];
       for (const [convId, bad] of cases) {
         await seedConversation(convId);
-        const cw = chatwoot([{ id: 2, content: "" }]);
-        const base = cw.makeClient;
-        cw.makeClient = async () => {
-          const c = (await base()) as unknown as {
-            getMessages: (
-              id: number,
-              o?: { after?: number },
-            ) => Promise<unknown>;
-          };
-          const get = c.getMessages;
-          c.getMessages = async (id, o) => {
-            const r = o?.after != null ? bad(o.after) : undefined;
-            return r !== undefined ? r : get(id, o);
-          };
-          return c as unknown as ChatwootClient;
-        };
+        const cw = chatwoot([{ id: 2, content: "" }], { onFullRead: bad });
         await flush(convId, cw, new NeverCalled());
         expect(cw.toggles).toEqual([]);
       }
+    });
+
+    test("a message that gains an attachment while the helper reads keeps the conversation open", async () => {
+      // A transport that delivers audio by `message_updated`: the blank message judged at the first
+      // read has media by the time of the last.
+      await seedConversation(89_538);
+      const msgs: Msg[] = [{ id: 2, content: "" }];
+      const cw = chatwoot(msgs, {
+        onLive: () => {
+          msgs[0] = {
+            id: 2,
+            content: "",
+            attachments: [{ file_type: "audio" }],
+          };
+        },
+      });
+      await flush(89_538, cw, new NeverCalled());
+      expect(cw.toggles).toEqual([]);
     });
 
     test("a private note from our side is not our side speaking", async () => {
@@ -822,36 +833,19 @@ describe.skipIf(!dbUp)(
       expect(cw.toggles).toEqual(["resolved"]);
     });
 
-    test("a /reset that lands during the final re-read closes nothing", async () => {
+    test("a /reset that lands during the final history read closes nothing", async () => {
       await seedConversation(89_533);
-      let reads = 0;
       const cw = chatwoot([{ id: 2, content: "" }], {
-        onRead: () => {
-          reads++;
+        onFullRead: async (nth) => {
+          if (nth !== 2) return undefined;
+          await suDb.schedulerJob.updateMany({
+            where: { tenantId, dedupeKey: debounceDedupeKey(threadOf(89_533)) },
+            data: { payload: { threadId: threadOf(89_533), cancelledAt: 1 } },
+          });
+          return undefined;
         },
       });
-      const base = cw.makeClient;
-      cw.makeClient = async () => {
-        const c = (await base()) as unknown as {
-          getMessages: (id: number, o?: { after?: number }) => Promise<unknown>;
-        };
-        const get = c.getMessages;
-        c.getMessages = async (id, o) => {
-          if (o?.after != null && o.after > 0) {
-            await suDb.schedulerJob.updateMany({
-              where: {
-                tenantId,
-                dedupeKey: debounceDedupeKey(threadOf(89_533)),
-              },
-              data: { payload: { threadId: threadOf(89_533), cancelledAt: 1 } },
-            });
-          }
-          return get(id, o);
-        };
-        return c as unknown as ChatwootClient;
-      };
       await flush(89_533, cw, new NeverCalled());
-      expect(reads).toBeGreaterThan(0);
       expect(cw.toggles).toEqual([]);
     });
 

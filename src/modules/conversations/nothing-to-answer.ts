@@ -61,6 +61,20 @@ function readWhole(raw: unknown): ChatwootMessageRow[] | null {
   return chatwootMessageListLength(raw) === rows.length ? rows : null;
 }
 
+// The history, judged: read whole, short enough for one batch, no customer-facing message from our
+// side (the mirror row is a snapshot from before this read, and a nudge sent meanwhile is on it), at
+// least one non-private incoming message, and none of them answerable or a reaction.
+function nothingToAnswerIn(raw: unknown): boolean {
+  const messages = readWhole(raw);
+  if (messages === null || messages.length >= HISTORY_BATCH) return false;
+  if (messages.some(weSpoke)) return false;
+  const incoming = messages.filter(
+    (m) => m.messageType === "incoming" && !m.private,
+  );
+  if (incoming.length === 0) return false;
+  return !incoming.some((m) => m.isReaction || hasAnswerableContent(m));
+}
+
 // The fork's `MessageFinder::CATCH_UP_LIMIT`: a batch this full may have more behind it.
 const HISTORY_BATCH = 100;
 
@@ -94,18 +108,9 @@ export async function closeIfNothingToAnswer(params: {
     );
     if (!row || ourSideHasSpoken(row)) return false;
 
-    const messages = readWhole(
-      await client.getMessages(conversationId, { after: 0 }),
-    );
-    if (messages === null || messages.length >= HISTORY_BATCH) return false;
-    // The mirror row above is a snapshot from before these reads; a nudge or a reply sent while they
-    // ran is on the history they return, and it means our side spoke after all.
-    if (messages.some(weSpoke)) return false;
-    const incoming = messages.filter(
-      (m) => m.messageType === "incoming" && !m.private,
-    );
-    if (incoming.length === 0) return false;
-    if (incoming.some((m) => m.isReaction || hasAnswerableContent(m)))
+    if (
+      !nothingToAnswerIn(await client.getMessages(conversationId, { after: 0 }))
+    )
       return false;
 
     const live = parseLiveConversation(
@@ -117,21 +122,16 @@ export async function closeIfNothingToAnswer(params: {
     )
       return false;
 
-    // The supersede re-read, the same one the reply's post gate makes: a message that landed after the
-    // history read is answerable work for its own flush, and closing now would bury it (it was created
-    // on a PENDING conversation, so Chatwoot does not reopen for it). Asked last, right before the
-    // write, so what is left is the same read-to-write gap every close and every post in the runtime
-    // has. Closing first and reopening on a late arrival does not work: by then that message's flush
-    // may already have settled against a resolved conversation.
-    const seen = Math.max(...messages.map((m) => m.id));
-    const later = readWhole(
-      await client.getMessages(conversationId, { after: seen }),
-    );
+    // The supersede re-read, the same one the reply's post gate makes, and of the WHOLE history again
+    // rather than past the last id: a message that landed meanwhile is answerable work for its own
+    // flush (created on a PENDING conversation, so Chatwoot does not reopen for it), a reply of ours
+    // means our side spoke, and a message already read can have changed in place (an attachment that
+    // arrives by `message_updated` turns a blank audio into something to transcribe). Asked last, right
+    // before the write, so what is left is the same read-to-write gap every close and every post in the
+    // runtime has. Closing first and reopening on a late change does not work: by then that message's
+    // flush may already have settled against a resolved conversation.
     if (
-      later === null ||
-      later.some(
-        (m) => (m.messageType === "incoming" && !m.private) || weSpoke(m),
-      )
+      !nothingToAnswerIn(await client.getMessages(conversationId, { after: 0 }))
     )
       return false;
     // The caller's fences, asked after the last read and right before the write: every await above

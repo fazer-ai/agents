@@ -14,6 +14,8 @@ import {
   parseSchedule,
 } from "@/modules/business-hours/hours";
 import { readChannelRedirectConfig } from "@/modules/channel-redirect/service";
+import { emitFlowEvent } from "@/modules/flowlog/service";
+import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import { appointmentPauseApplies } from "@/modules/followups/appointment-pause";
 import {
   isFollowUpLive,
@@ -365,13 +367,14 @@ async function sweepHandler(
       payload: { threadId: t.thread_id, episode: t.episode },
       // Nor over a run its handler put off on purpose (issue #796): the retry backoff, business
       // hours, a step-0 cadence longer than this sweep's cutoff. Pulled back to now, each became a
-      // run every minute, and the retry count the backoff was keeping was replaced with it. Only a
-      // STEP-0 deferral is this episode's: the sweep selects a thread only at the start of a fresh
-      // episode, so a later step still pending is left over from an earlier one (our own reply opens
-      // a new episode without cancelling it), and waiting for it would delay this episode's first
-      // follow-up by that step's cadence. And only while the configuration it was computed from still
-      // holds: a cadence shortened, or a schedule opened, after the deferral must not wait out the
-      // old instant, so a row marked with an older version is re-armed and the handler recomputes.
+      // run every minute, and the retry count the backoff was keeping was replaced with it. A later
+      // step of ANOTHER episode is not this one's (our own reply opens a new episode without
+      // cancelling it), and waiting for it would delay this episode's first follow-up by that step's
+      // cadence; a later step of THIS episode is its ladder, which advanced after this pass read the
+      // thread (issue #896). A step-0 deferral is kept only while the configuration it was computed
+      // from still holds: a cadence shortened, or a schedule opened, after the deferral must not wait
+      // out the old instant, so a row marked with an older version is re-armed and the handler
+      // recomputes.
       leaveLaterRun: (row) =>
         isDeferralOfThisEpisode(
           row,
@@ -385,6 +388,53 @@ async function sweepHandler(
     outcome: "reschedule",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
   };
+}
+
+// A STEP 0 THAT FINDS ITS EPISODE ALREADY FOLLOWED UP (issue #896). The row is the ladder, one per
+// conversation, so a step 0 running after the stamp means the row was pulled back from a later step,
+// and ending here ends the sequence before the step that labels and resolves: the conversation stays
+// pending with nothing scheduled, and the sweep will not select it again. Before this line the exit
+// was an ordinary `done`, the loss had no trace anywhere, and ten conversations of one deployment sat
+// two days before anyone looked. `dead_letter` because that is what it is, work nothing will bring
+// back, and the stage alert channels subscribe to; `warn` because the conversation is still there for
+// the operator to pick up.
+function announceLostLadder(
+  job: ClaimedJob,
+  base: PrismaClient,
+  at: {
+    conversationId: bigint;
+    agentId: bigint;
+    inboxId: bigint | null;
+    threadId: string;
+    fullDetail: boolean;
+  },
+): void {
+  emitFlowEvent(
+    {
+      tenantId: job.tenantId,
+      turnId: crypto.randomUUID(),
+      source: "inbox",
+      conversationId: at.conversationId,
+      agentId: at.agentId,
+      inboxId: at.inboxId,
+      threadId: at.threadId,
+      fullDetail: at.fullDetail,
+      base,
+    },
+    {
+      stage: "dead_letter",
+      level: "warn",
+      status: "error",
+      detail: {
+        unit: "job",
+        kind: job.kind,
+        jobId: String(job.id),
+        ...(job.dedupeKey ? { dedupeKey: job.dedupeKey } : {}),
+      },
+      errorMessage:
+        "follow-up step 0 ran on an episode already followed up: the sequence ends before its last step",
+    },
+  );
 }
 
 // WHICH CONFIGURATION A DEFERRAL WAS COMPUTED FROM (issue #796, review round 4). The cadence and the
@@ -405,8 +455,9 @@ const BACKOFF_DEFERRAL = "backoff";
 // An appointment hold, which the sweep re-arms whenever it selects the conversation (see the hold).
 const APPOINTMENT_HOLD = "appointment";
 
-// The sweep enqueues step 0 without a stepIndex; the handler's reschedules carry one. A deferral is
-// kept only when it says why it is safe to keep: a backoff, or a version that is still current. One
+// The sweep enqueues step 0 without a stepIndex; the handler's reschedules carry one. A row of this
+// episode at a later step is always kept. A step-0 deferral is kept only when it says why it is safe
+// to keep: a backoff, or a version that is still current. One
 // that says nothing (written before deferrals were marked, review round 5) is re-armed once, and the
 // handler recomputes it under the current configuration and marks it.
 function isDeferralOfThisEpisode(
@@ -428,7 +479,12 @@ function isDeferralOfThisEpisode(
   // Armed for another episode (review round 7): our own reply opens a new one without cancelling
   // the old deferral, and the new episode must not inherit its backoff or its retry count.
   if (deferredEpisode !== episode) return false;
-  if (stepIndex !== undefined && stepIndex !== 0) return false;
+  // A later step of THIS episode is the ladder already climbing (issue #896). It exists only because
+  // step 0 ran and stamped after the sweep read the thread as unstamped; re-armed, the row went back
+  // to step 0, which found the episode stamped and ended the ladder before its last step. Kept
+  // whatever the configuration version: once a sequence runs, the handler schedules each step, and
+  // the sweep never touches it.
+  if (stepIndex !== undefined && stepIndex !== 0) return true;
   // The scheduler's own retry backoff: the handler threw, and `failJob` re-pended the row with the
   // error and a delay, leaving the payload as it was. `lastError` is what the scheduler itself reads
   // to tell a backoff from a stand-down (claimWhere), and pulling it back spent the whole budget one
@@ -581,6 +637,8 @@ export async function followUpHandler(
       : null;
     return {
       conv,
+      agentId: inbox.agentId,
+      fullDetail: readObservabilityConfig(agent.settings).fullDetail,
       followUpCfg,
       hours,
       armedAt: agent.followUpArmedAt,
@@ -643,7 +701,16 @@ export async function followUpHandler(
   if (stepIndex === 0) {
     // Step 0 (sequence start) only proceeds for a fresh episode — the sweep's SQL filter already
     // enforces this; re-checking here blocks a stale step-0 job on an already-handled conversation.
-    if (!newEpisode) return { outcome: "done" };
+    if (!newEpisode) {
+      announceLostLadder(job, base, {
+        conversationId: ctx.conv.id,
+        agentId: ctx.agentId,
+        inboxId: ctx.conv.inboxId,
+        threadId,
+        fullDetail: ctx.fullDetail,
+      });
+      return { outcome: "done" };
+    }
     // NOTE: Activation fence (mirrors the sweep SQL): a sequence only STARTS for an episode that began
     // after follow-up was armed. Catches a step-0 job enqueued before a re-arm (disable → re-enable)
     // and any agent never armed (NULL → fail-safe). Later steps are exempt: an in-flight sequence

@@ -253,6 +253,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/flowlog-retention.test.ts": 1,
   "tests/modules/flowlog-settle.test.ts": 1,
   "tests/modules/flowlog.test.ts": 1,
+  // #896: one read, tenant-wide on purpose. Its subject is HOW MANY lines a lost follow-up sequence
+  // wrote, and the case empties this file's tenant before reading.
+  "tests/modules/followup-sweep-later-step.test.ts": 1,
   "tests/modules/guardrail-health.test.ts": 1,
   // #720: one reader, and it answers both directions on the same query — the line that names a
   // colleague's reply nobody remembered, and its absence on the customer's own lost ingestion, which
@@ -276,6 +279,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   // uma morte escreveu, e o da outra é sob QUAL tenant a linha caiu; nenhuma das unidades que morrem
   // ali tem turno para uma leitura mais estreita se prender.
   "tests/modules/scheduler-dead-letter-erased.test.ts": 2,
+  // #896: one reader, tenant-wide on purpose: its subject is HOW MANY lines a discarded outcome wrote,
+  // and each case empties this file's tenant first.
+  "tests/modules/scheduler-discard-announced.test.ts": 1,
   "tests/modules/spend-ceiling-gate-e2e.test.ts": 1,
   "tests/modules/spend-ceiling-paths-e2e.test.ts": 4,
   "tests/modules/spend-ceiling-poll.test.ts": 6,

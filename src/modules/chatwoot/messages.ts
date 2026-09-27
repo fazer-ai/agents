@@ -2,6 +2,7 @@ import type { VisualAttachment } from "@/modules/vision/extract-message";
 import { CHATWOOT_SEND_ID_KEY } from "./constants";
 import { bodyImagesBesides, emailBodyImageUrlsFrom } from "./email-body-images";
 import {
+  activityStatusFrom,
   activityTypeFrom,
   bodyImageVisuals,
   chatwootTimestamp,
@@ -77,6 +78,10 @@ export interface ChatwootMessageRow {
   // declare what they narrate — a status change, a Linear event — and null on the ones that carry
   // only a localized sentence, which is where a label change lives.
   activityType: string | null;
+  // `content_attributes.activity.status` on a status-change activity row (issue #897): the status the
+  // conversation moved to. Null on every other row. OPTIONAL because a row built by hand (a fixture,
+  // a caller that synthesises one) narrates no status, and absent reads the same as null.
+  activityStatus?: string | null;
   // WHO SENT IT, from Chatwoot's own `sender.type`. It is what separates OUR outgoing message from a
   // human agent's, a distinction `messageType` cannot make and the burst selection needs: a reply a
   // person wrote closes every customer message before it, and one of ours closes only what its turn
@@ -334,6 +339,7 @@ export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
       isReaction: ca?.is_reaction === true,
       emailSubject: emailSubjectFrom(ca),
       activityType: activityTypeFrom(ca),
+      activityStatus: activityStatusFrom(ca),
       senderType: senderTypeOf(item.sender),
       senderId: isRecord(item.sender) ? num(item.sender.id) : null,
       externalSenderName:

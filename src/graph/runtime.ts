@@ -117,6 +117,7 @@ import {
   loadAgentConfig,
 } from "./prepare";
 import { undoRefusedTurn } from "./refused-turn";
+import { burstReopenedResolved } from "./reopened-by-burst";
 import { stillInSameEpisode } from "./reset-episode";
 import {
   chosenSilence,
@@ -554,6 +555,29 @@ export async function handoverRow(
       { ourAgentBotId: ourBot },
     ),
   };
+}
+
+// Whether this turn answers the customer messages that reopened a resolved conversation (issue
+// #897), read off Chatwoot's activity trail on a fresh page (./reopened-by-burst.ts). Best-effort:
+// a page that cannot be read answers no, which leaves today's behaviour.
+export async function answersTheReopen(
+  client: Pick<ChatwootClient, "getMessages">,
+  conversationId: number,
+  messageIds: readonly number[] | undefined,
+): Promise<boolean> {
+  if (!messageIds || messageIds.length === 0) return false;
+  try {
+    const page = parseChatwootMessages(
+      await client.getMessages(conversationId),
+    );
+    return burstReopenedResolved(page, messageIds);
+  } catch (err) {
+    logger.warn(
+      { err, conversationId },
+      "reopen check: page read failed; leaving the conversation as it is",
+    );
+    return false;
+  }
 }
 
 // Applies a deferred resolve_conversation intent AFTER the reply is delivered. The tool only
@@ -3017,6 +3041,28 @@ async function runTurnBody(
       // `resolved` conversation tells the operator this attendance is finished when the agent knows
       // it is not. The rule itself lives in ./close-intent.ts, asked the same way at all three
       // sites — it was answered differently at each until a review round found them one by one.
+      // A THANK-YOU AFTER A CLOSE (issue #897). The messages this turn answers reopened a
+      // conversation that was resolved (Chatwoot's activity trail says so, ./reopened-by-burst.ts),
+      // and the model settled them with an acknowledged silence but did not also call
+      // `resolve_conversation`. Left alone, the conversation waits in `pending` until a follow-up
+      // nudges the customer who just said thanks; put back, it is where it was a moment ago. Only
+      // `acknowledged`, only with nobody taking it over, only for the reopening burst: any other
+      // silence, and the same "ok" in the middle of a case, stay exactly as before. The gates below
+      // (partial batch, operator called it off) still decide; a chosen silence is never an
+      // unexplained one.
+      if (
+        handoffState?.completed !== true &&
+        silenceChosen &&
+        chosenSilence(result.messages as BaseMessage[])?.reason ===
+          "acknowledged" &&
+        (await answersTheReopen(
+          client,
+          conversationId,
+          params.claimReply?.messageIds,
+        ))
+      ) {
+        turnState.resolveRequested = true;
+      }
       let closed = false;
       if (
         !unexplained &&

@@ -305,8 +305,9 @@ class SkipTwiceModel {
 
 type Call = [string, number, string];
 
-function recordingClient(calls: Call[], failOn?: string) {
+function recordingClient(calls: Call[], failOn?: string, page: unknown[] = []) {
   const client = {
+    getMessages: async () => ({ payload: page }),
     sendMessage: async (conversationId: number, content: string) => {
       calls.push(["sendMessage", conversationId, content]);
       return {};
@@ -324,7 +325,10 @@ function recordingClient(calls: Call[], failOn?: string) {
   return async () => client;
 }
 
-const incoming = (conversationId: number): NormalizedChatwootEvent => ({
+const incoming = (
+  conversationId: number,
+  messageId = 1,
+): NormalizedChatwootEvent => ({
   event: "message_created",
   conversationId,
   inboxId: 17,
@@ -334,14 +338,14 @@ const incoming = (conversationId: number): NormalizedChatwootEvent => ({
   assigneeName: null,
   contactInboxId: null,
   message: {
-    id: 1,
+    id: messageId,
     content: "obrigado",
     messageType: "incoming",
     private: false,
   },
 });
 
-async function seed(convId: number, spoken: boolean) {
+async function seed(convId: number, spoken: boolean, reopened = false) {
   await suDb.conversation.create({
     data: {
       tenantId,
@@ -350,27 +354,64 @@ async function seed(convId: number, spoken: boolean) {
       status: "pending",
       threadId: `${tenantId}:${instanceId}:${convId}`,
       lastEventAt: new Date(),
-      ...(spoken ? { lastRepliedMessageId: 1 } : {}),
+      ...(spoken && !reopened ? { lastRepliedMessageId: 1 } : {}),
+      // A reopened conversation was answered in an EARLIER episode, below this turn's message, so
+      // our side has spoken without the reply mark already covering the message this turn answers.
+      ...(reopened
+        ? { chatwootFirstReplyAt: new Date(Date.now() - 3_600_000) }
+        : {}),
     },
   });
 }
 
-async function turn(convId: number, model: unknown, failOn?: string) {
+async function turn(
+  convId: number,
+  model: unknown,
+  failOn?: string,
+  page: unknown[] = [],
+  messageId = 1,
+) {
   const calls: Call[] = [];
   const outcome = await runAgentTurn({
     tenantId,
     instanceId,
     agentBotId: 19,
-    event: incoming(convId),
+    event: incoming(convId, messageId),
     base: appDb,
     deps: {
       makeModel: () => model as BaseChatModel,
-      makeClient: recordingClient(calls, failOn),
+      makeClient: recordingClient(calls, failOn, page),
       checkpointer: new MemorySaver(),
     },
   });
   return { outcome, calls };
 }
+
+// Chatwoot's message page as the REST partial renders it, for the activity trail of issue #897.
+const THANKS = 50;
+const row = (id: number, messageType: number, extra = {}) => ({
+  id,
+  content: "x",
+  message_type: messageType,
+  private: false,
+  created_at: 1_790_000_000 + id,
+  ...extra,
+});
+const statusActivity = (id: number, status: string) =>
+  row(id, 2, {
+    content_attributes: {
+      activity: { type: "conversation_status_changed", status },
+    },
+  });
+// The agent answered, closed, and the customer's thank-you (not in an activity: Chatwoot writes
+// none when the contact's own message reopens a bot inbox's conversation) is the next thing said.
+const reopenedByThanks = [
+  row(10, 0),
+  row(11, 1),
+  statusActivity(12, "resolved"),
+  row(13, 3),
+  row(THANKS, 0),
+];
 
 // What reached Chatwoot, with the note reduced to whether it is there: the text is asserted apart.
 const shape = (calls: Call[]) =>
@@ -408,7 +449,7 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
         settings: {
           split: { enabled: false },
           nativeTools: {
-            enabled: ["skip_reply", "resolve_conversation"],
+            enabled: ["skip_reply", "resolve_conversation", "handoff_to_human"],
           },
         },
       },
@@ -586,5 +627,195 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
     );
     expect(calls.filter(([op]) => op !== "toggleStatus")).toEqual([]);
     expect(calls.map(([, , s]) => s)).toEqual(["resolved"]);
+  });
+
+  // Issue #897. The message this turn answers is the one that reopened a resolved conversation (a
+  // thank-you after the agent closed it), and the model acknowledged it without calling
+  // `resolve_conversation`. The conversation goes back to where it was instead of waiting in
+  // `pending` for a follow-up to nudge the customer who just said thanks.
+  test("an acknowledged thank-you that reopened a resolved conversation closes it again", async () => {
+    await seed(65_910, true, true);
+    const { outcome, calls } = await turn(
+      65_910,
+      new SkipModel({ reason: "acknowledged" }),
+      undefined,
+      reopenedByThanks,
+      THANKS,
+    );
+    expect(outcome).toBe("empty");
+    expect(calls).toEqual([["toggleStatus", 65_910, "resolved"]]);
+    const row = await suDb.conversation.findFirstOrThrow({
+      where: { tenantId, chatwootConversationId: 65_910 },
+      select: { resolvedBy: true },
+    });
+    expect(row.resolvedBy).toBe("agent");
+  });
+
+  test("an acknowledged message that did not reopen anything leaves it pending", async () => {
+    // Reopened by an EARLIER message, answered by an earlier turn: this one is an "ok" mid-case.
+    await seed(65_911, true, true);
+    const { calls } = await turn(
+      65_911,
+      new SkipModel({ reason: "acknowledged" }),
+      undefined,
+      [
+        row(10, 0),
+        statusActivity(12, "resolved"),
+        row(20, 0),
+        row(21, 1),
+        row(THANKS, 0),
+      ],
+      THANKS,
+    );
+    expect(calls).toEqual([]);
+  });
+
+  test("a reopening message the model hands to a person still goes to a person", async () => {
+    await seed(65_912, true, true);
+    const { calls } = await turn(
+      65_912,
+      new SkipModel({ reason: "needs_human" }),
+      undefined,
+      reopenedByThanks,
+      THANKS,
+    );
+    expect(shape(calls)).toEqual([
+      ["toggleStatus", 65_912, "open"],
+      ["sendPrivateNote", 65_912, ""],
+    ]);
+  });
+
+  test("a reopening message answered by nobody's choice is not closed", async () => {
+    // Empty completions and no skip: an unexplained silence, which never closes a conversation.
+    class Empty {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        return { invoke: async () => new AIMessage("") };
+      }
+    }
+    await seed(65_913, true, true);
+    const { calls } = await turn(
+      65_913,
+      new Empty(),
+      undefined,
+      reopenedByThanks,
+      THANKS,
+    );
+    expect(
+      calls.some(([op, , s]) => op === "toggleStatus" && s === "resolved"),
+    ).toBe(false);
+  });
+
+  test("a reopening message the agent answers in words stays with the agent", async () => {
+    class Talk {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("De nada!");
+      }
+      bindTools(_tools: unknown) {
+        return { invoke: async () => new AIMessage("De nada!") };
+      }
+    }
+    await seed(65_914, true, true);
+    const { calls } = await turn(
+      65_914,
+      new Talk(),
+      undefined,
+      reopenedByThanks,
+      THANKS,
+    );
+    expect(calls.map(([op]) => op)).toEqual(["sendMessage"]);
+  });
+
+  test("a reopening message handed to a person in the same turn is not closed under them", async () => {
+    class HandoffAndAck {
+      async invoke(): Promise<AIMessage> {
+        return new AIMessage("");
+      }
+      bindTools(_tools: unknown) {
+        let n = 0;
+        return {
+          async invoke(): Promise<AIMessage> {
+            n++;
+            return n === 1
+              ? new AIMessage({
+                  content: "",
+                  tool_calls: [
+                    {
+                      name: "handoff_to_human",
+                      args: { customerMessage: "", reason: "x" },
+                      id: "call_h",
+                    },
+                    {
+                      name: "skip_reply",
+                      args: { reason: "acknowledged" },
+                      id: "call_skip",
+                    },
+                  ],
+                })
+              : new AIMessage("");
+          },
+        };
+      }
+    }
+    await seed(65_915, true, true);
+    const { calls } = await turn(
+      65_915,
+      new HandoffAndAck(),
+      undefined,
+      reopenedByThanks,
+      THANKS,
+    );
+    expect(
+      calls.some(([op, , s]) => op === "toggleStatus" && s === "resolved"),
+    ).toBe(false);
+    expect(
+      calls.some(([op, , s]) => op === "toggleStatus" && s === "open"),
+    ).toBe(true);
+  });
+
+  test("a thank-you after an operator reopened the conversation is not closed", async () => {
+    await seed(65_916, true, true);
+    const { calls } = await turn(
+      65_916,
+      new SkipModel({ reason: "acknowledged" }),
+      undefined,
+      [
+        ...reopenedByThanks.slice(0, 4),
+        statusActivity(14, "open"),
+        row(THANKS, 0),
+      ],
+      THANKS,
+    );
+    expect(calls).toEqual([]);
+  });
+
+  test("a conversation whose page cannot be read is left as it is", async () => {
+    await seed(65_917, true, true);
+    const calls: Call[] = [];
+    const client = {
+      getMessages: async () => {
+        throw new Error("chatwoot 502");
+      },
+      toggleStatus: async (id: number, status: string) => {
+        calls.push(["toggleStatus", id, status]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 19,
+      event: incoming(65_917, THANKS),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new SkipModel({ reason: "acknowledged" }) as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(calls).toEqual([]);
   });
 });

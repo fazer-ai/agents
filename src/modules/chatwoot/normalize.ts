@@ -937,6 +937,20 @@ export function activityTypeFrom(
   return type.trim() ? type : null;
 }
 
+// THE STATUS A STATUS-CHANGE ACTIVITY NARRATES, from `content_attributes.activity.status`, which
+// Chatwoot's `status_change_activity` writes beside the type (issue #897). Read as a string and
+// nothing else, like the type above.
+export function activityStatusFrom(
+  contentAttributes: Record<string, unknown> | null | undefined,
+): string | null {
+  const activity = isRecord(contentAttributes?.activity)
+    ? contentAttributes.activity
+    : null;
+  const status = activity?.status;
+  if (typeof status !== "string") return null;
+  return status.trim() ? status : null;
+}
+
 export function firstLocationAttachment(
   attachments:
     | Array<

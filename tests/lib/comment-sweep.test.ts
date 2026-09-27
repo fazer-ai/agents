@@ -7,6 +7,7 @@ import {
   narratesHistory,
   overCeiling,
   overLedger,
+  raisedEntries,
   staleEntries,
   sweptFiles,
 } from "@/tests/utils/comment-blocks";
@@ -67,6 +68,41 @@ describe("what the sweep reads as provenance", () => {
   });
 });
 
+describe("each comment is judged on its own", () => {
+  test("a block comment after line comments is still read", () => {
+    const blocks = commentBlocks("// intro\n/* fixed in #123 */\n");
+    expect(blocks).toHaveLength(2);
+    expect(blocks.some(citesProvenance)).toBe(true);
+  });
+
+  test("prose after a block directive is still read", () => {
+    const blocks = commentBlocks(
+      "/* biome-ignore lint/x: reason */\n// fixed in #12\n",
+    );
+    expect(blocks.map((b) => b.text)).toEqual(["// fixed in #12"]);
+    expect(blocks.some(citesProvenance)).toBe(true);
+  });
+
+  test("two block comments are two blocks, however close", () => {
+    const five = `/*\n${" * x\n".repeat(4)} */`;
+    const blocks = commentBlocks(`${five}\n${five}\n`);
+    expect(blocks).toHaveLength(2);
+    expect(commentBlocks("/* one */\n// two\n")).toHaveLength(2);
+    expect(blocks.some(overCeiling)).toBe(false);
+  });
+
+  test("an empty waiver in a block comment is no waiver", () => {
+    expect(citesProvenance(block("/* Fixed in #123. comment-waiver: */"))).toBe(
+      true,
+    );
+    expect(
+      citesProvenance(
+        block("/* Fixed in #123. comment-waiver: upstream id */"),
+      ),
+    ).toBe(false);
+  });
+});
+
 describe("the line ceiling", () => {
   const lines = (n: number) =>
     Array.from({ length: n }, (_, i) => `// line ${i + 1}`).join("\n");
@@ -115,6 +151,14 @@ describe("the ledger", () => {
     const long = `${"// x\n".repeat(BLOCK_LINE_CEILING + 1)}export const c = 1;\n`;
     expect(overLedger([["c.ts", long]], { "c.ts": [0, 1] })).toEqual([]);
     expect(overLedger([["c.ts", long]], { "c.ts": [0, 0] })).toHaveLength(1);
+  });
+
+  test("a rewrite may lower an entry and never raise one", () => {
+    expect(raisedEntries([["b.ts", [1, 0]]], { "b.ts": [2, 0] })).toEqual([]);
+    expect(raisedEntries([["b.ts", [1, 1]]], { "b.ts": [1, 0] })).toHaveLength(
+      1,
+    );
+    expect(raisedEntries([["new.ts", [1, 0]]], {})).toHaveLength(1);
   });
 
   test("an entry above the file's count, or for a missing file, is stale", () => {

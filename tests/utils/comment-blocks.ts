@@ -4,10 +4,13 @@ import { commentSpans } from "@/tests/utils/source-text";
 
 export const SWEPT_ROOTS = ["src", "tests", "workers", "scripts"] as const;
 
+// Written by a tool, and rewritten on the next run of it.
+const GENERATED = new Set(["workers/cdn/worker-configuration.d.ts"]);
+
 export const BLOCK_LINE_CEILING = 8;
 
 // A block that has a reason to break a rule says so in its own text, with the reason after the colon.
-export const WAIVER = /\bcomment-waiver:[ \t]*[^\s/]/;
+export const WAIVER = /\bcomment-waiver:[ \t]*\S/;
 
 const PROVENANCE =
   /(?<![\w&/#])#\d+\b|\bPR\s*#?\d+\b|\bissues?\s+#\d+\b|\breview,?\s+round\b|\bround\s+\d+\b|\brodada\s+\d+\b/i;
@@ -20,55 +23,101 @@ const DIRECTIVE =
 
 export type CommentBlock = { line: number; lines: number; text: string };
 
-// Consecutive `//` lines are one block, which is how a reader sees them; a blank line or a directive
-// ends it.
+type Piece = { line: number; text: string; newlinesBefore: number };
+
+// The span can hold several comments separated by whitespace; each comes out on its own.
+function pieces(src: string, start: number, end: number): Piece[] {
+  const out: Piece[] = [];
+  let line = src.slice(0, start).split("\n").length;
+  let at = start;
+  let newlines = 0;
+  while (at < end) {
+    const ch = src[at];
+    if (ch === "\n") {
+      line++;
+      newlines++;
+      at++;
+      continue;
+    }
+    if (ch === " " || ch === "\t" || ch === "\r") {
+      at++;
+      continue;
+    }
+    const close = src.startsWith("/*", at)
+      ? src.indexOf("*/", at + 2) + 2
+      : src.indexOf("\n", at);
+    const stop = close <= at || close > end ? end : close;
+    const text = src.slice(at, stop);
+    out.push({ line, text, newlinesBefore: out.length ? newlines : Infinity });
+    line += text.split("\n").length - 1;
+    newlines = 0;
+    at = stop;
+  }
+  return out;
+}
+
+// Consecutive `//` lines are one block, which is how a reader sees them. A blank line, code, a block
+// comment or a directive ends it; a block comment is a block of its own.
 export function commentBlocks(src: string): CommentBlock[] {
   const blocks: CommentBlock[] = [];
   for (const [start, end] of commentSpans(src)) {
-    const text = src.slice(start, end);
-    const first = src.slice(0, start).split("\n").length;
-    if (!text.startsWith("//")) {
-      if (!DIRECTIVE.test(text)) {
-        blocks.push({ line: first, lines: text.split("\n").length, text });
-      }
-      continue;
-    }
     let current: CommentBlock | null = null;
-    text.split("\n").forEach((raw, i) => {
-      const line = raw.trim();
-      if (!line.startsWith("//") || DIRECTIVE.test(line)) {
-        if (current) blocks.push(current);
+    for (const piece of pieces(src, start, end)) {
+      const joins =
+        current !== null &&
+        piece.text.startsWith("//") &&
+        piece.newlinesBefore === 1;
+      if (!joins && current) {
+        blocks.push(current);
         current = null;
-        return;
       }
+      if (DIRECTIVE.test(piece.text)) continue;
       if (current) {
-        current.text += `\n${line}`;
+        current.text += `\n${piece.text}`;
         current.lines += 1;
       } else {
-        current = { line: first + i, lines: 1, text: line };
+        current = {
+          line: piece.line,
+          lines: piece.text.split("\n").length,
+          text: piece.text,
+        };
       }
-    });
+      if (!piece.text.startsWith("//")) {
+        blocks.push(current);
+        current = null;
+      }
+    }
     if (current) blocks.push(current);
   }
   return blocks;
 }
 
+// The words of a comment, without its delimiters.
+const prose = (text: string) =>
+  text
+    .replace(/^\/\*+|\*+\/$/g, "")
+    .split("\n")
+    .map((l) => l.replace(/^\s*(\/\/+|\*+)/, ""))
+    .join("\n");
+
+const waived = (block: CommentBlock) => WAIVER.test(prose(block.text));
+
 // An issue, PR or review round cited as where the code came from. A `TODO:`/`FIXME:` line may name
 // the issue that tracks the work it owes.
 export function citesProvenance(block: CommentBlock): boolean {
-  if (WAIVER.test(block.text)) return false;
+  if (waived(block)) return false;
   return block.text
     .split("\n")
     .some((line) => PROVENANCE.test(line) && !OWED_WORK.test(line));
 }
 
 export function overCeiling(block: CommentBlock): boolean {
-  return block.lines > BLOCK_LINE_CEILING && !WAIVER.test(block.text);
+  return block.lines > BLOCK_LINE_CEILING && !waived(block);
 }
 
 // Reported, never enforced: the terms also appear in comments that state a present fact.
 export function narratesHistory(block: CommentBlock): boolean {
-  return NARRATION.test(block.text) && !WAIVER.test(block.text);
+  return NARRATION.test(block.text) && !waived(block);
 }
 
 export type FileCounts = [provenance: number, long: number];
@@ -97,7 +146,7 @@ export async function sweptFiles(): Promise<string[]> {
   for (const root of SWEPT_ROOTS) {
     if (!existsSync(root)) continue;
     for await (const rel of new Glob("**/*.{ts,tsx}").scan(root)) {
-      paths.push(`${root}/${rel}`);
+      if (!GENERATED.has(`${root}/${rel}`)) paths.push(`${root}/${rel}`);
     }
   }
   return paths.sort();
@@ -140,4 +189,20 @@ export function staleEntries(
     }
   }
   return stale;
+}
+
+// Counts above the ledger's entry, which the rewrite refuses: the ledger only goes down.
+export function raisedEntries(
+  counted: Array<[string, FileCounts]>,
+  ledger: Record<string, FileCounts>,
+): string[] {
+  return counted
+    .filter(([path, [p, l]]) => {
+      const [was, wasLong] = ledger[path] ?? [0, 0];
+      return p > was || l > wasLong;
+    })
+    .map(
+      ([path, counts]) =>
+        `${path}: [${counts}] is above the ledger's [${ledger[path] ?? [0, 0]}]`,
+    );
 }

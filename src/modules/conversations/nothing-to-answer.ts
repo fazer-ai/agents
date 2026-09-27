@@ -1,5 +1,6 @@
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
+import basePrisma from "@/api/lib/prisma";
 import { resetLandedAfter } from "@/graph/reset-episode";
 import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
@@ -24,11 +25,7 @@ import {
 import { recordResolutionOrigin } from "@/modules/conversations/record-resolution";
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { ourSideHasSpoken } from "@/modules/followups/eligibility";
-import {
-  type ClaimedJob,
-  enqueueJob,
-  jobRetiredStrict,
-} from "@/modules/scheduler/service";
+import { type ClaimedJob, upsertJobRow } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 
 // A CONVERSATION WHOSE CUSTOMER SAID NOTHING, AND THAT NOBODY ON OUR SIDE EVER ANSWERED (issue #895).
@@ -88,24 +85,27 @@ function readWhole(raw: unknown): ChatwootMessageRow[] | null {
 // least one non-private incoming message, none of them answerable or a reaction, and none NEWER than
 // the message the job was armed for. A newer one is still inside its own delay (its attachment may be
 // on the way) and its own flush judges it; the receiver retires this job when it sees it, and this is
-// the same rule for the stretch before it does.
+// the same rule for the stretch before it does. Returns the highest id it read, which the live read
+// is checked against; null when there is something to answer or the read could not tell.
 function nothingToAnswerIn(
   raw: unknown,
   triggerMessageId: number | null,
-): boolean {
+): number | null {
   const messages = readWhole(raw);
-  if (messages === null || messages.length >= HISTORY_BATCH) return false;
-  if (messages.some(weSpoke)) return false;
+  if (messages === null || messages.length >= HISTORY_BATCH) return null;
+  if (messages.some(weSpoke)) return null;
   const incoming = messages.filter(
     (m) => m.messageType === "incoming" && !m.private,
   );
-  if (incoming.length === 0) return false;
+  if (incoming.length === 0) return null;
   if (
     triggerMessageId !== null &&
     incoming.some((m) => m.id > triggerMessageId)
   )
-    return false;
-  return !incoming.some((m) => m.isReaction || hasAnswerableContent(m));
+    return null;
+  if (incoming.some((m) => m.isReaction || hasAnswerableContent(m)))
+    return null;
+  return Math.max(...messages.map((m) => m.id));
 }
 
 // The fork's `MessageFinder::CATCH_UP_LIMIT`: a batch this full may have more behind it.
@@ -181,26 +181,51 @@ export async function armNothingToAnswer(params: {
   base?: PrismaClient;
   now?: Date;
 }): Promise<void> {
+  const dedupeKey = nothingToAnswerDedupeKey(params.threadId);
+  const trigger = params.triggerMessageId;
   try {
-    await enqueueJob({
-      tenantId: params.tenantId,
-      kind: "NOTHING_TO_ANSWER",
-      dedupeKey: nothingToAnswerDedupeKey(params.threadId),
-      // Every arm is a new judgement to make later: another blank message pushes it out again.
-      rearm: "new-work",
-      runAt: new Date(
-        (params.now ?? new Date()).getTime() + NOTHING_TO_ANSWER_DELAY_MS,
-      ),
-      payload: {
-        instanceId: String(params.instanceId),
-        conversationId: params.conversationId,
-        conversationDbId: String(params.conversationDbId),
-        agentId: String(params.agentId),
-        agentBotId: params.agentBotId,
-        triggerMessageId: params.triggerMessageId,
+    await runScopedOn(
+      params.base ?? basePrisma,
+      sysCtx(params.tenantId),
+      async (db) => {
+        // One arm at a time per thread, so the check below and the write are one step even when no
+        // row exists yet to lock.
+        await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${dedupeKey}))`;
+        // Monotonic: a live arm for a NEWER message stands. Deliveries on the direct path can finish
+        // out of order, and letting the older one win would name a trigger the job then refuses to
+        // judge (a newer incoming message is on the history), leaving the conversation with no arm.
+        if (trigger !== null) {
+          const live = await db.$queryRaw<Array<{ id: bigint }>>`
+          SELECT id FROM scheduler_jobs
+           WHERE tenant_id = ${params.tenantId}
+             AND kind = 'NOTHING_TO_ANSWER'::"SchedulerJobKind"
+             AND dedupe_key = ${dedupeKey}
+             AND status IN ('PENDING', 'CLAIMED')
+             AND NOT jsonb_exists(payload, 'cancelledAt')
+             AND jsonb_typeof(payload->'triggerMessageId') = 'number'
+             AND (payload->>'triggerMessageId')::bigint > ${trigger}`;
+          if (live.length > 0) return;
+        }
+        await upsertJobRow(db, {
+          tenantId: params.tenantId,
+          kind: "NOTHING_TO_ANSWER",
+          dedupeKey,
+          // Every arm is a new judgement to make later: another blank message pushes it out again.
+          rearm: "new-work",
+          runAt: new Date(
+            (params.now ?? new Date()).getTime() + NOTHING_TO_ANSWER_DELAY_MS,
+          ),
+          payload: {
+            instanceId: String(params.instanceId),
+            conversationId: params.conversationId,
+            conversationDbId: String(params.conversationDbId),
+            agentId: String(params.agentId),
+            agentBotId: params.agentBotId,
+            triggerMessageId: trigger,
+          },
+        });
       },
-      ...(params.base ? { base: params.base } : {}),
-    });
+    );
   } catch (err) {
     logger.warn(
       "nothing to answer: could not arm the close (conv=%s): %s",
@@ -208,6 +233,27 @@ export async function armNothingToAnswer(params: {
       err instanceof Error ? err.message : String(err),
     );
   }
+}
+
+// Whether this claim is still the job's, read strictly: a throw is a retry, never a close. Stricter
+// than `jobRetiredStrict` in one way: a row that is GONE is retired too. The retirement deletes a
+// waiting row, and a row can be waiting while an older run of it is still in flight (a re-arm puts a
+// claimed row back to PENDING in place), so its absence is the only trace that run gets.
+async function stillArmed(
+  job: ClaimedJob,
+  base: PrismaClient,
+): Promise<boolean> {
+  const rows = await runScopedOn(
+    base,
+    sysCtx(job.tenantId),
+    (db) =>
+      db.$queryRaw<Array<{ claim_seq: number; cancelled: boolean }>>`
+      SELECT claim_seq, jsonb_exists(payload, 'cancelledAt') AS cancelled
+        FROM scheduler_jobs
+       WHERE id = ${job.id} AND tenant_id = ${job.tenantId}`,
+  );
+  const row = rows[0];
+  return row !== undefined && row.claim_seq === job.claimSeq && !row.cancelled;
 }
 
 // The database's half of the judgement, the same reads a follow-up makes before it speaks
@@ -318,13 +364,11 @@ export async function nothingToAnswerHandler(
     base,
     makeClient,
   });
-  if (
-    !nothingToAnswerIn(
-      await client.getMessages(conversationId, { after: 0 }),
-      triggerMessageId,
-    )
-  )
-    return { outcome: "done" };
+  const readUpTo = nothingToAnswerIn(
+    await client.getMessages(conversationId, { after: 0 }),
+    triggerMessageId,
+  );
+  if (readUpTo === null) return { outcome: "done" };
   // Ownership last among the network reads: an operator who took the conversation, or an escalation
   // that opened it, is never overruled.
   const live = parseLiveConversation(
@@ -332,14 +376,18 @@ export async function nothingToAnswerHandler(
   );
   if (!live || !shouldBotHandle(live, { ourAgentBotId: agentBotId }))
     return { outcome: "done" };
+  // A message that landed after the history read, before its webhook retired this job: the live
+  // conversation already names it, and the judgement above never saw it.
+  if (live.latestMessageId !== null && live.latestMessageId > readUpTo)
+    return { outcome: "done" };
   // The database side again, after every network read and next to the write: a reply of ours, a
   // /reset, a rebinding or an agent switched off while Chatwoot was being asked; then the job's own
   // retirement, which a new incoming message sets.
   const row = await gate();
   if (row === null) return { outcome: "done" };
-  // Strict: a retirement this cannot read is a retry, never a licence to close over a message that
-  // may have retired it.
-  if (await jobRetiredStrict(job, base)) return { outcome: "done" };
+  // Strict, and a deleted row counts: a retirement this cannot read is a retry, never a licence to
+  // close over a message that may have retired it.
+  if (!(await stillArmed(job, base))) return { outcome: "done" };
 
   await client.toggleStatus(conversationId, "resolved", { asAdmin: true });
   await recordResolutionOrigin({

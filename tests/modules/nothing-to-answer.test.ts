@@ -104,6 +104,8 @@ function chatwoot(
     assigneeType?: string;
     assigneeId?: number;
     toggleFails?: boolean;
+    // The newest message id the live conversation names (`last_non_activity_message`).
+    latest?: number;
     // Runs inside the live conversation read, the job's last network read before it writes.
     onLive?: () => Promise<void> | void;
     // History older than the default page: only the full catch-up read (`after`) returns it.
@@ -141,6 +143,9 @@ function chatwoot(
         status: state.status,
         updated_at: 1_700_000_000.5,
         inbox_id: INBOX,
+        ...(live.latest !== undefined
+          ? { last_non_activity_message: { id: live.latest } }
+          : {}),
         meta: {
           assignee_type: state.assigneeType,
           assignee: { id: state.assigneeId, name: "x" },
@@ -742,6 +747,59 @@ describe.skipIf(!dbUp)(
       ]);
       await judge(89_551, note);
       expect(note.toggles).toEqual(["resolved"]);
+    });
+
+    test("a message the live read names past the history read keeps it open", async () => {
+      // Landed between the history read and the live one, its webhook not yet processed.
+      const late = chatwoot([{ id: 2, content: "" }], { latest: 3 });
+      await judge(89_552, late);
+      expect(late.toggles).toEqual([]);
+      const same = chatwoot([{ id: 2, content: "" }], { latest: 2 });
+      await judge(89_553, same);
+      expect(same.toggles).toEqual(["resolved"]);
+    });
+
+    test("a job whose row was deleted under it closes nothing", async () => {
+      // A re-arm puts a claimed row back to PENDING in place, and the retirement deletes a waiting
+      // row: the run still in flight has only the absence to go by.
+      const cw = chatwoot([{ id: 2, content: "" }], {
+        onLive: async () => {
+          await suDb.schedulerJob.deleteMany({
+            where: {
+              tenantId,
+              kind: "NOTHING_TO_ANSWER",
+              dedupeKey: nothingToAnswerDedupeKey(threadOf(89_554)),
+            },
+          });
+        },
+      });
+      await judge(89_554, cw);
+      expect(cw.toggles).toEqual([]);
+    });
+
+    test("an older message's arm finishing late does not replace a newer one's", async () => {
+      const conv = await seedConversation(89_555);
+      const arm = (triggerMessageId: number) =>
+        armNothingToAnswer({
+          tenantId,
+          instanceId,
+          threadId: threadOf(89_555),
+          conversationId: 89_555,
+          conversationDbId: conv.id,
+          agentId: agentDbId,
+          agentBotId: OUR_BOT,
+          triggerMessageId,
+          base: appDb,
+        });
+      await arm(3);
+      await arm(2);
+      expect((await armedRow(89_555))?.payload).toMatchObject({
+        triggerMessageId: 3,
+      });
+      await arm(4);
+      expect((await armedRow(89_555))?.payload).toMatchObject({
+        triggerMessageId: 4,
+      });
     });
 
     test("a private incoming row is not the customer speaking", async () => {

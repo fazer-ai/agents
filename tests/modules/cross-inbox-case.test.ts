@@ -2206,6 +2206,52 @@ describe("the case's email subject", () => {
     expect(created(f)[0]?.additionalAttributes).toBeUndefined();
   });
 
+  test("the subject passes the output check: a refused one is dropped, a transfer opens nothing", async () => {
+    const screened: string[] = [];
+    const screen =
+      (verdicts: Record<string, "send" | "drop" | "handed">) =>
+      async (text: string) => {
+        screened.push(text);
+        return verdicts[text] ?? "send";
+      };
+    const dropped = fakeChatwoot();
+    const r1 = await openCaseInInbox(
+      dropped.client,
+      input({
+        subject: "Assunto proibido",
+        screenCustomerMessage: screen({ "Assunto proibido": "drop" }),
+      }),
+    );
+    expect(r1.kind).toBe("opened");
+    expect(created(dropped)[0]?.additionalAttributes).toBeUndefined();
+    expect(screened).toContain("Assunto proibido");
+    const handed = fakeChatwoot();
+    const r2 = await openCaseInInbox(
+      handed.client,
+      input({
+        customerMessage: null,
+        subject: "Assunto que transfere",
+        screenCustomerMessage: screen({ "Assunto que transfere": "handed" }),
+      }),
+    );
+    expect(r2.kind).toBe("handed_by_policy");
+    expect(created(handed)).toEqual([]);
+  });
+
+  test("a subject the check allows is written", async () => {
+    const f = fakeChatwoot();
+    await openCaseInInbox(
+      f.client,
+      input({
+        subject: "Solicitação de Ana",
+        screenCustomerMessage: async () => "send",
+      }),
+    );
+    expect(created(f)[0]?.additionalAttributes).toEqual({
+      mail_subject: "Solicitação de Ana",
+    });
+  });
+
   test("without a subject, the case opens as before", async () => {
     const f = fakeChatwoot();
     await openCaseInInbox(f.client, input());

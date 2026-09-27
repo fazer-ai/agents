@@ -52,3 +52,19 @@ export function withKeyedQueue<T>(
 export function queuedKeyCount(): number {
   return keyedChains.size;
 }
+
+// Run async work once per key WITHIN this process: a call that finds the same key already running
+// gets that run's promise instead of starting its own. For paid work several deliveries of one
+// message ask for at once. The key leaves when the run settles, so a later call runs again.
+const sharedFlights = new Map<string, Promise<unknown>>();
+
+export function shareInFlight<T>(
+  key: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const running = sharedFlights.get(key);
+  if (running) return running as Promise<T>;
+  const run = fn().finally(() => sharedFlights.delete(key));
+  sharedFlights.set(key, run);
+  return run;
+}

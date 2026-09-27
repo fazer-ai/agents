@@ -3,6 +3,7 @@ import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { recordDirectUsage } from "@/graph/usage";
 import { AppError, NotFoundError } from "@/lib/errors";
+import { shareInFlight } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -347,7 +348,22 @@ export function classifyBodyImage(
   }) as Promise<null | typeof BODY_IMAGE_IGNORED | typeof BODY_IMAGE_OVER_CAP>;
 }
 
-async function extractInbound(
+// One read per file, however many deliveries of its message ask at once.
+function extractInbound(
+  params: ExtractInboundParams & {
+    bodyImage?: boolean;
+    classifyOnly?: boolean;
+  },
+): Promise<
+  ExtractResult | null | typeof BODY_IMAGE_IGNORED | typeof BODY_IMAGE_OVER_CAP
+> {
+  return shareInFlight(
+    `vision:${params.tenantId}:${params.instanceId}:${params.messageId}:${params.attachmentId ?? params.dataUrl}:${params.classifyOnly ? "classify" : "read"}`,
+    () => extractInboundOnce(params),
+  );
+}
+
+async function extractInboundOnce(
   params: ExtractInboundParams & {
     bodyImage?: boolean;
     classifyOnly?: boolean;

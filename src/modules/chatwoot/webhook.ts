@@ -58,7 +58,10 @@ import {
   isRedirectEntryInbox,
   readChannelRedirectConfig,
 } from "@/modules/channel-redirect/service";
-import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
+import {
+  mediaAnnotationFor,
+  stashMediaAnnotation,
+} from "@/modules/chatwoot/annotations";
 import {
   recordTurnCoverage,
   retireCoveredDeliveries,
@@ -2026,22 +2029,38 @@ export async function runEagerMedia(
         // below, because a mutable property can change before a deferred callback reads it.
         const conversationId = n.conversationId;
         const messageId = n.message.id;
-        const r = await extractMessageVisuals({
-          tenantId,
-          instanceId,
-          conversationId,
-          messageId,
-          visuals,
-          cfg: visionCfg,
-          stillAllowed: admitted,
-          base,
-          flow: flow(),
-          convLabel,
-          deps: {
-            makeClient: owner.deps?.makeClient,
-            fetchImpl: owner.deps?.visionFetch,
-          },
-        });
+        // NOTE: Another delivery of this message may have read it already; its result is stashed.
+        const stashed =
+          visuals === todos
+            ? mediaAnnotationFor(tenantId, instanceId, messageId)
+            : null;
+        const r =
+          stashed &&
+          (stashed.imageDescription ||
+            stashed.extractedText ||
+            stashed.bodyRead)
+            ? {
+                imageDescription: stashed.imageDescription ?? null,
+                extractedText: stashed.extractedText ?? null,
+                attachmentsUnread: stashed.attachmentsUnread ?? 0,
+                bodyRead: stashed.bodyRead ?? false,
+              }
+            : await extractMessageVisuals({
+                tenantId,
+                instanceId,
+                conversationId,
+                messageId,
+                visuals,
+                cfg: visionCfg,
+                stillAllowed: admitted,
+                base,
+                flow: flow(),
+                convLabel,
+                deps: {
+                  makeClient: owner.deps?.makeClient,
+                  fetchImpl: owner.deps?.visionFetch,
+                },
+              });
         if (r && recusados > 0)
           stashMediaAnnotation(
             { tenantId, instanceId, messageId },

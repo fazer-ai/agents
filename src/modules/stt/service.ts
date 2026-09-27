@@ -2,9 +2,13 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
 import { AppError, NotFoundError } from "@/lib/errors";
+import { shareInFlight } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { clipText } from "@/lib/text";
-import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
+import {
+  mediaAnnotationFor,
+  stashMediaAnnotation,
+} from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { cleanTranscription } from "@/modules/chatwoot/render";
@@ -91,7 +95,25 @@ export interface TranscribeInboundParams {
 // (also persisted in the attachment meta) or null when STT is not runnable (no key / misconfigured)
 // or yields nothing. Throws only on a hard download/provider error so the caller can decide; the
 // webhook treats STT as best-effort and never strands the delivery on it.
+// One transcription per voice note: Chatwoot delivers it as a `message_created` and two
+// `message_updated` almost at once, and each delivery asks. A delivery that finds the transcription
+// already stashed reuses it; one that finds it running waits for that run.
 export async function transcribeInboundAudio(
+  params: TranscribeInboundParams,
+): Promise<string | null> {
+  const stashed = mediaAnnotationFor(
+    params.tenantId,
+    params.instanceId,
+    params.messageId,
+  )?.transcribedText;
+  if (stashed) return stashed;
+  return shareInFlight(
+    `stt:${params.tenantId}:${params.instanceId}:${params.messageId}:${params.attachmentId}`,
+    () => transcribeOnce(params),
+  );
+}
+
+async function transcribeOnce(
   params: TranscribeInboundParams,
 ): Promise<string | null> {
   const { cfg } = params;

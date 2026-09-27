@@ -3775,6 +3775,74 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(await recoveredLine(98864)).toBeNull();
   });
 
+  test("an ordinary reply that was delivered is not marked as recovered", async () => {
+    await seedConversation(98872, null);
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98872 }),
+      base: appDb,
+      deps: {
+        makeModel: fakeModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("posted");
+    await new Promise((r) => setTimeout(r, 300));
+    const rows = await flowLogRows(suDb, {
+      where: {
+        tenantId,
+        stage: "generate",
+        threadId: `${tenantId}:${instanceId}:98872`,
+      },
+      select: { detail: true },
+    });
+    const details = rows.map((r) => r.detail as Record<string, unknown> | null);
+    expect(details.some((d) => typeof d?.turnMs === "number")).toBe(true);
+    expect(details.some((d) => d != null && "replyRecovered" in d)).toBe(false);
+  });
+
+  // The recovered text is chosen before the delivery gates run. A person taking the conversation
+  // mid-turn refuses the send, so the log shows that refusal and never a recovered reply.
+  test("a recovered reply refused by a takeover is not logged as recovered", async () => {
+    await seedConversation(98871, "User");
+    const calls: Array<[string, number, string]> = [];
+    const outcome = await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98871 }),
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new TextBesideToolThenEmptyModel([
+            {
+              text: "O prazo de cancelamento é de 7 dias a partir da compra.",
+              calls: [{ name: "set_labels", args: { labels: ["duvida"] } }],
+            },
+          ]) as unknown as BaseChatModel,
+        makeClient: makeResolveClient(calls),
+        checkpointer: new MemorySaver(),
+      },
+    });
+    expect(outcome).toBe("taken-over");
+    expect(calls.filter(([op]) => op === "sendMessage")).toEqual([]);
+    const rows = await flowLogRows(suDb, {
+      where: { tenantId, threadId: `${tenantId}:${instanceId}:98871` },
+      select: { stage: true, detail: true },
+    });
+    expect(
+      rows.some(
+        (r) =>
+          (r.detail as Record<string, unknown> | null)?.replyRecovered === true,
+      ),
+    ).toBe(false);
+    expect(rows.some((r) => r.stage === "handoff")).toBe(true);
+  });
+
   // A transfer that declared silence is a person owning the case with nothing to say: an earlier
   // line of the model does not come back on top of it.
   test("an earlier text is not recovered over a handoff that declared silence", async () => {
@@ -8279,6 +8347,76 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(outcome).toBe("posted");
       expect(sent).toEqual([[946, "GEN-OUT-REPLY"]]);
       expect(attachments).toEqual([]);
+    });
+
+    // The recovered text is what the guardrail screened, and the customer got the safe reply
+    // instead, so nothing on the log says a recovered reply was delivered.
+    test("a recovered reply the output guardrail replaced is not logged as recovered", async () => {
+      await setGuardrails({
+        enabled: true,
+        provider: "openai",
+        model: GUARD_MODEL,
+        credentialRef: gVaultRef,
+        input: { enabled: false },
+        output: {
+          enabled: true,
+          action: "generated",
+          checks: {
+            toxicity: true,
+            unsafeContent: false,
+            competitorMentions: false,
+            promptAdherence: false,
+          },
+          templateMessage: "TEMPLATE-OUT",
+        },
+      });
+      await seedConv(9471);
+      const sent: Array<[number, string]> = [];
+      const verdict = JSON.stringify({
+        violated: true,
+        categories: ["toxicity"],
+        rationale: "recovered",
+        suggestedReply: "GEN-OUT-REPLY",
+      });
+      const outcome = await runAgentTurn({
+        tenantId: gTenantId,
+        instanceId: gInstanceId,
+        agentBotId: G_BOT,
+        event: incoming({ conversationId: 9471, inboxId: G_INBOX }),
+        base: appDb,
+        deps: {
+          makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+            cfg.model === GUARD_MODEL
+              ? guardrailModel(async () => ({ content: verdict }))
+              : (new TextBesideToolThenEmptyModel([
+                  {
+                    text: "texto recuperado proibido",
+                    calls: [{ name: "resolve_conversation", args: {} }],
+                  },
+                ]) as unknown as BaseChatModel),
+          makeClient: guardStub(sent, []),
+          checkpointer: new MemorySaver(),
+        },
+      });
+      expect(outcome).toBe("posted");
+      expect(sent).toEqual([[9471, "GEN-OUT-REPLY"]]);
+      await new Promise((r) => setTimeout(r, 300));
+      const rows = await flowLogRows(suDb, {
+        where: {
+          tenantId: gTenantId,
+          stage: "generate",
+          threadId: `${gTenantId}:${gInstanceId}:9471`,
+        },
+        select: { detail: true },
+      });
+      expect(rows.length).toBeGreaterThan(0);
+      expect(
+        rows.some(
+          (r) =>
+            (r.detail as Record<string, unknown> | null)?.replyRecovered ===
+            true,
+        ),
+      ).toBe(false);
     });
 
     // The same rule, on the surface where getting it wrong costs the most. A caption is a line under

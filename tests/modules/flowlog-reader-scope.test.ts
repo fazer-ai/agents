@@ -215,8 +215,9 @@ const FLOWLOG_READERS: Record<string, number> = {
   // none of them. #886: two more, the `replyRecovered` line of a turn whose reply was written beside a
   // tool call, and the `silenceUnexplained` warn that must not fire on it, both scoped by thread.
   // #885: two more, the `silenceRetry` line of a retried silence and the warn's detail that says the
-  // retry ran, both scoped by thread.
-  "tests/graph/runtime.test.ts": 31,
+  // retry ran, both scoped by thread. Three more: the lines of a turn whose recovered reply a
+  // takeover refused, a guardrail replaced, and an ordinary delivered turn, each scoped by thread.
+  "tests/graph/runtime.test.ts": 34,
   "tests/graph/side-effect-flowlog.test.ts": 1,
   "tests/graph/skip-handover.test.ts": 1,
   // #726: the helper that runs one tool call end to end, plus the case that asks WHEN the turn's

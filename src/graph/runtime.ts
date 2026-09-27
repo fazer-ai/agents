@@ -1722,6 +1722,9 @@ async function runTurnBody(
   // Whether a FILE reached the customer this turn. Separate from the balloon count, which counts
   // text: an attachment-only turn delivers with `deliveredBalloons` still null.
   let sentAttachment = false;
+  // The reply is text an earlier message of this turn carried; it rides on the closing line only if
+  // it reached the customer.
+  let replyRecovered = false;
 
   // The sentence the transfer promised the customer, delivered on the way OUT of the turn — whatever
   // the way out is. Nothing downstream may take it back, and nothing downstream can be retried into
@@ -2763,11 +2766,7 @@ async function runTurnBody(
       );
       if (recovered.text) {
         reply = recovered.text;
-        emitFlowEvent(flow, {
-          stage: "generate",
-          status: "ok",
-          detail: { replyRecovered: true },
-        });
+        replyRecovered = true;
       }
     }
     await deliverHandoffPromise();
@@ -2896,6 +2895,7 @@ async function runTurnBody(
         if (replacement === null) return refuse("blocked");
         reply = replacement;
       }
+      replyRecovered = false;
     }
 
     // Empty reply: no text to post, but the queued images and a deferred resolve intent still apply
@@ -3341,6 +3341,7 @@ async function runTurnBody(
         detail: {
           turnMs: Math.round(performance.now() - turnStartedAt),
           ...(sentMessageIds.length > 0 ? { sentMessageIds } : {}),
+          ...(replyRecovered && deliveredBalloons ? { replyRecovered } : {}),
           ...(silenceAsked
             ? {
                 turnDelivered: turnReachedTheCustomer({

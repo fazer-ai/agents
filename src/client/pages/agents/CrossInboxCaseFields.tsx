@@ -85,6 +85,22 @@ export function showsSubjectField(
     : destinationIdentity(channelType) === "email";
 }
 
+// A new destination that is not email, or none, drops the subject template, which only an email inbox uses:
+// kept, it would still ask the model for a summary nobody reads.
+export function withDestination(
+  value: CrossInboxCaseState,
+  targetInboxId: string,
+  targetInstanceId: string,
+  channelType: string | null | undefined,
+): CrossInboxCaseState {
+  const next = { ...value, targetInboxId, targetInstanceId };
+  // An inbox the list does not know (undefined) keeps the template, since its channel is unknown.
+  const keep =
+    targetInboxId !== "" &&
+    (channelType === undefined || destinationIdentity(channelType) === "email");
+  return keep ? next : { ...next, subjectTemplate: "" };
+}
+
 const optionValue = (instanceId: string, inboxId: string | number) =>
   `${instanceId}:${inboxId}`;
 
@@ -177,11 +193,14 @@ export function CrossInboxCaseFields({
           value={selected}
           onChange={(e) => {
             const [instanceId = "", inboxId = ""] = e.target.value.split(":");
-            onChange({
-              ...value,
-              targetInboxId: inboxId,
-              targetInstanceId: instanceId,
-            });
+            const picked = eligible.find(
+              (ib) =>
+                optionValue(ib.chatwootInstanceId, ib.chatwootInboxId) ===
+                e.target.value,
+            );
+            onChange(
+              withDestination(value, inboxId, instanceId, picked?.channelType),
+            );
           }}
         >
           <option value="">

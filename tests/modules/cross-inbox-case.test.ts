@@ -2298,6 +2298,19 @@ describe("the case's email subject", () => {
     expect(keys(null)).not.toContain("summary");
   });
 
+  test("a call without the summary still opens the case, on a destination the template no longer fits", async () => {
+    const f = fakeChatwoot({
+      inboxes: { 40: { name: "API", channel_type: "Channel::Api" } },
+    });
+    const t = subjectTool(f, "Caso de {{nome_contato}}: {{resumo}}");
+    await t.invoke({
+      reason: "troca",
+      handoff_message: "Vou te passar para o time.",
+    });
+    expect(created(f)).toHaveLength(1);
+    expect(created(f)[0]?.additionalAttributes).toBeUndefined();
+  });
+
   test("the tool writes the rendered subject on the case", async () => {
     const f = fakeChatwoot();
     const t = subjectTool(f, "Solicitação de {{nome_contato}}: {{resumo}}");

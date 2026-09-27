@@ -2515,7 +2515,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           ? {
               summary: z
                 .string()
-                .min(1)
+                .optional()
                 .describe(
                   "One line saying what the request is about. It becomes part of the subject of the case's emails, which is what the customer and the team read first.",
                 ),

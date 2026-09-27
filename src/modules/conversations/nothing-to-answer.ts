@@ -85,8 +85,14 @@ function readWhole(raw: unknown): ChatwootMessageRow[] | null {
 
 // The history, judged: read whole, short enough for one batch, no customer-facing message from our
 // side (the mirror row is a snapshot from before this read, and a nudge sent meanwhile is on it), at
-// least one non-private incoming message, and none of them answerable or a reaction.
-function nothingToAnswerIn(raw: unknown): boolean {
+// least one non-private incoming message, none of them answerable or a reaction, and none NEWER than
+// the message the job was armed for. A newer one is still inside its own delay (its attachment may be
+// on the way) and its own flush judges it; the receiver retires this job when it sees it, and this is
+// the same rule for the stretch before it does.
+function nothingToAnswerIn(
+  raw: unknown,
+  triggerMessageId: number | null,
+): boolean {
   const messages = readWhole(raw);
   if (messages === null || messages.length >= HISTORY_BATCH) return false;
   if (messages.some(weSpoke)) return false;
@@ -94,6 +100,11 @@ function nothingToAnswerIn(raw: unknown): boolean {
     (m) => m.messageType === "incoming" && !m.private,
   );
   if (incoming.length === 0) return false;
+  if (
+    triggerMessageId !== null &&
+    incoming.some((m) => m.id > triggerMessageId)
+  )
+    return false;
   return !incoming.some((m) => m.isReaction || hasAnswerableContent(m));
 }
 
@@ -308,7 +319,10 @@ export async function nothingToAnswerHandler(
     makeClient,
   });
   if (
-    !nothingToAnswerIn(await client.getMessages(conversationId, { after: 0 }))
+    !nothingToAnswerIn(
+      await client.getMessages(conversationId, { after: 0 }),
+      triggerMessageId,
+    )
   )
     return { outcome: "done" };
   // Ownership last among the network reads: an operator who took the conversation, or an escalation

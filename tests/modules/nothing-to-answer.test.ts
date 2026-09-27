@@ -354,10 +354,10 @@ async function armAndClaim(
 async function judge(
   convId: number,
   cw: ReturnType<typeof chatwoot>,
-  opts: { spoken?: boolean; resetAt?: number } = {},
+  opts: { spoken?: boolean; resetAt?: number; trigger?: number } = {},
 ) {
   const conv = await seedConversation(convId, opts);
-  const job = await armAndClaim(convId, conv.id);
+  const job = await armAndClaim(convId, conv.id, opts.trigger ?? 2);
   const out = await nothingToAnswerHandler(job, appDb, cw.makeClient as never);
   return { conv, job, out };
 }
@@ -673,7 +673,7 @@ describe.skipIf(!dbUp)(
       const cw = chatwoot(blanks, {
         older: [{ id: 1, content: "meu ingresso não chegou" }],
       });
-      await judge(89_516, cw);
+      await judge(89_516, cw, { trigger: 50 });
       expect(cw.toggles).toEqual([]);
     });
 
@@ -684,7 +684,7 @@ describe.skipIf(!dbUp)(
           content: "",
         })),
       });
-      await judge(89_517, cw);
+      await judge(89_517, cw, { trigger: 200 });
       expect(cw.toggles).toEqual([]);
       // One row fewer is one batch, and the same blank history closes.
       const short = chatwoot([{ id: 200, content: "" }], {
@@ -693,7 +693,7 @@ describe.skipIf(!dbUp)(
           content: "",
         })),
       });
-      await judge(89_518, short);
+      await judge(89_518, short, { trigger: 200 });
       expect(short.toggles).toEqual(["resolved"]);
     });
 
@@ -724,6 +724,24 @@ describe.skipIf(!dbUp)(
         await judge(convId, cw);
         expect(cw.toggles).toEqual([]);
       }
+    });
+
+    test("a newer blank message the receiver has not retired it for yet is left to its own job", async () => {
+      // Armed for message 2; message 3 is already in Chatwoot, blank for now, its webhook not yet
+      // processed. Its own delay covers the attachment that may still be on the way.
+      const cw = chatwoot([
+        { id: 2, content: "" },
+        { id: 3, content: "" },
+      ]);
+      await judge(89_550, cw);
+      expect(cw.toggles).toEqual([]);
+      // Our own private rows past the trigger are not the customer.
+      const note = chatwoot([
+        { id: 2, content: "" },
+        { id: 3, content: "nota", private: true },
+      ]);
+      await judge(89_551, note);
+      expect(note.toggles).toEqual(["resolved"]);
     });
 
     test("a private incoming row is not the customer speaking", async () => {

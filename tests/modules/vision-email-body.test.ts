@@ -25,7 +25,6 @@ import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { reengageConversation } from "@/modules/conversations/reengage";
 import { extractMessageVisuals } from "@/modules/vision/extract-message";
-import { clearVisionReads } from "@/modules/vision/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogCount } from "../utils/flowlog";
 
@@ -279,7 +278,7 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
   });
 
   beforeEach(() => {
-    clearVisionReads();
+    clearMediaAnnotations();
     clearMediaAnnotations();
   });
 

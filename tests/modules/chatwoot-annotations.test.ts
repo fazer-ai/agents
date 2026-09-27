@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
   clearMediaAnnotations,
+  fileReadFor,
   mediaAnnotationCount,
   nextSweepDelayMs,
   overlayMediaAnnotations,
+  rememberFileRead,
   stashMediaAnnotation,
   sweepMediaAnnotations,
 } from "@/modules/chatwoot/annotations";
@@ -119,6 +121,21 @@ describe("media annotations (issue #49)", () => {
     expect(mediaAnnotationCount()).toBe(1);
     // NOTE: No further stash happens — this is the idle process, where only the scheduled sweeper
     // (which calls exactly this function) can reclaim the entry.
+    sweepMediaAnnotations(1_000 + 16 * 60_000);
+    expect(mediaAnnotationCount()).toBe(0);
+  });
+
+  test("a file's vision read is deleted by the sweep too, and the next wake-up counts it", () => {
+    rememberFileRead(
+      "vision:1:2:3:4:read",
+      { kind: "image", text: "foto" },
+      1_000,
+    );
+    expect(fileReadFor("vision:1:2:3:4:read", 1_000 + 60_000)).not.toBeNull();
+    expect(fileReadFor("vision:1:2:3:4:read", 1_000 + 16 * 60_000)).toBeNull();
+    expect(nextSweepDelayMs(1_000 + 60_000)).toBe(14 * 60_000);
+    sweepMediaAnnotations(1_000 + 60_000);
+    expect(mediaAnnotationCount()).toBe(1);
     sweepMediaAnnotations(1_000 + 16 * 60_000);
     expect(mediaAnnotationCount()).toBe(0);
   });

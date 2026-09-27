@@ -12,6 +12,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
 import {
+  clearMediaAnnotations,
   mediaAnnotationFor,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
@@ -24,7 +25,6 @@ import {
   clearContactAuthState,
   mediaRefusedHereThrough,
 } from "@/modules/contact-auth/state";
-import { clearVisionReads } from "@/modules/vision/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // With the contact authorization gate on, no media of an incoming message reaches the STT or vision
@@ -379,7 +379,7 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
   });
 
   beforeEach(() => {
-    clearVisionReads();
+    clearMediaAnnotations();
     clearContactAuthState();
     providers.stt = 0;
     providers.vision = 0;
@@ -823,7 +823,7 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
   // each delivery runs the media pass. One message is read once, whichever delivery gets there first.
   describe("one message, several deliveries", () => {
     beforeEach(() => {
-      clearVisionReads();
+      clearMediaAnnotations();
       providers.stt = 0;
       providers.vision = 0;
       providers.auth = 0;

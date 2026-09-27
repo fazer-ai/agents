@@ -29,6 +29,9 @@ const TTL_MS = 15 * 60 * 1000;
 const MAX_ENTRIES = 2000;
 
 const store = new Map<string, { at: number; note: MediaAnnotation }>();
+// One vision read per file, under the same retention as the annotations: a later delivery of the
+// message reuses it instead of paying the provider again.
+const fileReads = new Map<string, { at: number; value: unknown }>();
 let sweepTimer: ReturnType<typeof setTimeout> | undefined;
 
 function keyOf(tenantId: bigint, instanceId: bigint, messageId: number) {
@@ -44,15 +47,20 @@ export function sweepMediaAnnotations(nowMs: number = Date.now()): void {
     // would leave the entry in place and re-arm a zero-delay timer instead of reclaiming it.
     if (nowMs - v.at >= TTL_MS) store.delete(k);
   }
+  for (const [k, v] of fileReads) {
+    if (nowMs - v.at >= TTL_MS) fileReads.delete(k);
+  }
 }
 
 // NOTE: Second, independent bound: a burst that outruns the TTL is capped by entry count. Map
 // iteration is insertion-ordered and stash() re-inserts on update, so the front is the oldest.
 function enforceSizeCap(): void {
-  while (store.size > MAX_ENTRIES) {
-    const oldest = store.keys().next().value;
-    if (oldest === undefined) break;
-    store.delete(oldest);
+  for (const map of [store, fileReads] as Map<string, unknown>[]) {
+    while (map.size > MAX_ENTRIES) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
   }
 }
 
@@ -61,9 +69,10 @@ function enforceSizeCap(): void {
 // oldest. A flat TTL_MS delay would instead let an annotation stashed right after a sweep sit for
 // nearly two TTLs before the next one runs.
 export function nextSweepDelayMs(nowMs: number = Date.now()): number | null {
-  const oldest = store.values().next().value;
-  if (!oldest) return null;
-  return Math.max(0, oldest.at + TTL_MS - nowMs);
+  const firsts = [store.values().next().value, fileReads.values().next().value];
+  const at = Math.min(...firsts.flatMap((e) => (e ? [e.at] : [])));
+  if (!Number.isFinite(at)) return null;
+  return Math.max(0, at + TTL_MS - nowMs);
 }
 
 // NOTE: One rescheduled timer, armed only while the store holds something and unref'd (same idiom
@@ -142,9 +151,31 @@ export function overlayMediaAnnotations(
   }
 }
 
+export function rememberFileRead(
+  key: string,
+  value: unknown,
+  nowMs: number = Date.now(),
+): void {
+  fileReads.delete(key);
+  fileReads.set(key, { at: nowMs, value });
+  sweepMediaAnnotations(nowMs);
+  enforceSizeCap();
+  scheduleSweep(nowMs);
+}
+
+export function fileReadFor(
+  key: string,
+  nowMs: number = Date.now(),
+): { value: unknown } | null {
+  const hit = fileReads.get(key);
+  if (!hit || nowMs - hit.at >= TTL_MS) return null;
+  return { value: hit.value };
+}
+
 // NOTE: Test isolation only — production never clears the store wholesale (the TTL sweep does).
 export function clearMediaAnnotations(): void {
   store.clear();
+  fileReads.clear();
   if (sweepTimer) {
     clearTimeout(sweepTimer);
     sweepTimer = undefined;
@@ -154,5 +185,5 @@ export function clearMediaAnnotations(): void {
 // NOTE: How many annotations are actually RETAINED (not merely hidden from the overlay). Exposed so
 // the TTL-deletion contract is assertable.
 export function mediaAnnotationCount(): number {
-  return store.size;
+  return store.size + fileReads.size;
 }

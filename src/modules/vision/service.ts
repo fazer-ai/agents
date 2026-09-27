@@ -5,7 +5,11 @@ import { recordDirectUsage } from "@/graph/usage";
 import { AppError, NotFoundError } from "@/lib/errors";
 import { shareInFlight } from "@/lib/locks";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
-import { stashMediaAnnotation } from "@/modules/chatwoot/annotations";
+import {
+  fileReadFor,
+  rememberFileRead,
+  stashMediaAnnotation,
+} from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import {
@@ -349,21 +353,8 @@ export function classifyBodyImage(
 }
 
 // One read per file, however many deliveries of its message ask: a delivery that finds the file
-// being read waits for that read, and one that comes later reuses its result for a while. A failed
-// read is not kept, so the next delivery tries again.
-const READ_TTL_MS = 15 * 60_000;
-const READ_MAX = 10_000;
-const reads = new Map<
-  string,
-  {
-    at: number;
-    value:
-      | ExtractResult
-      | typeof BODY_IMAGE_IGNORED
-      | typeof BODY_IMAGE_OVER_CAP;
-  }
->();
-
+// being read waits for that read, and one that comes later reuses its result while the annotation
+// store keeps it. A failed read is not kept, so the next delivery tries again.
 function extractInbound(
   params: ExtractInboundParams & {
     bodyImage?: boolean;
@@ -373,25 +364,19 @@ function extractInbound(
   ExtractResult | null | typeof BODY_IMAGE_IGNORED | typeof BODY_IMAGE_OVER_CAP
 > {
   const key = `vision:${params.tenantId}:${params.instanceId}:${params.messageId}:${params.attachmentId ?? params.dataUrl}:${params.classifyOnly ? "classify" : "read"}`;
-  const now = Date.now();
-  const kept = reads.get(key);
-  if (kept && now - kept.at < READ_TTL_MS) return Promise.resolve(kept.value);
+  const kept = fileReadFor(key);
+  if (kept)
+    return Promise.resolve(
+      kept.value as
+        | ExtractResult
+        | typeof BODY_IMAGE_IGNORED
+        | typeof BODY_IMAGE_OVER_CAP,
+    );
   return shareInFlight(key, async () => {
     const value = await extractInboundOnce(params);
-    if (value !== null) {
-      if (reads.size >= READ_MAX) {
-        const oldest = reads.keys().next().value;
-        if (oldest !== undefined) reads.delete(oldest);
-      }
-      reads.set(key, { at: Date.now(), value });
-    }
+    if (value !== null) rememberFileRead(key, value);
     return value;
   });
-}
-
-// NOTE: Test isolation only.
-export function clearVisionReads(): void {
-  reads.clear();
 }
 
 async function extractInboundOnce(

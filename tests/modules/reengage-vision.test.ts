@@ -25,7 +25,6 @@ import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { mediaRefusalKey } from "@/modules/contact-auth/media-refusal";
 import { rememberMediaRefusal } from "@/modules/contact-auth/state";
 import { reengageConversation } from "@/modules/conversations/reengage";
-import { clearVisionReads } from "@/modules/vision/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
@@ -263,7 +262,7 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
   // respeitada" sobreviveu à bateria: o agregado stashado pelo caso anterior fazia a mensagem passar
   // por já lida, e nenhuma extração era tentada nem com a cerca removida.
   beforeEach(() => {
-    clearVisionReads();
+    clearMediaAnnotations();
     clearMediaAnnotations();
   });
 

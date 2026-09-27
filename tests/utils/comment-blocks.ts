@@ -13,7 +13,7 @@ export const BLOCK_LINE_CEILING = 8;
 export const WAIVER = /\bcomment-waiver:[ \t]*\S/;
 
 const PROVENANCE =
-  /(?<![\w&/#])#\d+\b|\bPR\s*#?\d+\b|\bissues?\s+#\d+\b|\breview,?\s+round\b|\bround\s+\d+\b|\brodada\s+\d+\b/i;
+  /(?<![\w&/#])#\d+\b|\bPR\s*#?\d+\b|\bissues?\s+#\d+\b|\breview,?\s+round\b|\bround\s+\d+\b|\brodada\s+\d+\b|github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+/i;
 const OWED_WORK = /\b(TODO|FIXME):/;
 const NARRATION =
   /\b(measured|medido|real case|caso real|used to|before this change|originally|turned out|we found)\b/i;

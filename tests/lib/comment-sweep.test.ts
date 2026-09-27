@@ -34,6 +34,8 @@ describe("what the sweep reads as provenance", () => {
       "// PR #9 moved it here.",
       "/* review round 2 asked for this */",
       "// The fix from round 3.",
+      "// Fixed in https://github.com/acme/app/pull/123",
+      "/* see https://github.com/acme/app/issues/9#issuecomment-1 */",
     ]) {
       expect(citesProvenance(block(text))).toBe(true);
     }
@@ -56,6 +58,14 @@ describe("what the sweep reads as provenance", () => {
     expect(
       commentBlocks('const url = "https://x.test/issues/123#456";'),
     ).toEqual([]);
+    expect(
+      commentBlocks('const url = "https://github.com/acme/app/pull/123";'),
+    ).toEqual([]);
+    expect(
+      citesProvenance(
+        block("// Docs: https://github.com/acme/app/blob/main/x.md"),
+      ),
+    ).toBe(false);
   });
 
   test("a waiver with a reason exempts the block, and one without a reason does not", () => {

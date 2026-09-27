@@ -252,12 +252,21 @@ async function settleCaseOwner(
   } catch {
     partial.push("case_assignee");
   }
-  if (teamId !== null && owner.teamId === null) {
-    try {
-      await client.assignTeam(caseId, teamId, { asAdmin: true });
-    } catch {
-      partial.push("case_team");
-    }
+  if (teamId === null || owner.teamId !== null) return;
+  // Read again before the team: routing or an operator can have given the case a person or a team
+  // while the clear was in flight, and a team written over it moves the case and, through
+  // `ensure_assignee_is_from_team`, takes it from that person.
+  try {
+    owner = caseOwner(await client.getConversation(caseId));
+  } catch {
+    partial.push("case_team");
+    return;
+  }
+  if (owner.human || owner.teamId !== null) return;
+  try {
+    await client.assignTeam(caseId, teamId, { asAdmin: true });
+  } catch {
+    partial.push("case_team");
   }
 }
 

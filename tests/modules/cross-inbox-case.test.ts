@@ -2500,6 +2500,72 @@ describe("who holds the case (issue #908)", () => {
     expect(f.convs.find((x) => x.id === 55)?.status).toBe("open");
   });
 
+  // Routing or an operator acting while the clear is in flight: the fake applies it right after
+  // the clear, as the next read would see it.
+  const routedDuringClear = (
+    f: ReturnType<typeof fakeChatwoot>,
+    apply: (c: Conv) => void,
+  ): CaseClient =>
+    ({
+      ...f.client,
+      unassignConversation: async (id: number, o?: { asAdmin?: boolean }) => {
+        const r = await f.client.unassignConversation(id, o);
+        const c = f.convs.find((x) => x.id === id);
+        if (c) apply(c);
+        return r;
+      },
+    }) as CaseClient;
+
+  test("a team routed while the clear was in flight is not overwritten", async () => {
+    const f = fakeChatwoot({
+      continueOpen: true,
+      convs: [originConv(), emailAgentsCase()],
+    });
+    const client = routedDuringClear(f, (c) => {
+      c.teamId = 9;
+    });
+    const r = await openCaseInInbox(client, input({ caseTeamId: 3 }));
+    expect(r).toMatchObject({ kind: "continued", partial: [] });
+    expect(f.calls.some((x) => x.fn === "assignTeam")).toBe(false);
+    expect(f.convs.find((x) => x.id === 55)?.teamId).toBe(9);
+  });
+
+  test("a person assigned while the clear was in flight keeps the case, no team written", async () => {
+    const f = fakeChatwoot({
+      continueOpen: true,
+      convs: [originConv(), emailAgentsCase()],
+    });
+    const client = routedDuringClear(f, (c) => {
+      c.human = 21;
+    });
+    await openCaseInInbox(client, input({ caseTeamId: 3 }));
+    expect(f.calls.some((x) => x.fn === "assignTeam")).toBe(false);
+    expect(f.convs.find((x) => x.id === 55)?.human).toBe(21);
+  });
+
+  test("the read before the team fails: the team is reported, not written blind", async () => {
+    const f = fakeChatwoot({
+      continueOpen: true,
+      convs: [originConv(), emailAgentsCase()],
+    });
+    let cleared = false;
+    const client = {
+      ...f.client,
+      unassignConversation: async (id: number, o?: { asAdmin?: boolean }) => {
+        cleared = true;
+        return f.client.unassignConversation(id, o);
+      },
+      getConversation: async (id: number) => {
+        if (cleared) throw new ChatwootApiError(500, "GET");
+        return f.client.getConversation(id);
+      },
+    } as CaseClient;
+    const r = await openCaseInInbox(client, input({ caseTeamId: 3 }));
+    expect(r).toMatchObject({ kind: "continued", partial: ["case_team"] });
+    expect(f.calls.some((x) => x.fn === "assignTeam")).toBe(false);
+    expect(f.convs.find((x) => x.id === 55)?.bot).toBeNull();
+  });
+
   test("an unreadable case: both owner writes reported, nothing guessed", async () => {
     const f = fakeChatwoot({
       convs: [

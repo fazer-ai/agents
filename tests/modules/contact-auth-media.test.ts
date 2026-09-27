@@ -24,6 +24,7 @@ import {
   clearContactAuthState,
   mediaRefusedHereThrough,
 } from "@/modules/contact-auth/state";
+import { clearVisionReads } from "@/modules/vision/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // With the contact authorization gate on, no media of an incoming message reaches the STT or vision
@@ -142,6 +143,8 @@ async function deliver(p: {
   owesMemoryOnly?: boolean;
   // An image an earlier pass already described, alone or beside one nobody read yet.
   describedImage?: "alone" | "beside-new" | "both";
+  // The default audio and image, plus a second image.
+  extraImage?: boolean;
   // Receives the normalized event, to read what the delivery left on it.
   seen?: NormalizedChatwootEvent[];
 }) {
@@ -193,6 +196,15 @@ async function deliver(p: {
               file_type: "image",
               data_url: `${CW_BASE}/rails/active_storage/blobs/i${messageId}.png`,
             },
+            ...(p.extraImage
+              ? [
+                  {
+                    id: messageId * 10 + 4,
+                    file_type: "image",
+                    data_url: `${CW_BASE}/rails/active_storage/blobs/k${messageId}.png`,
+                  },
+                ]
+              : []),
           ],
     conversation: {
       id: p.convId,
@@ -367,6 +379,7 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
   });
 
   beforeEach(() => {
+    clearVisionReads();
     clearContactAuthState();
     providers.stt = 0;
     providers.vision = 0;
@@ -810,6 +823,7 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
   // each delivery runs the media pass. One message is read once, whichever delivery gets there first.
   describe("one message, several deliveries", () => {
     beforeEach(() => {
+      clearVisionReads();
       providers.stt = 0;
       providers.vision = 0;
       providers.auth = 0;
@@ -902,6 +916,28 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
         describedImage: "beside-new",
       });
       expect(providers.vision).toBe(1);
+    });
+
+    test("an update that brings a file the first delivery did not have reads only that file", async () => {
+      await seedConversation(8936, INBOX_OPEN);
+      await deliver({
+        convId: 8936,
+        chatwootInboxId: INBOX_OPEN,
+        messageId: 89_360,
+      });
+      const seen: NormalizedChatwootEvent[] = [];
+      await deliver({
+        convId: 8936,
+        chatwootInboxId: INBOX_OPEN,
+        event: "message_updated",
+        messageId: 89_360,
+        humanHeld: true,
+        extraImage: true,
+        seen,
+      });
+      expect(providers.vision).toBe(2);
+      expect(seen[0]?.message?.imageDescription).toContain("k89360.png");
+      expect(seen[0]?.message?.attachmentsUnread ?? 0).toBe(0);
     });
 
     test("an update that arrives after the read reuses it, even without the write-back on the event", async () => {

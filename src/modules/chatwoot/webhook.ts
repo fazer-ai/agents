@@ -2030,12 +2030,15 @@ export async function runEagerMedia(
         const conversationId = n.conversationId;
         const messageId = n.message.id;
         // NOTE: Another delivery of this message may have read it already; its result is stashed.
+        // Reused only when complete and when this event still has files to open: metadata already
+        // on every attachment is reused for free below, and a partial read is worth asking again.
         const stashed =
-          visuals === todos
+          visuals === todos && hasUnextractedVisual(visuals)
             ? mediaAnnotationFor(tenantId, instanceId, messageId)
             : null;
         const r =
           stashed &&
+          (stashed.attachmentsUnread ?? 0) === 0 &&
           (stashed.imageDescription ||
             stashed.extractedText ||
             stashed.bodyRead)

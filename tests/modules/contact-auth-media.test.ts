@@ -11,7 +11,10 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { decryptJson, encryptJson } from "@/api/lib/crypto";
-import { mediaAnnotationFor } from "@/modules/chatwoot/annotations";
+import {
+  mediaAnnotationFor,
+  stashMediaAnnotation,
+} from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
@@ -138,7 +141,7 @@ async function deliver(p: {
   textOnly?: boolean;
   owesMemoryOnly?: boolean;
   // An image an earlier pass already described, alone or beside one nobody read yet.
-  describedImage?: "alone" | "beside-new";
+  describedImage?: "alone" | "beside-new" | "both";
   // Receives the normalized event, to read what the delivery left on it.
   seen?: NormalizedChatwootEvent[];
 }) {
@@ -168,7 +171,16 @@ async function deliver(p: {
                     data_url: `${CW_BASE}/rails/active_storage/blobs/j${messageId}.png`,
                   },
                 ]
-              : []),
+              : p.describedImage === "both"
+                ? [
+                    {
+                      id: messageId * 10 + 3,
+                      file_type: "image",
+                      data_url: `${CW_BASE}/rails/active_storage/blobs/j${messageId}.png`,
+                      meta: { image_description: "Comprovante de pagamento." },
+                    },
+                  ]
+                : []),
           ]
         : [
             {
@@ -852,6 +864,43 @@ describe.skipIf(!dbUp)("contact authorization gate and the media pass", () => {
       authAnswers.push(true, true, true, true, true, true);
       await burst(8932, INBOX_GATED, 89_320);
       expect(providers.stt).toBe(1);
+      expect(providers.vision).toBe(1);
+    });
+
+    test("descriptions a later delivery carries on every attachment win over the store", async () => {
+      await seedConversation(8934, INBOX_OPEN);
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 89_340 },
+        { imageDescription: "Print do pedido 21607129." },
+      );
+      const seen: NormalizedChatwootEvent[] = [];
+      await deliver({
+        convId: 8934,
+        chatwootInboxId: INBOX_OPEN,
+        messageId: 89_340,
+        humanHeld: true,
+        describedImage: "both",
+        seen,
+      });
+      expect(providers.vision).toBe(0);
+      expect(seen[0]?.message?.imageDescription).toContain(
+        "Comprovante de pagamento.",
+      );
+    });
+
+    test("a partial read in the store is asked again for the file it missed", async () => {
+      await seedConversation(8935, INBOX_OPEN);
+      stashMediaAnnotation(
+        { tenantId, instanceId, messageId: 89_350 },
+        { imageDescription: "Print do pedido 21607129.", attachmentsUnread: 1 },
+      );
+      await deliver({
+        convId: 8935,
+        chatwootInboxId: INBOX_OPEN,
+        messageId: 89_350,
+        humanHeld: true,
+        describedImage: "beside-new",
+      });
       expect(providers.vision).toBe(1);
     });
 

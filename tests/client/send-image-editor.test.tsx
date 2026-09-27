@@ -239,6 +239,7 @@ function renderCard(opts: {
       caseAttributeKey: "",
       mergeContacts: false,
       resolveOrigin: false,
+      subjectTemplate: "",
     },
     setCrossInboxCase: noop,
     sendImage: { allowedHosts: opts.hosts },

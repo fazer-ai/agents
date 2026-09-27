@@ -1,3 +1,5 @@
+import { clipText } from "@/lib/text";
+
 // Per-agent config for the `open_case_in_inbox` native tool, read from `agent.settings.crossInboxCase`.
 //
 // WHERE the case goes is an operator decision and lives here, never in a tool argument: the model
@@ -30,6 +32,9 @@ export interface CrossInboxCaseConfig {
   // `resolve_conversation` schedules: after this turn's reply is delivered, and dropped when the
   // customer writes again first. An operator rule, not the model's call, so it is never forgotten.
   resolveOrigin: boolean;
+  // The subject of a case opened in an EMAIL inbox: the operator's template, with the prompt's context
+  // variables and `{{resumo}}`/`{{summary}}`, which the model writes. Null ⇒ Chatwoot's generic one.
+  subjectTemplate: string | null;
 }
 
 export const CROSS_INBOX_CASE_DEFAULT_ATTRIBUTE = "case_conversation_id";
@@ -47,7 +52,33 @@ export const CROSS_INBOX_CASE_DEFAULTS: CrossInboxCaseConfig = {
   caseAttributeKey: CROSS_INBOX_CASE_DEFAULT_ATTRIBUTE,
   mergeContacts: false,
   resolveOrigin: false,
+  subjectTemplate: null,
 };
+
+// An email header: one line, and short enough to read in a list.
+export const CROSS_INBOX_CASE_SUBJECT_MAX = 200;
+export const CROSS_INBOX_CASE_SUBJECT_TEMPLATE_MAX = 500;
+const SUMMARY_PLACEHOLDER = /\{\{\s*(?:resumo|summary)\s*\}\}/g;
+
+// Whether the template leaves part of the subject to the model, which is what offers it the argument.
+export function subjectAsksSummary(template: string | null): boolean {
+  return template !== null && new RegExp(SUMMARY_PLACEHOLDER).test(template);
+}
+
+// Context variables first, then the model's summary: text the model wrote is never interpolated, so a
+// `{{...}}` in it stays literal. Empty after rendering ⇒ null, and the case keeps Chatwoot's subject.
+export function renderCaseSubject(
+  template: string | null,
+  summary: string | null,
+  interpolate: (template: string) => string,
+): string | null {
+  if (!template) return null;
+  const line = interpolate(template)
+    .replace(SUMMARY_PLACEHOLDER, () => summary ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return line ? clipText(line, CROSS_INBOX_CASE_SUBJECT_MAX).trim() : null;
+}
 
 // Chatwoot attribute keys are lowercase snake case; anything else would be written under a key the
 // dashboard never shows.
@@ -89,6 +120,13 @@ export function readCrossInboxCaseConfig(
   const label = typeof o.originLabel === "string" ? o.originLabel.trim() : "";
   const key =
     typeof o.caseAttributeKey === "string" ? o.caseAttributeKey.trim() : "";
+  const subject =
+    typeof o.subjectTemplate === "string"
+      ? clipText(
+          o.subjectTemplate.trim(),
+          CROSS_INBOX_CASE_SUBJECT_TEMPLATE_MAX,
+        )
+      : "";
   return {
     targetInboxId: positiveInt(o.targetInboxId),
     targetInstanceId: positiveInt(o.targetInstanceId),
@@ -99,6 +137,7 @@ export function readCrossInboxCaseConfig(
       : CROSS_INBOX_CASE_DEFAULT_ATTRIBUTE,
     mergeContacts: o.mergeContacts === true,
     resolveOrigin: o.resolveOrigin === true,
+    subjectTemplate: subject || null,
   };
 }
 

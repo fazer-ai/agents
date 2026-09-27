@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ToolMessage } from "@langchain/core/messages";
 import { owesHandbackNote } from "@/graph/handback";
+import { interpolatePromptVars } from "@/graph/prompt";
 import { OPEN_CASE_HANDED_MARK } from "@/graph/tools/catalog";
 import { buildNativeTools } from "@/graph/tools/native";
 import { ChatwootApiError, ChatwootClient } from "@/modules/chatwoot/client";
@@ -16,7 +17,10 @@ import {
 } from "@/modules/cross-inbox-case/service";
 import {
   CROSS_INBOX_CASE_DEFAULTS,
+  CROSS_INBOX_CASE_SUBJECT_MAX,
   readCrossInboxCaseConfig,
+  renderCaseSubject,
+  subjectAsksSummary,
 } from "@/modules/cross-inbox-case/settings";
 
 // A Chatwoot account small enough to reason about: contacts, conversations with their inbox, status,
@@ -330,6 +334,7 @@ describe("settings", () => {
       mergeContacts: false,
       resolveOrigin: false,
       caseLabels: [],
+      subjectTemplate: null,
     });
     const bad = readCrossInboxCaseConfig({
       crossInboxCase: { targetInboxId: 0, caseAttributeKey: "Protocolo X" },
@@ -2113,5 +2118,150 @@ describe("the hand-back rule reads the tool's transfer", () => {
         result(`${OPEN_CASE_HANDED_MARK} instead.`, "some_http_tool"),
       ]),
     ).toBe(false);
+  });
+});
+
+// The email subject of a case (issue #883): the operator's template, with the prompt's context
+// variables and a one-line summary the model writes.
+describe("the case's email subject", () => {
+  const vars = { nome_contato: "Ana Souza", contact_name: "Ana Souza" };
+  const interpolate = (t: string) => interpolatePromptVars(t, vars);
+  const created = (f: ReturnType<typeof fakeChatwoot>) =>
+    f.calls
+      .filter((c) => c.fn === "createConversation")
+      .map((c) => c.args[0] as { additionalAttributes?: unknown });
+
+  test("context variables and the summary fill the template, in one line", () => {
+    expect(
+      renderCaseSubject(
+        "Solicitação de {{nome_contato}}: {{resumo}}",
+        "troca de ingresso\n  do show de sábado",
+        interpolate,
+      ),
+    ).toBe("Solicitação de Ana Souza: troca de ingresso do show de sábado");
+    expect(
+      renderCaseSubject("[SAC] {{ summary }}", "reembolso", interpolate),
+    ).toBe("[SAC] reembolso");
+  });
+
+  test("the model's text is never interpolated", () => {
+    expect(
+      renderCaseSubject(
+        "{{resumo}}",
+        "pedido de {{nome_contato}}",
+        interpolate,
+      ),
+    ).toBe("pedido de {{nome_contato}}");
+  });
+
+  test("clipped to a header's length without splitting a character, and empty is no subject", () => {
+    const long = `${"x".repeat(CROSS_INBOX_CASE_SUBJECT_MAX - 1)}😀 e mais texto`;
+    const out = renderCaseSubject("{{resumo}}", long, interpolate) ?? "";
+    expect(out.length).toBeLessThanOrEqual(CROSS_INBOX_CASE_SUBJECT_MAX);
+    expect(out.endsWith("\ud83d")).toBe(false);
+    expect(renderCaseSubject("{{resumo}}", "  ", interpolate)).toBeNull();
+    expect(renderCaseSubject(null, "reembolso", interpolate)).toBeNull();
+  });
+
+  test("the summary is asked for only when the template has it", () => {
+    expect(subjectAsksSummary("Caso de {{nome_contato}}: {{resumo}}")).toBe(
+      true,
+    );
+    expect(subjectAsksSummary("{{summary}}")).toBe(true);
+    expect(subjectAsksSummary("Caso de {{nome_contato}}")).toBe(false);
+    expect(subjectAsksSummary(null)).toBe(false);
+  });
+
+  test("the template is read trimmed, and an empty one is none", () => {
+    expect(
+      readCrossInboxCaseConfig({
+        crossInboxCase: {
+          targetInboxId: 40,
+          subjectTemplate: "  Caso {{resumo}} ",
+        },
+      }).subjectTemplate,
+    ).toBe("Caso {{resumo}}");
+    expect(
+      readCrossInboxCaseConfig({
+        crossInboxCase: { targetInboxId: 40, subjectTemplate: "   " },
+      }).subjectTemplate,
+    ).toBeNull();
+  });
+
+  test("an email destination opens the case with the subject", async () => {
+    const f = fakeChatwoot();
+    await openCaseInInbox(f.client, input({ subject: "Solicitação de Ana" }));
+    expect(created(f)[0]?.additionalAttributes).toEqual({
+      mail_subject: "Solicitação de Ana",
+    });
+  });
+
+  test("a destination that is not email gets no subject", async () => {
+    const f = fakeChatwoot({
+      inboxes: {
+        40: { name: "WhatsApp oficial", channel_type: "Channel::Whatsapp" },
+      },
+    });
+    await openCaseInInbox(f.client, input({ subject: "Solicitação de Ana" }));
+    expect(created(f)[0]?.additionalAttributes).toBeUndefined();
+  });
+
+  test("without a subject, the case opens as before", async () => {
+    const f = fakeChatwoot();
+    await openCaseInInbox(f.client, input());
+    expect(created(f)[0]?.additionalAttributes).toBeUndefined();
+  });
+
+  function subjectTool(
+    f: ReturnType<typeof fakeChatwoot>,
+    template: string | null,
+  ) {
+    const client = { ...f.client, muted: false } as unknown as ChatwootClient;
+    const [t] = buildNativeTools(
+      {
+        client,
+        conversationId: 7,
+        crossInboxCase: {
+          config: {
+            ...CROSS_INBOX_CASE_DEFAULTS,
+            targetInboxId: 40,
+            subjectTemplate: template,
+          },
+          contactId: 5,
+          renderSubject: (summary) =>
+            renderCaseSubject(template, summary, interpolate),
+        },
+      },
+      ["open_case_in_inbox"],
+    );
+    if (!t) throw new Error("tool not built");
+    return t;
+  }
+
+  test("the tool offers the summary only when the template asks for it", () => {
+    const keys = (template: string | null) =>
+      Object.keys(
+        (
+          subjectTool(fakeChatwoot(), template).schema as {
+            shape: Record<string, unknown>;
+          }
+        ).shape,
+      );
+    expect(keys("Caso de {{nome_contato}}: {{resumo}}")).toContain("summary");
+    expect(keys("Caso de {{nome_contato}}")).not.toContain("summary");
+    expect(keys(null)).not.toContain("summary");
+  });
+
+  test("the tool writes the rendered subject on the case", async () => {
+    const f = fakeChatwoot();
+    const t = subjectTool(f, "Solicitação de {{nome_contato}}: {{resumo}}");
+    await t.invoke({
+      reason: "troca",
+      summary: "troca de ingresso",
+      handoff_message: "Vou te passar para o time.",
+    });
+    expect(created(f)[0]?.additionalAttributes).toEqual({
+      mail_subject: "Solicitação de Ana Souza: troca de ingresso",
+    });
   });
 });

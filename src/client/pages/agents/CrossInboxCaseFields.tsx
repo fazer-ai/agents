@@ -20,6 +20,7 @@ export interface CrossInboxCaseState {
   caseAttributeKey: string;
   mergeContacts: boolean;
   resolveOrigin: boolean;
+  subjectTemplate: string;
 }
 
 export function readCrossInboxCaseState(raw: unknown): CrossInboxCaseState {
@@ -37,6 +38,8 @@ export function readCrossInboxCaseState(raw: unknown): CrossInboxCaseState {
       typeof o.caseAttributeKey === "string" ? o.caseAttributeKey : "",
     mergeContacts: o.mergeContacts === true,
     resolveOrigin: o.resolveOrigin === true,
+    subjectTemplate:
+      typeof o.subjectTemplate === "string" ? o.subjectTemplate : "",
   };
 }
 
@@ -62,6 +65,7 @@ export function serializeCrossInboxCase(
       : {}),
     mergeContacts: s.mergeContacts,
     resolveOrigin: s.resolveOrigin,
+    subjectTemplate: s.subjectTemplate.trim() || null,
   };
 }
 
@@ -69,6 +73,17 @@ type InboxesData = Awaited<
   ReturnType<typeof api.api.v1.chatwoot.inboxes.get>
 >["data"];
 type Inbox = NonNullable<InboxesData>["inboxes"][number];
+
+// Only an email inbox has a subject. Before the inbox list loads (undefined) a saved template stays
+// visible, so it is never edited away unseen.
+export function showsSubjectField(
+  channelType: string | null | undefined,
+  template: string,
+): boolean {
+  return channelType === undefined
+    ? template.trim() !== ""
+    : destinationIdentity(channelType) === "email";
+}
 
 const optionValue = (instanceId: string, inboxId: string | number) =>
   `${instanceId}:${inboxId}`;
@@ -135,6 +150,13 @@ export function CrossInboxCaseFields({
       (ib) =>
         optionValue(ib.chatwootInstanceId, ib.chatwootInboxId) === selected,
     );
+  const selectedInbox = eligible.find(
+    (ib) => optionValue(ib.chatwootInstanceId, ib.chatwootInboxId) === selected,
+  );
+  const showSubject = showsSubjectField(
+    selectedInbox ? selectedInbox.channelType : undefined,
+    value.subjectTemplate,
+  );
   const label = (ib: Inbox) => {
     const type = ib.channelType ? ib.channelType.replace("Channel::", "") : "";
     return type
@@ -182,6 +204,24 @@ export function CrossInboxCaseFields({
           )}
         </Select>
       </FormField>
+      {showSubject && (
+        <FormField
+          label={t("editor.crossInboxCase.subject", "Email subject")}
+          description={t(
+            "editor.crossInboxCase.subjectHint",
+            "Subject of the case's emails. Takes the prompt's variables, such as nome_contato, and resumo, a line the agent writes. Empty uses Chatwoot's default.",
+          )}
+        >
+          <Input
+            value={value.subjectTemplate}
+            onChange={(e) =>
+              onChange({ ...value, subjectTemplate: e.target.value })
+            }
+            maxLength={500}
+            placeholder="Solicitação de {{nome_contato}}: {{resumo}}"
+          />
+        </FormField>
+      )}
       <div className="flex flex-col gap-1.5">
         <SwitchField
           checked={value.resolveOrigin}

@@ -120,6 +120,7 @@ function renderEditor(observing: boolean) {
                 caseAttributeKey: "",
                 mergeContacts: false,
                 resolveOrigin: false,
+                subjectTemplate: "",
               }}
               setCrossInboxCase={noop}
               sendImage={{ allowedHosts: "" }}
@@ -265,6 +266,7 @@ function renderToolsTab(
                 caseAttributeKey: "",
                 mergeContacts: false,
                 resolveOrigin: false,
+                subjectTemplate: "",
               }}
               setCrossInboxCase={noop}
               sendImage={{ allowedHosts: "" }}

@@ -42,7 +42,10 @@ import {
   type OpenCaseResult,
   openCaseInInbox,
 } from "@/modules/cross-inbox-case/service";
-import type { CrossInboxCaseConfig } from "@/modules/cross-inbox-case/settings";
+import {
+  type CrossInboxCaseConfig,
+  subjectAsksSummary,
+} from "@/modules/cross-inbox-case/settings";
 import type { HandoffConfig } from "@/modules/handoff/settings";
 import {
   type HandoffTargets,
@@ -434,6 +437,9 @@ export interface ToolCtx {
   // contact, as Chatwoot knows it. Absent, or with no destination inbox, the tool is not built.
   crossInboxCase?: {
     config: CrossInboxCaseConfig;
+    // The case's email subject for this conversation, from the operator's template and the model's
+    // summary. Absent ⇒ no subject.
+    renderSubject?: (summary: string | null) => string | null;
     contactId: number | null;
     // The agent's signature, applied to the opening the customer receives (docs/signature.md).
     sign?: (text: string) => string;
@@ -2333,12 +2339,14 @@ function openCaseInInboxTool(ctx: ToolCtx) {
       email,
       labels,
       handoff_message,
+      summary,
     }: {
       reason: string;
       customer_message?: string;
       email?: string;
       labels?: string[];
       handoff_message?: string;
+      summary?: string;
     }) => {
       const cic = ctx.crossInboxCase;
       if (!cic) return openCaseOutcomeText({ kind: "not_configured" });
@@ -2352,6 +2360,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         labels: (labels ?? [])
           .map((l) => l.trim().toLowerCase())
           .filter((l) => l.length > 0),
+        subject: cic.renderSubject?.(summary?.trim() || null) ?? null,
         stillWanted: ctx.stillWanted,
         tenantId: ctx.tenantId,
         screenCustomerMessage: ctx.screenCustomerText,
@@ -2500,6 +2509,18 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           .describe(
             "What the customer reads HERE if the case cannot be opened and this conversation goes to a person instead. Always provide it.",
           ),
+        ...(subjectAsksSummary(
+          ctx.crossInboxCase?.config.subjectTemplate ?? null,
+        )
+          ? {
+              summary: z
+                .string()
+                .min(1)
+                .describe(
+                  "One line saying what the request is about. It becomes part of the subject of the case's emails, which is what the customer and the team read first.",
+                ),
+            }
+          : {}),
       }),
     },
   );

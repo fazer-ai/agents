@@ -64,6 +64,9 @@ export interface OpenCaseInput {
   customerMessage: string | null;
   email: string | null;
   labels: string[];
+  // The rendered email subject (the operator's template, see settings.ts). Written only on an email
+  // destination; a continued case keeps the subject it has.
+  subject?: string | null;
   // Asked right before the first write and again right before the create; false ⇒ nothing more is
   // written.
   stillWanted?: () => Promise<boolean>;
@@ -377,6 +380,9 @@ async function run(
         // inbox does not pick it up and triage it again (shouldBotHandle needs `pending`).
         status: "open",
         customAttributes: { [CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE]: origin },
+        ...(needs === "email" && input.subject
+          ? { additionalAttributes: { mail_subject: input.subject } }
+          : {}),
       });
       const caseId = created.id;
       const continued = before.has(caseId) || caseId <= newestBefore;

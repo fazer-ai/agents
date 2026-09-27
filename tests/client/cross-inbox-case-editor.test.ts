@@ -5,6 +5,7 @@ import {
   invalidCaseAttributeKey,
   readCrossInboxCaseState,
   serializeCrossInboxCase,
+  showsSubjectField,
 } from "@/client/pages/agents/CrossInboxCaseFields";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { readCrossInboxCaseConfig } from "@/modules/cross-inbox-case/settings";
@@ -25,6 +26,7 @@ describe("the form round-trips what is stored", () => {
       mergeContacts: true,
       resolveOrigin: true,
       caseLabels: ["agente-sac", "veio-do-whatsapp"],
+      subjectTemplate: "Solicitação de {{nome_contato}}: {{resumo}}",
     };
     const saved = serializeCrossInboxCase(readCrossInboxCaseState(stored));
     expect(readCrossInboxCaseConfig({ crossInboxCase: saved })).toEqual(stored);
@@ -163,5 +165,19 @@ describe("the attribute key is checked where it is written", () => {
     expect(
       body.slice(check, body.indexOf('["tool-selections"].put(')),
     ).toContain('showToast(toolsText, "error");\n        return;');
+  });
+});
+
+describe("the email subject field", () => {
+  test("offered for an email destination only", () => {
+    expect(showsSubjectField("Channel::Email", "")).toBe(true);
+    expect(showsSubjectField("Channel::Whatsapp", "Caso {{resumo}}")).toBe(
+      false,
+    );
+    expect(showsSubjectField("Channel::Api", "")).toBe(false);
+  });
+  test("a saved template stays visible before the inbox list loads", () => {
+    expect(showsSubjectField(undefined, "Caso {{resumo}}")).toBe(true);
+    expect(showsSubjectField(undefined, "  ")).toBe(false);
   });
 });

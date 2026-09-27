@@ -1552,6 +1552,7 @@ export class ChatwootClient {
     contactId: number;
     status: "open" | "pending";
     customAttributes: Record<string, unknown>;
+    additionalAttributes?: Record<string, unknown>;
   }): Promise<ChatwootConversationRef> {
     const res = await this.request(
       this.config.adminToken,
@@ -1562,6 +1563,9 @@ export class ChatwootClient {
         contact_id: p.contactId,
         status: p.status,
         custom_attributes: p.customAttributes,
+        ...(p.additionalAttributes
+          ? { additional_attributes: p.additionalAttributes }
+          : {}),
       },
     );
     const ref = parseConversationRef(res);

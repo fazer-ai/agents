@@ -1177,7 +1177,9 @@
       "originLabel": "Label on the origin",
       "originLabelHint": "Written on the conversation the case came from, once the case is open. Leave empty for none.",
       "resolveOrigin": "Close the origin conversation once the case is open",
-      "resolveOriginHint": "Closed after the reply that tells the customer where the case went, and kept open if they write again first. Never on a failed opening."
+      "resolveOriginHint": "Closed after the reply that tells the customer where the case went, and kept open if they write again first. Never on a failed opening.",
+      "subject": "Email subject",
+      "subjectHint": "Subject of the case's emails. Takes the prompt's variables, such as nome_contato, and resumo, a line the agent writes. Empty uses Chatwoot's default."
     },
     "dangerZone": "Danger zone",
     "dangerZoneHint": "Permanently delete this agent. This cannot be undone.",

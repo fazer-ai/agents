@@ -522,6 +522,11 @@ const crossInboxCase = z.looseObject({
   targetInstanceId: chatwootId().describe("our instance id of that inbox"),
   originLabel: z.string().nullable().optional(),
   caseLabels: z.array(z.string()).optional().describe("first 20 kept"),
+  subjectTemplate: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("email subject; {{resumo}} = model's summary"),
   // Checked with `refine`, not `regex`: a pattern would enter the published JSON Schema and its
   // ceiling, and the refusal message already names the rule to whoever sends a bad key.
   caseAttributeKey: z

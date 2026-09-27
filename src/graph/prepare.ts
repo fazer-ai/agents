@@ -61,6 +61,7 @@ import type { CustomerTextVerdict } from "@/modules/cross-inbox-case/service";
 import {
   type CrossInboxCaseConfig,
   readCrossInboxCaseConfig,
+  renderCaseSubject,
 } from "@/modules/cross-inbox-case/settings";
 import { resolveVariantOverride } from "@/modules/experiments/service";
 import {
@@ -1116,6 +1117,7 @@ export interface ToolBuildDeps {
         config: CrossInboxCaseConfig;
         contactId: number | null;
         sign?: (text: string) => string;
+        renderSubject?: (summary: string | null) => string | null;
       };
       screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
       fetchImpl?: typeof fetch;
@@ -1513,6 +1515,13 @@ export async function buildToolset(
           ? {
               config: cfg.crossInboxCaseConfig,
               contactId: cfg.chatwootContactId,
+              renderSubject: (summary: string | null) =>
+                renderCaseSubject(
+                  cfg.crossInboxCaseConfig.subjectTemplate,
+                  summary,
+                  (t) =>
+                    interpolatePromptVars(t, cfg.promptVars, cfg.promptOpts),
+                ),
               // The opening reaches the customer, so it carries the agent's signature like every reply
               // (docs/signature.md); one message, one chunk.
               sign: (text: string) => {

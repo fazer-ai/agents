@@ -1206,7 +1206,9 @@
       "originLabel": "Etiqueta na origem",
       "originLabelHint": "Escrita na conversa de onde o caso saiu, depois que o caso abre. Deixe vazio para nenhuma.",
       "resolveOrigin": "Encerrar a conversa de origem quando o caso abrir",
-      "resolveOriginHint": "Encerrada depois da resposta que diz ao cliente para onde o caso foi, e mantida aberta se ele escrever antes. Nunca quando a abertura falha."
+      "resolveOriginHint": "Encerrada depois da resposta que diz ao cliente para onde o caso foi, e mantida aberta se ele escrever antes. Nunca quando a abertura falha.",
+      "subject": "Assunto do e-mail",
+      "subjectHint": "Assunto dos e-mails do caso. Aceita as variáveis do prompt, como nome_contato, e resumo, uma linha que o agente escreve. Vazio usa o padrão do Chatwoot."
     },
     "dangerZone": "Zona de perigo",
     "dangerZoneHint": "Exclui este agente permanentemente. Não é possível desfazer.",

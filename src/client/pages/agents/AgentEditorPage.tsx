@@ -934,6 +934,7 @@ function AgentEditor() {
     caseAttributeKey: "",
     mergeContacts: false,
     resolveOrigin: false,
+    subjectTemplate: "",
   });
   // NOTE: Which Chatwoot custom attributes are injected into the prompt as current values, per
   // scope. Mirrors agent.settings.attributeContext (modules/chatwoot/attributes).

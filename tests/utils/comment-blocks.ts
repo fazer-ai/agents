@@ -71,7 +71,11 @@ export function commentBlocks(src: string): CommentBlock[] {
         blocks.push(current);
         current = null;
       }
-      if (DIRECTIVE.test(piece.text)) continue;
+      if (DIRECTIVE.test(piece.text)) {
+        if (current) blocks.push(current);
+        current = null;
+        continue;
+      }
       if (current) {
         current.text += `\n${piece.text}`;
         current.lines += 1;

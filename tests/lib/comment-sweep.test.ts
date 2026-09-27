@@ -91,6 +91,19 @@ describe("each comment is judged on its own", () => {
     expect(blocks.some(overCeiling)).toBe(false);
   });
 
+  test("a directive between prose ends the block before it", () => {
+    const five = "// x\n".repeat(5);
+    const blocks = commentBlocks(
+      `${five}// biome-ignore lint/x: reason\n${five}`,
+    );
+    expect(blocks).toHaveLength(2);
+    expect(blocks.some(overCeiling)).toBe(false);
+    const waived = commentBlocks(
+      "// comment-waiver: upstream id\n// biome-ignore lint/x: reason\n// fixed in #12\n",
+    );
+    expect(waived.some(citesProvenance)).toBe(true);
+  });
+
   test("an empty waiver in a block comment is no waiver", () => {
     expect(citesProvenance(block("/* Fixed in #123. comment-waiver: */"))).toBe(
       true,

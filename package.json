@@ -14,6 +14,7 @@
     "start": "NODE_ENV=production bun src/index.ts",
     "build": "bun run build.ts",
     "test": "bun test",
+    "comments:ledger": "bun scripts/comment-ledger.ts",
     "test:coverage": "bun test --coverage",
     "test-watch": "bun test --watch",
     "lint": "bun biome check --error-on-warnings",

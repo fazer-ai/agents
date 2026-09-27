@@ -60,6 +60,7 @@ import type { ObservedConversation } from "@/modules/conversations/record-resolu
 import type { CustomerTextVerdict } from "@/modules/cross-inbox-case/service";
 import {
   type CrossInboxCaseConfig,
+  destinationIdentity,
   readCrossInboxCaseConfig,
   renderCaseSubject,
 } from "@/modules/cross-inbox-case/settings";
@@ -678,6 +679,25 @@ export async function loadAgentConfig(
   }
   // Company name for the {{nome_empresa}} prompt variable (the tenant's own row under RLS).
   const tenant = await db.tenant.findFirst({ select: { name: true } });
+  // NOTE: A subject template only fits an email destination, and one left over from an earlier
+  // destination would still offer the model a summary. The mirror knows the channel; an inbox it does
+  // not know keeps the template, and the service writes the subject on an email destination only.
+  const crossInboxCaseConfig = readCrossInboxCaseConfig(effSettings);
+  if (
+    crossInboxCaseConfig.subjectTemplate &&
+    crossInboxCaseConfig.targetInboxId != null
+  ) {
+    const destination = await db.inbox.findFirst({
+      where: {
+        chatwootInboxId: crossInboxCaseConfig.targetInboxId,
+        // The tool is built only where the destination's instance is this conversation's.
+        chatwootInstanceId: args.instanceId,
+      },
+      select: { channelType: true },
+    });
+    if (destination && destinationIdentity(destination.channelType) !== "email")
+      crossInboxCaseConfig.subjectTemplate = null;
+  }
   const langfuseCfg = await resolveLangfuseConfig(db, args.tenantId);
   const sel = await loadToolSelections(db, agent.id);
   // A/B: an active experiment for this agent may override the system prompt for this thread.
@@ -897,7 +917,7 @@ export async function loadAgentConfig(
     handoffConfig: readHandoffConfig(effSettings),
     contactAuthConfig: readContactAuthConfig(effSettings),
     sendImageConfig: readSendImageConfig(effSettings),
-    crossInboxCaseConfig: readCrossInboxCaseConfig(effSettings),
+    crossInboxCaseConfig,
     chatwootContactId: conv?.contact?.chatwootContactId ?? null,
     kanbanConfig: readKanbanConfig(effSettings),
     toolGuidance: readToolGuidance(effSettings),

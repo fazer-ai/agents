@@ -697,9 +697,13 @@ export class ChatwootClient {
 
   // Assign a TEAM (same assignments endpoint, `team_id` instead of `assignee_id`). Bot-accessible like
   // assignToAgent. Used by the handoff "pinned"/"agent_choice" targeting.
-  assignTeam(conversationId: number, teamId: number): Promise<unknown> {
+  assignTeam(
+    conversationId: number,
+    teamId: number,
+    opts: { asAdmin?: boolean } = {},
+  ): Promise<unknown> {
     return this.request(
-      this.config.botToken,
+      opts.asAdmin ? this.config.adminToken : this.config.botToken,
       "POST",
       `/conversations/${conversationId}/assignments`,
       { team_id: teamId },

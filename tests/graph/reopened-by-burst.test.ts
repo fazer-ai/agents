@@ -162,4 +162,36 @@ describe("burstReopenedResolved", () => {
   test("an empty burst answers no even on a page that ends in a close", () => {
     expect(burstReopenedResolved(page(status(12, "resolved")), [])).toBe(false);
   });
+
+  test("a thank-you whose turn runs after a newer exchange was answered does not close it", () => {
+    expect(
+      burstReopenedResolved(
+        page(status(12, "resolved"), row(20, 0), row(21, 0), row(22, 1)),
+        [20],
+      ),
+    ).toBe(false);
+  });
+
+  test("a newer customer message after the burst, not yet answered, holds the close too", () => {
+    expect(
+      burstReopenedResolved(
+        page(status(12, "resolved"), row(20, 0), row(21, 0)),
+        [20],
+      ),
+    ).toBe(false);
+  });
+
+  test("a private note or a non-status activity after the burst does not hold the close", () => {
+    expect(
+      burstReopenedResolved(
+        page(
+          status(12, "resolved"),
+          row(20, 0),
+          row(21, 1, { private: true }),
+          row(22, 2),
+        ),
+        [20],
+      ),
+    ).toBe(true);
+  });
 });

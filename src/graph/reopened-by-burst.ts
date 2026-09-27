@@ -16,7 +16,9 @@ import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 //   * the LAST status activity on the page says `resolved`, and it comes before the burst: the
 //     conversation was closed and nothing since has reopened it except a message; and
 //   * no public message sits between that activity and the burst: the burst is the first thing
-//     anybody said after the close, not an "ok" later in an episode the reopen already started.
+//     anybody said after the close, not an "ok" later in an episode the reopen already started;
+//   * nothing public comes after the burst either: a turn that runs late, after a newer message was
+//     already answered, would otherwise close the case that newer message opened.
 //
 // Conservative on every edge, which leaves today's behaviour (the conversation waits in `pending`):
 // the close scrolled off the page, a close written after the message (the activity job is
@@ -39,14 +41,16 @@ export function burstReopenedResolved(
   const lastStatus = statusRows.at(-1);
   if (lastStatus?.activityStatus !== "resolved") return false;
   if (lastStatus.id > first) return false;
-  const spokenBetween = rows.some(
+  // Public talk after the close that is not this burst: before it (the episode already started) or
+  // after it (a newer exchange the close would cut off).
+  const otherTalk = rows.some(
     (r) =>
       r.id > lastStatus.id &&
-      r.id < first &&
+      !burst.has(r.id) &&
       !r.private &&
       (r.messageType === "incoming" || r.messageType === "outgoing"),
   );
-  if (spokenBetween) return false;
+  if (otherTalk) return false;
   // Every id of the burst is a customer's public message on this page: an id the page does not
   // carry is a burst we cannot vouch for.
   return [...burst].every((id) =>

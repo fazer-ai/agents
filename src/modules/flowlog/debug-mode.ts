@@ -4,24 +4,13 @@ import {
   readObservabilityConfig,
 } from "./settings";
 
-// THE ONE ANSWER TO "IS ANYTHING RECORDING MORE THAN THE DEFAULT RIGHT NOW?"
-//
-// Three switches widen what an execution log keeps, and they were designed NOT to be merged, because
-// each answers a different question (issue #58):
-//
+// The one answer to "is anything recording more than the default right now?". Three switches widen
+// what a log keeps and stay separate, since each answers a different question:
 //   agent  observability.logToolValues     the customer's PII   values instead of shapes
 //   agent  observability.fullDetailUntil   database size        detail strings whole, not cut at 2000
 //   tenant langfuse.sendContent            destination          content reaches an EXTERNAL service
-//
-// Merging any two of them inverts an operator's intent: joining the PII switch to the size switch
-// makes "did my attribute block get injected?" start storing CPFs, and joining the destination
-// switch to either makes a LOCAL debug toggle start shipping customer content to a third party.
-//
-// What IS shared is the warning. An operator does not need to remember which of three unrelated
-// screens they touched last week — they need one place that says something is on, and which. So the
-// keys stay apart and this module is the single derivation both surfaces read: the console's
-// indicator and the agent read over MCP. A fourth switch added later belongs here, not in a second
-// copy of the same `||`.
+// Only the warning is shared: this is the single derivation the console indicator and the MCP read
+// use, and a new switch belongs here rather than in a second copy of the `||`.
 export interface DebugModes {
   // Whether ANY of the three is on. The indicator's own condition — never re-derive it from the
   // fields below, or a switch added here stops lighting it.
@@ -46,15 +35,9 @@ export function readDebugModes(
   );
 }
 
-// The same derivation over values already read, for the caller that holds the config rather than
-// the bag — the console, which has the agent's settings parsed into its form state and the tenant's
-// flag from its own fetch. It exists so the console does not spell the `||` out a second time: the
-// one place a switch gets forgotten is the copy, and the copy is invisible to the tests that cover
-// this file.
-// `now` is re-judged rather than taken from the config, because ONE of these three switches turns
-// itself off. A console that read the config at page load would keep reporting the size switch as on
-// after its window closed — the same false answer this warning was just fixed for, arriving by the
-// clock instead of by a click. Through the reader's own rule, so the two cannot fork.
+// The same derivation over values already read (the console's form state and tenant flag), so the
+// console does not spell the `||` out again. `now` is re-judged through the reader's own rule
+// because the size switch turns itself off, and a page-load reading would keep reporting it on.
 export function debugModesFrom(
   obs: ObservabilityConfig,
   langfuseSendContent: boolean,

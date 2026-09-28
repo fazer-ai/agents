@@ -12,22 +12,13 @@ import {
   type ToolSpec,
 } from "./types";
 
-// Google Drive OUTBOUND toolpack. The agent finds a file (the search already returns each match's
-// shareable link) or sends the file itself to the customer. The OAuth access token comes from the vault by reference (kind
-// `google_oauth`, shared with the Calendar toolpack); prepare.ts's resolveCredential auto-refreshes
-// it and hands us a fresh bearer — never reaching the model / a tool arg / the return / the trace.
-//
-// Security invariants (mirror google-calendar.ts / asaas.ts):
-//   - `folderId` (search scope) is bound to the INSTANCE CONFIG, never a tool arg;
-//   - the bearer token flows ONLY into the Authorization header;
-//   - the origin is a fixed constant (never interpolated); SSRF-guarded anyway;
-//   - https-only, no redirects, bounded timeout; the file download is byte-capped;
-//   - sending a file requires the live conversation handle (ctx.chatwoot); absent (playground) →
-//     a graceful degradation message instead of a broken call.
-//
-// NOTE: the Drive query escaping, the shared-drive flags, and the Google-apps export path are the
-// sensitive parts — implemented best-effort and flagged for LIVE validation against a real Google
-// account before this is considered closed (see plan Part C / Fase I gate).
+// Google Drive OUTBOUND toolpack: find a file (search returns each match's shareable link) or send
+// it to the customer. The vault OAuth bearer (kind `google_oauth`, shared with Calendar, refreshed
+// by prepare.ts) goes ONLY into the Authorization header. `folderId` is bound to the INSTANCE
+// CONFIG, never a tool arg; fixed origin (SSRF-guarded anyway); https-only, no redirects, bounded
+// timeout, byte-capped download. Sending needs ctx.chatwoot; without it (playground) the tool
+// degrades with a message.
+// TODO: validate query escaping, shared-drive flags and Google-apps export on a real account.
 
 const DRIVE_ORIGIN = "https://www.googleapis.com/drive/v3";
 const TIMEOUT_MS = 12_000;
@@ -63,8 +54,8 @@ async function driveFetch(
   const assertSafe = ctx.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(url);
   const doFetch = ctx.fetchImpl ?? fetch;
-  // The cap is on what is READ, not a slice of what was already read: `.text()` buffers the whole
-  // body before any limit applies (#464).
+  // NOTE: The cap is on what is READ, not a slice of what was already read: `.text()` buffers the
+  // whole body before any limit applies.
   const { res, body } = await fetchBounded(
     url,
     {
@@ -99,14 +90,9 @@ async function driveDownload(
   const assertSafe = ctx.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(url);
   const doFetch = ctx.fetchImpl ?? fetch;
-  // Byte-capped ON THE READ. `arrayBuffer()` buffered the whole body and then refused it for being
-  // too large, so a 5 GB file in the connected account was 5 GB of resident memory on its way to a
-  // refusal (#464).
-  //
-  // And the two cheap refusals still happen BEFORE a byte is read, which is what `readWhen` is for:
-  // an honest server that declares 500 MB is turned down without pulling fifteen of them first (on
-  // a slow link that read could spend the whole budget and turn "that file is too large" into a
-  // generic download failure), and a non-2xx body is an error page nothing here reads.
+  // NOTE: Byte-capped ON THE READ, so a huge file is refused without being held in memory. The two
+  // cheap refusals happen BEFORE a byte is read (`readWhen`): a declared size over the cap is
+  // turned down without pulling any of it, and a non-2xx body is an error page nothing here reads.
   const { res, body } = await fetchBoundedBytes(
     url,
     {

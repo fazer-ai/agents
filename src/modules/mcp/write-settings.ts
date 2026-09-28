@@ -112,9 +112,8 @@ export async function experimentCreate(
   }
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own questions, asked before the preview answers them and INSIDE the branch,
-      // because the apply reaches the core, which asks them again (#490). The first is pure; the
-      // second READS, outside the transaction the apply writes in, and is ADVISORY for it.
+      // NOTE: the core's own questions, INSIDE the branch because the apply asks them again. The
+      // first is pure; the agent check READS outside the apply's transaction and is ADVISORY.
       assertExperimentNameUsable(args.name);
       // In the apply's own order: name, then variants, then the agent. The first two are pure and
       // the third READS, so a preview that asked the agent first would refuse a call the apply
@@ -289,10 +288,8 @@ export async function businessHoursCreate(
   if ("ok" in ctx) return ctx;
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
-      // branch rather than above it because the apply reaches the core, which asks it again —
-      // and several of these read a row or resolve DNS, so above the branch is a second lookup
-      // that can even disagree with the first (#490).
+      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // which asks it again; above the branch it would be a second lookup that can disagree.
       assertBusinessHoursCreatable({
         name: args.name,
         timezone: args.timezone,
@@ -370,8 +367,8 @@ export async function businessHoursUpdate(
       exceptions: current.exceptions,
     };
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it — and INSIDE the branch,
-      // because the apply reaches `updateBusinessHours`, which asks it again (#490, #510).
+      // NOTE: the core's own question, INSIDE the branch because `updateBusinessHours` asks it
+      // again.
       assertBusinessHoursUpdatable(patch);
       const previewAfter = {
         name: patch.name ?? current.name,
@@ -431,7 +428,7 @@ export interface TenantSettingsUpdateArgs {
     send_content?: boolean;
     debug?: boolean;
   };
-  // The tenant's own model prices (issue #865): the WHOLE list, which replaces the saved one.
+  // The tenant's own model prices: the WHOLE list, which replaces the saved one.
   price_overrides?: McpPriceOverride[];
   dry_run?: boolean;
 }
@@ -520,9 +517,8 @@ export async function tenantSettingsUpdate(
         ? undefined
         : parsePriceOverrides(priceOverridesFromMcp(args.price_overrides));
     if (args.dry_run !== false) {
-      // NOTE: the core's own KIND question, which resolving the ref above does not answer — a
-      // `vault:<id>` names an entry of any kind, and this preview said "will wire" for one whose
-      // kind `updateLangfuse` refuses (#510). Only when the patch actually sets a ref.
+      // NOTE: the core's own KIND question, which resolving the ref above does not answer: a
+      // `vault:<id>` names an entry of any kind. Only when the patch actually sets a ref.
       if (typeof embeddingRef === "string") {
         await assertEmbeddingCredentialUsable(ctx, embeddingRef, base);
       }
@@ -629,14 +625,9 @@ export async function langfuseConnect(
   const enabled = args.enabled ?? true;
   try {
     if (args.dry_run !== false) {
-      // NOTE: the vault's own rule, asked before the preview answers, on the ENTRY THE APPLY WOULD
-      // BUILD rather than on one field of it. An earlier version checked `base_url` alone, and the
-      // apply also judges the vault name and both key values through `createVaultEntry` — a key
-      // with surrounding whitespace previewed clean and then refused, which is the same shape as
-      // the divergence this whole change is about, one level in (#490).
-      //
-      // `langfuse` is a kind that REQUIRES a base URL, so "   " — which normalizes to the empty
-      // string without raising — is refused in here rather than by a separate check out here.
+      // NOTE: the vault's own rule, on the whole ENTRY THE APPLY WOULD BUILD (name and both keys
+      // too, as `createVaultEntry` judges them), not on `base_url` alone. `langfuse` REQUIRES a
+      // base URL, so "   " (which normalizes to empty without raising) is refused in here.
       assertVaultEntryCreatable({
         name,
         value: { publicKey: args.public_key, secretKey: args.secret_key },
@@ -687,8 +678,8 @@ export async function langfuseConnect(
       { enabled, credentialRef: ref, sendContent: args.send_content },
       base,
     );
-    // NOTE: narrowed to the VAULT write, which is the half `updateLangfuse` cannot record. Two
-    // writes, two rows, not one write recorded twice; this one goes when the vault family moves (#399).
+    // NOTE: narrowed to the VAULT write, the half `updateLangfuse` cannot record: two writes, two
+    // rows, not one write recorded twice.
     await recordMcpAudit(ctx, base, {
       actorId: principal.userId,
       actorType: "mcp",
@@ -729,10 +720,8 @@ export async function apiKeyRevoke(
   const target = `api_key:${id}`;
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
-      // branch rather than above it because the apply reaches the core, which asks it again —
-      // and several of these read a row or resolve DNS, so above the branch is a second lookup
-      // that can even disagree with the first (#490).
+      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // which asks it again; above the branch it would be a second lookup that can disagree.
       await assertApiKeyRevocable(ctx, id, base);
       return ok({
         dryRun: true,

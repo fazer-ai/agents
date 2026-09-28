@@ -228,21 +228,14 @@ function principalCtx(principal: VerifiedToken): TenantContext {
   };
 }
 
-// Registers a PER-TENANT tool. The tenant target is explicit-per-call for a fleet-level SUPER_ADMIN
-// token (the input schema gains a required `tenant` selector) and implicit/transparent for a
-// tenant-scoped token (the field is omitted). Before the handler runs, the principal is resolved to
-// an "effective principal" whose tenantId is set — so the handler, every gate, and every service
-// below it see one tenant, identical in shape to an ordinary tenant token (the anti-IDOR fence is
-// unchanged). A missing/unknown `tenant` (SUPER_ADMIN only) short-circuits with an isError result,
-// never a thrown 500. See ./tenant-target.ts. Fleet/global tools (whoami, branding_*, tenant_*) are
-// NOT registered through this — they have no tenant target and stay on server.registerTool.
-// `targetless` is for the tool whose OWN arguments can name a trail that belongs to no tenant --
-// today only `audit_list` with `scope=fleet|all` (#520). It changes two things for a fleet-level
-// token, and both are needed: the selector becomes optional in the advertised schema (a required one
-// is refused by the SDK before any handler of ours runs), and a call the predicate accepts skips
-// tenant resolution entirely, reaching the handler with the tenant-less principal it was issued as.
-// Everything else on this list keeps the fence unchanged, and the tool itself still decides what a
-// targetless call may do.
+// Registers a PER-TENANT tool. A fleet-level SUPER_ADMIN token names the tenant per call (a
+// required `tenant` selector); a tenant-scoped token does not see the field. The handler, every
+// gate and every service below it get an effective principal with one tenantId
+// (./tenant-target.ts), and a missing or unknown `tenant` is an isError result, never a 500. Fleet
+// tools (whoami, branding_*, tenant_*) use server.registerTool. `targetless` is for a tool whose
+// OWN arguments can name a tenant-less trail (`audit_list` with `scope=fleet|all`): the selector
+// becomes optional in the schema (the SDK refuses a missing required one before our handler), and
+// an accepted call skips tenant resolution.
 function registerTenantTool(
   server: McpServer,
   principal: VerifiedToken,
@@ -594,10 +587,10 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         eff,
       ) => {
         try {
-          // The principal's OWN context, not an id rebuilt from it. A fleet token resolved its
-          // `tenant` selector on the way in (tenant-target.ts) and keeps SUPER_ADMIN, so the scoped
-          // boundary verifies the target once more and a tenant deleted between the two answers a
-          // refusal rather than an empty playground. Issue #268.
+          // NOTE: The principal's OWN context, not an id rebuilt from it. A fleet token resolved
+          // its `tenant` selector on the way in and keeps SUPER_ADMIN, so the scoped boundary
+          // verifies the target again and a tenant deleted in between answers a refusal rather than
+          // an empty playground.
           const ctx = principalCtx(eff);
           // Same parser as every other id: a padded or empty agent_id must not resolve to some
           // other agent's row.
@@ -708,17 +701,11 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
       },
     );
 
-    // ── expanded read coverage (mcp:read) ──
-    // Each tool projects a tenant-scoped service; secret-bearing fields are redacted by the service
-    // (Chatwoot adminToken → hasAdminToken, alert URL → urlMasked, API key → prefix).
-    //
-    // Ref-bearing fields come back in ONE of two vocabularies, and which one is the SERVICE's choice,
-    // not this file's: the settings reads translate to a vault entry NAME (`vaultNameByRef`), the
-    // entity reads hand back the stable `vault:<id>` the column holds. Both go through
-    // `readableVaultRef`, so a stored value that is not a reference at all reads as null rather than reaching a
-    // client — these columns took any string until #126 (issue #438). The descriptions below say
-    // which vocabulary each tool speaks; they used to promise NAMES for all of them, which was true
-    // of two.
+    // NOTE: ── expanded read coverage (mcp:read) ── Secret-bearing fields are redacted by each
+    // service. Ref-bearing fields come back in one of two vocabularies, the SERVICE's choice:
+    // settings reads give a vault entry NAME (`vaultNameByRef`), entity reads the stable
+    // `vault:<id>`; a non-reference value reads as null (`readableVaultRef`). The descriptions
+    // below say which vocabulary each tool speaks.
 
     registerTenantTool(
       server,
@@ -1434,9 +1421,8 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
   // a tool it could neither list nor call. They stay visible to a read-only token too, which is
   // what the `*_schema` sweep in tests/modules/mcp-tool-descriptions.test.ts asserts.
   if (hasScope(principal, "mcp:read") || hasScope(principal, "mcp:write")) {
-    // The authoring contract, served on demand for the reason document_template_schema is: a
-    // vocabulary inlined into code_tool_create's description is paid by every caller on every
-    // session, and only a caller actually writing a body needs it (issue #538).
+    // NOTE: The authoring contract, served on demand like document_template_schema: only a caller
+    // actually writing a body needs it.
     registerTenantTool(
       server,
       principal,

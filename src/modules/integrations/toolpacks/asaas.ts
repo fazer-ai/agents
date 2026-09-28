@@ -15,26 +15,14 @@ import {
   type ToolSpec,
 } from "./types";
 
-// Asaas (Brazilian payments) OUTBOUND toolpack. The agent generates a payment link to send to a
-// lead; we record an IntegrationExternalRef keyed by an opaque correlation id (sent to Asaas as
-// `externalReference` and echoed back in the payment webhook) so the inbound mapper correlates
-// the eventual PAYMENT_RECEIVED to THIS conversation by PK, never by LLM.
-//
-// Security invariants (hardened spec):
-//   - `environment` (sandbox/production) is bound to the INSTANCE CONFIG, never a tool arg — a
-//     prompt-injection cannot force a prod charge against a sandbox credential (or vice-versa);
-//   - the access token (per-tenant, from the vault) flows ONLY into the access_token header,
-//     never the URL / body / model-visible return / trace;
-//   - the origin is a fixed constant per environment (never interpolated); SSRF-guarded anyway;
-//   - https-only, no redirects, bounded timeout.
-//
-// NOTE: validated against the Asaas SANDBOX (2026-06). `POST /paymentLinks` with header
-// `access_token` at https://api-sandbox.asaas.com/v3 returns `{ id, url, externalReference, … }`;
-// chargeType DETACHED + billingType UNDEFINED are accepted and `externalReference` is echoed back.
-// `dueDateLimitDays` is REQUIRED (omitting it → 400 "É necessário informar a quantidade de dias
-// úteis para vencimento"), so it has a default below. The remaining webhook-side check — that a
-// link-PAID payment echoes the externalReference — needs a paid payment (inbound mapper open note).
-// Request-body defaults stay overridable via instance config (config.paymentLink).
+// Asaas (Brazilian payments) OUTBOUND toolpack. The agent generates a payment link; we record an
+// IntegrationExternalRef keyed by an opaque correlation id (sent as `externalReference`, echoed in
+// the payment webhook) so the inbound mapper ties the payment to THIS conversation by PK, never by
+// LLM. Invariants: `environment` is bound to the INSTANCE CONFIG, never a tool arg; the vault
+// access token goes ONLY into the access_token header; the origin is a fixed constant per
+// environment (SSRF-guarded anyway); https-only, no redirects, bounded timeout. `dueDateLimitDays`
+// is REQUIRED by `POST /paymentLinks` (400 without it), so it has a default below; request-body
+// defaults stay overridable via config.paymentLink.
 
 // Base URLs confirmed against the official Asaas docs (docs.asaas.com → Authentication / Sandbox,
 // 2026-06): the sandbox host is `api-sandbox.asaas.com` — NOT the legacy `sandbox.asaas.com/api/v3`,
@@ -73,8 +61,8 @@ async function asaasFetch(
   const assertSafe = ctx.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(url);
   const doFetch = ctx.fetchImpl ?? fetch;
-  // The cap is on what is READ, not a slice of what was already read: `.text()` buffers the whole
-  // body before any limit applies (#464).
+  // NOTE: The cap is on what is READ, not a slice of what was already read: `.text()` buffers the
+  // whole body before any limit applies.
   const { res, body } = await fetchBounded(
     url,
     {
@@ -192,10 +180,9 @@ function buildCreateLinkTool(
         // stays payable. Overridable via config.paymentLink.
         dueDateLimitDays: 3,
         ...overrides,
-        // Last: a config override must NOT clobber the correlation token. externalReference is the
-        // field Asaas offers for the merchant's own identifier, so an operator stamping an ERP id
-        // in config.paymentLink is the expected use of that map — and it used to win, leaving the
-        // paid webhook with nothing to tie back to the conversation (issue #108).
+        // NOTE: Last, so a config override cannot clobber the correlation token: an operator
+        // stamping an ERP id in config.paymentLink is the expected use of that field, and winning
+        // would leave the paid webhook with nothing to tie back to the conversation.
         externalReference: correlationId,
       };
 

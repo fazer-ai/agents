@@ -143,19 +143,15 @@ export async function agentCreate(
 
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
-      // branch rather than above it because the apply reaches the core, which asks it again —
-      // and several of these read a row or resolve DNS, so above the branch is a second lookup
-      // that can even disagree with the first (#490).
+      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // which asks it again; above the branch it would be a second lookup that can disagree.
       const { businessHoursId, followUpHoursId } = assertAgentCreatable(input);
-      // ADVISORY, unlike the line above it: this one READS. It passes the ids that line already
-      // PARSED rather than re-reading `input`, so the preview and the write cannot end up asking
-      // about different rows (#490).
+      // NOTE: ADVISORY, since this one READS. It takes the ids the line above PARSED, so the
+      // preview and the write ask about the same rows.
       await assertSchedulesExist(ctx, businessHoursId, followUpHoursId, base);
-      // ADVISORY too, and it asks the OTHER thing `createAgent` reads for: that every credential
-      // ref in the payload resolves AND that an entry of that kind can serve the field. A
-      // `google_oauth` entry holds an object where eight of these nine fields hand a plain string
-      // to a provider SDK, so "it exists" is not the question (#471, #490).
+      // NOTE: ADVISORY too: every credential ref resolves AND its kind can serve the field. A
+      // `google_oauth` entry holds an object where most of these fields hand a string to a provider
+      // SDK.
       await assertCredentialRefsUsable(ctx, input, base);
       return ok({
         dryRun: true,
@@ -232,10 +228,8 @@ export async function agentUpdate(
     }
     const target = `agent:${id}`;
     if (args.dry_run !== false) {
-      // NOTE: this preview had NO preflight, and its fence row hid that — the row passes an agent
-      // id that does not exist, so it proved the not-found path and every rule `updateAgent`
-      // applies after it went unasked. Measured: an empty name, a schedule id naming no row, and a
-      // credentialRef whose kind cannot serve the field all previewed ok and applied refused (#490).
+      // NOTE: the rules `updateAgent` applies past the not-found path, so the preview refuses what
+      // the apply refuses.
       const { rest, businessHoursId, followUpHoursId } =
         assertAgentUpdatable(patch);
       await assertSchedulesExist(ctx, businessHoursId, followUpHoursId, base);
@@ -244,9 +238,8 @@ export async function agentUpdate(
       await assertCredentialRefsUsable(ctx, rest, base, {
         modelConfig: current.modelConfig,
       });
-      // The apply refuses to SAVE a non-monitoring mode on an agent that observes an inbox (issue
-      // #476): the route it holds answers nothing whatever the mode says. Asked here too, or the
-      // preview approves the one write the apply is certain to reject.
+      // NOTE: the apply refuses to SAVE a non-monitoring mode on an agent that observes an inbox
+      // (its route answers nothing whatever the mode says), so the preview asks too.
       if (patch.mode !== undefined && !isMonitoring(patch.mode)) {
         await assertAgentNotObserving(ctx, id, base);
       }
@@ -330,13 +323,9 @@ export async function agentImport(
   // mode). Credentials absent in this tenant are created as PENDING placeholders on apply (the ref
   // stays wired); the operator only fills each secret afterward (deep-link → vault) — write nothing now.
   if (args.dry_run !== false) {
-    // The apply itself, rolled back (transfer.ts), so the warnings below are the ones the operator
-    // will actually get rather than a second reading of the same rules. Three rounds of #501 were
-    // spent finding out how many decisions that copy would have to mirror — a name moving off a
-    // native or off the other kind's namespace, a row already under the stored model-facing name,
-    // two rows under it, a template publishing the same name, a method or url template this build
-    // cannot store, and all of it again for code tools — and each miss was the preview claiming a
-    // component the apply would not create, or calling skipped one it reuses.
+    // NOTE: the apply itself, rolled back (transfer.ts), so these warnings are the ones the
+    // operator will get. A separate copy of the import's naming and reuse decisions would drift
+    // from them.
     const rehearsal = await importAgent(ctx, args.export, base, {
       dryRun: true,
     }).catch((e: unknown) => {
@@ -406,9 +395,9 @@ export async function agentDelete(
     const target = `agent:${id}`;
     const beforeProj = { id: current.id, name: current.name };
     if (args.dry_run !== false) {
-      // The apply refuses to delete an agent that observes an inbox (issue #476): the cascade would
-      // retire the row and the route token while the fork kept delivering to a bot that is gone,
-      // and the detach is a Chatwoot call the deletion's transaction cannot make.
+      // NOTE: the apply refuses to delete an agent that observes an inbox: the cascade would retire
+      // the row and the route token while the fork kept delivering to a bot that is gone, and the
+      // detach is a Chatwoot call the deletion's transaction cannot make.
       await assertAgentNotObserving(ctx, id, base);
       return ok({
         dryRun: true,
@@ -468,8 +457,8 @@ export async function agentToolsSet(
     const target = `agent:${id}`;
     if (args.dry_run !== false) {
       // NOTE: the core's own question about the ids INSIDE the array, which the row's single
-      // `agent_id` never reaches — and INSIDE the branch, because the apply reaches
-      // `replaceAgentToolSelections`, which asks it again under its lock (#490, #510).
+      // `agent_id` never reaches. Inside the branch because `replaceAgentToolSelections` asks it
+      // again under its lock.
       await assertAgentToolGrantsResolvable(ctx, grants, base);
       return ok({
         dryRun: true,
@@ -547,10 +536,8 @@ export async function buildToolPatch(
   }
   if (args.query !== undefined) patch.query = args.query;
   if (args.body !== undefined) {
-    // NOTE: refused here and not only in the service, for the same reason the expected_statuses
-    // line below gives: a dry run never calls the service, so a body the apply would reject was
-    // previewed back intact and with no warning — which is how the shape reached production in the
-    // first place (issue #150).
+    // NOTE: refused here and not only in the service: a dry run never calls the service, so a body
+    // the apply rejects would otherwise preview back intact.
     const badBody = unsupportedBodyShape(args.body);
     if (badBody) return { fail: err(badBody) };
     patch.body = args.body;
@@ -604,21 +591,10 @@ function toolShapesOf(src: {
   return out;
 }
 
-// The unused-credential warning for one tool write, with the vault read it needs. Called once per
-// write and spread into BOTH halves of the answer, like `norm.warnings` beside it: a preview that
-// stays quiet about wiring the apply will not fix is the preview promising something away (#490).
-//
-// `shapes` is the EFFECTIVE row — patch over stored — and RAW: `unusedCredentialWarning` runs the
-// normalization itself, because `buildHttpTool` runs it too and a legacy single-brace `{secret}`
-// sitting in a stored template is therefore sent. Normalizing only the patch, as the preview does
-// for its own purposes, would leave the stored half raw and report a working tool as unwired.
-// The same read AFTER the write has committed, and it can never take the write down with it. The
-// rule is docs/mcp.md's, for config-health: "the write had already committed, so a rejection is
-// reported rather than raised". A pool timeout on this advisory lookup would otherwise answer
-// `ok: false` for a tool that exists, and the caller's retry would meet a name conflict.
-//
-// Spelled out rather than forwarded with `...args`: the #502 fence reads these call sites for the
-// client they hand on, and a spread names none — it caught this one.
+// The unused-credential warning read AFTER the write committed, so a failure yields no warning
+// instead of `ok: false` for a tool that exists (a retry would meet a name conflict). `shapes` is
+// the effective row (patch over stored) and RAW: `unusedCredentialWarning` normalizes it, as
+// `buildHttpTool` does. Arguments are spelled out, not spread, so the base-client fence reads them.
 async function appliedWiringWarning(
   ctx: TenantContext,
   base: PrismaClient,
@@ -709,15 +685,11 @@ export async function toolCreate(
   });
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
-      // branch rather than above it because the apply reaches the core, which asks it again —
-      // and several of these read a row or resolve DNS, so above the branch is a second lookup
-      // that can even disagree with the first (#490).
+      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // which asks it again; above the branch it would be a second lookup that can disagree.
       const parsed = assertToolDefinitionCreatable(input);
-      // ADVISORY, unlike the line above it: this one READS, outside the transaction the apply
-      // will write in, so a free name here can be taken before the apply arrives. It answers the
-      // collision that actually happens (a name the operator already used), and the unique index
-      // inside the write remains what guarantees one name to one row (#490).
+      // NOTE: ADVISORY: it reads outside the apply's transaction, so the name can be taken
+      // meanwhile. The unique index inside the write is what guarantees one name per row.
       await assertToolNameAvailable(ctx, parsed.name, base);
       // Same kind of rule, same ADVISORY footing: whether a relative template has a credential base
       // URL to take its host from is a question about a vault row, so the apply's own check inside
@@ -729,8 +701,8 @@ export async function toolCreate(
         input.credentialRef,
         base,
       );
-      // `{{conversation_ref}}` names its integration (issue #818), asked of the canonical shapes the
-      // apply would store.
+      // NOTE: `{{conversation_ref}}` names its integration, asked of the canonical shapes the apply
+      // would store.
       await assertToolConversationRefResolvable(
         ctx,
         { ...toolShapesOf(input), ...norm.shapes },
@@ -835,16 +807,10 @@ export async function toolUpdate(
     }
     const target = `tool:${id}`;
     if (args.dry_run !== false) {
-      // The core's own questions about a PATCH, asked before the preview answers: the shape,
-      // which canonicalizes the name so the diff shows what would be STORED, and, for a rename, the
-      // availability of that name. Both are advisory here and authoritative inside the apply's
-      // transaction; what they buy is that a dry run stops describing a rename the apply refuses,
-      // or one to a spelling it would not store (#490, #510: this tool's fence row passed an id
-      // that names no tool, so it proved the ownership check and never the rename, and an operator
-      // reusing a name they already used read "will update" and got a 409).
-      //
-      // `id` is excluded because keeping your own name is not a collision, and `current.name` goes
-      // with it because a save that does not MOVE the name is not asking the question at all.
+      // NOTE: the core's questions about a PATCH, advisory here and authoritative inside the apply:
+      // the shape (which canonicalizes the name, so the diff shows what is STORED) and, for a
+      // rename, name availability. `id` and `current.name` are excluded: keeping your own name is
+      // not a collision.
       const parsed = assertToolDefinitionPatchValid(built.patch);
       // The EFFECTIVE pair, patch over stored, judged only when the patch names one of the two —
       // the same condition the apply uses, so the two halves agree on when the question applies as
@@ -866,8 +832,8 @@ export async function toolUpdate(
         await assertToolNameAvailable(ctx, parsed.name, base, id, current.name);
         afterProj.name = parsed.name;
       }
-      // The effective pair for `{{conversation_ref}}` (issue #818), under the same condition the
-      // apply judges it: only when the patch names a template or the integration.
+      // NOTE: the effective pair for `{{conversation_ref}}`, under the same condition the apply
+      // judges it: only when the patch names a template or the integration.
       if (
         parsed.conversationRefIntegrationId !== undefined ||
         parsed.urlTemplate !== undefined ||
@@ -1031,15 +997,11 @@ export async function mcpConnectionCreate(
   } as McpConnectionCreate;
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
-      // branch rather than above it because the apply reaches the core, which asks it again —
-      // and several of these read a row or resolve DNS, so above the branch is a second lookup
-      // that can even disagree with the first (#490).
+      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // which asks it again; above the branch it would be a second lookup that can disagree.
       const parsed = await assertMcpConnectionCreatable(input);
-      // ADVISORY, unlike the line above it: this one READS, outside the transaction the apply
-      // will write in, so a free name here can be taken before the apply arrives. It answers the
-      // collision that actually happens (a name the operator already used), and the unique index
-      // inside the write remains what guarantees one name to one row (#490).
+      // NOTE: ADVISORY: it reads outside the apply's transaction, so the name can be taken
+      // meanwhile. The unique index inside the write is what guarantees one name per row.
       await assertMcpConnectionNameAvailable(ctx, parsed.name, base);
       return ok({
         dryRun: true,
@@ -1082,16 +1044,13 @@ export async function mcpConnectionUpdate(
     }
     const target = `mcp_connection:${id}`;
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
-      // branch rather than above it because the apply reaches the core, which asks it again —
-      // and several of these read a row or resolve DNS, so above the branch is a second lookup
-      // that can even disagree with the first (#490).
-      // NOTE: judged against `current` — the SAME row the diff above was rendered from. Reading it
-      // again here would let a concurrent write land between the two, and the preview would then
-      // approve one state while describing a diff against another.
+      // NOTE: the core's own question, asked INSIDE the branch because the apply asks it again.
+      // Judged against `current`, the row the diff was rendered from: re-reading could let a
+      // concurrent write land between the two, and the preview would approve one state while
+      // describing another.
       await assertMcpConnectionUpdatable(built.patch, current);
-      // ADVISORY, and only when the patch actually renames. `exceptId` is what keeps a connection
-      // keeping its own name from being read as a collision (#490).
+      // NOTE: ADVISORY, and only on a rename. `exceptId` keeps a connection's own name from reading
+      // as a collision.
       if (built.patch.name !== undefined) {
         await assertMcpConnectionNameAvailable(ctx, built.patch.name, base, id);
       }

@@ -5,10 +5,9 @@ import type {
 } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 
-// The base client OR a scoped transaction. These tables are global (no RLS), so what a write needs
-// from its client is not a role but a TRANSACTION: the consent decision and the row that records it
-// commit together or not at all (#497), and `Prisma.TransactionClient` is the surface both a plain
-// `PrismaClient` and the `ScopedDb` handed out by `runScopedOn` satisfy.
+// The base client OR a scoped transaction. These tables are global (no RLS), so a write needs a
+// TRANSACTION, not a role: the consent decision and the row that records it commit together, and
+// `Prisma.TransactionClient` is what both `PrismaClient` and `runScopedOn`'s `ScopedDb` satisfy.
 type Db = Prisma.TransactionClient;
 // OAuth 2.1 consent state. A /authorize that is NOT auto-skipped (first-party client or a
 // sufficient prior approval) parks a pending record here and redirects the user to the SPA consent
@@ -151,23 +150,12 @@ export function isApprovalSufficient(
   return granted.every((s) => approved.includes(s));
 }
 
-// Records (or widens) the user's approval for a client. Stores the UNION so a later narrower
-// request stays covered; a wider one grows the set on the next approval.
-//
-// THE UNION IS COMPUTED BY THE DATABASE, INSIDE THE WRITE, and that is the whole point of the raw
-// statement (#497). Read-then-merge-then-upsert closes over a value read before the write: two
-// grants for the same (user, client) in flight together each merge against the set as it was BEFORE
-// either landed, so the second write replaces the first's scopes instead of adding to them. Both
-// calls return normally and the row is there, so the loss is silent — measured by blocking one
-// read until the other grant committed (`tests/modules/mcp-oauth-consent.test.ts`).
-//
-// `ON CONFLICT DO UPDATE` evaluates its SET against the row as it exists AT THE WRITE, under the
-// row lock the conflict takes, so there is nothing for a concurrent grant to slip between. No
-// `SELECT … FOR UPDATE` and no transaction: one statement cannot be interleaved.
-//
-// Prisma has no expression for this — `upsert` takes scalars it computed in JS — so it is raw. The
-// `ORDER BY 1` is not cosmetic: `DISTINCT unnest` has no defined order, and the stored order is
-// what every reader and every audit projection of this row sees.
+// Records (or widens) the user's approval for a client, storing the UNION so a narrower later
+// request stays covered. The union is computed by the DATABASE inside the write:
+// read-then-merge-then-upsert lets two concurrent grants each merge against the old set, and the
+// second silently replaces the first. `ON CONFLICT DO UPDATE` evaluates its SET under the row lock,
+// so one statement suffices. Raw because Prisma's `upsert` takes JS-computed scalars; `ORDER BY 1`
+// because `DISTINCT unnest` has no defined order and readers and audits see the stored one.
 export async function upsertApproval(
   userId: bigint,
   clientId: string,

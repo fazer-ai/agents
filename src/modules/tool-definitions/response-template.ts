@@ -1,25 +1,10 @@
 // What an operator-authored HTTP tool says its response should LOOK LIKE by the time it reaches the
 // model, and how that is rendered off a response body. Pure: no I/O, no clock.
 //
-// WHY THIS EXISTS. Without it the model gets the provider's raw body, clipped at maxResponseChars.
-// Measured against a public CNPJ lookup (#456): a 7,982-char response whose first 2.3k are five
-// third parties' names and masked tax ids, and whose registration status sits at char 7,806 — past
-// the cut. The agent then answered with a status that was not in the tool result at all, twice. A
-// truncated payload does not read to a model as missing data; it reads as a gap to fill from
-// training data. So the fix is not a bigger clip, it is letting the tool say which nine fields it
-// wanted and handing over only those.
-//
-// WHY A TEMPLATE AND NOT A FIELD MAP. A map answers "which fields", and the operator still has to
-// hope the model reads the resulting JSON the way they meant. A markdown block answers "which
-// fields, under which names, in which order", which is the same thing the n8n formatting node this
-// replaces was doing. It costs one concept: a token is a path into the response.
-//
-// THE TOKENS HERE ARE NOT THE TOKENS IN `graph/tools/http.ts`. That module's PLACEHOLDER is the
-// REQUEST-side vocabulary — `{{contact_name}}`, `{{secret}}`, the AI-filled fields — and its grammar
-// has no dots. This one addresses the RESPONSE and nothing else: no context, no credential, no model
-// input. `{{secret}}` in a response template is looked up in the response body like any other path,
-// finds nothing, and renders as absent. Sharing one pattern between the two would have made that
-// sentence untrue, which is the same reason `documents/tokens.ts` does not share the prompt's.
+// Without it the model gets the raw body clipped at maxResponseChars, and a field past the cut reads
+// to a model as a gap to fill, not as missing data. A markdown template says which fields, under
+// which names, in which order. Its tokens address the RESPONSE only, unlike the request-side
+// PLACEHOLDER in `graph/tools/http.ts`: `{{secret}}` here is a path into the body and finds nothing.
 
 import { clipText, unstorableCodePoints } from "@/lib/text";
 import {
@@ -57,44 +42,24 @@ export const ABSENT_MARKER = "(not returned)";
 // input as literal text.
 const TOKEN = /\{\{([^{}]*)\}\}/g;
 
-// A LIST OF UNKNOWN LENGTH (#459). One token addresses one value, so a tool whose response is N
-// rows could not be projected at all and kept the raw clip, with the invention risk this module
-// exists to remove, on exactly the tools operators write most: a product search, a slot lookup, an
-// order history. A block repeats its content once per item of the list its path names:
+// A LIST OF UNKNOWN LENGTH. A block repeats its content once per item of the list its path names:
 //
 //   {{#each resultados}}
-//   - {{nome}} — R$ {{preco}}
+//   - {{nome}}: R$ {{preco}}
 //   {{/each}}
 //
-// Inside it a path is RELATIVE to the item, and `{{.}}` is the item itself, the one thing a list
-// of strings has to address. The same spelling names the body outside a block (`{{#each .}}` walks
-// a response that IS the list), so "a path is relative to the current scope, and `.` is the scope"
-// stays one sentence. Blocks do not nest, deliberately: the second level is where "relative to
-// which item" stops being one sentence, and no tool measured so far needed it.
-//
-// Both markers are well-formed tokens to TOKEN, which is why the block scan runs FIRST and the
-// token scan sees only what is left: a `{{/each}}` judged as a path would be refused as malformed,
-// and a `{{#each a}}` left to the token render would reach the model as literal text.
+// Inside it a path is RELATIVE to the item and `{{.}}` is the item itself; `{{#each .}}` walks a
+// response that IS the list. Blocks do not nest. Both markers match TOKEN, so the block scan runs FIRST.
 const BLOCK = /\{\{\s*(?:#each(?:[ \t]+([^{}]*?))?|(\/each))\s*\}\}/g;
 
 // The current scope, which is the item inside a block and the body outside one.
 export const ITEM_SELF = ".";
 
-// How many items a block renders before it COUNTS the rest instead. Two bounds, on two different
-// things. This one bounds WORK: a list of one-character items would otherwise render thousands of
-// them under the text budget. The budget in `renderResponseTemplate` bounds TEXT: an item is only
-// appended while it fits under the model's clip with room left for the count of what follows, so
-// the block's own items are never what pushes the count past the clip (round 1 of review: 100 rows
-// of ~100 characters rendered 40 and cut the marker off with them). The remainder is never dropped
-// silently either way: a model reading "and 120 more" knows to ask for a narrower query, and one
-// reading a list that simply ends does not.
-//
-// What the budget does NOT cover is text BEFORE the block: two values at MAX_VALUE_CHARS already
-// fill the clip, and then no list and no count fits after them. That is #456's per-value clip
-// doing what it always did to any field after them, not something a block makes worse, and the
-// clip's own backstop answers it on both sides: `…[truncated]` where the cut happened for the
-// model, and the `response_clipped` note with "shorten the template" for the operator. Shrinking
-// earlier values to make room would be a second cap deciding what the operator's template says.
+// How many items a block renders before it COUNTS the rest instead. This bounds WORK; the budget in
+// `renderResponseTemplate` bounds TEXT, appending an item only while it fits with room for the count
+// of what follows. The remainder is never dropped silently: "and 120 more" tells the model to narrow
+// the query. Text BEFORE the block is not budgeted; the clip's own `…[truncated]` and the
+// `response_clipped` note cover that.
 export const MAX_EACH_ITEMS = 50;
 
 // What the model sees where the list came back with nothing in it. Not the absent marker: the path
@@ -240,12 +205,8 @@ export function unusableTemplateTokens(template: string): string[] {
   return templateTokens(template).filter((t) => !isTemplatePath(t));
 }
 
-// WHERE EACH PIECE OF THE VOCABULARY SITS, for an editor that has to draw them apart (issue #563).
-//
-// The same two patterns as everything above, with a range attached. In this module and not in the
-// client, because the client would need `TOKEN` and `BLOCK` to do it, and a second copy of those is
-// a second grammar: it would drift from the one that RENDERS, and the drift would show up as an
-// editor calling something valid that the runtime then refuses, or the reverse.
+// WHERE EACH PIECE OF THE VOCABULARY SITS, for an editor that has to draw them apart. Here and not in
+// the client, so the editor uses the same `TOKEN` and `BLOCK` that RENDER instead of a copy that drifts.
 export type TemplateSpanKind = "token" | "block-open" | "block-close" | "stray";
 
 export interface TemplateSpan {
@@ -331,17 +292,10 @@ export function enclosingBlock(
   return open;
 }
 
-// A `{{` or a `}}` that is not part of a token, which is a typo the token scan cannot see: `{{a}`
-// matches nothing, so it is not an unusable TOKEN, it is not a token at all. Before this, that
-// declaration was accepted, stored, and the runtime then put `Name: {{data.name}` in front of the
-// model verbatim — the same silent mis-aim as a well-formed path pointing at nothing, which is the
-// defect this whole section exists to remove.
-//
-// The rule is "what is left after the real tokens are gone", because that is the only way to tell
-// `{{a}} }}` (a token and a stray) from `{{a}}`. It costs the ability to write a literal `{{` in a
-// template, and that is the right trade: this is markdown for a model, and a stray double brace is
-// a typo far more often than it is content. Returns the offending fragment, so the message can
-// point at it rather than say "somewhere".
+// A `{{` or a `}}` that is not part of a token (`{{a}` matches nothing), which would otherwise reach
+// the model verbatim. The rule is "what is left after the real tokens are gone", which costs the
+// ability to write a literal `{{`: in markdown for a model, a stray double brace is a typo. Returns
+// the offending fragment so the message can point at it.
 export function unmatchedTemplateDelimiter(template: string): string | null {
   const rest = template.replace(TOKEN, "");
   const at = rest.search(/\{\{|\}\}/);
@@ -349,15 +303,10 @@ export function unmatchedTemplateDelimiter(template: string): string | null {
   return rest.slice(at, at + 24);
 }
 
-// A value the model may be shown. WIDER than the appointment reader's rule, and the difference is
-// the point: `"active": false` is an answer, and rendering it as absent would hand the model a
-// blank where the API said no. The empty string is admitted here too and handled by the renderer,
-// which needs to tell "the API answered with nothing" from "the API did not answer".
-//
-// The one refusal kept from the appointment side is the oversized number, for the same reason: past
-// 2^53 the digits were already lost by JSON.parse, so String() would show the model an id that the
-// operator's system never issued — and a model that reads an id in a tool result passes it to the
-// next tool call.
+// A value the model may be shown. WIDER than the appointment reader: `"active": false` is an answer,
+// and the empty string is admitted for the renderer to tell apart from absent. The one refusal kept
+// is the number past 2^53, whose digits JSON.parse already lost: the model would pass on an id the
+// operator's system never issued.
 function renderScalar(node: unknown): string | undefined {
   if (typeof node === "string") return node;
   if (typeof node === "boolean") return node ? "true" : "false";
@@ -413,11 +362,8 @@ export function templateListAt(body: unknown, path: string): unknown[] | null {
   return Array.isArray(node) ? node : null;
 }
 
-// WHAT A TOKEN AT THIS CARET MAY NAME, for the two things in the console that offer it: the picker
-// and, since #563, the completion the editor opens on `{{`. One function because they are one
-// question — an offer that named a field the other would not is two opinions about this grammar —
-// and here rather than in the console because the reader that has to ACCEPT what was picked is in
-// this file.
+// WHAT A TOKEN AT THIS CARET MAY NAME, for both console offers (the picker and the `{{` completion):
+// one function so they cannot disagree, and here because the reader that must ACCEPT the pick is here.
 export interface TemplateOffer {
   // The list whose items the caret's scope is, or null at the top level.
   block: string | null;
@@ -455,22 +401,14 @@ export function templateOfferAt(
   };
 }
 
-// WHAT THE OPERATOR IS IN THE MIDDLE OF TYPING, or null when they are not in a token at all.
-//
-// `kind` is what the position asks for and they are not the same question: after `{{#each ` only a
-// LIST renders, and offering a scalar field there writes a block that the save refuses and that
-// would have rendered the absent marker over a value sitting right there.
-//
-// `closed` is whether a `}}` already follows, which decides whether accepting an answer types one.
-// Getting that wrong is visible either way: `{{path` reaches the model with a stray brace, and
-// `{{path}}}}` is a token plus two characters of noise.
+// WHAT THE OPERATOR IS IN THE MIDDLE OF TYPING, or null outside a token. `kind`: after `{{#each ` only
+// a LIST renders, so a scalar there would write a block the save refuses. `closed`: whether a `}}`
+// already follows, which decides whether accepting types one.
 export interface TemplateWrite {
   kind: "path" | "list";
-  // What the operator has typed since the opening: `from` to the caret. This is the range the
-  // completion FILTERS on, and it has to end at the caret — measured in the installed
-  // `@codemirror/autocomplete`, the pattern is `sliceDoc(active.from, active.to)` with `to` taken
-  // from the result, so a range stretched over the rest of the path filtered every candidate
-  // against `foo` and hid the ones meant to replace it (round 3 of review).
+  // What the operator has typed since the opening: `from` to the caret. The completion FILTERS on
+  // this range (`@codemirror/autocomplete` slices `from..to` of the result), so it must end at the
+  // caret, or candidates meant to replace the rest of the path would be filtered out.
   from: number;
   to: number;
   // Where the path already in the token ends, which is what an accepted answer REPLACES. The same
@@ -505,17 +443,13 @@ export function templateWriteAt(
   if (/[\r\n]/.test(typed) || typed.includes("}}")) return null;
   // NOTE: `{{/each}}` names nothing, so there is nothing to offer inside it.
   if (typed.startsWith("/")) return null;
-  // NOTE: the whitespace the GRAMMAR allows is not part of what is being typed. `BLOCK` spells the
-  // opening `\{\{\s*` and the token render trims, so `{{ campo }}` and `{{ #each xs }}` are both
-  // legal; anchoring at `{{` put that space into the prefix CodeMirror filters on, which filtered
-  // every path OUT for `{{ campo`, and made `{{ #each ` read as a scalar path (round 2 of review).
+  // NOTE: the whitespace the GRAMMAR allows (`{{ campo }}`, `{{ #each xs }}`) is not part of what is
+  // being typed: in the prefix CodeMirror filters on, it would filter every path out.
   const lead = /^[ \t]*/.exec(typed)?.[0].length ?? 0;
   const body = typed.slice(lead);
-  // NOTE: `[ \t]+`, the separator `BLOCK` itself requires, and not `*`. With `*` a caret sitting
-  // straight after `each` was list position, and completing there wrote `{{#eachresultados}}`,
-  // which no block pattern matches and the Save gate refuses (round 1 of review). Not a corner
-  // either: `closeBrackets` answers a typed `{{` with `{{}}`, so typing `#each` inside it leaves
-  // the caret exactly there.
+  // NOTE: `[ \t]+`, the separator `BLOCK` itself requires, not `*`: with `*`, completing right after
+  // `each` writes `{{#eachresultados}}`, which the Save gate refuses. `closeBrackets` answers a typed
+  // `{{` with `{{}}`, so the caret lands exactly there.
   const each = /^#each[ \t]+/.exec(body);
   // NOTE: and a `#` that has not become a complete marker yet is not a path prefix either. Without
   // this, dropping the separator above only moved the defect: `{{#each}}` stopped asking for a list
@@ -538,11 +472,9 @@ export function templateWriteAt(
   return {
     kind,
     from,
-    // NOTE: through the end of the path ALREADY THERE, not up to the caret (round 2 of review).
-    // Completing at the start of `{{foo}}` and picking `bar` wrote `{{barfoo}}`, and where the
-    // concatenation happens to stay a legal path it is worse than a broken one: it aims at a field
-    // nobody chose, silently. Trailing whitespace is left where the operator put it; only the path
-    // is replaced.
+    // NOTE: through the end of the path ALREADY THERE, not up to the caret: completing at the start of
+    // `{{foo}}` must not write `{{barfoo}}`, which may even be a legal path nobody chose. Trailing
+    // whitespace stays where the operator put it.
     to: cursor,
     pathEnd:
       closeAt === null ? cursor : endOfPath(template, cursor, closeAt - 2),
@@ -559,8 +491,8 @@ function endOfPath(template: string, cursor: number, close: number): number {
 }
 
 export type ResponseTemplateRead =
-  // No template here, which is what every tool written before #456 says and what a row carrying
-  // something else in `outputSchema` says. The runtime keeps its old behaviour: raw body, clipped.
+  // No template here, as on any row whose `outputSchema` carries something else. The runtime keeps
+  // the raw body, clipped.
   | { declared: false }
   | { declared: true; ok: true; template: string }
   // Declared and unusable. Refused by the writers rather than stored, because a declaration that
@@ -643,24 +575,9 @@ export function readResponseTemplate(raw: unknown): ResponseTemplate | null {
   return r.declared && r.ok ? { template: r.template } : null;
 }
 
-// What a WRITER puts in the column, from what a caller sent. The reader's own shape for a usable
-// declaration, and the value untouched for anything that is not one — a legacy JSON Schema is not
-// this feature's to rewrite.
-//
-// `dropUnusable` is the difference between the two kinds of writer, and it is not a style choice.
-// The REST/MCP path refuses a broken declaration before reaching here (the operator wrote it and can
-// fix it), so nothing unusable ever arrives and the flag is off. The IMPORT path cannot refuse: a
-// bundle is a file handed over whole, and failing all of it over one tool's template would be worse
-// than importing it — so there the broken declaration is DROPPED, which makes the row say "no
-// template" honestly instead of parking unusable text where the editor reads it back as a legacy
-// schema and nothing anywhere says why the tool stopped projecting.
-// THE PROJECTION ITSELF, and it lives here rather than in `graph/tools/http.ts` because two callers
-// have to agree on it: the runtime, and the editor's preview, which is labelled "exactly what the
-// agent would receive". They were written as two readers of the same rules, and they drifted twice
-// in two review rounds — round 4 taught the runtime that a token-less template needs no body and
-// left the preview parsing JSON first; round 3 taught the preview about non-2xx and left it with
-// its own copy of the clip. Restating a rule is how a preview stops being one, so there is one
-// function and the callers differ only in what they do with `skipped`.
+// THE PROJECTION ITSELF, here rather than in `graph/tools/http.ts` because the runtime and the
+// editor's preview ("exactly what the agent would receive") must agree on it. One function, so a
+// rule is never restated; the callers differ only in what they do with `skipped`.
 export interface ProjectedResponse {
   // What the model is handed, or null when the template does not apply and the raw body goes.
   text: string | null;
@@ -670,15 +587,9 @@ export interface ProjectedResponse {
   skipped: "no-template" | "not-2xx" | "not-json" | null;
 }
 
-// Whether the model reads this body AS IT ARRIVED, with no template over it. 2xx alone gets a
-// template, the same gate `registerDeclaredAppointment` uses and for the same kind of reason: a
-// non-2xx body is the error the model has to read literally, and a template aimed at success fields
-// would render a block of absent markers over it.
-//
-// Exported because the console has to ask the same question rather than answer it again. Everything
-// the preview decided for itself drifted from this function within a round; the sample field now
-// asks it too, before offering to reformat a body that is going to be shown exactly as it arrived
-// (round 5 of review).
+// Whether the model reads this body AS IT ARRIVED, with no template over it. Only 2xx gets a template
+// (the same gate as `registerDeclaredAppointment`): a non-2xx body is the error the model has to read
+// literally. Exported so the console asks this same question instead of answering it again.
 export function readsBodyVerbatim(status: number): boolean {
   return status < 200 || status >= 300;
 }
@@ -719,6 +630,10 @@ export function clipToModelLimit(
   return { text: `${clipText(text, max)}…[truncated]`, clipped: true };
 }
 
+// What a WRITER puts in the column: the reader's shape for a usable declaration, anything else
+// untouched (a legacy JSON Schema is not this feature's to rewrite). REST/MCP refuse a broken
+// declaration before this; the IMPORT cannot refuse a whole bundle, so with `dropUnusable` it drops
+// the declaration and the row says "no template" instead of holding text nothing reads.
 export function storableResponseTemplate(
   raw: unknown,
   opts: { dropUnusable?: boolean } = {},
@@ -817,10 +732,9 @@ export function renderResponseTemplate(
       continue;
     }
     const node = resolveTemplatePath(body, seg.path);
-    // A standalone `{{/each}}` took its line ending with it, and every item puts one back because
-    // the body ends in one. A MARKER standing in for the items does not, so the text after the
-    // block would land on the marker's line (`(none)Done`, round 3 of review): the block owes that
-    // ending to whatever follows it, and an inline block (no ending in its body) owes nothing.
+    // NOTE: A standalone `{{/each}}` took its line ending with it, and every item puts one back. A
+    // MARKER standing in for the items does not, so the block owes that ending to whatever follows
+    // (else `(none)Done`); an inline block owes nothing.
     const eol = seg.body.endsWith("\r\n")
       ? "\r\n"
       : seg.body.endsWith("\n")
@@ -858,8 +772,8 @@ export function renderResponseTemplate(
         },
       );
       const after = node.length - index - 1;
-      // The count AND the line ending it carries, or a standalone block lands one character past
-      // the budget on exactly the row length that fills it (round 4 of review).
+      // NOTE: The count AND the line ending it carries, or a standalone block lands one character
+      // past the budget on exactly the row length that fills it.
       const reserve =
         after > 0 ? moreItemsMarker(after).length + eol.length : 0;
       if (text.length + piece.length + reserve > budget) break;

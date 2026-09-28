@@ -31,10 +31,9 @@ function constantTimeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
-// The base client OR a scoped transaction, for the mint alone. What the code needs from its client
-// is not a role but a TRANSACTION: the consent decision, the code it mints and the row that records
-// the decision commit together or not at all (#497). Deliberately NOT applied to the rest of this
-// module — `/token` mints from its own request and shares no transaction with anything.
+// The base client OR a scoped transaction, for the mint alone: the consent decision, the code it
+// mints and the row that records the decision commit together. Not applied to the rest of this
+// module: `/token` mints from its own request and shares no transaction with anything.
 type CodeDb = Prisma.TransactionClient;
 
 export interface CreateCodeParams {

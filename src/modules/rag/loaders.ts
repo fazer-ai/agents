@@ -60,16 +60,9 @@ export async function extractText(file: FileInput): Promise<{ text: string }> {
   let text: string;
 
   if (isPdf) {
-    // THE BYTES, not a proxy we build first, and the difference is who destroys the document. unpdf
-    // says it in its own words — "caller-supplied proxies keep their lifecycle with the caller" —
-    // and `withDocument` only destroys what it created (`if (pdf !== data)`). Handing it a proxy
-    // from `getDocumentProxy` therefore left one parsed PDF alive per upload, for the life of the
-    // process, and the `no extractable text` throw below walked past any release we might have
-    // added. Passing the bytes removes the ownership question instead of answering it.
-    //
-    // Same invariant as the HEIC conversion in `modules/vision/convert`, which is where this was
-    // found: a library with a convenience entry point that cleans up and an explicit one that hands
-    // ownership over says nothing about the difference at the call site (issue #697, review round 1).
+    // NOTE: Pass THE BYTES, not a proxy from `getDocumentProxy`: unpdf's `withDocument` only destroys
+    // a document it created, so a caller-supplied proxy would stay alive for the life of the process
+    // (the same ownership trap as the HEIC conversion in `modules/vision/convert`).
     const result = await unpdfExtractText(file.bytes, { mergePages: true });
     // unpdf returns { text: string } or { text: string[] } depending on mergePages
     const raw = Array.isArray(result.text)

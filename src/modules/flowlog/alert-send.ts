@@ -9,55 +9,18 @@ import { consoleUrl } from "@/modules/mcp/console-links";
 import { resolveSigningSecret } from "@/modules/vault/service";
 import { outboundHeaders } from "@/modules/webhooks/outbound/signing";
 
-// THE ONE PLACE THAT TURNS AN ALERT INTO AN HTTP REQUEST (issue #605).
-//
-// Two callers: the worker delivering a queued alert, and the console's Test button probing a channel
-// before an incident does. They agree on everything that decides whether an alert ARRIVES — the
-// decrypted URL, the SSRF guard, the signing secret, the body shape, the headers, the refusal to
-// follow a redirect, the timeout — and differ only in what they do with the answer: the worker moves
-// a row through DELIVERED / PENDING / DEAD, the probe hands the outcome to a person.
-//
-// It is one function rather than two because a test button that exercises a DIFFERENT path from the
-// real send is worse than no button: it approves a channel whose alerts will never arrive, which is
-// the failure the issue is about, one level up. This repo already has the other shape next door —
-// `webhooks/outbound/test.ts` re-states the outbound worker's rules in its own words and the two are
-// kept in step by hand — and the alerting module is where that cost is highest, because nothing
-// downstream notices when this bus goes quiet.
+// The one place an alert becomes an HTTP request. The worker and the console's Test button both
+// call it, so a green test is evidence about the path a real alert takes; they differ only in what
+// they do with the answer (move a delivery row, or show the outcome to a person).
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_ERROR_LEN = 500;
 
-// THE CHANNEL'S URL IS A SECRET, AND ONE FETCH ERROR QUOTES IT BACK (holdout of #605, s10).
-//
-// A Discord webhook URL embeds a bot token, which is why the column is an `encryptJson` blob and the
-// DTO returns `scheme://host/…`. Bun's `UnexpectedRedirect` names the URL it was fetching, in full,
-// and that string is what the worker stores in `alert_deliveries.last_error` — measured there on the
-// base, so the leak predates this change — and what the new test route, the MCP tool and the console
-// toast now put in front of an operator and into anything that logs a response.
-//
-// Every URL in the message is reduced to the same masked form the read already shows, and nothing
-// else is touched: the neighbouring failures were characterised in the same holdout and none of them
-// carries more than the host (`getaddrinfo ENOTFOUND <host>`, "Unable to connect", "unknown
-// certificate verification error", "The operation timed out."). A host is what `redactEndpoint`
-// keeps, so the advice the operator needs survives the redaction.
-//
-// TWO PASSES, AND THE FIRST ONE IS THE ONE THAT HAS TO BE RIGHT (review round 3).
-//
-// The exact destination is KNOWN here — it was just decrypted — so it is replaced by literal string
-// match, which cannot be defeated by what a URL happens to contain. A regex alone can: the first
-// version of this stopped at `]`, so `https://[2606:4700::1111]/hooks/private-token` matched only up
-// to the bracket, failed to parse, collapsed to "…" and left `]/hooks/private-token` standing. The
-// same hole opens on any path character the class excludes. Guessing where a URL ENDS is the wrong
-// job to give the thing guarding a token.
-//
-// The regex is the backstop, for URLs this function does not know: a redirect TARGET the destination
-// chose, or a second URL some future error text quotes. It now stops only at whitespace and quotes,
-// and over-matching is harmless because every match is replaced by `scheme://host/…` regardless —
-// trailing punctuation swept in with it is dropped by the same rewrite.
-//
-// It requires a scheme on purpose. A bare host in a DNS failure is not matched and stays readable,
-// which is the difference between telling someone their hostname does not resolve and telling them
-// "…".
+// A channel URL is a secret (a Discord webhook embeds a bot token), and some fetch errors (Bun's
+// `UnexpectedRedirect`) quote it in full. The known destination is masked first by literal match,
+// because a regex cannot be trusted to find where a URL ends; this regex is the backstop for URLs
+// the caller does not know, such as a redirect target. Every match collapses to `scheme://host/…`,
+// so over-matching is harmless, and the required scheme leaves a bare host in a DNS error readable.
 const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"']+/gi;
 
 function maskUrlsIn(text: string, known?: string): string {
@@ -68,10 +31,10 @@ function maskUrlsIn(text: string, known?: string): string {
   return withoutKnown.replace(URL_IN_TEXT, (u) => redactEndpoint(u));
 }
 
-// `sanitizeErrorMessage` rather than a bare cut: this string is stored in `last_error`, and the
-// exceptions a delivery produces wrap what the remote endpoint answered. See issue #243 and the
-// function's own header for why a NUL or an orphan surrogate costs the whole write. The masking runs
-// FIRST, so the 500-character cut cannot leave half a token behind by truncating mid-URL.
+// `sanitizeErrorMessage` rather than a bare cut: this string is stored in `last_error` and wraps
+// what the remote endpoint answered, and a NUL or an orphan surrogate costs the whole write (see
+// that function's header). The masking runs FIRST, so the 500-character cut cannot leave half a
+// token.
 export function alertErrMsg(err: unknown, url?: string): string {
   return sanitizeErrorMessage(
     maskUrlsIn(err instanceof Error ? err.message : String(err), url),
@@ -92,9 +55,9 @@ export interface AlertSendTarget {
   level: string;
   summary: string;
   count: number;
-  // Where the first event of the window happened (issue #665). The tenant is what the links carry
-  // so the console opens on it; the two ids are null on a probe and on a row written before the
-  // columns existed, and then the body carries no link.
+  // Where the first event of the window happened. The tenant is what the links carry so the console
+  // opens on it; the two ids are null on a probe and on a row written before the columns existed,
+  // and then the body carries no link.
   tenantId: bigint | null;
   turnId: string | null;
   conversationId: bigint | null;
@@ -123,11 +86,10 @@ export interface AlertSendResult {
   error: string | null;
   // Whether the payload went out HMAC-signed.
   signed: boolean;
-  // Set when the channel names a signing secret and it did not resolve, so this went out unsigned:
-  // the sentence to show the operator and to store on the row (issue #724). Separate from `signed`
-  // on purpose, and a sentence rather than a flag, because unsigned-because-none-configured,
-  // unsigned-because-the-credential-was-deleted and unsigned-because-it-was-never-filled are the
-  // same wire request and three different errands.
+  // Set when the channel names a signing secret that did not resolve, so this went out unsigned:
+  // the sentence to show the operator and to store on the row. A sentence rather than a flag,
+  // because the unsigned causes (none configured, credential deleted, never filled) are one wire
+  // request and three different fixes.
   unsignedReason: string | null;
   // Wall time of the request itself, null when none was made.
   durationMs: number | null;
@@ -145,16 +107,11 @@ type AlertBodyInput = Pick<
   | "conversationId"
 >;
 
-// WHERE THE OPERATOR GOES FROM THE ALERT (issue #665), and the count decides it. The ids name the
-// FIRST event of the window, so on a burst they name one member of it, and a burst's members can be
-// unrelated conversations: a link to the first one would point at one of several and hide the rest.
-// So a burst links to the stage+level list, and a single event links to its own turn, plus its
-// conversation when the mirror knew one (a stranded delivery is filed unattached when it did not).
-//
-// No `source` on either: the page defaults to real traffic, and only real traffic alerts
-// (`emitFlowEvent` dispatches `source === "inbox"` alone). `consoleUrl` names the tenant, because
-// the console resolves it from the browser and an operator of several tenants would otherwise land
-// on whichever one they last had open.
+// Where the operator goes from the alert. The ids name the FIRST event of the window, and a burst's
+// members can be unrelated conversations, so a burst links to the stage+level list and a single
+// event links to its own turn (plus its conversation when the mirror knew one). No `source`: only
+// inbox traffic alerts, which is the page's default. `consoleUrl` names the tenant so an operator
+// of several tenants lands on the right one.
 export function alertLinks(a: AlertBodyInput): string[] {
   const opts = { tenantId: a.tenantId };
   if (a.count > 1) {
@@ -256,14 +213,9 @@ export async function sendAlert(
     return stopped("url", alertErrMsg(err));
   }
 
-  // Optional HMAC secret (generic webhook), resolved through a tenant-scoped read.
-  //
-  // A ref that names nothing -- deleted entry, or one created and never filled -- comes back with no
-  // secret rather than throwing, and the send goes out UNSIGNED. Holding the alert back instead
-  // would be the worse trade: the receiver that does not verify loses an incident notification over
-  // a credential problem it does not care about, and nothing downstream notices this bus going
-  // quiet. What changes with #724 is that the fact travels with the answer, per state, so the probe
-  // and the delivery row can both say which errand the operator is on.
+  // NOTE: Optional HMAC secret (generic webhook), resolved through a tenant-scoped read. A ref that
+  // names nothing (deleted, or created and never filled) yields no secret and the send goes out
+  // UNSIGNED rather than holding the alert back; `unsignedReason` carries which case it was.
   let secret: string | null = null;
   let unsignedReason: string | null = null;
   if (a.type === "webhook") {

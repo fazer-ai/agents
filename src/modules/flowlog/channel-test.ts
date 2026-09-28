@@ -4,25 +4,11 @@ import { AppError, NotFoundError } from "@/lib/errors";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { type AlertSendDeps, sendAlert } from "./alert-send";
 
-// THE BUTTON ON THE SMOKE DETECTOR (issue #605).
-//
-// An alert channel was configured blind: a URL pasted with a trailing space, a webhook deleted on the
-// Discord side, a rotated token, an egress rule blocking the host — every one of them invisible until
-// an alert failed to arrive, which is the one moment nobody is watching for a silence. This posts a
-// sample alert now and hands back what happened.
-//
-// It is the same send the worker performs (`sendAlert`), not a re-statement of it, so a green result
-// is evidence about the path a real alert takes. What it does NOT do is leave a trace of a real one:
-//
-//   - no `AlertDelivery` row. The sharp half, and the reason is the coalescing window: a PENDING row
-//     of the same channel/stage/level is bumped with `count++` rather than becoming a new row, AND
-//     THE COALESCED ROW KEEPS THE FIRST EVENT'S BODY. A row left here would swallow the summary of
-//     the next real alert, so the test would not merely add noise to the history, it would take a
-//     real alert's text away.
-//   - no flow-log line at warn/error. Those are exactly what `dispatchAlertsForEvent` routes, so a
-//     test that logged its own failure would alert about itself, in the channel being tested.
-//   - no audit row. The trail records CHANGES; nothing here changes. Same decision already taken for
-//     `webhook_test` and `mcp_connection_discover`.
+// Posts a sample alert through the same `sendAlert` the worker uses, so a green result is evidence
+// about the path a real alert takes. It leaves no trace of a real one: no `AlertDelivery` row (a
+// coalesced PENDING row keeps the FIRST event's body, so a test row would swallow the next real
+// alert's summary), no warn/error flow-log line (it would alert about itself, in the channel under
+// test), and no audit row (nothing changes).
 
 const TEST_DELIVERY_ID = "test";
 // DELIBERATELY NOT one of `FLOW_STAGES`. The stage only ever reaches the rendered body here (nothing
@@ -101,11 +87,9 @@ export async function sendAlertChannelTest(
     signed: res.signed,
     enabled: channel.enabled,
     durationMs: res.durationMs,
-    // The one case where a 2xx is not the whole answer: the channel names a signing secret that no
-    // longer resolves, so this delivery went out UNSIGNED and a receiver that verifies signatures
-    // will reject the real alert while this test reports success. The sentence comes from the
-    // resolver rather than from here (issue #724), so the probe and the delivery row that a later
-    // incident is read from say the same thing, and both say WHICH of the two problems it is.
+    // NOTE: A 2xx is not the whole answer when the channel names a signing secret that no longer
+    // resolves: this went out UNSIGNED, and a verifying receiver will reject the real alert. The
+    // sentence comes from the resolver so the probe and the delivery row say the same thing.
     warning: res.unsignedReason,
   };
 }

@@ -7,18 +7,13 @@ import { nextBackoffMs } from "@/modules/webhooks/outbound/service";
 import { alertErrMsg, sendAlert } from "./alert-send";
 import { emitDeadLetter } from "./dead-letter";
 
-// Alert delivery worker (claim + deliver). Mirrors the outbound-webhook worker: a single-replica
+// Alert delivery worker (claim + deliver), mirroring the outbound-webhook worker: a single-replica
 // tick reaps stale SENDING rows, claims due PENDING deliveries cross-tenant (FOR UPDATE SKIP
-// LOCKED), hands each one to `sendAlert` (which decrypts the channel URL, vets it, signs and POSTs,
-// OUTSIDE any transaction), and records the outcome (DELIVERED / back to PENDING with full-jitter
-// backoff / DEAD). The send itself lives in ./alert-send.ts because the console's Test button
-// performs the same one (#605), and a probe that took a different path would approve channels whose
-// real alerts never arrive.
+// LOCKED), sends each through `sendAlert` (./alert-send.ts, shared with the console's Test button)
+// OUTSIDE any transaction, and records DELIVERED / PENDING with full-jitter backoff / DEAD.
 //
-// A DEBOUNCE WINDOW gates fresh rows: a just-created delivery (no next_attempt_at) is only claimed
-// once it is older than ALERT_COALESCE_WINDOW_MS, so concurrent burst events accumulate into its
-// `count` before the single POST. Retries (next_attempt_at set) are claimed when due, ignoring the
-// window.
+// A fresh row (no next_attempt_at) is claimed only once it is older than ALERT_COALESCE_WINDOW_MS,
+// so a burst accumulates into its `count` before the single POST. Retries are claimed when due.
 
 const MAX_ATTEMPTS = 8;
 const CLAIM_LIMIT = 50;
@@ -166,10 +161,9 @@ async function claimDue(
   );
 }
 
-// `unsignedReason` rides along on EVERY terminal write, including this one, because it describes the
-// attempt and not its outcome (issue #724). The delivered row is the one that needed it most: it is
-// the one nothing else marks, and a 2xx from a receiver that does not verify signatures looks
-// exactly like a 2xx from one that does and just rejected the next alert.
+// `unsignedReason` rides on EVERY terminal write, this one included, because it describes the
+// attempt and not its outcome. The delivered row needs it most: a 2xx from a receiver that does not
+// verify signatures looks exactly like one from a receiver that will reject the next alert.
 async function finalizeDelivered(
   base: PrismaClient,
   a: ClaimedAlert,
@@ -190,15 +184,9 @@ async function finalizeDelivered(
   );
 }
 
-// THE NOTIFICATION THAT WILL NEVER ARRIVE, AND THE ONE LINE THAT SAYS SO (issue #356).
-//
-// The sharpest site of the four, because the operator learns about everything else THROUGH this bus,
-// and this is the bus failing. It cannot report itself, so the sink is the flow-log row: it costs
-// nothing, it is not the failing path, and ../flowlog/alerts.ts refuses to turn this particular line
-// back into an alert (the loop is written out there).
-//
-// Both roads to DEAD come here, which is the same collapse #325 did for the outbound bus. They were
-// written apart and neither had a line to forget; a third added the same way would be silent again.
+// Both roads to DEAD come through here. The alert bus cannot report its own failure, so the sink is
+// the flow-log line: it is not the failing path, and ./alerts.ts refuses to turn it back into an
+// alert.
 async function finalizeDead(
   base: PrismaClient,
   a: ClaimedAlert,

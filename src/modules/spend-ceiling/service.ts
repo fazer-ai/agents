@@ -31,10 +31,9 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// WHAT THE POLL LAST KNEW about one (tenant, source, month): the figure the gate decides on, and the
-// health the console and the alert line report beside it (issue #426). `costUsd` is what Langfuse
-// costed the month's generations at, monotonic inside the month; `polledAt` the last successful
-// poll; the `pollError` pair the last failure, which never overwrote the figure.
+// WHAT THE POLL LAST KNEW about one (tenant, source, month): the figure the gate decides on, and its
+// health. `costUsd` is Langfuse's cost for the month, monotonic inside it; `polledAt` the last
+// successful poll; the `pollError` pair the last failure, which never overwrites the figure.
 export interface SpendSnapshot {
   costUsd: number;
   tracedCalls: number;
@@ -106,12 +105,10 @@ export const SPEND_SNAPSHOT_STALE_AFTER_MS =
 // misspell it.
 export const LANGFUSE_NOT_CONFIGURED = "langfuse-not-configured";
 
-// A ROW THE POLL COULD NOT REFRESH FOR WANT OF A LANGFUSE IS NO FIGURE TO ENFORCE (review round 2).
-// The poll keeps the last figure on such a row (the console shows what stopped being enforced,
-// and the figure is still the month's floor if Langfuse comes back), but the gate must not decide
-// on it: the console says "cannot be enforced" the moment the credential is gone, and a tenant
-// that switched Langfuse off at $50 of a $10 ceiling would otherwise be refused for the rest of
-// the month on a number nothing can refresh. Every OTHER failure is staleness, and stale decides.
+// A ROW THE POLL COULD NOT REFRESH FOR WANT OF A LANGFUSE IS NO FIGURE TO ENFORCE. The row keeps the
+// last figure (shown, and still the floor if Langfuse returns), but the gate must not refuse a
+// tenant for the rest of the month on a number nothing can refresh. Every OTHER failure is
+// staleness, and stale decides.
 export function snapshotUnenforceable(
   row: { pollError: string | null } | null,
 ): boolean {
@@ -149,29 +146,19 @@ export interface SpendCeilingParams {
   cfg?: SpendCeilingConfig;
 }
 
-// THE VERDICT CARRIES THE INSTANT IT WAS EVALUATED AT, because everything downstream of it is about
-// a MONTH and the answer to "which month" is this timestamp, not the one the reader happens to hold.
-// A verdict read at 23:59:59.9 and announced at 00:00:00.1 would otherwise report the old month's
-// figures under the new month's warning key, and burn the new month's first window on a sentence
-// about the month that ended. Carried in the value rather than asked of every caller: five gates ask
-// this question, and a `now` each of them has to remember to pass on is the one the sixth forgets.
-//
-// It carries the snapshot's health too: null where no row was read (the block is off, this half has
-// no ceiling, or the month has not been polled yet), otherwise whether the figure is fresh.
+// THE VERDICT CARRIES THE INSTANT IT WAS EVALUATED AT: everything downstream is about a MONTH, and
+// a verdict read at 23:59:59.9 and announced at 00:00:00.1 must report the month it was read in.
+// Carried in the value so none of the gates has to remember to pass a `now`. `snapshot` is null
+// where no row was read (block off, no ceiling on this half, month not polled yet).
 export type SpendCeilingResult = SpendVerdict & {
   cfg: SpendCeilingConfig;
   evaluatedAt: Date;
   snapshot: SpendSnapshotHealth | null;
 };
 
-// THE ASK, and what an unreadable answer means.
-//
-// A ceiling that cannot be read ALLOWS the turn. That is the opposite direction from the durable
-// turn claim (#203), and deliberately: there the false answer let a writer erase a customer's
-// message, here the false answer refuses to answer a customer who is waiting because our own
-// database hiccuped. Losing a turn to protect a budget the operator may not even have configured is
-// the worse of the two, and the poll keeps writing either way, so the next message re-asks with
-// nothing lost but the cost of one turn.
+// THE ASK. A ceiling that cannot be read ALLOWS the turn: refusing a waiting customer because our
+// own database hiccuped is worse than one turn's cost, and the poll keeps writing either way, so the
+// next message re-asks with nothing else lost.
 export async function spendCeilingVerdict(
   params: SpendCeilingParams,
 ): Promise<SpendCeilingResult> {
@@ -266,20 +253,11 @@ export async function readTenantSpendCeiling(
   return readSpendCeilingConfig(row?.settings ?? {});
 }
 
-// HOW OFTEN THE WARNING IS SAID, which is not "once per message".
-//
-// `over` is a per-message fact: each refused customer is one turn that did not run, and the Logs
-// page is where an operator counts them, exactly as the contact-auth gate does. `warning` is not.
-// It describes the MONTH, it stays true for every message from the fraction to the ceiling, and the
-// alert bus coalesces only a burst — it bumps a PENDING delivery and inserts a fresh one as soon as
-// the worker has sent the last, so a busy tenant sitting at 85% would page its channels for the
-// rest of the month about one unchanging fact.
-//
-// Six hours, and not `noticeCooldownSeconds`: that field is a per-CONVERSATION cooldown on what a
-// customer sees, with a default of five minutes, and a monthly budget crossing is not something to
-// be told twelve times an hour. In-process, like every other notice claim here, so a restart or a
-// second replica re-announces once. That is the right failure direction for a warning: the cost is
-// one extra message, and the alternative is a durable row for a line nobody is required to receive.
+// HOW OFTEN THE WARNING IS SAID. `over` is per message (one refused turn, counted on the Logs page);
+// `warning` describes the MONTH and stays true from the fraction to the ceiling, and the alert bus
+// only coalesces a burst. So it is claimed once per six hours per (tenant, source), not per
+// `noticeCooldownSeconds` (a per-conversation cooldown on what a customer sees). In-process, so a
+// restart re-announces once, which is the right failure direction for a warning.
 export const SPEND_CEILING_WARN_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 export function spendCeilingWarnKey(
@@ -298,28 +276,13 @@ export function spendCeilingWarnKey(
   return `spend_ceiling_warn:${tenantId}:${source}:${monthStart(now).toISOString()}`;
 }
 
-// WHAT, IF ANYTHING, TO WRITE. Separate from the emit below so the frequency rule can be proved
-// without a database: `emitFlowEvent` writes an `ExecutionLog` row and offers no seam, so a test
-// that went through it would be measuring Postgres.
-//
-// CLAIMING IS THE DECISION, which is why this is not a predicate: asking twice would consume the
-// window twice, and a caller that asked before deciding would silence the line it was about to
-// write. So it returns the event, or null, having already spent the window it needed.
-// WHAT THE REFUSAL IS ABOUT, so the `over` line is one per refused OCCASION rather than one per ask.
-// The docs promise one line per refused customer message, and the two ways that promise broke are
-// both repetition the traffic does not explain:
-//
-//   - the same MESSAGE asked twice. Chatwoot fans one incoming message to the conversation's
-//     assigned agent bot AND to the inbox's, which is two deliveries with two ids running
-//     concurrently, so one refused customer produced two rows and two alert deliveries.
-//   - the same OCCASION asked eight times. `over-ceiling` is a repairable nudge refusal, so the
-//     caller reschedules it every fifteen minutes for two hours against a wall that is temporary by
-//     construction; a tenant holding fifty pending jobs paged the channels four hundred times about
-//     one unchanging fact.
-//
-// The caller names the occasion because only it knows what one is: a message id for a delivery, the
-// conversation for a scheduled job whose ladder spans two hours. Same reasoning as the warning's own
-// window, with the subject moved from the month to the thing being refused.
+// WHAT, IF ANYTHING, TO WRITE, separate from the emit so the frequency rule is testable without a
+// database. CLAIMING IS THE DECISION: it returns the event or null having already spent the window,
+// so asking twice would consume it twice.
+// The occasion makes the `over` line one per refused OCCASION, not per ask: Chatwoot fans one message
+// to two bots (two concurrent deliveries), and a repairable nudge refusal is rescheduled many times
+// against the same wall. Only the caller knows what an occasion is: a message id for a delivery, the
+// conversation for a scheduled job.
 export interface SpendCeilingOccasion {
   key: string;
   windowMs: number;
@@ -332,16 +295,10 @@ export interface SpendCeilingOccasion {
 // without knowing they had.
 export const SPEND_CEILING_MESSAGE_WINDOW_MS = 60_000;
 
-// THE SCHEDULER'S OWN LADDER, for the occasion a debounce flush refuses. A claimed job that throws
-// after the refusal has been written — advancing the watermark is the last thing it does, and that
-// is a database write — is re-pended with a backoff and runs again on the SAME burst, so without a
-// window one refused burst writes one `error` line and pages the alert channels once per attempt.
-//
-// Sized off the scheduler rather than guessed: `MAX_ATTEMPTS` is 5 and `backoffMs` is full-jitter on
-// a 2s base with the exponent clamped, so four retries are spaced at most 4s + 8s + 16s + 32s. Ten
-// minutes covers that ladder several times over, which is the right direction to be wrong in — the
-// key carries the burst's own conversation and last message id, so a window this long can never
-// suppress a line about a DIFFERENT burst, and the next burst carries a later id by construction.
+// THE SCHEDULER'S OWN LADDER, for the occasion a debounce flush refuses: a job that throws after
+// writing the refusal is re-pended and runs again on the SAME burst. Ten minutes covers the
+// scheduler's retry ladder (`MAX_ATTEMPTS`, `backoffMs`) several times over, and the key carries the
+// burst's conversation and last message id, so it never suppresses a line about a different burst.
 export const SPEND_CEILING_BURST_WINDOW_MS = 10 * 60 * 1000;
 
 export function spendCeilingOverKey(
@@ -400,18 +357,10 @@ export function announceSpendCeiling(
   if (ev) emitFlowEvent(flow, ev);
 }
 
-// THE WARNING HALF ON ITS OWN, for a caller that runs BEFORE the gate that will refuse the same
-// message. Vision is the only one (docs/spend-ceiling.md): it reads the incoming attachment before
-// any gate has decided anything, so an `over` written here would put a second refusal row and a
-// second alert bump on the Logs page for one customer message, and what this step did is already on
-// its own `vision` line as `skipped` with `spend_ceiling` as the reason.
-//
-// The WARNING is not symmetric with that, which is what made silence here wrong. It leaves no trace
-// anywhere else: the call proceeds, the attachment is read, and nothing says the month crossed its
-// fraction. And on a message no gate ever reaches — a human-owned conversation, a silenced agent, a
-// redirect, an hour outside the schedule — this is the only place that could have said it. It
-// cannot double-write either: the window is claimed once, so a gate that follows and asks the same
-// question writes nothing.
+// THE WARNING HALF ON ITS OWN, for vision, which runs BEFORE the gate that will refuse the same
+// message: an `over` here would double the refusal row, and vision's own line already says
+// `skipped`. The warning has no other trace, and on a message no gate reaches this is the only place
+// that can say it. It cannot double-write: the window is claimed once, so a later gate writes nothing.
 export function announceSpendCeilingWarning(
   flow: FlowContext | undefined,
   result: SpendVerdict & { evaluatedAt?: Date },
@@ -490,10 +439,8 @@ export interface SpendCeilingUsageEntry {
   costedCalls: number;
   ledgerCalls: number;
   unpricedModels: string[];
-  // What of `usedUsd` was carried over from a PREVIOUS Langfuse project, when the tenant switched
-  // mid-month (see the carry in poll.ts). Sent so the console can say why the figure is higher than
-  // the project's own total: the dashboard now shows the two side by side (issue #427), and a bar
-  // that reads $10.02 next to a cost card that reads $5.01 explains itself or looks broken.
+  // What of `usedUsd` was carried over from a PREVIOUS Langfuse project (see the carry in poll.ts),
+  // so the console can explain a figure higher than the project's own cost card beside it.
   carriedUsd: number;
 }
 
@@ -503,10 +450,8 @@ export interface SpendCeilingUsageDto {
   // enough that "this month" would silently mean a different window than the gate's.
   periodStart: string;
   // Whether the tenant's Langfuse credential RESOLVES (switched on, the vault entry exists, the keys
-  // parse), asked the way the poll asks it: without that there is no price table to read and the
-  // ceiling cannot be enforced, which the console says instead of showing a bar that never moves.
-  // A reference alone is not enough (review round 1): a deleted or malformed entry is exactly what
-  // the poll reports as `langfuse-not-configured`, and the flag has to agree with the row.
+  // parse), asked the way the poll asks it, so the flag agrees with a `langfuse-not-configured` row.
+  // Without it the ceiling cannot be enforced, and the console says so.
   langfuseConfigured: boolean;
   // A ceiling this block was given in tokens before the unit changed, never enforced: see
   // `SpendCeilingConfig.legacyTokens`.
@@ -516,14 +461,10 @@ export interface SpendCeilingUsageDto {
   entries: SpendCeilingUsageEntry[];
 }
 
-// WHAT THE CONSOLE SHOWS. Both halves, always, and with the figures present even when the block is
-// off: an operator deciding what to set the ceiling to needs last month's shape more than anyone,
-// and a screen that shows nothing until a ceiling exists asks them to pick a number blind.
-// Takes the REQUEST's context, never an id lifted out of it. Every other reader here is an internal
-// caller holding an id it read from a row, which is the distinction the fence in
-// tests/modules/tenant-selector-entry-points.test.ts draws: a controller that unwraps its context
-// tells `runScopedOn` that a caller's stale selection was internal, and a dead tenant then comes
-// back as an empty screen instead of a refusal naming the selection (#268).
+// WHAT THE CONSOLE SHOWS: both halves, always, with figures even when the block is off, so an
+// operator picking a ceiling sees last month's shape. Takes the REQUEST's context, never an id lifted
+// out of it, so a stale tenant selection is refused rather than read as an empty screen (see
+// tests/modules/tenant-selector-entry-points.test.ts).
 export async function spendCeilingUsage(params: {
   ctx: TenantContext;
   base?: PrismaClient;

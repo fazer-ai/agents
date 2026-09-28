@@ -20,12 +20,12 @@ export function getMapper(catalogType: string): InboundMapper | undefined {
   return REGISTRY.get(catalogType);
 }
 
-// ── GENERIC (issue #818) ──
-// The operator's own system, calling back about a conversation an HTTP tool handed it. There is no
-// third-party shape to translate: the body IS our documented normalized shape, so this only
-// validates it. `conversation_ref` is the correlation key the tool minted (IntegrationExternalRef,
-// kind `conversation_ref`), `event_id` is the sender's idempotency key, `text` is what the agent
-// passes on. Unknown keys are ignored rather than refused, so a sender can carry its own fields.
+// ── GENERIC ──
+// The operator's own system, calling back about a conversation an HTTP tool handed it. The body IS
+// our documented normalized shape, so this only validates it. `conversation_ref` is the correlation
+// key the tool minted (IntegrationExternalRef, kind `conversation_ref`), `event_id` is the sender's
+// idempotency key, `text` is what the agent passes on. Unknown keys are ignored, so a sender can
+// carry its own.
 const genericSchema = z.object({
   event_id: z.string().min(1),
   conversation_ref: z.string().min(1),
@@ -61,33 +61,13 @@ const genericMapper: InboundMapper = {
 registerMapper(genericMapper);
 
 // ── ASAAS ──
-// Brazilian payments. Webhook shape (doc-confirmed, docs.asaas.com → "Webhook para cobranças",
-// 2026-06): { event: "PAYMENT_RECEIVED", payment: { id, value, status, externalReference,
-// paymentLink, … } }. A received/confirmed payment is a CONVERSION; an overdue payment is an
-// AGENT_NUDGE (let the agent decide on a gentle reminder). Event names PAYMENT_RECEIVED /
-// PAYMENT_CONFIRMED / PAYMENT_OVERDUE are all confirmed in the docs.
-//
-// Correlation: the outbound toolpack (toolpacks/asaas.ts) sends an opaque correlation token as the
-// payment link's `externalReference` (a doc-confirmed accepted field on POST /paymentLinks) and
-// stores it as IntegrationExternalRef.externalId. We read it back here PREFERENTIALLY over
-// payment.id — a link-generated payment has a different id than the link but carries the
-// externalReference, the exact tie back to the conversation. payment.id is the fallback (direct
-// charges) and ALWAYS drives dedupeKey (the charge is the idempotency unit; one externalReference
-// may span installment charges).
-//
-// OPEN (needs Asaas sandbox e2e, creds-gated): confirm a link-generated payment actually ECHOES the
-// link's externalReference. If it does NOT, the contingency is to correlate by `payment.paymentLink`
-// (the link id, already stored on the ref as metadata.paymentLinkId) — we capture paymentLink in the
-// schema/metadata below for that, but DO NOT wire it into the lookup yet (speculative until the
-// sandbox capture says so).
-//
-// `summary` is OUR text, never the raw payload (injection boundary).
-// NOTE: the optional payment fields are `.nullish()`, not `.optional()` — Asaas SENDS them as
-// explicit nulls (paymentLink is always present, null on direct/non-link charges;
-// externalReference is null on charges created outside our tools). `.optional()` alone rejects
-// null and used to silently drop real paid-payment webhooks. min(1) stays deliberate: an empty
-// string would corrupt the correlation key silently (`"" ?? payment.id` does not coalesce), so
-// it must surface as invalid instead.
+// Brazilian payments. PAYMENT_RECEIVED and PAYMENT_CONFIRMED are a CONVERSION; PAYMENT_OVERDUE is
+// an AGENT_NUDGE. `externalReference` (the token toolpacks/asaas.ts sent) is preferred over
+// payment.id, since a link-generated payment has its own id; payment.id is the fallback and ALWAYS
+// drives dedupeKey (one reference may span installments). Optional fields are `.nullish()` because
+// Asaas sends explicit nulls; min(1) makes an empty string invalid, not a broken correlation.
+// `summary` is OUR text, not the payload.
+// TODO: confirm a paid link payment echoes externalReference, else correlate by `paymentLink`.
 const asaasSchema = z.object({
   event: z.string().min(1),
   payment: z

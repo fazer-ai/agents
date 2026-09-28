@@ -97,20 +97,13 @@ import {
   type WriteResult,
 } from "./write";
 
-// MCP READ tools — the read half of the expanded admin surface, all gated by the same fence as
-// write reads (mcp:read scope + a tenant target). Each tool projects a tenant-scoped service and
-// serializes bigints to strings (JSON.stringify throws on a bigint). Secret-bearing fields are
-// never returned: services redact them (Chatwoot adminToken → hasAdminToken, alert URL → urlMasked,
-// API key → prefix).
-//
-// A ref-bearing field comes back in one of TWO vocabularies. The settings reads translate to a vault
-// entry NAME here (`vaultNameByRef`); the entity reads hand back the service DTO, which carries the
-// stable `vault:<id>` the column holds. This comment claimed NAMES for all of them and was true of
-// the two it could see — the entity DTOs were passing the COLUMN through, and until #126 that column
-// took any string, so a secret typed into it reached every `mcp:read` client (issue #438). The
-// services redact through `readableVaultRef` now: a stored value that is not a reference reads as null. A ref whose
-// ENTRY was deleted still comes back — the guard proves the value is a reference, deliberately not
-// that it resolves, so a dangling ref stays visible instead of reading as an empty field.
+// MCP READ tools, gated by the same fence as write reads (mcp:read scope + a tenant target). Each
+// projects a tenant-scoped service and serializes bigints to strings. Secret-bearing fields are
+// never returned (Chatwoot adminToken → hasAdminToken, alert URL → urlMasked, API key → prefix). A
+// ref-bearing field comes back in one of TWO vocabularies: the settings reads translate to a vault
+// entry NAME (`vaultNameByRef`), the entity reads return the DTO's stable `vault:<id>`. Services
+// redact through `readableVaultRef`: a non-reference reads as null, while a dangling ref stays
+// visible (the guard proves the value is a reference, not that it resolves).
 
 const sid = (v: bigint): string => v.toString();
 const sidn = (v: bigint | null): string | null =>
@@ -142,11 +135,8 @@ export async function agentGet(
   }
 }
 
-// "Is this agent's configuration healthy?" — the same warnings the console's editor panel computes,
-// for the caller that never opens it. An onboarding driven entirely through these tools is the path
-// the docs recommend, and until this existed it was also the one that ran blind: nothing on it ever
-// rendered the page those checks live on, so it finished by reporting success over a vault entry
-// nobody had filled. Issue #467.
+// "Is this agent's configuration healthy?": the same warnings the console's editor panel computes,
+// for the caller that never opens it, such as an onboarding driven entirely through these tools.
 export async function agentConfigHealth(
   principal: VerifiedToken,
   args: { agent_id: string },
@@ -215,7 +205,7 @@ export async function toolGet(
   }
 }
 
-// ── code tools (operator-authored, issue #363) ──
+// ── code tools (operator-authored) ──
 
 export async function codeToolList(
   principal: VerifiedToken,
@@ -259,37 +249,13 @@ export async function codeToolGet(
 }
 
 // The authoring contract for a code tool body, served on demand rather than inlined into
-// `code_tool_create`'s description (issue #538). The precedent is `document_template_schema`, and
-// the reason is the same one measured there: a vocabulary that every caller pays for on every
-// session, for a contract only a caller actually WRITING a body needs.
-//
-// It answers what a body cannot discover by trying: which `context` keys exist, which of them can be
-// ABSENT (all but three, because the runtime builds that object by spreading conditionals), which
-// GLOBALS the sandbox puts in scope, and the limits that turn a run into a failure. Everything here
-// is derived from the modules that enforce it, never restated, so the answer cannot drift from the
-// sandbox.
-//
-// `available` is the same `CODE_TOOL_GLOBALS` the console's Ctrl-Space offers, as data rather than
-// as the sentence it used to be. The sentence named three of the twenty and went stale the moment a
-// name moved, which is the drift the vocabulary module exists to close: a caller writing through MCP
-// and a caller writing in the console have to be told the same list.
-//
-// Seven limits are served and they bite at three DIFFERENT moments, so they are described in three
-// sentences rather than one. `timeoutMs`, `memoryBytes`, `stackBytes` and `contextMaxChars` mark the
-// call failed. `inputMaxChars` is the model's doing and comes back as an ordinary result saying what
-// to change (graph/tools/code.ts). `codeMaxChars` never reaches a call at all: the write is REFUSED,
-// so nothing is saved. `resultMaxChars` is the fourth thing a body cannot discover by trying: what
-// the body returns is CLIPPED (code-sandbox.ts), and it bounds the VALUE rather than the rendered
-// line, so a caller reading it as a bound on the whole text sizes a return by the wrong number. The
-// cut itself is marked, but the `console.log` block is dropped WHOLE when the value leaves it under
-// forty characters of budget, and that is the one case nothing marks. A caller told these are all
-// failures reads a correctable argument size as a broken tool and an authoring refusal as an outage.
-//
-// The gate is `authoringGate`, not `readGate`: `code_tool_create` names this tool for the contract
-// it no longer restates, and `filterScopes` grants exactly the scopes a client asked for, so a token
-// holding `mcp:write` without `mcp:read` is a real token that would otherwise be sent to a tool it
-// can neither list nor call. It answers a constant either way, so admitting the writer gives away
-// nothing the reader was not already given.
+// `code_tool_create`'s description (like `document_template_schema`), since only a caller WRITING
+// a body needs it. It answers what a body cannot discover by trying (which `context` keys exist and
+// may be absent, the sandbox GLOBALS, the limits), all derived from the enforcing modules. The
+// limits bite at different moments: some fail the call, `inputMaxChars` returns a correctable
+// result, `codeMaxChars` refuses the write, and `resultMaxChars` clips the returned value.
+// `authoringGate`, not `readGate`: a token with `mcp:write` alone is sent here by
+// `code_tool_create`.
 export function codeToolSchema(principal: VerifiedToken): WriteResult {
   const ctx = authoringGate(principal);
   if ("ok" in ctx) return ctx;
@@ -585,9 +551,9 @@ export async function knowledgeDocumentsList(
   }
 }
 
-// One document WITH its text (issue #708). The list carries metadata and `contentChars` only, and
-// `knowledge_search` returns chunks cut by relevance, so without this the whole text of a document
-// was reachable from nowhere an MCP client could go.
+// One document WITH its text. The list carries metadata and `contentChars` only, and
+// `knowledge_search` returns chunks cut by relevance, so this is the only way to read a whole
+// document.
 export async function knowledgeDocumentGet(
   principal: VerifiedToken,
   args: { document_id: string },
@@ -893,7 +859,7 @@ export async function tenantSettingsGet(
       settings: {
         embedding: { ...settings.embedding, credentialRef: embeddingRef },
         langfuse: { ...settings.langfuse, credentialRef: langfuseRef },
-        // The tenant's own model prices (issue #865), USD per million tokens.
+        // NOTE: The tenant's own model prices, USD per million tokens.
         priceOverrides: settings.priceOverrides,
       },
     });
@@ -975,14 +941,11 @@ export async function auditList(
 ): Promise<WriteResult> {
   const base = deps.base ?? basePrisma;
   const opts: Parameters<typeof listAudit>[1] = {};
-  // The same three trails the console offers (#520), for the same reason: the rows keyed to no
-  // tenant are unreachable from a tenant read rather than filtered out of it, so an agent asking
-  // "was this MCP client ever created" against the tenant trail gets an empty answer that reads as
-  // "no". `listAudit` refuses the wider two to anyone but a SUPER_ADMIN, so the door is the same one
-  // the REST surface uses; this only forwards the ask.
-  //
-  // READ BEFORE THE GATE, because it is what the gate depends on: a tenant target is required by the
-  // SCOPE and not by the tool, exactly as `ctxOrThrow` has it on the REST side.
+  // NOTE: The same three trails the console offers: rows keyed to no tenant are unreachable from a
+  // tenant read, so asking the tenant trail about a fleet row gets an empty answer that reads as
+  // "no". `listAudit` refuses the wider two to anyone but a SUPER_ADMIN. Read BEFORE the gate,
+  // because a tenant target is required by the SCOPE, not by the tool (as `ctxOrThrow` does on the
+  // REST side).
   if (args.scope !== undefined) {
     if (typeof args.scope !== "string" || !isAuditScope(args.scope)) {
       return err(`scope must be one of: ${AUDIT_SCOPES.join(", ")}`);
@@ -1040,9 +1003,8 @@ export async function auditList(
     opts.actorId = v;
   }
   if (args.cursor !== undefined) {
-    // TWO COLUMNS SINCE #530, so not `parseMcpId`. A bare id was the cursor before that, and was
-    // accepted for one release after it so an agent holding one mid-walk kept walking across a
-    // rolling deploy; since #544 it is refused like any other malformed cursor.
+    // NOTE: The cursor is TWO COLUMNS, so not `parseMcpId`; a bare id is refused like any other
+    // malformed cursor.
     const c = parseAuditCursor(args.cursor);
     if (c === null) {
       return err(

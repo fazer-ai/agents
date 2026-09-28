@@ -75,18 +75,14 @@ export async function tenantCreate(
   if ("ok" in ctx) return ctx;
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
-      // branch rather than above it because the apply reaches the core, which asks it again —
-      // and several of these read a row or resolve DNS, so above the branch is a second lookup
-      // that can even disagree with the first (#490).
+      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // which asks it again; above the branch it would be a second lookup that can disagree.
       const parsed = assertTenantCreatable({
         name: args.name,
         slug: args.slug,
       });
-      // ADVISORY, unlike the line above it: this one READS, outside the transaction the apply
-      // will write in, so a free name here can be taken before the apply arrives. It answers the
-      // collision that actually happens (a name the operator already used), and the unique index
-      // inside the write remains what guarantees one name to one row (#490).
+      // NOTE: ADVISORY: it reads outside the apply's transaction, so the slug can be taken
+      // meanwhile. The unique index inside the write is what guarantees one slug per row.
       await assertTenantSlugAvailable(parsed.slug, base);
       return ok({
         dryRun: true,

@@ -105,10 +105,9 @@ export async function disconnectClient(
       where: { userId, clientId, revokedAt: null },
       data: { revokedAt: now },
     });
-    // Recorded only when something actually went. The route is idempotent and the console offers it
-    // on a connection the user may already have dropped elsewhere, so an unconditional row would
-    // append one every time somebody clicks twice — the same answer #395 reached for the reconcile
-    // that runs on every page load.
+    // NOTE: Recorded only when something actually went. The route is idempotent and the console
+    // offers it on a connection that may already be gone, so an unconditional row would append one
+    // per click.
     if (approval.count > 0 || access.count > 0 || refresh.count > 0) {
       // The trail this joins is the ACTOR's own tenant, and `ctx.tenantId` is not that for the one
       // principal who has none: a SUPER_ADMIN carries whichever tenant the console had selected, so

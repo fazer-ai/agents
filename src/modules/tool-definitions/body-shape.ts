@@ -1,18 +1,8 @@
-// The request body of an HTTP tool, and the one place that says which shapes exist.
-//
-// `parseBody` (src/graph/tools/http.ts) executes three: "kv" assembles JSON from explicit rows,
-// "raw" sends an interpolated template, and absent/"fields" assembles JSON from the declared input
-// fields. It reads a fixed set of keys and ignores every other, which is why an unsupported shape
-// was never noticed: the request still went out, assembled from the field names, looking plausible
-// and carrying nothing the operator had written (issue #150).
-//
-// The rule is therefore not "declare a known mode" but the stricter one: the body must be exactly an
-// executable shape, with NO key the runtime does not read. Both halves are load-bearing, and the
-// second is what catches a half-conversion. A body authored as a plain JSON object
-// (`{"contact":{"email":"{{email}}"}}`) reads like a template and is not one; the same object with
-// `mode: "raw"` bolted on is worse, because it declares a mode a mode-only check would accept while
-// `parseBody` sends an empty body and drops every key the author actually wrote. A key the runtime
-// does not read is a payload somebody believes they are sending.
+// The request body of an HTTP tool, and the one place that says which shapes exist. `parseBody`
+// (src/graph/tools/http.ts) executes three: "kv" rows, a "raw" template, and absent/"fields" built
+// from the declared input fields, ignoring every other key. So the rule is strict: the body must be
+// exactly an executable shape, with NO key the runtime does not read. A plain JSON object, or one
+// with `mode: "raw"` bolted on, would go out as a plausible request carrying nothing the author wrote.
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -112,15 +102,8 @@ export function unsupportedBodyShape(body: unknown): string | null {
 
 // What `parseBody` actually executes for a body this file refuses, spelled canonically. The bundle
 // import uses it instead of blanking the row, so a legacy tool keeps sending what it was sending.
-//
-// It is written as a MIRROR of parseBody's branches, not as a variation on the refusal above, and
-// that distinction is the whole reason this exists as its own function. The two answer different
-// questions — "may an author write this?" and "what does the runtime do with it?" — and they differ
-// at exactly the places a shape is *tolerated* rather than *read*: an extra key beside `raw`, an
-// extra key inside a row, a value of the wrong type. Deriving one from the other silently changes
-// the request every time they diverge, which is the thing this whole change exists to stop.
-//
-// Every rule below has a line of parseBody behind it:
+// It MIRRORS parseBody's branches rather than deriving from the refusal above, because the two
+// differ exactly where a shape is tolerated rather than read:
 //   raw     -> `typeof b.raw === "string" ? b.raw : ""`
 //   kv rows -> key/value coerced to "" when not strings, then `.filter(r => r.key.trim())`
 //   else    -> the legacy `fields` branch

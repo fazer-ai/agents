@@ -1,27 +1,11 @@
-// THE CONTACT FOOTER OF A RETRIEVED PASSAGE (issue #747).
-//
-// Help-center articles are written for a person browsing a site, and they end on a line of site
-// navigation: "entre em contato com nosso atendimento pelo e-mail sac@…". Retrieved into an agent,
-// that line is read as an instruction, and the agent escalates a conversation whose answer was in
-// the article it just read. Measured on 183 real conversations, two independent batteries: with such
-// an article in the search results the agent transferred when it should not have 4.7x and 5.7x as
-// often. A prompt paragraph telling the model to ignore contact instructions from retrieved content
-// moved nothing (26% vs 27%, p = 1.0); removing the line did. An annotation would lose the same way:
-// it is more text competing with the line instead of the line being gone.
-//
-// So the line goes, at SEARCH time and per knowledge base, behind an operator's switch that is off
-// by default. Search time and not ingest time because the article stays the authoritative source:
-// nothing stored changes, and turning the switch off gives the passage back without re-indexing.
-//
-// What counts as a footer is deliberately narrow, because the cost of a false positive is losing a
-// sentence of the answer:
-//   - only at the END OF THE DOCUMENT: the passage that is its tail, or the one before it where the
-//     chunks' overlap carried the head of that same footer (a paragraph that merely ends a middle
-//     chunk and is not the document's footer is text the chunker happened to cut there);
-//   - only trailing paragraphs, walked backwards, each one short and carrying an e-mail, a phone
-//     number or an invitation to get in touch;
-//   - never the whole passage: a passage that is nothing but a footer is kept as it is, since it may
-//     be the answer to "how do I reach you".
+// The contact footer of a retrieved passage. A help-center article ends on navigation ("entre em
+// contato pelo e-mail sac@…"); retrieved into an agent, that line reads as an instruction and the
+// agent escalates a conversation the article answers. A prompt telling the model to ignore it does
+// not help; removing the line does. Removed at SEARCH time, per knowledge base, behind an operator
+// switch off by default, so nothing stored changes. Narrow on purpose (a false positive loses part
+// of the answer): only trailing short paragraphs carrying an e-mail, phone or invitation, only in
+// the document's tail passage (or the one before it, where the overlap carried the footer's head),
+// and never the whole passage, which may be the answer to "how do I reach you".
 
 import type { ChunkHit, ChunkRow } from "./sql";
 

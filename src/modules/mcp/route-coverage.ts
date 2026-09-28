@@ -1,21 +1,9 @@
-// WHICH REST ROUTE HAS A TWIN IN THE MCP, AND WHY THE REST DO NOT (issue #708).
-//
-// `PATCH /v1/knowledge/documents/:id` existed for months with no MCP tool, and nothing said so: a
-// session that only saw the MCP concluded that editing a document meant deleting and recreating it,
-// which loses the id and takes the document out of search while it re-embeds. The gap was not the
-// difference between the two surfaces, which is expected; it was that the difference was invisible.
-//
-// So every route under `src/api/v1/*.controller.ts` is named here with one of three answers, and
-// `tests/modules/mcp-route-coverage.test.ts` fails when a route is added without one, when an entry
-// names a route that no longer exists, or when a `tool` names nothing the server registers:
-//
-//   - `tool`: the MCP tool that does the same job. Not always one-to-one (`metrics_get` answers two
-//     routes), and the test checks that the tool exists, not that it is equivalent.
-//   - `none`: the route has no business in the MCP, and the reason says why. Shared reasons are the
-//     constants below, so a new route reuses one or writes its own.
-//   - `gap`: it SHOULD have a tool and does not yet. Written down so the next person who needs it
-//     finds the gap here instead of in a production session, and so CI charges only the delta.
-//
+// Which REST route has a twin in the MCP, and why the rest do not. Every route under
+// `src/api/v1/*.controller.ts` is named here, and `tests/modules/mcp-route-coverage.test.ts` fails
+// on a route without an entry, an entry naming no route, or a `tool` the server does not register:
+//   - `tool`: the MCP tool that does the same job (not always one-to-one; only existence checked).
+//   - `none`: the route has no business in the MCP; shared reasons are the constants below.
+//   - `gap`: it SHOULD have a tool and does not yet, written down so CI charges only the delta.
 // Keys are `METHOD /prefix/path` exactly as the controller spells them, prefix included.
 
 type Coverage = { tool: string } | { none: string } | { gap: string };

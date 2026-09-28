@@ -1,14 +1,7 @@
-// WHICH GATE ANSWERS FOR EACH BILLED CALL (issue #146).
-//
-// The ceiling is one question asked in several places, which is the shape that reliably ships
-// missing from the N+1 place. So the answer is written down per `LlmUsage.node`, TOTAL over the
-// ledger's own node vocabulary, and a fence test (tests/modules/spend-ceiling-coverage.test.ts)
-// compares the key set against `USAGE_NODE_IS_AGENT_TURN`: a node added to the ledger without an
-// answer here is a red test, never a silent default.
-//
-// Defaulting either way is what this exists to prevent. Defaulting to "gated" would let a new
-// billed path spend past the ceiling while the map claims it cannot; defaulting to "covered" would
-// hide the same thing behind a word that sounds like coverage.
+// WHICH GATE ANSWERS FOR EACH BILLED CALL, per `LlmUsage.node`, TOTAL over the ledger's node
+// vocabulary. A fence test (tests/modules/spend-ceiling-coverage.test.ts) compares the key set
+// against `USAGE_NODE_IS_AGENT_TURN`, so a new node without an answer here is a red test. There is
+// deliberately no default: either default would hide a billed path that can spend past the ceiling.
 
 export type SpendGateSite =
   // Something asks the ceiling immediately before this call, on EVERY path that reaches it.
@@ -38,24 +31,14 @@ export const SPEND_GATE_FOR_NODE: Readonly<Record<string, SpendGateSite>> =
     guardrail: "covered-by-the-unit",
     // Speech normalization, inside a turn that was allowed.
     tts_normalize: "covered-by-the-unit",
-    // Memory compaction. NOT inside a turn — it runs from its own `MEMORY_COMPACT` scheduler job,
-    // minutes after the attendance it summarizes and on attendances a human handled, so there is no
-    // enclosing verdict to be covered by. It is out of the ceiling by DECISION (issue #146's scope),
-    // for the reason that makes it different from every other billed call here: refusing it does not
-    // save the tokens, it moves them — the raw history stays in the thread and the next turn carries
-    // it, so a ceiling that skipped compaction would raise spend rather than bound it.
-    //
-    // THE COST THAT BUYS, said out loud because it is real: a tenant past its ceiling keeps paying
-    // for compaction. Bounded (one job per attendance, one summary each) and small beside a turn,
-    // but not zero, and it is the one path on which "the ceiling bounds the month" is not literally
-    // true. Revisiting it is a scope decision, not a bug fix — and it would need an answer for what
-    // happens to the un-summarized history of a month that ended over the line.
+    // Memory compaction runs from its own `MEMORY_COMPACT` job, outside any turn, and is out of the
+    // ceiling by DECISION: refusing it does not save tokens, it moves them into the next turn's
+    // history. So a tenant past its ceiling keeps paying for compaction (see docs/spend-ceiling.md).
     memory_compact: "ungated-by-decision",
-    // Vision runs on the incoming attachment BEFORE any turn gate decides anything (#316 measured
-    // the same asymmetry for attribution), so it is the one sub-call that has to ask for itself.
+    // Vision runs on the incoming attachment BEFORE any turn gate decides anything, so it is the one
+    // sub-call that has to ask for itself.
     vision: "gated",
-    // The OBSERVE job (issue #477). Its own scheduler job, outside any turn, so nothing answers for
-    // it: it asks the ceiling itself, immediately before its one model call, and a refusal costs
-    // the tenant a label that stays as it was — nothing a customer waits on.
+    // The OBSERVE job: its own scheduler job, outside any turn, so it asks the ceiling itself right
+    // before its one model call. A refusal leaves a label as it was, nothing a customer waits on.
     observer: "gated",
   });

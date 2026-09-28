@@ -24,17 +24,10 @@ import {
   type WriteResult,
 } from "./write";
 
-// MCP code-tool write tools (issue #363), the twin of the HTTP tool_* trio in write-agents.ts.
-// Spine: gate (mcp:write + tenant target) → dry-run preview by default → apply + audit (the row is
-// the service's, code-tools/service.ts). No secrets, so no credential resolution.
-//
-// Two things ride on every answer that an HTTP tool's does not. `warnings` is the body's static
-// check (a syntax error with its line and column, or a body with no `return`): the service saves an
-// invalid body and answers with the warning rather than refusing, so the preview runs the same
-// check on the same body, and a caller can approve a dry run knowing what the apply will report.
-// And `input_schema` is canonicalized HERE and not only in the service, for the reason
-// buildToolPatch gives: the patch is also what the dry run shows, and a preview echoing a
-// JSON-Schema-shaped argument would promise a shape the row never holds.
+// MCP code-tool write tools, the twin of the HTTP tool_* trio in write-agents.ts. No secrets, so
+// no credential resolution. `warnings` (the body's static check) rides on both halves: the service
+// saves an invalid body and warns, so the preview runs the same check. `input_schema` is
+// canonicalized here too, since the patch is also what the dry run shows.
 
 function failOf(e: unknown): WriteResult {
   if (e instanceof AppError) return err(e.message);
@@ -106,15 +99,11 @@ export async function codeToolCreate(
     built.warnings.length > 0 ? { schemaWarnings: built.warnings } : {};
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own questions, asked before the preview answers them. They sit INSIDE the
-      // branch because the apply reaches the core, which asks them again (#490).
-      // PARSED, and the preview shows what it returned: the parser trims the label and the
-      // description, so echoing the raw input would promise the caller a row the apply then stores
-      // with different values (#490 is about exactly that gap).
+      // NOTE: the core's own questions, asked INSIDE the branch because the apply asks them again.
+      // The preview shows the PARSED result: the parser trims the label and description.
       const parsed = assertCodeToolCreatable(input);
-      // ADVISORY, unlike the line above it: this one READS, outside the transaction the apply will
-      // write in, so a free name here can be taken before the apply arrives. The unique index
-      // inside the write remains what guarantees one name to one row (#490).
+      // NOTE: ADVISORY: it reads outside the apply's transaction, so the name can be taken
+      // meanwhile. The unique index inside the write is what guarantees one name per row.
       await assertCodeToolNameAvailable(ctx, parsed.name, base);
       return ok({
         dryRun: true,
@@ -166,14 +155,11 @@ export async function codeToolUpdate(
     }
     const target = `code_tool:${id}`;
     if (args.dry_run !== false) {
-      // The patch the apply would parse, parsed here: a rename the pattern refuses stops reading as
-      // a diff the apply would take (#490). It judges the INPUT, so its verdict cannot change in
-      // the gap; the name's availability is asked by the apply, inside its transaction.
+      // NOTE: the patch the apply would parse, parsed here, so a rename the pattern refuses is not
+      // previewed as a diff. It judges the INPUT only; name availability is asked below.
       const parsed = assertCodeToolPatchValid(built.patch);
-      // A rename is the one field of a patch whose verdict is not in the payload: `updateCodeTool`
-      // asks whether the name is free, and a preview that skipped the question answered a confident
-      // diff for a write that always fails. ADVISORY, like the create's, and excluding this row so
-      // a tool keeping its own name is not refused for colliding with itself (#490).
+      // NOTE: `updateCodeTool` asks whether a new name is free. ADVISORY, like the create's, and
+      // excluding this row so a tool keeping its own name does not collide with itself.
       if (parsed.name !== undefined) {
         // `parsed`, not the raw patch: the name is canonicalized on the way in, so `Calculator`
         // becomes `calculator` — asking about the spelling the caller typed approves a write the

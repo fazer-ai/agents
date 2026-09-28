@@ -26,8 +26,7 @@ export const CATALOG: ReadonlyArray<CatalogEntry> = [
     supportsInbound: true,
     defaultInboundAuth: "STATIC_HEADER",
     // Asaas sends the webhook's authentication token in `asaas-access-token` and the name is not
-    // configurable in their panel, so comparing against our generic default rejected every
-    // delivery (issue #107).
+    // configurable in their panel, so the generic default would reject every delivery.
     inboundAuthHeader: "asaas-access-token",
   },
   {

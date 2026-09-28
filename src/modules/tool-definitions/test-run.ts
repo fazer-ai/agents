@@ -1,24 +1,8 @@
-// Run an HTTP tool definition ONCE, from the editor, and hand the operator back both what the
-// provider answered and what the model would have been given (issue #456).
-//
-// WHY THIS EXISTS. Declaring a response template means naming paths into a response, and the paths
-// only exist if you have a response. Before this, the only way to get one was to save the tool,
-// grant it to an agent, coax the agent into calling it and read the trace — a loop long enough that
-// operators guess the paths instead, and a guessed path is exactly the silent mis-aim the picker
-// was built to remove. One button closes it: the definition on screen, unsaved, against the real
-// API.
-//
-// IT ADDS NO CAPABILITY. Whoever reaches this can already save the definition, grant it and call it
-// from the playground; what changes is the length of the loop, not what the operator can make the
-// server do. Which is why none of the guards are restated here — the request goes out through
-// `buildHttpTool`, exactly as a turn's would, so the host allowlist, the SSRF guard, the
-// no-redirect rule and the bounded timeout are the same code. A second fetch path would be a second
-// place for those to age.
-//
-// AND IT REGISTERS NOTHING. `appointmentBooked` / `cancelAppointment` are deliberately not wired:
-// testing the tool that books must not book, and must not arm reminders. `emitAck` is out for the
-// same reason — there is no customer on the other end of this, and wiring the ack would also make
-// `__wait_message` a required argument of a schema the operator never filled.
+// Run an unsaved HTTP tool definition ONCE, from the editor, and hand the operator back both what
+// the provider answered and what the model would have been given (docs/graph.md). It adds no
+// capability: the request goes out through `buildHttpTool`, so every guard is the runtime's own.
+// It registers nothing: no appointment closures (testing the tool that books must not book) and no
+// ack (no customer is on the other end, and it would require `__wait_message`).
 
 import { ToolInputParsingException } from "@langchain/core/tools";
 import type { PrismaClient } from "@/../generated/prisma/client";
@@ -55,21 +39,13 @@ import {
 import { readResponseTemplateResult } from "./response-template";
 import { DEFAULT_HTTP_METHOD, readHttpMethod } from "./service";
 
-// What the operator gets back to paste into the sample field, and it is the RAW response, not the
-// clipped one the model sees: the whole point is to pick paths out of it, including the ones past
-// the clip. Bounded because it crosses the wire into a browser; the response this feature was
-// measured against is 8kB.
-//
-// A DISPLAY bound, and deliberately tighter than the runtime's MAX_OUTBOUND_BODY_CHARS, which is
-// how much of a body can be READ and therefore how much a response template can address. The two
-// are not in competition: `modelText` below comes from the runtime itself, so what this screen
-// says the model gets is what the model gets, whatever this number is.
+// A DISPLAY bound on the RAW response the operator picks paths from (not the model's clipped view).
+// Tighter than the runtime's MAX_OUTBOUND_BODY_CHARS on purpose: `modelText` comes from the runtime
+// itself, so this number never changes what the screen says the model gets.
 const MAX_RAW_CHARS = 100_000;
 
-// The RUNTIME'S patience, not a friendlier one. A test more patient than a turn answers the wrong
-// question: an endpoint that takes 12s would report a clean 200 here and abort on every real
-// call, and the operator would have measured the one number this screen exists to show them.
-// Imported rather than restated so the two cannot drift.
+// The timeout is the RUNTIME'S (`DEFAULT_HTTP_TOOL_TIMEOUT_MS`): a more patient test would report a
+// clean 200 for an endpoint that aborts on every real call.
 
 export interface ToolTestInput {
   // The definition being edited, unsaved. Same field names the write body uses.
@@ -123,10 +99,8 @@ export interface ToolTestResult {
 const CONTEXT_NAMES = new Set<string>(CONTEXT_VAR_NAMES);
 
 export interface ToolTestDeps {
-  // Test seams, both of them, and both narrow on purpose: production passes neither. They exist
-  // because the two things this module has to classify correctly — a provider that never answers,
-  // a credential store that fails — cannot be produced from the outside without waiting ten seconds
-  // or breaking a database.
+  // Test seams; production passes none. A provider that never answers and a credential store that
+  // fails cannot otherwise be produced without waiting or breaking a database.
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   resolveCredentialImpl?: (ref: string) => Promise<string | null>;
@@ -141,11 +115,8 @@ export async function runToolTest(
   const tenantId = ctx.tenantId;
   if (tenantId === null) throw new AppError("tenant required", 400);
   const d = input.definition;
-  // The SAME five methods the write schema accepts, and refused here rather than passed through.
-  // Without this the endpoint is the one place a TENANT_ADMIN can make the server issue a `PURGE`
-  // or a `CONNECT` — which is a capability that saving the definition and calling it does not give
-  // them, and "adds no capability over what you can already do" is the whole argument for this
-  // endpoint existing.
+  // NOTE: the SAME five methods the write schema accepts, or this endpoint would let a TENANT_ADMIN
+  // make the server issue a `PURGE` or `CONNECT`, which saving the definition does not allow.
   const method = readHttpMethod(d.method ?? DEFAULT_HTTP_METHOD);
   if (method === null) {
     throw new AppError(
@@ -153,27 +124,18 @@ export async function runToolTest(
       400,
     );
   }
-  // The other two gates the WRITE path runs, called rather than restated. This endpoint's whole
-  // argument for existing is that it does what saving the definition and calling it does, so a
-  // shape the save refuses must not be previewed here as a finished thing — the operator would be
-  // reading a request they can never ship. Both refusals happen BEFORE anything goes out.
-  //
-  // The body first, because it is the one that reaches the provider: `parseBody` reads a fixed set
-  // of keys and ignores every other, so an unsupported shape does not fail — it sends a DIFFERENT
-  // payload, assembled from the field names, looking plausible (issue #150).
+  // NOTE: the WRITE path's other two gates, before anything goes out, so a shape the save refuses
+  // is never previewed. The body first: `parseBody` ignores unknown keys, so an unsupported shape
+  // would silently send a DIFFERENT payload.
   const badBody = unsupportedBodyShape(d.body);
   if (badBody) throw new AppError(badBody, 400);
-  // Then the response template, the one that reaches the screen. A declared template the reader
-  // would not honour used to arrive here as "no template", so the run went out and reported the RAW
-  // body as the model's text: a preview of a definition that cannot be saved, and the preview is
-  // the whole point of the screen. Judged by the same reader the write schema refines with, which
-  // is also why an undeclared shape (a legacy JSON Schema someone wrote through MCP) still passes.
+  // NOTE: then the response template, judged by the reader the write schema refines with, so an
+  // undeclared shape (a legacy JSON Schema written through MCP) still passes.
   const tpl = readResponseTemplateResult(d.outputSchema);
   if (tpl.declared && !tpl.ok) throw new AppError(tpl.problem, 400);
 
-  // `{{conversation_ref}}` names a conversation, and a test run has none (issue #818). Refused up
-  // front and in so many words: the runtime's own refusal would read as a definition problem ("names
-  // no integration") on a definition that may be perfectly fine.
+  // NOTE: a test run has no conversation for `{{conversation_ref}}`. Refused up front because the
+  // runtime's own refusal would read as a problem with a definition that may be fine.
   if (
     renderedVariableNames(
       normalizeToolShapes({
@@ -192,13 +154,9 @@ export async function runToolTest(
   }
 
   const credentialRef = d.credentialRef || null;
-  // The credential's own metadata, read where the turn reads it, so a typed credential auto-injects
-  // here the way it will in production. A ref naming nothing yields no metadata, which is the same
-  // "no auto-injection" the runtime falls back to.
-  //
-  // Wrapped like the injection read below, and for the same reason: this one runs BEFORE the try
-  // around `invoke`, so a store that cannot answer here escaped as a bare throw with no status —
-  // a 500 with the reason stripped off, for the one failure in this function that really is a 500.
+  // NOTE: the credential's metadata, read where the turn reads it, so a typed credential
+  // auto-injects as in production. Wrapped because it runs before the try around `invoke`, and a
+  // store failure must still carry its reason.
   let meta: Awaited<ReturnType<typeof readCredentialMeta>> = null;
   if (credentialRef) {
     try {
@@ -238,10 +196,8 @@ export async function runToolTest(
   let seen: { status: number; body: Promise<OutboundBody> } | null = null;
   const doFetch = deps.fetchImpl ?? fetch;
   const tool = buildHttpTool(def, {
-    // Wrapped so that a failure to READ the credential is not read as a failure of the definition.
-    // It is the one thing inside `invoke` that is ours rather than the operator's or the provider's,
-    // and it is what makes the `AppError` passthrough below a branch with a case rather than an
-    // identity: it is the only status in here that is not a 4xx.
+    // NOTE: a failure to READ the credential is ours, not the definition's, so it carries 500
+    // through the `AppError` passthrough below.
     resolveCredential: async (ref) => {
       try {
         return await (deps.resolveCredentialImpl
@@ -262,19 +218,9 @@ export async function runToolTest(
         message: e.err instanceof Error ? e.err.message : String(e.err),
         ...(e.detail ? { detail: e.detail } : {}),
       }),
-    // The raw body is taken HERE, on the way in, because everything downstream of this point is the
-    // model's view: rendered, clipped, prefixed. The operator needs the provider's own answer.
-    //
-    // From a CLONE, and not awaited before returning: awaiting it would hold the runtime's own read
-    // behind this one. Returning `res` untouched also means there is no reconstructed Response to
-    // get wrong — a 204 or a 304 stays exactly the object the runtime would have read.
-    //
-    // AND NO DEADLINE OF ITS OWN, not any more. Until #464 this wrapper armed a second one, because
-    // the runtime's bound covered only the headers and a body that never ended left this dialog
-    // with a spinner and no exit — round 8 blocked every way of closing it while a request is in
-    // flight. `fetchBounded` now covers the whole exchange for every caller, and the clone errors
-    // under the same abort, so a timer here would be a second answer to a question the runtime
-    // already answers. That is the divergence this screen exists to not have.
+    // NOTE: the raw body is taken here, before the model's view (rendered, clipped) exists. From a
+    // CLONE, not awaited, so the runtime's read is not held and `res` stays untouched. No deadline
+    // of its own: `fetchBounded` bounds the whole exchange and the clone errors under that abort.
     fetchImpl: (async (url: string, init: RequestInit) => {
       const res = await doFetch(url, init);
       // `.catch` rather than a bare promise: when the runtime's bound cuts the exchange this
@@ -292,27 +238,10 @@ export async function runToolTest(
   });
 
   const startedAt = Date.now();
-  // WHY THE THROWS ARE CAUGHT HERE, AND HOW THEY ARE SORTED. `buildHttpTool` has no outer catch:
-  // everything that stops a call — a host off the allowlist, a URL the SSRF guard blocks, a name
-  // with no value, an argument the declared type refuses, a DNS failure, the abort — THROWS out of
-  // `invoke`. Mid-turn LangGraph catches those and hands the model the message; there is no
-  // LangGraph here, so an uncaught one reaches Elysia with no status at all and surfaces as a 500.
-  //
-  // The first version of this made every throw a 400, on the reasoning that everything reachable in
-  // here is the caller's to fix. That is wrong for half of them, and review round 6 was right to
-  // say so: a name that does not resolve, a TLS handshake that fails, a provider that does not
-  // answer inside the bound — none of those is a malformed request, and answering 400 tells the
-  // operator to go and edit a definition that is fine. What each one IS, measured rather than
-  // guessed:
-  //
-  //   AppError        the definition's own refusals, already carrying 400 (SsrfError is one of
-  //                   these), plus the credential read above, which carries 500. Kept as sent.
-  //   AbortError      the provider did not answer inside the runtime's bound -> 504. So is
-  //                   anything at all once `timedOut` is set, because aborting a body mid-read
-  //                   surfaces as EncodingError, which is the same shape as the line below.
-  //   anything else   DNSException (`getaddrinfo ENOTFOUND`), EncodingError (a body the provider
-  //                   really did break), TLS -> 502. The message travels either way, because it is
-  //                   the only thing that says what to do next.
+  // NOTE: `invoke` THROWS whatever stops a call (mid-turn LangGraph catches it; here nothing would),
+  // so each throw is sorted to a status. AppError is kept as sent (the definition's own refusals are
+  // 400, SsrfError included; the credential read is 500). A timeout is 504. Anything else (DNS, TLS,
+  // a body the provider broke) is 502, not 400: the definition may be fine.
   let out: unknown;
   try {
     out = await tool.invoke(input.args ?? {});
@@ -323,10 +252,9 @@ export async function runToolTest(
       throw new AppError(err.message, 400);
     }
     const message = err instanceof Error ? err.message : String(err);
-    // `OutboundTimeoutError` is the runtime saying the bound was ITS doing, which is the one thing
-    // the error's name cannot say: a body cut mid-read surfaces as `EncodingError`, the same shape
-    // a provider that really broke its stream produces. Its message already names the bound it
-    // used — the real one, which a test may have shortened — so it travels as written.
+    // NOTE: a body cut mid-read by the runtime's bound surfaces as `EncodingError`, like a broken
+    // stream, so only `OutboundTimeoutError` says the bound did it. Its message names the real
+    // bound, so it travels as written.
     const timedOut =
       err instanceof OutboundTimeoutError ||
       (err instanceof Error && err.name === "AbortError");

@@ -15,23 +15,13 @@ import {
 } from "./types";
 
 // Resend (transactional email) OUTBOUND toolpack. The agent sends an email the customer asked for
-// (a booking confirmation, a reminder, a follow-up) and can check its delivery status later. We
-// record an IntegrationExternalRef keyed by the Resend email id so a future inbound webhook
-// (delivered/bounced events) can correlate back to THIS conversation by PK, never by LLM.
-//
-// Security invariants (mirroring the Asaas hardened spec):
-//   - `from` and `reply_to` are bound to the INSTANCE CONFIG, never tool args — a prompt-injection
-//     cannot spoof the sender identity of the tenant's verified domain;
-//   - the API key (per-tenant, from the vault) flows ONLY into the Authorization header, never the
-//     URL / body / model-visible return / trace;
-//   - the origin is a fixed constant (never interpolated); SSRF-guarded anyway;
-//   - https-only, no redirects, bounded timeout, bounded response read.
-//
-// NOTE: validated against the official Resend API reference (resend.com/docs, 2026-09):
-// `POST /emails` with `Authorization: Bearer re_...` accepts { from, to, subject, html, reply_to }
-// and answers `{ id }`; `GET /emails/{id}` answers the email projection with `last_event`
-// (queued/delivered/bounced/...). The `from` domain must be verified on the Resend account,
-// otherwise the send is rejected — surfaced as the provider refusal below.
+// and can check its delivery status later; an IntegrationExternalRef keyed by the Resend email id
+// lets a future inbound webhook correlate back to THIS conversation by PK, never by LLM.
+// Invariants: `from` and `reply_to` are bound to the INSTANCE CONFIG, never tool args; the vault
+// API key goes ONLY into the Authorization header; fixed origin (SSRF-guarded anyway); https-only,
+// no redirects, bounded timeout and response read. `POST /emails` answers `{ id }`, `GET
+// /emails/{id}` answers `last_event`; a `from` domain not verified on the Resend account is a
+// provider refusal.
 
 const RESEND_ORIGIN = "https://api.resend.com";
 

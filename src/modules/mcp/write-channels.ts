@@ -73,17 +73,15 @@ export async function deploymentConnect(
   if (!args.admin_token) return err("admin_token is required");
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
-      // branch rather than above it because the apply reaches the core, which asks it again —
-      // and several of these read a row or resolve DNS, so above the branch is a second lookup
-      // that can even disagree with the first (#490).
+      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // which asks it again; above the branch it would be a second lookup that can disagree.
       const data = await assertDeploymentConnectable({
         baseUrl: args.base_url,
         adminToken: args.admin_token,
       });
-      // ADVISORY, unlike the line above it: this one READS. It passes the base URL that line
-      // NORMALIZED, because that is what the write compares against and what it stores — asking
-      // with the raw string would call a connect to the same server a switch (#490).
+      // NOTE: ADVISORY, since this one READS. It takes the base URL the line above NORMALIZED,
+      // which is what the write compares and stores; the raw string would call a reconnect a
+      // switch.
       await assertDeploymentNotSwitching(ctx, data.baseUrl, base);
       return ok({
         dryRun: true,
@@ -168,15 +166,12 @@ export async function deploymentSetAccounts(
   const target = "chatwoot_deployment:accounts";
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
-      // branch rather than above it because the apply reaches the core, which asks it again —
-      // and several of these read a row or resolve DNS, so above the branch is a second lookup
-      // that can even disagree with the first (#490).
+      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // which asks it again; above the branch it would be a second lookup that can disagree.
       await assertAccountsClaimable(ctx, args.account_ids, base);
-      // NOTE: ADVISORY, like the claim check above it: the list lives on the operator's Chatwoot and
-      // can move between the preview and the apply, which asks again inside its own sequence. What
-      // it buys is that an id this deployment cannot operate is refused here instead of being
-      // previewed as a connection the apply then declines (#490, #503).
+      // NOTE: ADVISORY, like the claim check above: the list lives on the operator's Chatwoot and
+      // can move before the apply, which asks again. It refuses here an id this deployment cannot
+      // operate.
       let reported: number[] | null = null;
       try {
         reported = (
@@ -315,12 +310,10 @@ export async function inboxBind(
     if (!current) return err("inbox not found");
     const target = `inbox:${inboxId}`;
     if (args.dry_run !== false) {
-      // NOTE: the core's own two questions past existence — the account is still connected, and the
-      // agent being bound exists. `listInboxes` above answers neither, and the preview approved a
-      // bind the apply refuses with a 409 (#510).
+      // NOTE: the core's own two questions past existence: the account is still connected, and the
+      // agent being bound exists. `listInboxes` above answers neither.
       await assertInboxBindable(ctx, inboxId, agentId, base);
-      // The apply refuses an agent that already OBSERVES this inbox (issue #476 review, round 25),
-      // and a preview that approves it hands the caller a confident yes followed by a 422.
+      // NOTE: the apply refuses an agent that already OBSERVES this inbox, so the preview asks too.
       if (agentId !== null) {
         await assertBindTargetNotObserving(ctx, inboxId, agentId, base);
       }
@@ -340,9 +333,9 @@ export async function inboxBind(
   }
 }
 
-// The OBSERVER binding (issue #476): attach a monitoring agent to an inbox as an observer, or
-// detach it. Same preview shape as `inboxBind`; the apply provisions/attaches the agent's bot on
-// Chatwoot (or detaches it) and records the observer list before and after.
+// The OBSERVER binding: attach a monitoring agent to an inbox as an observer, or detach it. Same
+// preview shape as `inboxBind`; the apply provisions/attaches the agent's bot on Chatwoot (or
+// detaches it) and records the observer list before and after.
 export async function inboxObserve(
   principal: VerifiedToken,
   args: { inbox_id: string; agent_id: string; dry_run?: boolean },
@@ -427,10 +420,9 @@ export async function inboxRemove(
       name: inbox.name,
       chatwootInboxId: inbox.chatwootInboxId,
       agentId: inbox.agentId,
-      // THE WATCHERS THE CASCADE WILL TAKE (issue #476 review, round 50). `InboxObserver` cascades on
-      // the inbox's foreign key, so this removal discards bindings the caller never named — and those
-      // bindings are what refuse the agent's mode change and its deletion elsewhere. A preview that
-      // omits them shows a removal smaller than the one it is approving.
+      // NOTE: the watchers the cascade will take. `InboxObserver` cascades on the inbox's foreign
+      // key, and those bindings are what refuse the agent's mode change and deletion elsewhere, so
+      // a preview without them shows a smaller removal than the one it approves.
       observerAgentIds: inbox.observerAgentIds,
     };
     if (args.dry_run !== false) {
@@ -465,10 +457,8 @@ export async function inboxReconnect(
   const target = `inbox:${inboxId}`;
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
-      // branch rather than above it because the apply reaches the core, which asks it again —
-      // and several of these read a row or resolve DNS, so above the branch is a second lookup
-      // that can even disagree with the first (#490).
+      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // which asks it again; above the branch it would be a second lookup that can disagree.
       await assertInboxReconnectable(ctx, inboxId, base);
       return ok({
         dryRun: true,
@@ -503,8 +493,8 @@ export async function inboxReconcile(
   }
   try {
     const reconciled = await reconcileInboxBots(ctx, {}, base);
-    // `status` stays the flat responder map it has always been — a caller reading `status[inboxId]`
-    // is not broken by the observers arriving beside it, under their own key (issue #476).
+    // NOTE: `status` stays the flat responder map; observers arrive beside it under their own key,
+    // so a caller reading `status[inboxId]` is not broken.
     return ok({
       dryRun: false,
       applied: true,

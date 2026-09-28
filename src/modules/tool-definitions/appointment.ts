@@ -1,20 +1,10 @@
 // What an operator-authored HTTP tool declares about the appointment its response describes, and how
 // that declaration is read off a response body. Pure: no I/O, no clock.
 //
-// WHY A DECLARATION AND NOT A TOOL THE AGENT CALLS. The platform learns about a booking from the
-// code that made it — the Google Calendar toolpack calls `appointmentBooked` itself, right after the
-// POST lands, and the model never decides anything about it. An operator's HTTP tool cannot have
-// that line written into it, because the operator writes the tool. So the DEFINITION carries the
-// same statement instead. A native tool called afterwards was the obvious alternative and is worse
-// in the way that matters: a second call is a call the model can omit, and the failure is silent —
-// no follow-up pause, no reminder, nothing in the agent's prompt, and nothing anywhere saying why
-// (issue #352). Registration has to be a consequence of the call the model was already going to make.
-//
-// REMINDERS ARE OPT-IN, and the record is not. Losing the pause is the reported defect and it is
-// restored unconditionally; attendance reminders are a message this platform would send on top of
-// whatever the operator's own system already sends, so they are armed only where the declaration
-// asks for them. Nothing is lost by the default: since #376 an appointment that arms no reminder is
-// an ordinary, fully-functioning record.
+// A DECLARATION, not a tool the agent calls: the Calendar toolpack registers a booking from its own
+// code, and an operator's tool can only match that through its definition. A separate native tool is
+// a call the model can omit, silently losing the follow-up pause. Reminders are OPT-IN, the record is
+// not: an appointment that arms no reminder is still a complete record.
 
 import { clipText, makeStorable, unstorableCodePoints } from "@/lib/text";
 import {
@@ -131,32 +121,13 @@ export function sampleLeaves(root: unknown, max = 200): SampleLeaf[] {
   return collectLeaves(root, readScalar, max);
 }
 
-// What a declared response is allowed to hand over, per field, and the two answers are different on
-// purpose (the question is whether the consumer needs the exact bytes):
-//
-// - the ID is IDENTITY, so it is refused rather than clipped: a clipped id is a different booking,
-//   and the cancel tool would never find this one again. It also has to survive the unique index it
-//   keys, and a btree entry tops out around 2704 bytes, so an oversized id does not merely bloat the
-//   row — the write throws, and the appointment is silently never recorded. Refusing here instead
-//   names the path through the channel that already names unresolved ones. No real booking id is
-//   anywhere near this long; the cap only has to be past every plausible one.
-// - the SUMMARY is DESCRIPTION, so it is clipped (with clipText, never a bare slice: a cut landing
-//   between the halves of an emoji leaves an orphan surrogate, which Postgres refuses inside a jsonb
-//   write and which renders as a replacement character wherever it survives): it exists to make the
-//   prompt block read better,
-//   losing the tail costs nothing, and refusing the whole registration over a long title would trade
-//   the follow-up pause for a nicer sentence. Unclipped it is worse than the id, because nothing
-//   downstream errors: it is re-rendered into EVERY subsequent turn's prompt.
-// - the START is parsed as an instant downstream, so anything this long cannot be one.
-//
-// The SAME split answers the second thing a value can be wrong about, which is characters Postgres
-// refuses outright — a NUL, or half of a character. `external_id` is `text` and the scheduler payload
-// is `jsonb`, and both refuse them, so an unstoreable value does not degrade anything: the write
-// throws and the appointment is never recorded. The id and the start are refused, and the summary is
-// repaired, for the reasons above and for one more that only applies here: REPAIRING AN ID CHANGES
-// IT. Dropping a NUL out of it mints a value that no longer matches what the operator's cancel tool
-// will answer with, so the booking could never be retired — a silent mis-aim of exactly the kind the
-// picker exists to remove, arriving from the other direction.
+// What a declared response may hand over, per field (the question is whether the consumer needs the
+// exact bytes). The ID is IDENTITY: refused, never clipped or repaired, since a changed id is a
+// booking the cancel tool never finds, and an oversized one overflows its unique btree index. The
+// SUMMARY is DESCRIPTION: clipped (with clipText) and repaired, since it is re-rendered into every
+// later turn's prompt and refusing it would cost the pause. The START is parsed as an instant, so
+// anything this long cannot be one. Characters Postgres refuses (a NUL, half a character) follow the
+// same split: refused for id and start, repaired for the summary.
 const MAX_EXTERNAL_ID_CHARS = 200;
 const MAX_START_CHARS = 100;
 const MAX_SUMMARY_CHARS = 200;
@@ -184,19 +155,11 @@ export interface ExtractedAppointment {
   askConfirmationOnLast?: boolean;
 }
 
-// A wall clock with no offset, which is what a great many booking APIs answer with: `14:00` means
-// two in the afternoon WHERE THE OPERATOR IS, and there is nothing in the string that says where
-// that is. Everything downstream reads the start through `parseStartMs`, which treats an offset-less
-// datetime as UTC — deliberately, and correctly, for a value that already went through here. Left
-// unresolved, a booking at 14:00 in a -03:00 tenant arms its reminders for 11:00 and shows the
-// customer 14:00, and nothing anywhere reports it.
-//
-// Resolved by the CALLER, not here, because the answer is the agent's own timezone and this reader
-// has no business knowing it — the same boundary the Calendar path already draws ("one parse, at the
-// boundary", calendar-slots.ts). The resolver returns the SAME wall clock with an explicit offset
-// (never the instant re-rendered into another zone: the string is what the reminder says out loud),
-// or null for a wall clock that does not exist in that zone at all, which is a DST gap and cannot be
-// an appointment.
+// A wall clock with no offset, as many booking APIs answer: `14:00` means two in the afternoon WHERE
+// THE OPERATOR IS. Downstream `parseStartMs` reads an offset-less datetime as UTC, so it is resolved
+// before it gets there, by the CALLER, which knows the agent's timezone (the same boundary as
+// calendar-slots.ts). The resolver returns the SAME wall clock with an explicit offset, or null for
+// a DST gap, which cannot be an appointment.
 const OFFSETLESS_DATETIME =
   /^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/;
 

@@ -38,9 +38,8 @@ export interface AlertChannelDto {
   enabled: boolean;
   minLevel: string;
   stages: string[];
-  // Agents whose lines this channel never alerts on (issue #843), as decimal strings. Stored as
-  // written: an id whose agent was deleted since stays until the channel is saved without it, and
-  // matches nothing meanwhile.
+  // Agents whose lines this channel never alerts on, as decimal strings. Stored as written: an id
+  // whose agent was deleted since stays until the channel is saved without it, and matches nothing.
   excludeAgentIds: string[];
   // Whether an HMAC signing secret is configured (the value never leaves the vault).
   //
@@ -48,24 +47,14 @@ export interface AlertChannelDto {
   // tool's own description names it. Both are read off the same column by `toDto`, so they cannot
   // come apart.
   hasSecret: boolean;
-  // The vault REFERENCE (`vault:<id>`) of that secret, or null. Not the secret: this service is one
-  // of the two writers of the column and canonicalizes every value through `requireVaultRef`, the
-  // same grounds on which `WebhookSubscriptionDto` returns its own.
-  //
-  // It is on the DTO so the console can show WHICH credential signs and let the operator take it
-  // away — `hasSecret` can do neither. It is `readableVaultRef` of the column and not the column:
-  // this one predates #126 and can hold arbitrary text, which a projection must never publish.
+  // The vault REFERENCE (`vault:<id>`) of that secret, or null, so the console can show which
+  // credential signs and let the operator remove it. Projected through `readableVaultRef`, because
+  // older rows of this column can hold arbitrary text, which a projection must never publish.
   secretRef: string | null;
-  // WHETHER THIS CHANNEL'S ALERTS ACTUALLY CARRY A SIGNATURE (issue #724).
-  //
-  // Four conditions decide it and only three can be read off the row, which is why the console used
-  // to rebuild the rule from `type` + `hasSecret` + `secretRef` and still got one case wrong: a
-  // well-formed ref whose entry was deleted, or created and never filled, resolves to nothing in the
-  // worker and the screen said "Signed". Answering it means asking the VAULT, so the list asks, once
-  // for every row.
-  //
-  // It is one field and not a fourth boolean so the client stops re-deriving the worker's rule from
-  // parts. `alert-send.ts` is the authority; this is its answer, projected.
+  // Whether this channel's alerts actually carry a signature. It depends on the vault (a
+  // well-formed ref whose entry was deleted or never filled resolves to nothing), so the list asks
+  // it once per row. `alert-send.ts` is the authority; the client must not re-derive the rule from
+  // the other fields.
   signingState: AlertSigningState;
   createdAt: Date;
   updatedAt: Date;
@@ -156,22 +145,11 @@ function toDto(
   };
 }
 
-// What the audit row carries. Built from the ROW rather than the DTO, because two of the three
-// things worth recording here are not on the DTO at all.
-//
-// The URL is NOT on it, and `urlMasked` is. The column is an `encryptJson` blob because a Discord
-// URL embeds a bot token, and an audit row is readable by every tenant admin — the one place a
-// projection built by hand would put it back in the clear.
-//
-// `secretRef` IS on it, because the DTO's `hasSecret` would not do: it is the same boolean before and
-// after a ROTATION, so the one change a signing secret can undergo would leave no row. It goes through
-// `readableVaultRef` like the DTO — this service canonicalizes every value it writes, but the column
-// predates #126 and holds whatever came in before that, and an audit row is append-only and readable
-// by every tenant admin: the one place a mistake here cannot be taken back.
-//
-// `secretRefOpaque` is what keeps the trail honest once the redaction exists. Without it a legacy
-// value reads as null on both sides of a clear, `projectionMoved` sees nothing, and the one save that
-// removed a signing secret writes no row at all — the same silence the DTO's `hasSecret` had.
+// What the audit row carries, built from the ROW because the DTO lacks what matters here. No URL (a
+// Discord URL embeds a bot token and audit rows are readable by every tenant admin), only
+// `urlMasked`. `secretRef` goes through `readableVaultRef`, since `hasSecret` does not change on a
+// rotation and older rows can hold arbitrary text. `secretRefOpaque` keeps a legacy value visible
+// to `projectionMoved`, so clearing it still writes a row.
 function auditProjection(row: {
   name: string;
   type: string;
@@ -233,14 +211,10 @@ function assertStages(stages: string[]): string[] {
   return out;
 }
 
-// The agents a channel leaves out, checked against the tenant's own (issue #843): an id that names no
-// agent here is refused rather than stored, because a typo would otherwise leave the battery alerting
-// with the channel claiming it is excluded. Read under the caller's scope, so another tenant's agent
-// is "no such agent" too. Deduplicated, in first-seen order, like the stages.
-//
-// `kept` is what the channel already holds. Those ids pass without the lookup: an agent deleted
-// after it was excluded leaves its id behind, and refusing it would make every later save of the
-// channel fail on a field the operator never touched. Only an id being ADDED has to exist.
+// The agents a channel leaves out, checked against the tenant's own under the caller's scope: an id
+// that names no agent is refused, so a typo cannot leave the channel alerting while claiming the
+// exclusion. Deduplicated, in first-seen order. Ids in `kept` (already on the channel) skip the
+// lookup, so an agent deleted after being excluded does not make every later save fail.
 async function checkExcludedAgents(
   db: Pick<PrismaClient, "agent">,
   ids: readonly string[],
@@ -338,14 +312,10 @@ export const alertChannelCreateSchema = z
 
 export type AlertChannelCreate = z.infer<typeof alertChannelCreateSchema>;
 
-// The two things both writes decide about a channel's DESTINATION and its filter, in one place so
-// the MCP preview can ask them (#490). Neither is answerable from the MCP arguments alone, which is
-// why both were missing there: the stage list is a closed set this module owns, and the URL does not
-// travel in the arguments at all — it arrives as a vault ref whose VALUE the apply resolves and
-// vets. A preview that stopped at "the ref resolves" approved a channel the write refuses (#510).
-//
-// Returns the normalized stages (deduplicated, in first-seen order), because that is what gets
-// stored and the caller would otherwise have to run the same loop again.
+// The two checks both writes make on a channel's DESTINATION and filter, in one place so the MCP
+// preview can ask them too: the stage list is a closed set this module owns, and the URL arrives as
+// a vault ref whose VALUE must be resolved and vetted. Returns the normalized stages (deduplicated,
+// in first-seen order), which is what gets stored.
 export async function assertAlertChannelWritable(input: {
   url?: string;
   stages?: string[];

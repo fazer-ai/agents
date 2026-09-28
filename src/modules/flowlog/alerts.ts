@@ -16,16 +16,11 @@ function sysCtx(tenantId: bigint): TenantContext {
 
 const LEVEL_RANK: Record<string, number> = { info: 0, warn: 1, error: 2 };
 
-// WHY A LINE WITH NO ERROR TEXT IS A WARN OR AN ERROR lives in `detail`, and the body used to stop
-// at `status` (issue #610). That field says how the stage ended, not why anyone is being told: a
-// delivery recovered on retry ends `ok`, so its warn arrived as `[delivery] ok`, and 23 stranded
-// deliveries arrived as `[delivery] error`, the same words a routine line would use.
-//
-// READ FROM AN ALLOWLIST, never from `detail` as a whole. The alert gets the event before the row's
-// redaction runs, and `detail` is not text-free everywhere: a tool line carries the call's `args`
-// and `output` when the operator turns tool values on. Every key below holds a closed vocabulary at
-// every site that sets it (string literals, union types, a Prisma enum, the provider-failure
-// classifier's output), and a value is still dropped unless it looks like one.
+// Why a warn or error line with no error text was raised lives in `detail`; `status` only says how
+// the stage ended (a delivery recovered on retry ends `ok`). Read from an ALLOWLIST, never from
+// `detail` as a whole: the alert gets the event before the row's redaction runs, and a tool line
+// can carry the call's args and output. Every key below holds a closed vocabulary at every site
+// that sets it, and a value is still dropped unless it looks like one.
 //
 // The CAUSE is the first of these present, printed bare: it answers the question on its own.
 const CAUSE_KEYS = ["skipped", "failed", "outcome", "state", "reason"] as const;
@@ -38,11 +33,11 @@ const LABELED_KEYS = [
   "action",
   "direction",
   "strandedOn",
-  // Which limit a `capacity` line waited on (`debounce_lane` | `model_semaphore`, issue #812): the one
-  // thing the operator needs to know to act, since the two are raised differently.
+  // Which limit a `capacity` line waited on (`debounce_lane` | `model_semaphore`): the one thing
+  // the operator needs to know to act, since the two are raised differently.
   "waitedOn",
-  // What a `channel_error` was classified as, and the channel's own error number (issue #842):
-  // `action` alone says what was done about it, not what the channel answered.
+  // What a `channel_error` was classified as, and the channel's own error number: `action` alone
+  // says what was done about it, not what the channel answered.
   "class",
   "code",
 ] as const;
@@ -53,17 +48,14 @@ const FLAG_KEYS = [
   "silenceTokenSuppressed",
   "silenceTokenInReply",
   "retry",
-  // A turn that ended with no reply, no `skip_reply` and no handoff (issue #842). The line's whole
-  // point, and before it was listed the alert read `[generate] ok` and nothing else.
+  // A turn that ended with no reply, no `skip_reply` and no handoff: the line's whole point.
   "silenceUnexplained",
   // A proactive turn that ran beside another invoke holding its thread past the lease (nudge.ts).
   "threadWaitExpired",
 ] as const;
-// BOOLEANS whose `false` says as much as their `true`, so both are printed, labeled. A presence flag
-// would drop the `false`, and for `resolveDiscarded` that is the case the operator cannot find: the
-// conversation stays pending with no owner, where `true` closed it as handled with nothing sent.
-// `silenceRetried` (issue #885) the same way: `true` is a silence the retry could not recover, and
-// `false` one the agent's own switch left unretried, and the operator acts differently on each.
+// BOOLEANS whose `false` says as much as their `true`, so both are printed, labeled. A `false`
+// `resolveDiscarded` is a conversation left pending with no owner; `silenceRetried` is `true` for a
+// silence the retry could not recover and `false` for one the agent's own switch left unretried.
 const BOOLEAN_KEYS = ["resolveDiscarded", "silenceRetried"] as const;
 // Every `detail` key the body can print, for the fence that holds each warn and error line to name at
 // least one (tests/modules/flowlog-alert-summary.test.ts): a line with none alerts as its bare status.
@@ -131,16 +123,10 @@ export async function dispatchAlertsForEvent(
   ev: FlowEvent & { level: FlowLevel },
   base: PrismaClient,
 ): Promise<void> {
-  // NOTE: THE ONE LINE THAT CANNOT BECOME AN ALERT — the alert bus reporting its own death
-  // (issue #356).
-  //
-  // A dead `AlertDelivery` is the operator's notification failing to arrive, and it is announced
-  // like every other terminal failure. Routing that announcement back through here would queue a
-  // new delivery to the very channel that just died — which dies, announces, and queues another.
-  // The coalescing below does not bound it: it bumps a PENDING row, and the row this one would
-  // follow is DEAD, so every cycle INSERTS. With two broken channels they alert about each other
-  // forever, so excluding the dying channel would not close it either; the only sink that is not
-  // the failing path is the flow-log row itself, which is written before this runs.
+  // NOTE: A dead `AlertDelivery` never becomes an alert. Routing it back here would queue a
+  // delivery to the channel that just died, which dies and queues another (coalescing does not
+  // bound it: the row it would follow is DEAD, so every cycle inserts). The flow-log row, written
+  // before this runs, is the only sink that is not the failing path.
   if (ev.detail?.unit === ALERT_DELIVERY_UNIT) return;
   const rank = LEVEL_RANK[ev.level] ?? 0;
   await runScopedOn(base, sysCtx(ctx.tenantId), async (db) => {
@@ -160,8 +146,8 @@ export async function dispatchAlertsForEvent(
       if ((LEVEL_RANK[ch.minLevel] ?? 2) > rank) continue;
       // stage allowlist (empty = all stages).
       if (ch.stages.length > 0 && !ch.stages.includes(ev.stage)) continue;
-      // agents this channel leaves out (issue #843). A line with no agent is never excluded: the
-      // list names agents, and an unrouted or tenant-wide line belongs to none of them.
+      // NOTE: Agents this channel leaves out. A line with no agent is never excluded: the list
+      // names agents, and an unrouted or tenant-wide line belongs to none of them.
       if (ctx.agentId != null && ch.excludeAgentIds.includes(ctx.agentId))
         continue;
       // Coalesce a burst: bump an existing pending delivery for this (channel, stage, level),
@@ -183,8 +169,8 @@ export async function dispatchAlertsForEvent(
             stage: ev.stage,
             level: ev.level,
             summary,
-            // Where the event happened, so the alert can link to it (issue #665). Only here: the
-            // bump above leaves them naming the first event, like `summary`.
+            // NOTE: Where the event happened, so the alert can link to it. Only here: the bump
+            // above leaves them naming the first event, like `summary`.
             turnId: ctx.turnId,
             conversationId: ctx.conversationId ?? null,
           },

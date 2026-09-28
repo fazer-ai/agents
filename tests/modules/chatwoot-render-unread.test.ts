@@ -21,6 +21,8 @@ describe("the unread-attachments marker names each file and its cause", () => {
     expect(out).toContain("fotos.zip");
     expect(out).toContain('motivo="formato"');
     expect(out).toContain("não resolve");
+    // A PDF is not offered: an endpoint that cannot read documents lands here too.
+    expect(out).not.toContain("PDF");
     expect(out).not.toContain("reenvie o que falta");
   });
 

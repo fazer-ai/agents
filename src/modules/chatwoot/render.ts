@@ -138,7 +138,7 @@ const PEDIDO_POR_MOTIVO: Record<
   format: {
     motivo: "formato",
     texto:
-      "formato que não conseguimos abrir; enviar o mesmo arquivo de novo não resolve. Se a resposta depender dele, peça o conteúdo em foto ou PDF, ou por escrito",
+      "formato que não conseguimos abrir; enviar o mesmo arquivo de novo não resolve. Se a resposta depender dele, peça o conteúdo em foto ou por escrito",
   },
   too_large: {
     motivo: "grande-demais",

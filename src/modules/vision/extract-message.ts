@@ -31,9 +31,10 @@ import {
   classifyBodyImage,
   type ExtractInboundParams,
   extractBodyImage,
-  extractInboundFile,
+  readInboundFile,
 } from "./service";
 import type { VisionConfig } from "./settings";
+import { isUnread, type UnreadFile } from "./unread";
 
 // Quantos anexos de uma mensagem podem custar uma EXTRAÇÃO NOVA. A média medida numa caixa de
 // produção é 1,98 por conversa, então isto cobre o tráfego real com folga; a cauda é o cliente que
@@ -62,6 +63,9 @@ export interface MessageVisuals {
   extractedText: string | null;
   // Anexos que esta passagem não abriu: os que passaram do teto mais os que falharam.
   attachmentsUnread: number;
+  // Os não lidos que esta passagem tentou abrir, cada um com o nome e o motivo. Os que passaram do
+  // teto não estão aqui: nunca foram tentados, e ficam só na contagem.
+  unreadFiles: UnreadFile[];
   // Esta passagem percorreu as imagens do corpo do e-mail (#864), mesmo que fossem todas ornamento.
   bodyRead: boolean;
 }
@@ -161,7 +165,7 @@ export async function extractMessageVisuals(params: {
     };
     return visual.id === null
       ? extractBodyImage(comum)
-      : extractInboundFile({ ...comum, attachmentId: visual.id });
+      : readInboundFile({ ...comum, attachmentId: visual.id });
   };
 
   const ler = (visual: VisualAttachment) =>
@@ -187,7 +191,7 @@ export async function extractMessageVisuals(params: {
               params.convLabel ?? String(params.conversationId),
               err instanceof Error ? err.message : String(err),
             );
-            return null;
+            return { unread: "failed" } as const;
           })
           .then((r) => ({ nome: visual.name, r }));
 
@@ -247,7 +251,7 @@ export async function extractMessageVisuals(params: {
 
   const imagens: string[] = [];
   const documentos: string[] = [];
-  let falharam = 0;
+  const unreadFiles: UnreadFile[] = [];
   // Ornamento do corpo do e-mail, ou imagem que não é deste Chatwoot: não foi enviada pelo cliente,
   // então não é lida, não rotula as outras e não entra na contagem de não lidos (#864).
   const doCliente = extraidos.flatMap(({ nome, r }) =>
@@ -256,8 +260,8 @@ export async function extractMessageVisuals(params: {
   for (const { nome, r } of doCliente) {
     // Arquivo que não deu para ler NÃO é arquivo que não foi enviado. Contado junto com os que
     // passaram do teto porque o movimento do modelo é o mesmo: nomear o que falta e pedir de novo.
-    if (!r) {
-      falharam++;
+    if (isUnread(r)) {
+      unreadFiles.push({ name: nome, cause: r.unread });
       continue;
     }
     (r.kind === "image" ? imagens : documentos).push(
@@ -265,7 +269,7 @@ export async function extractMessageVisuals(params: {
     );
   }
 
-  const naoLidos = sobraram + falharam;
+  const naoLidos = sobraram + unreadFiles.length;
   const descricao = imagens.length > 0 ? imagens.join("\n\n") : null;
   const documento = documentos.length > 0 ? documentos.join("\n\n") : null;
 
@@ -284,6 +288,7 @@ export async function extractMessageVisuals(params: {
         // finalmente leu tudo deixava de pé a contagem positiva anterior, e o flush renderizava
         // "N arquivos não lidos" ao lado da extração completa.
         attachmentsUnread: naoLidos,
+        unreadFiles,
         ...(leuCorpo ? { bodyRead: true } : {}),
       },
     );
@@ -292,6 +297,7 @@ export async function extractMessageVisuals(params: {
     imageDescription: descricao,
     extractedText: documento,
     attachmentsUnread: naoLidos,
+    unreadFiles,
     bodyRead: leuCorpo,
   };
 }

@@ -329,10 +329,11 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
         toRenderable({ ...row, imageDescription: "[a.jpg] comprovante" }),
       ),
     ).toContain('<anexos-nao-lidos quantidade="10">');
-    // Without one, the "send it as text" marker already asks for the same thing.
-    expect(renderInboundMessage(toRenderable(row))).not.toContain(
-      "anexos-nao-lidos",
-    );
+    // Without one, the tried files are still named with their cause, and the image marker no longer
+    // asks for the file on its own: one request, not two.
+    const semLeitura = renderInboundMessage(toRenderable(row));
+    expect(semLeitura).toContain('motivo="falha"');
+    expect(semLeitura).not.toContain("reenvie o arquivo");
   });
 
   // DELIVERY RECOVERY RE-RUNS THE PASS FROM SCRATCH, and a partial re-run used to publish an
@@ -517,11 +518,11 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     const n = await entregar(CONV_ID + 2, [anexo(301, "unico.png")]);
 
     expect(await linhasDeVisao(CONV_ID + 2)).toBeGreaterThan(0);
-    // O único anexo foi tentado e a vision não pôde rodar: não lido, e o marcador de "envie por
-    // texto" é quem fala com o cliente nesse caso.
+    // O único anexo foi tentado e a vision não pôde rodar: não lido, nomeado com o motivo, e sem o
+    // aviso de que passou do teto.
     expect(n.message?.attachmentsUnread).toBe(1);
-    expect(renderInboundMessage(incomingRenderable(n))).not.toContain(
-      "anexos-nao-lidos",
-    );
+    const texto = renderInboundMessage(incomingRenderable(n));
+    expect(texto).toContain('nome="unico.png" motivo="falha"');
+    expect(texto).not.toContain("mais ");
   });
 });

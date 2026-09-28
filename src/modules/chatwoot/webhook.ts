@@ -2055,6 +2055,7 @@ export async function runEagerMedia(
           // A COUNT, phrased by the renderer, because it has to survive the debounce re-fetch.
           if (r.attachmentsUnread + recusados > 0)
             n.message.attachmentsUnread = r.attachmentsUnread + recusados;
+          if (r.unreadFiles.length > 0) n.message.unreadFiles = r.unreadFiles;
           if (r.bodyRead) n.message.bodyRead = true;
           if (r.imageDescription)
             n.message.imageDescription = r.imageDescription;

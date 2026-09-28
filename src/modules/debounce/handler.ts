@@ -529,6 +529,7 @@ async function fillMissingVisuals(args: {
         if (lido.imageDescription) m.imageDescription = lido.imageDescription;
         if (lido.extractedText) m.extractedText = lido.extractedText;
         m.attachmentsUnread = lido.attachmentsUnread;
+        m.unreadFiles = lido.unreadFiles;
       }
     } catch (err) {
       logger.warn(

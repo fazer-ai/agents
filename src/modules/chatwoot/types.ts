@@ -10,6 +10,8 @@
 // `status` (open|pending|resolved|snoozed), `inbox_id`, and `meta.{assignee, assignee_type}`
 // where assignee_type is "User" for a human and "AgentBot" (or null) otherwise.
 
+import type { UnreadFile } from "@/modules/vision/unread";
+
 export type ChatwootStatus = "open" | "pending" | "resolved" | "snoozed";
 export type ChatwootAssigneeType = "User" | "AgentBot" | "Team";
 export type ChatwootMessageType =
@@ -109,6 +111,8 @@ export interface NormalizedChatwootMessage {
   // renderer turns it into the marker that tells the model files are missing, so it must reach the
   // flush as well as the direct path — it rides the annotation store, not the payload.
   attachmentsUnread?: number | null;
+  // Which of those files the pass tried, with the name and why each was not read.
+  unreadFiles?: UnreadFile[] | null;
   // Filled by the eager vision pass: it went through the email body's images (issue #864), so the
   // second call site of this delivery does not download them again.
   bodyRead?: boolean;

@@ -624,7 +624,8 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     );
     expect(provider.calls).toBe(0);
     expect(out.turn).toContain("Segue o documento");
-    expect(out.turn).toContain(unreadMarker(1));
+    expect(out.turn).toContain('<anexos-nao-lidos quantidade="1">');
+    expect(out.turn).toContain('motivo="falha"');
   });
 
   test("an attachment already read does not keep a distinct body image from being read", async () => {
@@ -750,7 +751,8 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
       { types: { [svg]: "image/svg+xml" } },
     );
     expect(provider.calls).toBe(0);
-    expect(out.turn).toContain(unreadMarker(1));
+    expect(out.turn).toContain('<anexos-nao-lidos quantidade="1">');
+    expect(out.turn).toContain('motivo="formato"');
   });
 
   test("an email with no text whose only body image is an ornament does not ask for a resend", async () => {
@@ -946,7 +948,8 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
       } as never,
       { fail: new Set([broken]) },
     );
-    expect(out.turn).toContain(unreadMarker(1));
+    expect(out.turn).toContain('<anexos-nao-lidos quantidade="1">');
+    expect(out.turn).toContain('motivo="falha"');
   });
 
   test("a body of ornaments only is not downloaded again by the next turn", async () => {

@@ -1,4 +1,5 @@
 import { clipText } from "@/lib/text";
+import type { UnreadCause, UnreadFile } from "@/modules/vision/unread";
 // Renders ONE inbound customer message into the text the agent actually sees, mirroring the n8n
 // "Extrair mensagem" node so the agent gets modality + reply context instead of a silent blank:
 //   * audio  → the transcription wrapped in <mensagem-de-audio>…</mensagem-de-audio> (or a
@@ -25,6 +26,8 @@ export interface RenderableMessage {
   imageDescription?: string | null;
   extractedText?: string | null;
   attachmentsUnread?: number | null;
+  // The unread files the pass tried, with name and cause. The rest of the count went over the cap.
+  unreadFiles?: UnreadFile[] | null;
   // Chatwoot file_type of each attachment ("audio" | "image" | "file" | "video" | ...).
   attachmentTypes: string[];
   // Images the mailbox kept in the email body (issue #864): no attachment type, read by vision.
@@ -123,6 +126,47 @@ const CORPO_SEM_CONTEUDO =
   "<e-mail sem texto; as imagens do corpo não trouxeram conteúdo legível>";
 const IMAGEM_ILEGIVEL =
   "<usuário enviou uma imagem; não foi possível ler o conteúdo, peça que o cliente reenvie o arquivo ou escreva a informação>";
+// The same prefix with no request: the file-by-file block below says what to ask for.
+const IMAGEM_ILEGIVEL_NOMEADA =
+  "<usuário enviou uma imagem; não foi possível ler o conteúdo>";
+
+// Each cause asks for the one thing that helps. Resending the same file only helps a failure.
+const PEDIDO_POR_MOTIVO: Record<
+  UnreadCause,
+  { motivo: string; texto: string }
+> = {
+  format: {
+    motivo: "formato",
+    texto:
+      "formato que não conseguimos abrir; enviar o mesmo arquivo de novo não resolve. Se a resposta depender dele, peça o conteúdo em foto ou por escrito",
+  },
+  too_large: {
+    motivo: "grande-demais",
+    texto:
+      "imagem com resolução alta demais para ler; se a resposta depender dela, peça um print da tela ou uma foto em resolução normal",
+  },
+  failed: {
+    motivo: "falha",
+    texto:
+      "não foi possível ler desta vez; se a resposta depender dele, peça o conteúdo por escrito ou o arquivo de novo",
+  },
+};
+
+function anexosNaoLidos(total: number, files: UnreadFile[]): string {
+  const linhas = files.map((f) => {
+    const { motivo, texto } = PEDIDO_POR_MOTIVO[f.cause];
+    const nome = defangMarkerText(f.name).replace(/"/g, "'");
+    const attr = nome ? ` nome="${nome}"` : "";
+    const quem = nome ? "" : "arquivo sem nome: ";
+    return `<arquivo${attr} motivo="${motivo}">${quem}${texto}</arquivo>`;
+  });
+  const resto = total - files.length;
+  if (resto > 0)
+    linhas.push(
+      `mais ${resto} arquivo(s) não foram abertos; se a resposta depender deles, peça ao cliente que reenvie o que falta`,
+    );
+  return `<anexos-nao-lidos quantidade="${total}">estes arquivos chegaram, mas o conteúdo não foi lido:\n${linhas.join("\n")}\n</anexos-nao-lidos>`;
+}
 
 export function renderInboundMessage(
   m: RenderableMessage,
@@ -171,11 +215,14 @@ export function renderInboundMessage(
   // with the other markers, so it survives the debounce re-fetch: glued onto the extracted text it
   // existed only on the discarded event, and a model told nothing answers as if the message had
   // those files fewer (PR #692 review, rounds 1 and 3).
+  const nomeados = m.unreadFiles ?? [];
   const pulados = m.attachmentsUnread ?? 0;
   const naoLidos =
-    pulados > 0
-      ? `<anexos-nao-lidos quantidade="${pulados}">não foi possível ler; se a resposta depender deles, peça ao cliente que reenvie o que falta</anexos-nao-lidos>`
-      : "";
+    nomeados.length > 0
+      ? anexosNaoLidos(pulados, nomeados)
+      : pulados > 0
+        ? `<anexos-nao-lidos quantidade="${pulados}">não foi possível ler; se a resposta depender deles, peça ao cliente que reenvie o que falta</anexos-nao-lidos>`
+        : "";
   let body: string;
   // Whether a branch below already told the model a file could not be read.
   let pediuReenvio = false;
@@ -213,7 +260,9 @@ export function renderInboundMessage(
     // O PREFIXO É CONTRATO: `unwrapFileMarker` (../playground/sessions.ts) reconhece este marcador
     // por `startsWith` para remontar o anexo na tela do operador, e uma reescrita da frase inteira
     // quebraria aquele lado em silêncio. Cercado em `tests/modules/chatwoot-render.test.ts`.
-    body = withText(IMAGEM_ILEGIVEL);
+    body = withText(
+      nomeados.length > 0 ? IMAGEM_ILEGIVEL_NOMEADA : IMAGEM_ILEGIVEL,
+    );
     pediuReenvio = true;
   } else if (m.location) {
     // NOTE: A WhatsApp location pin: surfaced as attributes (mirroring the reaction marker) so the
@@ -260,7 +309,11 @@ export function renderInboundMessage(
   // message look complete (PR #692 review, rounds 1 and 3).
   // Or when that marker was NOT emitted: an image in an email body has no attachment type, so beside
   // text, an audio or a pin a failed one would otherwise leave no trace (issue #864).
-  if (naoLidos && (imageDescription || extractedText || !pediuReenvio))
+  // A named cause is never redundant: the generic markers do not say what to ask for.
+  if (
+    naoLidos &&
+    (imageDescription || extractedText || !pediuReenvio || nomeados.length > 0)
+  )
     body = body ? `${body}\n${naoLidos}` : naoLidos;
 
   if (m.inReplyTo != null && ctx.resolveQuoted) {

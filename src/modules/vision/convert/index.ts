@@ -33,6 +33,15 @@ export class MediaSourceMismatchError extends MediaConversionError {
   }
 }
 
+// Over the pixel cap: a legitimate picture, too large to decode here. Its own type because the
+// customer can fix it (a screenshot, a photo at normal resolution) and a broken file cannot.
+export class MediaTooLargeError extends MediaConversionError {
+  constructor(message: string) {
+    super(message);
+    this.name = "MediaTooLargeError";
+  }
+}
+
 // The RGBA buffer a decode materialises is width*height*4 and exists in full before anything is
 // encoded: a 12 MP photo is 48 MB, and the 48 MP ones current iPhones shoot are 192 MB. The cap is on
 // PIXELS and not on the file, because HEIC's whole point is that the file is small — the 25 MB
@@ -283,7 +292,7 @@ async function heicToJpeg(
     // because it is the dependency's property and not ours (review round 14).
     const pixels = Math.max(width * height, stored);
     if (pixels > cap)
-      throw new MediaConversionError(
+      throw new MediaTooLargeError(
         `heic is ${width}x${height} and stores ${pixels} px, over the ${cap} px cap`,
       );
     const raw = await frame.decode();

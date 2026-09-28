@@ -1,3 +1,4 @@
+import type { UnreadFile } from "@/modules/vision/unread";
 import type { ChatwootMessageRow } from "./messages";
 
 // In-process fallback for the eager media annotations (STT transcription, vision extraction).
@@ -20,6 +21,9 @@ export interface MediaAnnotation {
   // for it again. A COUNT, never text: it crosses the debounce re-fetch, where the notice this
   // becomes is phrased by the renderer like every other marker (PR #692 review, rounds 1 and 3).
   attachmentsUnread?: number;
+  // The unread files the pass tried, each with its name and cause, so the renderer can say what to
+  // ask for. Memory only, like everything here: the name is the customer's text.
+  unreadFiles?: UnreadFile[];
   // The pass that wrote this went through the email body's images too (issue #864). They leave no
   // meta anywhere, so this is the only record that they were read, or were all ornaments.
   bodyRead?: boolean;
@@ -148,6 +152,7 @@ export function overlayMediaAnnotations(
     // pass declined to open, so the stash is the only source and always wins here.
     if (hit.note.attachmentsUnread)
       row.attachmentsUnread = hit.note.attachmentsUnread;
+    if (hit.note.unreadFiles?.length) row.unreadFiles = hit.note.unreadFiles;
   }
 }
 

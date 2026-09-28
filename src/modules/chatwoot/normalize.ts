@@ -892,6 +892,7 @@ export function incomingRenderable(
     imageDescription: n.message?.imageDescription,
     extractedText: n.message?.extractedText,
     attachmentsUnread: n.message?.attachmentsUnread,
+    unreadFiles: n.message?.unreadFiles,
     attachmentTypes: (n.message?.attachments ?? [])
       .map((a) => a.fileType)
       .filter((t): t is string => t !== null),

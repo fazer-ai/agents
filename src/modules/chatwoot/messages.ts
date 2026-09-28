@@ -1,4 +1,5 @@
 import type { VisualAttachment } from "@/modules/vision/extract-message";
+import type { UnreadFile } from "@/modules/vision/unread";
 import { CHATWOOT_SEND_ID_KEY } from "./constants";
 import { bodyImagesBesides, emailBodyImageUrlsFrom } from "./email-body-images";
 import {
@@ -50,6 +51,8 @@ export interface ChatwootMessageRow {
   // because the fetched page can never carry it: `overlayMediaAnnotations` fills it from the
   // in-process stash, which is why the notice is a COUNT here and a marker only at render time.
   attachmentsUnread?: number | null;
+  // Filled the same way, and only from the stash: which of those files were tried, and why each failed.
+  unreadFiles?: UnreadFile[] | null;
   // Best-effort first-attachment file name (from the data_url basename), for the unsupported marker.
   attachmentName: string | null;
   // OS ANEXOS VISUAIS EM SI, com o id e a url que uma extração precisa (issue #757). Os dois campos
@@ -382,6 +385,7 @@ export function toRenderable(row: ChatwootMessageRow): RenderableMessage {
     imageDescription: row.imageDescription,
     extractedText: row.extractedText,
     attachmentsUnread: row.attachmentsUnread,
+    unreadFiles: row.unreadFiles,
     attachmentTypes: row.attachmentTypes,
     bodyImages: row.bodyImages,
     attachmentName: row.attachmentName,

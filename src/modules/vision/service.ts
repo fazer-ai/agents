@@ -23,7 +23,11 @@ import {
   spendCeilingVerdict,
 } from "@/modules/spend-ceiling/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
-import { MediaSourceMismatchError, runMediaConverter } from "./convert";
+import {
+  MediaSourceMismatchError,
+  MediaTooLargeError,
+  runMediaConverter,
+} from "./convert";
 import { isDecorativeImage } from "./decorative";
 import { visionAcceptsDocuments } from "./document-support";
 import { normalizeMediaType, planImageConversion } from "./media-conversion";
@@ -42,6 +46,7 @@ import {
   VISION_MAX_ATTEMPTS,
 } from "./retry";
 import { readVisionConfig, type VisionConfig } from "./settings";
+import { isUnread, skipLevel, type Unread, unreadCauseOf } from "./unread";
 
 // Image/document extraction orchestration (the vision mirror of stt/service): download the file,
 // extract its content via the configured provider (key from the vault), and write the result back
@@ -304,6 +309,14 @@ async function convertForProvider(args: {
       );
       return { ok: true, bytes: args.bytes, mimeType: args.mimeType };
     }
+    if (err instanceof MediaTooLargeError) {
+      logger.info(
+        "vision: %s, the attachment was not read (provider=%s)",
+        why,
+        args.provider,
+      );
+      return { ok: false, reason: "over_pixel_cap" };
+    }
     // The converter id is already the head of the wrapped message, so it is not repeated here.
     logger.warn(
       "vision: conversion failed, the attachment was not read (provider=%s): %s",
@@ -323,33 +336,44 @@ export const BODY_IMAGE_IGNORED = "ignored" as const;
 export async function extractInboundFile(
   params: ExtractInboundParams,
 ): Promise<ExtractResult | null> {
+  const r = await readInboundFile(params);
+  return isUnread(r) ? null : r;
+}
+
+// The same read, saying why when the file was not read.
+export async function readInboundFile(
+  params: ExtractInboundParams,
+): Promise<ExtractResult | Unread> {
   const r = await extractInbound(params);
-  return r === BODY_IMAGE_IGNORED || r === BODY_IMAGE_OVER_CAP ? null : r;
+  return r === BODY_IMAGE_IGNORED || r === BODY_IMAGE_OVER_CAP
+    ? { unread: "failed" }
+    : r;
 }
 
 // An image Chatwoot's mailbox kept inside the email body instead of making it an attachment (#864).
 export function extractBodyImage(
   params: Omit<ExtractInboundParams, "attachmentId">,
-): Promise<ExtractResult | null | typeof BODY_IMAGE_IGNORED> {
+): Promise<ExtractResult | Unread | typeof BODY_IMAGE_IGNORED> {
   return extractInbound({
     ...params,
     attachmentId: null,
     bodyImage: true,
-  }) as Promise<ExtractResult | null | typeof BODY_IMAGE_IGNORED>;
+  }) as Promise<ExtractResult | Unread | typeof BODY_IMAGE_IGNORED>;
 }
 
 // A body image past the per-message cap, downloaded only to know whether it is an ornament: it is
 // never sent to the provider, and what is not an ornament is what the model is told was not read.
 export const BODY_IMAGE_OVER_CAP = "over_cap" as const;
-export function classifyBodyImage(
+export async function classifyBodyImage(
   params: Omit<ExtractInboundParams, "attachmentId">,
 ): Promise<null | typeof BODY_IMAGE_IGNORED | typeof BODY_IMAGE_OVER_CAP> {
-  return extractInbound({
+  const r = await extractInbound({
     ...params,
     attachmentId: null,
     bodyImage: true,
     classifyOnly: true,
-  }) as Promise<null | typeof BODY_IMAGE_IGNORED | typeof BODY_IMAGE_OVER_CAP>;
+  });
+  return r === BODY_IMAGE_IGNORED || r === BODY_IMAGE_OVER_CAP ? r : null;
 }
 
 // One read per file, however many deliveries of its message ask: a delivery that finds the file
@@ -361,7 +385,10 @@ function extractInbound(
     classifyOnly?: boolean;
   },
 ): Promise<
-  ExtractResult | null | typeof BODY_IMAGE_IGNORED | typeof BODY_IMAGE_OVER_CAP
+  | ExtractResult
+  | Unread
+  | typeof BODY_IMAGE_IGNORED
+  | typeof BODY_IMAGE_OVER_CAP
 > {
   const key = `vision:${params.tenantId}:${params.instanceId}:${params.messageId}:${params.attachmentId ?? params.dataUrl}:${params.classifyOnly ? "classify" : "read"}`;
   const kept = fileReadFor(key);
@@ -374,7 +401,7 @@ function extractInbound(
     );
   return shareInFlight(key, async () => {
     const value = await extractInboundOnce(params);
-    if (value !== null) rememberFileRead(key, value);
+    if (!isUnread(value)) rememberFileRead(key, value);
     return value;
   });
 }
@@ -385,24 +412,27 @@ async function extractInboundOnce(
     classifyOnly?: boolean;
   },
 ): Promise<
-  ExtractResult | null | typeof BODY_IMAGE_IGNORED | typeof BODY_IMAGE_OVER_CAP
+  | ExtractResult
+  | Unread
+  | typeof BODY_IMAGE_IGNORED
+  | typeof BODY_IMAGE_OVER_CAP
 > {
   const { cfg } = params;
   const base = params.base ?? basePrisma;
 
-  // Surface a skip on the Logs/turn trail (warn + skipped) so a vision that silently does nothing
-  // (attachment left unextracted) is visible to the operator instead of vanishing. Mirrors STT.
-  const skip = (reason: string): null => {
+  // Surface a skip on the Logs/turn trail so a vision that silently does nothing (attachment left
+  // unextracted) is visible to the operator instead of vanishing. Mirrors STT.
+  const skip = (reason: string): Unread => {
     if (params.flow) {
       emitFlowEvent(params.flow, {
         stage: "vision",
-        level: "warn",
+        level: skipLevel(reason),
         status: "skipped",
         provider: cfg.provider,
         detail: { reason },
       });
     }
-    return null;
+    return { unread: unreadCauseOf(reason) };
   };
 
   const provider = getVisionProvider(cfg.provider);
@@ -586,7 +616,7 @@ async function extractInboundOnce(
       },
       "inbound vision extraction failed; leaving attachment unextracted",
     );
-    return null;
+    return { unread: "failed" };
   }
   const text = extracted.text.trim();
   // The row is written whether or not the extraction yielded text: a call that came back empty was
@@ -601,7 +631,7 @@ async function extractInboundOnce(
       durationMs: performance.now() - readStartedAt,
     });
   }
-  if (!text) return null;
+  if (!text) return { unread: "failed" };
 
   // NOTE: Stash BEFORE the write-back — same contract as the STT pass: on upstream Chatwoot (no
   // fork meta route) the in-process overlay is the only reader of this extraction (issue #49).

@@ -66,7 +66,7 @@ async function resolveApiKey(
   const entry = await runScopedOn(base, ctx, (db) =>
     tryResolveApiKeyEntry(db, credentialRef),
   );
-  // One null for three states, on purpose: the picker lists what it can, and an unusable credential
+  // NOTE: One null for three states, on purpose: the picker lists what it can, and an unusable credential
   // yields the same empty list as a missing one. The `state` split serves the runtime's log lines.
   return entry.state === "ok" ? entry.secret : null;
 }

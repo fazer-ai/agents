@@ -258,7 +258,7 @@ export async function getKpis(
         // mirror conversation (conversationId stays null), and source="inbox" makes that explicit.
         conversationId: { not: null },
         source: "inbox",
-        // A billed call is not the same claim as "the agent took this conversation", and this is
+        // NOTE: A billed call is not the same claim as "the agent took this conversation", and this is
         // the only reader that makes the second one. Vision runs on the incoming attachment before
         // the bot-ownership gate decides anything, so an image sent into a conversation a human
         // handled start to finish would otherwise land here as bot involvement.

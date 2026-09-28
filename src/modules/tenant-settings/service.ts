@@ -465,14 +465,14 @@ export async function updateCompanySettings(
     {
       action: "tenant_settings.company_set",
       target: "tenant_settings:company",
-      // WHICH fields moved, never what they hold: for a sole trader this block is a CPF, a home address
+      // NOTE: WHICH fields moved, never what they hold: for a sole trader this block is a CPF, a home address
       // and a personal phone, `AuditEntry` forbids PII in the clear, and a row keeps the value after the
       // profile is corrected. Keys rather than an allowlist of safe fields, so a field added later cannot
       // arrive in the clear by default. The current value is readable from `GET /v1/tenant-settings`.
       project: (before, after) => {
         const b = parseCompanySettings(before);
         const a = parseCompanySettings(after);
-        // No exclusion for the logo half: `CompanyUpdateInput` omits both of its fields and the merge
+        // NOTE: No exclusion for the logo half: `CompanyUpdateInput` omits both of its fields and the merge
         // carries them over, so they cannot differ here.
         const changed = (
           Object.keys(COMPANY_DEFAULTS) as (keyof CompanySettings)[]
@@ -570,7 +570,7 @@ export async function updateSpendCeiling(
     {
       action: "tenant_settings.spend_ceiling_set",
       target: "tenant_settings:spendCeiling",
-      // The numbers themselves: this block decides whether the agent answers at all, and none of them is a
+      // NOTE: The numbers themselves: this block decides whether the agent answers at all, and none of them is a
       // secret or PII. The customer-facing sentence is fingerprinted, not quoted: free text would paste a
       // paragraph into every row, while a bare "set" would read one sentence replaced by another as
       // unchanged. `null` stays `null`, because "cleared" is a state.

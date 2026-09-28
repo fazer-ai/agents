@@ -15,11 +15,11 @@ import { runModelCall } from "@/graph/model-limit";
 
 const NORMALIZE_TIMEOUT_MS = 20_000;
 
-// Measured, not composed (docs/tts.md): rewriting "08:00, 08:30 e 09:00" item by item fuses the last
-// two into a time never offered. Each line bought something in that measurement, which is the bar
-// for adding another: "keep every fact" replaces "preserve the wording" and buys the freedom to
-// restructure, the enumeration line breaks the fusion, and the date line stops "18/08" being read
-// digit by digit. Spelling a rule out at length measured no better, and can make a prompt worse.
+// Every line earns its place against the battery in docs/tts.md, which is the bar for adding another:
+// rewriting "08:00, 08:30 e 09:00" item by item fuses the last two into a time never offered.
+// "Keep every fact" (not "preserve the wording") gives the freedom to restructure, the enumeration
+// line prevents the fusion, and the date line stops "18/08" being read digit by digit. A rule spelled
+// out at length does no better and can make the prompt worse.
 const SYSTEM_PROMPT =
   "You prepare an assistant's chat message to be read aloud by a text-to-speech engine. " +
   "Rewrite it so it SOUNDS like a person speaking, in the SAME language as the message.\n" +

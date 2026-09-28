@@ -182,6 +182,8 @@ export interface ReplyDelivery {
 // The unit of delivery is the reply: a failure after a balloon landed never throws, since a throw
 // would hand the reply to the recovery and resend what the customer already has, side-effecting
 // tools included. The remainder is retried once, consolidated into a single send. See docs/split.md.
+// No per-balloon durable state: the chunks are still in memory in this process, so all it would add
+// is resuming after a process death, which is the recovery's job, not this loop's.
 export async function deliverReply(
   client: ChatwootClient,
   conversationId: number,

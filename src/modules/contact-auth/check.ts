@@ -205,7 +205,7 @@ export function classifyAuthorizationResponse(
   body: string | null,
 ): AuthorizationVerdict {
   const json = body === null ? null : parseJsonObject(body);
-  // FIRST, because these three say everything they need to say in the status line: an endpoint may
+  // NOTE: FIRST, because these three say everything they need to say in the status line: an endpoint may
   // answer REST-style with no body at all, so a body we could not read cannot turn the answer into
   // something else. Checked after the body, a 403 behind a proxy's error page would read as a
   // transient ERROR: no deny message, no handoff, and every following message asking again.

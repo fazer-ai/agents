@@ -112,7 +112,7 @@ export async function synthesizeReply(
     return null;
   };
 
-  // The checks that need no network, in the order a skip reports them, shared with the turn's plan
+  // NOTE: The checks that need no network, in the order a skip reports them, shared with the turn's plan
   // (./modality.ts) so a reply these refuse was never announced as spoken.
   // NOTE: they run BEFORE the paid rewrite below, so an unsupported combination burns no call. No
   // format = the provider cannot emit anything this channel accepts (openrouter on Instagram): Meta
@@ -161,7 +161,7 @@ export async function synthesizeReply(
     return skip("no_base_url");
   }
 
-  // The rewrite for speech, LAST of all: it is a billed model call, and every check above can still
+  // NOTE: The rewrite for speech, LAST of all: it is a billed model call, and every check above can still
   // abort this synthesis (an agent with no TTS credential would otherwise pay for a rewrite on every
   // audio turn and still fall back to text). Best-effort: any failure here keeps the raw speech text. The Chatwoot transcribedText
   // keeps the ORIGINAL reply either way; only the synth input is rewritten.

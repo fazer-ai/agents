@@ -8,18 +8,12 @@ import {
 } from "@/graph/usage";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 
-// WHAT A CONVERSATION HAS SPENT, from the usage ledger (issue #853): the total the conversation
-// screen shows in its header, and what each agent turn spent, which the screen hangs on the last
-// message the turn created (issue #858). The numbers are the provider's, written by `UsageCapture`
-// as each call returned; nothing here estimates.
-//
-// The total is every row billed to the conversation, whatever the node: the agent, the guardrail,
-// speech normalization, vision, memory compaction and the observer all cost the tenant money on
-// this conversation. A row no turn owns (memory compaction runs as a job, and rows from before the
-// `turnId` column carry none) counts in the total and in no turn, so the turns can sum to less than
-// the header, never more.
-//
-// Real traffic only: a playground row never names a conversation, and the filter says so anyway.
+// What a conversation has spent, from the usage ledger: the total in the conversation header, and
+// what each agent turn spent (shown on the last message the turn created). The numbers are the
+// provider's, written by `UsageCapture`; nothing here estimates. The total is every row billed to
+// the conversation, whatever the node. A row no turn owns (memory compaction runs as a job, and
+// older rows carry no `turnId`) counts in the total and in no turn, so the turns can sum to less
+// than the header, never more.
 
 export interface ConversationTurnUsage {
   turnId: string;
@@ -27,13 +21,13 @@ export interface ConversationTurnUsage {
   // of the messages it created is on screen.
   at: string;
   usage: TurnUsage;
-  // The Chatwoot ids of the messages the turn created, from the line it closed on (issue #855).
-  // Empty for a turn that created none, and for one from before that line existed.
+  // The Chatwoot ids of the messages the turn created, from the line it closed on. Empty for a turn
+  // that created none, or whose closing line carries no ids.
   messageIds: number[];
   // The turn's wall time, from the same line; null when there is none.
   turnMs: number | null;
-  // Summed over the turn's calls; null unless every one of them was timed (a row from before
-  // `duration_ms` has no time, and a partial sum would read as the whole).
+  // Summed over the turn's calls; null unless every one of them was timed (a partial sum would read
+  // as the whole).
   modelMs: number | null;
 }
 
@@ -52,11 +46,9 @@ export async function getConversationUsage(
   base: PrismaClient = basePrisma,
 ): Promise<ConversationUsage> {
   const tenantId = ctx.tenantId as bigint;
-  // ONE statement for the numbers, grouped by turn and step, and the total is the sum of its groups
-  // (the turnless rows are the groups whose key is null). Two reads, even in one transaction, run at
-  // READ COMMITTED and can each see a different set of rows while a turn is writing its own: the
-  // turns would then add up to more than the header (#853, review round 1). A conversation's turn
-  // count is its message count, so reading every group costs no more than the thread itself.
+  // NOTE: ONE statement, and the total is the sum of its groups (turnless rows are the null-key
+  // groups). Two reads at READ COMMITTED can each see a different set of rows while a turn writes,
+  // and the turns would add up to more than the header.
   const groups = await runScopedOn(base, ctx, (db) =>
     db.llmUsage.groupBy({
       by: ["turnId", "node", "priceTable"],
@@ -129,8 +121,8 @@ export async function getConversationUsage(
   };
 }
 
-// The line each turn closed on (issue #855), read for the turns the screen gets. The execution log
-// is retention-bounded, so an old turn may have lost it and keeps its numbers without a bubble.
+// The line each turn closed on, read for the turns the screen gets. The execution log is
+// retention-bounded, so an old turn may have lost it and keeps its numbers without a bubble.
 async function closingLines(
   base: PrismaClient,
   ctx: TenantContext,

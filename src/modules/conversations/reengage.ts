@@ -41,15 +41,11 @@ import {
 } from "@/modules/spend-ceiling/service";
 import { clearConversationError } from "./error";
 
-// Manual re-engage (item 6): re-fire the agent turn on a conversation WITHOUT waiting for a new
-// customer message — the recovery path after a failed turn. It answers the unanswered tail (every
-// incoming message after the last outgoing one), reusing the debounce flush's coalesce machinery
-// (the shared reply claim = at-most-once, so a double click, a racing flush and its retry post at
-// most once between them, and a message that lands mid-turn still defers the click through the same
-// supersede re-fetch the flush uses). Honors the
-// assignee gate: if a human owns the conversation it does nothing (the operator should "return to
-// agent" first), and the contact-authorization gate, because this path RUNS the model and SENDS its
-// answer. Clears the conversation's lastError on a successful post.
+// Manual re-engage: re-fires the agent turn on a conversation without a new customer message, the
+// recovery path after a failed turn. It answers the unanswered tail through the debounce flush's
+// coalesce machinery (the shared reply claim makes a double click, a racing flush and its retry post
+// at most once). It honors the assignee gate (a human-owned conversation does nothing) and the
+// contact-authorization gate, since it runs the model and sends. A successful post clears lastError.
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -78,9 +74,8 @@ function incomingAfterLastOutgoing(
     if (
       (m.messageType === "outgoing" || m.messageType === "template") &&
       !m.private &&
-      // An operator's reaction is not a reply either, and the catch-up read now brings in the ones
-      // the default page left out: an emoji on an older message would close the request asked
-      // after it (PR #821, review round 1). Same exclusion as `foreignReplyBoundary`.
+      // NOTE: An operator's reaction is not a reply either: an emoji on an older message would close
+      // the request asked after it. Same exclusion as `foreignReplyBoundary`.
       !m.isReaction &&
       m.id > lastOut
     ) {
@@ -117,12 +112,10 @@ function resolveReengage(
   base: PrismaClient,
   tenantId: bigint,
   conversationDbId: bigint,
-  // The PREVIEW's read, and this flag is the whole difference between the two callers. Resolving an
-  // A/B variant is not a read: `resolveVariantOverride` INSERTS the thread's assignment when there
-  // is none, and that row lands in the denominator of every result for the experiment. The apply
-  // wants it — it is about to run the tested prompt — and the preview must not have it, or a dry run
-  // enrols a conversation in an experiment it never took a turn in. Same reason memory compaction
-  // passes it (#510, review round 1).
+  // Set by the preview. Resolving an A/B variant INSERTS the thread's assignment
+  // (`resolveVariantOverride`), which lands in the experiment's denominator: the apply is about to run
+  // the tested prompt and wants it, while a dry run must not enrol a conversation that never took a
+  // turn. Memory compaction passes it for the same reason.
   opts: { skipExperiment?: boolean } = {},
 ) {
   return runScopedOn(base, sysCtx(tenantId), async (db) => {
@@ -182,13 +175,9 @@ function resolveReengage(
   });
 }
 
-// The two ways this resolution refuses, in one place, because the MCP preview has to give the same
-// answer. Its fence row passes a conversation id that names no row, so it proved the not-found and
-// never the second one — and a preview answered "would re-engage" for an inbox with no agent bound,
-// which is a message that can never be sent (#510).
-//
-// An assertion function rather than a boolean, so the caller keeps the resolved value with the two
-// sentinels narrowed away.
+// The two ways this resolution refuses, in one place, because the MCP preview must give the same
+// answer (a preview saying "would re-engage" for an inbox with no agent names a message that can never
+// be sent). An assertion function, so the caller keeps the resolved value with the sentinels narrowed.
 function assertResolved(
   resolved: ResolvedReengage,
 ): asserts resolved is Exclude<ResolvedReengage, "not-found" | "no-agent"> {
@@ -253,15 +242,9 @@ export async function reengageConversation(
     resolved.contactInboxId,
   );
   const contactInboxId = resolved.contactInboxId;
-  // UMA RECUSA QUE NÃO DEIXA RASTRO LÊ COMO UM CLIQUE QUE NUNCA ACONTECEU, e este arquivo já diz
-  // isso em voz alta na recusa de autorização, poucas linhas abaixo: "It is logged, though — a
-  // refused re-engage that left no trace would read in the flowlog as if the click never happened."
-  // Vale igual aqui, e com um motivo a mais: o operador que apertou o botão e não viu nada mudar vai
-  // procurar no log, e "recusei porque a thread estava tomada" e "o clique não chegou" mandam
-  // investigar coisas completamente diferentes.
-  //
-  // `skipped`, e não `error`: nada falhou. Um turno estava rodando e este clique cedeu a vez, que é
-  // o desfecho correto e não um incidente.
+  // NOTE: Uma recusa sem rastro lê no flowlog como um clique que nunca aconteceu, e "a thread estava
+  // tomada" e "o clique não chegou" mandam investigar coisas diferentes. `skipped`, não `error`: um
+  // turno estava rodando e este clique cedeu a vez, que é o desfecho correto.
   const recusaOcupada = (onde: "cedo" | "adjacente"): ReengageResult => {
     logger.info(
       "reengage refused: a turn already owns thread=%s (conv=%s, check=%s)",
@@ -311,12 +294,10 @@ export async function reengageConversation(
     conversationDbId: resolved.convDbId,
     base,
   });
-  // ALREADY SPOKEN FOR IS NOT PART OF THE TAIL (issue #690, PR review round 1). This burst comes
-  // from the channel rather than from a watermark, so a claim whose send failed leaves its message
-  // sitting in the tail with a row on it. The claim is all-or-nothing, so that one message would
-  // roll back the whole click — and take with it the newer message beside it that nobody answered,
-  // on this click and on every one after, since nothing removes the row. A dispensal is left alone:
-  // overturning those is what the button is for.
+  // NOTE: Already spoken for is not part of the tail. The burst comes from the channel, not a
+  // watermark, so a claim whose send failed leaves its message in the tail with a row on it; the
+  // all-or-nothing claim would roll back this click and every later one, taking the newer unanswered
+  // message with it. A dispensal is left alone: overturning those is what the button is for.
   const dropAlreadyClaimed = async (
     tail: ChatwootMessageRow[],
   ): Promise<ChatwootMessageRow[]> => {
@@ -338,21 +319,12 @@ export async function reengageConversation(
   };
   const selectTail = authCfg.enabled
     ? async (messages: ChatwootMessageRow[]) => {
-        // With the gate on, the tail drops what something else handled DURING this call, re-read at
-        // the point the burst is chosen. The authorization call below is a round-trip to somebody
-        // else's endpoint, and a message that arrived and was REFUSED during it has already had the
-        // watermark advanced past it by its own delivery — but the tail is chosen from the last
-        // OUTGOING message, which a refusal never writes, so that refused message would be handed
-        // straight to the model. "No turn for a contact the endpoint will not vouch for" is a
-        // statement about turns, and this is one. The same guard the debounce flush carries.
-        //
-        // THE WINDOW, and not the whole past (issue #452). A watermark ahead of the last outgoing
-        // message is exactly what a deliberate skip leaves behind, and re-engage exists to answer a
-        // tail nobody answered — so a blunt floor turns the button into a no-op on the conversations
-        // it was written for, which is the failure this gate's own comment used to say it was
-        // avoiding. What arrived and was consumed while the endpoint was being asked sits ABOVE the
-        // entry mark and under the fresh one; everything at or below the entry mark predates this
-        // click and stays.
+        // NOTE: With the gate on, the tail drops what something else handled DURING this call: a
+        // message refused while the authorization round-trip ran has the watermark past it but no
+        // outgoing message after it, so it would reach the model. Only that window (above the entry
+        // mark, under the fresh one): at or below the entry mark predates the click and stays, since a
+        // deliberate skip leaves the watermark ahead of the last outgoing message and answering that
+        // tail is the button's purpose. The debounce flush carries the same guard.
         const tail = incomingAfterLastOutgoing(messages);
         const handled = await readHandledWatermark({
           tenantId,
@@ -381,12 +353,10 @@ export async function reengageConversation(
     base,
     makeClient: deps.makeClient,
   });
-  // A REACTION NO DEFAULT PAGE CARRIES (issue #746): the fork keeps a customer's reaction on the
-  // page only when the message it reacts to is among that page's last twenty of the same
-  // conversation. This click has no arm that saw the webhook, so it always asks the catch-up read
-  // from the mark the operator is looking past: one read per click, and a tail holding only such a
-  // reaction is not answered as empty. A conversation with no mark has no floor to read from, and
-  // keeps the default page alone.
+  // NOTE: The fork keeps a customer's reaction on the default page only when the message it reacts to
+  // is among that page's last twenty, and this click has no arm that saw the webhook, so it always
+  // asks the catch-up read from the mark the operator is looking past. With no mark there is no floor,
+  // and the default page alone is read.
   const catchUp = {
     armedLast: null,
     after: floorAtEntry,
@@ -397,21 +367,10 @@ export async function reengageConversation(
   const previewTail = await selectPending(await readTail());
   if (previewTail.length === 0) return { outcome: "empty" };
 
-  // A MESMA PERGUNTA, CEDO, pelo motivo que o portão de assignee logo acima já dá para si mesmo:
-  // recusar aqui evita gastar o que vem depois. Sem ela o clique num contato que já está sendo
-  // respondido ainda paga o teto de gasto e, com o portão ligado, uma chamada ao endpoint de
-  // autorização de outra pessoa, para no fim dizer "ocupado". Medido rodando o console de verdade.
-  //
-  // DEPOIS do portão de cauda vazia, não antes, pela regra que este arquivo já enuncia: nada a
-  // responder ⇒ nada a recusar. Um clique sem cauda nenhuma numa thread ocupada não é "ocupado", é
-  // "não há o que responder", e mandar o operador tentar de novo o faz clicar para nada. O preço é
-  // a leitura de mensagens que aquele portão faz de qualquer jeito, e que o próprio arquivo diz não
-  // ser um gasto.
-  //
-  // SÓ O PROCESSO, sem ir ao banco: a leitura durável custa uma consulta e o caminho limpo não pode
-  // pagar duas. Quem decide é a checagem adjacente ao invoke, lá embaixo, que pergunta as duas
-  // metades. Aqui é a barata e otimista, e na topologia no ar (réplica única) ela já pega tudo que
-  // importa; a metade entre réplicas é a #593.
+  // NOTE: A mesma pergunta, cedo, para não pagar o teto de gasto nem a chamada de autorização só para
+  // responder "ocupado". Depois do portão de cauda vazia: nada a responder, nada a recusar, e um
+  // clique sem cauda numa thread ocupada é "empty", não "busy". Só o processo, sem ir ao banco: quem
+  // decide é a checagem adjacente ao invoke, abaixo; esta é a barata e otimista.
   if (isTurnInFlight(graphThreadId) || isFlushHeld(graphThreadId)) {
     return recusaOcupada("cedo");
   }
@@ -453,17 +412,11 @@ export async function reengageConversation(
   );
   if (ceiling.state === "over") return { outcome: "over-ceiling" };
 
-  // The contact-authorization gate (docs/contact-auth.md) applies here for the same reason it
-  // applies to a follow-up: this runs the model and sends its answer to the customer, so it is a
-  // turn, and the invariant is that no turn happens for a contact the endpoint will not vouch for.
-  // The operator pressing the button is not the authorization — the endpoint is, and the tail this
-  // would answer may be unanswered precisely BECAUSE it was refused, or the contact may have been
-  // revoked since it arrived.
-  //
-  // A refusal is reported to the operator who pressed the button and does nothing else: the
-  // customer copy and the handoff exist to answer a message the customer just sent, and here there
-  // is none. It is logged, though — a refused re-engage that left no trace would read in the
-  // flowlog as if the click never happened.
+  // NOTE: The contact-authorization gate (docs/contact-auth.md) applies because this runs the model and
+  // sends: the operator's click is not the authorization, and the tail may be unanswered precisely
+  // because it was refused, or the contact revoked since. A refusal is only reported to the operator
+  // (there is no customer message for the refusal copy or a handoff to answer) and logged, so the
+  // click still leaves a trace in the flowlog.
   let authContext: AuthContext | null = null;
   if (authCfg.enabled) {
     const auth = await authorizeContact({
@@ -525,27 +478,14 @@ export async function reengageConversation(
     if (!stillOurs) return { outcome: "gate-closed" };
   }
 
-  // ADJACENTE AO INVOKE, e não lá na entrada. Entre a entrada desta função e esta linha correm o
-  // preview do Chatwoot, o teto de gasto, a autorização do contato (que pode levar dez segundos) e
-  // a releitura do assignee. Uma checagem na entrada deixaria aberta uma janela mais larga do que a
-  // que a #588 fechou no flush, e o turno que ela ignorasse é o que está escrevendo o canal agora.
-  // O flush resolveu isso com adjacência (`markFlushHold`, ../debounce/handler.ts); aqui vale a
-  // mesma regra.
-  //
-  // `turnOwnsThread` e não `isTurnInFlight`: a resposta certa é a do processo MAIS a da linha, e
-  // uma leitura que falha conta como ocupado. Recusar por engano custa um clique repetido; seguir
-  // por engano custa o canal.
-  //
-  // Sem `contact_inbox_id` não há claim durável a consultar (a linha é chaveada por ele), e a thread
-  // de grafo cai para a da conversa: sobra o registro do processo, que é o que existe hoje.
-  // A LEITURA DURÁVEL PRIMEIRO, E DEPOIS NADA DE `await` ATÉ A MARCA. Esta ordem é a correção
-  // inteira, e eu já a quebrei uma vez: extrair as duas metades para um predicado `async` põe um
-  // `await` ENTRE a checagem local e o `markFlushHold`, e duas chamadas concorrentes cedem o event
-  // loop no mesmo ponto, leem "livre" as duas e marcam as duas. O clique duplo passava mesmo assim,
-  // por sorte de escalonamento, e é isso que o teste da barreira abaixo tira da jogada.
-  //
-  // Por isso o predicado NÃO é compartilhado com a checagem antecipada: aquela é local e síncrona
-  // porque não pode custar consulta; esta é durável e tem que terminar em marca no mesmo tick.
+  // NOTE: Adjacente ao invoke, e não na entrada: entre as duas correm o preview, o teto de gasto, a
+  // autorização (até dez segundos) e a releitura do assignee, e o turno que uma checagem na entrada
+  // ignorasse é o que está escrevendo no canal agora. `turnOwnsThread` pergunta ao processo E à linha,
+  // e uma leitura que falha conta como ocupado. Sem `contact_inbox_id` não há claim durável (a linha é
+  // chaveada por ele) e sobra o registro do processo. A leitura durável vem primeiro e depois nenhum
+  // `await` até `markFlushHold`: um `await` entre a checagem e a marca deixa duas chamadas concorrentes
+  // lerem "livre" e marcarem as duas (o teste da barreira fixa isso). Por isso este predicado não é
+  // compartilhado com a checagem antecipada.
   const donoDuravel =
     contactInboxId !== null &&
     (await turnOwnsThread(
@@ -564,10 +504,9 @@ export async function reengageConversation(
   ) {
     return recusaOcupada("adjacente");
   }
-  // O MESMO REGISTRO QUE O FLUSH USA, pelo que ele já é: invisível para quem pergunta por TURNOS
-  // (ingestão, compactação, rollback) e visível para o flush, que é quem precisa adiar diante deste
-  // botão. Reusar o registro do turno aqui faria `drainPendingIngest` alcançar nada e todo rollback
-  // pular, com a suíte inteira verde: o defeito que o review da #588 já encontrou uma vez.
+  // NOTE: O mesmo registro que o flush usa: invisível para quem pergunta por turnos (ingestão,
+  // compactação, rollback) e visível para o flush, que precisa adiar diante deste botão. Reusar o
+  // registro do turno faria `drainPendingIngest` não alcançar nada e todo rollback pular.
   markFlushHold(graphThreadId);
   try {
     const outcome = await coalesceAndRunTurn(
@@ -588,27 +527,18 @@ export async function reengageConversation(
         // authorization call between them is a round trip long enough for the tail to change.
         selectPending,
         catchUp,
-        // THE ONE CALLER THAT ANSWERS WHAT THE WATERMARK ALREADY COVERS, and this is issue #452 in
-        // one line: the tail is chosen from the last OUTGOING message, and a deliberate skip (a
-        // human-owned stretch, an out-of-hours silence, a turn that ended without a reply) advances
-        // the watermark past it without ever writing one of ours. A claim that refused a covered
-        // burst would make the button a no-op on exactly the conversations it was written for.
-        //
-        // The ceiling is the mark this call READ ON THE WAY IN, not "no ceiling": what was already
-        // settled when the operator clicked is the tail they are asking about, but a skip that lands
-        // WHILE the model runs settled it for somebody else, and this click is not entitled to
-        // answer over that. Including when that reading was NULL — a conversation with no mark yet
-        // is the case with the least evidence the tail is unanswered, so a mark appearing under a
-        // running model refuses it there too.
+        // NOTE: The one caller that answers what the watermark already covers: a deliberate skip (a
+        // human-owned stretch, an out-of-hours silence, a turn that ended without a reply) advances it
+        // past the last outgoing message, and refusing a covered burst would make the button a no-op.
+        // The ceiling is the mark read on the way in, NULL included: a skip that lands while the model
+        // runs settled the tail for somebody else, and this click may not answer over it.
         claimHandledCeiling: () => floorAtEntry,
         // THE ONE OPERATOR-INITIATED PATH. A person looked at the conversation and asked for the
         // tail to be answered, which is the only thing allowed to overturn a deliberate silence.
         initiatedBy: "operator",
-        // OS ANEXOS QUE A PASSAGEM EAGER NUNCA VIU (issue #757). Este botão existe para atender uma
-        // conversa que ficou parada, e a parada mais comum é justamente a que chegou antes de o
-        // agente observar a caixa: nenhuma mensagem dela passou pelo webhook, então nenhum anexo
-        // dela tem extração, e sem isto o turno responde que a imagem não deu para ler — pedindo de
-        // volta o número de pedido que está dentro dela.
+        // NOTE: Os anexos que a passagem eager nunca viu. A parada mais comum que este botão atende
+        // chegou antes de o agente observar a caixa, então nenhum anexo dela tem extração, e sem isto
+        // o turno diria que não conseguiu ler a imagem.
         fillMissingMedia: true,
         managedBotId: resolved.loaded.agentBotId,
         whatsappProvider: resolved.loaded.whatsappProvider,
@@ -618,16 +548,13 @@ export async function reengageConversation(
       deps,
     );
 
-    // NOTE: The reply is with the customer from here, and clearing the error badge is our own bookkeeping:
-    // it can throw, and a row written only after it would be missing for a turn that did post. Same
-    // seam as the other four (`conversations/audit.ts`).
+    // NOTE: The reply is with the customer from here, and clearing the error badge is our own
+    // bookkeeping: it can throw, and a row written only after it would be missing for a turn that did
+    // post. Same seam as `conversations/audit.ts`.
     //
-    // NOTE: A DECLARED GAP, and it is upstream of this line: `coalesceAndRunTurn` advances the handled
-    // watermark after the post and before it returns, so a failure there rejects without ever naming
-    // an outcome, and this call cannot know whether the customer was answered. No row is the honest
-    // answer to that, not a guess — and the same crash loses the turn's own bookkeeping either way.
-    // Closing it means recording at the posting seam itself, which is the turn's business rather than
-    // this button's.
+    // NOTE: A declared gap upstream: `coalesceAndRunTurn` advances the watermark after the post and
+    // before it returns, so a failure there rejects without an outcome, and no row is written because
+    // this call cannot know whether the customer was answered.
     try {
       if (outcome === "posted") {
         await clearConversationError({
@@ -638,12 +565,9 @@ export async function reengageConversation(
         });
       }
     } finally {
-      // NOTE: Recorded when the turn REACHED THE CUSTOMER, and only then, which is the one place this family
-      // does not record every apply. The other four call Chatwoot unconditionally; this one runs a model
-      // first and most of its outcomes are the button declining to act: an empty tail, a closed gate, a
-      // conversation somebody else holds. Those changed nothing outside this process and the flow log
-      // already narrates them for the operator asking why nothing happened (#317). `posted-partial` is
-      // on this side of the line because part of the reply IS with the customer.
+      // NOTE: Recorded only when the turn reached the customer, unlike the rest of this family: most
+      // outcomes are the button declining to act, which changes nothing outside this process and the
+      // flow log already narrates. `posted-partial` counts: part of the reply is with the customer.
       if (outcome === "posted" || outcome === "posted-partial") {
         await recordConversationAction(ctx, base, conversationDbId, {
           action: "conversation.reengage",

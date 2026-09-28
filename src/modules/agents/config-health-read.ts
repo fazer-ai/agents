@@ -37,19 +37,9 @@ import { readTtsConfig } from "@/modules/tts/settings";
 import { dialableBaseUrl, listVaultEntryInfos } from "@/modules/vault/service";
 import { readVisionConfig } from "@/modules/vision/settings";
 
-// "Is this agent's configuration healthy?", answered for a caller that is not the browser.
-//
-// The checks themselves are the console's, unchanged and shared (config-health.ts): an agent
-// configured over MCP has to be judged by the same rules as one configured on the screen, or the two
-// answers diverge and the operator has no way to tell which is lying. What this module adds is the
-// half the editor got for free by being a page — it gathers the eight inputs those checks need, from
-// the services that own them, instead of from a form.
-//
-// One difference from the editor is worth stating because it makes this reading STRICTER, not
-// looser. The panel judges what the operator is typing next to what was last saved, and defers a few
-// verdicts while the vault list is still in flight. Here there is no pending edit and no first
-// paint: `knownRefs` is always loaded, so every deferral collapses and the answer is about the row
-// as it stands.
+// "Is this agent's configuration healthy?" for a caller that is not the browser: the console's own
+// checks (config-health.ts), fed from the services that own each input instead of from a form. With
+// no pending edit and `knownRefs` always loaded, no verdict is deferred: it judges the row as stored.
 
 export interface AgentConfigHealthIssue {
   key: ConfigIssue["key"];
@@ -139,10 +129,8 @@ export async function readAgentConfigHealth(
       .filter((e) => e.status === "pending")
       .map((e) => formatVaultRef(e.id)),
   );
-  // The fourth question over the same list: an entry that exists and is filled can still be unable to
-  // serve the field naming it, by its TYPE or by holding a value that type does not describe (issue
-  // #471). Read from the same rows as the three above, so the four answers cannot disagree about
-  // which refs the vault holds.
+  // NOTE: An entry that exists and is filled can still not serve its field, by its TYPE or by a value
+  // that type does not describe. Read from the same rows as the three above, so the answers agree.
   const refFacts = new Map(
     vault.map((e) => [
       formatVaultRef(e.id),
@@ -324,15 +312,8 @@ export async function readAgentConfigHealth(
     };
   });
 
-  // WORST FIRST, which `SEVERITY_ORDER` declares and nothing was applying. The console orders by
-  // feature — its panel is a page you scan, and the section a warning belongs to is what you scroll
-  // to — but a caller reading JSON has no page, and the first entries are the ones it prints or
-  // stops on.
-  //
-  // Sorted HERE and not inside `computeConfigIssues`, so the editor keeps the order it renders in.
-  // And stable by construction: `Array.prototype.sort` has been required to be stable since ES2019,
-  // and every key has a severity (the Record is exhaustive by type), so there is no element the
-  // comparator leaves unplaced — which is what keeps the feature order INSIDE each severity.
+  // NOTE: Worst first for a JSON caller; the editor keeps its per-feature order, so this sorts here
+  // and not in `computeConfigIssues`. The sort is stable, which keeps feature order within a severity.
   out.sort(
     (a, b) =>
       SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity),
@@ -348,22 +329,9 @@ export async function readAgentConfigHealth(
   };
 }
 
-// What a WRITE reports back about the state it just left behind.
-//
-// A read tool answers "how am I doing" to a caller who thought to ask. This answers it to the caller
-// who did not — at the moment the operator could still fix it in the same breath, which is the point
-// in the whole loop where the fix is cheapest. The write that creates the classic bad state (wiring
-// a credential whose secret was never filled) is precisely the one that has no idea it did.
-//
-// Two deliberate reductions, both from the same rule that `healthy` uses:
-//
-//   * no live readings (`live: false`), so a write never waits on Chatwoot or pays its outages;
-//   * ADVISORY issues are left out of `issues`. They are choices the operator has already made, not
-//     damage this write did, and a write that answers with all of them trains its caller to skip the
-//     block. They are still counted, so the caller can see there is more and call the read tool.
-//
-// Always present, even when everything is fine: a field that disappears when healthy cannot be told
-// apart from a tool that never checked.
+// What a WRITE reports back about the state it just left behind. No live readings (a write never waits
+// on Chatwoot), and advisory issues are counted but not listed. Always present, even when healthy, so
+// it cannot be mistaken for a tool that never checked.
 export interface ConfigHealthAfterWrite {
   // `null` when the reading itself could not be taken. Not `false`: nothing was found to be wrong,
   // nobody looked. `unchecked` then carries "configHealth" and the lists are empty.

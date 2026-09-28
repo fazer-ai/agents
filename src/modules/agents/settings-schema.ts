@@ -36,57 +36,9 @@ import { TTS_PROVIDER_NAMES } from "@/modules/tts/providers";
 import { TTS_CHECK_MODES, TTS_MODES } from "@/modules/tts/settings-shared";
 import { VISION_PROVIDER_NAMES } from "@/modules/vision/providers";
 
-// The argument shape of the behavior blocks, as a schema instead of a paragraph.
-//
-// Every block used to be declared `z.record(z.string(), z.unknown())`, so a client was told "an
-// object" and every field name, choice, unit and default had to live in the tool description. That
-// is a place where a fact is easy to add and a stale one is impossible to find: `vision.provider`
-// was written up as `(openai|gemini|anthropic)` while the registry had grown to five, and nothing
-// could have caught it, because prose is not type-checked and the enum below is.
-//
-// WHAT GOES IN HERE, AND WHAT MUST NOT — the rule is type and choice, never size:
-//
-//   * A value the reader would THROW AWAY (wrong type, a provider that is not registered, a delay
-//     unit that does not exist) is declared, so the call is refused with the field named instead of
-//     succeeding and silently storing a default the caller never asked for.
-//   * A value the reader HONORS after measuring it (a number outside its band is clamped, operator
-//     text past its cap is refused only when the write CHANGES it, a list longer than its ceiling is
-//     truncated) must still parse. Copying those bounds here would turn a clamp into a refusal and
-//     break `agent_settings_set accepts a stored over-cap value it does not change`. They live in
-//     the field's `.describe()`, which reaches a client as the property's `description`.
-//
-// Two pairs where that question separates fields the eye reads as identical:
-//
-//   * `handoff.targetAgentId` is `.int().positive()` and `limits.maxHistoryTokens` is a bare number.
-//     `posInt` DISCARDS a 1.5 or a 0 — a pinned target silently cleared — while `readLimitsConfig`
-//     treats 0 as the documented way to say OFF. Zero is a value only where the consumer says so.
-//   * `stt.language` carries the reader's own pattern and `sendImage.allowedHosts` carries none.
-//     `LANG_RE` only TESTS, so "portugues" is thrown away and comes back as "pt"; the host
-//     normalizer TRANSFORMS what it accepts (a full URL, a port, a path all reduce to one host), so
-//     a pattern here would refuse spellings the reader honors.
-//
-// The blocks are LOOSE objects on purpose. An undeclared key still reaches the readers exactly as
-// before, so a field added to a reader by someone who never opened this file is merged rather than
-// silently dropped on the way in — the readers stay the authority, and this schema only says what is
-// already known about the shape.
-//
-// WHAT THIS SCHEMA ENFORCES IS WHAT IT PUBLISHES, and that is a second constraint, not the same one.
-// `tools/list` ships the generated JSON Schema, so a client may validate a call before sending it;
-// anything zod enforces that JSON Schema cannot express becomes a contract the two ends read
-// differently. It has bitten twice here: a `/…/i` pattern loses its flag on the way out (so the
-// published pattern refused the documented "pt-BR"), and a `z.preprocess` that trims before an enum
-// is invisible out there (so a padded " openai " parsed on the server and would be refused by a
-// client). The first was fixed by spelling the case classes out in the reader's own constant. The
-// second cannot be fixed that way: encoding the whitespace means publishing a pattern INSTEAD of an
-// enum, which trades away the one thing worth publishing — the list of options a client renders.
-//
-// So the schema is deliberately narrower than a reader in exactly two places, both for the same
-// reason: `observability.logToolValues` / `memory.compaction.enabled` also honor the STRING
-// spellings ("true"/"false"), and every `str()`-backed choice also honors surrounding whitespace.
-// Both are normalizations of what is STORED — a bag written by an older build, a row edited by hand
-// — and both stay true of everything already stored, because the readers are untouched. Neither was
-// ever an input contract: no description offered them, and no console path can produce one (a
-// provider comes from a dropdown). What narrows is only what a caller may newly SEND.
+// The argument shape of the behavior blocks. Two rules, both in docs/mcp.md: type and choice, never
+// size (declare what a reader throws away, never a bound it clamps), and what the schema enforces is
+// what it publishes in `tools/list`. Blocks are LOOSE so a key added to a reader still reaches it.
 
 // A registry list as a set of choices. `Object.keys` of a provider map is `string[]`, which is the
 // one shape `z.enum` cannot take; the registries are module-level literals and never empty.
@@ -118,20 +70,9 @@ const modelId = () =>
 // because that is how the field is cleared on purpose.
 const chatwootId = () => z.number().int().positive().nullable().optional();
 
-// BLANK IS WHAT THE READER THROWS AWAY, so the schema is where it gets declared. `readToolInstructions`
-// trims and returns null for an empty result, so a note of `""` or `"   "` is accepted by the write,
-// replaces whatever note was there, and then never reaches a tool description — the one outcome
-// docs/mcp.md says a caller cannot discover by trying, because what comes back is success.
-//
-// A PATTERN rather than a length: `minLength` would not catch `"   "`, and this is not the size rule
-// the contract forbids copying into zod ("type and choice, never size"). It refuses a KIND of value,
-// it is published faithfully (`\S` carries no flag to lose, unlike the /…/i case in docs/mcp.md), and
-// it diverges from no console path — all three fields are written by the editor as `.trim() || null`,
-// or with the key deleted (toolGuidance), so the console never produces the value this refuses.
-//
-// `followUps[].instructions` is deliberately NOT here: its stored default is `""` (see
-// modules/followups/settings.ts), the reader keeps it, and refusing it would break the round trip
-// this surface documents.
+// Blank is what the reader throws away (it trims to null), so it is refused here rather than stored
+// as a silent no-op. A pattern, since `minLength` misses `"   "`. Not used for
+// `followUps[].instructions`, whose stored default is `""`.
 const nonBlank = (message: string) => z.string().regex(/\S/, message);
 
 const toolNote = () => nonBlank("must not be blank; use null to clear it");
@@ -201,7 +142,7 @@ const tts = z.looseObject({
     .nullable()
     .optional()
     .describe("null = the instance default"),
-  // Issue #856: with `textInstead` on, a reply past one of these goes as TEXT instead of a voice
+  // With `textInstead` on, a reply past one of these goes as TEXT instead of a voice
   // note. Absent = the default, null = that criterion off; the reader clamps, so a number outside the
   // band is read at its end.
   textInstead: z
@@ -225,7 +166,7 @@ const tts = z.looseObject({
     .describe(
       "text from this many prices or 4+ digit numbers (2-50, default 3); null = off",
     ),
-  // Issue #859: what the model is told about a spoken reply. Both switches default to false.
+  // What the model is told about a spoken reply. Both switches default to false.
   spokenNotice: z
     .boolean()
     .optional()
@@ -251,7 +192,7 @@ const vision = z.looseObject({
   credentialRef: credentialRef(),
   baseURL: baseURL(),
   // Nullable because the reader honours null as "the default prompt" and the console sends exactly that
-  // on every Behavior save; this schema's rule is that a value the reader honours must parse (#622).
+  // on every Behavior save; a value the reader honours must parse.
   extractionPrompt: z
     .string()
     .nullable()
@@ -403,7 +344,7 @@ const availability = z.looseObject({
     ),
 });
 
-// The local rule (issue #646). Either this or `url`: with a rule, the endpoint is never called.
+// The local rule. Either this or `url`: with a rule, the endpoint is never called.
 const contactAuthRule = z
   .union([
     z.object({
@@ -620,15 +561,9 @@ const memory = z.looseObject({
 });
 
 const modelFallback = z.looseObject({
-  // WHERE THE TURN GOES when the agent's own provider cannot take it. Resolved by the same
-  // `resolveModelOverride` the speech rewrite and the summariser use, so the rules about whose key
-  // may travel to which host are written once — a fallback on another vendor carries its own
-  // credential or it does not run.
-  //
-  // The one place this block reads DIFFERENTLY from its two siblings: there, everything absent means
-  // "run on the agent's own model", which is a useful default. Here that would be a fallback to the
-  // provider that just failed — configured-looking and a guaranteed no-op. So a fallback exists only
-  // when the operator named BOTH a provider and a model, and anything less is no fallback at all.
+  // Where the turn goes when the agent's own provider cannot take it (`resolveModelOverride`). Unlike
+  // its siblings, absent does NOT mean the agent's model (that is the provider that just failed): a
+  // fallback exists only when BOTH a provider and a model are named.
   provider: oneOf(MODEL_PROVIDERS)
     .nullable()
     .optional()
@@ -643,20 +578,10 @@ const modelFallback = z.looseObject({
 });
 
 // The 18 behavior blocks of `agent_settings_set`, each a partial patch over the stored block.
-// --- Blocks added by issue #402 ---------------------------------------------------------------
-//
-// Five blocks of the settings bag were written by the console and REST and reachable through MCP
-// not at all. Four were never registered anywhere; `guardrails` was the one deliberate omission, and
-// the reason was never written down. The guard that discovers this now
-// (tests/modules/agent-settings-mcp-parity.test.ts) probes the readers rather than reading a list,
-// so what follows only has to keep its promise: type and choice, never size.
+// tests/modules/agent-settings-mcp-parity.test.ts probes the readers so no block is left out.
 
-// NOTE: THE TWO DIRECTIONS PUBLISH DIFFERENT FIELDS, because two of the checks only mean something about
-// a REPLY. `activeChecks` drops `promptAdherence` and `answerRelevance` whenever the direction is
-// `input`, and the generated-reply guidance is only read for `output` (prompts.ts). Publishing them
-// under `input` advertised three settings that store, read back through agent_settings_get, and do
-// nothing — configuration that reports success, which is the same failure `appointmentReminders` was
-// removed from this change for. The console has always gated them behind `dir === "output"`.
+// The two directions publish different fields: `promptAdherence` and `answerRelevance` only mean
+// something about a REPLY (`activeChecks` drops them for `input`), as in the console.
 const sharedChecks = {
   toxicity: z.boolean().optional(),
   unsafeContent: z.boolean().optional(),
@@ -666,30 +591,11 @@ const sharedChecks = {
     .describe("matches the names in guardrails.competitors"),
 };
 
-// The two reply checks are REFUSED under `input`, not merely left unpublished. Splitting the
-// published shape was round 4; round 5 showed it was half a fix, because a loose object still
-// ACCEPTS them — and the shape `agent_settings_get` returns carries all five, so a caller doing the
-// most ordinary thing (read, change one field, write back) would have sent them and had them stored
-// as a silent no-op. The refusal names the field.
-//
-// Refused HERE and dropped from the read projection (modules/mcp/write.ts) together, because only
-// one of the two would trade a silent no-op for a broken round trip: a `get` that returns a field
-// the `set` refuses is a 400 for a caller who changed nothing.
-//
-// Still LOOSE otherwise, for the reason the header gives: an undeclared key reaches the readers as
-// before, so a field someone adds to the reader is merged rather than silently dropped. What is
-// refused is the specific, known, direction-wrong set.
-// PUBLISHED as a prohibition, not merely enforced. `docs/mcp.md` states the constraint this failed
-// on the first attempt: what the schema ENFORCES has to be what it PUBLISHES, because tools/list
-// ships the generated JSON Schema and a client may validate a call before sending it. A zod
-// `.check()` is invisible out there, so the client accepted what the server refused — the same shape
-// of mismatch the doc already records twice (a regex flag lost on the way out, a preprocess trim).
-// `z.never().optional()` serializes as `{"not": {}}`: both ends read the same rule.
+// The reply checks are REFUSED under `input` (a loose object would accept them as a silent no-op),
+// and dropped from the read projection in modules/mcp/write.ts so a read-then-write round trip holds.
+// `z.never().optional()` publishes as `{"not": {}}`, where a zod `.check()` would be invisible.
 const inputChecks = z.looseObject({
   ...sharedChecks,
-  // NOTE: These two only mean something about a REPLY — activeChecks drops them whenever the direction
-  // is `input` — so accepting them here would store configuration the runtime never acts on. That is
-  // the one outcome a caller cannot discover by trying, because what comes back is success.
   promptAdherence: z.never().optional(),
   answerRelevance: z.never().optional(),
 });
@@ -794,20 +700,8 @@ const kanban = z.looseObject({
     ),
 });
 
-// NOTE: Keyed BY THE CATALOG, and NOT by an open string-keyed record. Both of these are maps whose keys are
-// native tool names, and both readers DROP a key outside the catalog — so a record schema would
-// publish "any string" and let a typo be accepted by the API and ignored by the turn, which for a
-// precondition means an unguarded tool that reads as guarded. Generated from NATIVE_TOOL_NAMES so a
-// tool added later is publishable the day it ships instead of the day someone remembers this file.
-// NOTE: `__proto__` is refused BEFORE the object parser can lose it. It is the one key name that
-// survives JSON.parse as an own property and then disappears inside zod's loose-object rebuild, so
-// the entry reaches neither the write boundary nor the merge and the call answers ok having done
-// nothing — a tombstone the caller believes deleted an enforced rule, or a rule the catalog refusal
-// never sees. Checked on the RAW value, which is the only place it still exists.
-//
-// The runtime half of this hazard is already closed (#378 keys these maps on null-prototype objects
-// and looks up with Object.hasOwn); this is the same name at the transport boundary, where the loss
-// runs the other way.
+// `__proto__` is refused on the RAW value, before zod's loose-object rebuild silently drops it and the
+// call answers ok having done nothing (a removal that removed nothing, a rule never checked).
 const refuseProtoKey = <T extends z.ZodObject>(schema: T) =>
   schema.check((ctx) => {
     const raw = ctx.value as Record<string, unknown> | null;
@@ -822,11 +716,11 @@ const refuseProtoKey = <T extends z.ZodObject>(schema: T) =>
     }
   });
 
+// A map keyed BY THE NATIVE CATALOG, not an open record: both readers drop any other key, so "any
+// string" would accept a typo the turn then ignores (for a precondition, an unguarded tool).
 const nativeToolKeys = <T extends z.ZodTypeAny>(value: T) => {
-  // ONE instance shared by all thirteen keys, not thirteen `.optional()` calls. This is about the
-  // PUBLISHED schema, not about the parse: distinct instances serialize as thirteen full copies of
-  // the value, which for the precondition object alone came to 5.2 KB — 23% of the whole tool's
-  // schema, for one block, in a catalogue the model pays for on every conversation.
+  // NOTE: ONE shared instance: distinct ones serialize as a full copy per key in the published
+  // schema, which the model pays for on every conversation.
   const shared = value.optional();
   return refuseProtoKey(
     z.looseObject(
@@ -838,10 +732,8 @@ const nativeToolKeys = <T extends z.ZodTypeAny>(value: T) => {
   );
 };
 
-// The `set_labels` guard. A block of its own rather than a key beside the taxonomy, because
-// `settings.labels` is now REFUSED on the write (it was retired with the taxonomy, issue #568) and
-// because what this list does is fence a tool, not describe a vocabulary. Loose like its siblings,
-// so a field added to the reader later still reaches it.
+// The `set_labels` guard: a block of its own, since it fences a tool (`settings.labels` is refused on
+// write). Loose like its siblings.
 const setLabels = z
   .looseObject({
     protected: z
@@ -871,24 +763,15 @@ const toolGuidance = nativeToolKeys(toolNote().nullable()).describe(
   `per-native-tool guidance appended to that tool's description; null clears one. A key outside the catalog is dropped by the reader, so only the names published here take effect. Each note is refused above ${TOOL_INSTRUCTIONS_MAX} characters, not trimmed. PRECEDENCE: handoff_to_human and kanban_move_card also have a note in their own block (handoff.instructions, kanban.instructions); a non-empty value THERE wins over this map for that tool, so the value here applies only while the grouped one is empty.`,
 );
 
-// NOTE: The field descriptions live on the BLOCK, once, rather than on each field — the value is
-// serialized once per key, so a per-field `.describe()` is published thirteen times. That alone was
-// worth ~2 KB of a schema the model pays for on every conversation, and thirteen copies of the same
-// sentence is noise to the reader as much as it is bytes on the wire.
+// The field descriptions live on the BLOCK: the value is serialized once per key, so a per-field
+// `.describe()` would be published once per native tool.
 const toolPreconditions = nativeToolKeys(
   z
     .looseObject({
       kind: z.literal("attribute"),
       scope: z.enum(["conversation", "contact"]),
-      // BLANK IS REFUSED BY THE SERVER HERE, so it is published rather than left to the caller to
-      // discover. `parseToolPrecondition` trims both and returns null for either — and the write
-      // boundary REFUSES what does not parse instead of dropping it, so a schema-valid call came
-      // back as an MCP error with nothing in tools/list to predict it.
-      //
-      // The line that decides which refusals belong in the schema is whether JSON Schema can carry
-      // them faithfully. A pattern can. `modelFallback`'s half-named pair cannot — that is a
-      // requirement BETWEEN fields, and docs/mcp.md puts those in the description, which is where
-      // it already is.
+      // NOTE: Blank is refused by the write boundary (`parseToolPrecondition` trims to null), so the
+      // schema publishes it as a pattern, which JSON Schema carries faithfully.
       key: nonBlank("must not be blank"),
       // NOTE: blank is refused rather than treated as absent, and the reader says why: dropping it
       // would turn "the attribute must equal X" into "the attribute must exist", a weaker rule than
@@ -908,10 +791,8 @@ const toolPreconditions = nativeToolKeys(
   "per-native-tool precondition, checked by the runtime BEFORE the call runs (send `null` for a tool to remove its rule): `key` is the custom-attribute key that must be set on the chosen `scope`, and `equals` is the required value (omit it to require any non-blank value). Unmet, the tool does not run and the model is told why. Only native tools can be guarded (issue #389 tracks the rest).",
 );
 
-// What a monitoring agent does with what it reads (issue #477). Descriptions kept to the bone: the
-// MCP schema ceiling (tests/modules/mcp-tool-descriptions.test.ts) is a ratchet, and the reader has
-// docs/chatwoot.md for the rest. The label groups that used to live here are gone with the
-// classifier (issue #568): a watcher labels with `set_labels` like any other agent.
+// What a monitoring agent does with what it reads. Descriptions kept short: the MCP schema ceiling
+// (tests/modules/mcp-tool-descriptions.test.ts) is a ratchet, and docs/chatwoot.md has the rest.
 const monitoring = z.looseObject({
   analysis: oneOf(["incremental", "on_resolve"] as const)
     .optional()

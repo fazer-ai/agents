@@ -13,27 +13,13 @@ import {
   parseChatwootMessages,
 } from "@/modules/chatwoot/messages";
 
-// A turn that dies leaves the customer with no reply, and the only traces are an `error` line in
-// `execution_logs`, `Conversation.lastError` in our console, and an `AlertChannel` dispatch when one
-// is configured. None of those is open in front of the person working the inbox, so a dead turn is
-// indistinguishable from an agent that chose to stay silent. This posts a private note (agents see
-// it, the customer does not) saying so.
-//
-// The hard part is not the note: it is knowing when the turn is DEFINITIVELY lost. The note tells an
-// operator to take over, and taking over closes `shouldBotHandle` — the gate a pending retry depends
-// on — so a premature note causes the failure it reports. Hence the rule below, and hence the fact
-// that this is NOT called from the handlers' catch blocks (issue #71):
-//
-//   * a job that will be retried is not lost, so the announcement hangs off the DEAD-LETTER event
-//     rather than off the failure. `failJob` reports whether its CAS actually dead-lettered, which
-//     also covers the flush that was re-armed mid-run (`armDebounce` upserts the CLAIMED row back to
-//     PENDING, the CAS then matches nothing, and another flush is already queued). The DEAD row can
-//     be re-armed AFTER that too, so the state is re-read at announce time (see `assess` below);
-//   * on the direct webhook path there is no job and no retry, so what has to be excluded is a NEWER
-//     message whose own turn may still answer — the same supersede fence the success path applies at
-//     `shouldPost`. A fence that cannot be read is `unknown`, and unknown does not announce: the cost
-//     of a missing note is an operator who finds out from the console, the cost of a wrong one is a
-//     conversation taken over while its answer was still coming.
+// Posts a private note when a turn is definitively lost, so the person working the inbox can tell a
+// dead turn from an agent that chose silence. The note makes an operator take over, which closes
+// `shouldBotHandle` (the gate a pending retry depends on), so a premature note causes the failure it
+// reports. That is why it hangs off the dead-letter event, never a handler's catch: a job announces
+// only when its `failJob` CAS actually moved the row to DEAD, and the direct path only when no newer
+// incoming message exists (the `shouldPost` supersede fence). An unreadable fence does not announce:
+// a missing note costs less than a conversation taken over while its answer was still coming.
 
 export type TurnFailure =
   // A scheduler job. `deadLettered` is the CAS result, not the attempt count: only the statement that
@@ -167,16 +153,9 @@ function noteText(reason: string): string {
 }
 
 // Best-effort from end to end: a Chatwoot that is down must never turn one failed turn into two.
-//
-// `assess` is deliberately a callback rather than a value. The failure and the announcement are
-// separated by database and network work, and a message arriving in that gap starts a direct turn or
-// re-arms the DEAD debounce row back to PENDING — so a snapshot taken at failure time can announce
-// over work that is already live, which is the one outcome this whole module exists to avoid. It is
-// therefore called as late as it can be, right before the claim, and after the reads that could fail
-// for their own reasons (resolving the persona bot burns nothing when it comes back empty).
-//
-// What remains is the claim→post gap, which is irreducible: Chatwoot is the source of truth for
-// "another message arrived" and we cannot hold a lock across it.
+// `assess` is a callback called right before the claim, because a message arriving after the failure
+// can start a direct turn or re-arm the DEAD debounce row, and a snapshot taken at failure time would
+// announce over live work. The claim-to-post gap remains: no lock spans Chatwoot.
 export async function announceFailedTurn(params: {
   tenantId: bigint;
   instanceId: bigint;

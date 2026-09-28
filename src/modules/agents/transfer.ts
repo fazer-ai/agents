@@ -1,18 +1,11 @@
-// Agent export/import (item 3) — share + reuse an agent's full configuration across tenants/
-
-// instances WITHOUT ever moving a secret. This whole module is a Full-distribution feature.
+// Agent export/import: share an agent's full configuration across tenants and instances WITHOUT
+// ever moving a secret. A Full-distribution feature.
 //
-// The export is a self-contained JSON that references everything BY NAME (never by id and never the
-// secret value): the system prompt, the model config, the behavior settings (debounce/stt/tts/split/
-// serviceWindow/grounding), and the tool grants (HTTP tool name, code tool name, MCP server name,
-// integration catalogType+name, KB names). Credential refs are stored internally as `vault:<id>` (tenant-local),
-// so export translates them id→NAME and import translates NAME→`vault:<id>` in the target tenant
-// (collectCredRefs/remapCredRefs). `assertNoSecrets` (the n8n-export value scanner) is the backstop: the
-// export REFUSES if any concrete secret-shaped value slipped in. Import recreates the agent DISABLED,
-// resolves each reference by name in the target tenant. A credential missing at the destination is
-// re-created as an empty PENDING vault entry with the ref kept wired (so the operator only fills the
-// secret); anything still unresolvable is warned (the agent stays incomplete but never breaks).
-// Secret VALUES are never imported, only empty placeholders.
+// The export references everything BY NAME (never by id, never a secret value). Credential refs are
+// `vault:<id>` internally, so export maps id to name and import maps name back in the target tenant;
+// `assertNoSecrets` refuses an export where a secret-shaped value slipped in. Import recreates the
+// agent DISABLED; a missing credential becomes an empty PENDING vault entry with the ref kept wired,
+// and anything still unresolvable is a warning, never a failure.
 
 import { z } from "zod";
 import { Prisma, type PrismaClient } from "@/../generated/prisma/client";
@@ -145,7 +138,7 @@ const exportedGrantSchema = z.discriminatedUnion("source", [
     enabledTools: z.array(z.string()),
   }),
   // By NAME, like an HTTP tool's. No enabledTools: a code tool grant exposes exactly one tool, the
-  // way a document template's does (issue #363).
+  // way a document template's does.
   z.object({ source: z.literal("CODE"), tool: z.string() }),
   z.object({
     source: z.literal("MCP"),
@@ -166,20 +159,10 @@ const exportedGrantSchema = z.discriminatedUnion("source", [
   z.object({ source: z.literal("DOCUMENT"), documentTemplate: z.string() }),
 ]);
 
-// A grant whose SOURCE this build does not know — one a newer release added — is dropped with a
-// warning instead of failing the whole bundle. A discriminated union refuses the entire array on one
-// unknown arm, so without this a single grant of a kind we have not heard of makes an otherwise
-// importable agent unimportable, and the operator is told nothing about which part was the problem.
-//
-// This does NOT help an OLDER instance read a bundle written here — nothing in this file can, and
-// bumping the format version would only trade a confusing refusal for a clean one while making every
-// bundle without a document grant refusable too, which is the trade `riskTier` above already
-// rejected for the same reason. What it does is stop the next arm from breaking this direction.
-//
-// Restricted to sources this build has never HEARD of. Without that restriction the fallback also
-// swallowed a malformed grant from a source we do know — `{source:"DOCUMENT"}` with no template —
-// dropping it silently and blaming a newer version for it, when the honest answer is that the
-// bundle is broken and the import should say so.
+// A grant whose SOURCE this build has never heard of (a newer release added it) is dropped with a
+// warning instead of failing the bundle, since a discriminated union refuses the whole array on one
+// unknown arm. A malformed grant from a KNOWN source still fails: the bundle is broken, not newer.
+// This does not help an older instance read a bundle written here; nothing in this file can.
 const KNOWN_GRANT_SOURCES = new Set(
   exportedGrantSchema.options.map((o) => o.shape.source.value as string),
 );
@@ -193,15 +176,8 @@ const importedGrantSchema = z.union([
     .transform(() => null),
 ]);
 
-// Full component definitions (opt-in via ?components=true). Each references its credential BY NAME
-// (never id, never secret); integrations carry NO inboundSecretRef/routeTokenHash (regenerated on
-// import). Knowledge bases carry metadata; their documents' SOURCE TEXT is bundled only with the
-// separate ?documents opt-in (re-chunked + re-embedded at the destination — embeddings/chunks, being
-// derived and model-specific, are never exported).
-// Wire-format constant, not data. `tool_definitions.risk_tier` was retired behind `@ignore` (#176)
-// and then dropped from the database (#149), so there is no field on the row to read: the export
-// writes this instead. The KEY stays on the wire for the reason spelled out on `riskTier` below,
-// and the value is arbitrary because no build in any supported version acts on it.
+// Wire-format constant: the risk tier column no longer exists, but the `riskTier` key stays on the
+// wire (see below), and its value is arbitrary because no supported version acts on it.
 const RETIRED_RISK_TIER = "medium";
 
 // A field map as the bundle wrote it, kept KEY FOR KEY. `z.record` would rebuild it, and the one
@@ -226,34 +202,25 @@ const exportedHttpToolSchema = z.object({
   // Optional so exports produced before query existed still import (defaults to {}).
   query: z.record(z.string(), z.unknown()).optional(),
   body: z.record(z.string(), z.unknown()),
-  // Retired (issue #137) and read by nothing. The KEY outlives the column, and outlives the schema
-  // ignoring it, because they are different compatibility surfaces. A rollback is one operator on one instance minutes apart,
-  // which is what #149's one-release wait bounds; a bundle is a file handed to ANOTHER instance at
-  // an arbitrary version, and the format is versioned as a whole (`version: z.literal(1)`), so an
-  // instance one release behind parses our bundle with a schema where this key is REQUIRED.
-  // Omitting it would make every bundle this build writes unimportable there, and bumping the
-  // version would only trade that for a cleaner refusal while also making THIS build reject every
-  // v1 bundle. So the export echoes RETIRED_RISK_TIER instead of the row, and this stays optional
-  // in both directions: a bundle written after the column is dropped still imports, and one written
-  // before it does too, with the value discarded on the way in.
+  // Read by nothing, but the KEY stays: a bundle is read by other instances at arbitrary versions
+  // under one format version, and an instance one release behind requires it. Omitting it would make
+  // every bundle written here unimportable there, and bumping the version would make this build
+  // reject every v1 bundle. So the export writes RETIRED_RISK_TIER, and the key is optional both ways.
   riskTier: z.string().optional(),
   ackEnabled: z.boolean(),
   ackMessage: z.string().nullable().optional(),
   credentialRef: z.string().nullable().optional(),
-  // Optional so bundles exported before issue #59 still import (defaults to [], which is today's
-  // "every non-2xx is a failure").
+  // Optional so older bundles still import; absent is [], "every non-2xx is a failure".
   expectedStatuses: z.array(z.number()).optional(),
-  // Optional for the same reason, one issue later (#352): a bundle exported before the column
-  // existed carries nothing here, which is what every tool declared then.
+  // Optional: a bundle from before the column carries nothing, which is what every tool declared then.
   appointment: z.record(z.string(), z.unknown()).nullable().optional(),
-  // The NAME of the GENERIC integration this tool hands `{{conversation_ref}}` for (issue #818),
-  // bundled beside it in `integrations`. By name because an id is tenant-local; optional because a
-  // bundle written before the column carries nothing, which is what every tool declared then.
+  // The NAME of the GENERIC integration this tool hands `{{conversation_ref}}` for, bundled beside it
+  // in `integrations`. By name because an id is tenant-local; optional for older bundles.
   conversationRefIntegration: z.string().nullable().optional(),
 });
-// An operator-authored code tool (issue #363). The body is the "wiring", the way an HTTP tool's
-// request is, and it travels for the same reason: without it the grant points at nothing. No
-// credential: the sandbox reaches nothing outside the thread, so there is none to name.
+// An operator-authored code tool. The body is its wiring, the way an HTTP tool's request is, and it
+// travels so the grant points at something. No credential: the sandbox reaches nothing outside the
+// thread.
 const exportedCodeToolSchema = z.object({
   name: z.string(),
   label: z.string().nullable().optional(),
@@ -305,14 +272,13 @@ const exportedKnowledgeDocumentSchema = z.object({
   fileName: z.string().nullable().optional(),
   mimeType: z.string().nullable().optional(),
   content: z.string(),
-  // A synced document's article (issue #794). Carried so a base that keeps its source at the
-  // destination readopts these documents by id instead of creating a copy of each; optional for
-  // bundles from before it existed, which read as ordinary documents.
+  // A synced document's article, carried so a base that keeps its source at the destination readopts
+  // these documents by id instead of copying each; optional for older bundles.
   externalId: z.string().nullable().optional(),
   sourceUrl: z.string().nullable().optional(),
 });
-// A base's help center source (issue #794), as the operator configured it. Re-validated on import
-// like the write validates it, so a bundle cannot store what the API would refuse.
+// A base's help center source, as the operator configured it. Re-validated on import like the write
+// validates it, so a bundle cannot store what the API would refuse.
 const exportedKnowledgeSourceSchema = z.object({
   kind: z.string(),
   baseUrl: z.string(),
@@ -327,8 +293,7 @@ const exportedKnowledgeBaseSchema = z.object({
   embeddingModel: z.string().optional(),
   chunkSize: z.number().optional(),
   chunkOverlap: z.number().optional(),
-  // Optional for bundles exported before the switch existed (issue #747): absent reads as off, the
-  // column default, which is what those bases had.
+  // Optional for older bundles: absent reads as off, the column default.
   stripContactFooters: z.boolean().optional(),
   // Optional: absent (older bundles) and null both mean the base mirrors nothing.
   source: exportedKnowledgeSourceSchema.nullable().optional(),
@@ -349,6 +314,9 @@ const exportedBusinessHoursSchema = z.object({
   exceptions: z.array(z.unknown()).optional(),
   source: z.string().optional(),
 });
+// Full component definitions (opt-in via ?components=true), each credential by NAME. Integrations
+// carry no inbound secret or route token hash (regenerated on import). Knowledge base document text
+// travels only with ?documents, and is re-chunked and re-embedded at the destination.
 const exportedComponentsSchema = z.object({
   httpTools: z.array(exportedHttpToolSchema),
   // Optional for back-compat: a bundle written before code tools existed simply has none.
@@ -439,12 +407,9 @@ function dedupeWarnings(ws: ImportWarning[]): ImportWarning[] {
   const seen = new Set<string>();
   const out: ImportWarning[] = [];
   for (const w of ws) {
-    // The TARGET is part of the identity, not decoration: two warnings with the same code and the
-    // same rendered params can still be about two different components. That is not hypothetical
-    // once any param is clipped — two knowledge bases whose names share their first 60 characters
-    // render identically, and both are skipped while only one is reported (#501, review round 16).
-    // Where the duplicates this function exists for come from — one credential referenced from
-    // several paths — the target is the same object, so they still collapse.
+    // NOTE: The TARGET is part of the identity: two warnings with the same code and rendered params
+    // can be about different components (a clipped name param makes two bases look alike). The
+    // duplicates this exists for (one credential referenced from several paths) share the target.
     const key = `${w.code}|${JSON.stringify(w.params ?? {})}|${JSON.stringify(
       w.target ?? {},
     )}`;
@@ -784,9 +749,9 @@ export async function exportAgent(
       const httpRows = httpIds.length
         ? await db.toolDefinition.findMany({ where: { id: { in: httpIds } } })
         : [];
-      // The GENERIC instances the bundled tools hand `{{conversation_ref}}` for travel with them
-      // (issue #818): nothing grants a GENERIC to an agent, so the grant walk above never finds
-      // them, and a tool imported without its instance refuses every call at the destination.
+      // NOTE: The GENERIC instances the bundled tools hand `{{conversation_ref}}` for travel with them:
+      // nothing grants a GENERIC to an agent, so the grant walk above never finds them, and a tool
+      // imported without its instance refuses every call at the destination.
       const refIntegrationIds = httpRows
         .map((r) => r.conversationRefIntegrationId)
         .filter((x): x is bigint => x != null);
@@ -908,9 +873,8 @@ export async function exportAgent(
           ackMessage: r.ackMessage,
           credentialRef: r.credentialRef,
           expectedStatuses: r.expectedStatuses,
-          // Carried, because a bundle that drops it re-imports the tool WITHOUT its declaration and
-          // the agent then books appointments the platform never hears about — the exact silence
-          // issue #352 removed, reintroduced by a round trip nobody would think to check.
+          // NOTE: Carried, because a bundle that drops it re-imports the tool WITHOUT its declaration,
+          // and the agent then books appointments the platform never hears about.
           appointment: (r.appointment ?? null) as Record<
             string,
             unknown
@@ -1129,24 +1093,11 @@ export interface ImportAgentResult {
   warnings: ImportWarning[];
 }
 
-// THE DRY RUN IS THE APPLY, ROLLED BACK.
-//
-// The alternative was a second walk that mirrors this one's decisions, and three review rounds of
-// #501 were spent discovering how many there are to mirror: a name that moves off a native or off
-// the other kind's namespace, a row already under the stored MODEL-FACING name (reused), two rows
-// under it (ambiguous, skipped), a template that publishes the same name, a method or a url template
-// this build cannot store, and the same questions again for code tools. Every one of those was a
-// preview claiming a component the apply would not create, or naming as skipped one it reuses.
-//
-// So the preview runs the import and throws this at the end, inside the transaction, instead of
-// answering from a copy of the rules. What it reports is what the apply produces, by construction,
-// and it cannot drift because there is nothing to drift from.
-//
-// What it costs, said plainly: a dry run now does the work of an import and takes its locks —
-// `lockToolNames` included — for the duration, and the sequences it consumes do not come back. That
-// is real, and it is the price of a preview that is not a second implementation. It is bounded by
-// the same transaction the apply is bounded by, and a dry run is an operator action rather than a
-// per-turn one.
+// The dry run IS the apply, rolled back: the preview runs the import and throws this at the end,
+// inside the transaction, so what it reports is what the apply produces. A second walk mirroring the
+// apply's decisions (reuse, ambiguity, namespace moves, unstorable methods) drifts from it. The cost:
+// a dry run takes the import's locks (`lockToolNames` included) for its duration, and the sequences
+// it consumes do not come back.
 class DryRunRollback extends Error {
   constructor(readonly result: ImportAgentResult) {
     super("dry run");
@@ -1263,9 +1214,8 @@ export async function importAgent(
         refByName.set(name, null);
         continue;
       }
-      // The name the vault would STORE, which is what the lookup below has to ask about: the write
-      // trims, so resolving the bundle's spelling verbatim reported ` cred ` as missing and the
-      // insert then collided with the row it had just failed to find (review round 10).
+      // NOTE: The name the vault would STORE (the write trims), so the lookup below and the insert
+      // agree on which row a spelling like ` cred ` means.
       const storedName = storedVaultName(name);
       if (storedName === null) {
         warnings.push({
@@ -1276,23 +1226,18 @@ export async function importAgent(
         refByName.set(name, null);
         continue;
       }
-      // ON `db`: this read belongs to the import's transaction, like the write below. A lookup on a
-      // separate connection cannot see what the import has already written, so a bundle naming the
-      // same missing credential twice under trim-equivalent spellings resolved the second one as
-      // missing too and the insert collided with the row from the first (review round 11).
+      // NOTE: On `db`, inside the import's transaction: a separate connection cannot see what the
+      // import already wrote, so a credential named twice under trim-equivalent spellings would read
+      // as missing again and collide on insert.
       const resolution = await resolveVaultRefByNameOn(db, storedName, kind);
       if (resolution.status === "found") {
         refByName.set(name, resolution.ref);
       } else {
-        // Not in the target tenant yet: instead of dropping the ref, create a reference-only PENDING
-        // vault entry (name + kind) and KEEP the ref wired. The operator then only fills the secret
-        // (config-health + the vault list surface a pending entry), never re-links by hand after import.
-        // Some kinds can't be pending — managed OAuth, or ones needing a baseUrl/paramName the export
-        // metadata doesn't carry — so fall back to leaving the field unset for those. That question
-        // is asked BEFORE the write, by the guard the write itself asks, rather than by catching
-        // whatever the write throws: this runs inside the import's transaction now, and a statement
-        // that fails in there aborts the transaction, so swallowing a database error would carry on
-        // over a connection where every following statement fails.
+        // NOTE: Not in the target tenant yet: create a reference-only PENDING vault entry (name + kind)
+        // and KEEP the ref wired, so the operator only fills the secret. Some kinds cannot be pending
+        // (managed OAuth, or ones needing a baseUrl/paramName the export lacks) and leave the field
+        // unset. That is asked BEFORE the write, by the write's own guard, never by catching the write:
+        // a failed statement aborts the import's transaction and every statement after it.
         let creatable = true;
         try {
           assertPendingVaultEntryCreatable({ name: storedName, kind });
@@ -1340,17 +1285,11 @@ export async function importAgent(
       },
     );
 
-    // Every credential the bags ended up wired to, judged against what the FIELD reads it as. Only
-    // reachable through an import: the direct write boundary refuses this pairing (requireVaultRefFor),
-    // and the ref that lands here can come from a payload authored anywhere — the export carries the
-    // kind, so a bundle can name a `google_oauth` entry on the model and the (name, kind) lookup above
-    // will happily match it.
-    //
-    // Warned rather than refused, and rather than unset. Refusing would reject a whole bundle over one
-    // field, which is the rule this file already rejects for over-cap prose; unsetting would erase the
-    // only record of which credential the author meant, and the entry EXISTS, unlike the
-    // `credentialNotFound` case that unsets. So the ref stays wired, the operator is told at import
-    // time, and config-health keeps saying it until they act. Issue #471.
+    // NOTE: Every credential the bags ended up wired to, judged against what the FIELD reads it as.
+    // Only an import reaches this (the direct write refuses the pairing): a bundle can name a
+    // `google_oauth` entry on the model and the (name, kind) lookup matches it. Warned, not refused
+    // (one field would reject the whole bundle) and not unset (the entry exists, and the ref is the
+    // only record of what the author meant); config-health keeps saying it until the operator acts.
     const wiredFacts = new Map<string, VaultEntryFacts | null>();
     for (const write of collectCredentialRefWrites(
       { modelConfig, settings },
@@ -1383,12 +1322,9 @@ export async function importAgent(
       });
     }
 
-    // The protected-label list over its ceiling is clamped for exactly the reasons above, and one
-    // more that is specific to it: `readProtectedLabels` stops AT the ceiling, so a longer stored
-    // list shows the operator guards that guard nothing — the console reloads what was stored, and
-    // the tool honours only the first ones. The direct writes refuse (the person is at the keyboard);
-    // a bundle authored elsewhere is clamped, warned about, and lands disabled and in test mode for
-    // the operator to review (issue #568, review round 23).
+    // NOTE: The protected-label list over its ceiling is clamped for the same reasons, and one more:
+    // `readProtectedLabels` stops AT the ceiling, so a longer stored list would show the operator
+    // guards that guard nothing. The imported agent lands disabled and in test mode for review.
     const dropped = clampProtectedLabelsInPlace(settings);
     if (dropped > 0) {
       warnings.push({
@@ -1418,10 +1354,10 @@ export async function importAgent(
     // the grants (so buildGrantRows finds them by name). Components of the same name are reused, never
     // overwritten. Credentials are re-linked by name where resolved; otherwise left unset.
     //
-    // ...AND BEFORE THE AGENT ROW, which is not where this used to sit. The settings bag carries the
-    // operator's rules keyed by tool NAME, and a bundled tool that had to be stored under another
-    // name takes its rules with it — so the rename map has to exist before the bag is written. The
-    // migration settles the same two moves in the same order, for the same reason (review r6).
+    // ...AND BEFORE THE AGENT ROW. The settings bag carries the operator's rules keyed by tool NAME,
+    // and a bundled tool that had to be stored under another name takes its rules with it, so the
+    // rename map has to exist before the bag is written. The migration settles the same two moves in
+    // the same order, for the same reason.
     let renamed: RenamedComponents = {
       httpTools: new Map(),
       codeTools: new Map(),
@@ -1466,12 +1402,9 @@ export async function importAgent(
         ),
       ),
     );
-    // What create would refuse, normalized and named (#631): a closed value outside its domain, half a
-    // fallback, a tool guard that cannot parse. Asked of the bag AS IT WILL BE STORED, after the
-    // renames and strips above, so a note under a pre-rename native name is judged under the name the
-    // schema checks rather than passing as an unknown key.
-    // Named one by one up to a point, and counted past it: a bundle can carry thousands of unusable
-    // entries in one list, and a warning apiece would be the whole response.
+    // NOTE: What create would refuse (a closed value outside its domain, half a fallback, a tool guard
+    // that cannot parse), asked of the bag AS IT WILL BE STORED, after the renames and strips above.
+    // Named one by one up to a point and counted past it: a bundle can carry thousands of entries.
     const unusable = dropUnusableImportedSettingsInPlace(storable);
     let named = 0;
     for (const field of unusable.paths) {
@@ -1511,11 +1444,10 @@ export async function importAgent(
     if (unknownGrants > 0) {
       warnings.push({
         code: "unknownGrantSourceSkipped",
-        // NOTE: `n` is the name this count carried before #513 and is kept ONLY for the rolling-deploy
-        // overlap (docs/deploy.md): during it an editor loaded from the previous release is still
-        // reading `{{n}}`, and it renders the placeholder literally if the field is gone. The
-        // console reads `count` and falls back to `n`, so the pair covers the skew in both
-        // directions. Drop `n` once no container from that release can serve.
+        // NOTE: `n` is the count's previous name, kept ONLY for the rolling-deploy overlap
+        // (docs/deploy.md): an editor from the previous release still reads `{{n}}` and renders the
+        // placeholder literally without it. The console reads `count` and falls back to `n`.
+        // TODO: drop `n` once no container from the previous release can serve.
         params: { count: unknownGrants, n: unknownGrants },
       });
     }
@@ -1557,10 +1489,9 @@ export async function importAgent(
     if (e instanceof DryRunRollback) return e.result;
     throw e;
   });
-  // Every integration an import creates gets a route token (above), so an import can be the moment
-  // a tenant first has an inbound surface, and the boot arm only reached tenants that had one then
-  // (issue #817, review round 1). After the commit and never on a dry run, which wrote nothing;
-  // best-effort, like the arm on `createIntegrationInstance`.
+  // NOTE: An import can be the moment a tenant first has an inbound surface (every imported
+  // integration gets a route token), and the boot arm only reaches tenants that had one then. After
+  // the commit and never on a dry run; best-effort, like the arm on `createIntegrationInstance`.
   if (!opts.dryRun && components?.integrations?.length) {
     await ensureInboundSweep(tenantId, base).catch((err) =>
       logger.warn(
@@ -1572,18 +1503,10 @@ export async function importAgent(
   return imported;
 }
 
-// An integration config may reference a business-hours schedule by id (Google Calendar's
-// `businessHoursId`). On EXPORT we rewrite that id to the schedule's NAME so it survives the tenant hop
-// (the referenced schedule is also bundled in components.businessHours); on IMPORT the name is resolved
-// back to the local id. A config with no such ref, or an unresolved one, is left untouched.
-// The schedule an integration config references, read the way the RUNTIME reads it.
-//
-// `resolveBusinessHoursId` in the Calendar toolpack trims before using the value, so a config
-// holding `" 7 "` is a working configuration pointing at schedule 7. Both halves of the export have
-// to agree with that reader or they disagree with each other: the bundling below would omit a
-// schedule the tool actually uses, and the id→name rewrite would leave a destination-invalid id in
-// the config. Bounded as well as trimmed, because a run of digits past 2^63-1 converts under
-// `BigInt` and would reach the `in` clause as a bind error. Issue #407.
+// The schedule an integration config references (Google Calendar's `businessHoursId`), read the way
+// the RUNTIME reads it: `resolveBusinessHoursId` trims, so `" 7 "` is a working pointer at schedule 7,
+// and the export's bundling and id-to-name rewrite must agree with that. Bounded too, since digits
+// past 2^63-1 convert under `BigInt` and would reach the `in` clause as a bind error.
 export function configBusinessHoursId(
   config: Record<string, unknown> | null,
 ): bigint | null {
@@ -1591,6 +1514,9 @@ export function configBusinessHoursId(
   return typeof raw === "string" ? parseDbId(raw.trim()) : null;
 }
 
+// On EXPORT the config's schedule id becomes the schedule's NAME, so it survives the tenant hop (the
+// schedule is bundled too); on IMPORT the name resolves back to the local id. A config with no such
+// ref, or an unresolved one, is left untouched.
 export function remapConfigBusinessHoursIdToName(
   config: Record<string, unknown>,
   bhNameById: Map<string, string>,
@@ -1638,25 +1564,12 @@ async function resolveByName(
   return row.id;
 }
 
-// Recreates the bundled business-hours schedules missing on the target tenant. A same-name schedule is
-// reused (warned, never overwritten) — its windows may differ from the source, so the operator should
-// review it. Runs before the agent's hours/follow-up names are resolved.
 type EntryFate = "dropped" | "altered" | "intact";
 
-// How many bundled entries do not reach the column as written. Three things it has to get right, and
-// each one was a wrong answer first:
-//
-//   - a subtraction of ARRAY LENGTHS misses the entry that survives and still loses something.
-//     `parseExceptions` prunes the RANGES inside an exception it keeps, so a half-day written
-//     backwards (14:00–09:00) loses its only range and lands as `ranges: []`, which means CLOSED ALL
-//     DAY: a different schedule than the bundle asked for, arriving with nothing said;
-//   - the verdict per entry is taken by running the REAL parser over that entry alone, never by a
-//     second copy of its rules, so this cannot drift from what actually gets stored;
-//   - the cap counts SURVIVORS, not positions. A malformed entry does not consume a slot, so testing
-//     the first `cap` raw items over-reports by one for every one of them (measured: one bad window
-//     followed by 200 good ones stores all 200 and would have been reported as two lost). The walk
-//     below therefore tracks how many have been stored so far, which is exactly what decides whether
-//     the next survivor lands or is truncated away.
+// How many bundled entries do not reach the column as written. The verdict per entry comes from the
+// REAL parser run over that entry alone, and it counts an entry that survives but loses something (a
+// backwards range pruned to `ranges: []` means CLOSED ALL DAY). The cap counts SURVIVORS, not
+// positions: a malformed entry does not consume a slot, so the walk tracks how many were stored.
 function countNotStoredAsWritten(
   raw: unknown[],
   cap: number,
@@ -1683,23 +1596,11 @@ function rangeCount(item: unknown): number {
   return Array.isArray(ranges) ? ranges.length : 0;
 }
 
-// The half of a bundled schedule this instance can actually read, with everything it dropped named
-// in a warning. Both JSON columns arrive as `z.array(z.unknown())` and this path writes to the table
-// directly rather than through `createBusinessHours`, so the import is the one writer that never
-// answers to `businessHoursCreateSchema`: nothing between a hand-authored file and the column asks
-// whether an entry is readable at all.
-//
-// Storing what the READER surfaces settles that, and the reader is the right authority precisely
-// because it is entry-by-entry and bounded. One unreadable window then costs that window instead of
-// the whole grid, which matters here more than the tidiness suggests: an empty grid is not "closed",
-// it is ALWAYS OPEN, so the as-a-unit reading turned a typo in a bundle into an agent that answers
-// around the clock on the destination tenant (issue #346).
-//
-// The two rejected alternatives fail in that same direction. Refusing the whole BUNDLE over one
-// field is the wrong trade for a bulk restore. SKIPPING just this schedule is worse than it looks:
-// the agent then resolves no business hours at all, which is the very always-open state being fixed.
-// So the schedule always lands, carrying what could be read, and the warning is what keeps the drop
-// from being one more silence.
+// The half of a bundled schedule this instance can actually read, with everything dropped named in a
+// warning. The import writes the table directly, not through `createBusinessHours`, so nothing else
+// asks whether an entry is readable. Entry by entry, because an empty grid is ALWAYS OPEN: rejecting
+// the grid as a unit, or skipping the schedule, turns one typo into an agent that answers around the
+// clock. Refusing the whole bundle over one field is the wrong trade for a bulk restore.
 function readableSchedule(
   h: ExportedBusinessHours,
   warnings: ImportWarning[],
@@ -1743,6 +1644,9 @@ function readableSchedule(
   return { windows, exceptions };
 }
 
+// Recreates the bundled business-hours schedules missing on the target tenant. A same-name schedule is
+// reused (warned, never overwritten): its windows may differ from the source, so the operator should
+// review it. Runs before the agent's hours/follow-up names are resolved.
 async function createMissingBusinessHours(
   db: ScopedDb,
   tenantId: bigint,
@@ -1783,18 +1687,14 @@ async function createMissingBusinessHours(
   }
 }
 
-// The name a bundled tool that carries a native's name is stored under: the first `<base>_N`
-// (N from 2) not in `taken`, which is what the bundle itself carries and what the import has
-// already chosen — a bundle holding `calculator` and `calculator_2` gave the first one `_2`, then
-// "reused" the genuine `_2` onto it, and two grants for one row broke the unique index and
-// aborted the import (round 16). Decided by the BUNDLE alone, never by what is stored: a row
-// already under that name is then reused, warned, the way every same-name component is, so the
-// same bundle imported twice binds both agents to one row instead of storing a copy per import
-// (round 17). The migration `rename_http_tools_named_after_natives` walks past stored rows
-// instead, because both of its rows are real and both must survive.
 // The provider's own ceiling on a tool name, and `normalizeToolName`'s: a name past it is refused
 // with the WHOLE function list.
 const TOOL_NAME_MAX = 64;
+// The name a bundled tool carrying a native's name is stored under: the first `<base>_N` (N from 2)
+// not in `taken`, which holds what the bundle carries and what the import already chose, so two
+// entries never land on one row. Decided by the BUNDLE alone: a stored row under that name is reused,
+// warned, so one bundle imported twice binds both agents to one row. The migration
+// `rename_http_tools_named_after_natives` walks past stored rows instead, because both rows are real.
 function renamedToolName(base: string, taken: ReadonlySet<string>): string {
   for (let n = 2; ; n++) {
     const suffix = `_${n}`;
@@ -1836,13 +1736,10 @@ function clipDescription(text: string): string {
   return clipText(text, TOOL_DESCRIPTION_MAX);
 }
 
-// The label a renamed tool is stored with. It follows the name where the console would derive
-// the old one from it: the console submits `normalizeToolName(label)` as the name on every save,
-// so a renamed row whose label still derived the reserved name could not be saved again from
-// there (round 20). A label that never derived it is the operator's own. Same rule as the
-// migration's. A label the suffix would push past the authoring limit becomes the name itself,
-// which derives to itself (round 22). Shared by the HTTP and the code loop: both kinds are
-// authored in the same console, under the same derivation.
+// The label a renamed tool is stored with. It follows the name where the old label derived the old
+// name, since the console submits `normalizeToolName(label)` as the name on every save; a label that
+// never derived it is the operator's own. Same rule as the migration's. Shared by the HTTP and the
+// code loop: both kinds are authored in the same console, under the same derivation.
 function renamedLabel(
   bundledName: string,
   storedName: string,
@@ -1854,29 +1751,20 @@ function renamedLabel(
   // ceiling has its stem trimmed before `_N` is appended (renamedToolName), so counting from the
   // bundled name starts past the end.
   const suffixed = `${bundledLabel} ${storedName.slice(storedName.lastIndexOf("_") + 1)}`;
-  // And then the only question that matters is asked of the RESULT, because the length rule this
-  // replaces answered a different one (round 26). A bundled name at the 64 ceiling has a label at
-  // the ceiling too, and ` 2` on the end of it normalizes back to 64 characters with the suffix
-  // CUT: the label derives the name the row could not take, the console submits that name on every
-  // save, and the tool cannot be saved again without renaming it by hand. Clipped first, since a
-  // label past TOOL_LABEL_MAX is trimmed on the way to the column and the trim can break the
-  // derivation the same way. The stored name always derives itself, so it is the fallback.
+  // NOTE: Then the only question that matters is asked of the RESULT: a label at the 64 ceiling with
+  // ` 2` appended normalizes back to 64 characters with the suffix CUT, deriving the name the row
+  // could not take, and the tool could not be saved again. Clipped first, since TOOL_LABEL_MAX trims
+  // on the way to the column and can break the derivation too. The stored name always derives
+  // itself, so it is the fallback.
   const clipped = clipLabel(suffixed);
   return normalizeToolName(clipped) === storedName ? clipped : storedName;
 }
 
-// CAN THIS BUILD STORE THE TOOL THIS BUNDLE DESCRIBES.
-//
-// Two readers, one answer, because the two refusals are the same shape: warn-and-skip rather than
-// canonicalize, since there IS no equivalent request. Falling back to GET would change what the tool
-// does, and there is no destination to invent for a template this build cannot turn into a URL — a
-// tool stored with one imports, gets granted, is offered to the model and throws on the first call
-// with `tool <name>: invalid urlTemplate`. Measured on a hand-edited bundle, which imported clean
-// with an empty warnings array and the row stored (#501).
-//
-// The url question comes from `urlTemplateProblem`, the function the write asks, rather than being
-// restated here: this path writes past the service, and a second copy of a rule is how the two come
-// to disagree.
+// Whether this build can store the tool the bundle describes. An unreadable method or a url template
+// this build cannot turn into a URL is warned and skipped, never canonicalized: falling back to GET
+// changes what the tool does, and a stored invalid template throws on the model's first call. The
+// url question is `urlTemplateProblem`, the one the write asks, since this path writes past the
+// service.
 export function importableHttpTool(
   tdef: ExportedHttpTool,
 ):
@@ -1909,15 +1797,11 @@ export function importableHttpTool(
   return { ok: true, method };
 }
 
-// The name a bundled HTTP or code tool is stored under. A native's name moves first, decided by
-// the bundle alone (above). Then a rule the two kinds share: ONE namespace reaches the model, and
-// each service refuses a name the OTHER kind holds where it is typed (tool-definitions/service.ts
-// and code-tools/service.ts ask each other's table), so a stored row of the other kind under the
-// name cannot be REUSED the way a same-kind row is, and the tool moves to the first `<name>_N`
-// the other kind does not hold. A same-kind row under THAT name is then reused like any other
-// same-name component, which is what lands a second import of the same bundle on the same row
-// instead of the next suffix. The walk asks the table because it has to: what the bundle carries
-// says nothing about what the destination stored under the other kind.
+// The name a bundled HTTP or code tool is stored under. A native's name moves first, decided by the
+// bundle alone. Then ONE namespace reaches the model, and each service refuses a name the OTHER kind
+// holds, so a row of the other kind under the name cannot be reused: the tool moves to the first
+// `<name>_N` the other kind does not hold, and a same-kind row under THAT name is reused. The walk
+// asks the table: the bundle says nothing about what the destination stored under the other kind.
 async function storedToolName(
   bundled: string,
   taken: Set<string>,
@@ -1940,12 +1824,10 @@ async function storedToolName(
   while (
     isNativeToolName(name) ||
     isRagToolName(name) ||
-    // A name a component of THIS import already landed on. The same-kind row under a name is
-    // normally REUSED (a second occurrence of one bundle entry finds the row the first wrote), and
-    // that is decided below, outside this walk — but two DISTINCT entries whose names normalize
-    // alike ("a b" and "a_b") are not one entry twice, and reading the second as a reuse discarded
-    // its definition and collapsed both grants onto one row (round 21). `claimed` carries only
-    // names a row actually exists under, so an entry the loop skipped frees the name again.
+    // NOTE: A name a component of THIS import already landed on. A same-kind row is normally REUSED
+    // (decided below, outside this walk), but two DISTINCT entries whose names normalize alike ("a b"
+    // and "a_b") are not one entry twice. `claimed` carries only names a row exists under, so an
+    // entry the loop skipped frees the name again.
     claimed.has(name) ||
     (await heldByOtherKind(name))
   ) {
@@ -1955,19 +1837,12 @@ async function storedToolName(
   return name;
 }
 
-// The part of a bundled template's validity that asks nothing of the database. Extracted because
-// TWO passes need the same answer and a second copy of the rules would drift from the first: the
-// name reservation below runs before the tool loops, and the insert loop runs after them.
-//
-// Re-validated on the way IN, never trusted as exported: a template written by a newer build can
-// carry a block this one does not know how to render, and a warning that names the reason is a
-// better import than a document that renders wrong in front of a customer. The SLUG goes through
-// the same gate as a hand-written one, because it becomes a tool name: one reading `image` produces
-// `send_image`, which the assembly then drops as a duplicate of the built-in. A bundle is
-// hand-editable and this path writes to the table directly rather than through
-// createDocumentTemplate, so every rule that write applies has to be applied here too. The
-// description is the one that bites: it is appended verbatim to the agent's tool description on
-// every turn, and an oversized one arriving in a bundle would do that on the destination.
+// The part of a bundled template's validity that asks nothing of the database, shared by the name
+// reservation (before the tool loops) and the insert loop (after them). Re-validated on the way IN:
+// a newer build's block may not render here, and the SLUG becomes a tool name (`image` would produce
+// `send_image`, a built-in's duplicate). This path writes the table directly, not through
+// createDocumentTemplate, so every rule that write applies is applied here, the description's cap
+// included (it is appended to the agent's tool description on every turn).
 function readBundledTemplate(
   tpl: z.infer<typeof exportedDocumentTemplateSchema>,
 ):
@@ -2021,19 +1896,11 @@ async function createMissingComponents(
   // concurrent tool create could commit into that table between the question and the insert
   // (namespace.ts). One acquisition covers every name this import claims.
   await lockToolNames(db);
-  // The `send_<slug>` tools the bundle's own templates will publish. They do not exist in the
-  // database yet — the templates are inserted after the tool loops — so the loops carry them.
-  //
-  // Only the templates that will actually CLAIM one, which is not the same as the templates the
-  // bundle carries (round 21). A template the loop below skips — unreadable, named like one the
-  // destination already has, or blocked by a tool that was already there — publishes nothing, and
-  // a bundled tool renamed off its name was renamed for nothing: the grant follows the rename, but
-  // a prompt naming the tool stops finding it while no document tool ever took the name.
-  //
-  // The questions are that loop's own, asked here against the tree BEFORE the tool loops write,
-  // and that order is the only one that terminates: reserving the name is precisely what keeps a
-  // bundled tool off it, so asking `toolHoldingName` afterwards would answer a question this
-  // answer decides.
+  // NOTE: The `send_<slug>` tools the bundle's own templates will publish, carried by the tool loops
+  // because the templates are inserted after them. Only templates that will actually CLAIM one: a
+  // template the loop below skips publishes nothing, and a tool renamed off its name would be renamed
+  // for nothing. The questions are that loop's own, asked here BEFORE the tool loops write, the only
+  // order that terminates: reserving the name is what keeps a bundled tool off it.
   const bundledDocumentNames = new Set<string>();
   const bundledTemplateTitles = new Set<string>();
   for (const tpl of components.documentTemplates ?? []) {
@@ -2086,19 +1953,16 @@ async function createMissingComponents(
   // chosen: a component the loop then skips (an unsupported method) writes no row, and holding its
   // name would push the next one off it for nothing.
   const claimed = new Set<string>();
-  // One stored name per bundle name: a bundle carrying the same native-named component twice (a
-  // hand-edited file) chose a new suffix per occurrence and the last one overwrote the grant
-  // mapping (round 18); the second occurrence now finds the first one's row and is reused.
+  // NOTE: One stored name per bundle name: the second occurrence of a native-named component (a
+  // hand-edited file) finds the first one's row and reuses it, instead of choosing another suffix.
   const chosen = new Map<string, string>();
   const conversationRefWiring: { tool: string; integration: string }[] = [];
   for (const tdef of components.httpTools) {
-    // A bundle authored before a native took the name (PR #485, round 15). The assembly reserves
-    // every native name (#457), so a tool stored under one would exist in the console and never
-    // reach the model; the service refuses the name where it is typed, and this path writes past
-    // the service. Stored under `<name>_N`, warned, so the operator learns the name a prompt may
-    // still use; a row already under it is reused like any other same-name component. A name a
-    // stored CODE tool holds moves the same way (`storedToolName`), since the two kinds share
-    // the namespace and the assembly would otherwise drop one of the pair.
+    // NOTE: A bundle authored before a native took the name. The assembly reserves every native name,
+    // so a tool stored under one would never reach the model, and this path writes past the service
+    // that refuses it. Stored under `<name>_N`, warned, so the operator learns the name a prompt may
+    // still use. A name a stored CODE tool holds moves the same way (`storedToolName`): the two kinds
+    // share the namespace.
     const name =
       chosen.get(tdef.name) ??
       (await storedToolName(
@@ -2121,9 +1985,8 @@ async function createMissingComponents(
     const label = clipLabel(
       renamedLabel(tdef.name, name, blankFallback(tdef.label, name)),
     );
-    // Recorded once a row under the new name EXISTS — written below, or found by the pre-check
-    // or the race — and not before: a component the checks below skip was otherwise announced
-    // as imported under a name no row carries, next to the warning that it was not (round 16).
+    // NOTE: Recorded once a row under the new name EXISTS (written below, or found by the pre-check or
+    // the race) and not before: a component the checks skip must not be announced as imported.
     const landed = (): void => {
       // Before the early return: a component stored under its OWN name occupies it just as much as
       // a renamed one, and the next component whose name normalizes to it must not read that row
@@ -2137,12 +2000,9 @@ async function createMissingComponents(
         target: { kind: "tool", name },
       });
     };
-    // Reuse is decided by the MODEL-FACING name, not the stored spelling: a row written as `Foo`
-    // before names were canonicalized answers to `foo`, and an exact lookup would miss it and
-    // insert a SECOND row under the same name the model sees (namespace.ts).
-    // Same resolution the grant uses, and for the same reason: with `Foo` and `foo` both stored,
-    // "reuse" has to name ONE row. Ambiguous reads as taken and is left alone rather than reused,
-    // because a third row under that name would only deepen it (round 29).
+    // NOTE: Reuse is decided by the MODEL-FACING name, not the stored spelling: a row written as `Foo`
+    // answers to `foo`, and an exact lookup would insert a SECOND row under the name the model sees
+    // (namespace.ts). Same resolution the grant uses, so "reuse" names ONE row.
     const reuse = await toolUnderModelName(db, name, "http");
     // Ambiguous is TAKEN, not free. Two rows already answer to this name here; writing a third
     // would deepen the collision, and reusing one would pick an endpoint on the destination's row
@@ -2166,22 +2026,12 @@ async function createMissingComponents(
       });
       continue;
     }
-    // NOTE: the import writes straight to the DB (not via the service), so canonicalize authoring
-    // shapes here too; a bundle exported from a pre-normalization instance may carry JSON-Schema
-    // inputSchema / single-brace placeholders.
-    // A body shape this version refuses is CANONICALIZED rather than refused, the same trade the
-    // expectedStatuses line below makes: failing a whole bundle over an untidily stored body would
-    // be worse than importing it. `canonicalBodyShape` returns what `parseBody` was already
-    // executing, so the outbound request is byte-identical and only the storage stops holding keys
-    // nothing reads. Blanking it to `{}` would NOT be equivalent: that is behaviour-preserving only
-    // for a body with no recognized mode, and would switch a `{mode:"raw", …, extra}` tool to the
-    // fields assembly — changing what it sends (issue #150).
-    // The method the bundle names, through the same reader the write schema uses. The column has
-    // three writers and only that one carried the list, so a hand-edited bundle could store a method
-    // no console can produce and the runtime would then issue it. Warn-and-skip rather than
-    // canonicalize, and the difference from the body two lines down is that there IS no equivalent
-    // request: a body shape this version refuses still describes the same call, while falling back
-    // to GET would change what the tool does.
+    // NOTE: The import writes straight to the DB, so it canonicalizes authoring shapes too (a bundle
+    // from an older instance may carry JSON-Schema inputSchema or single-brace placeholders). An
+    // unsupported body shape is CANONICALIZED, not refused: `canonicalBodyShape` returns what
+    // `parseBody` already executed, so the request is byte-identical. Blanking it to `{}` would switch
+    // a `{mode:"raw", ..., extra}` tool to the fields assembly. The method and url, by contrast, are
+    // warn-and-skip (`importableHttpTool`): there is no equivalent request to fall back to.
     const usable = importableHttpTool(tdef);
     if (!usable.ok) {
       warnings.push(usable.warning);
@@ -2210,13 +2060,10 @@ async function createMissingComponents(
         target: { kind: "tool", name },
       });
     }
-    // And the pairing the write asks, on the row this is about to store (#501, review round 15). A
-    // template starting with `/` is RELATIVE: `buildHttpTool` prepends the credential's base URL,
-    // and with none to prepend it THROWS — out of `buildHttpTools`, which is a bare `.map` inside the
-    // toolset literal, so the agent loses every tool it has and not just this one. Measured: two
-    // definitions in, one of them relative with no base, and the assembly throws instead of
-    // returning the other. That is why this is not left to be completed later like a pending
-    // credential: an import that stores it lands an agent whose next turn has no tools at all.
+    // NOTE: And the pairing the write asks, on the row about to be stored. A relative template (`/...`)
+    // with no credential base URL makes `buildHttpTool` THROW out of `buildHttpTools`, a bare `.map`
+    // in the toolset literal, so the agent would lose every tool, not just this one. So it is
+    // skipped, not left to be completed later like a pending credential.
     const credentialRef = resolveCredName(tdef.credentialRef);
     if (
       !(await relativeTemplateHasBase(db, storedUrlTemplate, credentialRef))
@@ -2228,11 +2075,9 @@ async function createMissingComponents(
       });
       continue;
     }
-    // `createMany({ skipDuplicates })` rather than `create`, for the reason spelled out on the
-    // document-template loop below: the pre-check above can answer "free" and a concurrent writer
-    // commit before this insert, and a P2002 here does not cost one tool: the whole import runs
-    // inside ONE `runScopedOn` transaction, so it aborts that transaction and every statement after
-    // it fails with "current transaction is aborted" (issue #221).
+    // NOTE: `createMany({ skipDuplicates })` rather than `create`: a concurrent writer can commit
+    // between the pre-check and this insert, and a P2002 would abort the import's single
+    // `runScopedOn` transaction and every statement after it.
     const { count } = await db.toolDefinition.createMany({
       data: [
         {
@@ -2283,9 +2128,9 @@ async function createMissingComponents(
       continue;
     }
     landed();
-    // Resolved after the integrations below exist: the bundle's GENERIC instance may be one this
-    // same import is about to create (issue #818). Only a tool this import CREATED is wired; a reused
-    // one keeps whatever its operator gave it.
+    // NOTE: Resolved after the integrations below exist, since the bundle's GENERIC instance may be
+    // one this import is about to create. Only a tool this import CREATED is wired; a reused one keeps
+    // whatever its operator gave it.
     if (tdef.conversationRefIntegration) {
       conversationRefWiring.push({
         tool: name,
@@ -2312,7 +2157,7 @@ async function createMissingComponents(
 
   // Bundle name → stored name, for the code tools this loop could not store under their own.
   const renamedCodeTools = new Map<string, string>();
-  // One stored name per bundle name, for the reason the HTTP loop keeps one (round 18).
+  // One stored name per bundle name, for the reason the HTTP loop keeps one.
   const chosenCode = new Map<string, string>();
   for (const tdef of components.codeTools ?? []) {
     const name =
@@ -2398,9 +2243,8 @@ async function createMissingComponents(
         target: { kind: "codeTool", name },
       });
     }
-    // `createMany({ skipDuplicates })` for the reason the HTTP loop gives: a lost race on
-    // `@@unique([tenantId, name])` would abort the enclosing transaction and take the whole
-    // import with it (issue #221).
+    // NOTE: `createMany({ skipDuplicates })` for the reason the HTTP loop gives: a lost race on
+    // `@@unique([tenantId, name])` would abort the import's transaction.
     const { count } = await db.codeToolDefinition.createMany({
       data: [
         {
@@ -2458,9 +2302,8 @@ async function createMissingComponents(
         continue;
       }
     }
-    // `createMany({ skipDuplicates })` for the same reason as the loop above: a lost race on
-    // `@@unique([tenantId, name])` would abort the enclosing transaction and take the whole import
-    // with it (issue #221).
+    // NOTE: `createMany({ skipDuplicates })` for the same reason as the loop above: a lost race on
+    // `@@unique([tenantId, name])` would abort the import's transaction.
     const { count } = await db.mcpServerConnection.createMany({
       data: [
         {
@@ -2523,9 +2366,8 @@ async function createMissingComponents(
       i.config as Record<string, unknown>,
       configWarnings,
     );
-    // `createMany({ skipDuplicates })` for the same reason as the loops above: a lost race on
-    // `@@unique([tenantId, catalogType, name])` would abort the enclosing transaction and take the
-    // whole import with it (issue #221). `routeTokenHash` is unique too and also covered by the
+    // NOTE: `createMany({ skipDuplicates })` for the same reason as the loops above, on
+    // `@@unique([tenantId, catalogType, name])`. `routeTokenHash` is unique too and covered by the
     // ON CONFLICT, but it is 32 fresh random bytes hashed, so a skip here is the name, in practice.
     const { count } = await db.integrationInstance.createMany({
       data: [
@@ -2535,9 +2377,9 @@ async function createMissingComponents(
           name: i.name,
           config: config as Prisma.InputJsonValue,
           credentialRef: resolveCredName(i.credentialRef),
-          // A GENERIC route cannot be open (issue #818): it is created with its catalog default and
-          // no secret, which answers 401 until the operator picks one, rather than NONE, which
-          // would let anyone holding a ref make the agent write to that customer.
+          // NOTE: A GENERIC route cannot be open: it is created with its catalog default and no
+          // secret, which answers 401 until the operator picks one, rather than NONE, which would let
+          // anyone holding a ref make the agent write to that customer.
           inboundAuthStrategy: getCatalogEntry(i.catalogType)
             ?.requiresInboundAuth
             ? (getCatalogEntry(i.catalogType)?.defaultInboundAuth ?? "NONE")
@@ -2566,9 +2408,9 @@ async function createMissingComponents(
     // any time on the integration page; for a clone the operator wires the external webhook from scratch.
   }
 
-  // `{{conversation_ref}}` (issue #818): each tool this import created is wired to the GENERIC
-  // instance of that name — created just above, or already here and reused. One that is missing
-  // leaves the tool refusing every call, which is said now rather than at the first conversation.
+  // NOTE: `{{conversation_ref}}`: each tool this import created is wired to the GENERIC instance of
+  // that name (created above, or reused). A missing one leaves the tool refusing every call, which is
+  // said now rather than at the first conversation.
   for (const w of conversationRefWiring) {
     const inst = await db.integrationInstance.findFirst({
       where: { catalogType: "GENERIC", name: w.integration },
@@ -2601,10 +2443,9 @@ async function createMissingComponents(
       });
       continue;
     }
-    // Through the same reader the name reservation above used, so the two passes cannot disagree
-    // about which templates are importable: the reservation decided whether a bundled tool had to
-    // move off `send_<slug>`, and a second copy of these rules answering differently here would
-    // move a tool for a template this loop then skips (round 21).
+    // NOTE: Through the same reader the name reservation above used, so the two passes agree on
+    // which templates are importable; disagreeing would move a tool off `send_<slug>` for a template
+    // this loop then skips.
     const read = readBundledTemplate(tpl);
     if (!read.ok) {
       warnings.push({
@@ -2652,17 +2493,11 @@ async function createMissingComponents(
       });
       continue;
     }
-    // `createMany({ skipDuplicates })` rather than `create`, and the enclosing transaction is the
-    // whole reason. Both pre-checks above can answer "free" and a writer commit before this insert
-    // — a second import, or someone saving a template in the console. A P2002 here does not cost one
-    // template: `importAgent` runs the ENTIRE import inside one `runScopedOn` transaction, so it
-    // aborts that transaction, every statement after it fails with "current transaction is aborted",
-    // and the operator loses the agent, the tools and the knowledge bases to a race over a name.
-    //
-    // A `catch` around the insert is the trap, not the remedy: by the time it runs the transaction
-    // is already dead, so it swallows the one legible error and replaces it with a confusing one.
-    // Only NOT RAISING works, and `ON CONFLICT DO NOTHING` covers BOTH unique indexes on this table,
-    // which is what the two pre-checks were separately trying to do.
+    // NOTE: `createMany({ skipDuplicates })` rather than `create`: both pre-checks can answer "free"
+    // and a writer (a second import, a console save) commit before this insert, and a P2002 aborts
+    // the ONE `runScopedOn` transaction the entire import runs in, losing the agent, tools and bases.
+    // A `catch` around the insert cannot help, since the transaction is already dead; `ON CONFLICT
+    // DO NOTHING` covers BOTH unique indexes on this table.
     const { count } = await db.documentTemplate.createMany({
       data: [
         {
@@ -2732,16 +2567,11 @@ async function createMissingComponents(
       );
       continue;
     }
-    // The name the bundle carries, held to the rule the write holds it to (#501). A blank one is a
-    // base the agent cannot scope a search to — and, with one other base left named, the
-    // `knowledge_base` parameter disappears for that base too; a 5000-character one eats the tool
-    // description's whole budget and pushes the other bases out of what the model reads. The import
-    // writes straight through Prisma, so the service's own check is not on this path. Warn and skip,
-    // like every other component this build cannot store: the grants that name it then report
-    // `kbGrantNotFound`, and the rest of the agent imports.
-    //
-    // AFTER the reuse branch above, deliberately: a row already stored under that name is one to
-    // reuse whatever the bundle says, which is the order #501's round 7 had to learn for tools.
+    // NOTE: The name the bundle carries, held to the rule the write holds it to: a blank one is a
+    // base the agent cannot scope a search to, and a huge one eats the tool description's budget and
+    // pushes the other bases out of what the model reads. The import writes through Prisma, past the
+    // service's check, so it warns and skips here (the grants then report `kbGrantNotFound`). AFTER
+    // the reuse branch above: a row already stored under the name is reused whatever the bundle says.
     if (!knowledgeBaseNameUsable(kb.name)) {
       warnings.push({
         code: "knowledgeBaseNameUnusable",
@@ -2825,26 +2655,6 @@ async function createMissingComponents(
   return { httpTools: renamedHttpTools, codeTools: renamedCodeTools };
 }
 
-// The two settings maps keyed by native tool NAME, carried across a rename the same way the grant
-// is. Left alone, `toolGuidance.assign_label` is dropped by its reader (a note that vanishes) and
-// `toolPreconditions.assign_label` is worse: the runtime keeps whatever name it finds and matches
-// by name, so the operator's guard goes inert while the editor still shows it — and the write
-// boundary then refuses the agent's next settings save, because it checks the KEY against the
-// native catalog. Both are the migration's job for rows that exist; this is the same job for a
-// bundle, which can arrive at any time (issue #568, review r5).
-//
-// The new key WINS when both are present, for the same reason it does in the migration: it is the
-// operator's most recent word.
-// A RETIRED KEY IS DROPPED ON THE WAY IN, not carried and then refused (issue #568 review).
-//
-// The write boundary refuses `settings.labels` and `settings.monitoring.labelGroups` because they no
-// longer do anything, and that refusal is right for an operator editing an agent: it tells them
-// where the taxonomy went. It is wrong for an import. A bundle is a FILE — exported under the old
-// release, imported whenever someone gets around to it — and failing the whole import over a key
-// that means nothing would block a restore for a reason the operator cannot act on inside the
-// bundle. Same argument that put RENAMED_NATIVE_TOOLS on this boundary, with the opposite verdict:
-// there the old key had to be MOVED because its value still governs something, here it is dropped
-// because its value governs nothing.
 // Cuts `settings.setLabels.protected` down to the ceiling, IN PLACE, and answers how many entries
 // it dropped. Counted the way the reader counts (blanks, non-strings and duplicates never became
 // guards), so the number in the warning is the number of guards the operator loses.
@@ -2852,8 +2662,8 @@ function clampProtectedLabelsInPlace(settings: unknown): number {
   return clampLabelListInPlace(settings, "protected", PROTECTED_LABELS_MAX);
 }
 
-// The allowed list (issue #638), clamped for the same reasons: the console reloads it, and the
-// reader honours only the first ones.
+// The allowed list, clamped for the same reasons: the console reloads it, and the reader honours
+// only the first ones.
 function clampAllowedLabelsInPlace(settings: unknown): number {
   return clampLabelListInPlace(settings, "allowed", ALLOWED_LABELS_MAX);
 }
@@ -2883,16 +2693,12 @@ function clampLabelListInPlace(
   return kept.length - max;
 }
 
-// THE CONFIGURED TAXONOMY, RENDERED AS THE SENTENCE IT BECAME. A bundle is a file, so one exported
-// before this release carries `monitoring.labelGroups` — the one thing in the retired keys that
-// somebody chose. The upgrade migration carries it into `toolGuidance.set_labels`; dropping it here
-// would mean a restore loses exactly what an upgrade keeps (issue #568, review round 28).
-//
-// THE TEXT MIRRORS THE MIGRATION'S, statement for statement, and the two tests assert the same
-// sentence for the same input — that pairing is the only thing keeping a SQL renderer and a TS one
-// from drifting apart. The reader's own default is what decides exclusivity: `bag.exclusive !==
-// false`, so a group that never wrote the field was exclusive, and a loose value (`"custom"`, an
-// object) reads the same way rather than being coerced.
+// The configured taxonomy, rendered as the sentence it became. A bundle exported before the label
+// redesign carries `monitoring.labelGroups`, which the upgrade migration carries into
+// `toolGuidance.set_labels`, so a restore keeps what an upgrade keeps. The text mirrors the
+// migration's statement for statement (the two tests assert the same sentence for the same input).
+// Exclusivity follows the reader's default, `bag.exclusive !== false`, so a loose value reads as
+// exclusive rather than being coerced.
 function taxonomySentence(groups: unknown): string | null {
   if (!Array.isArray(groups) || groups.length === 0) return null;
   const parts: string[] = [];
@@ -2921,13 +2727,11 @@ function taxonomySentence(groups: unknown): string | null {
   );
 }
 
-// WHETHER THIS BUNDLE CAME FROM THE CLASSIFIER, asked of the settings BEFORE they are stripped.
-// The old classifier applied its labels itself and consulted no allowlist, so a watcher could carry
-// an explicit NATIVE grant WITHOUT any label tool and classify anyway. Under the new design the
-// migrated sentence is worth nothing without the tool: the agent keeps running, keeps spending a
-// model call per burst, and quietly no longer classifies. Step 1c of
-// `20260910140000_drop_retired_label_settings` repairs the rows that exist when it runs; a bundle is
-// a FILE and can be restored long after, so the same repair has to happen here (review round 31).
+// Whether this bundle came from the classifier, asked of the settings BEFORE they are stripped. The
+// old classifier applied labels without any label tool, so a watcher could carry a NATIVE grant
+// without one; under the new design the migrated sentence does nothing without the tool. Step 1c of
+// `20260910140000_drop_retired_label_settings` repairs stored rows; a bundle can be restored long
+// after, so the same repair happens here.
 function carriesRetiredTaxonomy(settings: unknown): boolean {
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return false;
@@ -2937,6 +2741,10 @@ function carriesRetiredTaxonomy(settings: unknown): boolean {
   return Array.isArray(groups) && groups.length > 0;
 }
 
+// Drops the retired `settings.labels` and `settings.monitoring.labelGroups` on the way in. The write
+// boundary refuses them to tell an editing operator where the taxonomy went, but a bundle is a file
+// exported under an older release, and failing a restore over a key that governs nothing gives the
+// operator nothing to act on. (A RENAMED_NATIVE_TOOLS key is MOVED instead: it still governs.)
 function stripRetiredLabelKeys(settings: unknown): unknown {
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return settings;
@@ -2979,17 +2787,11 @@ function stripRetiredLabelKeys(settings: unknown): unknown {
   return bag;
 }
 
-// THE PROMPT NAMES TOOLS TOO, and a bundle is a file: one exported before the rename instructs the
-// model to call `assign_label`, which the catalog no longer has. The keys around it are moved by
-// `renameNativeToolKeys`; the prose was left verbatim, so the restored agent asked for a tool that
-// does not exist — and the sample this repo ships did exactly that (issue #568, review round 26).
-//
-// A WORD BOUNDARY, so only the identifier moves: `xassign_labelx` and `assign_labels` are somebody's
-// own vocabulary. And skipped entirely when the bundle grants a CUSTOM tool under the old name — the
-// same rule the key move follows, for the same reason: the prompt then means that tool.
-//
-// Returns the text and how many mentions moved, because an upgrade that edited an operator's prose
-// has to say so.
+// The prompt names tools too: a bundle exported before a rename tells the model to call a tool the
+// catalog no longer has (`assign_label`). A WORD BOUNDARY, so only the identifier moves
+// (`assign_labels` is somebody's own vocabulary), and skipped when the bundle grants a CUSTOM tool
+// under the old name, since the prompt then means that tool. Returns how many mentions moved,
+// because an upgrade that edited an operator's prose has to say so.
 function renameNativeToolsInProse(
   text: string,
   customToolNames: ReadonlySet<string>,
@@ -3007,28 +2809,27 @@ function renameNativeToolsInProse(
   return { text: out, renamed };
 }
 
+// The two settings maps keyed by native tool NAME (`toolGuidance`, `toolPreconditions`), carried
+// across a rename like the grant is. Left alone, a note vanishes, a guard goes inert while the editor
+// still shows it, and the write boundary refuses the next settings save (it checks the KEY against
+// the native catalog). The migration does this for stored rows; a bundle can arrive any time. The
+// new key WINS when both are present: it is the operator's most recent word.
 function renameNativeToolKeys(
   settings: unknown,
   renamed: RenamedComponents,
   // The names the bundle grants as HTTP or CODE tools. A legacy native name is only legacy while
-  // nothing else answers to it: once `assign_label` stopped being native an operator became free to
-  // create a tool under it, and a bundle from THAT agent means its own tool by the key, not the
-  // native that used to hold the name. Without this the guard is moved to `set_labels` and the
-  // custom tool, which keeps its name, runs unguarded (review r9).
+  // nothing else answers to it: a bundle from an agent with its own tool under that name means that
+  // tool by the key, and moving the guard to the native would leave the custom tool unguarded.
   customToolNames: ReadonlySet<string>,
 ): unknown {
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return settings;
   const bag = settings as Record<string, unknown>;
-  // TWO MOVES, AND THE ORDER IS THE WHOLE THING. A bundle can carry BOTH a custom tool named
-  // `set_labels` and the native under its old name, each with its own rule. Done in one pass, the
-  // native's rule finds `set_labels` already taken and is discarded, and the custom tool's rule
-  // stays on a key that now names the NATIVE — the operator's guard moved onto a different tool and
-  // the custom tool left open. Settling the custom rename first empties the key the native needs.
-  //
-  // The bundle's own name is the key here, which is what `RenamedComponents` maps: it was written
-  // when the tool was called that, and the tool is only called something else because THIS import
-  // could not store it under its own name.
+  // NOTE: Two moves, and the order matters. A bundle can carry BOTH a custom tool named `set_labels`
+  // and the native under its old name; in one pass the native's rule finds `set_labels` taken and is
+  // discarded, and the custom tool's rule stays on a key that now names the native. Settling the
+  // custom rename first empties the key. The bundle's own name is the key (what `RenamedComponents`
+  // maps), since the tool is renamed only because this import could not store it under that name.
   const stored = new Map<string, string>();
   for (const m of [renamed.httpTools, renamed.codeTools])
     for (const [from, to] of m) if (from !== to) stored.set(from, to);
@@ -3081,12 +2882,10 @@ async function buildGrantRows(
   for (const g of tools) {
     switch (g.source) {
       case "NATIVE": {
-        // A name this build's catalog does not carry is dropped, and said. `run_code` was a
-        // native between PR #485 and issue #363, so a bundle exported in that window names it
-        // here, and the write boundary (`normalizeGrants`) refuses an unknown native where it is
-        // typed; failing the whole bundle over it would be the trade this file already rejects.
-        // The row lands even when nothing survives the filter: an explicit empty allowlist means
-        // NO natives, and no row at all would mean ALL of them.
+        // NOTE: A name this build's catalog does not carry is dropped, and said (a bundle from an
+        // older release may name a retired native like `run_code`); failing the whole bundle would be
+        // the trade this file rejects. The row lands even when nothing survives the filter: an
+        // explicit empty allowlist means NO natives, and no row at all would mean ALL of them.
         const known = new Set<string>(NATIVE_TOOL_NAMES);
         // A RENAMED native is carried across rather than dropped (`currentNativeToolName`). The
         // migration repairs the rows that exist when it runs; a bundle is a file, and one exported
@@ -3167,10 +2966,9 @@ async function buildGrantRows(
         // and an exact lookup would drop the grant with `httpGrantNotFound` for a tool that is
         // right there (namespace.ts).
         const wanted = renamed.httpTools.get(g.tool) ?? g.tool;
-        // WHICH row, not "is the name taken": a destination can hold `Foo` and `foo` from before
-        // the unique index was case-insensitive, and binding the grant to the wrong one hands the
-        // agent another endpoint with another credential (round 29). Ambiguity is reported, never
-        // resolved by picking.
+        // NOTE: WHICH row, not "is the name taken": a destination can hold `Foo` and `foo` from before
+        // the unique index was case-insensitive, and binding the wrong one hands the agent another
+        // endpoint with another credential. Ambiguity is reported, never resolved by picking.
         const match = await toolUnderModelName(db, wanted, "http");
         if (match.kind === "ambiguous") {
           warnings.push({

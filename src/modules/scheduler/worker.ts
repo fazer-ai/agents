@@ -31,10 +31,9 @@ import {
 } from "./service";
 
 // Single-replica worker that drains the scheduler. The handler registry decouples the scheduler
-// from feature logic (follow-ups register their handlers); a job kind with no handler fails (and
-// eventually goes DEAD) rather than silently vanishing. `reschedule` is for "not yet" (out of
-// hours) and CLEARS the failure budget, because it means the pass completed (issue #287); `fail`
-// retries with backoff up to the cap.
+// from feature logic; a job kind with no handler fails (and eventually goes DEAD) rather than
+// silently vanishing. `reschedule` is for "not yet" (out of hours) and clears the failure budget,
+// because the pass completed; `fail` retries with backoff up to the cap.
 
 export type JobResult =
   | { outcome: "done" }
@@ -50,12 +49,10 @@ export type JobResult =
     }
   | { outcome: "fail"; error?: string };
 
-// What a handler is given besides its row. `signal` aborts when the run's deadline fires (issue
-// #811): a handler that passes it to what it awaits is ended by it. `commit` is what a handler calls
-// once it has done what it cannot take back (a message sent, a step stamped): a run past its deadline
-// has its outcome discarded and its retry starts over, which is right for work that never reached the
-// world and wrong for work that did, whose retry would send it again or read its stamp as the step
-// being over. A run that committed has its outcome written after all.
+// What a handler is given besides its row. `signal` aborts when the run's deadline fires. `commit` is
+// called once the handler has done what it cannot take back (a message sent, a step stamped): a run
+// past its deadline normally has its outcome discarded and its retry starts over, which would repeat
+// committed work, so a run that committed has its outcome written after all.
 export interface JobContext {
   signal: AbortSignal;
   commit: () => void;
@@ -70,11 +67,9 @@ export type JobHandler = (
 // The window after which the reaper presumes a CLAIMED row crashed.
 export const SCHEDULER_STALE_MS = 5 * 60_000;
 
-// How long a run may take before it is ended (issue #811): four fifths of the stale window of the
-// reaper that watches its row, so a job is ended by its own deadline, failed through failJob with
-// its backoff and budget, a minute before the reaper would presume it crashed. Derived rather than
-// configured: the deadline only means something below the window, and a window passed in shorter
-// (a lane's own, a test's) carries its deadline down with it.
+// How long a run may take before it is ended: four fifths of the reaper's stale window, so a job is
+// failed through failJob (with its backoff and budget) before the reaper would presume it crashed.
+// Derived rather than configured, so a shorter window (a lane's own, a test's) carries its deadline.
 export function jobDeadlineMs(staleMs: number): number {
   return Math.floor(staleMs * 0.8);
 }
@@ -127,23 +122,17 @@ export function registerJobHandler(kind: string, handler: JobHandler): void {
 export function getJobHandler(kind: string): JobHandler | undefined {
   return handlers.get(kind);
 }
-// The counterpart, and it exists because the registry is process-global while a Bun worker shares
-// one process across test files: a test that installs a handler for a kind that had none could put
-// nothing back, so the stub outlived the file and the next file's scheduler test inherited it. With
-// this, "install, use, put back" is expressible for both starting states.
+// The registry is process-global and a Bun worker shares one process across test files, so a test
+// that installs a handler for a kind that had none needs this to put things back.
 export function unregisterJobHandler(kind: string): void {
   handlers.delete(kind);
 }
 
-// Called when a job is DEAD-LETTERED, which is the only moment the scheduler can state that this
-// work is definitively lost — a failure is not that statement, because the next attempt may succeed
-// (issue #71). Registered per kind so the scheduler stays ignorant of what a given job's loss means
-// downstream.
-//
-// OPTIONAL, and what a kind gets by NOT registering one is no longer silence: it is the generic
-// line below. A hook is for a kind whose loss can be said better than "a FOLLOWUP died" — attached
-// to the conversation it belongs to, suppressed when the row was re-armed underneath it — and two
-// kinds have earned one. Ten had not, and before issue #356 all ten died through an early return.
+// Called when a job is DEAD-LETTERED, the only moment the scheduler can state that this work is
+// definitively lost (a failure is not, since the next attempt may succeed). Registered per kind so
+// the scheduler stays ignorant of what a loss means downstream. Optional: a kind without one gets the
+// generic line; a hook is for a kind whose loss can be said better (attached to its conversation,
+// suppressed when the row was re-armed underneath it).
 export type DeadLetterHandler = (
   job: ClaimedJob,
   error: string,
@@ -168,25 +157,11 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// Best-effort, and the guarantee covers the WHOLE function rather than the hook call it started on:
-// nothing in here may turn a failed job into a failed tick. It runs AFTER the row is DEAD, so it can
-// never be mistaken for part of the attempt, and by then the announcement is the only thing left to
-// lose — but losing it is not the worst case. `announceReaped` walks a BATCH, so a throw escaping
-// here takes every later dead job in that batch with it, and no subsequent reap will return them:
-// they are already DEAD, and the reaper only claims rows still CLAIMED. One transient pool timeout
-// would permanently silence a whole tick's worth of deaths.
-//
-// That is why the re-read below is inside the try and not beside it. A guard added to prevent one
-// false report must not be able to destroy a batch of true ones.
-//
-// EVERY kind announces here, which is the whole of issue #356's biggest half. `if (!hook) return`
-// used to be the exit for ten of the twelve kinds, and it was invisible: the hook is optional by
-// design, so nothing anywhere counted how many kinds were leaving through it, and the count only
-// ever went down when somebody happened to write a hook for one more (#196, #71).
-//
-// A registered hook OWNS the announcement, including the decision NOT to write one — both existing
-// hooks re-read the row and stay quiet when it was re-armed underneath them, and a generic line
-// written over that would re-report a loss the hook just established had not happened.
+// Best-effort over the whole function: nothing here may turn a failed job into a failed tick.
+// `announceReaped` walks a batch of rows already DEAD, which no later reap returns, so a throw
+// escaping here would silence every later death in that batch for good; hence the re-read sits inside
+// the try. Every kind announces here. A registered hook owns the announcement, including the decision
+// not to write one (it stays quiet when the row was re-armed underneath it).
 async function dispatchDeadLetter(
   job: ClaimedJob,
   error: string,
@@ -198,32 +173,15 @@ async function dispatchDeadLetter(
       await hook(job, error, base);
       return;
     }
-    // NOTE: CLAIM the announcement rather than trust the dead-letter that got us here, which is
-    // what both hand-written hooks do by re-reading, and for the same reason (../memory/compact.ts
-    // spells it out). A re-arm lands on THIS row — `upsertJobRow` keys on (tenant, kind, dedupeKey)
-    // — so a FOLLOWUP the sweep re-arms in the window between the DEAD write and this line is work
-    // that is queued again, and announcing it would page an operator about a loss that did not
-    // happen. Suppressing costs nothing: a cause that is still broken fails the new arm too, and
-    // announces then.
-    //
-    // A CLAIM and not a read, because the read could not tell an erased death from a completed one
-    // and both look like a missing row (issue #737). `claimDeadLetterAnnouncement` asks the same
-    // three questions the read asked — DEAD, DEAD for THIS claim (`claimSeq` is the token the claim
-    // handed out, and a row re-armed, re-claimed and dead AGAIN belongs to a later attempt, which
-    // announces its own death with its own error) — and leaves a token behind, so the revoke that
-    // deletes the row can see whether this line was already owed to someone. It is one round trip,
-    // the same as the read it replaced.
-    //
-    // It NARROWS the re-arm window and cannot close it: the trail write is fire-and-forget, so a
-    // re-arm landing between the claim and the insert still gets announced over. What is left is a
-    // line the next pass's own outcome follows, which is legible; closing it would mean writing the
-    // row inside the job's transaction.
+    // NOTE: claim the announcement rather than trust the dead-letter that got us here: a re-arm lands
+    // on this same row, and announcing re-queued work would page an operator about a loss that did not
+    // happen (a still-broken cause fails the new arm and announces then). A claim, not a read, because
+    // a missing row cannot tell an erased death from a completed one; the token it leaves lets the
+    // revoke see whether this line is owed (DEAD_LETTER_ANNOUNCED). The trail write is fire-and-forget,
+    // so a re-arm between claim and insert is still announced over; closing that needs the job's tx.
     if (!(await claimDeadLetterAnnouncement(job, base))) return;
-    // NOTE: the attempt count is deliberately absent, for the reason measured in
-    // ../memory/compact.ts: the two roads to DEAD disagree about the number while meaning the same
-    // thing (failJob hands the hook the claim it was given, the reaper increments in SQL). What
-    // tells the roads apart is the error itself, and only the reaper writes "the claim never
-    // finished".
+    // NOTE: the attempt count is deliberately absent: the two roads to DEAD disagree about the number
+    // while meaning the same thing (../memory/compact.ts). The error tells the roads apart.
     emitDeadLetter({
       tenantId: job.tenantId,
       unit: "job",
@@ -246,19 +204,11 @@ async function dispatchDeadLetter(
   }
 }
 
-// THE SECOND ROAD TO DEAD, and the one with nothing else to read: a claim that crashed or hung never
-// reaches failJob, so it carries no `lastError` explaining anything — just a row that stopped moving.
-// Every caller of `reapStaleJobs` owes this call.
-//
-// It is a shared function rather than the loop it replaced because reaping is NOT the scheduler
-// tick's alone: a lane with its own worker reaps its own kind (the compaction lane, the ingest
-// drain), for reasons written at those call sites, and the loop was copied to none of them. Which
-// reaper announced was therefore decided by whichever won the atomic UPDATE — the scheduler's, and
-// the announcement happened; the lane's, and it did not. A kind whose lane runs with the scheduler
-// worker disabled — a configuration the boot sequence supports — never announced at all.
-//
-// Free for a kind with no hook registered, which is what makes "every reaper calls it" a rule a
-// fourth lane can follow without knowing which kinds have one.
+// The second road to DEAD: a claim that crashed or hung never reaches failJob, so it carries no
+// `lastError`. Every caller of `reapStaleJobs` owes this call, because a lane with its own worker
+// reaps its own kind (the compaction lane, the ingest drain), possibly with the scheduler worker
+// disabled, and whichever reaper wins the UPDATE is the only one that sees the death. Free for a kind
+// with no hook, so a new lane can call it without knowing which kinds have one.
 export async function announceReaped(
   reaped: ReapedJob[],
   base: PrismaClient,
@@ -290,15 +240,11 @@ async function fail(
   if (deadLettered) await dispatchDeadLetter(job, error, base);
 }
 
-// Runs one claimed job through its handler and records the outcome (under the job's tenant scope).
-//
-// Under a DEADLINE (issue #811). Nothing used to end a run that was still going: the reaper re-pends
-// a row whose claim went stale, but the handler holding it kept its slot for as long as whatever it
-// awaited took, and after the reap the same row could be claimed again beside it. When the deadline
-// fires, the handler's signal aborts, the run is failed through failJob like any other failure, and
-// this returns, so the lane's slot is free whether or not the handler listened. What the handler
-// returns afterwards is discarded, and until it does return its row stays out of every claim in this
-// process (./running.ts), so the retry never runs beside it.
+// Runs one claimed job through its handler, under a deadline, and records the outcome (under the
+// job's tenant scope). When the deadline fires the handler's signal aborts, the run is failed through
+// failJob, and this returns, so the lane's slot is free whether or not the handler listened. Until the
+// handler does return, its row stays out of every claim in this process (./running.ts), so the retry
+// never runs beside it.
 export async function runClaimed(
   job: ClaimedJob,
   base: PrismaClient = basePrisma,
@@ -397,17 +343,10 @@ async function settle(
   }
 }
 
-// The claim this run held was no longer the current one, so its outcome was DISCARDED: the row now
-// belongs to a later claim, or to none. The handler still ran to completion, side effects included,
-// which is why this is worth a line — the whole reason issue #164 was filed is that these orderings
-// are invisible until someone traces them by hand, and a CAS that refuses in silence keeps them that
-// way. Not an error: refusing is the guard working. A handler whose work must not be repeated needs
-// its own exclusion (see the inFlight set in src/modules/memory/worker.ts); the token only decides
-// which write lands.
 // A run failed at its deadline that had committed (JobContext.commit): the row is taken back from the
-// failure and the outcome written through the same path as an ordinary one, so a step stamped is
-// followed by its next step and a reminder sent is not sent again. Taken back only if nothing touched
-// the row since the failure; otherwise the outcome is discarded like any other late one.
+// failure and the outcome written through the ordinary path, so a step stamped is followed by its next
+// step and a reminder sent is not sent again. Taken back only if nothing touched the row since the
+// failure; otherwise the outcome is discarded like any other late one.
 async function settleAfterDeadline(
   job: ClaimedJob,
   result: JobResult,
@@ -456,6 +395,9 @@ function lateOutcomeDiscarded(
   announceDiscardedOutcome(job, "deadline", base, { heldMs });
 }
 
+// The claim this run held was no longer current, so its outcome was discarded. Not an error (the CAS
+// working), but the only trace of the ordering, and the handler's side effects still happened. Work
+// that must not be repeated needs its own exclusion (see inFlight in src/modules/memory/worker.ts).
 async function supersededWarning(
   job: ClaimedJob,
   outcome: string,
@@ -465,8 +407,8 @@ async function supersededWarning(
     { kind: job.kind, jobId: String(job.id), claimSeq: job.claimSeq, outcome },
     "scheduler: claim superseded, outcome discarded",
   );
-  // A row retired on purpose while this run held it (/reset, the episode ending) fences the run by
-  // design, and says so with `cancelledAt` (review round 1): nothing was lost, so nothing to announce.
+  // NOTE: a row retired on purpose while this run held it (/reset, the episode ending) carries
+  // `cancelledAt`: the fence is the design and nothing was lost, so nothing to announce.
   if (
     SUPERSEDE_ANNOUNCED.has(job.kind) &&
     !(await jobCancelledOnPurpose(job, base))
@@ -475,22 +417,17 @@ async function supersededWarning(
   }
 }
 
-// WHICH SUPERSEDED CLAIMS ARE WORTH A FLOW LINE (issue #896). A superseded claim is usually the guard
-// working: a debounce flush is superseded by every message that lands while it runs, and a line per
-// burst would page an alert channel all day. A FOLLOWUP is different: since #786 nothing re-arms a
-// claimed follow-up, so a superseded one is an ordering nobody designed, and the outcome it loses can
-// be the reschedule to the step that labels and resolves. A kind joins this set when its supersede
-// stops being routine.
+// Which superseded claims are worth a flow line. Usually a supersede is the guard working (a debounce
+// flush is superseded by every message landing while it runs). Nothing re-arms a claimed FOLLOWUP, so
+// a superseded one is an ordering nobody designed, and it can lose the step that labels and resolves.
+// A kind joins this set when its supersede stops being routine.
 const SUPERSEDE_ANNOUNCED: ReadonlySet<SchedulerJobKind> = new Set([
   "FOLLOWUP",
 ]);
 
-// A DISCARDED OUTCOME, ON THE RECORD OPERATORS READ (issue #896). Both discards used to reach stdout
-// only, where no alert channel looks, so a follow-up whose next step was dropped left no trace an
-// operator could find. `dead_letter` because the outcome the handler produced is gone and nothing
-// brings it back (the retry, when there is one, recomputes from scratch), and because that is the
-// stage alert channels subscribe to for lost work; `warn` because the row itself is still live and
-// the scheduler moves on. `detail.discarded` says which road.
+// A discarded outcome, on the record operators read. `dead_letter` because the outcome is gone (a
+// retry recomputes from scratch) and that is the stage alert channels subscribe to for lost work;
+// `warn` because the row itself is still live. `detail.discarded` says which road.
 function announceDiscardedOutcome(
   job: ClaimedJob,
   discarded: "deadline" | "superseded",
@@ -522,15 +459,11 @@ function announceDiscardedOutcome(
 export interface TickOptions {
   staleMs: number;
   batchSize: number;
-  // NOTE: test-only isolation, the same fence claimDueJobs and reapStaleJobs already document. The
-  // tick is cross-tenant by design (single leader in production), so two DB-backed suites running at
-  // once claim each other's rows: the batch fills with the other run's jobs, or this process
-  // executes them. Leave it unset in production.
+  // NOTE: test-only isolation, the same fence claimDueJobs and reapStaleJobs document: the tick is
+  // cross-tenant, so concurrent DB-backed suites claim each other's rows. Unset in production.
   tenantId?: bigint;
-  // NOTE: test-only, like tenantId. Production sizes this from the model budget
-  // (sharedProviderConcurrency); a test that scaled its workload to that budget would be asserting
-  // whatever AGENT_MODEL_CONCURRENCY happens to be on the machine running it — at 400 the bound is
-  // 100 and the batch it would need exceeds the claim's own hard cap. Leave it unset in production.
+  // NOTE: test-only. Production sizes this from the model budget (sharedProviderConcurrency), which
+  // depends on the machine's AGENT_MODEL_CONCURRENCY. Unset in production.
   providerConcurrency?: number;
 }
 
@@ -545,32 +478,18 @@ export async function runSchedulerTick(
     opts.tenantId,
   );
   await announceReaped(reaped, base);
-  // TWO CLAIMS, ONE DRAIN. The fixed-rate kinds take the batch; the traffic-proportional ones take a
-  // share of it on top (../scheduler/lanes.ts, JOB_TRAFFIC_PROPORTIONAL). A single claim ordered by
-  // run_at cannot serve both: ingestion rows are armed for `now` and arrive at the rate contacts
-  // write, so on a busy fleet they are always the oldest and always fill the batch, and an
-  // appointment reminder — a kind whose whole purpose is to arrive before something — is never
-  // claimed at all, however overdue it gets.
-  //
-  // A share rather than the whole batch again, because these are the rows that can be unbounded, and
-  // a quarter of a batch every tick is generous for work whose latency nothing waits on: every
-  // reader of a memory thread drains it before reading, so the tick is only the backstop for threads
-  // nobody touches.
-  // The `max(1, …)` survives mutation, and knowingly: `claimWhere` clamps its own limit to at least
-  // one, so a batch smaller than four would claim a traffic row either way and no test can separate
-  // the two. It stays because that clamp is a hard CAP for the claim, not a floor for this caller —
-  // making the floor depend on it would put this rule in another module, in a line written for the
-  // opposite purpose.
+  // NOTE: two claims, one drain. Fixed-rate kinds take the batch; traffic-proportional ones take a
+  // quarter on top (../scheduler/lanes.ts, JOB_TRAFFIC_PROPORTIONAL). One claim ordered by run_at
+  // would be filled by ingestion rows armed for `now`, and an appointment reminder would never be
+  // claimed. A quarter suffices: every reader of a memory thread drains it first, so the tick is only
+  // the backstop. The `max(1, ...)` is this caller's floor; claimWhere's clamp is a cap, not a floor.
   const trafficShare = Math.max(1, Math.floor(opts.batchSize / 4));
   const providerConcurrency =
     opts.providerConcurrency ??
     sharedProviderConcurrency(config.agent.modelConcurrency);
-  // NOTE: A THIRD CLAIM, for the observe lane (issue #621). OBSERVE follows traffic like the share
-  // above, but its latency is read live, and inside that share it waited behind every ingestion row
-  // armed before it: five rows a tick for the whole install, a ceiling of 20 observations a minute
-  // against a peak-hour demand of 73. Its own limit is sized to the provider bound it runs under
-  // below, so it can only ever spend the permits the shared lane already had, and it counts the
-  // provider-spending rows the first two claims took, which queue on that same bound.
+  // NOTE: a third claim, for the observe lane: OBSERVE's latency is read live, so it cannot wait
+  // behind ingestion in the traffic share. Its limit is sized to the provider bound below, minus the
+  // provider-spending rows the first two claims took, so it only spends permits the lane already had.
   const earlier = [
     ...(await claimDueJobs(opts.batchSize, base, new Date(), opts.tenantId)),
     ...(await claimDueTrafficJobs(
@@ -592,30 +511,15 @@ export async function runSchedulerTick(
       opts.tenantId,
     )),
   ];
-  // NOTE: The batch drains CONCURRENTLY, which is what the debounce and compaction lanes always did
-  // and this one did not (issue #165). Serially, the lane advanced at the speed of whatever was
-  // running: one large document being indexed, or one follow-up whose model call is slow, delayed
-  // every other job claimed with it — and the one where lateness is customer-visible is the
-  // appointment reminder, which exists to arrive BEFORE something. The kinds that call a model are
-  // still throttled, by the process-wide model semaphore they already go through, so concurrency
-  // here does not widen that budget; it stops short jobs from queueing behind long ones.
-  //
-  // What this gives up is FIFO WITHIN a batch (the claim still orders by run_at; the drain no longer
-  // waits). It costs one thing, and only in a state that is already broken: two reminders for the
-  // same appointment can differ (`isLast` decides whether the last one asks for confirmation), so
-  // running them out of order reads oddly. Reaching that state needs both to be overdue at once,
-  // and enqueue skips offsets already past — so it takes the scheduler being hours behind, where the
-  // reminders are late no matter what order they land in.
-  //
-  // allSettled: runClaimed never re-throws (it fails the job internally), but a stray throw must not
-  // stall the tick.
-  // The kinds that spend provider capacity go through a bound; the rest do not. Bounding the whole
-  // drain would put a heartbeat back behind a nudge, which is the head-of-line blocking this change
-  // removed — and leaving the costly ones unbounded lets a batch of twenty hold every model permit
-  // while a customer's reply waits (see JOB_SPENDS_PROVIDER).
+  // NOTE: the batch drains concurrently so short jobs do not queue behind long ones (an appointment
+  // reminder must arrive before something). It gives up FIFO within a batch, which only shows when the
+  // scheduler is hours behind. allSettled: runClaimed never re-throws, but a stray throw must not stall
+  // the tick. Kinds that spend provider capacity go through a bound, the rest do not: bounding the whole
+  // drain puts a heartbeat behind a nudge, and leaving them unbounded lets a batch hold every model
+  // permit while a customer's reply waits (JOB_SPENDS_PROVIDER).
   const gate = new Semaphore(providerConcurrency);
   // NOTE: the deadline follows the stale window THIS tick reaps with, so neither can be passed in
-  // without the other (issue #811).
+  // without the other.
   const deadlineMs = jobDeadlineMs(opts.staleMs);
   const settled = await Promise.allSettled(
     jobs.map((job) =>
@@ -624,12 +528,9 @@ export async function runSchedulerTick(
         : runClaimed(job, base, { deadlineMs }),
     ),
   );
-  // NOTE: allSettled DISCARDS rejections, and the serial loop this replaced did not: an `await` that
-  // threw propagated out of the tick and startScheduler logged it. runClaimed swallows a handler's
-  // own error (it fails the job instead), so a rejection here is the infrastructure underneath —
-  // completeJob/failJob unable to reach the database — and the row stays CLAIMED until the reaper
-  // takes it minutes later. Logged per job rather than re-thrown, because one unreachable row must
-  // not decide the outcome of the other nineteen.
+  // NOTE: allSettled discards rejections. runClaimed swallows a handler's own error, so a rejection
+  // here is the infrastructure underneath (completeJob/failJob unable to reach the database) and the
+  // row stays CLAIMED until the reaper takes it. Logged per job so one row cannot decide the rest.
   for (const [i, r] of settled.entries()) {
     if (r.status !== "rejected") continue;
     const job = jobs[i];

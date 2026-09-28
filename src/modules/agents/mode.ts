@@ -1,11 +1,6 @@
-// The agent's operating mode, and the two questions every reader of it asks.
-//
-// `test` answers only in a conversation the customer activated with /teste; `production` answers
-// normally; `monitoring` never answers at all (issue #209). Monitoring is not `enabled: false`: a
-// disabled agent is not asked anything, while a monitoring agent stays bound, receives every event,
-// analyzes media and folds every message into its memory — it only never produces a customer-facing
-// output. No reply, no typing, no follow-up, no template, no away message, and /teste never
-// activates it.
+// The agent's operating mode. `test` answers only where /teste activated it; `production` answers;
+// `monitoring` stays bound, receives every event and folds messages into memory, but never produces
+// customer-facing output (no reply, typing, follow-up, template or away message), unlike a disabled agent.
 export const AGENT_MODES = ["test", "production", "monitoring"] as const;
 export type AgentMode = (typeof AGENT_MODES)[number];
 

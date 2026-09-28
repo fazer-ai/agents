@@ -84,12 +84,6 @@ export interface BehaviorSettings {
   // NOTE: All four fields null is the ordinary state and means NO fallback, not "the agent's own
   // model" the way the two sibling overrides read it (see graph/fallback-settings).
   modelFallback: ReturnType<typeof readModelFallbackConfig>;
-  // NOTE: The five below joined this surface with issue #402, and they are the reason the guard over it
-  // changed shape. Each was already written by the console and by REST; none was reachable over MCP,
-  // because the check that should have noticed compared against the list right below rather than
-  // against what the readers produce. `guardrails` is the one that was left out on purpose, and the
-  // reason was never written anywhere — which is why "decided" and "forgotten" had become the same
-  // thing from outside.
   kanban: ReturnType<typeof readKanbanConfig>;
   toolGuidance: ReturnType<typeof readToolGuidance>;
   setLabels: {
@@ -135,12 +129,8 @@ export const BEHAVIOR_SETTINGS_KEYS = [
 export type BehaviorSettingsKey = (typeof BEHAVIOR_SETTINGS_KEYS)[number];
 
 // Normalize the whole behavior block from a raw settings bag (defaults + clamps applied).
-// `now` is threaded rather than left to each reader's own default for the reason
-// `readObservabilityConfig` states at its own signature: a caller that already holds an instant has
-// to use the SAME one for every read of it. Two calls of this function on one stored bag are not
-// otherwise guaranteed to agree — measured, 80ms apart across a `fullDetailUntil` expiry they differ
-// in two fields, because that reader nulls the deadline once the window closes as well as flipping
-// the derived flag.
+// `now` is threaded so every read uses the SAME instant: across a `fullDetailUntil` expiry, two reads
+// of one bag would otherwise differ.
 export function readBehaviorSettings(
   settings: unknown,
   now: Date = new Date(),
@@ -216,35 +206,9 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-// Merge a patch into a stored block key by key, at ANY depth (issue #184). Two objects merge;
-// anything else replaces.
-//
-// The depth is the whole point. One shallow spread kept the "untouched keys preserved" promise at
-// the top level of a block and broke it one step in, and the break was silent rather than loud:
-// each block is re-read through its typed reader afterwards, so a sub-object the patch replaced
-// came back FILLED WITH DEFAULTS instead of absent. Turning off a guardrail direction returned a
-// complete, plausible direction with the operator's refusal text swapped for the product's and
-// `action: "silent"` — send nothing — swapped for `template` — send this.
-//
-// An ARRAY replaces, deliberately: a list patch means the new list. Merging element by element
-// would make a shorter `followUp.steps` or a smaller attribute scope impossible to express, which
-// is the opposite of what sending one means.
-// How deep the merge will follow a patch before it stops descending and simply replaces. Both halves
-// of that are load-bearing.
-//
-// It is BOUNDED because the settings bag is caller-supplied on both sides — the stored value and the
-// patch — and `agentUpdateSchema.settings` accepts arbitrary nested `unknown`. Recursing once per
-// level turns "store a deep object, then patch it" into `RangeError: Maximum call stack size
-// exceeded` (measured against this tree: 5_000 levels merge fine, 20_000 throw), and since the throw
-// escapes the write, the agent's settings would stay unwritable until the row was repaired by hand.
-//
-// The number comes from the shape the readers actually produce, not from the stack: the deepest is
-// `guardrails.input.checks.toxicity`, at 4. Eight is double that and four orders of magnitude short
-// of where the stack gives out. `mergeMaxDepthCoversReaders` in the tests ties the two together, so
-// a block that grows deeper than this fails there rather than silently losing values past the cap.
-//
-// Past the cap it REPLACES, which is what the merge did at every level before it learned to descend.
-// Nothing that used to work changes shape; only the runaway stops.
+// How deep the merge descends before it replaces. Bounded because both sides are caller-supplied and
+// unbounded recursion would overflow the stack and leave the settings unwritable. Double the deepest
+// path the readers produce (4); `mergeMaxDepthCoversReaders` in the tests keeps it above that.
 const MERGE_MAX_DEPTH = 8;
 
 // Fields inside a block that the merge replaces whole instead of descending into.
@@ -252,6 +216,9 @@ const ATOMIC_FIELDS: Record<string, readonly string[]> = {
   contactAuth: ["rule"],
 };
 
+// Merge a patch into a stored block key by key, at any depth: a sub-object replaced by a shallow
+// spread would be re-read FILLED WITH DEFAULTS. Two objects merge; anything else, arrays included
+// (a list patch means the new list), replaces.
 function mergeBlock(
   before: Record<string, unknown>,
   patch: Record<string, unknown>,
@@ -284,29 +251,9 @@ export function behaviorSettingsMaxDepth(): number {
 
 export const MERGE_MAX_DEPTH_FOR_TESTS = MERGE_MAX_DEPTH;
 
-// Merge a behavior patch into the existing raw settings bag, then RE-READ each touched block through
-// its typed reader so the persisted value is always normalized + clamped (never the raw patch).
-// Untouched keys in the bag (and untouched blocks) are preserved verbatim — the REST/UI merge
-// contract. Returns the new settings bag to persist.
-// THE BLOCKS WHOSE READER IS A FILTER, NOT A DEFAULTER — and the distinction is the whole reason
-// they are handled apart (PR #404, round 1).
-//
-// Every other block reads into DEFAULTS: an unrecognized value becomes the default, so re-reading a
-// bag and storing what came out loses nothing, because there was nothing the reader could not
-// represent. These two DROP what they do not recognize — a key outside the native catalog, a
-// condition of a kind added later, an entry an agent import copied in verbatim. Run them through the
-// same normalized write-back and "normalize" means DELETE.
-//
-// Three ways that was measured to bite, all silent, all on a guard the operator believed was there:
-// an invalid entry in the patch erased the VALID one it replaced; an update to `debounce` deleted a
-// precondition it never mentioned; and there was no way to remove one at all, since an empty object
-// deep-merged into the old value and changed nothing.
-//
-// So: merged BY KEY with whole-value replacement, `null` to remove, keys the patch does not mention
-// left byte-identical — and never written back through the reader. The write boundary is what
-// refuses a bad entry (assertSettingsToolPreconditions, run on the PATCH before this merge, like its
-// three siblings in modules/mcp/write.ts), which is also why dropping one here would be the wrong
-// place to enforce anything.
+// The blocks whose reader FILTERS rather than defaults: it drops what it does not recognize, so a
+// normalized write-back would delete entries. Merged by key with whole-value replacement, `null` to
+// remove, never written back through the reader; the write boundary refuses bad entries instead.
 const TOOL_KEYED_BLOCKS: ReadonlySet<string> = new Set([
   "toolGuidance",
   "toolPreconditions",
@@ -316,12 +263,8 @@ function mergeToolKeyedBlock(
   before: Record<string, unknown>,
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
-  // NOTE: An ARRAY prior is no map at all, and enumerating it is worse than ignoring it: `Object.entries`
-  // on an array yields its INDICES, so a stored array became keys "0" and "1" and the apply then
-  // refused with `settings.toolPreconditions.0 is not a valid precondition` — a field name the
-  // operator never wrote, and no way for this surface to write over the bad block at all. An array
-  // was never valid configuration here (the reader ignores it whole), so there is nothing to
-  // preserve and the patch repairs the block.
+  // NOTE: An ARRAY prior is not a map (the reader ignores it whole), and enumerating it would yield
+  // index keys; dropping it lets the patch repair the block.
   const prior = Array.isArray(before) ? {} : before;
   // NULL-PROTOTYPE, for the reason the runtime map is: a tool name is operator text, and `__proto__`
   // assigned onto an ordinary object mutates the prototype instead of storing an entry.
@@ -336,18 +279,19 @@ function mergeToolKeyedBlock(
   return out;
 }
 
+// Merge a behavior patch into the raw settings bag, then RE-READ each block through its typed reader
+// so what is persisted is normalized and clamped. Untouched keys and blocks are preserved verbatim.
 export function mergeBehaviorSettings(
   current: Record<string, unknown>,
   patch: BehaviorSettingsPatch,
 ): Record<string, unknown> {
-  // Start from a shallow copy of the existing bag (preserves unknown/non-behavior keys).
   const next: Record<string, unknown> = { ...current };
 
   for (const key of BEHAVIOR_SETTINGS_KEYS) {
     const sub = patch[key];
     if (sub === undefined) continue;
     if (sub === null || typeof sub !== "object" || Array.isArray(sub)) {
-      // A non-object block is ignored (the readers would coerce it to defaults anyway); skipping
+      // NOTE: A non-object block is ignored (the readers would coerce it to defaults anyway); skipping
       // here keeps the existing block intact rather than silently wiping it.
       continue;
     }
@@ -358,10 +302,8 @@ export function mergeBehaviorSettings(
     next[key] = TOOL_KEYED_BLOCKS.has(key)
       ? mergeToolKeyedBlock(before, sub)
       : mergeBlock(before, sub);
-    // A value that is ONE decision is replaced, never merged into (issue #646 review). The contact
-    // gate's rule is tagged by `kind`: merged, a new key kept the old rule's `equals`, and a list
-    // switched to an attribute kept its phones beside it, so the rule a caller wrote was not the rule
-    // stored.
+    // NOTE: A value that is ONE decision (the contact gate's `kind`-tagged rule) is replaced, never
+    // merged into, or the stored rule would keep fields of the old one.
     const atomic = ATOMIC_FIELDS[key];
     if (atomic) {
       for (const field of atomic) {
@@ -374,17 +316,8 @@ export function mergeBehaviorSettings(
     }
   }
 
-  // Re-read through the typed readers to clamp/validate, then write the normalized blocks back.
-  //
-  // FROM THE KEY LIST, not eighteen assignments beside it. This was a line per block, and the guard
-  // over it (tests/modules/behavior-settings.test.ts) exists because `modelFallback` went in without
-  // one — the fourth block in a single change to reach one registration point and not the next. It
-  // happened again here: #402 added four blocks to the list above and the write-back kept the shape
-  // it had, so `kanban` and `appointmentReminders` merged and were never stored normalized. The
-  // guard caught it, which is the argument for deriving rather than for a more careful reviewer.
-  //
-  // The two exceptions are handled after the loop, and each is a real difference rather than an
-  // omission: see their own comments below.
+  // NOTE: Write the normalized blocks back, derived from the key list so a new block cannot miss it.
+  // The exceptions are handled after the loop.
   const normalized = readBehaviorSettings(next) as unknown as Record<
     string,
     unknown

@@ -1,29 +1,15 @@
 import { isLangChainTool } from "@langchain/core/utils/function_calling";
 import { toJsonSchema } from "@langchain/core/utils/json_schema";
 
-// Gemini tool declarations. @langchain/google-genai declares a tool's parameters in
-// `FunctionDeclaration.parameters`, which generativelanguage parses as the OpenAPI 3.03 subset: a
-// CLOSED set of 22 fields (the API's own discovery document lists them under `.schemas.Schema
-// .properties` at https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta). One
-// field outside that set makes the API reject the ENTIRE request with `Invalid JSON payload
-// received. Unknown name "<key>"`, before the model is ever reached — issue #64. Two of our own
-// generators trip it on every turn: `z.number().int().positive()` emits `exclusiveMinimum` (the
-// native `get_current_time`, the Calendar/Drive/Asaas toolpacks) and `z.record(...)` emits
-// `propertyNames` (every HTTP tool with an object parameter).
-//
-// `FunctionDeclaration.parametersJsonSchema` takes a FULL JSON Schema instead, and is mutually
-// exclusive with `parameters`. Declaring tools that way sends the schema exactly as authored, so
-// nothing is dropped and no bound is approximated. Measured against the live API on
-// gemini-3.5-flash, gemini-2.5-flash and gemini-flash-latest: `exclusiveMinimum`, `propertyNames`,
-// `additionalProperties`, `$schema`, `$defs`/`$ref`, `const`, `uniqueItems`, `multipleOf`,
-// `oneOf`/`allOf`, an object with no properties, a `type` array and a non-string `enum` all pass,
-// and the model still answers with correct arguments.
-//
-// The alternative (rewrite each schema into the subset) was measured working too, but it is lossy
-// by construction: `exclusiveMinimum: 0` on a money field can only become `minimum: 0`, which tells
-// the model that zero is a legal amount.
+// Gemini tool declarations. @langchain/google-genai puts a tool's parameters in
+// `FunctionDeclaration.parameters`, which the API parses as a closed OpenAPI subset (its discovery
+// document lists the fields under `.schemas.Schema.properties`). One field outside it rejects the
+// whole request (`Unknown name "<key>"`), and zod emits `exclusiveMinimum` and `propertyNames`. So
+// tools are declared through `parametersJsonSchema` (full JSON Schema, exclusive with `parameters`),
+// which sends the schema as authored. Rewriting schemas into the subset is lossy: `exclusiveMinimum:
+// 0` on a money field can only become `minimum: 0`, which tells the model zero is a legal amount.
 
-// A Gemini FunctionDeclaration as we build it. NOTE: the SDK's own types predate
+// A Gemini FunctionDeclaration as we build it. The SDK's own types predate
 // `parametersJsonSchema` (@google/generative-ai is the legacy client and stopped being updated),
 // but the field is in the API's discovery document and the request body is JSON.stringify'd
 // straight through, so it reaches the wire regardless of the local type.
@@ -37,27 +23,15 @@ export interface GeminiFunctionTool {
   functionDeclarations: GeminiFunctionDeclaration[];
 }
 
-// NOTE: guards against a hostile schema from a third-party MCP server; JSON-derived data cannot be
-// cyclic, so this only caps absurd nesting instead of preventing a loop. Past the cap the subtree
-// travels untransformed, which is exactly what shipped before this module existed.
+// Caps the nesting of a hostile schema from a third-party MCP server (JSON-derived data cannot be
+// cyclic, so there is no loop to prevent). Past the cap the subtree travels untransformed.
 const MAX_DEPTH = 64;
 
-// The ONE construct the JSON Schema path still rejects (measured: `schema at properties.X.items
-// must be a boolean or an object`). Draft-07 writes a tuple as an `items` ARRAY; 2020-12 writes it
-// `prefixItems`, and Gemini implements 2020-12. Zod never emits the old form, but an MCP server
-// written against draft-07 does and @langchain/mcp-adapters passes it through untouched. The rename
-// is the exact 2020-12 translation, so the tuple keeps its meaning.
-//
-// Always returns fresh objects: `toJsonSchema` memoizes per schema and hands back the SAME object
-// on every call, so editing in place would corrupt what the other providers declare for the rest of
-// the process.
-//
-// Where a schema may legally sit. The walk descends ONLY into these, because "every object is a
-// schema" is wrong three different ways: inside `properties` the keys are parameter NAMES chosen by
-// the tool author (a parameter called "additionalItems" would be translated away while `required`
-// still demanded it), and `enum`/`const`/`default`/`examples` hold INSTANCE DATA, so an enum value
-// that happens to contain `items: [...]` would be rewritten into a different allowed value. Anything
-// not listed here travels verbatim, which is also the safe default for a keyword we do not know.
+// Where a schema may legally sit; the walk descends only into these. "Every object is a schema" is
+// wrong: inside `properties` the keys are parameter NAMES (one called "additionalItems" would be
+// translated away while `required` still demands it), and `enum`/`const`/`default`/`examples` hold
+// instance data that must not be rewritten. Anything unlisted travels verbatim, the safe default for
+// a keyword we do not know.
 const SCHEMA_MAP_KEYWORDS = new Set([
   "properties",
   "patternProperties",
@@ -94,6 +68,11 @@ function normalizeSchemaMap(node: unknown, depth: number): unknown {
   return out;
 }
 
+// Rewrites the one construct the JSON Schema path still rejects: a draft-07 tuple (an `items` ARRAY),
+// which Gemini, implementing 2020-12, refuses. Zod never emits it, but a draft-07 MCP server does and
+// @langchain/mcp-adapters passes it through; `prefixItems` is the exact 2020-12 translation. Always
+// returns fresh objects: `toJsonSchema` memoizes per schema, so editing in place would corrupt what
+// the other providers declare for the rest of the process.
 function normalizeTupleItems(node: unknown, depth = 0): unknown {
   if (depth > MAX_DEPTH) return node;
   if (!node || typeof node !== "object" || Array.isArray(node)) return node;
@@ -130,10 +109,9 @@ function normalizeTupleItems(node: unknown, depth = 0): unknown {
       continue;
     }
     if (key === "additionalItems") {
-      // The other half of the same translation: what draft-07 spelled `additionalItems` is the
-      // single-schema form of `items` in 2020-12. Dropping it would silently widen the contract —
-      // `additionalItems: false` means "nothing past the tuple", and losing it lets the model send
-      // extra elements. Outside a tuple the keyword has no meaning in either draft, so it goes.
+      // NOTE: the other half of the translation: draft-07 `additionalItems` is the single-schema
+      // `items` of 2020-12. Dropping it would widen the contract (`additionalItems: false` means
+      // nothing past the tuple). Outside a tuple it means nothing in either draft, so it goes.
       if (isTuple) {
         out.items =
           typeof value === "boolean"
@@ -142,8 +120,8 @@ function normalizeTupleItems(node: unknown, depth = 0): unknown {
       }
       continue;
     }
-    // Not a schema position: instance data (`enum`, `const`, `default`, `examples`) or a plain
-    // annotation. Copied by reference, never walked — and never mutated, here or downstream.
+    // NOTE: not a schema position: instance data (`enum`, `const`, `default`, `examples`) or a plain
+    // annotation. Copied by reference, never walked, and never mutated here or downstream.
     out[key] = value;
   }
   return out;
@@ -160,15 +138,11 @@ const ARGUMENT_KEYWORDS = [
   "propertyNames",
 ];
 
-// A tool that takes no parameters is declared WITHOUT `parametersJsonSchema`, the same shape
-// @langchain/google-genai already sends today for `z.object({})` (`resolve_conversation`); an empty
-// schema is accepted either way, and keeping the omission means parameterless tools go on the wire
-// exactly as they did before this change.
-//
-// NOTE: "no properties" alone is NOT the test. A third-party MCP server can describe its arguments
-// with an `additionalProperties` map, a root `$ref`, or a union, and omitting those would hand the
-// model a tool it then has to call with no arguments at all. What makes a schema parameterless is
-// that it can accept nothing: no properties, closed to extras, and no keyword that admits any.
+// A parameterless tool is declared WITHOUT `parametersJsonSchema`, the shape @langchain/google-genai
+// sends for `z.object({})`. "No properties" alone is not the test: an MCP server can describe its
+// arguments with an `additionalProperties` map, a root `$ref` or a union, and omitting those would
+// leave the model a tool it must call with no arguments. Parameterless means it accepts nothing: no
+// properties, closed to extras, and no keyword that admits any.
 function acceptsNoArguments(source: Record<string, unknown>): boolean {
   const properties = source.properties;
   const listsProperties =
@@ -223,7 +197,7 @@ export function toGeminiTools<T>(
       ...(parameters === undefined ? {} : { parametersJsonSchema: parameters }),
     });
   }
-  // NOTE: one entry holding every declaration, never one entry per tool — Gemini refuses a request
+  // NOTE: one entry holding every declaration, never one entry per tool: Gemini refuses a request
   // with multiple tool entries unless they are all search tools. Same reason the fold below exists:
   // a declaration entry the caller already passed has to absorb ours instead of sitting beside it.
   if (declarations.length === 0) return [...passthrough];
@@ -235,7 +209,7 @@ export function toGeminiTools<T>(
     const existing = tool as GeminiFunctionTool;
     return {
       ...existing,
-      // Caller's declarations first, matching the order upstream produced before this module existed.
+      // NOTE: caller's declarations first, the order upstream produces.
       functionDeclarations: [
         ...(existing.functionDeclarations ?? []),
         ...declarations,

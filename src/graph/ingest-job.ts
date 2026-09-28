@@ -12,45 +12,22 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// Continuous ingestion as a scheduler job, instead of an append made inline while the webhook is
-// being acked (issue #194).
-//
-// The reason is NOT retries, which is what a queue usually buys. It is that appending on arrival has
-// nowhere to defer TO. A graph invoke is a read-modify-write of the whole message channel, so a
-// message appended while a turn is in flight is erased when that turn saves — and on the inline path
-// the only alternatives were to append anyway (the message is lost, and the thread's own record says
-// it was handled) or to block the webhook until the turn finished, which is an ack we do not have
-// the time budget for. With a row to come back to, the third answer exists: put it down and try
-// again in a minute.
-//
-// THE TEXT IS ENCRYPTED AT REST. The receiver deliberately keeps message bodies out of our database
-// — the delivery ledger stores status and never the payload, "which is PII" (docs/chatwoot.md) — and
-// a durable job row is exactly the thing that would have quietly walked one back in, transcriptions
-// and quoted context included. `encryptJson` is the same treatment every other secret at rest gets.
-// It does not restore the stronger property the receiver has (the body never lands here at all);
-// that would mean carrying only a reference and re-reading Chatwoot at run time, which is a provider
-// round-trip on every ingestion and a credential this job does not otherwise need.
-//
-// WHAT THE PAYLOAD CARRIES, and why it is the rendered text rather than the raw message. Rendering
-// folds in the eager media pass — transcription, image description, extracted text, quoted context —
-// which has already run by the time the webhook reaches ingestion and which the job has no way to
-// re-derive. Re-rendering later would also read a Chatwoot that has moved on. So the webhook renders
-// and the job stores words, exactly as ../modules/chatwoot/render.ts produced them.
+// Continuous ingestion as a scheduler job rather than an append inline with the webhook ack. Not for
+// retries: an inline append has nowhere to defer TO. An invoke is a read-modify-write of the whole
+// channel, so a message appended mid-turn is erased when the turn saves, and blocking the ack until
+// the turn ends does not fit its time budget; a row can be put down and retried in a minute. The text
+// is encrypted at rest (`encryptJson`), since the receiver keeps message bodies, which are PII, out of
+// the database (docs/chatwoot.md); carrying only a reference would cost a Chatwoot round-trip and a
+// credential per ingestion. It is the RENDERED text (../modules/chatwoot/render.ts): it folds in the
+// eager media pass, which the job cannot re-derive from a Chatwoot that has moved on.
 
 const DEFER_ON_TURN_MS = 60_000;
 
-// One row per MESSAGE, and this is the field the dedupe key cannot leave out. `enqueueJob` keeps one
-// live row per (tenant, kind, dedupeKey) and a re-enqueue REPLACES the payload, so a key scoped to
-// the thread would let the second message of a burst overwrite the first — the same message loss
-// this job exists to stop, moved one layer out. Chatwoot message ids are unique per account, so the
-// thread and the id together name exactly one append.
-// A CHAVE NOMEIA UMA MENSAGEM, e é exportada porque isso é um fato que os testes precisam PERGUNTAR
-// e não reconstruir (issue #723). Quarenta e cinco lugares afirmavam "nenhuma ingestão foi armada
-// para esta mensagem" contando a população de linhas do tenant, uma quantidade que este módulo move
-// de propósito: a linha é apagada ao concluir (JOB_DELETE_ON_DONE) e `drainPendingIngest` drena as
-// pendentes de uma thread. Os dezessete do seam saíram na #723 e os vinte e oito do observer-route
-// na #731. Um teste que remonta o formato à mão fica igualmente certo e igualmente frágil, porque o
-// formato passa a viver em dois lugares; exportar é o que mantém um só.
+// One row per MESSAGE: `enqueueJob` keeps one live row per (tenant, kind, dedupeKey) and a re-enqueue
+// REPLACES the payload, so a key scoped to the thread would let a burst's second message overwrite
+// the first. Chatwoot message ids are unique per account, so thread and id name exactly one append.
+// Exported so tests ask for the key instead of rebuilding its format or counting the tenant's rows,
+// which this module deletes on DONE and `drainPendingIngest` drains.
 export function ingestDedupeKey(
   graphThreadId: string,
   messageId: number,
@@ -58,18 +35,11 @@ export function ingestDedupeKey(
   return `${ingestKeyPrefix(graphThreadId)}${messageId}`;
 }
 
-// EVERYTHING UP TO THE MESSAGE ID, and it exists so the two ends of that sentence cannot drift
-// (issue #736). Three places need the prefix rather than one key: the drain scans it, the `/reset`
-// revoke sweeps it, and that revoke now READS the id back off the key to decide which rows are
-// after the command. Written by hand in each of them, a change to the key's shape (a suffix, an
-// episode, a version marker) would leave the reader unable to parse any key on the thread — and the
-// reader's unreadable case deletes, so the whole thread's queued ingestion would be revoked in
-// silence, which is the exact loss #736 exists to close, coming back through a change nobody would
-// connect to this revoke. Built from one function, the same change breaks compilation or a test
-// instead.
-//
-// The trailing colon is load-bearing: without it thread `…:ci:10`'s prefix also matches
-// `…:ci:100`'s rows, and a reset on one thread would sweep another's.
+// Everything up to the message id, built in one place because three readers need the prefix: the
+// drain scans it, and the `/reset` revoke sweeps it and READS the id back off the key. A hand-written
+// copy that drifted from the key's shape would leave the revoke unable to parse any key, and its
+// unreadable case deletes, silently revoking the thread's whole queue. The trailing colon is
+// load-bearing: without it thread `…:ci:10`'s prefix also matches `…:ci:100`'s rows.
 export function ingestKeyPrefix(graphThreadId: string): string {
   return `ingest:${graphThreadId}:`;
 }
@@ -83,8 +53,8 @@ export interface ArmIngestParams {
   messageId: number;
   text: string;
   role: IngestRole;
-  // When Chatwoot recorded the message (issue #755). Optional because a caller that does not know
-  // must say nothing rather than "now"; a job armed by an older build carries none either.
+  // When Chatwoot recorded the message. Optional because a caller that does not know
+  // must say nothing rather than "now", and a row armed without one carries none.
   sentAt?: Date | null;
   agentId: bigint;
   compactionEnabled: boolean;
@@ -100,12 +70,12 @@ export async function armIngest(params: ArmIngestParams): Promise<void> {
     // second one. The row is also deleted on DONE (JOB_DELETE_ON_DONE), so a completed ingest
     // leaves nothing for a later arm to inherit in the first place.
     rearm: "same-work",
-    // Now: the fast tick drains this lane, and what waits behind a queued ingestion is the next
+    // NOTE: now: the fast tick drains this lane, and what waits behind a queued ingestion is the next
     // turn's context rather than a customer reading a reply.
     runAt: new Date(),
-    // The ciphertext travels in its OWN column, never in `payload`: that is a Prisma `Json` column,
-    // and an `encryptJson` blob does not go in one (CLAUDE.md, Encryption). A Json payload is the
-    // thing that gets logged or serialized whole, and it would carry a contact's own words with it.
+    // NOTE: the ciphertext travels in its OWN column, never in `payload`: that is a Prisma `Json`
+    // column, and an `encryptJson` blob does not go in one (CLAUDE.md, Encryption). A Json payload is
+    // the thing that gets logged or serialized whole, and it would carry a contact's own words with it.
     payloadSecret: encryptJson(params.text),
     payload: {
       instanceId: String(params.instanceId),
@@ -142,12 +112,10 @@ function parsePayload(
   const instanceId = s("instanceId");
   const agentId = s("agentId");
   const graphThreadId = s("graphThreadId");
-  // THROWS on a missing secret, and that is the guard for the column being optional on ClaimedJob:
-  // a query that forgot to select it produces a loud failure here rather than an empty message
-  // folded into a contact's permanent memory. Decryption is deliberately outside the shape check
-  // below for the same reason — a body we cannot read is a real failure (a rotated key), so it
-  // throws and the job retries and then dead-letters visibly, instead of being dropped as an
-  // unreadable payload.
+  // NOTE: THROWS on a missing secret, the guard for the column being optional on ClaimedJob: a query
+  // that forgot to select it fails loudly instead of folding an empty message into a contact's
+  // permanent memory. Decryption sits outside the shape check for the same reason: an unreadable body
+  // is a real failure (a rotated key), so the job retries and dead-letters visibly.
   if (payloadSecret == null) {
     throw new Error("ingest: the job carries no message body");
   }
@@ -195,29 +163,18 @@ export async function ingestHandler(
   if (!p) return { outcome: "done" };
   const tenantId = job.tenantId;
 
-  // THE DEFERRAL THIS JOB EXISTS FOR, asked for with a flag rather than checked here. The decision
-  // has to be taken under the `ingest:<thread>` lock to be exclusive with a turn marking itself, and
-  // that lock lives inside ./ingest.ts — a check made out here would only be staggered: the turn can
-  // take the lock, mark itself and release it between our check and the append.
+  // NOTE: the deferral this job exists for, asked for with a flag rather than checked here. It has to
+  // be decided under the `ingest:<thread>` lock inside ./ingest.ts to be exclusive with a turn marking
+  // itself; a check out here would only be staggered, since the turn can take the lock, mark itself
+  // and release it between our check and the append.
   const outcome = await ingestMessageIntoThread({
     deferIfTurnInFlight: true,
-    // THE GENERATION FENCE THIS JOB LACKED (round-9 review). Compaction has two defenses against a
-    // memory reset overtaking it — the reset cancels its pending row, and a claimed one finds the
-    // AgentThread row gone and drops the summary. Ingestion inherited neither, and it is the worse
-    // of the two to get wrong: a claimed ingestion waiting on the reset's own lock appends pre-reset
-    // text the moment that lock is released, recreating both the thread row and the checkpoint, with
-    // the operator having been told the reset succeeded.
-    //
-    // The token is the row itself, read under the lock: a revoked job is no longer CLAIMED by this
-    // run. `claimSeq` is in the comparison because a re-enqueue (a duplicate delivery) re-arms the
-    // row and bumps it — the later enqueue wins, and standing down here is what lets it, since that
-    // re-armed row carries the same message and will run again.
-    //
-    // Its own short transaction. This used to have to run on the ingestion transaction's connection,
-    // because that transaction stayed open across the whole critical section and a second one here
-    // could deadlock a busy shared lane against its own pool. The section holds no transaction while
-    // this runs any more (issue #225), so the read stands on its own; what still matters is that it
-    // happens INSIDE the critical section, which is what makes it exclusive with the reset.
+    // NOTE: the generation fence. A claimed ingestion waiting on a memory reset's own lock would
+    // append pre-reset text once it is released, recreating the thread row and the checkpoint after
+    // the operator was told the reset succeeded. The token is the row, read under the lock: a revoked
+    // job is no longer CLAIMED by this run, and `claimSeq` catches a re-enqueue (a duplicate delivery)
+    // that re-armed the row, whose later run carries the same message. Its own short transaction, since
+    // the section holds none while this runs; what matters is that it runs INSIDE the critical section.
     stillWanted: async () => {
       const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
         db.schedulerJob.findUnique({
@@ -251,7 +208,7 @@ export async function ingestHandler(
       }).then(() => undefined),
   });
 
-  // `reschedule` rather than `fail`: waiting on a turn is not an error and must not consume an
+  // NOTE: `reschedule` rather than `fail`: waiting on a turn is not an error and must not consume an
   // attempt, or a contact in a long conversation would dead-letter their own message.
   if (outcome === "deferred") {
     logger.info(

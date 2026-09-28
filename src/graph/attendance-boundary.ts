@@ -1,50 +1,12 @@
 import type { BaseMessage } from "@langchain/core/messages";
 import { lastStampedConversationId } from "./markers";
 
-// WHO CONSUMES AN ATTENDANCE BOUNDARY, decided once for every writer of a contact's memory thread.
-//
-// Three places write that thread: the reactive turn (./runtime.ts), the ingestion of a message the
-// agent did not answer (./ingest.ts), and a proactive nudge (./nudge.ts). Any of the three can be the
-// FIRST activity of a new conversation on a thread that already carries the previous one, so all
-// three face the same three questions: does a divider go in, does the sidecar marker advance, and
-// which attendance just ended and is now compactable.
-//
-// The rule lived inline in two of them, in copies that had drifted in wording but not in substance.
-// The third never had it, and that is the defect this module exists to make impossible: a proactive
-// nudge entered the thread with no stamp and no marker advance, so the boundary of the NEXT reactive
-// turn landed AFTER it and the nudge — with the reply it produced — was summarized away as part of
-// the previous attendance.
-//
-// Pure on purpose, same reason as ./history-window.ts and ../modules/memory/cut.ts: this is a
-// decision, and a decision belongs in a table of cases rather than in three copies inside three
-// different transactions.
-//
-// THE TWO CASES THAT MAKE IT MORE THAN `previous !== current`:
-//
-//   1. AN INVOKE IS ALREADY READING THE THREAD. An invoke is a read-modify-write of the WHOLE message
-//      channel: it saves the state it loaded plus its own messages, erasing anything that landed
-//      meanwhile. A divider written under one is erased — while the marker row recording "we already
-//      wrote it" would advance for good, spending the one chance to write it. So a boundary crossed
-//      while another invoke is in flight is NOT consumed here: the marker stays put and the next
-//      writer lands the divider with nothing in the way.
-//
-//      WHO STILL ARRIVES HERE WITH THIS TRUE, since issue #658: the nudge, continuous ingestion, and
-//      the debounce flush past its deferral ceiling. The direct webhook turn does NOT — it waits the
-//      other invoke out and acquires alone, so it claims the boundary in its own turn. What keeps
-//      that turn from writing a SECOND divider is no longer this case, it is `previous ===
-//      conversationId` above: the turn it waited for has already moved the marker. Measured on the
-//      holdout scenario s4 of that issue, six runs, one divider.
-//   2. THE ATTENDANCE HAS ALREADY STARTED. A boundary deferred by case 1 leaves the marker on the OLD
-//      conversation, so the next writer of the SAME conversation still sees a boundary — by which
-//      time messages of this attendance are already in the thread. A divider can only be APPENDED, so
-//      it would land after them and tell the model that part of the conversation it is in the middle
-//      of is a past attendance. A hint in the wrong place is worse than no hint.
-//
-// Both cases cost the PROMPT only. The cut reads the conversation stamped on each message
-// (./markers.ts), never the divider, so a divider that never lands loses a hint in one prompt and
-// never an attendance. Which is also why compaction is armed in EVERY boundary case, including the
-// two that write nothing: the attendance that just ended is compactable right now, and withholding
-// the arm would make it wait on a next writer that may never come.
+// Decides, for every writer of a contact's memory thread (the reactive turn in ./runtime.ts,
+// ./ingest.ts, and a nudge in ./nudge.ts), whether a new attendance gets a divider, whether the
+// sidecar marker advances, and which attendance just ended and is compactable. Any of the three can be
+// the first activity of a new conversation, and a writer that skips this lands its message on the far
+// side of the next boundary, summarized away with the previous attendance. Pure, so the decision is one
+// table of cases instead of a copy inside each writer's transaction.
 
 export interface AttendanceBoundaryInput {
   // AgentThread.lastConversationId, read BEFORE this writer takes its own in-flight claim: what
@@ -67,12 +29,11 @@ export interface AttendanceBoundaryClaim {
   closedConversationId: number | null;
 }
 
-// Whether the attendance is already under way ON THE THREAD, which is what decides case 2 above.
-// Asked of the LAST stamped run and not of the whole history: a reopened conversation appears earlier
-// too, and reading that as "already started" made every writer skip the divider for an attendance
-// that had genuinely just begun — presenting its first turn to the model as a continuation of the
-// conversation that ran in between. The stamp itself is inert to the model; the divider is the only
-// part it reads.
+// Whether the attendance is already under way on the thread (the "already started" case of
+// claimAttendanceBoundary). Asks the LAST stamped run, not the whole history: a reopened conversation
+// also appears earlier, and reading that as started would present the first turn of a new attendance
+// as a continuation of the conversation in between. The stamp is inert to the model; only the divider
+// is read.
 export function attendanceHasStarted(
   messages: BaseMessage[],
   conversationId: number,
@@ -80,33 +41,14 @@ export function attendanceHasStarted(
   return lastStampedConversationId(messages) === conversationId;
 }
 
-// WHETHER THIS MESSAGE MAY MOVE THE BOUNDARY AT ALL, asked before the claim below.
-//
-// Every case in this module reads `previousConversationId` as "the attendance the thread is on", and
-// that reading holds only for a message that is the newest one the thread has seen. Since ingestion
-// began accepting out-of-order ids (./ingest-dedup.ts, issue #194) it can be handed a message whose
-// attendance is already OVER — a media webhook from conversation A, delayed behind a provider
-// round-trip while B opened. Run through the claim that message writes a divider for A, walks the
-// marker BACKWARDS to A, and arms compaction for B: the conversation still being served, whose raw
-// turns are then replaced by a summary of an attendance that has not finished.
-//
-// THE FRONTIER IS THE THREAD'S, NOT THE ARRIVING WRITER'S. The first version compared against the
-// mark of the message's own role, which leaves the same hazard open through the other one — and
-// through the ordinary shape of it: the bot qualifies, a person takes over, and the takeover message
-// is what opens the next conversation. The customer's own mark is then still back in the old
-// attendance, so their delayed note reads as current and closes the live conversation exactly as
-// before. Chatwoot message ids are unique and increasing per ACCOUNT, so marks from both directions
-// are comparable and the newest of them is the thread's frontier.
-//
-// Nulls are absent marks, not zeroes: a direction that has never written has no frontier to lose to.
-//
-// KNOWN LIMIT. The marks are inbound Chatwoot message ids, so the writers that leave one are the two
-// ingestion roles and the reactive turn (../graph/runtime.ts records the id it answered). A PROACTIVE
-// NUDGE has no inbound message at all, so an attendance it opens by itself contributes nothing here,
-// and a delayed message from the previous conversation is then genuinely the newest inbound id on the
-// thread and claims a boundary back to it. It needs an attendance opened by a nudge and nothing else,
-// which is why it is written down rather than given a fourth input: the cost is one nudge summarised
-// early, against a mechanism every other path would carry.
+// Whether this message may move the boundary at all, asked before claimAttendanceBoundary. Ingestion
+// accepts out-of-order ids (./ingest-dedup.ts), so a delayed message from an attendance already over
+// would otherwise write its divider, walk the marker back, and compact the conversation still served.
+// The frontier is the newest mark from EITHER direction, not the writer's own role: after a takeover
+// opens the next conversation, the customer's own mark still sits in the old one. Chatwoot message ids
+// increase per account, so both directions compare; a null mark is absent, not zero. Known limit: a
+// nudge leaves no inbound id, so an attendance opened only by a nudge can be claimed back by a delayed
+// message, accepted over a fourth input that every other path would carry.
 export function movesAttendanceFrontier(
   marks: readonly (number | null | undefined)[],
   messageId: number,
@@ -150,9 +92,8 @@ export function claimAttendanceBoundary(
     attendanceAlreadyStarted,
   } = input;
 
-  // A thread with no marker yet: nothing ended, and there is no previous attendance for a divider to
-  // separate this one from. The row still has to come into existence — resolve-time compaction reads
-  // it to know which attendance the thread is on, and finds nothing to do without it.
+  // NOTE: no marker yet, so nothing ended and there is nothing for a divider to separate. The row
+  // still has to exist: resolve-time compaction reads it to know which attendance the thread is on.
   if (previous === null) {
     return {
       writeDivider: false,
@@ -161,7 +102,7 @@ export function claimAttendanceBoundary(
     };
   }
 
-  // Same attendance, already recorded. The marker is written only when it would change.
+  // NOTE: same attendance, already recorded. The marker is written only when it would change.
   if (previous === conversationId) {
     return {
       writeDivider: false,
@@ -170,7 +111,12 @@ export function claimAttendanceBoundary(
     };
   }
 
-  // Case 1 in the header: defer the divider AND the marker, arm compaction anyway.
+  // NOTE: an invoke is a read-modify-write of the whole message channel, so a divider written under
+  // another one is erased while the advanced marker spends the one chance to write it. Defer both and
+  // let the next writer land it. Compaction is armed anyway: the cut reads each message's stamp
+  // (./markers.ts), never the divider, and the ended attendance must not wait on a writer that may
+  // never come. The direct webhook turn waits other invokes out instead, and the `previous ===
+  // conversationId` branch keeps it from writing a second divider.
   if (anotherInvokeIsReading) {
     return {
       writeDivider: false,
@@ -179,7 +125,10 @@ export function claimAttendanceBoundary(
     };
   }
 
-  // Case 2 in the header: consume the boundary, but a divider would land in the wrong place.
+  // NOTE: a boundary deferred above leaves the marker on the old conversation, so a later writer of
+  // the same conversation can find this attendance already in the thread. A divider can only be
+  // appended and would mark part of the live conversation as past: a hint in the wrong place is worse
+  // than none, and skipping it costs the prompt only.
   return {
     writeDivider: !attendanceAlreadyStarted,
     advanceMarker: true,

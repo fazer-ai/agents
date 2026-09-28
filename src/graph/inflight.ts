@@ -1,57 +1,23 @@
-// In-memory registry of agent turns currently executing. The keys are thread ids, and a turn marks
-// TWO of them because two different jobs need to know two different things:
-//
-//   - the per-conversation chatwoot thread (`tenant:instance:conversationId`), for the follow-up
-//     handler: do not fire a proactive nudge in the MIDDLE of a long turn (a short follow-up delay
-//     can elapse while the model is still thinking, and the nudge would race the agent's own reply);
-//   - the per-contact-inbox GRAPH thread, for memory compaction: do not rewrite the message channel
-//     while an invoke is reading it. A LangGraph invoke is a read-modify-write of the WHOLE channel
-//     — it saves what it loaded at the start plus its own messages — so a rewrite that lands in the
-//     middle is silently undone when the turn finishes, restoring the raw history it had just
-//     replaced. Measured, not assumed: tests/modules/memory-compaction.test.ts pins the undo.
-//
-// The compaction key is marked INSIDE the `ingest:<graphThreadId>` lock, which is what makes the two
-// sides exclusive rather than merely staggered: the rewrite holds that same lock while it checks
-// here, so it either runs entirely before a turn's mark (and the turn then loads the rewritten
-// state) or it sees the mark and defers. Marking outside the lock would leave the window where the
-// rewrite checks an unmarked thread that is about to be read.
-//
-// THIS IS NOW THE FAST HALF, NOT THE WHOLE ANSWER. It holds under the single-replica / one-leader
-// invariant, where the webhook turn and the scheduler worker share this process and therefore this
-// Map. On the scaled web tier docs/deploy.md §4 sanctions they do not, and the consumer whose
-// cross-process failure is irreversible, continuous ingestion, whose append is undone AND recorded
-// as handled, reads a busy thread as free. That half moved to ./thread-claim.ts, which keeps the
-// claim in the thread's own row; this Map stays in front of it as the answer that costs no query,
-// and it can only ever say MORE than the row, never less.
-//
-// What is left here alone is the key that has no row: the per-CONVERSATION thread the follow-up
-// nudge claims, and the graph thread of a conversation whose contact inbox is unknown. Their cost is
-// the one issue #203 measured: a nudge races one reply, a compaction is undone and re-armed at the
-// next attendance boundary where the summary row already exists. Neither loses a message.
-//
-// Not durable by design, a process restart clears it, after which the next sweep re-evaluates
-// purely from the persisted watermarks (lastEventAt / lastFollowUpAt).
-// COUNTED, not a set of present keys. Two turns really do overlap on one thread — two deliveries for
-// the same conversation race whenever debounce is off, and a follow-up nudge invokes on the same
-// memory thread as a reactive turn — and with plain membership the first one to finish releases a
-// claim the other is still holding. A compaction would then read the thread as idle, rewrite it, and
-// have the surviving invoke undo the rewrite: exactly the failure the claim exists to prevent, made
-// harder to see because it only happens under load.
+// In-memory registry of agent turns currently executing, keyed by thread id. A turn marks the
+// per-conversation chatwoot thread (so the follow-up handler does not fire a nudge mid-turn, racing
+// the reply) and the per-contact-inbox GRAPH thread (so compaction does not rewrite the channel under
+// an invoke, a read-modify-write of the WHOLE channel that would undo it). The compaction key is
+// marked INSIDE the `ingest:<graphThreadId>` lock the rewrite also holds, so the two are exclusive,
+// not staggered. Across processes this is only the fast half: ./thread-claim.ts keeps the claim in the
+// thread's row and this Map can only say MORE; a key with no row risks at worst one raced nudge or one
+// re-armed compaction. Not durable: after a restart the sweep re-reads lastEventAt / lastFollowUpAt.
+
+// Counted, not a set: two turns overlap on one thread (two deliveries racing with debounce off, a
+// nudge on a reactive turn's memory thread), and with plain membership the first to finish releases
+// the other's claim, letting a compaction rewrite a thread the surviving invoke then undoes.
 const inFlight = new Map<string, number>();
 
-// RESERVATIONS, counted the same way and kept in their own map. A reservation says "a turn is about
-// to run on this thread and has not claimed it yet" — the stretch a delivery recovery holds between
-// its own fence and `runAgentTurn` taking the claim (../modules/chatwoot/recover-delivery.ts). Every
-// reader that asks "may I write this thread" has to see it, which is why `isTurnInFlight` counts
-// both: a /reset, an append or a compaction landing in that stretch is undone by the turn that
-// follows it.
-//
-// Separate from `inFlight` because ONE reader must not see it. `markTurnOwning` asks whether ANOTHER
-// invoke was already reading the thread, and answers the boundary question with it — a `true` there
-// defers the attendance divider and the marker, on the grounds that somebody else is mid-read. The
-// reserving caller IS the invoke that is about to call it, so counting its own reservation made a
-// recovered first turn on a reused contact thread run against the previous attendance with no
-// divider (MEASURED). `isTurnRunning` is what that one asks.
+// Reservations: a turn about to run on this thread that has not claimed it yet (a delivery recovery
+// between its fence and `runAgentTurn`, ../modules/chatwoot/recover-delivery.ts). `isTurnInFlight`
+// counts them: a /reset, append or compaction in that stretch is undone by the turn. Separate from
+// `inFlight` because `markTurnOwning` must NOT see them: it asks whether ANOTHER invoke is reading, to
+// defer the attendance divider, and the reserving caller IS the invoke about to run, so counting it
+// would run a recovered first turn against the previous attendance with no divider.
 const reserved = new Map<string, number>();
 
 export function markTurnInFlight(threadId: string): void {
@@ -79,19 +45,11 @@ export function clearTurnInFlight(threadId: string): void {
   else inFlight.delete(threadId);
 }
 
-// A THIRD REGISTRY, and it is deliberately invisible to the two questions above.
-//
-// The debounce flush needs to exclude ANOTHER FLUSH over the stretch between "is this thread free"
-// and the moment its turn takes its own claim, several awaits later (issue #588). The obvious way to
-// get that was `markTurnReserved`, and it was wrong for a reason review had to find: `reserved` is
-// counted by `isTurnInFlight`, which two subsystems ask before doing their own work on the thread.
-// `undoRefusedTurn` refuses to roll back a superseded answer while it reads true, so a reservation
-// held across the whole turn made EVERY debounce rollback skip, leaving answers the customer never
-// received sitting in memory; and `claimIngestWrite` answers busy, so `drainPendingIngest` reached
-// none of the queued messages and the reply went out without the history it was supposed to carry.
-//
-// So the flush-to-flush hold gets its own map. It says nothing to anybody else, which is the whole
-// requirement: the only reader is the flush, and what it excludes is another flush.
+// A third registry, deliberately invisible to the two questions above: the debounce flush excludes
+// another flush between "is this thread free" and its turn's own claim. Not `markTurnReserved`,
+// because `isTurnInFlight` counts reservations: `undoRefusedTurn` would skip every debounce rollback
+// (leaving undelivered answers in memory) and `claimIngestWrite` would answer busy, so
+// `drainPendingIngest` would reach none of the queued messages before the reply.
 const flushHolds = new Map<string, number>();
 
 export function markFlushHold(threadId: string): void {

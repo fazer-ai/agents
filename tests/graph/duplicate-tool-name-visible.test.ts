@@ -17,18 +17,13 @@ import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
-// ── A TOOL DROPPED FOR A DUPLICATE NAME HAS TO SAY SO WHERE THE OPERATOR LOOKS (#389) ──
+// ── A TOOL DROPPED FOR A DUPLICATE NAME HAS TO SAY SO WHERE THE OPERATOR LOOKS ──
 //
-// When two sources claim one name the assembly keeps the first and drops the rest, which is the right
-// call — refusing to build the toolset would take the whole agent down over one name. What was
-// missing is the telling: the only record was a `logger.warn` on stdout, and on a managed deploy the
-// operator may have no way to read that at all. What they see is an agent that stopped doing one
-// thing, with a Logs page that shows a perfectly ordinary turn.
-//
-// The sibling case one seam over — a precondition rule matching no assembled tool — has reported
-// itself to the flow log since #101, and it is decided in the same function, at the same moment,
-// about the same toolset. This asserts the line lands in `execution_logs`, which is the table the
-// Logs page reads: asserting the emit call would prove the wiring and not the record.
+// When two sources claim one name the assembly keeps the first and drops the rest (refusing to build
+// the toolset would take the whole agent down over one name). A `logger.warn` on stdout is not enough:
+// on a managed deploy the operator may be unable to read it and sees only an ordinary turn. This
+// asserts the line lands in `execution_logs`, the table the Logs page reads: asserting the emit call
+// would prove the wiring and not the record.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -116,8 +111,8 @@ function ctx(): ToolsetCtx {
   };
 }
 
-// No cast: `turnId` is required and a `as FlowContext` hid that, so the write failed on a missing
-// column and the case read as "no line was written". The type is the control here.
+// No cast: `turnId` is required, and an `as FlowContext` would hide a missing one, making a failed
+// write read as "no line was written". The type is the control here.
 function flow(turnId: string): FlowContext {
   return {
     tenantId,
@@ -184,11 +179,10 @@ describe.skipIf(!dbUp)("a tool dropped for a duplicate name", () => {
     expect(lines[0]?.level).toBe("info");
   });
 
-  // THE RESERVATION AT THE REAL SEAM (issue #457, review round 5). `buildNativeTools` builds only the
-  // natives in the agent's allowlist, so an agent with the transfer tool turned off used to leave the
-  // name free — and an HTTP tool named `handoff_to_human` would then answer under it, with the
-  // hand-back decision reading its result as a transfer that happened. Ordering could not defend a
-  // name nobody claimed; the reservation can.
+  // NOTE: The reservation at the real seam. `buildNativeTools` builds only the natives in the
+  // agent's allowlist, so with the transfer tool off an HTTP tool named `handoff_to_human` could
+  // answer under that name and the hand-back decision would read its result as a real transfer.
+  // Ordering cannot defend a name nobody claimed; the reservation can.
   test("refuses a native's name to an HTTP tool when the native is not built", async () => {
     const turnId = crypto.randomUUID();
     const cfg = config();
@@ -217,10 +211,9 @@ describe.skipIf(!dbUp)("a tool dropped for a duplicate name", () => {
 
   test("names a tool once, however many claimants lost it", async () => {
     const turnId = crypto.randomUUID();
-    // THREE claimants, two losers, ONE name. `dropDuplicateToolNames` returns the name once per tool
-    // it dropped, so the raw list reads `["dup", "dup"]` — which on the Logs page looks like two
-    // separate problems to chase. Found by mutation: replacing the dedupe with the raw list killed
-    // no test, and the rule is real rather than decorative, so this is the case it was missing.
+    // NOTE: THREE claimants, two losers, ONE name. `dropDuplicateToolNames` returns the name once per
+    // tool it dropped, so the raw list reads `["dup", "dup"]`, which on the Logs page looks like two
+    // separate problems to chase. This is the only case that fails if the dedupe is removed.
     const tools = await buildToolset(config(), ctx(), {
       buildNativeTools: () => [fakeTool("dup"), fakeTool("dup")],
       flow: flow(turnId),

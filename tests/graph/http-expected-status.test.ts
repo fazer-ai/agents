@@ -4,9 +4,9 @@ import {
   normalizeExpectedStatuses,
 } from "@/graph/tools/http-status";
 
-// Decision table for issue #59. Since #40 every non-2xx is an integration failure, which is right
-// for a broken credential and wrong for a lookup whose 404 means "no record" — that tool emits a
-// warn on every healthy turn and drowns the operator's alert channel.
+// Decision table for declared expected statuses. By default every non-2xx is an integration failure,
+// which is right for a broken credential and wrong for a lookup whose 404 means "no record": that
+// tool would emit a warn on every healthy turn and drown the operator's alert channel.
 
 describe("normalizeExpectedStatuses", () => {
   test("an absent or non-array config is empty, which is today's behavior", () => {
@@ -36,18 +36,18 @@ describe("normalizeExpectedStatuses", () => {
     expect(normalizeExpectedStatuses([200, 204, 404])).toEqual([404]);
   });
 
-  // Almost always the wrong choice, and still the operator's to make: refusing it would buy a
-  // special case in the validator, and some APIs really do answer 503 for "temporarily no data".
-  // Review finding, round 3, same class as the one below: `fetch` consumes informational responses
-  // and exposes only the final one, so a declared 1xx could never be matched against anything.
+  // NOTE: A declared 5xx is almost always wrong and still the operator's call: refusing it would buy
+  // a special case in the validator, and some APIs answer 503 for "temporarily no data". A declared
+  // 1xx is refused: `fetch` consumes informational responses and exposes only the final one, so it
+  // could never be matched against anything.
   test("informational statuses are refused, not stored", () => {
     expect(normalizeExpectedStatuses([100, 102, 199, 404])).toEqual([404]);
   });
 
-  // Review finding, round 2: the tool fetches with `redirect: "error"`, so a redirect status
-  // arriving with a Location rejects before any status is looked at. Accepting the declaration would
-  // store a promise the runtime cannot keep, and one that would seem to work on the responses that
-  // happened to carry no Location.
+  // NOTE: The tool fetches with `redirect: "error"`, so a redirect status arriving with a Location
+  // rejects before any status is looked at. Accepting the declaration would store a promise the
+  // runtime cannot keep, and one that would seem to work on the responses that happened to carry no
+  // Location.
   test("the statuses fetch treats as redirects are refused, not stored", () => {
     expect(normalizeExpectedStatuses([301, 302, 303, 307, 308, 404])).toEqual([
       404,

@@ -14,7 +14,7 @@ import { CALLED_OFF_TOOL_RESULT } from "@/graph/markers";
 import { contentToText } from "@/graph/message-text";
 import { withoutComments } from "@/tests/utils/source-text";
 
-// Issue #811, where a job's deadline meets the graph. The signal is never handed to `graph.invoke`:
+// Where a job's deadline meets the graph. The signal is never handed to `graph.invoke`:
 // aborting an invoke between a checkpointed tool call and its result leaves the thread with a call no
 // `ToolMessage` answers, which the providers reject on every later turn, and the invoke rejects while
 // the tool is still running, so the job would look finished with its work still going. The signal
@@ -24,9 +24,9 @@ import { withoutComments } from "@/tests/utils/source-text";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Round 1 calls the writer; round 2 answers. Records whether each round's signal had aborted.
-// `afterCalling` runs as round 1 returns its call, which is where a test puts the deadline to land
-// between the model's answer and the tool.
+// The first model call calls the writer; the second answers. Records whether each call's signal had
+// aborted. `afterCalling` runs as the first returns its call, which is where a test puts the deadline
+// to land between the model's answer and the tool.
 class CallsThenAnswers {
   rounds = 0;
   sawAborted: boolean[] = [];
@@ -376,9 +376,9 @@ describe("a job's deadline inside the graph (issue #811)", () => {
   });
 
   test("every job kind whose handler runs a model turn hands the turn its job's signal", async () => {
-    // The handlers are tested by calling them, which skips the registration, and a registration that
-    // wraps its handler is where the signal was dropped twice. A kind that starts running a turn has
-    // to be added to the list below, which is the point: it cannot join without being looked at.
+    // NOTE: The handlers are tested by calling them, which skips the registration, and a registration
+    // that wraps its handler is where the signal is easiest to drop. A kind that starts running a turn
+    // has to be added to the list below, which is the point: it cannot join without being looked at.
     const turn = /\b(runAgentNudge|runLoadedTurn|runAgentTurn)\(/;
     const noTurn = new Set(["FOLLOWUP_SWEEP"]);
     const kinds: string[] = [];

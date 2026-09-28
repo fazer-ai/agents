@@ -8,22 +8,14 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// A support report, end to end: a Calendar integration with ONE allowed calendar, and the agent
-// calling availability with `calendarId` filled with something that is not a calendar (the model has
-// no valid value in sight, because the block that lists the calendars is suppressed when there is
-// nothing to choose). The tool refused, and the operator only got it working by telling the agent not
-// to send the arg.
-//
-// The unit suite covers the resolver. This one covers the two things only a real turn can show: what
-// the toolset ACTUALLY hands the provider after loadAgentConfig → buildToolpackTools (the arg must not
-// be on the wire at all), and that a model which sends it anyway still gets slots and the customer
-// still gets an answer.
-//
-// Asked of EVERY argument a conditional schema removes, not just calendarId: the integration here also
-// pins the slot grid (1h visits on the half hour), which is the second instance of the same question —
-// a model sending granularityMinutes: 15 got 14:15 back, a real, bookable slot the business does not
-// sell. Same turn, same wire, one more pair of args.
-//
+// A Calendar integration with ONE allowed calendar and a pinned slot grid (1h visits on the half
+// hour). With one calendar the block listing calendars is suppressed, so a model has no valid
+// `calendarId` in sight and invents one; a model sending granularityMinutes: 15 would get 14:15, a
+// bookable slot the business does not sell. The unit suite covers the resolver; this covers what only
+// a real turn shows: after loadAgentConfig → buildToolpackTools no arg a conditional schema removes is
+// on the wire, and a model that sends one anyway still gets slots on the operator's grid and the
+// customer still gets an answer.
+
 // NOTE: the turn's SSRF guard is not injectable (prepare.ts builds the toolpack ctx without one), so
 // this test resolves www.googleapis.com for real. Every HTTP response is stubbed; only DNS is live.
 
@@ -106,8 +98,8 @@ function fakeHosts() {
                       timeMin: "2099-06-22T00:00:00-03:00",
                       timeMax: "2099-06-22T23:00:00-03:00",
                       calendarId: INVENTED,
-                      // The school's case: a grid the operator pinned, redefined per call. Sent
-                      // from a stale tool definition, since neither arg is on the wire any more.
+                      // NOTE: A grid the operator pinned, redefined per call. Sent as from a stale
+                      // tool definition, since neither arg is on the wire.
                       slotDurationMinutes: 15,
                       granularityMinutes: 15,
                     }),
@@ -240,7 +232,7 @@ describe.skipIf(!dbUp)("a turn on an integration with one calendar", () => {
         config: {
           calendarIds: [PINNED],
           calendarLabels: { [PINNED]: "Clinic" },
-          // 1h appointments on the half hour, the configuration the report came from.
+          // NOTE: 1h appointments on the half hour.
           slotDurationMinutes: 60,
           slotGranularityMinutes: 30,
         },

@@ -17,19 +17,13 @@ import { settleFlowEvents } from "@/modules/flowlog/scheduled";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
-// The blue tick on the contact's phone, end to end. The client unit tests cover the request shape;
-// only a real turn shows the two things that matter here.
-//
-// First, that a turn actually acknowledges the message it is answering. The receipt lives in
-// `runTurnBody`, the tail BOTH entry points share, so proving it on the direct path proves it for
-// the debounce flush too — and the flush's own contribution (the WHOLE burst, not just the newest
-// id) is asserted separately below.
-//
-// Second, and this is the one that decides whether the feature is safe to ship: an instance whose
-// Chatwoot predates the `read_receipt` endpoint answers 401 (its bot allowlist has no such action)
-// or 404 (no route at all), and the turn must go through anyway. Every fazer.ai agents deployment
-// talks to a Chatwoot the operator upgrades on their own schedule, so this is the ordinary case for
-// a while, not an edge one.
+// The blue tick on the contact's phone, end to end (the client unit tests cover the request shape).
+// First, a turn acknowledges the message it answers. The receipt lives in `runTurnBody`, the tail
+// BOTH entry points share, so the direct path proves it for the debounce flush too; the flush's own
+// part (the WHOLE burst, not just the newest id) is asserted separately below. Second, a Chatwoot
+// that predates the `read_receipt` endpoint answers 401 (its bot allowlist has no such action) or
+// 404 (no route), and the turn must go through anyway: operators upgrade Chatwoot on their own
+// schedule, so this is an ordinary case, not an edge one.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -283,14 +277,10 @@ describe.skipIf(!dbUp)("the WhatsApp read receipt of a turn", () => {
     expect(receipts).toEqual([{ conversationId: convId, messageIds: [5501] }]);
   });
 
-  // The playground runs turns against a dummy client on conversation 0. A receipt there would be a
-  // request to `/conversations/0/read_receipt` on every operator test-drive.
-  //
-  // The mirror row for id 0 is what makes this test about the playground guard and nothing else.
-  // Without it the ownership read finds no conversation, answers "not ours" and closes the gate for
-  // its own reasons — so the test passed either way and `conversationId > 0` was pinned by nobody.
-  // Measured: mutating it to `>= 0` left all 11 green. With an owned row seeded there, the guard is
-  // the only thing standing between the playground and a tick.
+  // NOTE: The playground runs turns against a dummy client on conversation 0, where a receipt would
+  // be a request to `/conversations/0/read_receipt` on every test-drive. The owned mirror row for id
+  // 0 keeps this about the playground guard: without it the ownership read answers "not ours" and
+  // closes the gate for its own reasons, so the test would pass with `conversationId > 0` unpinned.
   test("the playground sends no receipt", async () => {
     await seedConversation(0, whatsappInboxDbId);
     const sent: number[] = [];
@@ -427,12 +417,11 @@ describe.skipIf(!dbUp)("the WhatsApp read receipt of a turn", () => {
     ]);
   });
 
-  // A blue tick is an outward write, and `docs/graph.md` requires every one of them to ask whether
-  // the caller still wants this turn — the receipt was the only write in `runTurnBody` reaching the
-  // wire before the first ask. The window is real on the debounce path: `/reset` (or a retirement)
-  // landing between the claim and this line left the contact looking at ticks from a turn that then
-  // returned "stale" and answered nothing. Nothing is lost by skipping: a retired job was retired
-  // because a NEWER burst took over, and that flush acknowledges a superset of these ids.
+  // NOTE: A blue tick is an outward write, and `docs/graph.md` requires every one to ask whether the
+  // caller still wants this turn. On the debounce path a `/reset` (or a retirement) can land between
+  // the claim and the receipt, which would leave ticks from a turn that returns "stale" and answers
+  // nothing. Skipping loses nothing: a retired job was retired because a NEWER burst took over, and
+  // that flush acknowledges a superset of these ids.
   test("a turn the caller withdrew sends no receipt", async () => {
     const convId = 8108;
     await seedConversation(convId, whatsappInboxDbId);
@@ -464,7 +453,7 @@ describe.skipIf(!dbUp)("the WhatsApp read receipt of a turn", () => {
     expect(receipts).toEqual([]);
     expect(sent).toEqual([]);
     expect(outcome).toBe("stale");
-    // Nor a closing line (issue #855, review round 2): it ran no model and created nothing.
+    // NOTE: Nor a closing line: it ran no model and created nothing.
     await settleFlowEvents();
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
@@ -513,12 +502,10 @@ describe.skipIf(!dbUp)("the WhatsApp read receipt of a turn", () => {
     expect(receipts).toEqual([{ conversationId: convId, messageIds: [6002] }]);
   });
 
-  // The third question the turn already asks before its other outward writes, and the receipt was
-  // not asking it either. The receiver's gate proved bot ownership before the turn was queued; a
-  // person taking the conversation over inside the window that follows leaves that answer stale, and
-  // the post-generation recheck suppresses the SEND without being able to unwrite a tick. Same
-  // window `botOwnsItNow` was added for in issue #457 (hand-back note, review round 7), so the
-  // receipt asks the same read at the moment it writes.
+  // NOTE: The third question the turn asks before its other outward writes. The receiver's gate
+  // proved bot ownership before the turn was queued; a person taking over inside the window that
+  // follows leaves that answer stale, and the post-generation recheck suppresses the SEND but cannot
+  // unwrite a tick, so the receipt asks the `botOwnsItNow` read at the moment it writes.
   test("a conversation a human took over gets no receipt", async () => {
     const convId = 8110;
     await seedConversation(convId, whatsappInboxDbId, {

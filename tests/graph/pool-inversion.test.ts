@@ -8,18 +8,12 @@ import { ingestMessageIntoThread } from "@/graph/ingest";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { countingBase } from "../utils/counting-base";
 
-// THE POOL INVERSION (issue #225).
-//
-// The checkpointer is a SEPARATE Postgres pool from Prisma's. The `ingest:<threadId>` critical
-// section used to run inside a Prisma transaction, so a connection from pool A sat idle-in-
-// transaction for the length of two or three round-trips to pool B (one of them rewriting the whole
-// thread channel). Under load pool A drained and every unrelated query in the process, the Chatwoot
-// webhook ack included, waited out `maxWait` and failed. That is what took the bot off conversations
-// it was about to answer correctly.
-//
-// The property is structural, so the test is too: count transactions that are OPEN at the moment the
-// checkpointer is touched. Timing assertions would be flaky and would pass for the wrong reason on a
-// fast machine.
+// The checkpointer is a SEPARATE Postgres pool from Prisma's, so the `ingest:<threadId>` critical
+// section must not touch it inside a Prisma transaction: a connection would sit idle-in-transaction
+// across round-trips to the other pool, and under load the Prisma pool drains and every unrelated
+// query (the Chatwoot webhook ack included) waits out `maxWait` and fails. The property is
+// structural, so the test counts transactions OPEN when the checkpointer is touched; timing
+// assertions would be flaky and would pass for the wrong reason on a fast machine.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

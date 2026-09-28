@@ -26,16 +26,13 @@ import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// THE EFFECT, WHERE THE ISSUE SAYS IT IS: the memory thread, after a proactive turn was generated and
-// then refused. `tests/graph/refused-turn.test.ts` proves the RULE; this proves the turn actually
-// reaches it, through the real `runAgentNudge`, with a real checkpointer.
-//
-// Measured on `main`, with the job retired during generation. This is the state the file exists to end:
+// THE EFFECT ON the memory thread after a proactive turn is generated and then refused.
+// `tests/graph/refused-turn.test.ts` proves the RULE; this proves the turn actually reaches it,
+// through the real `runAgentNudge`, with a real checkpointer. Without the rollback, a job retired
+// during generation leaves the thread holding a reply the customer never got:
 //
 //   OUTCOME: stale   SENT TO CUSTOMER: []
 //   channel: [human] An external system event just occurred…   [ai] Oi, ainda precisa de ajuda?
-//
-// Issue #251.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -441,10 +438,9 @@ describe.skipIf(!dbUp)(
               }, "Oi, ainda precisa de ajuda?"),
             makeClient: s.makeClient,
             checkpointer,
-            // DEPOIS DO TETO DA ESPERA (issue #689). O nudge agora espera um invoke mais velho
-            // sair, então este estado — reivindicar o thread com outro invoke lendo — só existe
-            // passado o teto de `TURN_WAIT_MS`, que são cinco minutos. Um teto já vencido põe o teste
-            // exatamente lá, que é o caso que este arquivo mede.
+            // NOTE: DEPOIS DO TETO DA ESPERA. O nudge espera um invoke mais velho sair, então este
+            // estado (reivindicar o thread com outro invoke lendo) só existe passado o teto de
+            // `TURN_WAIT_MS`, que são cinco minutos. Um teto já vencido põe o teste exatamente lá.
             turnWaitDeadline: () => Date.now(),
             persistUsage: async () => {},
           },
@@ -460,14 +456,11 @@ describe.skipIf(!dbUp)(
       expect(after.map(textOf).join("\n")).toContain("ainda precisa de ajuda");
     });
 
-    // Round 11 of PR #455. The test above is the SAME-process half: a Map this process owns. On the
-    // topology docs/deploy.md §4 sanctions, the invoke that races this one runs on another replica
-    // and holds no entry in this Map at all — and the rollback reaches this line just after
-    // releasing its own durable claim, which is exactly the moment the other replica can start.
-    //
-    // So the rollback takes the claim every write to the channel from outside an invoke takes
-    // (`claimIngestWrite`), and the two halves are separated here on purpose: the row is claimed and
-    // the Map entry is dropped, which is what "another replica" looks like from inside this process.
+    // NOTE: The test above is the SAME-process half (a Map this process owns). On the topology
+    // docs/deploy.md §4 sanctions, the racing invoke runs on another replica with no entry in this
+    // Map, and the rollback reaches this line just after releasing its own durable claim. So the
+    // rollback takes `claimIngestWrite`, like every write to the channel from outside an invoke; here
+    // the row is claimed and the Map entry dropped, which is what "another replica" looks like.
     test("a turn holding the thread on ANOTHER replica defers the rollback too", async () => {
       const contactInboxId = 7256;
       await seedConv(9256, contactInboxId);
@@ -561,8 +554,8 @@ describe.skipIf(!dbUp)(
       await releaseIngestWrite(owner, appDb, again);
     });
 
-    // Round 21. The release runs in a `finally` that fires AFTER the removal has already been
-    // written, and it stops the lease renewal before it touches the database — so a transient
+    // NOTE: The release runs in a `finally` that fires AFTER the removal has already been
+    // written, and it stops the lease renewal before it touches the database, so a transient
     // failure there strands the claim either way, and throwing on top of it turns a clean rollback
     // into an error the caller reports. Ingestion catches its own for the same reason; this catches
     // its own too, and owes a line in the log.
@@ -642,15 +635,11 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    // THE WIRING, which the two tests above do not touch: they call `undoRefusedTurn` directly, so a
-    // caller that stopped passing its owner would leave them both green. Same scenario, driven
-    // through the real `runAgentNudge`.
-    //
-    // The other replica's turn is taken DURING generation, which is the only position that produces
-    // the case: turn claims are counted, so B joining while A holds is ordinary, and what matters is
-    // that B is still there when A releases and reaches its rollback. Its Map entry is dropped
-    // immediately — another replica holds no entry in this process's Map, and leaving one would let
-    // the Map check answer instead of the row.
+    // NOTE: THE WIRING: the two tests above call `undoRefusedTurn` directly, so a caller that stopped
+    // passing its owner would leave them green. The other replica's turn is taken DURING generation,
+    // the only position that produces the case (turn claims are counted, so B joining while A holds
+    // is ordinary; B must still be there when A reaches its rollback). Its Map entry is dropped at
+    // once: another replica holds none here, and one left would let the Map answer instead of the row.
     test("the nudge hands its owner down, so another replica defers it too", async () => {
       const contactInboxId = 7258;
       await seedConv(9258, contactInboxId);
@@ -699,12 +688,11 @@ describe.skipIf(!dbUp)(
       expect(after.map(textOf).join("\n")).toContain("ainda precisa de ajuda");
     });
 
-    // Round 15, and the LAST place issue #454's own defect survived. An agent that can bind no tool
-    // is told to say nothing with the token, and a follow-up that does so ends "silent" — not
-    // refused, so it never passed through the rollback. The token stayed in the shared contact-inbox
-    // thread, the next ordinary turn read it as something the customer was told, and reproducing it
-    // now costs that customer their answer entirely (the reactive rule reads a reply that is only
-    // the token as silence).
+    // NOTE: An agent that can bind no tool is told to say nothing with the token, and a follow-up
+    // that does so ends "silent", not refused, so the refusal rollback never sees it. A token left in
+    // the shared contact-inbox thread would read as something the customer was told, and repeating it
+    // would cost that customer their answer (the reactive rule reads a reply of only the token as
+    // silence).
     test("a silent follow-up leaves its own token out of the thread", async () => {
       const contactInboxId = 7259;
       await seedConv(9259, contactInboxId);
@@ -731,23 +719,22 @@ describe.skipIf(!dbUp)(
       expect(outcome).toBe("silent");
       expect(s.messages).toEqual([]);
       const after = await channel(checkpointer, graphThreadId);
-      // Positive control: a probe that found nothing measured nothing. The attendance that was
+      // NOTE: Positive control: a probe that found nothing proves nothing. The attendance that was
       // already there is not this turn's to take.
       expect(after.map(textOf)).toContain("bom dia");
       expect(
         after.filter((m) => textOf(m).includes(FOLLOWUP_SKIP_SENTINEL)),
       ).toEqual([]);
-      // The DIRECTIVE stays, and round 19 is why: silence and refusal want different plans. The
-      // proactive plan takes directive and answer together and must therefore keep everything the
-      // moment a tool ran — right for a refusal, and it would leave the token untouched on any
-      // follow-up that labelled the conversation before going quiet. The reactive plan names the
-      // trailing assistant run instead, so the act (and the directive) stay and only the sentence
-      // nobody read comes out. An event the agent chose not to answer is what actually happened.
+      // NOTE: The DIRECTIVE stays: silence and refusal want different plans. The proactive plan
+      // takes directive and answer together, so it keeps everything once a tool ran (right for a
+      // refusal, but it would leave the token on a follow-up that labelled before going quiet). The
+      // reactive plan names the trailing assistant run, so the act and directive stay and only the
+      // unread sentence comes out. An event the agent chose not to answer is what actually happened.
       expect(after.some((m) => isNudgeTurn(m))).toBe(true);
     });
 
-    // The case that forced the plan swap: a follow-up that DID something and then went quiet. The
-    // proactive plan answers `tool-ran` here and removes not one word.
+    // NOTE: The case that needs the reactive plan: a follow-up that DID something and then went
+    // quiet. The proactive plan answers `tool-ran` here and removes not one word.
     test("a silent follow-up that ran a tool still loses its token", async () => {
       const contactInboxId = 7261;
       await seedConv(9261, contactInboxId);

@@ -12,18 +12,11 @@ import {
 } from "@/graph/observability";
 import type { ScopedDb } from "@/lib/tenancy";
 
-// NOTE: `buildLangfuseHandler` below is called with a real config on purpose — the handler under
-// test only exists once a client has minted a trace. That queues events the SDK delivers on a
-// BACKGROUND flush, and "unreachable baseUrl" does NOT keep them in the process: the POST still
-// goes out through `globalThis.fetch`, which by flush time is whatever stub the NEXT test file
-// installed. That is how three `POST /api/public/ingestion` landed in an unrelated client test's
-// `expect(posted).toEqual([])`, roughly one CI run in four. This file creates the work, so this
-// file settles it before ending.
-//
-// The 15s budget is the measured cost, not a guess: draining takes ~9s because the SDK retries
-// with backoff and, under happy-dom's `fetch`, even a live local sink reads as a failed delivery
-// (measured: 20ms with the native fetch, 9023ms here). Paid once per suite run, in the file that
-// owes it, instead of at random in someone else's assertion.
+// NOTE: `buildLangfuseHandler` below mints a real trace, whose events the SDK delivers on a
+// BACKGROUND flush through `globalThis.fetch`; an unreachable baseUrl does not keep them in the
+// process, so an unsettled flush would POST through the stub the NEXT test file installs. This file
+// creates the work, so it drains it here. The 15s budget covers ~9s of SDK retries with backoff:
+// under happy-dom's `fetch` even a live local sink reads as a failed delivery.
 afterAll(async () => {
   await shutdownLangfuseClients();
 }, 15000);
@@ -90,9 +83,9 @@ describe("buildLangfuseHandler", () => {
 });
 
 describe("attachLangfuseDeliveryLogging", () => {
-  // The whole point: Langfuse swallows delivery failures (a failed flush is an unlistened "warning"
-  // event), so without this the broken-ingestion bug was invisible. This asserts those events reach
-  // our logger, and that a persistently-broken instance is deduped (logs once per distinct message).
+  // NOTE: Langfuse swallows delivery failures (a failed flush is an unlistened "warning" event), so
+  // a broken ingestion is invisible without this. Asserts those events reach our logger, and that a
+  // persistently broken instance is deduped (logs once per distinct message).
   function fakeClient() {
     const handlers = new Map<string, (p: unknown) => void>();
     return {
@@ -126,7 +119,7 @@ describe("attachLangfuseDeliveryLogging", () => {
     expect(client.has("error")).toBe(true);
     expect(client.has("warning")).toBe(true);
 
-    // The exact silent path from the real bug: a failed flush emitted as "warning".
+    // NOTE: The silent path: a failed flush emitted as "warning".
     client.fire(
       "warning",
       new Error("Failed to upload events to blob storage"),
@@ -243,7 +236,7 @@ describe("resolveLangfuseConfig", () => {
     expect(cfg?.baseUrl).toBe("https://us.cloud.langfuse.com");
     expect(cfg?.publicKey).toBe("pk-1");
     expect(cfg?.secretKey).toBe("sk-1");
-    // environment is no longer part of the config — it is injected at client-creation time from config.env.
+    // NOTE: environment is not part of the config; it is injected at client creation from config.env.
     expect(
       (cfg as Record<string, unknown> | null)?.environment,
     ).toBeUndefined();

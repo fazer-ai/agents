@@ -26,7 +26,7 @@ const TABLE: Array<[RunAgentNudgeOutcome, boolean]> = [
   // the occasion immediately would lose a follow-up nobody resends. What it buys is BOUNDED by this
   // ladder, which is the same one `agent-unavailable` rides: 8 attempts, 15 minutes apart, so a
   // ceiling still standing two hours later spends the occasion anyway. That is the common case
-  // covered, not a promise that the occasion waits for the month to turn (issue #146).
+  // covered, not a promise that the occasion waits for the month to turn.
   ["over-ceiling", true],
   ["messaged", false],
   ["templated", false],
@@ -163,10 +163,10 @@ describe("the occasion a nudge refusal belongs to", () => {
     );
   });
 
-  // AN INBOUND EVENT DESCRIBES ITSELF WITH NOTHING THE OTHER PARTS READ: `buildNudge` sets one
-  // `source`, a fixed `kind`, no `step` and no `refs`, so two separate deliveries on one conversation
-  // produced one key and the second refusal lost its row and its alert inside the first's two-hour
-  // window. The delivery row is the occasion, and the id is what says so.
+  // NOTE: AN INBOUND EVENT DESCRIBES ITSELF WITH NOTHING THE OTHER PARTS READ: `buildNudge` sets one
+  // `source`, a fixed `kind`, no `step` and no `refs`, so without the delivery id two deliveries on
+  // one conversation would share a key and the second refusal would lose its row and its alert
+  // inside the first's two-hour window. The delivery row is the occasion, and the id says so.
   test("two inbound deliveries are two occasions", () => {
     const inbound = (deliveryId: string) => ({
       source: "asaas",
@@ -189,8 +189,8 @@ describe("the occasion a nudge refusal belongs to", () => {
     );
   });
 
-  // EVERY DESCRIPTOR THIS KEY IS ASKED ABOUT HAS TO ANSWER "WHICH OCCASION", and two of them said
-  // only "which rung". Asserted against the real builders rather than hand-written literals, because
+  // NOTE: EVERY DESCRIPTOR THIS KEY IS ASKED ABOUT HAS TO ANSWER "WHICH OCCASION", not only "which
+  // rung". Asserted against the real builders rather than hand-written literals, because
   // the key cannot fail on a field its caller never set — the same reason the inbound receptor's own
   // wiring is asserted in its suite.
   test("two follow-up episodes at the same step are two occasions", () => {
@@ -209,10 +209,10 @@ describe("the occasion a nudge refusal belongs to", () => {
     expect(key(step(first))).not.toBe(key({ ...step(first), step: 2 }));
   });
 
-  // Issue #750: o episódio que a NOSSA resposta abre, sem o cliente ter voltado a falar. Os dois
-  // episódios têm o mesmo `lastInboundAt` — é justamente o que os deixaria com uma chave só, e dentro
-  // da janela de duas horas do teto o segundo perde a linha de erro e o alerta para o primeiro. O que
-  // os separa é o eixo que a cerca passou a ler: quando o silêncio COMEÇOU.
+  // NOTE: O episódio que a NOSSA resposta abre, sem o cliente ter voltado a falar. Os dois episódios
+  // têm o mesmo `lastInboundAt`, o que os deixaria com uma chave só, e dentro da janela de duas horas
+  // do teto o segundo perderia a linha de erro e o alerta para o primeiro. O que os separa é o eixo
+  // que a cerca lê: quando o silêncio COMEÇOU.
   test("um episódio aberto pela nossa resposta não herda a janela do anterior", () => {
     const falouEm = new Date("2026-08-27T09:00:00.000Z");
     const respondemosEm = new Date("2026-08-27T12:00:00.000Z");
@@ -238,10 +238,10 @@ describe("the occasion a nudge refusal belongs to", () => {
     );
   });
 
-  // ...AND SO IS THE ACCOUNT THE NUMBER CAME FROM. Chatwoot conversation ids are account-local, so a
-  // tenant connected to two Chatwoot instances has two different conversations numbered 77, and the
-  // identical follow-up step on each is two occasions. Without this they shared one two-hour window
-  // and the second refusal lost its row and its alert.
+  // NOTE: ...AND SO IS THE ACCOUNT THE NUMBER CAME FROM. Chatwoot conversation ids are account-local,
+  // so a tenant connected to two Chatwoot instances has two different conversations numbered 77, and
+  // the identical follow-up step on each is two occasions. Without this they would share one two-hour
+  // window and the second refusal would lose its row and its alert.
   test("the Chatwoot instance is part of the identity", () => {
     const job = { source: "followup", kind: "inactivity", step: 1 };
     expect(nudgeOccasionKey(3n, 77, job)).not.toBe(

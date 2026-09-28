@@ -8,7 +8,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #74 end-to-end: the effort the operator saved on the agent has to survive the whole chain
+// End to end: the effort the operator saved on the agent has to survive the whole chain
 // (agent row → loadAgentConfig → buildModelAndGraph → createChatModel → the wire) AND the answer
 // that comes back over the other endpoint has to reach the customer. The unit tests in
 // model-reasoning-effort cover which endpoint gets picked; this one covers that a real turn still
@@ -45,7 +45,7 @@ let tenantId = 0n;
 let instanceId = 0n;
 
 // Personifies both OpenAI endpoints at the shape level: a reasoning block that carries no text
-// followed by the answer, which is what /v1/responses actually returned in the live run.
+// followed by the answer, which is the shape /v1/responses returns.
 function fakeOpenAI() {
   const calls: { url: string; body: Record<string, unknown> }[] = [];
   const original = globalThis.fetch;
@@ -261,13 +261,13 @@ describe.skipIf(!dbUp)("a turn run at the effort the operator chose", () => {
     } finally {
       fake.restore();
     }
-    // The whole point of the issue: the agent thinks at the chosen effort, on the endpoint that
-    // allows it, without OpenAI keeping the conversation.
+    // NOTE: The agent thinks at the chosen effort, on the endpoint that allows it, without OpenAI
+    // keeping the conversation.
     expect(fake.calls[0]?.url).toContain("/v1/responses");
     expect(fake.calls[0]?.body.reasoning).toEqual({ effort: "high" });
     expect(fake.calls[0]?.body.store).toBe(false);
-    // And the answer, which arrived as content blocks rather than a string, reached the customer
-    // whole — no empty message, no reasoning text leaking into the reply.
+    // NOTE: The answer, which arrived as content blocks rather than a string, reached the customer
+    // whole: no empty message, no reasoning text leaking into the reply.
     expect(sent).toEqual([[701, REPLY]]);
   });
 

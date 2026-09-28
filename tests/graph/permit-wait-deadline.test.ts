@@ -9,9 +9,9 @@ import config from "@/config";
 import { buildAgentGraph } from "@/graph/graph";
 import { runModelCall } from "@/graph/model-limit";
 
-// Issue #834: a job run whose deadline fired while it waited for a model permit stayed in the queue
-// until a permit freed, and its row stayed in the running set until then, so the retry could not be
-// claimed. The wait now takes the job's signal. Exercises the real process-wide semaphore: the
+// A job run whose deadline fires while it waits for a model permit leaves the permit queue at once,
+// since the wait takes the job's signal; otherwise its row would stay in the running set until a
+// permit freed and the retry could not be claimed. Exercises the real process-wide semaphore: the
 // permits are taken by calls that hang until the test lets them go.
 
 const THRESHOLD_MS = 300;
@@ -145,8 +145,8 @@ describe("a model call waiting for a permit when its job's deadline fires", () =
   });
 });
 
-// Round 1 calls the writer; round 2 answers. `duringTool` runs while the tool is still running,
-// which is where a test takes the permits and fires the deadline.
+// The first model call asks for the writer; the second answers. `duringTool` runs while the tool is
+// still running, which is where a test takes the permits and fires the deadline.
 class CallsThenAnswers {
   rounds = 0;
   async invoke(): Promise<AIMessage> {

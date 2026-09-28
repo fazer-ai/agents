@@ -11,12 +11,11 @@ import { owesHandbackNote } from "@/graph/handback";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "@/graph/thread-state";
 import { HANDOFF_DONE_PREFIX, HANDOFF_TOOL_NAME } from "@/graph/tools/catalog";
 
-// THE DECISION READS A PERSISTED MESSAGE, not the one it was handed (issue #457, review round 4).
-// `owesHandbackNote` now matches the tool NAME as well as the result's prefix, and the name is a
-// constructor field that has to survive the checkpointer's own serialization to still be there when
-// the NEXT turn loads the thread. Every other test in this area uses `MemorySaver`, which keeps the
-// object graph in memory and can prove nothing about that — so if the serde dropped the field, the
-// decision would go quietly false in production and stay green in the whole suite.
+// THE DECISION READS A PERSISTED MESSAGE, not the one it was handed. `owesHandbackNote` matches the
+// tool NAME as well as the result's prefix, and the name is a constructor field that must survive
+// the checkpointer's serialization to be there when the NEXT turn loads the thread. `MemorySaver`
+// keeps the object graph in memory and proves nothing about that: a serde that dropped the field
+// would turn the decision quietly false in production while every other test stays green.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 let dbUp = false;
 let app: PrismaClient | undefined;

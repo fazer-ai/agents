@@ -6,11 +6,10 @@ import config from "@/config";
 import { buildAgentGraph } from "@/graph/graph";
 import { runModelCall } from "@/graph/model-limit";
 
-// Issue #819: #809 gave the no-fallback primary a deadline that holds on an adapter deaf to the abort
-// signal (the Google one, measured). Every other call through `runModelCall` still trusted the signal
-// or had nothing: the guardrail, the memory summary, the speech normalization, the fallback, and the
-// primary WITH a fallback. The deadline now lives in `runModelCall` itself, per attempt, so these
-// tests drive it there and through the graph, with a model that never looks at the signal.
+// The deadline lives in `runModelCall` itself, per attempt, so it holds on an adapter deaf to the
+// abort signal (the Google one) for every call through it: the guardrail, the memory summary, the
+// speech normalization, the fallback, and the primary with or without a fallback. These tests drive
+// it there and through the graph, with a model that never looks at the signal.
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const DEADLINE_MS = 300;

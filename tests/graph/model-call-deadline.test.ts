@@ -10,10 +10,10 @@ import { createChatModel } from "@/graph/models";
 import { buildModelAndGraph } from "@/graph/prepare";
 import { makeConfig } from "../utils/agent-config";
 
-// Issue #809: with no fallback configured, the primary model call had no ceiling at all, so a
-// provider that accepts the connection and never answers held the turn for as long as it liked
-// (measured in #807: 5 min 36 s). The deadline covers the whole call, retries included, and holds on
-// a provider whose adapter ignores the abort signal (the Google one, measured).
+// With no fallback configured, the primary model call still has a deadline: without one a provider
+// that accepts the connection and never answers holds the turn for as long as it likes. The deadline
+// covers the whole call, retries included, and holds on a provider whose adapter ignores the abort
+// signal (the Google one).
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // NOTE: the suite's DOM preload replaces the global `Response`, and Bun's socket layer does not
@@ -87,7 +87,7 @@ function hangingEndpoint() {
 }
 
 // A model that answers after `delayMs` and never looks at the abort signal, which is how the Google
-// adapter behaves (measured: neither `timeout` nor `signal` on invoke stops it).
+// adapter behaves (neither `timeout` nor `signal` on invoke stops it).
 class DeafModel extends BaseChatModel {
   calls = 0;
   constructor(

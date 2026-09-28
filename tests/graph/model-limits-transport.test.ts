@@ -5,14 +5,10 @@ import { createChatModel } from "@/graph/models";
 // THE BOUNDS AS THE ADAPTER ACTUALLY APPLIES THEM, asked of the built instance over a real socket
 // rather than of the object handed to the factory.
 //
-// The two are different questions and only one of them is the feature. `model-fallback-build` proves
-// `buildModelAndGraph` COMPUTES the bounds; nothing there notices if `createChatModel` drops them on
-// the floor, and mutation showed exactly that — deleting the spread in `models.ts` left every other
-// test green. What would ship is a fallback that only gets its turn after LangChain has spent
-// 77-99s on the provider that already said it was overloaded (measured, issue #143), which is the
-// state this whole change exists to leave.
-//
-// Counted in REQUESTS, because that is the only thing the retry budget is observable as.
+// `model-fallback-build` proves `buildModelAndGraph` COMPUTES the bounds, but nothing there notices
+// if `createChatModel` drops them (deleting the spread in `models.ts` leaves every other test
+// green), and then the fallback only gets its turn after LangChain spends 77-99s on a provider that
+// already said it was overloaded. Counted in REQUESTS, the only way the retry budget is observable.
 
 async function requestsUntilFailure(
   maxRetries: number | undefined,
@@ -49,14 +45,11 @@ async function requestsUntilFailure(
 }
 
 describe("the retry budget reaches the transport", () => {
-  // BOTH ARMS CARRY AN EXPLICIT TIMEOUT, and it is not a flake being papered over: what these count
-  // is REQUESTS, and how long the SDK sleeps between them is the SDK's business. The default 5000ms
-  // was measuring the second thing. Alone this file runs in 1.5s; inside a shard of ~2,200 tests
-  // sharing one event loop the same call lands at 5.1s and the runner kills it — measured on
-  // `--shard=4/4` locally and on CI, three runs, always `this test timed out after 5000ms`. Adding
-  // test files anywhere in the tree reshuffles every shard (see `.github/workflows/test.yml`), so a
-  // duration-insensitive test gated on a thin default margin goes red for a change that has nothing
-  // to do with it. 30s still catches a hang, which is the only thing a timeout is for here.
+  // NOTE: BOTH ARMS CARRY AN EXPLICIT TIMEOUT: they count REQUESTS, and how long the SDK sleeps
+  // between them is the SDK's business. Alone this file runs in ~1.5s, but inside a busy shard
+  // sharing one event loop the same call can pass 5s, and adding test files anywhere reshuffles every
+  // shard (`.github/workflows/test.yml`), so the default 5000ms would go red for unrelated changes.
+  // 30s still catches a hang, which is the only thing a timeout is for here.
   const NOT_A_LATENCY_TEST = 30_000;
 
   test(
@@ -78,18 +71,15 @@ describe("the retry budget reaches the transport", () => {
   );
 });
 
-// THE CEILING'S BEHAVIOUR IS MEASURED, AND NOT FROM HERE. A hung endpoint against a model built by
-// this factory is abandoned in 2.003ms with `timeoutMs: 2_000`, raising a `TimeoutError`; the same
-// call under this suite's `tests/dom-setup.ts` preload runs the server's full 30.017ms sleep and
-// never aborts, because happy-dom replaces `fetch` and the SDK's abort never fires. So the arm that
-// proves the ceiling STOPS a call lives outside the harness, and what is asserted below is the
-// thing this suite can honestly answer: that the value reaches the adapter at all, in the spelling
-// that adapter reads. Deleting the spread in `models.ts` is what those catch.
+// THE CEILING'S BEHAVIOUR IS NOT PROVABLE FROM HERE. Outside the harness a hung endpoint is abandoned
+// at `timeoutMs` with a `TimeoutError`; under this suite's `tests/dom-setup.ts` preload happy-dom
+// replaces `fetch`, the SDK's abort never fires and the call runs the server's full sleep. So what
+// is asserted below is that the value reaches the adapter at all, in the spelling that adapter
+// reads. Deleting the spread in `models.ts` is what those catch.
 
 // WHERE each adapter parks the two bounds, asked of the built instances. The spellings are not
 // uniform and the option TYPES do not tell them apart: Anthropic accepts a plain `timeout` at the
-// type level and the built client leaves it undefined, which is how the first version of this
-// shipped wrong. Google takes no ceiling in either spelling.
+// type level and the built client leaves it undefined. Google takes no ceiling in either spelling.
 describe("which adapters carry the two bounds", () => {
   for (const provider of MODEL_PROVIDERS) {
     test(`${provider} carries the retry budget`, () => {

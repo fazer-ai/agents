@@ -4,9 +4,9 @@ import {
   withOwnershipFence,
 } from "@/graph/ownership-fence";
 
-// Issue #717: the rules the tool boundary's ownership question follows, one by one. The wiring into
-// the reactive turn and the follow-up is measured against the database in runtime.test.ts and
-// nudge.test.ts; these are the branches a live run reaches only by timing.
+// The rules the tool boundary's ownership question follows, one by one. The wiring into the reactive
+// turn and the follow-up is tested against the database in runtime.test.ts and nudge.test.ts; these
+// are the branches a live run reaches only by timing.
 const TAKEN = {
   ours: false,
   closed: { closedBy: "human_takeover" },
@@ -74,8 +74,8 @@ describe("withOwnershipFence", () => {
     expect(reads()).toBe(0);
   });
 
-  // Review round 2: calls of one batch run concurrently, so a label's ask can start before the
-  // handoff beside it completes and read the status that handoff wrote.
+  // NOTE: Calls of one batch run concurrently, so a label's ask can start before the handoff beside
+  // it completes and read the status that handoff wrote.
   test("the turn's own change landing during the read is still the turn's own", async () => {
     let handedOff = false;
     const { f } = fence({

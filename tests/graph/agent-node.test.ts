@@ -41,11 +41,10 @@ class RecordingModel {
   }
 }
 
-// Regression for the production follow-up bug: agentNode must hand the model EXACTLY ONE system
-// message, first. A proactive nudge used to be injected as a SystemMessage; combined with the
-// per-turn system prompt that produced [system, …, system], which strict providers (Google) reject
-// with "System messages are only permitted as the first passed message". The node now strips any
-// system message from the history before prepending the prompt — auto-healing old threads too.
+// agentNode hands the model EXACTLY ONE system message, first: strict providers (Google) reject a
+// later one with "System messages are only permitted as the first passed message". The node strips
+// every system message from the history before prepending the prompt, which also heals a thread
+// that already carries one (a proactive nudge stored as a SystemMessage, for instance).
 describe("agentNode system-message normalization", () => {
   test("prepends one system prompt and drops a system message leaked into history", async () => {
     const model = new RecordingModel();
@@ -120,10 +119,9 @@ const noopTool = tool(async () => "feito", {
   schema: z.object({}),
 });
 
-// The REAL `skip_reply`, not a double: since round 24 the tool identifies itself with a mark in
-// `additional_kwargs` that only it can set, so a stand-in returning the ack string is no longer the
-// tool as far as `skipReplyRan` is concerned — which is the whole point of that change. It calls
-// nothing, so the ctx below is never reached.
+// The REAL `skip_reply`, not a double: the tool identifies itself with a mark in `additional_kwargs`
+// that only it can set, so a stand-in returning the ack string is not the tool as far as
+// `skipReplyRan` is concerned. It calls nothing, so the ctx below is never reached.
 function realSkipTool(): StructuredToolInterface {
   const t = buildNativeTools({ client: {} as never, conversationId: 1 }, [
     SKIP_REPLY_TOOL,
@@ -133,17 +131,12 @@ function realSkipTool(): StructuredToolInterface {
 }
 
 describe("agentNode tool-call limit (soft+hard)", () => {
-  // Issue #454, review rounds 5 and 11, then issue #639. Silence is a TOOL CALL, so the graph loops
-  // back with the tool's result and asks the model AGAIN — and round 5 only stopped that round from
-  // being told "Conclua agora: responda ao cliente". Rounds 9 and 11 then made the decision terminal,
-  // because whatever the model writes on that round goes to the customer, and on the proactive path
-  // that is an unsolicited message.
-  //
-  // #639 measured the price of ending the turn: everything the operator asked for AFTER the decision
-  // stops running, which is a real prompt shape (`one tool at a time` plus numbered steps starting at
-  // `skip_reply`). So the round is back, and what rounds 9 and 11 were protecting is kept in code
-  // instead — the wrap-up still cannot land on it, and the turn's last word is blanked on the way
-  // out. The COUNT is untouched, so the cap still bounds a model that loops on skip_reply.
+  // NOTE: Silence is a TOOL CALL, so the graph loops back with the tool's result and asks the model
+  // AGAIN. That round is never told "Conclua agora: responda ao cliente", and what the model writes
+  // there is blanked on the way out, because on the proactive path it would be an unsolicited
+  // message. The round itself stays: ending the turn on the decision stops everything the operator
+  // asked for after it (`one tool at a time` plus numbered steps starting at `skip_reply`). The
+  // COUNT is untouched, so the cap still bounds a model that loops on skip_reply.
   test("the round after the silence decision exists, and carries no wrap-up", async () => {
     const skipTool = realSkipTool();
     // One skip_reply call, then an empty answer — the shape a silent turn actually has.
@@ -189,22 +182,19 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("nada a fazer")] },
       { configurable: { thread_id: "limit-skip" } },
     );
-    // TWO rounds: the decision no longer ends the turn (#639). The wrap-up is what must not land on
-    // the second one — "responda ao cliente" is the exact opposite of what the model just chose —
-    // and the control below proves the same cap DOES produce it for an ordinary turn.
+    // NOTE: TWO rounds: the decision does not end the turn. The wrap-up must not land on the second
+    // one ("responda ao cliente" is the exact opposite of what the model just chose), and the
+    // control below proves the same cap DOES produce it for an ordinary turn.
     expect(model.boundRounds).toHaveLength(2);
     expect(model.boundRounds.some(carriesWrapUp)).toBe(false);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
   });
 
-  // The defect round 11 named, in the shape that reaches a person: the round after the decision is
-  // where a follow-up that chose silence writes to the customer anyway. Well below the cap, so no
-  // limit is involved — only the decision.
-  //
-  // #639 moved WHERE that is stopped without moving WHETHER: the model gets the round (it is the
-  // round the operator's remaining steps run in) and the sentence it writes there is taken out of the
-  // message the runtime posts. Both halves are asserted, and they have to be: "nothing was posted" is
-  // satisfied just as well by a model that wrote nothing at all.
+  // NOTE: The round after the decision is where a follow-up that chose silence would write to the
+  // customer anyway. Well below the cap, so no limit is involved, only the decision. The model gets
+  // the round (the operator's remaining steps run in it) and the sentence it writes there is taken
+  // out of the message the runtime posts. Both halves are asserted, and they have to be: "nothing
+  // was posted" is satisfied just as well by a model that wrote nothing at all.
   test("a model that speaks after skip_reply is not delivered", async () => {
     const skipTool = realSkipTool();
     class SkipThenTalksAnyway {
@@ -258,9 +248,10 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     ).toBe(false);
   });
 
-  // Round 9: the HARD limit is the other way the decision gets talked over. At `maxToolCalls: 1` the
+  // NOTE: The HARD limit is the other way the decision gets talked over. At `maxToolCalls: 1` the
   // budget is spent by the very round that chose silence, and that path exists to force a TEXT
-  // answer — it invokes the raw model with no tools bound. A deliberate silence became a message.
+  // answer (it invokes the raw model with no tools bound), which would turn a deliberate silence
+  // into a message.
   test("the hard limit does not force text out of a turn that chose silence", async () => {
     const skipTool = realSkipTool();
     class SkipThenWouldSpeakModel {
@@ -315,10 +306,10 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(hits).toEqual([{ maxToolCalls: 1, toolCalls: 1 }]);
   });
 
-  // Round 10: the SAME name, the opposite outcome. `skip_reply` is a native name, so an operator may
+  // NOTE: The SAME name, the opposite outcome. `skip_reply` is a native name, so an operator may
   // declare a precondition on it (`isGuardableToolName`); unmet, the wrapper returns a normal tool
   // result under that name telling the model to carry on. Read by name that is a decision to stay
-  // silent, and at `maxToolCalls: 1` the turn then ends with NO text — a customer left waiting by
+  // silent, and at `maxToolCalls: 1` the turn then ends with NO text: a customer left waiting by
   // the guard that was supposed to make the agent more careful.
   test("a refused skip_reply is not silence: the hard limit still forces an answer", async () => {
     const refusal = unmetPreconditionMessage(SKIP_REPLY_TOOL, {
@@ -379,11 +370,10 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     );
   });
 
-  // Round 13. A model can put text in the very message that calls `skip_reply`, and that text is
-  // never delivered — the runtime posts the LAST assistant message, which is the empty one the turn
-  // ends on. Left in the channel it is a sentence the customer never saw, read by the next turn as
-  // something they were told: the false memory this whole family is about, arriving through the
-  // silence protocol instead of through a refusal.
+  // NOTE: A model can put text in the very message that calls `skip_reply`, and that text is never
+  // delivered: the runtime posts the LAST assistant message, which is the empty one the turn ends
+  // on. Left in the channel it is a sentence the customer never saw, read by the next turn as
+  // something they were told.
   test("text written beside the decision does not stay in the channel", async () => {
     const skipTool = realSkipTool();
     const NARRATION = "Vou deixar quieto por ora.";
@@ -397,9 +387,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
         return {
           async invoke(): Promise<AIMessage> {
             self.rounds++;
-            // The round after the decision, which #639 gave back: this model has nothing more to do
-            // with it, and a real one never repeats a message id, so it gets its own empty turn
-            // instead of the same object twice.
+            // NOTE: The round after the decision: this model has nothing more to do with it, and a
+            // real one never repeats a message id, so it gets its own empty turn instead of the
+            // same object twice.
             if (self.rounds > 1)
               return new AIMessage({ id: "ai-quiet", content: "" });
             return new AIMessage({
@@ -437,9 +427,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("ok")] },
       { configurable: { thread_id: "silence-narration" } },
     );
-    // TWO rounds since #639: the decision no longer ends the turn. This stub asks for the same call
-    // every round, so the second round makes no progress and the turn ends there — the blanking is
-    // what this test is about either way, and it happens on the round the decision was SEEN.
+    // NOTE: TWO rounds: the decision does not end the turn. This stub asks for the same call every
+    // round, so the second round makes no progress and the turn ends there; the blanking is what
+    // this test is about either way, and it happens on the round the decision was SEEN.
     expect(model.rounds).toBe(2);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
     // Gone from the CHANNEL, which is the copy the next turn reads back.
@@ -471,10 +461,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(contentToText(rewritten.content)).toBe("");
   });
 
-  // Round 20, and it is where rounds 13 and 18 meet. A PARALLEL batch is not terminal, so the
-  // narration written beside the decision no longer went out through the branch that blanks it —
-  // and the turn could still finish silent, leaving that text standing as something the customer
-  // was told.
+  // NOTE: A PARALLEL batch is not terminal, so the narration written beside the decision does not
+  // go out through the terminal branch that blanks it, and the turn can still finish silent,
+  // leaving that text standing as something the customer was told.
   test("narration beside a parallel skip is blanked even without ending there", async () => {
     const skipTool = realSkipTool();
     const reactTool = tool(async () => "reacted with 👍", {
@@ -506,8 +495,8 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 ],
               });
             }
-            // #639: the lone decision on round 2 no longer ends the turn, so this model is asked a
-            // third time and has nothing left to do.
+            // NOTE: The lone decision on the second round does not end the turn, so this model is
+            // asked a third time and has nothing left to do.
             if (self.rounds > 2) return new AIMessage("");
             return new AIMessage({
               content: "",
@@ -538,8 +527,8 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("👍")] },
       cfg,
     );
-    // THREE rounds since #639, and the extra one is the whole fix: the lone `skip_reply` of round 2
-    // is where the operator's remaining step would run, so it buys a round instead of ending there.
+    // NOTE: THREE rounds: the lone `skip_reply` of the second round is where the operator's
+    // remaining step would run, so it buys a round instead of ending there.
     expect(model.rounds).toBe(3);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
     const state = await buildThreadStateGraph(checkpointer).getState(cfg);
@@ -553,11 +542,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(messages.some((m) => m.getType() === "tool")).toBe(true);
   });
 
-  // Round 22. At the hard limit the graph invokes the RAW model with no tools bound, to force a text
-  // answer — and round 18 made a parallel batch non-terminal, so a model that chose silence and had
-  // a companion to inspect landed exactly there. Round 9 already named that defect; this is the same
-  // one arriving through the parallel door. The budget stops the tools that ACT and leaves the one
-  // that does not, so the model can reaffirm silence after seeing the companion's result.
+  // NOTE: At the hard limit the graph invokes the RAW model with no tools bound, to force a text
+  // answer, and a parallel batch is not terminal, so a model that chose silence and had a companion
+  // to inspect lands exactly there, where its silence would become a message. The budget stops the
+  // tools that ACT and leaves the one that does not, so the model can reaffirm silence after seeing
+  // the companion's result.
   test("the hard limit leaves a silent turn the option to stay silent", async () => {
     const skipTool = realSkipTool();
     const reactTool = tool(async () => "reacted with 👍", {
@@ -628,10 +617,10 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(model.rawInvokes).toBe(0);
     expect(boundAtLimit).toEqual([[SKIP_REPLY_TOOL]]);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
-    // ONCE. The cap is one event — the turn ran out of budget — and its handlers write an operator
-    // line and can page. Two rounds now cross the limit (the batch, then the reaffirmation), and
-    // reporting both meant two warnings for one event, the second describing a round that spent
-    // nothing (round 23).
+    // NOTE: ONCE. The cap is one event (the turn ran out of budget) and its handlers write an
+    // operator line and can page. Two rounds cross the limit here (the batch, then the
+    // reaffirmation), and reporting both would mean two warnings for one event, the second
+    // describing a round that spent nothing.
     expect(hits).toEqual([{ maxToolCalls: 2, toolCalls: 2 }]);
   });
 
@@ -689,9 +678,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     );
   });
 
-  // Round 22, the other half: the blanking is a reducer update that lands AFTER the model call, so
-  // the extra round a parallel batch buys would otherwise still be SENT the sentence the customer
-  // never received — and the model can lean on it, or repeat it, in the answer that does go out.
+  // NOTE: The blanking is a reducer update that lands AFTER the model call, so the extra round a
+  // parallel batch buys would otherwise still be SENT the sentence the customer never received, and
+  // the model can lean on it, or repeat it, in the answer that does go out.
   test("the extra round is not shown the narration it is about to lose", async () => {
     const skipTool = realSkipTool();
     const reactTool = tool(async () => "reacted with 👍", {
@@ -729,8 +718,8 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 JSON.stringify(m.content).includes("quieto"),
               ),
             );
-            // The lone decision no longer ends the turn (#639), so this model is asked once more.
-            // It has nothing left to do, which is how a turn like this one ends now.
+            // NOTE: The lone decision does not end the turn, so this model is asked once more. It
+            // has nothing left to do, which is how a turn like this one ends.
             if (self.rounds > 2) return new AIMessage("");
             return new AIMessage({
               content: "",
@@ -758,15 +747,15 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("👍")] },
       { configurable: { thread_id: "narration-not-sent" } },
     );
-    // TWO rounds see the history now, and neither may carry the sentence: #639 gave the lone
-    // decision a round of its own, and the blanking has to survive every one of them.
+    // NOTE: TWO rounds see the history (the lone decision gets a round of its own), and neither may
+    // carry the sentence: the blanking has to survive every one of them.
     expect(seenNarration).toEqual([false, false]);
   });
 
-  // s7 of the holdout. The decision is no longer terminal, so "the model keeps asking for silence"
-  // has to end somewhere, and the budget is the wrong somewhere: it is far away (`maxToolCalls` is
-  // ten by default) and it exists to bound ACTION, not repetition. The second lone decision is where
-  // the information ends — asked again after deciding alone, the model did nothing new.
+  // NOTE: The decision is not terminal, so "the model keeps asking for silence" has to end
+  // somewhere, and the budget is the wrong somewhere: it is far away (`maxToolCalls` is ten by
+  // default) and it exists to bound ACTION, not repetition. The second lone decision is where the
+  // information ends: asked again after deciding alone, the model did nothing new.
   test("a model that only ever asks for silence stops at the second decision", async () => {
     const skipTool = realSkipTool();
     class AlwaysSkips {
@@ -815,11 +804,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
   });
 
-  // THE STALL, which only became reachable when the decision stopped ending the turn. `ToolNode`
-  // skips a call whose id already has an answer, so a model that repeats a batch verbatim gets no
-  // new result and is asked again with the same history — forever, because the budget counts tool
-  // RESULTS and none are being produced. Not a silence case at all, which is why it is tested with
-  // an ordinary tool: the rule is about repetition, not about `skip_reply`.
+  // NOTE: THE STALL, reachable because the decision does not end the turn. `ToolNode` skips a call
+  // whose id already has an answer, so a model that repeats a batch verbatim gets no new result and
+  // is asked again with the same history, forever, because the budget counts tool RESULTS and none
+  // are being produced. Not a silence case at all, which is why it is tested with an ordinary tool:
+  // the rule is about repetition, not about `skip_reply`.
   test("a batch whose every call was already answered ends the turn", async () => {
     let ran = 0;
     const counter = tool(
@@ -867,11 +856,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
   });
 
-  // THE DECISION STICKS, which is the half of #639 that is not about the extra round. `staySilent`
-  // answers "what did the model just do", and the batch after the decision is the operator's own
-  // call — so read off the LAST batch the turn would go back to being allowed to write, which is the
-  // hazard the terminal branch existed for, arriving through the new door. Caught by the mutation
-  // battery: making `silentTurn` read only the last batch left every other test green.
+  // NOTE: THE DECISION STICKS. `staySilent` answers "what did the model just do", and the batch
+  // after the decision is the operator's own call, so a rule that read only the LAST batch would
+  // let the turn write to the customer again: the hazard the silence branch exists for, through
+  // another door. Making `silentTurn` read only the last batch leaves every other test green, so
+  // this is the test that catches it.
   test("a decision two batches back still silences what the model writes at the end", async () => {
     const skipTool = realSkipTool();
     let resolved = false;
@@ -993,13 +982,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     );
   });
 
-  // A REFUSED `skip_reply` is not a decision, and the rule that ENDS the turn on a reaffirmation has
-  // to agree with the rule that RECOGNISES one. An operator may declare a precondition on the native
-  // name; unmet, it returns an ordinary result under that name, which `skipReplyRan` does not accept.
-  // A refusal followed by a real decision is two lone `skip_reply` batches that are NOT "asked twice,
-  // nothing new" — and the mutation battery is why this exists: letting the decision leak from one
-  // batch to the older one left every other test green while ending this turn a round early, with
-  // the operator's `resolve_conversation` never run.
+  // NOTE: A REFUSED `skip_reply` is not a decision, and the rule that ENDS the turn on a
+  // reaffirmation has to agree with the rule that RECOGNISES one. An operator may declare a
+  // precondition on the native name; unmet, it returns an ordinary result under that name, which
+  // `skipReplyRan` does not accept. A refusal followed by a real decision is two lone `skip_reply`
+  // batches that are NOT "asked twice, nothing new": letting the decision leak from one batch to
+  // the older one leaves every other test green while ending this turn a round early, with the
+  // operator's `resolve_conversation` never run.
   test("a refused skip_reply is not the decision a reaffirmation would end on", async () => {
     const refusal = unmetPreconditionMessage(SKIP_REPLY_TOOL, {
       kind: "attribute",
@@ -1159,11 +1148,10 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(String(preamble?.content ?? "")).toBe("Vou registrar isso.");
   });
 
-  // …and what it MUST touch, in the shape only one vendor has. For the Responses API the history is
-  // serialized from the raw `output` array in `response_metadata`, not from `content`, so a rule that
-  // cleared `content` alone left the sentence in the copy that actually travels. The blanking of the
-  // decision's own message has covered this since round 23; the turn's LAST message needed it too,
-  // and only got it when the turn stopped ending on the decision.
+  // NOTE: ...and what it MUST touch, in the shape only one vendor has. For the Responses API the
+  // history is serialized from the raw `output` array in `response_metadata`, not from `content`,
+  // so a rule that cleared `content` alone would leave the sentence in the copy that actually
+  // travels. That holds for the turn's LAST message as much as for the decision's own.
   test("the final message of a silent turn loses its text in the provider's own copy too", async () => {
     const skipTool = realSkipTool();
     class SkipsThenSpeaksThroughResponses {
@@ -1228,9 +1216,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(JSON.stringify(result.messages)).not.toContain("Tudo certo");
   });
 
-  // The wrap-up is "Conclua agora: responda ao cliente", which is the opposite of what a silent turn
-  // chose — and now that the turn goes on, it can reach the soft limit while still silent. Round 18
-  // suppressed it for the batch that just decided; #639 has to keep it suppressed for the rest.
+  // NOTE: The wrap-up is "Conclua agora: responda ao cliente", the opposite of what a silent turn
+  // chose, and since the turn goes on it can reach the soft limit while still silent. It stays
+  // suppressed for every round after the decision, not only for the batch that decided.
   test("the wrap-up does not land on the rounds after a lone decision", async () => {
     const skipTool = realSkipTool();
     const noop = tool(async () => "feito", {
@@ -1349,11 +1337,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("pronto");
   });
 
-  // Rodada 1 do review da #639. The stall rule ends the turn on a batch whose calls were all answered
-  // already — and that batch is left in the checkpoint with NO tool result after it, because
-  // `ToolNode` skipped every call in it. `isEmptyAssistantTurn` keeps it (it carries calls), so the
-  // NEXT customer turn sends a provider an assistant message whose `tool_call_id`s are never
-  // answered, which OpenAI and Anthropic both refuse — the thread stops answering at all.
+  // NOTE: The stall rule ends the turn on a batch whose calls were all answered already, and that
+  // batch is left in the checkpoint with NO tool result after it, because `ToolNode` skipped every
+  // call in it. `isEmptyAssistantTurn` keeps it (it carries calls), so the NEXT customer turn would
+  // send a provider an assistant message whose `tool_call_id`s are never answered, which OpenAI and
+  // Anthropic both refuse: the thread stops answering at all.
   test("a stalled turn leaves the next one no tool call without an answer", async () => {
     const counter = tool(async () => "counted", {
       name: "count_it",
@@ -1421,10 +1409,10 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(dangling).toEqual([]);
   });
 
-  // Round 26. A provider can emit a good `skip_reply` beside a call whose arguments do not parse, and
-  // LangChain files that one under `invalid_tool_calls` — invisible to a check that reads
-  // `tool_calls`. The batch then looked like nothing but the decision, the turn ended, and the model
-  // never got the round where it would have seen the failure and answered.
+  // NOTE: A provider can emit a good `skip_reply` beside a call whose arguments do not parse, and
+  // LangChain files that one under `invalid_tool_calls`, invisible to a check that reads
+  // `tool_calls`. Read that way the batch looks like nothing but the decision, the turn ends, and
+  // the model never gets the round where it would see the failure and answer.
   test("a malformed companion call is a companion", async () => {
     const skipTool = realSkipTool();
     const reactTool = tool(async () => "reacted with 👍", {
@@ -1500,12 +1488,13 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     ]);
   });
 
-  // Round 27. A provider can return blocks BESIDE the text, and Anthropic's `thinking` /
+  // NOTE: A provider can return blocks BESIDE the text, and Anthropic's `thinking` /
   // `redacted_thinking` are signed and must be replayed unchanged before the tool result they
-  // precede — so emptying the block list deletes protocol data and the very next round fails at the
-  // provider. And for models served over the Responses API, `@langchain/openai` replays the raw
-  // `output` array from `response_metadata` rather than `content`, so blanking `content` alone hands
-  // the narration back anyway. Text is the only thing this rule may remove, wherever it lives.
+  // precede, so emptying the block list deletes protocol data and the very next round fails at the
+  // provider. For models served over the Responses API, `@langchain/openai` replays the raw
+  // `output` array from `response_metadata` rather than `content`, so blanking `content` alone
+  // hands the narration back anyway. Text is the only thing this rule may remove, wherever it
+  // lives.
   test("blanking removes the text and nothing else", async () => {
     const skipTool = realSkipTool();
     const reactTool = tool(async () => "reacted with 👍", {
@@ -1660,11 +1649,10 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     ).not.toEqual([]);
   });
 
-  // Round 17. `skip_reply` beside `react_to_message` is the documented way to answer with a reaction
-  // ALONE — so the reaction IS the reply, and when it fails, ending the turn on the skip leaves the
+  // NOTE: `skip_reply` beside `react_to_message` is the documented way to answer with a reaction
+  // ALONE, so the reaction IS the reply, and when it fails, ending the turn on the skip leaves the
   // customer with nothing at all. The model has to see that result and decide again, which is what
-  // every other failed tool call already gets. (Round 18 widened the rule to every companion, for
-  // the reason below; this case is what made the question visible.)
+  // every other failed tool call already gets (and, for the reason below, every companion).
   test("a companion tool that FAILED keeps the turn going", async () => {
     const skipTool = realSkipTool();
     const reactTool = failableTool(
@@ -1718,14 +1706,12 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     );
   });
 
-  // ISSUE #639. A LONE decision no longer ENDS the turn, it makes the turn SILENT — two different
-  // guarantees, and `docs/graph.md` only ever argued for the second ("a turn that chose silence
-  // writes to the customer anyway" is the hazard). Ending it costs the operator everything they
-  // asked for after the decision, and the shape that reaches it is ordinary: a prompt that forbids
-  // parallel calls (the agent in the report carries one for `set_labels`, #604) and names
-  // `skip_reply` before the rest. Measured live on the issue, the two failing cells are exactly the
-  // two that name it first, and no wording fixes it — the note that takes gpt-5.2 from 0/12 to 12/12
-  // does nothing on gpt-5.6-luna, because it asks the model to disobey the operator's own ordering.
+  // NOTE: A LONE decision does not END the turn, it makes the turn SILENT: two different
+  // guarantees, and `docs/graph.md` argues only for the second ("a turn that chose silence writes
+  // to the customer anyway" is the hazard). Ending it costs the operator everything they asked for
+  // after the decision, and the shape that reaches it is ordinary: a prompt that forbids parallel
+  // calls and names `skip_reply` before the rest. No prompt wording fixes that on every model,
+  // because it asks the model to disobey the operator's own ordering.
   test("a lone skip_reply lets the rest of what the operator asked for run", async () => {
     const skipTool = realSkipTool();
     let resolved = false;
@@ -1787,18 +1773,16 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("obrigado!")] },
       { configurable: { thread_id: "lone-skip-then-resolve" } },
     );
-    // THE POSITIVE HALF FIRST, and it is not decoration: "nothing was delivered" is satisfied just
-    // as well by a turn that stopped dead, which is the bug. The resolve having RUN is what says the
-    // path was walked (the process note of 18/set, on assertions of absence).
+    // NOTE: THE POSITIVE HALF FIRST: "nothing was delivered" is satisfied just as well by a turn
+    // that stopped dead, which is the bug. The resolve having RUN is what says the path was walked.
     expect(resolved).toBe(true);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
   });
 
-  // ...and a companion the operator's own rule REFUSED is the same thing to the customer: the
-  // reaction did not happen, so ending on the skip leaves them with nothing. Round 17 read that off
-  // the RESULT; round 18 showed a result cannot answer it (a tool may decline through an ordinary
-  // success string), so the rule moved to the CALLS. This case is covered by the same rule now, and
-  // it stays because it is the shape an operator can actually configure.
+  // NOTE: ...and a companion the operator's own rule REFUSED is the same thing to the customer: the
+  // reaction did not happen, so ending on the skip leaves them with nothing. The rule reads the
+  // CALLS, not the RESULT, because a tool may decline through an ordinary success string; this case
+  // stays because it is the shape an operator can actually configure.
   test("a companion tool that was REFUSED keeps the turn going", async () => {
     const skipTool = realSkipTool();
     const reactTool = guardedTool(
@@ -1858,11 +1842,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     );
   });
 
-  // The control, and round 18 changed what it controls FOR. A batch that called something else has
-  // produced information the model has not seen, so it decides again — whether that companion
-  // worked or not, because a tool can decline through a perfectly ordinary success result and no
-  // reader can tell. What the extra round must still deliver is SILENCE when the model asks for it
-  // alone: the decision is terminal there, and the raw model never speaks.
+  // NOTE: The control. A batch that called something else has produced information the model has
+  // not seen, so it decides again, whether that companion worked or not, because a tool can decline
+  // through a perfectly ordinary success result and no reader can tell. What the extra round must
+  // still deliver is SILENCE when the model asks for it alone: the turn stays silent and the raw
+  // model never speaks.
   test("a companion that worked costs one round and still ends silent", async () => {
     const skipTool = realSkipTool();
     const reactTool = tool(async () => "reacted with 👍", {
@@ -1893,9 +1877,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
                 ],
               });
             }
-            // Having seen the reaction land, the model asks for silence ALONE. That used to end the
-            // turn; since #639 it buys one round, because that round is where the operator's
-            // remaining steps run. This model has none, so it spends the round and stops.
+            // NOTE: Having seen the reaction land, the model asks for silence ALONE. That buys one
+            // round, because that round is where the operator's remaining steps run. This model has
+            // none, so it spends the round and stops.
             if (self.rounds > 2) return new AIMessage("");
             return new AIMessage({
               content: "",
@@ -1924,17 +1908,17 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("👍")] },
       { configurable: { thread_id: "companion-ok" } },
     );
-    // THREE since #639: the reaffirmation on round 2 is a lone decision, and a lone decision now
-    // buys the round where the operator's remaining steps would run.
+    // NOTE: THREE rounds: the reaffirmation on the second round is a lone decision, and a lone
+    // decision buys the round where the operator's remaining steps would run.
     expect(model.rounds).toBe(3);
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("");
   });
 
-  // Round 17, the other half. The terminal marker is an EMPTY assistant message, and it stays in the
-  // channel on purpose — it is what keeps `lastAssistantText` reading "" instead of the skip tool's
-  // acknowledgement, which would otherwise go to the customer as the reply. What it must not do is
-  // reach the provider: `@langchain/anthropic` renders string content as a text block and Anthropic
-  // refuses an empty one, so a thread that accumulated one would stop answering entirely.
+  // NOTE: The terminal marker is an EMPTY assistant message, and it stays in the channel on
+  // purpose: it keeps `lastAssistantText` reading "" instead of the skip tool's acknowledgement,
+  // which would otherwise go to the customer as the reply. What it must not do is reach the
+  // provider: `@langchain/anthropic` renders string content as a text block and Anthropic refuses
+  // an empty one, so a thread that accumulated one would stop answering entirely.
   test("the empty turn stays in the channel and never reaches the model", async () => {
     const skipTool = realSkipTool();
     const seen: number[] = [];
@@ -2003,10 +1987,10 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(seen).toEqual(seen.map(() => 0));
   });
 
-  // Round 31, the half the filter above got wrong. "No text" and "empty" are not the same question:
-  // a provider can return a turn whose whole content is a signed `thinking` block, with no tool
-  // calls and no text at all. Classifying that as an empty turn deletes provider-native output from
-  // every later prompt, and it deletes exactly what `silenceNarration` above takes such care to keep.
+  // NOTE: "No text" and "empty" are not the same question: a provider can return a turn whose whole
+  // content is a signed `thinking` block, with no tool calls and no text at all. Classifying that
+  // as an empty turn deletes provider-native output from every later prompt, exactly what
+  // `silenceNarration` above takes such care to keep.
   test("a turn whose only content is a non-text block still reaches the model", async () => {
     const seen: number[] = [];
     class RecordsThinkingTurns {
@@ -2226,11 +2210,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(seen).toEqual([0, 0]);
   });
 
-  // Round 1 of the follow-up, and it is the case the guard above must NOT make an exception for. A
-  // call that failed to parse is never executed, so `toolsCondition` ends the graph and nothing ever
-  // answers it — and `@langchain/openai` keeps the RAW calls in `additional_kwargs.tool_calls` and
-  // replays those whenever `tool_calls` is empty. Keeping that turn hands OpenAI an assistant tool
-  // call with no tool response, which it rejects, and every later turn on the thread dies with it.
+  // NOTE: The case the guard above must NOT make an exception for. A call that failed to parse is
+  // never executed, so `toolsCondition` ends the graph and nothing ever answers it, and
+  // `@langchain/openai` keeps the RAW calls in `additional_kwargs.tool_calls` and replays those
+  // whenever `tool_calls` is empty. Keeping that turn hands OpenAI an assistant tool call with no
+  // tool response, which it rejects, and every later turn on the thread dies with it.
   test("a turn whose only record is an unparseable call never reaches the model", async () => {
     const seen: number[] = [];
     class RecordsInvalidCallTurns {
@@ -2350,9 +2334,9 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(seen).toEqual([0, 1]);
   });
 
-  // Round 7: parallel tool calls. `skip_reply` alongside `react_to_message` is the documented way to
-  // answer with a reaction alone, and whichever result lands last is an ordering accident — reading
-  // only the last one made the wrap-up instruction depend on it.
+  // NOTE: Parallel tool calls. `skip_reply` alongside `react_to_message` is the documented way to
+  // answer with a reaction alone, and whichever result lands last is an ordering accident, so the
+  // wrap-up decision reads the whole batch, not only the last result.
   test("skip_reply counts even when another tool's result lands last", async () => {
     const skipTool = realSkipTool();
     const reactTool = tool(async () => "reagiu", {
@@ -2403,11 +2387,11 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       { messages: [new HumanMessage("ok")] },
       { configurable: { thread_id: "limit-parallel" } },
     );
-    // The batch was READ, not just its last result: the reaction landed AFTER the skip and the round
-    // that follows was still not told to answer the customer. Two rounds now, because a batch that
-    // called something else is not terminal (round 18) — which is exactly why reading the whole
-    // batch still matters: the wrap-up instruction would otherwise land on the round after a
-    // decision to stay quiet.
+    // NOTE: The batch was READ, not just its last result: the reaction landed AFTER the skip and
+    // the round that follows was still not told to answer the customer. Two rounds, because a batch
+    // that called something else is not terminal, which is exactly why reading the whole batch
+    // matters: the wrap-up instruction would otherwise land on the round after a decision to stay
+    // quiet.
     expect(model.boundRounds.length).toBeGreaterThanOrEqual(2);
     expect(model.boundRounds.some(carriesWrapUp)).toBe(false);
   });
@@ -2440,9 +2424,10 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(model.boundRounds.map(carriesWrapUp)).toEqual([false, true, true]);
   });
 
-  // Issue #628. The wrap-up is an instruction, so it travels in a role a customer cannot type into:
+  // NOTE: The wrap-up is an instruction, so it travels in a role a customer cannot type into:
   // "[Sistema] ..." in a chat message arrives as a human message, and a real instruction sent the
-  // same way would be indistinguishable from it. Checked on every path below, whatever else differs.
+  // same way would be indistinguishable from it. Checked on every path below, whatever else
+  // differs.
   const humanCarriesWrapUp = (round: BaseMessage[]) =>
     carriesWrapUp(round.filter((m) => m.getType() === "human"));
 
@@ -2478,7 +2463,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     return { rounds: model.boundRounds, result };
   };
 
-  // ISSUE #629. An observation turn has nobody to answer: its frame says any text it writes reaches
+  // NOTE: An observation turn has nobody to answer: its frame says any text it writes reaches
   // nowhere and its client is muted. The budget is the same, the sentence after it is not.
   const REPLY_SENTENCE = "responda ao cliente";
   const roundWithWrapUp = (rounds: BaseMessage[][]) => {
@@ -2587,7 +2572,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
   );
 });
 
-// The ceiling is wired through the node, so what it is worth is measured where it matters: in the
+// The ceiling is wired through the node, so what it is worth is checked where it matters: in the
 // list the model actually receives. See tests/graph/history-window.test.ts for the rule itself.
 describe("agentNode history ceiling", () => {
   // Eight turns of a chatty contact. Every message is long enough that a small ceiling has to cut.
@@ -2667,14 +2652,14 @@ describe("agentNode history ceiling", () => {
   });
 });
 
-// ISSUE #449. `stillWanted` is the runtime's own ask, and every seam it owns is BETWEEN two steps:
-// before the divider, after the claim, before the invoke, at each outward write. A tool call happens
-// INSIDE one, so a `/reset` that lands once the model call is in flight is refused on its memory
-// step, says so, and the turn's tools then write an attribute, a label and a kanban card back onto
-// the conversation the operator was just told about. The seam that covers every tool source at once
-// is the node they all pass through.
+// `stillWanted` is the runtime's own ask, and every seam it owns is BETWEEN two steps: before the
+// divider, after the claim, before the invoke, at each outward write. A tool call happens INSIDE
+// one, so a `/reset` that lands once the model call is in flight would be refused on its memory
+// step, say so, and the turn's tools would then write an attribute, a label and a kanban card back
+// onto the conversation the operator was just told about. The seam that covers every tool source at
+// once is the node they all pass through.
 describe("the tool boundary refuses a turn that was called off", () => {
-  // Calls a tool, then answers. The shape of the turn the window is measured on.
+  // Calls a tool, then answers: the shape of the turn the window is exercised on.
   class CallsThenAnswers {
     rounds = 0;
     async invoke(): Promise<AIMessage> {
@@ -2823,10 +2808,10 @@ describe("the tool boundary refuses a turn that was called off", () => {
     expect(model.rounds).toBe(1);
   });
 
-  // THE SEAM CANNOT REFUSE BY THROWING, only break the thread. Measured against the real
-  // checkpointer with a tools node that throws: the thread comes back `[human, ai(tool_calls=…)]`
-  // with no ToolMessage — the exact broken sequence the refusal above exists to avoid. And a
-  // throwing fence is not hypothetical: several of the ones the runtime hands down read a job row.
+  // NOTE: THE SEAM CANNOT REFUSE BY THROWING, only break the thread. Against the real checkpointer
+  // with a tools node that throws, the thread comes back `[human, ai(tool_calls=…)]` with no
+  // ToolMessage: the exact broken sequence the refusal above exists to avoid. And a throwing fence
+  // is not hypothetical: several of the ones the runtime hands down read a job row.
   test("a fence that cannot answer lets the tools run", async () => {
     const ran: string[] = [];
     const model = new CallsThenAnswers();
@@ -2870,9 +2855,8 @@ describe("the tool boundary refuses a turn that was called off", () => {
     expect(String(result.messages.at(-1)?.content ?? "")).toBe("pronto");
   });
 
-  // WHAT IT COSTS, counted rather than estimated: one read per TOOL-CALLING hop, and none at all on
-  // a turn that calls nothing. The issue named the cost as a reason this needed a design, on a path
-  // that already pays for the fence #428 added.
+  // NOTE: WHAT IT COSTS, counted rather than estimated: one read per TOOL-CALLING hop, and none at
+  // all on a turn that calls nothing, on a path that already pays for another fence read.
   test("the fence is asked once per tool-calling hop, and never on a turn without one", async () => {
     const ran: string[] = [];
     let asked = 0;

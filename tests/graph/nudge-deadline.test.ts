@@ -10,7 +10,7 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { HandoffThenReplyModel } from "../utils/scripted-models";
 
-// Issue #811, the nudge's half of a job's deadline: the FOLLOWUP handler hands its job's signal to
+// The nudge's half of a job's deadline: the FOLLOWUP handler hands its job's signal to
 // the nudge, the invoke is aborted by it, and every write after it is refused through `stillWanted`,
 // so a follow-up whose run was already failed at its deadline never sends the step its retry owns.
 

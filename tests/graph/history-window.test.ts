@@ -115,11 +115,11 @@ describe("selectHistoryWindow", () => {
     }
   });
 
-  // INVARIANT 5 (issue #457): a hand-back note sits immediately before the customer's message and is
-  // a human message like any other here, so a turn whose own message eats the budget opens on the
-  // customer and leaves the note behind. That loss is PERMANENT — the note is in the thread, so the
-  // decision that writes it reads it as already announced and never writes another — and the turn
-  // answers from the transfer context, which is the silence the note exists to end.
+  // NOTE: INVARIANT 5: a hand-back note sits immediately before the customer's message and is a
+  // human message like any other, so without the exception a turn whose own message eats the budget
+  // would open on the customer and leave the note behind. That loss is PERMANENT (the note is in the
+  // thread, so the decision reads it as already announced and never writes another), and the turn
+  // would answer from the transfer context, the silence the note exists to end.
   test("a hand-back note before the opener travels with it", () => {
     const history = [
       new HumanMessage("velho"),
@@ -158,7 +158,7 @@ describe("selectHistoryWindow", () => {
       seen.set(m, (seen.get(m) ?? 0) + 1);
       return EACH;
     });
-    // The O(n^2) shape this replaced re-counted the surviving prefix on every step.
+    // NOTE: Guards against an O(n^2) walk that re-counts the surviving prefix on every step.
     for (const [, times] of seen) expect(times).toBe(1);
   });
 });

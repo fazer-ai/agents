@@ -5,10 +5,9 @@ import {
   postedOutcomeFor,
 } from "@/graph/close-intent";
 
-// THE WHOLE TABLE, asserted at once, because this question was answered at three call sites and got
-// a different answer at each — the review loop found the same defect in them one round at a time
-// (issue #429). Two independent inputs make four cases, and a table is the only shape that cannot
-// leave one of them unwritten.
+// THE WHOLE TABLE, asserted at once: three call sites ask this question and must give one answer.
+// Two independent inputs make four cases, and a table is the only shape that cannot leave one of
+// them unwritten.
 describe("mayCloseConversation", () => {
   test.each([
     // replyPartial, attachmentFailed, may close, why
@@ -81,10 +80,9 @@ describe("postedOutcomeFor", () => {
     },
   );
 
-  // The coupling itself, stated so a later edit cannot answer one question and forget the other:
-  // every delivery that may close is "posted", and every one that may not is "posted-partial".
-  // Written as an equivalence rather than two lists, because a list can be extended on one side
-  // alone — which is exactly how these two drifted apart at three call sites before (see above).
+  // NOTE: The coupling itself, so an edit cannot answer one question and forget the other: every
+  // delivery that may close is "posted", and every one that may not is "posted-partial". Written as
+  // an equivalence rather than two lists, because a list can be extended on one side alone.
   test("the two answers are the same bit, asked twice", () => {
     for (const replyPartial of [false, true]) {
       for (const attachmentFailed of [false, true]) {

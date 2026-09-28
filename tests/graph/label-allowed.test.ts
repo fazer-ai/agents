@@ -16,7 +16,7 @@ import {
 } from "@/modules/agents/tool-guidance";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 
-// Issue #638: an operator-declared list of the labels set_labels may ADD. Without it the model's
+// An operator-declared list of the labels set_labels may ADD. Without it the model's
 // array is the taxonomy and a title Chatwoot does not have is created; with it, a title outside the
 // list is refused (or, under `accept`, written and counted), and the trail can name what moved.
 

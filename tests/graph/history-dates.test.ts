@@ -30,9 +30,9 @@ import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { readMemoryConfig } from "@/modules/memory/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #755: the history the model reads carries, in front of each message a person sent, the date
-// it was sent. Without it the customer who vanished for a week and came back with "segue" was
-// answered as if everything above were happening now.
+// The history the model reads carries, in front of each message a person sent, the date it was
+// sent. Without it a customer who vanishes for a week and comes back with "segue" is answered as if
+// everything above were happening now.
 
 const WEEK_AGO = new Date("2026-09-16T13:05:00.000Z"); // 10:05 in São Paulo
 const NOW = new Date("2026-09-23T17:40:00.000Z"); // 14:40 in São Paulo
@@ -203,7 +203,7 @@ describe("the agent node", () => {
     );
   });
 
-  // Review r1: the date is part of what the provider receives, so the history ceiling counts it. A
+  // NOTE: The date is part of what the provider receives, so the history ceiling counts it. A
   // ceiling that fits the stored text but not the dated one has to trim.
   test("the history ceiling counts each message with its date", async () => {
     const long: BaseMessage[] = [];

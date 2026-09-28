@@ -5,10 +5,9 @@ import { z } from "zod";
 import { type GeminiFunctionTool, toGeminiTools } from "@/graph/gemini-tools";
 import { createChatModel } from "@/graph/models";
 
-// Gemini rejected EVERY turn of an agent whose tools carry a numeric bound or a free-form object
-// parameter (issue #64): `parameters` is parsed as the OpenAPI 3.03 subset, whose field set is
-// closed, and an unknown field kills the whole request before the model is reached. The fix declares
-// tools with `parametersJsonSchema` instead, which takes a full JSON Schema.
+// Gemini parses `parameters` as the OpenAPI 3.03 subset, whose field set is closed: a numeric bound
+// or a free-form object parameter kills the whole request before the model is reached. Tools are
+// declared with `parametersJsonSchema` instead, which takes a full JSON Schema.
 //
 // NOTE: the allowlist below is transcribed from the API's own discovery document
 // (https://generativelanguage.googleapis.com/$discovery/rest?version=v1beta, .schemas.Schema
@@ -82,8 +81,8 @@ function rejectOpenApiSubset(node: unknown, path: string): GeminiReject | null {
 
 // The JSON Schema path accepts what the subset does not ($defs/$ref, const, exclusiveMinimum,
 // additionalProperties, propertyNames, uniqueItems, multipleOf, oneOf/allOf, a `type` array and a
-// non-string `enum` were all measured passing against the live API). The one construct it still
-// rejects is a draft-07 tuple, because Gemini implements 2020-12, where `items` must be a schema.
+// non-string `enum` all pass against the live API). The one construct it rejects is a draft-07
+// tuple, because Gemini implements 2020-12, where `items` must be a schema.
 function rejectJsonSchema(node: unknown, path: string): GeminiReject | null {
   if (Array.isArray(node)) {
     for (const [i, v] of node.entries()) {
@@ -425,9 +424,9 @@ describe("Gemini tool declarations", () => {
     expect(pair).not.toHaveProperty("items");
   });
 
-  // `additionalItems` is the other half of the same draft-07 tuple. Leaving it behind would widen
-  // the contract, because `false` means "nothing past the tuple" and 2020-12 spells that `items:
-  // false` — measured accepted by the live API.
+  // NOTE: `additionalItems` is the other half of the same draft-07 tuple. Leaving it behind would
+  // widen the contract, because `false` means "nothing past the tuple" and 2020-12 spells that
+  // `items: false`, which the live API accepts.
   test.each([
     ["a closed tuple", false, false],
     ["an open tuple with a type", { type: "string" }, { type: "string" }],
@@ -609,8 +608,7 @@ describe("Gemini tool declarations", () => {
 
   test("nesting past the depth cap travels untransformed instead of throwing", () => {
     // NOTE: pins the documented degradation. Past MAX_DEPTH the subtree is left exactly as it
-    // arrived, which is what shipped before this module existed, rather than a stack overflow on a
-    // hostile schema.
+    // arrived, rather than a stack overflow on a hostile schema.
     let deep: Record<string, unknown> = {
       type: "array",
       items: [{ type: "string" }],

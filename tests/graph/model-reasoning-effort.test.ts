@@ -9,9 +9,8 @@ import {
   type ReasoningEffort,
 } from "@/graph/openai-reasoning";
 
-// Every turn of a gpt-5.6 agent that has tools died on an OpenAI 400 (issue #66). We never send a
-// reasoning effort, so what collides with the tools is the provider's own default: measured against
-// the live API, `gpt-5.6-luna` with tools and no effort answers 400, and the same call with
+// With no reasoning effort sent, a gpt-5.6 agent's tools collide with the provider's own default:
+// on the live API `gpt-5.6-luna` with tools and no effort answers 400, and the same call with
 // `reasoning_effort: "none"` answers 200 with the tool call. gpt-5.5 and older are unaffected.
 
 interface FakeOpenAI {
@@ -20,19 +19,12 @@ interface FakeOpenAI {
   restore: () => void;
 }
 
-// Stands in for BOTH OpenAI endpoints. The rules below are transcribed from what the live API did,
-// NOT imported from src — a fake that reuses the implementation's idea of the rule cannot catch
-// that idea being wrong.
-//
-// Measured on 2026-08-15 with one function tool attached, on gpt-5.6-luna, gpt-5.6-sol,
-// gpt-5.4-mini and gpt-5.5: /v1/chat/completions answers 400 for EVERY effort above "none",
-// on every one of those models, and answers 400 for an ABSENT effort only on the gpt-5.6 family
-// (whose server-side default is not "none"). /v1/responses answers 200 for every effort on every
-// one of them. So the ceiling belongs to the endpoint, not to the family.
-//
-// Measured again on 2026-09-23 on gpt-6-luna (issue #804): the same 400 for an absent effort and for
-// every effort above "none" alongside tools, 200 with "none". The gpt-6 family's server-side default
-// is not "none" either.
+// Stands in for BOTH OpenAI endpoints. The rules are transcribed from the live API, NOT imported
+// from src: a fake that reuses the implementation's idea of the rule cannot catch it being wrong.
+// With one function tool (gpt-5.6-luna, gpt-5.6-sol, gpt-6-luna, gpt-5.4-mini, gpt-5.5),
+// /v1/chat/completions answers 400 for EVERY effort above "none", and for an ABSENT effort only on
+// the gpt-5.6 and gpt-6 families (whose server-side default is not "none"). /v1/responses answers
+// 200 for every effort on all of them. So the ceiling belongs to the endpoint, not to the family.
 function completionsRejects(model: string, body: Record<string, unknown>) {
   const hasTools = Array.isArray(body.tools) && body.tools.length > 0;
   if (!hasTools) return false;
@@ -60,12 +52,10 @@ function fakeOpenAI(): FakeOpenAI {
     urls.push(String(url));
     const model = String(body.model ?? "");
     if (String(url).includes("/responses")) {
-      // Measured: a model with no reasoning to constrain refuses the parameter by name
-      // ("Unsupported parameter: 'reasoning.effort' is not supported with this model." on gpt-4o).
-      // The fake rejects it too, so a test can tell "the operator was told" apart from "the
-      // parameter never left".
-      // Measured: the endpoint rejects the completions spelling by name, and says where it moved.
-      // This is what a model the ADAPTER routes here would have hit.
+      // NOTE: The live API refuses the parameter by name on a model with no reasoning to constrain
+      // ("Unsupported parameter: 'reasoning.effort' ..." on gpt-4o), and rejects the completions
+      // spelling by name, saying where it moved (what a model the ADAPTER routes here would hit).
+      // The fake rejects both, so a test can tell "the operator was told" from "it never left".
       if (body.reasoning_effort !== undefined) {
         return new Response(
           JSON.stringify({
@@ -284,7 +274,7 @@ describe("createChatModel on the gpt-5.6 family", () => {
   });
 });
 
-// The carve-out must not spread: gpt-5.5 and older answered 200 with tools and no effort, and
+// The carve-out must not spread: gpt-5.5 and older answer 200 with tools and no effort, and
 // gpt-5.4-mini accepts "none" as well — so sending it there would silently drop the reasoning those
 // agents run with today, trading one regression for another.
 describe("createChatModel leaves every other model alone", () => {
@@ -314,8 +304,8 @@ describe("createChatModel leaves every other model alone", () => {
     }
   });
 
-  // Issue #804: the gpt-6 family refuses tools without "none" exactly like gpt-5.6 (measured on
-  // gpt-6-luna, 2026-09-23), in every spelling an operator can configure.
+  // NOTE: The gpt-6 family refuses tools without "none" exactly like gpt-5.6, in every spelling an
+  // operator can configure.
   test("the gpt-6 family carries it too, bare, routed and fine-tuned", async () => {
     for (const [model, provider] of [
       ["gpt-6-luna", "openai"],
@@ -381,9 +371,9 @@ describe("createChatModel leaves every other model alone", () => {
   });
 });
 
-// Issue #74: the operator picks the effort per agent. The measurement that shapes this is that
-// /v1/chat/completions refuses EVERY effort above "none" alongside function tools, on every
-// reasoning model tried — so an explicit effort is a transport decision, not a family carve-out.
+// The operator picks the effort per agent. /v1/chat/completions refuses EVERY effort above "none"
+// alongside function tools, on every reasoning model tried, so an explicit effort is a transport
+// decision, not a family carve-out.
 
 describe("the fake API accepts what OpenAI accepts", () => {
   test("completions rejects an effort above none even on the older families", async () => {
@@ -490,10 +480,10 @@ describe("createChatModel with an explicit effort", () => {
     }
   });
 
-  // Switching endpoint must not switch what OpenAI keeps. Chat Completions stores nothing unless
-  // asked; the Responses API stores by default (30 days). Sending store:false is what keeps the
-  // knob about reasoning instead of quietly changing retention for a product that carries customer
-  // conversations. Measured: the two-turn tool round-trip still works with storage off.
+  // NOTE: Switching endpoint must not switch what OpenAI keeps. Chat Completions stores nothing
+  // unless asked; the Responses API stores by default (30 days). Sending store:false keeps the knob
+  // about reasoning instead of quietly changing retention for a product that carries customer
+  // conversations. The two-turn tool round-trip still works with storage off.
   test("the responses endpoint is told not to store the conversation", async () => {
     const { sent } = await turn("gpt-5.6-luna", "openai", "low");
     expect(sent.store).toBe(false);
@@ -520,8 +510,8 @@ describe("createChatModel with an explicit effort", () => {
     }
   });
 
-  // The issue #66 pin exists only because nobody chose an effort. Once the operator does choose,
-  // the pin must not survive and silently cap the choice at "none".
+  // NOTE: The gpt-5.6 "none" pin exists only because nobody chose an effort. Once the operator
+  // does choose, the pin must not survive and silently cap the choice at "none".
   test("the choice overrides the pin the family carries by default", async () => {
     const { sent, url } = await turn("gpt-5.6-luna", "openai", "high");
     expect(url).toContain("/responses");
@@ -559,7 +549,7 @@ describe("createChatModel with an explicit effort", () => {
   });
 });
 
-// The knob is offered only where a working combination was measured AND where we control the
+// The knob is offered only where a working combination is verified AND where we control the
 // endpoint. OpenRouter and openai-compatible servers mostly do not implement /v1/responses, so
 // there the effort could only ride on completions — the one place it is refused alongside tools.
 describe("the config schema fences the knob to the provider that has the endpoint", () => {
@@ -599,8 +589,8 @@ describe("the config schema fences the knob to the provider that has the endpoin
     ).toBeUndefined();
   });
 
-  // Measured: every model tried rejects "minimal", so offering it would be a control with a
-  // position that always fails.
+  // NOTE: Every model tried rejects "minimal", so offering it would be a control with a position
+  // that always fails.
   test("minimal is not part of the vocabulary", () => {
     expect(() =>
       parseModelConfig({
@@ -618,8 +608,8 @@ describe("the config schema fences the knob to the provider that has the endpoin
 // effort at all: the operator's choice silently discarded, which is the one outcome worse than a
 // rejection. A fine-tuned id of a model that DOES reason is the case that makes this concrete —
 // "ft:gpt-5.6-luna:…" is a legitimate choice and the name test drops it. Carrying the effort in
-// modelKwargs, which is spread into the request unconditionally, is the same fix the completions
-// branch already needed for routed OpenRouter ids, and for the same reason.
+// modelKwargs, which is spread into the request unconditionally, is what the completions branch
+// does for routed OpenRouter ids, for the same reason.
 describe("the chosen effort is not silently dropped by a name test", () => {
   test("a fine-tuned id of a reasoning model still carries it", async () => {
     const { sent, url } = await turn(
@@ -649,7 +639,7 @@ describe("the chosen effort is not silently dropped by a name test", () => {
 });
 
 // Same blind spot on the other rule: a fine-tune of gpt-5.6 inherits the server-side default that
-// breaks function tools, so it needs the issue #66 pin just as much as the bare id does.
+// breaks function tools, so it needs the "none" pin just as much as the bare id does.
 describe("a fine-tuned id is read through to its base model", () => {
   test("the pin follows the base family", () => {
     expect(planOpenAITransport("ft:gpt-5.6-luna:acme::x1", undefined)).toEqual({
@@ -666,8 +656,8 @@ describe("a fine-tuned id is read through to its base model", () => {
 });
 
 // @langchain/openai routes some ids to /v1/responses on its own, whatever we ask
-// (_modelPrefersResponsesAPI). The issue #66 pin is spelled for completions, so it must not fire
-// on those — and the ft: match added above is what makes the overlap reachable, because the last
+// (_modelPrefersResponsesAPI). The "none" pin is spelled for completions, so it must not fire
+// on those, and the ft: match above is what makes the overlap reachable, because the last
 // segments of "ft:<base>:<org>:<name>:<id>" are free text the operator writes: a support agent
 // fine-tuned as "codex-support" contains "codex" and gets routed away.
 describe("the completions-spelled pin follows the endpoint, not a guess about it", () => {
@@ -703,8 +693,8 @@ describe("the completions-spelled pin follows the endpoint, not a guess about it
     expect(sent).not.toHaveProperty("reasoning_effort");
   });
 
-  // Uppercase suffix: `_modelPrefersResponsesAPI` uses case-SENSITIVE `includes`, so the very same
-  // agent stays on completions — where dropping the pin is the issue #66 400 all over again.
+  // NOTE: Uppercase suffix: `_modelPrefersResponsesAPI` uses case-SENSITIVE `includes`, so the very
+  // same agent stays on completions, where dropping the pin brings back the tools 400.
   test.each([
     "ft:gpt-5.6-luna:acme:Codex-support:x1",
     "ft:gpt-5.6-luna:acme:GPT-5.4-PRO-migration:x1",
@@ -759,10 +749,10 @@ describe("the completions spelling never leaves for the responses endpoint", () 
     }
   });
 
-  // The other half of the same seam, and the half a case-insensitive guess broke: whenever a
-  // gpt-5.6 model DOES leave for completions with tools attached, the issue #66 pin has to be on
-  // it. Stated as an invariant so neither direction can be fixed at the other's expense —
-  // withholding the pin too eagerly reopens #66 exactly as sending it too eagerly breaks the
+  // NOTE: The other half of the same seam, which a case-insensitive routing guess would break:
+  // whenever a gpt-5.6 model DOES leave for completions with tools attached, the "none" pin has to
+  // be on it. Stated as an invariant so neither direction is fixed at the other's expense:
+  // withholding the pin too eagerly brings back the tools 400, sending it too eagerly breaks the
   // Responses route.
   test.each(IDS.filter((m) => m.includes("gpt-5.6")))(
     "%s, when a gpt-5.6 stays on completions",

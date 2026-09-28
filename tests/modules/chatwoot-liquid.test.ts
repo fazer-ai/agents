@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { literalForChatwoot } from "@/modules/chatwoot/liquid";
+import { asRendered, literalForChatwoot } from "@/modules/chatwoot/liquid";
 import { attachSignature } from "@/modules/signature/service";
 
 // THE ESCAPE ITSELF. What makes it right is how Chatwoot's Liquid 5.4 renders it, and
@@ -56,6 +56,18 @@ describe("literalForChatwoot", () => {
         literalForChatwoot,
       ),
     ).toEqual(["Oi {{ '{{' }}a}}\n\nAlex", "Tchau {{ '{{' }}b}}\n\nAlex"]);
+  });
+
+  // Measuring an escaped text (a typing delay) reads what the customer will see.
+  test("asRendered gives back the text the escape was made from", () => {
+    for (const t of [
+      "Use `{{foo}}`.",
+      "a{`b {{",
+      "x {% if a %}y{% endif %}",
+      "`{% endraw %}{{contact.email}}{% raw %}`",
+    ]) {
+      expect(asRendered(literalForChatwoot(t))).toBe(t);
+    }
   });
 
   // An escaped text keeps no backtick of its own, which is what leaves Chatwoot's code-span pairing

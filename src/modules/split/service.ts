@@ -4,7 +4,7 @@ import {
   type ChatwootClient,
   ChatwootMissingTokenError,
 } from "@/modules/chatwoot/client";
-import { literalForChatwoot } from "@/modules/chatwoot/liquid";
+import { asRendered, literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
   chatwootMessageListLength,
   parseChatwootMessages,
@@ -285,7 +285,8 @@ export async function deliverReply(
           await client
             .toggleTyping(conversationId, true)
             .catch(() => undefined);
-          await sleep(typingDelayMs(chunk, cfg));
+          // Paced by what the customer reads, not by the escape's extra syntax.
+          await sleep(typingDelayMs(asRendered(chunk), cfg));
           if (await calledOff()) break;
           // NOTE: minted before the request, because the send that times out never returns anything.
           const sendId = crypto.randomUUID();

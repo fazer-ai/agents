@@ -14,3 +14,12 @@ export function literalForChatwoot(text: string): string {
     m === "`" ? "{{ '%60' | url_decode }}" : `{{ '${m}' }}`,
   );
 }
+
+// What the customer reads of a text `literalForChatwoot` escaped: its own tags printed back. For
+// measuring a message (a typing delay), never for sending.
+export function asRendered(wire: string): string {
+  return wire.replace(
+    /\{\{ '(\{\{|\{%|\{)' \}\}|\{\{ '%60' \| url_decode \}\}/g,
+    (_m, c) => c ?? "`",
+  );
+}

@@ -1265,6 +1265,22 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       expect(rec.sent).toEqual(["Olá {{contact.name}}\n\nAlex"]);
     });
 
+    // The escape's syntax is not words the customer reads, so it does not stretch the typing pause.
+    test("the typing pause is measured on the text the customer reads", async () => {
+      const waits: number[] = [];
+      const rec = { sent: [] as string[], typing: [] as boolean[] };
+      await deliverReply(
+        failingStub(rec, () => false),
+        1,
+        "Use `{{foo}}`.",
+        { ...SPLIT_DEFAULTS, enabled: true },
+        async (ms: number) => {
+          waits.push(ms);
+        },
+      );
+      expect(waits).toEqual([typingDelayMs("Use `{{foo}}`.", SPLIT_DEFAULTS)]);
+    });
+
     test("an unsigned retry is escaped too", async () => {
       const rec = { sent: [] as string[], typing: [] as boolean[] };
       await deliverReply(

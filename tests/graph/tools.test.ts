@@ -2881,7 +2881,7 @@ describe("a muted turn is not offered what it cannot complete", () => {
     }).map((t) => t.name);
     expect(names).not.toContain("react_to_message");
     expect(names).not.toContain("send_image");
-    // The private note is the mute's own exception: it is the one thing an observer writes where a
+    // NOTE: The private note is the mute's own exception: it is the one thing an observer writes where a
     // person reads it, so hiding it would take the watcher's voice away entirely.
     expect(names).toContain("private_note");
     expect(names).toContain("set_labels");

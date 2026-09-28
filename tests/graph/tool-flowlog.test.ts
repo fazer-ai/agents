@@ -346,7 +346,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       undefined,
       "probe",
     );
-    // The ToolMessage-like shape the callback receives, with a structured content, which is where a
+    // NOTE: The ToolMessage-like shape the callback receives, with a structured content, which is where a
     // provider's own keys would arrive.
     logger.handleToolEnd(
       { content: { cpf: "12345678900", nome: "Maria Souza" } },

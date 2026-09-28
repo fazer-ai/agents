@@ -62,7 +62,7 @@ describe("customerFacingReply — the REACTIVE rule", () => {
       false,
       `${S}Bom${S} dia`,
     ],
-    // The heuristics below belong to the proactive path ONLY. Here a customer is waiting, and these
+    // NOTE: The heuristics below belong to the proactive path ONLY. Here a customer is waiting, and these
     // are ordinary short answers, and swallowing one is its own defect.
     ["a bare SKIP", "SKIP", false, "SKIP"],
     [
@@ -82,7 +82,7 @@ describe("customerFacingReply — the REACTIVE rule", () => {
       // NOTE: The contract the repeated-sentinel case must hold: emptiness and silence are one
       // decision, so a caller can never see silent=false with nothing to send.
       expect(out.silent).toBe(out.text.length === 0);
-      // ...and the one thing the rules erase on purpose: EVERY kind of silence comes out as `text:
+      // NOTE: ...and the one thing the rules erase on purpose: EVERY kind of silence comes out as `text:
       // ""`, so a caller asking "is there anything in the thread nobody received" needs the raw
       // answer kept separately. It is about the model's words, never about ours.
       expect(out.wroteText).toBe(raw.trim().length > 0);

@@ -1041,8 +1041,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // NOTE: Ingestion decides whether an out-of-order message may still speak for the thread's
   // attendance by comparing it with the newest inbound id the thread has seen, so the turn must record
   // its id: otherwise a delayed message from the previous conversation claims a boundary, walks the
-  // marker back, and arms compaction for the LIVE one. Two writers in one test on purpose: the
-  // property only exists where they meet, and each alone passes without it.
+  // marker back, and arms compaction for the LIVE one. That holds when the boundary is DEFERRED
+  // because another invoke reads the thread too (src/graph/runtime.ts): the marker stays, the id is
+  // still recorded, or the cut reads the live conversation as closed. Two writers in one test on
+  // purpose: the property only exists where they meet, and each alone passes without it.
   test("a turn's inbound id counts in the frontier a late ingestion is measured against", async () => {
     const contactInboxId = 7011;
     const graphThreadId = contactInboxThreadId(
@@ -1189,7 +1191,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // significa que o invoke rodou e a mensagem do cliente ESTÁ no canal; aqui o turno parou antes, e
     // a mensagem não está em memória nenhuma. Lidas como a mesma palavra, é a segunda que some.
     expect(await turn).toBe("taken-over-unread");
-    // E A MARCA FICA ONDE ESTAVA, que é o que essa palavra compra. A lista de exclusão deste caminho
+    // NOTE: E A MARCA FICA ONDE ESTAVA, que é o que essa palavra compra. A lista de exclusão deste caminho
     // é lida por exclusão e só nomeia `superseded`, então uma palavra nova avança a marca por
     // padrão, e uma marca por cima de uma mensagem que ninguém leu é a mensagem perdida.
     expect(

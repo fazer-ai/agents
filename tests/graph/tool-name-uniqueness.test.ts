@@ -34,9 +34,9 @@ describe("dropDuplicateToolNames", () => {
     expect(r.dropped).toEqual(["handoff_to_human"]);
   });
 
-  // The case that made this necessary: a document template's tool name is derived from its slug, and
-  // the tenant may already have an HTTP tool under that exact name. Both are operator-authored, so
-  // neither is "wrong" — the point is that one deterministic tool answers, and the other is named.
+  // NOTE: a document template's tool name is derived from its slug, and the tenant may already have
+  // an HTTP tool under that exact name. Both are operator-authored, so neither is "wrong": one
+  // deterministic tool answers, and the other is named.
   test("names a document tool colliding with an HTTP tool of the same name", () => {
     const r = dropDuplicateToolNames([
       t("send_image", "native"),
@@ -65,12 +65,10 @@ describe("dropDuplicateToolNames", () => {
     expect(r.dropped).toEqual(["lookup", "lookup"]);
   });
 
-  // A NATIVE NAME IS RESERVED EVEN WHEN NO NATIVE CLAIMS IT (issue #457, review round 5). Ordering
-  // defends only the names actually built, and `buildNativeTools` drops the ones outside the agent's
-  // allowlist — so on an agent with the transfer tool turned off, the name was simply free, and an
-  // HTTP or toolpack tool could answer as `handoff_to_human`. The hand-back decision reads a result
-  // under that name as a transfer that happened, and tool preconditions restrict rules to native
-  // names on the same argument; both need the name reserved, not merely first.
+  // NOTE: a native name is reserved even when no native claims it. Ordering defends only the names
+  // actually built, and `buildNativeTools` drops the ones outside the agent's allowlist, so without
+  // the reservation an HTTP or toolpack tool could answer as `handoff_to_human`. The hand-back
+  // decision reads a result under that name as a transfer, and preconditions are native-only.
   test("a reserved native name is refused to another source that claims it", () => {
     const r = dropDuplicateToolNames(
       [t("crm_lookup", "http"), t("handoff_to_human", "http")],

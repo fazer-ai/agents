@@ -89,12 +89,10 @@ describe("extractTokenUsage", () => {
         },
       },
     } as unknown as LLMResult;
-    // NOTE: 11 + 8 + 2 (issue #334). Anthropic documents `input_tokens` as the tokens that were
-    // NEITHER read from NOR used to create a cache, so the billed input is the sum of the three —
-    // the opposite of the OpenAI shape above, where the cached count is already inside the prompt.
-    // This assertion used to read 11, which is the row disagreeing with itself: `cachedReadTokens`
-    // is documented as a discounted SUBSET of `promptTokens`, and 8 is not a subset of 11 when 11
-    // already excludes it.
+    // NOTE: 11 + 8 + 2. Anthropic documents `input_tokens` as the tokens NEITHER read from NOR used
+    // to create a cache, so the billed input is the sum of the three (unlike the OpenAI shape above,
+    // where the cached count is already inside the prompt). 11 alone would make the row disagree
+    // with itself: `cachedReadTokens` is a discounted SUBSET of `promptTokens`.
     expect(extractTokenUsage(r)).toEqual({
       promptTokens: 21,
       completionTokens: 5,
@@ -224,9 +222,9 @@ describe("UsageCapture", () => {
 // WHICH MODEL THE ROW IS BILLED TO, when a fallback took the turn.
 //
 // The ledger has one column for who answered and no provider beside it, so this name is the whole
-// record. The graph node names the model in the CALL's own metadata (measured to merge with the
-// turn's, unlike `callbacks`, which replaces them), and this handler is what turns that into the
-// row's `model`.
+// record. The graph node names the model in the CALL's own metadata (which merges with the turn's,
+// unlike `callbacks`, which replaces them), and this handler is what turns that into the row's
+// `model`.
 describe("UsageCapture attributes a run to the model that made it", () => {
   const capture = (rows: UsageRow[], model: string) =>
     new UsageCapture({
@@ -260,10 +258,10 @@ describe("UsageCapture attributes a run to the model that made it", () => {
     expect(rows[0]?.model).toBe("claude-haiku-4-5");
   });
 
-  // PRESENT, NOT TRUTHY. An empty name is what a model-less `openai-compatible` fallback is called —
-  // the server picks, so there is no id to record, and `""` is exactly what this ledger stores for a
-  // PRIMARY pointed at such an endpoint. Read as falsy, the override was discarded and the row fell
-  // back to the agent's configured model: a call that never reached that vendor, billed to it.
+  // NOTE: PRESENT, NOT TRUTHY. An empty name is what a model-less `openai-compatible` fallback is
+  // called (the server picks, so there is no id), and `""` is what this ledger stores for a PRIMARY
+  // pointed at such an endpoint. Read as falsy, the override would be discarded and the row billed
+  // to the agent's configured model, a vendor the call never reached.
   test("an override that is deliberately empty is kept, not discarded", async () => {
     const rows: UsageRow[] = [];
     const c = capture(rows, "gpt-5.4-mini");
@@ -302,7 +300,7 @@ describe("UsageCapture attributes a run to the model that made it", () => {
     ]);
   });
 
-  // Issue #863: the row is priced when it is written, as the model's own provider's. A fallback on
+  // NOTE: the row is priced when it is written, as the model's own provider's. A fallback on
   // another provider names both, and the price is the fallback's.
   test("the row carries its price, from the provider that answered", async () => {
     const rows: UsageRow[] = [];

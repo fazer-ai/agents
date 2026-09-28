@@ -8,14 +8,10 @@ import { outboundUrl } from "../utils/outbound";
 
 const OUTBOUND_HOST = new URL(outboundUrl()).hostname;
 
-// Issue #59, review finding of round 1. The declaration is stored by three transports and read by
-// the HTTP tool, but a real agent turn does not use any of those paths to get it: it goes through
-// `loadToolSelections`, whose Prisma `select` enumerates the columns it wants. A column missing from
-// that list is silently `undefined`, so the whole feature would be configurable everywhere and dead
-// in the one place it exists for — a 404 declared as a result would still be a warn on every turn.
-//
-// This walks the real path: a row in `tool_definitions`, loaded the way a turn loads it, built into
-// the tool a turn builds, answered with a 404.
+// The expected-status declaration reaches a real turn only through `loadToolSelections`, whose
+// Prisma `select` enumerates its columns: one missing there is silently `undefined`, and a 404
+// declared as a result would still be a warn on every turn. This walks the real path: a row in
+// `tool_definitions`, loaded and built the way a turn does it, answered with a 404.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -94,9 +90,9 @@ async function invokeLoadedTool(tenantId: bigint, agentId: bigint) {
   const sel = await runScopedOn(appDb, ctx(tenantId), (db) =>
     loadToolSelections(db, agentId),
   );
-  // `buildHttpTools` (the plural form a turn uses) takes no fetch injection — that seam exists only
-  // on the singular builder, and going through the singular one would skip the very mapping the
-  // finding was about. So the global is swapped for the call and restored right after.
+  // NOTE: `buildHttpTools` (the plural form a turn uses) takes no fetch injection; the singular
+  // builder does, but would skip the mapping under test. So the global is swapped for the call and
+  // restored right after.
   const realFetch = globalThis.fetch;
   globalThis.fetch = stubFetch(404) as unknown as typeof fetch;
   try {

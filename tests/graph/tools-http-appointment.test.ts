@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { buildHttpTool, type HttpToolDef } from "@/graph/tools/http";
 
-// (#352) The registration an operator's HTTP tool declares, exercised through the tool itself: what
-// it sends to the model is unchanged, and the appointment reaches the same two closures the Calendar
-// toolpack uses.
+// The registration an operator's HTTP tool declares, exercised through the tool itself: what it sends
+// to the model is unchanged, and the appointment reaches the same two closures the Calendar toolpack
+// uses.
 
 const PUBLIC = "8.8.8.8";
 
@@ -92,10 +92,10 @@ describe("an HTTP tool that declares a booking", () => {
       eventId: "ap_8842",
       startISO: "2026-09-02T14:00:00-03:00",
       summary: "Consulta - Dra. X",
-      // No Google behind it, and every field that would name one says so. The null credential is
-      // what tells the reminder handler there is nothing to ask about this appointment (#376); the
-      // provider is what tells the per-turn prompt block the same thing, since a record carries no
-      // credential — without it the block hands the model calendar_cancel_event and a Feegow id.
+      // NOTE: no Google behind it, and every field that would name one says so. The null credential
+      // tells the reminder handler there is nothing to ask about this appointment; the provider tells
+      // the per-turn prompt block the same, since a record carries no credential (without it the
+      // block hands the model calendar_cancel_event and a Feegow id).
       provider: "declared",
       calendarId: null,
       credentialRef: null,
@@ -228,7 +228,7 @@ describe("an HTTP tool that declares a booking", () => {
     expect(h.errors).toEqual([]);
   });
 
-  // A 404 an operator declared a RESULT (issue #59) is a lookup saying "no record". Registering an
+  // NOTE: a 404 an operator declared a RESULT is a lookup saying "no record". Registering an
   // appointment out of it would invent one from the response that says there is none.
   test("a non-2xx records nothing, even when the operator declared it a result", async () => {
     const h = harness(
@@ -294,11 +294,10 @@ describe("an HTTP tool that declares a booking", () => {
   });
 });
 
-// (#352, round 12) A great many booking APIs answer with a bare local timestamp. `14:00` is two in
-// the afternoon WHERE THE OPERATOR IS, and everything downstream reads the start through
-// `parseStartMs`, which treats an offset-less datetime as UTC — right for a value that already came
-// through here, three hours wrong for one that did not. The customer would be shown 14:00 and
-// reminded for 11:00, with nothing anywhere reporting it.
+// A great many booking APIs answer with a bare local timestamp. `14:00` is two in the afternoon WHERE
+// THE OPERATOR IS, and everything downstream reads the start through `parseStartMs`, which treats an
+// offset-less datetime as UTC: right for a value that already came through here, three hours wrong
+// for one that did not (shown 14:00, reminded for 11:00, with nothing reporting it).
 describe("an offset-less start is read in the agent's own zone", () => {
   const bodyAt = (start: string) =>
     JSON.stringify({ data: { id: "ap_1", start, title: "Consulta" } });

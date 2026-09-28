@@ -14,17 +14,12 @@ import { runPlaygroundTurn } from "@/modules/playground/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
-// A TOOL CALL THE SCHEMA REFUSED USED TO LEAVE NOTHING BEHIND (issue #667).
-//
-// LangChain validates the arguments inside `StructuredTool.call`, before the callback manager is
-// configured, so `ToolFlowLogger` gets no `handleToolStart` and no `handleToolError` for a refused
-// call: not a missing handler, a missing callback. The model sees the refusal and tries again, and
-// a turn where the agent tried three times to hand a conversation to a human and never managed to
-// was byte for byte identical, in `execution_logs`, to a turn where it tried nothing at all.
-//
-// Everything here is measured through `runAgentTurn` against a real Postgres, because the subject is
-// the ROW: which stage, which level, which correlation columns, and what `detail` is allowed to
-// carry. A unit test of the wrapper could not answer any of those.
+// A tool call the schema refused leaves a flow-log line. LangChain validates the arguments inside
+// `StructuredTool.call`, before the callback manager is configured, so `ToolFlowLogger` gets no
+// callback at all for a refused call; without the wrapper, three failed handoff attempts look in
+// `execution_logs` exactly like a turn that tried nothing. Everything here runs through
+// `runAgentTurn` against a real Postgres, because the subject is the ROW: which stage, which level,
+// which correlation columns, and what `detail` may carry.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -73,7 +68,7 @@ interface Row {
 }
 
 const det = (r: Row): Detail => (r.detail ?? {}) as Detail;
-// The line every turn closes on (issue #855): how long the turn took and the messages it created.
+// The line every turn closes on: how long the turn took and the messages it created.
 // Kept apart from the lines these tests are about, and asserted on its own where it matters.
 const isTurnEnd = (r: Row): boolean =>
   typeof (det(r) as { turnMs?: unknown }).turnMs === "number";
@@ -349,10 +344,9 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     const t = await runTurn(6701, [
       { name: "handoff_to_human", args: { reason: "cliente quer humano" } },
     ]);
-    // The fix is instrumentation: the turn does exactly what it did before.
+    // NOTE: the wrapper only observes: the turn's outcome is the same as without it.
     expect(t.outcome).toBe("empty");
     expect(t.msgs).toEqual([]);
-    // Where there were zero.
     expect(tools(t.rows).length).toBeGreaterThanOrEqual(1);
     const line = refused(t.rows)[0];
     expect(line).toBeDefined();
@@ -361,12 +355,10 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     expect(det(line as Row).phase).toBe("schema_refusal");
     expect(refusalOf(line as Row).params).toEqual(["customerMessage"]);
     expect(refusalOf(line as Row).issues).toEqual(["customerMessage: missing"]);
-    // Additional, never a replacement: the line that already existed is untouched. The second
-    // `generate` line is issue #773's: the call was refused, so nothing reached the customer and
-    // nothing in the turn chose that silence. Both are `status: ok` — neither is an error of the
-    // generation step — and they differ in level, which is what decides who hears about it.
-    // Since issue #885 the silence is asked once more before it is accepted, and that retry is its
-    // own `info` line between the two; the model here answers nothing again.
+    // NOTE: the refusal adds a line and replaces none. The call was refused, so nothing reached the
+    // customer and nothing chose that silence: the last `generate` line is a `warn`, after the
+    // `info` line of the one retry the silence gets. All are `status: ok` (not an error of the
+    // generation step); the level decides who hears about it.
     const gen = withoutTurnEnd(t.rows).filter((r) => r.stage === "generate");
     expect(gen.map((r) => r.status)).toEqual(["ok", "ok", "ok"]);
     expect(gen.map((r) => r.level)).toEqual(["info", "info", "warn"]);
@@ -384,11 +376,10 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     // THE CONTROL AGAINST A FALSE POSITIVE: no attempt, no line. Counting `stage='tool'` rows of one
     // turn is what answers "did the model try to use a tool here", with no error text opened.
     expect(tools(b.rows).length).toBe(0);
-    // Two `generate` lines and no `tool` line: the model tried nothing AND answered nothing, which
-    // since issue #773 is a turn the operator is told about rather than one that disappears. And
-    // nobody on our side had spoken in this conversation, so since issue #659 the silence also hands
-    // it to a person: the `handoff` line is that.
-    // The second `info` is issue #885's retry of that silence, which the model answers with nothing.
+    // NOTE: no `tool` line: the model tried nothing AND answered nothing, which the operator is
+    // told about (the `warn`). Nobody on our side had spoken in this conversation, so the silence
+    // also hands it to a person (the `handoff` line). The second `info` is the silence's one retry,
+    // which the model answers with nothing.
     const lines = withoutTurnEnd(b.rows);
     expect(lines.map((r) => `${r.stage}/${r.status}/${r.level}`)).toEqual([
       "generate/ok/info",
@@ -595,11 +586,10 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
       select: { stage: true, level: true },
     });
     expect(tools(h.rows).map((r) => r.level)).toEqual(["warn"]);
-    // TWO deliveries, and the second one is the point of issue #773 rather than a leak of this one:
-    // the transfer this turn owed the customer FAILED, so nobody was answered and nobody chose that.
-    // The burst above still pays nothing — turn `g` handed off on its fourth attempt, so it reached
-    // a person and produced no such line. What is quiet is a refusal the model recovers from; what
-    // pages is a turn that ended with the customer holding nothing.
+    // NOTE: TWO deliveries, and the second is not a leak of this one: the transfer this turn owed
+    // the customer FAILED, so nobody was answered. Turn `g` handed off on its fourth attempt and
+    // produced no such line: a refusal the model recovers from is quiet, and a turn that ends with
+    // the customer holding nothing pages.
     expect(afterH).toEqual([
       { stage: "tool", level: "warn" },
       { stage: "generate", level: "warn" },
@@ -716,10 +706,10 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     ).not.toContain(MARKER);
   });
 
-  // THE PLAYGROUND REPLACES TOOLS AFTER ASSEMBLY, which is the one way the wrapper can be dropped
-  // while the schema goes on refusing: `applyToolMocks` builds a fresh `tool()` from the mocked
-  // tool's own schema. So the mocked tool needs the wrapper re-applied, and the tools it left alone
-  // must not end up wrapped twice (review round 1).
+  // NOTE: the playground replaces tools after assembly (`applyToolMocks` builds a fresh `tool()`
+  // from the mocked tool's schema), which is the one way the wrapper can be dropped while the schema
+  // goes on refusing. The mocked tool needs the wrapper re-applied, and the others must not end up
+  // wrapped twice.
   test("a mocked playground tool records its refusal, and no tool records it twice", async () => {
     const model = new Scripted([
       // The operator mocked this one.

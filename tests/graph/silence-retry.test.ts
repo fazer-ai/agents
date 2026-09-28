@@ -20,11 +20,10 @@ import { SKIP_REPLY_TOOL } from "@/graph/silence";
 import { buildNativeTools } from "@/graph/tools/native";
 import { ScriptedSilenceModel } from "../utils/scripted-models";
 
-// ISSUE #885. A reactive turn that ends with nothing for the customer, no handoff and no
-// `skip_reply` is asked ONCE more, in the same round, with a late system instruction naming both
-// exits: answer, or declare the silence. Measured on 51 real turns read from the checkpoint, most of
-// them are correct silences after a thank-you that were never declared, and a few are customers who
-// were owed an answer — so the instruction must not push the model into replying to a thank-you.
+// A reactive turn that ends with nothing for the customer, no handoff and no `skip_reply` is asked
+// ONCE more, in the same round, with a late system instruction naming both exits: answer, or declare
+// the silence. Most such turns are correct but undeclared silences after a thank-you, so the
+// instruction must not push the model into replying to a thank-you.
 
 const noopTool = tool(async () => "feito", {
   name: "set_labels",
@@ -242,7 +241,7 @@ describe("unexplained silence: one retry with both exits (issue #885)", () => {
     expect(retries).toEqual([]);
   });
 
-  // Issue #886 recovers text written earlier in the turn: that turn is not a silence.
+  // NOTE: Text written earlier in the turn is recovered, so that turn is not a silence.
   test("a reply written earlier in the turn is not a silence, and is not retried", async () => {
     const model = new ScriptedSilenceModel([
       {

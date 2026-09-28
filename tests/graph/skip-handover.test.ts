@@ -29,7 +29,7 @@ import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
-// Issue #659: `skip_reply` carries a reason, and a silence that names a person, or any silence on a
+// `skip_reply` carries a reason, and a silence that names a person, or any silence on a
 // conversation nobody on our side has answered, hands the conversation to `open` with a private note.
 
 const skipLine = (
@@ -387,7 +387,7 @@ async function turn(
   return { outcome, calls };
 }
 
-// Chatwoot's message page as the REST partial renders it, for the activity trail of issue #897.
+// Chatwoot's message page as the REST partial renders it, for the activity trail.
 const THANKS = 50;
 const row = (id: number, messageType: number, extra = {}) => ({
   id,
@@ -629,7 +629,7 @@ describe.skipIf(!dbUp)("a silence a person has to see", () => {
     expect(calls.map(([, , s]) => s)).toEqual(["resolved"]);
   });
 
-  // Issue #897. The message this turn answers is the one that reopened a resolved conversation (a
+  // NOTE: The message this turn answers is the one that reopened a resolved conversation (a
   // thank-you after the agent closed it), and the model acknowledged it without calling
   // `resolve_conversation`. The conversation goes back to where it was instead of waiting in
   // `pending` for a follow-up to nudge the customer who just said thanks.

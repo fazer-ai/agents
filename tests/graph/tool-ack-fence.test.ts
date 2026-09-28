@@ -17,9 +17,8 @@ import { registerToolpack } from "@/modules/integrations/toolpacks";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
 
 // The slow-tool ack is the one customer-facing write a tool makes on its own, and its send is a wait
-// after the graph's ask at the tool boundary. A run called off inside it — the operator's flip to
-// monitoring (issue #209 review, round 10) — shows no typing indicator after the ack and makes no
-// request. Asked of the toolset the runtime builds, with the fence it hands in.
+// after the graph's ask at the tool boundary. A run called off inside it (e.g. the operator's flip
+// to monitoring) shows no typing indicator after the ack and makes no request. Asked of the toolset the runtime builds, with the fence it hands in.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 let dbUp = false;
@@ -142,12 +141,10 @@ describe.skipIf(!dbUp)(
       expect(r.requests.length).toBe(1);
     });
 
-    // ── AND THE ACK IS A MESSAGE THE TURN PUT IN FRONT OF THE CUSTOMER (issue #726) ──
-    //
-    // Nothing else in the turn state knows: the ack counts no balloon and queues no attachment, so a
-    // turn that said "just a moment" and then called `skip_reply` had the operator's timeline saying
-    // it decided not to respond. Recorded here, where the send happens, because this is the only
-    // place that knows it happened.
+    // NOTE: The ack is a message the turn put in front of the customer, and nothing else in the turn
+    // state knows (it counts no balloon, queues no attachment): without this record a turn that said
+    // "just a moment" and then called `skip_reply` reads as having decided not to respond. Recorded
+    // where the send happens, the only place that knows it happened.
     async function comTurnState(fenceAnswers: boolean, muted = false) {
       const turnState = {
         resolveRequested: false,
@@ -192,8 +189,8 @@ describe.skipIf(!dbUp)(
       expect((await comTurnState(false)).spokeOutsideTheReply).toBe(true);
     });
 
-    // The muted transport refuses a customer-facing message by design, so there is no ack to record
-    // — and claiming one would be the observation runner reporting a delivery it never made.
+    // NOTE: The muted transport refuses a customer-facing message by design, so there is no ack to
+    // record, and claiming one would report a delivery the observation runner never made.
     test("a muted turn sends no ack and records none", async () => {
       expect(
         (await comTurnState(true, true)).spokeOutsideTheReply,
@@ -201,9 +198,9 @@ describe.skipIf(!dbUp)(
     });
 
     test("the fence reaches the HTTP tool itself, not only the ack", async () => {
-      // The wiring, which a unit test of `buildHttpTool` cannot see: `buildToolset` has to hand the
+      // NOTE: The wiring, which a unit test of `buildHttpTool` cannot see: `buildToolset` has to hand the
       // fence down. Without an ack there is nothing else that could stop the request, so a call
-      // that sends anyway is the toolset not forwarding it (review round 28).
+      // that sends anyway is the toolset not forwarding it.
       const cfg = config() as unknown as Record<string, unknown>;
       cfg.httpToolDefs = [
         {
@@ -240,9 +237,9 @@ describe.skipIf(!dbUp)(
     });
 
     test("the fence reaches a toolpack's request, not only the native tools", async () => {
-      // The other half of the same wiring: `buildToolpackTools` wraps the fence onto the pack's
+      // NOTE: The other half of the same wiring: `buildToolpackTools` wraps the fence onto the pack's
       // fetch at the build seam, so what a unit test cannot see is whether `buildToolset` hands it
-      // over at all. A hermetic pack registered here asks exactly that (review round 28).
+      // over at all. A hermetic pack registered here asks exactly that.
       registerToolpack({
         catalogType: "TEST_FENCE_PACK",
         toolSpecs: [{ name: "pack_probe", schema: z.object({}) }],
@@ -298,9 +295,9 @@ describe.skipIf(!dbUp)(
     });
 
     test("a MUTED turn is not offered a document tool either", async () => {
-      // A document is an attachment to the customer: without a turnState to queue into it refuses
+      // NOTE: A document is an attachment to the customer: without a turnState to queue into it refuses
       // every call, and with one it would deliver through the very send the muted client exists to
-      // refuse. Same reading the native toolset and the toolpacks make (issue #568, round 23).
+      // refuse. Same reading the native toolset and the toolpacks make.
       const cfg = config() as unknown as Record<string, unknown>;
       cfg.documentSelections = [
         {
@@ -332,10 +329,9 @@ describe.skipIf(!dbUp)(
     });
 
     test("a MUTED turn has no ack at all, and the tool runs", async () => {
-      // The ack is a message in front of the customer, and the muted transport refuses one by
-      // design — reaching that refusal is a defect, so an observation must not arm an ack it
-      // cannot deliver. Wiring it anyway logged a failed send before every slow tool and told the
-      // operator an integration was broken (issue #568, review round 22).
+      // NOTE: The ack is a message in front of the customer, and the muted transport refuses one by
+      // design, so an observation must not arm an ack it cannot deliver: that would log a failed send
+      // before every slow tool and tell the operator an integration is broken.
       const r = await run(true, true);
       expect(r.calls).toEqual([]);
       expect(r.requests.length).toBe(1);

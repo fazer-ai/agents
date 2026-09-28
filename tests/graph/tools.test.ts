@@ -55,8 +55,8 @@ function fakeContactDb(chatwootContactId: number): PrismaClient {
 describe("native tools", () => {
   test("exposes all tools by default; the allowlist filters (fail-closed)", () => {
     const { client } = recordingClient();
-    // `open_case_in_inbox` is the one native that needs its config to exist: with no destination
-    // inbox there is nothing it could do, so it is not offered (issue #700).
+    // NOTE: `open_case_in_inbox` is the one native that needs its config to exist: with no
+    // destination inbox there is nothing it could do, so it is not offered.
     expect(
       buildNativeTools({ client, conversationId: 1 })
         .map((t) => t.name)
@@ -83,17 +83,11 @@ describe("native tools", () => {
     expect(only.map((t) => t.name)).toEqual(["private_note"]);
   });
 
-  // ISSUE #662. The tool used to accept a transfer with nothing to say AND tell the model, in the
-  // same breath, that the bot would stay silent now. So the one case the runtime's own fallback
-  // exists for — `handoffAnsweredTheTurn` requires a line AND a completed transfer, precisely so the
-  // model's next hop can speak when there is no line — was the case where the tool told the model
-  // not to speak. Measured by the reporter on an email inbox: 2 of 130 turns ended with the
-  // conversation transferred, a note filed, and nothing at all for the customer.
-  //
-  // Two halves, and the second is what makes the first provable: the argument is REQUIRED, so
-  // forgetting it is not a way to reach silence, and an empty string is how silence is DECLARED —
-  // which is also the only way an operator can tell a decision from an oversight, since the tool's
-  // log line reports `string(0)` for a declared empty and nothing at all for an omitted argument.
+  // NOTE: `handoffAnsweredTheTurn` requires a line AND a completed transfer so the model's next hop
+  // can speak when there is no line; a tool that told the model to stay silent there would leave the
+  // customer with nothing. The argument is REQUIRED, so forgetting it is not a way to reach silence,
+  // and an empty string is how silence is DECLARED: the log line reports `string(0)` for a declared
+  // empty and nothing for an omitted argument, which is how an operator tells the two apart.
   test("a transfer cannot be silent by omission, and says what it will do in each case", async () => {
     const { client } = recordingClient();
     const speaking = byName(
@@ -112,7 +106,7 @@ describe("native tools", () => {
     const declaredSilent = String(
       await speaking.invoke({ customerMessage: "" }),
     );
-    // Neither branch may carry an instruction to stay silent: that sentence is what the model obeyed.
+    // NOTE: neither branch may carry an instruction to stay silent: the model obeys that sentence.
     for (const out of [withLine, declaredSilent])
       expect(out.toLowerCase()).not.toContain("stay silent");
     // And each says what actually happens to the customer, so the model does not have to guess
@@ -133,9 +127,8 @@ describe("native tools", () => {
     expect(silentTurn.toLowerCase()).not.toContain("stay silent");
     expect(silentTurn).toContain("nothing is sent to them");
 
-    // And on the OTHER shape, the one that carries `assignTo`. The field is defined once for both,
-    // but it was written twice first, and a mutation restoring `.optional()` on this copy survived
-    // the whole suite because nothing exercised this branch.
+    // NOTE: and on the OTHER shape, the one that carries `assignTo`, so a mutation making the field
+    // optional on this branch alone cannot survive the suite.
     const routing = byName(
       buildNativeTools({
         client,
@@ -159,10 +152,9 @@ describe("native tools", () => {
   });
 
   test("a MUTED turn is not told to write a message the transfer will not send", () => {
-    // The line is RECORDED on `handoffState` for the caller to deliver, and an observation has no
-    // `handoffState` and throws its final output away: the transfer happens and the customer hears
-    // nothing. Promising otherwise makes the model hand over believing they were answered
-    // (review round 35).
+    // NOTE: the line is RECORDED on `handoffState` for the caller to deliver, and an observation
+    // has no `handoffState` and throws its final output away: the transfer happens and the customer
+    // hears nothing. Promising otherwise makes the model hand over believing they were answered.
     const { client } = recordingClient();
     const speaking = byName(
       buildNativeTools({ client, conversationId: 1 }),
@@ -187,10 +179,10 @@ describe("native tools", () => {
   });
 
   test("the delta names the scope's own labels, not the conversation's", () => {
-    // The delta applies to the SCOPE the call chooses, so a description that always named the
-    // conversation's labels would show a `contact` call the wrong list — and copying them onto the
-    // contact is the move that invites (review round 35). Under #695 the listing is per scope and
-    // labelled with it, and the prose around it never says "conversation".
+    // NOTE: the delta applies to the SCOPE the call chooses, so a description that always named the
+    // conversation's labels would show a `contact` call the wrong list, and invite copying them onto
+    // the contact. The listing is per scope and labelled with it, and the prose never says
+    // "conversation".
     const { client } = recordingClient();
     const tool = byName(
       buildNativeTools({
@@ -220,10 +212,9 @@ describe("native tools", () => {
   });
 
   test("a ONE-SHOT allowlist grants what it names, not what the first candidate leaves", () => {
-    // The parameter is an `Iterable<string>`, and a generator is spent by whoever reads it first.
-    // Read once per candidate, it would be exhausted while testing a tool nobody granted, and the
-    // agent would come up with an empty toolset — silently, with every grant in place
-    // (review round 30).
+    // NOTE: the parameter is an `Iterable<string>`, and a generator is spent by whoever reads it
+    // first. Read once per candidate, it would be exhausted while testing a tool nobody granted,
+    // and the agent would come up with an empty toolset, silently, with every grant in place.
     const { client } = recordingClient();
     function* granted(): Generator<string> {
       yield "private_note";
@@ -282,7 +273,7 @@ describe("native tools", () => {
     expect(String(out)).toContain("human");
   });
 
-  // #160: the tool writes NOTHING to the customer. The closing line is recorded for the caller, which
+  // NOTE: the tool writes NOTHING to the customer. The closing line is recorded for the caller, which
   // is what puts it through the output guardrail and the shared delivery path.
   test("handoff with customerMessage sends only the note and the transfer", async () => {
     const { client, calls } = recordingClient();
@@ -555,7 +546,7 @@ describe("native tools", () => {
     await byName(tools, "resolve_conversation").invoke({});
     expect(calls).toEqual([
       ["sendPrivateNote", [7, "nota interna"]],
-      // The third argument carries the fence the client asks INSIDE its queue (round 25); this ctx
+      // NOTE: the third argument carries the fence the client asks INSIDE its queue; this ctx
       // has none to offer, so it arrives undefined and the write proceeds.
       [
         "setConversationCustomAttributes",
@@ -566,10 +557,10 @@ describe("native tools", () => {
   });
 
   test("a /reset landing while resolve_conversation reads does NOT close the conversation", async () => {
-    // The close reads the live status first (a WAIT), and the graph's ask at the tool boundary
-    // happened before it. An observation holds no thread claim, so `/reset` can land in that window
-    // — and a close is not something a later turn undoes. Same rule set_labels applies inside its
-    // queue, asked in the one other place that waits before writing (round 17).
+    // NOTE: the close reads the live status first (a WAIT), and the graph's ask at the tool
+    // boundary happened before it. An observation holds no thread claim, so `/reset` can land in
+    // that window, and a close is not something a later turn undoes. Same rule set_labels applies
+    // in its queue.
     const { client, calls } = recordingClient();
     let asked = 0;
     const tools = buildNativeTools({
@@ -612,8 +603,8 @@ describe("native tools", () => {
   });
 
   test("without a note there is no wait, so the handoff is unchanged", async () => {
-    // The fence is asked only where a wait happened. A handoff with no summary writes straight
-    // through, exactly as before.
+    // NOTE: the fence is asked only where a wait happened. A handoff with no summary writes straight
+    // through.
     const { client, calls } = recordingClient();
     const tools = buildNativeTools({
       client,
@@ -637,16 +628,12 @@ describe("native tools", () => {
     expect(calls.map((c) => c[0])).toContain("toggleStatus");
   });
 
-  // ISSUE #671. The tool has two modes and the rule was written in only one of them: with a
-  // `turnState` the intent is deferred and the reactive runtime drops it when a transfer completed
-  // ("a conversation the human queue now owns is not ours to close", #159), and WITHOUT one the tool
-  // closes inside the call, which is every proactive turn and every observation. Asked here, on the
-  // tool, because that is the one place both modes pass through, and because the observer builds its
-  // own toolset: a guard written in either runtime would leave it out.
-  //
-  // Both directions matter. A transfer that completed blocks the close AND says so, so the model
-  // reads what happened; a turn with no transfer at all still closes, which is the ordinary case and
-  // what a guard written too wide would break.
+  // NOTE: a conversation the human queue now owns is not ours to close. With a `turnState` the
+  // intent is deferred and the reactive runtime drops it; WITHOUT one (every proactive turn and every
+  // observation) the tool closes inside the call. Asked on the tool because both modes pass through
+  // it and the observer builds its own toolset, so a guard in either runtime would miss it. A
+  // completed transfer blocks the close AND says so; a turn with no transfer still closes, which a
+  // guard written too wide would break.
   test("resolve_conversation refuses to close what this turn transferred", async () => {
     const { client, calls } = recordingClient();
     const handoffState = {
@@ -655,7 +642,7 @@ describe("native tools", () => {
       declinedToSpeak: false,
     };
     const tools = buildNativeTools({ client, conversationId: 7, handoffState });
-    // No transfer yet: the legacy immediate close is untouched.
+    // NOTE: no transfer yet: the immediate close is untouched.
     await byName(tools, "resolve_conversation").invoke({});
     expect(calls.map((c) => c[0])).toContain("toggleStatus");
 
@@ -1008,13 +995,10 @@ describe("native tools", () => {
     expect(calls).toEqual([]);
   });
 
-  // REWRITTEN, NOT DELETED (issue #695). Every case below is the counterpart of one that proved the
-  // replace contract: what each of those proved about a diff against `shown`, its counterpart proves
-  // about a delta the model names. Two of them INVERT, and those are the ones worth reading.
+  // NOTE: the call names a delta; nothing is diffed against what the model was `shown`.
   describe("applyLabelDelta", () => {
     test("only what is NAMED in remove is removed", () => {
-      // The counterpart of "only what was SHOWN and left out is removed". `c` survives here for a
-      // stronger reason than it did there: not because it was unseen, but because nobody named it.
+      // NOTE: `c` survives because nobody named it, not because it was unseen.
       expect(applyLabelDelta([], ["b"], ["a", "b", "c"])).toEqual({
         next: ["a", "c"],
         added: [],
@@ -1052,13 +1036,10 @@ describe("native tools", () => {
     });
 
     test("INVERTED: naming a label in add DOES put it back after somebody removed it", () => {
-      // The case that flips. Under the replace contract the model repeated `vip` only because
-      // leaving it out would delete it, so treating the repeat as an addition undid an operator who
-      // had just peeled it off — and the tool deliberately did not. Under the delta contract nothing
-      // forces the model to mention a label it does not mean, so naming one in `add` IS a request to
-      // have it, and honouring that is correct. The cost moved to the operator's prose: a prompt
-      // that still says "repeat the labels that are already there" now asks for exactly this
-      // (holdout s14), which is why the old shape is refused by name rather than best-effort.
+      // NOTE: nothing forces the model to mention a label it does not mean, so naming one in `add`
+      // IS a request to have it, and honouring that is correct. Operator prose that says "repeat the
+      // labels that are already there" asks for exactly this, which is why the retired `labels`
+      // shape is refused by name rather than best-effort.
       expect(applyLabelDelta(["vip", "lead"], [], [])).toEqual({
         next: ["vip", "lead"],
         added: ["vip", "lead"],
@@ -1070,10 +1051,8 @@ describe("native tools", () => {
     });
 
     test("naming nothing changes nothing, whatever is standing", () => {
-      // The counterpart of "an empty desired list with nothing shown writes nothing at all". There
-      // the clear-everything call and the never-read case had to be told apart, because `[]` could
-      // mean either; here `[]` can only mean "I name nothing", and wiping a conversation requires
-      // naming every label on it.
+      // NOTE: `[]` can only mean "I name nothing", and wiping a conversation requires naming every
+      // label on it.
       expect(applyLabelDelta([], [], ["a", "b"])).toEqual({
         next: ["a", "b"],
         added: [],
@@ -1085,10 +1064,7 @@ describe("native tools", () => {
     });
 
     test("INVERTED: a guarded label is no longer removed by silence, because silence removes nothing", () => {
-      // The defect the guard was built for does not exist under this contract. Measured on a live
-      // fork under the old one: asked for `["compra-de-ingresso"]`, the tool answered
-      // `removed "cancelamento", "agente-off", "vip"` — three labels the model never mentioned. Here
-      // the same intent leaves every one of them standing without the guard doing anything at all,
+      // NOTE: labels the call does not name stay standing without the guard doing anything at all,
       // which is why the guard's remaining job is the two directions below.
       expect(
         applyLabelDelta(
@@ -1107,9 +1083,9 @@ describe("native tools", () => {
     });
 
     test("a guarded label the model ASKS FOR is not added, and the refusal is named", () => {
-      // The half the issue's own first draft dropped. A model that learned the name from the
-      // operator's prompt could otherwise switch the agent off by naming the label, which is the
-      // authority the guard denies — and now that it can SEE the label, it will ask.
+      // NOTE: a model that learned the name from the operator's prompt could otherwise switch the
+      // agent off by naming the label, which is the authority the guard denies; and since it SEES the
+      // label, it will ask.
       expect(
         applyLabelDelta(["agente-off", "vip"], [], [], ["agente-off"]),
       ).toEqual({
@@ -1141,8 +1117,8 @@ describe("native tools", () => {
     });
 
     test("a guarded label standing on the scope is KEPT in next, and is no longer hidden", () => {
-      // `next` carries it because it is on the conversation; there is no `visible` projection any
-      // more, because the model is shown everything. That is the change: one list, not two.
+      // NOTE: `next` carries it because it is on the conversation. There is no separate `visible`
+      // projection: the model is shown everything, one list.
       const out = applyLabelDelta(
         ["lead"],
         [],
@@ -1174,8 +1150,8 @@ describe("native tools", () => {
         return {};
       },
     } as unknown as ChatwootClient;
-    // Under the delta there is nothing to leave out: `vip` is not named, so it is not touched,
-    // and no snapshot of what the model saw has to be consulted to know that.
+    // NOTE: `vip` is not named, so it is not touched, and no snapshot of what the model saw has to
+    // be consulted to know that.
     const tools = buildNativeTools({ client, conversationId: 9 });
     const out = String(
       await byName(tools, "set_labels").invoke({ add: ["lead"] }),
@@ -1232,10 +1208,10 @@ describe("native tools", () => {
   });
 
   test("set_labels refuses to remove a guarded label, and names the refusal", async () => {
-    // The case above protects a label the model never named. This one it names explicitly, and only
-    // the guard keeps it. Under the delta the model SEES the guarded label, so it will ask; an
-    // answer that stayed silent would be a false statement the model reads back out of its own
-    // transcript one call later, which is why the report says which one it refused.
+    // NOTE: the case above protects a label the model never named. This one it names explicitly,
+    // and only the guard keeps it. The model SEES the guarded label, so it will ask; an answer that
+    // stayed silent would be a false statement the model reads back out of its own transcript one
+    // call later, which is why the report says which one it refused.
     const setCalls: unknown[][] = [];
     const client = {
       getConversationLabels: async () => ["dúvidas-evento", "agente-off"],
@@ -1257,16 +1233,15 @@ describe("native tools", () => {
       }),
     );
     expect(setCalls).toEqual([[9, ["agente-off", "cancelamento"]]]);
-    // Told, by name, which one did not move and why — the opposite of the old contract, where the
-    // label was hidden and the silence is what made a fenced agent invent a name for it.
+    // NOTE: told, by name, which one did not move and why. Hiding the label instead is what makes a
+    // fenced agent invent a name for it.
     expect(out).toContain('cannot be removed: "agente-off"');
     expect(out).toContain('removed "dúvidas-evento"');
   });
 
   test("a call that names neither side is refused, and writes nothing", async () => {
-    // Under the replace contract an empty list was a MEANING — "clear the scope" — so it had to be
-    // honoured. Under the delta it is the absence of a request, and honouring it would be inventing
-    // one. The refusal is what tells the model to name what it wants.
+    // NOTE: an empty delta is the absence of a request, and honouring it would be inventing one.
+    // The refusal is what tells the model to name what it wants.
     const setCalls: unknown[][] = [];
     const client = {
       getConversationLabels: async () => ["vip", "agente-off"],
@@ -1288,8 +1263,8 @@ describe("native tools", () => {
   });
 
   test("the retired `labels` list is refused BY NAME, not silently dropped", async () => {
-    // Operator prose in five free-text fields still describes the replace contract on every tenant
-    // that has not rewritten it, and a model following that prose sends `{labels: [...]}`. A strict
+    // NOTE: operator prose in five free-text fields can still describe the retired full-list shape,
+    // and a model following that prose sends `{labels: [...]}`. A strict
     // schema would strip the key and leave an empty delta, so the call would answer "already as
     // requested" and the model would record a classification that was never written.
     const setCalls: unknown[][] = [];
@@ -1372,10 +1347,8 @@ describe("native tools", () => {
   });
 
   test("a label the model was never shown is removable the moment it names it", async () => {
-    // `urgente` lands between the turn's read and the first call. Under the replace contract it had
-    // to survive one write and be handed over by the report before it could be dropped, because
-    // "shown" was what licensed a removal. Naming the delta retires that ceremony: not naming it
-    // keeps it, naming it removes it, and neither answer depends on what the model was shown.
+    // NOTE: `urgente` lands between the turn's read and the first call. Not naming it keeps it,
+    // naming it removes it, and neither answer depends on what the model was shown.
     let current: string[] = ["urgente"];
     const setCalls: unknown[][] = [];
     const client = {
@@ -1466,8 +1439,8 @@ describe("native tools", () => {
       },
     );
     const tool = byName(guarded, "set_labels");
-    // The batch metadata LangGraph itself supplies: one step for both calls (measured — the two
-    // calls of a batch carry the same `langgraph_step`, the next batch a different one).
+    // NOTE: the batch metadata LangGraph itself supplies: the two calls of a batch carry the same
+    // `langgraph_step`, the next batch a different one.
     const batch = {
       metadata: {
         thread_id: "t",
@@ -1531,11 +1504,9 @@ describe("native tools", () => {
   });
 
   test("a label added to the card mid-turn survives, like in the other two scopes", async () => {
-    // ISSUE #695 HOLDOUT s6. The card used to be the turn-prep snapshot, so "not named, not
-    // touched" was a statement about that snapshot and not about the card: a label somebody put on
-    // it while the model was generating was erased by the next write. It is the one scope where the
-    // promise the whole change is built on was false, and one GET by id closes it — the id is in
-    // hand here, unlike at prep, where the card has to be resolved from the conversation.
+    // NOTE: "not named, not touched" has to hold for the card itself, not for a turn-prep snapshot
+    // of it, or a label put on it while the model was generating is erased by the next write. One
+    // GET by id at write time covers it: the id is in hand here, unlike at prep.
     const setCalls: unknown[][] = [];
     const client = {
       // The card moved after prep: `externa` is on it now and the snapshot never saw it.
@@ -1558,7 +1529,7 @@ describe("native tools", () => {
   });
 
   test("a card that cannot be read refuses the write instead of using the snapshot", async () => {
-    // Falling back to the snapshot would reintroduce the erasure silently, on the one path where
+    // NOTE: falling back to the snapshot would erase such a label silently, on the one path where
     // nobody is looking. The conversation scope answers an unreadable state the same way.
     let setCount = 0;
     const client = {
@@ -1586,10 +1557,9 @@ describe("native tools", () => {
   });
 
   test("a card write withdrawn during the fresh read does not land", async () => {
-    // The fresh read this PR added to the task scope is a WAIT, exactly like the GET the other two
-    // scopes do: `/reset` can retire the run while it is in flight, and until this recheck the
-    // task scope was the only one that wrote anyway, because the graph's dispatch check was the
-    // last word before its POST. The fence is asked AFTER the read, not before it.
+    // NOTE: the task scope's fresh read is a WAIT, exactly like the GET the other two scopes do:
+    // `/reset` can retire the run while it is in flight, so the graph's dispatch check cannot be the
+    // last word before the POST. The fence is asked AFTER the read, not before it.
     let setCount = 0;
     let asked = 0;
     const client = {
@@ -1647,17 +1617,11 @@ describe("native tools", () => {
   });
 
   test("a swap whose add is guarded writes NOTHING, and says the removal was held", async () => {
-    // Issue #712, and the decision it asked for: A REMOVAL IS NOT APPLIED WHEN THE GUARD REFUSED
-    // ANY ADDITION OF THE SAME CALL. Until this commit the removal landed alone, so a mutually
-    // exclusive taxonomy ended the turn with NO category — measured identical on 5ae9af39, so the
-    // delta contract did not introduce it, it made it routine by showing the model the guarded
-    // label it now asks for.
-    //
-    // ONLY REMOVALS ARE HELD, never additions, which is what keeps this compatible with the two
-    // sealed scenarios of #695 that a fully atomic call would have reversed: s8 (`add:
-    // ["cancelamento", "reembolso"]` with `cancelamento` guarded must still write `reembolso`) and
-    // s9 (a guarded REMOVE must still let its addition through, so the "both categories" direction
-    // stays on purpose — see the sibling test below, which is not a bug this issue closes).
+    // NOTE: A REMOVAL IS NOT APPLIED WHEN THE GUARD REFUSED ANY ADDITION OF THE SAME CALL, or a
+    // mutually exclusive taxonomy ends the turn with NO category. ONLY REMOVALS ARE HELD: a fully
+    // atomic call would stop `add: ["cancelamento", "reembolso"]` (with `cancelamento` guarded) from
+    // writing `reembolso`, and a guarded REMOVE from letting its addition through. So the "both
+    // categories" direction stays on purpose (the sibling test below).
     const posts: unknown[][] = [];
     const client = {
       getConversationLabels: async () => [
@@ -1693,8 +1657,8 @@ describe("native tools", () => {
   });
 
   test("a swap whose remove is guarded lands the addition alone, and says so", async () => {
-    // The mirror, and the other state the single write exists to prevent: both categories at
-    // once. Also identical on 5ae9af39 (POST carried all four).
+    // NOTE: the mirror, and the other state the single write exists to prevent: both categories at
+    // once.
     const posts: unknown[][] = [];
     const client = {
       getConversationLabels: async () => ["compra-de-ingresso", "agente-off"],
@@ -1722,9 +1686,9 @@ describe("native tools", () => {
   });
 
   test("a guard that holds the whole taxonomy refuses both halves and writes nothing", async () => {
-    // The configuration that is actually correct: every mutually-exclusive value guarded. Both
-    // halves fall, no POST goes out, and the two refusals are reported. The half-write lives in
-    // the INCOMPLETE list, which is the condition of the 2026-09-17 incident.
+    // NOTE: the configuration that is actually correct: every mutually-exclusive value guarded.
+    // Both halves fall, no POST goes out, and the two refusals are reported. The half-write lives in
+    // an INCOMPLETE list.
     let posts = 0;
     const client = {
       getConversationLabels: async () => ["compra-de-ingresso", "agente-off"],
@@ -1750,12 +1714,10 @@ describe("native tools", () => {
   });
 
   test("a free addition alongside a refused one lands, and the removal is STILL held", async () => {
-    // The hole the issue's own proposal left open, and the reason this PR states the rule over ANY
-    // refused addition rather than over a wholly refused `add`. "Classify it and mark it urgent"
-    // is how an instruction produces `add: [category, "urgente"]`, and under the narrow rule the
-    // guard would catch only the category, the `add` would not have fallen ENTIRELY, and the
-    // removal would land alone — the same conversation with no category, reached by a call the
-    // issue's table does not contain.
+    // NOTE: the rule is over ANY refused addition, not a wholly refused `add`. "Classify it and
+    // mark it urgent" produces `add: [category, "urgente"]`; under the narrow rule the guard would
+    // catch only the category, the `add` would not fall ENTIRELY, and the removal would land alone,
+    // leaving the conversation with no category.
     const posts: unknown[][] = [];
     const client = {
       getConversationLabels: async () => ["compra-de-ingresso", "agente-off"],
@@ -1785,8 +1747,8 @@ describe("native tools", () => {
   });
 
   test("a call with no refused addition removes normally, including when it has no `add` at all", async () => {
-    // THE CHEAPEST REGRESSION TO CAUSE AND THE MOST EXPENSIVE TO FIND. Written as "every label in
-    // `add` was refused", the rule fires on an empty `add` — `[].every(…)` is true — and swallows
+    // NOTE: the cheapest regression to cause and the most expensive to find. Written as "every label
+    // in `add` was refused", the rule fires on an empty `add` (`[].every(…)` is true) and swallows
     // the removal of every remove-only call, which is the most common use of the tool and the one
     // an operator's prompt uses to take a wrong label off. The rule is over what the guard
     // REFUSED, so an empty `add` refuses nothing and holds nothing.
@@ -1846,10 +1808,10 @@ describe("native tools", () => {
   });
 
   test("the rule is about the guard REFUSING an addition, not about the addition having no effect", async () => {
-    // `add: ["a"]` where `a` is already standing asks for something and moves nothing, and #695's
-    // s14 settled that naming a label already present is a legitimate request. Conditioning the
-    // hold on "nothing was actually added" instead of "the guard refused an addition" would turn
-    // that redundant request into a block on every removal beside it.
+    // NOTE: `add: ["a"]` where `a` is already standing asks for something and moves nothing, and
+    // naming a label already present is a legitimate request. Conditioning the hold on "nothing was
+    // actually added" instead of "the guard refused an addition" would turn that redundant request
+    // into a block on every removal beside it.
     const posts: unknown[][] = [];
     const client = {
       getConversationLabels: async () => ["a", "compra-de-ingresso"],
@@ -1870,11 +1832,10 @@ describe("native tools", () => {
   });
 
   test("a held call holds its WHOLE removal, guarded half and free half alike", async () => {
-    // The edge the issue raises and leaves open, decided here: the free half goes nowhere either.
-    // The removal was asked for as one request, and applying the part of it the guard happens not
-    // to cover would leave the conversation in a state nobody asked for — which is the thing the
-    // rule exists to stop, not a smaller version of it. Both labels are named back, because the
-    // model wrote both and cannot guess where either ended up.
+    // NOTE: the free half goes nowhere either. The removal was asked for as one request, and
+    // applying the part the guard happens not to cover would leave the conversation in a state
+    // nobody asked for, which is what the rule exists to stop. Both labels are named back, because
+    // the model wrote both and cannot guess where either ended up.
     let posts = 0;
     const client = {
       getConversationLabels: async () => [
@@ -1961,14 +1922,10 @@ describe("native tools", () => {
   });
 
   test("reaffirming a guarded label that is already there does not hold the swap", async () => {
-    // Found by the holdout verifier on the head this rule first shipped in. `agente-off` guarded
-    // AND standing is the real observer's configuration, and a model that reaffirms it — which it
-    // can now do, because #695 made guarded labels visible — beside a perfectly ordinary swap
-    // would otherwise end the turn with BOTH categories, which is the state the single write
-    // exists to prevent and which the same call did NOT produce before the hold existed.
-    //
-    // The refused addition asked for nothing: naming a present label moves nothing under the
-    // delta, so there was no exchange for the removal to be in service of.
+    // NOTE: a guarded label that is already standing (an observer's `agente-off`) is visible, so a
+    // model may reaffirm it beside an ordinary swap. Holding the removal there would end the turn
+    // with BOTH categories. The refused addition asked for nothing: naming a present label moves
+    // nothing under the delta, so there is no exchange for the removal to be in service of.
     const posts: unknown[][] = [];
     const client = {
       getConversationLabels: async () => ["compra-de-ingresso", "agente-off"],
@@ -2048,10 +2005,9 @@ describe("native tools", () => {
   });
 
   test("a held call does not hold the OTHER call of the same batch", async () => {
-    // The hold is a property of the call that carried the refused addition, and the queue is what
-    // makes the other call of the batch read a world the first one did not change. Ten runs,
-    // because a result that oscillates between runs means the serialisation stopped closing and
-    // would read here as a flaky test rather than as the defect it is.
+    // NOTE: the hold is a property of the call that carried the refused addition, and the queue is
+    // what makes the other call of the batch read a world the first one did not change. Ten runs,
+    // because a result that oscillates between runs means the serialisation stopped closing.
     for (let i = 0; i < 10; i++) {
       let current = ["compra-de-ingresso", "base"];
       const client = {
@@ -2178,10 +2134,10 @@ describe("native tools", () => {
   });
 
   test("a /reset landing while the contact labels are read stops the contact write", async () => {
-    // The FOURTH handler that waits before writing: the GET above is a wait exactly like the queue
-    // the conversation scope waits on, and this scope has no queue to ask inside. A contact label
-    // outlives the conversation it was written from, so a write admitted at the tool boundary and
-    // landing after `/reset` is the one that survives longest (round 21).
+    // NOTE: the GET above is a wait exactly like the queue the conversation scope waits on, and
+    // this scope has no queue to ask inside. A contact label outlives the conversation it was
+    // written from, so a write admitted at the tool boundary and landing after `/reset` is the one
+    // that survives longest.
     let setCount = 0;
     let asked = 0;
     const client = {
@@ -2644,9 +2600,9 @@ describe("handoff targeting", () => {
   });
 });
 
-// NOTE: A side effect that fails INSIDE a tool that still returns success (issue #46) must reach
-// ctx.onSideEffectError so prepare.ts can surface it as a flowlog warn — while the tool's return
-// value (what the model sees) stays a success.
+// A side effect that fails INSIDE a tool that still returns success must reach
+// ctx.onSideEffectError so src/graph/prepare.ts can surface it as a flowlog warn, while the tool's
+// return value (what the model sees) stays a success.
 describe("swallowed side effects reach onSideEffectError (issue #46)", () => {
   type SideEffect = {
     tool: string;
@@ -2764,11 +2720,9 @@ describe("swallowed side effects reach onSideEffectError (issue #46)", () => {
   });
 });
 
-// Two facts, two fields, and the predicate needs both. They happen to be written in the same block
-// today, which is exactly why the table exists: the block that writes them was MOVED here by review
-// (the line used to be recorded on the way into the tool, so a first attempt that threw left its
-// promise behind for the retry to deliver in place of the recovery text the model wrote instead).
-// A caller that reads only "there is a line" would deliver that promise again.
+// Two facts, two fields, and the predicate needs both, even though one block writes them together.
+// A line recorded by an attempt that threw must not be delivered by the retry in place of the
+// recovery text the model wrote, so a caller that reads only "there is a line" is wrong.
 describe("handoffAnsweredTheTurn", () => {
   const rows: [string, HandoffTurnState | undefined, boolean][] = [
     ["no handoff state at all", undefined, false],
@@ -2801,9 +2755,9 @@ describe("handoffAnsweredTheTurn", () => {
   }
 });
 
-// The design line drawn after PR #485: the model never authors code. Computation it must not redo
-// is an operator-authored code tool (tools/code.ts), so no native tool may take a `code` argument —
-// the shape a "run this snippet" tool has, whatever it is called.
+// The model never authors code. Computation it must not redo is an operator-authored code tool
+// (src/graph/tools/code.ts), so no native tool may take a `code` argument, the shape a "run this
+// snippet" tool has, whatever it is called.
 describe("no native tool takes code from the model", () => {
   test("every native tool's schema is free of a `code` field, and no native is named run_code", () => {
     const tools = buildNativeTools({
@@ -2820,24 +2774,11 @@ describe("no native tool takes code from the model", () => {
   });
 });
 
-// EVERY handler that waits before writing has to ask the fence again, and this battery is what says
-// so — three review rounds found three separate handlers breaking the rule one at a time (17, 21,
-// 22), which is what a rule kept by reading rather than by a test looks like.
-//
-// THE RULE, in the form the trace below can check: the graph asks `stillWanted` at DISPATCH, so the
-// first outward effect of a handler is covered by that ask. Everything after it happened AFTER a
-// wait, and a write there must be fenced. With a fence that says no from the first wait onward, a
-// correct handler makes at most one outward effect and it is never a write that came second.
-//
-// The client is a proxy over a classification rather than a stub: a method that is neither a read
-// nor a write is recorded as UNKNOWN and fails the battery, so a client call added to a handler
-// later cannot join the trace silently. Same for the tool table — it is asked to cover every name in
-// the catalog, so a tool added later arrives with an entry or the suite says which one is missing.
 describe("what the model is shown has a ceiling", () => {
-  // Every other model-facing list in the file is capped; a conversation's own set was not, and it is
-  // the one an automation can grow without an operator looking. Uncapped it lands in the observer's
-  // prompt and TWICE in this tool's description, so a bulk-labelled conversation can push the whole
-  // tick past the provider's context limit — and every retry of it fails the same way.
+  // NOTE: a conversation's own label set is the one list an automation can grow without an
+  // operator looking. Uncapped it lands in the observer's prompt and TWICE in this tool's
+  // description, so a bulk-labelled conversation can push the whole tick past the provider's
+  // context limit, and every retry of it fails the same way.
   const many = Array.from({ length: 90 }, (_, i) => `etq-${i}`);
 
   test("the description shows the ceiling, not the whole set", () => {
@@ -2857,10 +2798,8 @@ describe("what the model is shown has a ceiling", () => {
   });
 
   test("what falls off the end is untouched, because nothing unnamed is touched", async () => {
-    // Why a ceiling is safe here, and the reason got SIMPLER with the delta (issue #695). It used to
-    // rest on the diff: a label past the cut was not shown, so it could not be "shown and left out",
-    // so it survived. Now it rests on the contract itself — a label the call does not name is not
-    // touched — and the cut is a display decision with no reach into the write at all.
+    // NOTE: a ceiling is safe because a label the call does not name is not touched: the cut is a
+    // display decision with no reach into the write at all.
     const setCalls: unknown[][] = [];
     const client = {
       getConversationLabels: async () => many,
@@ -2876,8 +2815,7 @@ describe("what the model is shown has a ceiling", () => {
     });
     await byName(tools, "set_labels").invoke({ add: ["resolvido"] });
     const next = (setCalls[0]?.[1] ?? []) as string[];
-    // All 90 stand — the 40 it was shown as much as the 50 it never saw — plus the new one. Under
-    // the replace contract this same call deleted the 40 it had been shown and left out.
+    // NOTE: all 90 stand (the 40 it was shown as much as the 50 it never saw), plus the new one.
     expect(next).toContain("etq-0");
     expect(next).toContain(`etq-${SHOWN_LABELS_MAX}`);
     expect(next).toContain("etq-89");
@@ -2928,7 +2866,7 @@ describe("what the model is shown has a ceiling", () => {
 });
 
 describe("a muted turn is not offered what it cannot complete", () => {
-  // The observer runs the ordinary toolset now (issue #568), and two of those tools are entirely
+  // NOTE: the observer runs the ordinary toolset, and two of those tools are entirely
   // customer-facing: the reaction's POST is refused at the muted transport, and the image is
   // delivered by a turn an observation does not have. Each costs a model round and answers with a
   // failure the operator reads as a broken integration.
@@ -2943,7 +2881,7 @@ describe("a muted turn is not offered what it cannot complete", () => {
     }).map((t) => t.name);
     expect(names).not.toContain("react_to_message");
     expect(names).not.toContain("send_image");
-    // The private note is the mute's own isention: it is the one thing an observer writes where a
+    // NOTE: The private note is the mute's own exception: it is the one thing an observer writes where a
     // person reads it, so hiding it would take the watcher's voice away entirely.
     expect(names).toContain("private_note");
     expect(names).toContain("set_labels");
@@ -2972,6 +2910,12 @@ describe("a muted turn is not offered what it cannot complete", () => {
   });
 });
 
+// EVERY handler that waits before writing has to ask the fence again, and a rule kept by reading
+// breaks one handler at a time. The graph asks `stillWanted` at DISPATCH, which covers a handler's
+// first outward effect; with a fence that says no from the first wait onward, a correct handler
+// makes at most one outward effect and never a write that came second. The client is a proxy over a
+// read/write classification (an UNKNOWN method fails), and the tool table must cover every name in
+// the catalog, so a new client call or tool cannot join silently. See docs/chatwoot.md.
 describe("the fence rule, over every native tool", () => {
   const CLIENT_READS = [
     "getInbox",
@@ -3047,8 +2991,8 @@ describe("the fence rule, over every native tool", () => {
         },
       },
     ) as unknown as ChatwootClient;
-    // The database is a wait like any other — `set_custom_attribute` and `set_labels` reach their
-    // contact scope through one, and it is the wait that round 22 found unfenced.
+    // NOTE: the database is a wait like any other: `set_custom_attribute` and `set_labels` reach
+    // their contact scope through one.
     const tx = {
       // The scoped transaction opens with a `set_config` of its own; it is plumbing every scoped
       // access pays, not the handler awaiting something, so it neither counts as an effect nor
@@ -3230,11 +3174,10 @@ describe("the fence rule, over every native tool", () => {
     );
   });
 
-  // THE SAME RULE THROUGH THE PRECONDITION WRAPPER, which is where round 24 found it broken. A
-  // configured precondition puts a database read between the graph's ask at dispatch and the call it
-  // authorises, so a handler whose FIRST act is a write — a private note, a status toggle — loses
-  // the cover that ask gave it. Here the fence is already withdrawn when the tool is invoked, so a
-  // correct wrapper lets NOTHING through: not even the first effect.
+  // NOTE: the same rule through the precondition wrapper. A configured precondition puts a database
+  // read between the graph's ask at dispatch and the call it authorises, so a handler whose FIRST
+  // act is a write (a private note, a status toggle) loses the cover that ask gave it. Here the
+  // fence is already withdrawn when the tool is invoked, so a correct wrapper lets NOTHING through.
   for (const c of CASES) {
     const name = c.label ? `${c.tool} (${c.label})` : c.tool;
     test(`${name}: a precondition read is a wait, and nothing runs after it`, async () => {

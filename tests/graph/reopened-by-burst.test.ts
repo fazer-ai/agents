@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { burstReopenedResolved } from "@/graph/reopened-by-burst";
 import { parseChatwootMessages } from "@/modules/chatwoot/messages";
 
-// Issue #897: whether the messages a turn answers reopened a resolved conversation, read off
+// Whether the messages a turn answers reopened a resolved conversation, read off
 // Chatwoot's activity trail. The rows go through the real page parser, spelled as the REST partial
 // renders them, so a change in how the trail is read fails here too.
 

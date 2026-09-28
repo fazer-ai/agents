@@ -13,10 +13,9 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 
-// NOTE: Issue #46 end-to-end — a tool that SUCCEEDS for the model but whose side effect fails
-// (here: handoff assignment) must land a warn `tool` line in the execution log AND produce an
-// alert delivery for a minLevel:warn channel, through the REAL turn path (runAgentTurn → prepare →
-// onSideEffectError binding → emitFlowEvent). Before the fix the failure was a stdout log only.
+// A tool that SUCCEEDS for the model but whose side effect fails (here: handoff assignment) must land
+// a warn `tool` line in the execution log AND produce an alert delivery for a minLevel:warn channel,
+// through the REAL turn path (runAgentTurn → prepare → onSideEffectError binding → emitFlowEvent).
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -61,7 +60,7 @@ class HandoffThenReplyModel {
               content: "",
               tool_calls: [
                 {
-                  // A line, not the empty string: since issue #662 an empty `customerMessage` is a
+                  // NOTE: A line, not the empty string: an empty `customerMessage` is a
                   // DECLARED silence and the runtime sends nothing, which would make this turn
                   // `empty` and say nothing about the assignment failure this test is about.
                   name: "handoff_to_human",
@@ -278,7 +277,7 @@ describe.skipIf(!dbUp)(
         "handoff_to_human",
       );
 
-      // And it paged the minLevel:warn channel — the invisible-failure complaint of the issue.
+      // NOTE: And it paged the minLevel:warn channel, so the failure is not invisible.
       let delivery: { level: string | null } | null = null;
       for (let i = 0; i < 50 && !delivery; i++) {
         delivery = await suDb.alertDelivery.findFirst({

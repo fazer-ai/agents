@@ -29,20 +29,11 @@ if (appUrl && suUrl) {
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
-// WHICH COLUMN EACH FENCE READS, AND WHY — the file that exists so nobody has to re-derive it from
-// the column names, and so the next `/reset` fence is written against the right question.
-//
-// `/reset` does two things and they can come apart. It WITHDRAWS the work the conversation had in
-// flight, which happens the moment the operator types the command and which nothing can refuse
-// afterwards; and it CLEARS the memory, which is a later step that refuses by design while a turn is
-// already invoking, with the acknowledgement naming what did not clear.
-//
-// `reset_at_message_id` records the first. `memory_cleared_at_message_id` is written inside the
-// transaction that deletes the thread, the summaries and the checkpoint, so it records the second and
-// cannot exist without it.
-//
-// Every case below is the same row in the state where the two disagree: the operator typed `/reset`
-// on message 500 and was told the memory step did not run.
+// Which column each `/reset` fence reads. `/reset` WITHDRAWS in-flight work the moment it is typed
+// (`reset_at_message_id`) and later CLEARS the memory, a step that refuses while a turn is invoking
+// (`memory_cleared_at_message_id`, written in the transaction that deletes thread, summaries and
+// checkpoint). Every case is the same row where the two disagree: `/reset` on message 500, memory
+// step refused.
 describe.skipIf(!dbUp)(
   "the /reset fences, on a command whose cleanup refused",
   () => {
@@ -90,10 +81,9 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    // WITHDRAWAL. The operator took this turn back; whether the memory was emptied is a different
-    // question and not this fence's. Issue #449 is the measurement: there the memory step DID refuse,
-    // and the stale turn's `set_custom_attribute` then wrote the attribute back onto the conversation
-    // the operator had just been told about, with nothing anywhere saying it came back.
+    // NOTE: WITHDRAWAL. The operator took this turn back; whether the memory was emptied is a different
+    // question and not this fence's. Reading the memory column here would let a stale turn's
+    // `set_custom_attribute` write the attribute back after the operator was told it was withdrawn.
     test("the direct turn is withdrawn, cleared memory or not", async () => {
       const fence = (triggerMessageId: number) =>
         stillInSameEpisode({
@@ -122,7 +112,7 @@ describe.skipIf(!dbUp)(
       expect(state.resetAt).toBe(500);
     });
 
-    // RESTORE, and the one reader that genuinely needed the other column (issue #728). It decides
+    // NOTE: RESTORE, and the one reader that genuinely needs the other column. It decides
     // whether a colleague's reply may be appended INTO the memory, so it must not fire over a memory
     // that was never emptied: the text would be dropped from a thread nobody cleared, after a
     // `/reset` the operator WATCHED fail.

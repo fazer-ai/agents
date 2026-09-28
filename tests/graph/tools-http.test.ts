@@ -368,8 +368,8 @@ describe("buildHttpTool slow-tool ack (item 4)", () => {
   });
 
   test("an ack that reports the run called off stops the tool before any request", async () => {
-    // The ack's send is a wait after the graph's own ask at the tool boundary; a run called off
-    // inside it (the operator's flip to monitoring, issue #209 review round 10) makes no request.
+    // NOTE: the ack's send is a wait after the graph's own ask at the tool boundary; a run called
+    // off inside it (e.g. the operator's flip to monitoring) makes no request.
     const order: string[] = [];
     const fetchImpl = (async () => {
       order.push("fetch");
@@ -949,9 +949,8 @@ describe("buildHttpTool — programmatic authoring shapes (JSON-Schema input_sch
     });
   });
 
-  // NOTE: the three "empty" spellings send three different things, and a body-shape refusal that
-  // called `{}` "no body" got the first one wrong (issue #150). Pinned together so the contract the
-  // REST/MCP descriptions state has something to be checked against.
+  // NOTE: the three "empty" spellings send three different things (`{}` is not "no body"). Pinned
+  // together so the contract the REST/MCP descriptions state has something to be checked against.
   test("the three empty body spellings are not interchangeable", async () => {
     const cases: [unknown, string][] = [
       // `{}` is the legacy fallback, NOT an empty request.
@@ -1082,9 +1081,9 @@ describe("buildHttpTool — programmatic authoring shapes (JSON-Schema input_sch
   });
 });
 
-// NOTE: A tool may DECLARE the statuses that are results rather than failures (issue #59). The
-// model-facing text is identical either way — same "HTTP <status>" with the same body — so only the
-// failure marking, and therefore the log level and the alert dispatch, moves.
+// A tool may DECLARE the statuses that are results rather than failures. The model-facing
+// text is identical either way (same "HTTP <status>" with the same body), so only the failure
+// marking, and therefore the log level and the alert dispatch, moves.
 describe("buildHttpTool — declared expected statuses (issue #59)", () => {
   async function callWith(status: number, expectedStatuses?: number[]) {
     const tool = buildHttpTool(
@@ -1134,7 +1133,7 @@ describe("buildHttpTool — declared expected statuses (issue #59)", () => {
   });
 });
 
-// NOTE: For operator-authored HTTP tools EVERY non-2xx is an integration failure (issue #40):
+// For operator-authored HTTP tools EVERY non-2xx is an integration failure:
 // invoked as a tool_call it returns a ToolMessage with status "error" carrying the same
 // "HTTP <status>" body the model already saw; 2xx stays a plain success.
 describe("buildHttpTool — non-2xx marked as integration failure (issue #40)", () => {
@@ -1171,12 +1170,12 @@ describe("buildHttpTool — non-2xx marked as integration failure (issue #40)", 
   });
 });
 
-// #456. THE MEASURED CASE: a lookup whose response is bigger than the clip, whose first kilobytes
-// are third-party data the tool was never asked for, and whose registration status sits past the
-// cut. Before the template the model got the head of the body and invented the tail.
+// A lookup whose response is bigger than the clip, whose first kilobytes are third-party data the
+// tool was never asked for, and whose registration status sits past the cut. Without a template the
+// model gets the head of the body and invents the tail.
 function measuredBody(): string {
   return JSON.stringify({
-    // 5 partners with names and masked tax ids: 29% of the real response, and none of it asked for.
+    // NOTE: 5 partners with names and masked tax ids, none of it asked for.
     qsa: Array.from({ length: 5 }, (_, i) => ({
       nome_socio: `SOCIO ${i}`,
       cnpj_cpf_do_socio: `***${i}00000**`,
@@ -1347,10 +1346,9 @@ describe("response template (#456)", () => {
   });
 });
 
-// Round 4 of review, finding 1. A template with no tokens says the same thing whatever the body is,
-// and the reader accepts one on purpose. Rendering it was gated on the body PARSING as JSON, so the
-// endpoint that most wants a constant answer — the one that returns 204 with nothing in it — was
-// the one that did not get it.
+// A template with no tokens says the same thing whatever the body is, and the reader accepts one on
+// purpose. Gating it on the body PARSING as JSON would deny it to the endpoint that most wants a
+// constant answer: the one that returns 204 with nothing in it.
 describe("a response template with no tokens does not need a body", () => {
   async function modelText(status: number, body: string | null) {
     const tool = buildHttpTool(
@@ -1382,7 +1380,6 @@ describe("a response template with no tokens does not need a body", () => {
   }
 
   test("a 204 with no body still hands the model the operator's own text", async () => {
-    // Before this, the model got `HTTP 204\n` — an empty result where the whole answer was written.
     expect(await modelText(204, null)).toBe(
       "HTTP 204\nDone. The booking is confirmed.",
     );
@@ -1432,10 +1429,9 @@ describe("a response template with no tokens does not need a body", () => {
   });
 });
 
-// Round 12 of review, finding 2. The clip notice used to have two branches — rendered or not — and
-// "not rendered" covers a tool with NO template and a tool whose template deliberately does not
-// apply here. The second one was being told to declare a template it already has, for a case where
-// a template is not the remedy.
+// "Not rendered" covers a tool with NO template and a tool whose template deliberately does not
+// apply here, so the clip notice cannot have just two branches: the second tool would be told to
+// declare a template it already has, for a case where a template is not the remedy.
 describe("the clip notice says which fix applies", () => {
   async function clipNoticeFor(opts: {
     status?: number;
@@ -1524,9 +1520,9 @@ describe("the clip notice says which fix applies", () => {
   });
 });
 
-// #459. A search that returns N rows could not be projected at all (every token addresses one
-// value), so it kept the raw clip, and a 120-row response reads to the model as ~40 rows and an
-// end. The block renders one line per row and COUNTS the rest.
+// A search that returns N rows cannot be projected by tokens (every token addresses one value), and
+// the raw clip reads to the model as ~40 rows and an end. The block renders one line per row and
+// COUNTS the rest.
 describe("a list of unknown length renders through a block (#459)", () => {
   const results = Array.from({ length: 120 }, (_, i) => ({
     id: i + 1,
@@ -1574,7 +1570,7 @@ describe("a list of unknown length renders through a block (#459)", () => {
   });
 
   test("rows too long for fifty still leave the model a count, not a cut", async () => {
-    // Round 1 of review: 100 rows of ~100 characters rendered forty and the clip took the count.
+    // NOTE: 100 rows of ~100 characters: rendered whole, the clip would take the count.
     const long = Array.from({ length: 100 }, (_, i) => ({
       id: i + 1,
       descricao: "d".repeat(80),
@@ -1662,8 +1658,7 @@ describe("a list of unknown length renders through a block (#459)", () => {
 // ABORTING AN INVOKE STOPS THE CALLER WAITING, NOT THIS HANDLER WRITING. The observer's tick has a
 // whole-turn budget; when it runs out the tick is reported as a RETRYABLE failure, so anything the
 // handler still sends afterwards is sent again by the retry. The Chatwoot client refuses past its
-// deadline for that reason, and until this an external endpoint had none of that protection and
-// none of Chatwoot's idempotency either (issue #568 review, round 12).
+// deadline for that reason, and an external endpoint needs the same, having no Chatwoot idempotency.
 describe("the turn's deadline reaches an http tool", () => {
   test("a budget that ran out while the credential resolved stops the request", async () => {
     const captured: Captured = {};
@@ -1718,8 +1713,7 @@ describe("the turn's deadline reaches an http tool", () => {
 
 // A DEADLINE SAYS THERE IS NO TIME LEFT; THE FENCE SAYS NOBODY IS WAITING. A `/reset`, a supersede
 // or a detach landing while a tool resolves a credential or a DNS name leaves the budget perfectly
-// alive and the run withdrawn all the same, and the POST reaches somebody else's system anyway
-// (issue #568 review, round 28).
+// alive and the run withdrawn all the same, and the POST would reach somebody else's system anyway.
 describe("the turn's withdrawal fence reaches an http tool", () => {
   test("a run called off while the credential resolved stops the request", async () => {
     const captured: Captured = {};
@@ -1768,7 +1762,7 @@ describe("the turn's withdrawal fence reaches an http tool", () => {
 // THE SAME DEADLINE, THE OTHER FAMILY OF TOOLS. Four toolpacks each have their own request helper,
 // so enforcing this at each of them is four places to forget and a fifth uncovered the day someone
 // adds a pack. It is applied by wrapping the ctx's `fetchImpl` at the build seam instead — the shape
-// the Chatwoot client's mutedFetch already uses (issue #568 review, round 13).
+// the Chatwoot client's mutedFetch already uses.
 describe("the turn's deadline reaches a toolpack", () => {
   test("a budget already spent stops the request before it is sent", async () => {
     const ctrl = new AbortController();
@@ -1883,7 +1877,7 @@ describe("the turn's deadline reaches a toolpack", () => {
   });
 });
 
-// THE FENCE, AT THE SAME SEAM AND FOR THE SAME REASON (round 28). A pack's helper never learns about
+// THE FENCE, AT THE SAME SEAM AND FOR THE SAME REASON. A pack's helper never learns about
 // it; the wrap does, so a pack written next month is covered the day it is registered.
 describe("the turn's withdrawal fence reaches a toolpack", () => {
   test("a run called off refuses the request before it leaves", async () => {
@@ -1902,13 +1896,10 @@ describe("the turn's withdrawal fence reaches a toolpack", () => {
   });
 
   test("a refusal the pack SWALLOWED is still reported once, with the tool's own name", async () => {
-    // The refusal that ends in `throw` has no result to carry the answer, and the observer's tick
-    // has to know that nothing left the process or it counts the dispatch as a write and stops
-    // retrying. The pack here does what every real pack does with a transport error — catches it and
-    // answers a tool failure (asaas.ts, google-drive.ts, google-calendar.ts all wrap their request
-    // helper in that catch) — so nothing escapes the invoke and a report waiting outside it never
-    // fires (review round 38). Two requests, one report: the dedupe that moving the report out was
-    // meant to buy is kept by the per-dispatch frame.
+    // NOTE: the observer's tick has to know that nothing left the process, or it counts the
+    // dispatch as a write and stops retrying. Every real pack catches a transport error and answers
+    // a tool failure, so nothing escapes the invoke and a report waiting outside it would never
+    // fire. Two requests, one report: the per-dispatch frame dedupes.
     const reported: string[] = [];
     registerToolpack({
       catalogType: "TEST_NOEFFECT_PACK",
@@ -1966,9 +1957,9 @@ describe("the turn's withdrawal fence reaches a toolpack", () => {
   });
 
   test("a fence that turns false AFTER a request left reports nothing", async () => {
-    // A pack tool is not one request. `asaas_create_pix_charge` POSTs the charge and then GETs its
-    // QR code: a withdrawal between the two is a refusal with the charge already made, and saying
-    // "no effect" there hands the scheduler a retry that charges twice (review round 41).
+    // NOTE: a pack tool is not one request. `asaas_create_pix_charge` POSTs the charge and then
+    // GETs its QR code: a withdrawal between the two is a refusal with the charge already made, and
+    // saying "no effect" there hands the scheduler a retry that charges twice.
     const reported: string[] = [];
     const sent: string[] = [];
     let allow = true;

@@ -1,35 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-// THE TWO QUESTIONS `stillWanted` ANSWERS, and they want opposite things when the read itself fails.
-//
-// The ask inside the thread's critical section runs before anything is written, so an unreadable
-// answer has to STOP the run: guessing "still wanted" there recreates the graph state /reset just
-// cleared, the operator is told the conversation was wiped, and the agent keeps answering from it.
-// No later fence catches that. Every other ask guards a SEND, and there an unreadable answer must
-// NOT throw: unwinding past a delivered message abandons its watermark and its job completion, so
-// the scheduler retries the step and the customer gets it twice.
-//
-// The rule is per CALL SITE, not per function, so the test reads the source. A table-driven test of
-// the callback would prove the callback and say nothing about which of the eleven asks passes
-// `strict: true` — and the one that matters is reached only through `runLoadedTurn`, which the
-// webhook path never uses (it passes `stillWanted: null`, having no job to retire).
+// `stillWanted` answers two questions that want opposite things when the read fails. Inside the
+// critical section, before any write, an unreadable answer STOPS the run (guessing "still wanted"
+// recreates the state /reset just cleared). Every other ask guards a SEND and must NOT throw
+// (unwinding past a delivery makes the scheduler retry it, so the customer gets it twice). The rule
+// is per CALL SITE, so the test reads the source: the ask that matters is reached only through
+// `runLoadedTurn`, which the webhook path never uses (it passes `stillWanted: null`).
 const FILES = [
   "src/graph/runtime.ts",
   "src/graph/nudge.ts",
   "src/modules/channel-redirect/followup.ts",
 ];
 
-// The redirect ladder asks most of its questions through the composite `fence` now (issues #246,
-// #250), which answers a verdict rather than a boolean and folds the retirement half in. That does
-// not weaken the rule, it moves where the rule is broken: a callback handed to `runAgentNudge`
-// receives `{ strict }` and can simply DROP it, which compiles, passes every behavioural test whose
-// database answers, and fails open on the one ask that runs before a write. That is exactly what a
-// rebase onto the composite fence did here, and only a reviewer caught it.
-//
-// So the walk asks the question of the call site that matters: the `stillWanted` inside
-// `runAgentNudge({ ... })` must thread `strict` through. Callbacks handed to the fixed-text senders
-// are not policed — every ask they make surrounds a send, where fail-open is the correct answer.
+// A callback handed to `runAgentNudge` receives `{ strict }` and can simply DROP it, which compiles,
+// passes every behavioural test whose database answers, and fails open on the one ask before a
+// write. So the `stillWanted` inside `runAgentNudge({ ... })` must thread `strict` through. The
+// fixed-text senders are not policed: every ask they make surrounds a send, where fail-open is right.
 const NUDGE_CALLERS = ["src/modules/channel-redirect/followup.ts"];
 
 // The `stillWanted` entry of the `runAgentNudge({ ... })` object literal, as written.
@@ -65,21 +52,16 @@ describe("stillWanted strictness, per call site", () => {
 
   test.each(NUDGE_CALLERS)("%s threads strict into runAgentNudge", (f) => {
     const line = nudgeStillWanted(readFileSync(f as string, "utf8"));
-    // The walk found the call site at all — without this, a rename turns the assertion below into a
+    // NOTE: The walk found the call site at all; without this, a rename turns the assertion below into a
     // test that proves nothing while still passing.
     expect(line).toBeDefined();
     expect(line).toContain("strict");
   });
 
-  // TWO per file, and only in the two files that hold a critical section. The redirect follow-up has
-  // none: every ask it makes is around a send.
-  //
-  // Two and not one because the durable claim WAITS (issue #203). The first ask is before it, so a
-  // run already retired takes no claim it would have to release; the second is after it, because
-  // `markTurnOwning` blocks on an append's lease and on the row lock /reset itself takes, and a
-  // reset holding that row releases it straight into this waiter. A single ask before the claim
-  // answers about a moment that can be dozens of seconds in the past by the time anything is
-  // written.
+  // NOTE: TWO per file with a critical section (the redirect follow-up only asks around sends).
+  // The durable claim WAITS on an append's lease and on the row lock /reset takes, so one ask comes
+  // before it (a retired run takes no claim) and one after it: a single ask before the claim can be
+  // dozens of seconds stale by the time anything is written.
   test.each([
     ["src/graph/runtime.ts", 2],
     ["src/graph/nudge.ts", 2],
@@ -108,16 +90,11 @@ describe("stillWanted strictness, per call site", () => {
     },
   );
 
-  // THE ASK THAT STRADDLES THE WAIT. The claim is not instantaneous: it waits out an append's lease
-  // and the row lock /reset holds, so the ask that authorizes the writes has to come AFTER it. This
-  // is the rule the code broke on its way to being durable, and it broke it silently: the ask was
-  // still there, still strict, still inside the section, and only its position had stopped meaning
-  // anything.
-  //
-  // A source walk and not a behavioural test because the call site in `runLoadedTurn` is not
-  // reachable from a test (the webhook path passes `stillWanted: null`, and the debounce job that
-  // does pass a callback goes through the whole handler). `runAgentNudge` covers the same seam
-  // behaviourally in tests/graph/nudge.test.ts; this covers both files.
+  // NOTE: The claim waits out an append's lease and the row lock /reset holds, so the ask that
+  // authorizes the writes must come AFTER it; a strict ask in the wrong position fails silently. A
+  // source walk because the call site in `runLoadedTurn` is not reachable from a test (the webhook
+  // path passes `stillWanted: null`, the debounce job goes through the whole handler).
+  // `runAgentNudge` covers the same seam behaviourally in tests/graph/nudge.test.ts.
   const WRITES =
     /\.(?:updateState|upsert|create|update|createMany|updateMany|delete)\(|\$executeRaw/;
   test.each([["src/graph/runtime.ts"], ["src/graph/nudge.ts"]])(

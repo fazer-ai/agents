@@ -18,8 +18,8 @@ const COND: ToolPrecondition = {
   key: "article_url",
 };
 
-// The side effect the issue is about: `handoff_to_human` reassigns the conversation and posts, and
-// none of that is undoable. A stub that RECORDS the effect is the only way a test can tell "refused"
+// The guarded side effect: `handoff_to_human` reassigns the conversation and posts, and none of that
+// is undoable. A stub that RECORDS the effect is the only way a test can tell "refused"
 // from "ran and returned something that reads like a refusal".
 function spyTool(name = "handoff_to_human") {
   const calls: unknown[] = [];
@@ -81,9 +81,8 @@ describe("guardedTool", () => {
     ]);
   });
 
-  // Round 5 of PR #378: both refusals reported identically, so a database fault that refuses EVERY
-  // guarded call for as long as it lasts was indistinguishable from a rule doing its job — the same
-  // `info`/`ok` line, and nothing anywhere to page on. The model still gets the same sentence.
+  // NOTE: a database fault refuses EVERY guarded call for as long as it lasts, so reported like an
+  // unmet rule (the same `info`/`ok` line) it would page nobody. The model gets the same sentence.
   test("an unreadable state reports a DIFFERENT reason, carrying the error", async () => {
     const seen: Array<{ reason: string; err?: unknown }> = [];
     const { tool: inner, calls } = spyTool();
@@ -122,7 +121,7 @@ describe("guardedTool", () => {
 
   test("the state is read per CALL, not once at wrap time", async () => {
     const { tool: inner, calls } = spyTool();
-    // The turn the issue describes: the value arrives mid-turn (set_custom_attribute writes it) and
+    // The value arrives mid-turn (set_custom_attribute writes it) and
     // the guarded call comes after. A state captured at wrap time would refuse this.
     let attributes: Record<string, unknown> = {};
     const guarded = guardedTool(inner, COND, async () => ({
@@ -214,9 +213,9 @@ describe("applyToolPreconditions", () => {
     expect(out[0]).toBe(a);
   });
 
-  // Round 5 of PR #378: "changes nothing" is exactly the problem. On screen the rule is there, the
-  // tool runs anyway, and nothing connects the two. It happens without the operator doing anything —
-  // the grant is removed, or an imported MCP connection comes back under a different exposed name.
+  // NOTE: a rule that matches nothing shows on screen while the tool runs anyway. It happens without
+  // the operator doing anything: the grant is removed, or an imported MCP connection comes back under
+  // a different exposed name.
   describe("a rule that matches nothing is REPORTED", () => {
     test("names every unmatched tool, once", () => {
       const { tool: a } = spyTool("a");
@@ -249,9 +248,8 @@ describe("applyToolPreconditions", () => {
   });
 });
 
-// Round 1 of PR #378: the wrapper used to be a second `tool()`, which started a CHILD run under the
-// outer one. Two runs for one model-issued call is two flow-log lines and, on an integration
-// failure, two alerts.
+// The wrapper must not be a second `tool()`, which would start a CHILD run under the outer one: two
+// runs for one model-issued call is two flow-log lines and, on an integration failure, two alerts.
 describe("round 1: one model-issued call is ONE tool run", () => {
   function runCounter() {
     const started: string[] = [];
@@ -260,7 +258,7 @@ describe("round 1: one model-issued call is ONE tool run", () => {
       handlers: [
         {
           // The 7th argument is the run NAME; the first is a serialized descriptor whose `name` is
-          // not the tool's. Measured, rather than assumed from the signature.
+          // not the tool's.
           handleToolStart(
             _tool: unknown,
             _input: string,
@@ -334,8 +332,8 @@ describe("preconditionFlowEvent", () => {
   });
 
   test("the error's CLASS travels, never its message", () => {
-    // Measured in this repo before (PR #292): a driver's own TypeError message carries the request
-    // that failed, headers included. This detail is rendered in the console.
+    // NOTE: a driver's own TypeError message carries the request that failed, credentials included,
+    // and this detail is rendered in the console.
     const ev = preconditionFlowEvent({
       tool: "handoff_to_human",
       cond: COND,
@@ -384,11 +382,10 @@ describe("unmatchedPreconditionEvent", () => {
 
 describe("the effect-free mark and the guard", () => {
   test("a guarded tool is still the tool it wraps, mark included", async () => {
-    // An imported settings bag can carry a precondition on a NON-native name, and the runtime guards
-    // whatever tool still answers to it (tool-preconditions.ts) — `search_knowledge` included. The
-    // guard delegates by prototype, so the mark the RAG builder put on the tool is inherited; a
-    // wrapper that ever stops delegating would drop it, and the observer's tick would start counting
-    // a read as an effect and lose its retry (issue #568, review round 29).
+    // NOTE: an imported settings bag can carry a precondition on a NON-native name, and the runtime
+    // guards whatever tool still answers to it, `search_knowledge` included. The guard delegates by
+    // prototype, so the RAG builder's mark is inherited; a wrapper that stops delegating would drop
+    // it, and the observer's tick would count a read as an effect and lose its retry.
     const inner = markEffectFree(
       tool(async () => "nada", {
         name: "search_knowledge",

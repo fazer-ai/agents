@@ -104,7 +104,7 @@ describe("every post-generation refusal rolls the turn back", () => {
   });
 
   // NOTE: The trap the comment stripping exists for: runtime.ts prose quotes the outcomes by name,
-  // and without the strip this file reported two phantom sites there.
+  // so without the strip runtime.ts yields two phantom sites.
   test("prose above a routed refusal does not invent an offender", () => {
     const prosey = `
   const refuse = async (outcome) => outcome;

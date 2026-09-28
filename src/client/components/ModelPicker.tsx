@@ -80,15 +80,11 @@ export function ModelPicker({
 }: Props) {
   const { t } = useTranslation();
   const key = cacheKey(provider, credentialRef, baseURL, capability);
-  // An empty field still shows this text, so it has to be the model the runtime would actually use.
-  // It used to be the literal "gpt-5.4-mini" for every provider, which read as "Anthropic will run
-  // gpt-5.4-mini" under Anthropic. Only chat has a per-provider table here.
-  //
-  // NOTE: A caller's placeholder wins even when it is the empty string, which is a deliberate value
-  // and not an omission: the vision and STT tabs pass `X_DEFAULT_MODEL[provider] ?? ""`, and for
-  // openai-compatible those tables hold "" precisely because no default exists and the endpoint
-  // needs a named model. Promising "provider default" there would invite an empty field the request
-  // cannot satisfy. Hence `!== undefined` rather than a truthiness fallback.
+  // NOTE: an empty field still shows this text, so it has to be the model the runtime would actually
+  // use; only chat has a per-provider table here. A caller's placeholder wins even when it is "": the
+  // vision and STT tabs pass `X_DEFAULT_MODEL[provider] ?? ""`, and openai-compatible holds "" because
+  // no default exists and the endpoint needs a named model, so promising "provider default" would
+  // invite an empty field the request cannot satisfy. Hence `!== undefined`, not a truthiness fallback.
   const providerDefault = t(
     "editor.modelPickerProviderDefault",
     "Provider default",

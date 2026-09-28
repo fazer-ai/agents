@@ -19,31 +19,21 @@ import { Button } from "./Button";
 import { DiscardDialog } from "./DiscardDialog";
 import { handOverEscape } from "./escapeClaim";
 
-// NOTE: stacked modals resolve their z-index at runtime via
-// `calc(var(--z-modal) + level * step)` — `level` is the modal's position in the open-stack
-// (see below) — so the base value stays defined in one place (public/index.css). Each level adds
-// MODAL_DEPTH_STEP to the content; the overlay sits one below its content so it dims the modal
-// beneath without escaping to the next layer above. At level 0 the Tailwind z-token classes below
-// are used unchanged, which preserves the 10-unit gap between --z-modal-overlay (70) and
-// --z-modal (80). At level >0 the gap between overlay and content collapses to 1; this is only a
-// problem if a new z-indexed layer is ever introduced between a content and its own overlay,
-// which does not happen with the current token set.
+// Stacked modals resolve their z-index at runtime as `calc(var(--z-modal) + level * step)`, with
+// `level` the modal's position in the open-stack, so the base stays defined once (public/index.css).
+// The overlay sits one below its content, dimming the modal beneath. At level >0 the overlay-content
+// gap collapses to 1, which only matters if a z-indexed layer is ever put between a content and its
+// own overlay.
 const MODAL_DEPTH_STEP = 2;
 // NOTE: with base 80 and step 2, level 5 reaches --z-toast (90). Warn before
 // the collision so the conflict does not go silently wrong.
 const MODAL_MAX_DEPTH = 4;
 
-// NOTE: the open modals, in open order (module-level so every <Modal> shares one stack). It
-// drives two things Radix's per-dialog primitives and our document-level dismissal can't do on
-// their own for SIBLING modals (ones rendered at the same React position, e.g. a page that mounts
-// several <Modal> next to each other and opens them in sequence):
-//   1. Dismissal stacking: only the TOPMOST open modal reacts to a backdrop click. Our
-//      pointerdown/pointerup listeners run on `document` and, unlike Radix's DismissableLayer, have
-//      no stacking awareness — without this a click on an upper modal dismisses a lower one.
-//   2. Overlay dimming / z-index: each modal's z derives from its position here, so a modal opened
-//      later sits (with its dimming overlay one step below it) above every earlier one. Sibling
-//      modals would otherwise share a z and their overlays could not dim each other.
-// Reactive via useSyncExternalStore so opening/closing one re-renders the others to restack.
+// The open modals, in open order, module-level so every <Modal> shares one stack. For SIBLING modals
+// (rendered at the same React position) it gives what Radix's per-dialog primitives cannot: only the
+// TOPMOST reacts to a backdrop click, since our `document` pointer listeners have no stacking
+// awareness, and each modal's z derives from its position, so a later one and its overlay sit above
+// every earlier one. Reactive via useSyncExternalStore so opening or closing one restacks the others.
 let modalStack: string[] = [];
 const modalStackListeners = new Set<() => void>();
 function getModalStack(): string[] {
@@ -201,17 +191,11 @@ export function ModalCancelButton({
   );
 }
 
-// NOTE: Convenience for the common "init state when the modal opens" pattern.
-// Fires `effect` each time the passed controller's `isOpen` transitions from
-// false to true, and runs the optional cleanup when it transitions back to
-// false. Takes the controller directly (not the boolean) because this hook
-// is typically called in the wrapper component *before* `<Modal>` mounts its
-// `ModalControllerContext.Provider`, so it cannot read the controller from
-// context the way `useModal` does. The effect closure is refreshed on every
-// render, so it always sees the latest props and state without re-firing
-// mid-open (which would clobber user edits on an unrelated prop change). For
-// behavior that must react to changes while the modal is open, use
-// `useEffect` directly.
+// Runs `effect` each time the controller's `isOpen` goes from false to true, and its cleanup when it
+// goes back. Takes the controller rather than reading context, because it is called in the wrapper
+// before `<Modal>` mounts its provider. The closure is refreshed every render without re-firing
+// mid-open, which would clobber user edits on an unrelated prop change; to react to changes while
+// the modal is open, use `useEffect` directly.
 export function useOnModalOpen(
   modal: Pick<ModalController<unknown>, "isOpen">,
   // biome-ignore lint/suspicious/noConfusingVoidType: matches React's EffectCallback shape — `void` means "caller ignores any non-cleanup return", and `(() => void)` is the optional cleanup.
@@ -399,15 +383,11 @@ export function Modal({
         }
       : undefined;
   const contentRef = useRef<HTMLDivElement>(null);
-  // NOTE: Radix closes on pointerdown-outside by default, which closes mid-drag
-  // (e.g. a text selection released outside the modal). We instead close only when
-  // BOTH the press and the release land outside the content. This is driven by our own
-  // real pointerdown/pointerup document listeners (below), NOT Radix's
-  // `onPointerDownOutside` — Radix dispatches that callback AFTER `pointerup` (deferred
-  // to the `click`), so a latch set there is always one gesture stale: it dangles past
-  // its own release and then fires on the NEXT click, closing the modal on an unrelated
-  // press (e.g. re-opening a dropdown after interacting with it). This ref records, per
-  // gesture, whether the pointerdown was outside.
+  // NOTE: close only when BOTH the press and the release land outside the content, so a drag released
+  // outside (a text selection) does not close. Driven by our own document pointerdown/pointerup
+  // listeners, NOT Radix's `onPointerDownOutside`: Radix dispatches that after `pointerup`, so a latch
+  // set there is one gesture stale and closes the modal on the NEXT, unrelated click. This ref records,
+  // per gesture, whether the pointerdown was outside.
   const pointerDownOutsideRef = useRef(false);
 
   useEffect(() => {
@@ -492,12 +472,10 @@ export function Modal({
               onPointerDownOutside={(e) => {
                 e.preventDefault();
               }}
-              // A control INSIDE the dialog may own Escape. The code editor's completion popup is
-              // the measured case: Escape is the standard key for dismissing a suggestion, and
-              // closing the dialog on that same press asked the operator whether to discard the
-              // body they were writing. It cannot stop the event itself, because Radix listens on
-              // `document` in the CAPTURE phase and therefore runs first; `defaultPrevented` is
-              // what it reads back, so the claim is declared and cancelled here.
+              // NOTE: a control INSIDE the dialog may own Escape, such as the code editor's completion popup,
+              // where closing the dialog on the same press would offer to discard the body. The control cannot
+              // stop the event, because Radix listens on `document` in the CAPTURE phase and runs first, so it
+              // declares a claim and the press is cancelled here.
               onEscapeKeyDown={(e) => {
                 if (handOverEscape(e.target)) e.preventDefault();
               }}
@@ -510,12 +488,9 @@ export function Modal({
               // `aria-labelledby` from it automatically. When no title is
               // provided, `ariaLabel` gives the dialog an accessible name.
               aria-label={!title && ariaLabel ? ariaLabel : undefined}
-              // Full-viewport flex container that CENTERS the panel below. Centering by flexbox
-              // (not top-50% + translateY(-50%)) means the panel's position never depends on its
-              // own height, so a modal whose body loads async no longer paints low then jumps to
-              // center once the content grows. Content stays the direct Portal child, so Radix's
-              // Presence still plays the exit animation; the zoom/fade run here and scale the
-              // centered panel around the viewport center (identical look to the translate one).
+              // NOTE: a full-viewport flex container that CENTERS the panel, so its position never depends on its
+              // own height (with top-50% + translateY, a modal whose body loads async paints low, then jumps).
+              // Content stays the direct Portal child, so Radix's Presence still plays the exit animation.
               className={cn(
                 "data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 fixed inset-0 flex items-center justify-center p-4 focus:outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
                 stackLevel === 0 && "z-(--z-modal)",

@@ -204,11 +204,9 @@ export function GuardrailsTab({
             </FormField>
             {/* Shown for "generated" too, because that action falls back to this text whenever no
                 replacement is written: when the model returns none, and always when the relevance
-                check is what tripped. Hiding it here left the operator unable to see or edit the
-                message their customers actually receive. */}
-            {/* The hand-over's own sentence (issue #704). Not the template: that one is a refusal,
-                and this says a person will continue. Empty is a choice, so the box may be left
-                blank on purpose. */}
+                check is what tripped. It is the message customers actually receive then. */}
+            {/* The hand-over's own sentence. Not the template: that one is a refusal, and this says
+                a person will continue. Empty is a choice, so the box may be left blank on purpose. */}
             {d.action === "handoff" && (
               <FormField
                 label={t(

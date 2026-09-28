@@ -1,12 +1,9 @@
 // The selected tenant, sent as X-Tenant-Id on every API call: any tenant for a SUPER_ADMIN, one of
-// the person's memberships for everyone else (issue #756). The backend refuses a selector outside
-// what the session may reach and names it on the refusal, which is how a stale value (another
-// person's, on a shared browser, or a membership since removed) gets dropped
-// (src/client/lib/tenantSelectorRecovery.ts).
-//
-// Remembered PER TAB, with the last choice as the default for a new one: sessionStorage is the tab's
-// own, localStorage what the next tab starts from. One shared value would make choosing a tenant in
-// one tab move every other tab to it on their next request, under pages built for the old one.
+// the person's memberships for everyone else. The backend refuses a selector outside what the
+// session may reach and names it, which is how a stale value gets dropped (tenantSelectorRecovery.ts).
+// Remembered PER TAB, with the last choice as a new tab's default: sessionStorage is the tab's own,
+// localStorage what the next tab starts from. One shared value would move every other tab to a newly
+// chosen tenant on their next request, under pages built for the old one.
 
 const KEY = "@app:active-tenant";
 
@@ -32,7 +29,7 @@ export function getActiveTenantId(): string | null {
 // Pins the tenant THIS TAB is running under without making it the next tab's default. For a person
 // whose session resolved their default membership with no selection stored: until the tab holds that
 // id, it keeps inheriting the shared default, and a choice made in another tab would move this tab's
-// next request to another tenant under a page built for the first one (review round 1, #756).
+// next request to another tenant under a page built for the first one.
 export function pinTabTenantId(id: string): void {
   const tab = tabStore();
   if (tab && tab.getItem(KEY) === null) tab.setItem(KEY, id);
@@ -40,11 +37,9 @@ export function pinTabTenantId(id: string): void {
 
 // What the tab does with the tenant a fresh session reports, a function rather than inline in the
 // AuthProvider so the rule can be tested (the provider is module-mocked across the client suite).
-//
 // A SUPER_ADMIN gets the fleet's first tenant as a default, only when nothing is selected, so the
-// console opens on a real tenant instead of an empty dashboard and a deliberate switch is never
-// overridden. A person's session ran under the membership the server resolved, and this tab keeps it,
-// so a choice made in another tab cannot move it (issue #756).
+// console opens on a real tenant and a deliberate switch is never overridden. A person's session ran
+// under the membership the server resolved, and this tab keeps it, so another tab cannot move it.
 export function adoptSessionTenant(
   user: { role: string; tenantId: string | null } | null,
   defaultTenantId: string | null,
@@ -77,23 +72,13 @@ export function notifyTenantsChanged(): void {
   window.dispatchEvent(new Event(TENANTS_CHANGED_EVENT));
 }
 
-// Reconcile the stored selection against the AUTHORITATIVE list of tenants, reporting the id that
-// survives and whether a selection was dropped.
-//
-// The stored id is the one piece of tenant state that lives in the browser, so it outlives the
-// tenant it names: delete that tenant, or point the console at another database, and every request
-// keeps carrying a selector for something that is not there. Before this, both readers of the list
-// answered the question and neither acted on it: the header switcher fell back to its "Select
-// tenant" label, which reads exactly like "you have not picked one yet", the one state it is not.
-//
-// `cleared` is separate from a null `activeId` because the two mean different things to a caller. A
-// null id is also the ordinary state of a fleet operator who has not picked a tenant yet; `cleared`
-// is an event, and it is the only one that says the pages currently on screen were built against a
-// tenant that is not there.
-//
-// Only ever called with a list that was actually READ. A failed fetch must not reach here, because
-// an empty list is the claim "there are no tenants", and treating a read we could not make as that
-// claim would drop a perfectly good selection on any server blip.
+// Reconcile the stored selection against the AUTHORITATIVE tenant list, reporting the surviving id
+// and whether a selection was dropped. The stored id lives in the browser, so it outlives the tenant
+// it names (deleted, or the console pointed at another database), and a "Select tenant" fallback
+// would read like "not picked yet". `cleared` is separate from a null `activeId`: null is also a
+// fleet operator who has not picked, while `cleared` is the event saying the pages on screen were
+// built against a tenant that is gone. Only ever called with a list actually READ: an empty list
+// claims "there are no tenants", and a failed read taken as that would drop a good selection.
 export function reconcileActiveTenantId(tenantIds: string[]): {
   activeId: string | null;
   cleared: boolean;
@@ -107,23 +92,13 @@ export function reconcileActiveTenantId(tenantIds: string[]): {
   return { activeId: null, cleared: true };
 }
 
-// The same question `reconcileActiveTenantId` asks at page load, asked by a single REFUSED REQUEST.
-//
-// The list-based reconciliation only runs on mount, so everything that kills a tenant mid-session is
-// invisible to it: deleted from another tab or by another operator, `tenant_delete` over MCP, the
-// console pointed at a different database. This path finds out on the next request instead of on the
-// next page load, from the id the boundary names (REJECTED_TENANT_SELECTOR_HEADER).
-//
-// Answers whether the refusal is about the selection THIS window is running under. A DIFFERENT id is
-// not: the request went out under the old selection and came back after the operator had already
-// switched to a live tenant, and that newer choice is not this answer's to discard — the same reason
-// the reconciliation reads storage at call time rather than capturing it.
-//
-// Nothing stored still counts as ours, and that case is the multi-tab one: localStorage is shared
-// across tabs, so another tab may have cleared it while this one was still rendered against that
-// tenant and still sending it. Reading null as "someone else handled it" is what would leave that tab
-// on screen, sending no selector at all. What keeps the reload to one per window is
-// src/client/lib/tenantSelectorRecovery.ts, which is window state and not this.
+// The same question `reconcileActiveTenantId` asks at page load, asked by a single REFUSED REQUEST,
+// so a tenant killed mid-session (another tab, `tenant_delete` over MCP, another database) is found
+// on the next request, from the id the boundary names (REJECTED_TENANT_SELECTOR_HEADER). Answers
+// whether the refusal is about the selection THIS window runs under: a DIFFERENT id is a request
+// that went out before the operator switched, and that newer choice is not its to discard. Nothing
+// stored still counts as ours: another tab may have cleared the shared value while this one still
+// sends it. One reload per window is kept by tenantSelectorRecovery.ts, which is window state.
 export function dropRejectedSelection(rejectedId: string): boolean {
   const active = getActiveTenantId();
   if (active !== null && active !== rejectedId) return false;

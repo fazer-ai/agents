@@ -144,18 +144,10 @@ export function DocumentTemplateModal({
     );
   }, [template, texts]);
 
-  // What this modal would WRITE: the fields whose value here differs from the row it was opened on.
-  //
-  // The modal holds a snapshot from when the list was loaded, so sending every field back makes a
-  // wording-only edit overwrite a name, prefix or style an API or MCP client set in the meantime —
-  // the same multi-transport overwrite `blockText` exists to avoid for the blocks. The server's row
-  // lock serialises the writes; it cannot know that a field this request restated was never edited
-  // here.
-  //
-  // The PREVIEW is built from this too, and that is the point of it being one value: a preview
-  // assembled from the modal's whole state shows the stale style beside the new wording, while the
-  // save that follows keeps the concurrent style — the preview describing a document the apply will
-  // not produce, which is the one thing it must never do.
+  // NOTE: what this modal would WRITE: only the fields that differ from the row it opened on, so a
+  // wording edit cannot overwrite a name, prefix or style an API or MCP client set meanwhile (the
+  // row lock cannot tell a restated field from an edited one). The PREVIEW is built from this same
+  // value, so it never shows a document the save would not produce.
   const changes = useMemo(() => {
     if (!template || !style) return null;
     const patch: Record<string, unknown> = {};
@@ -245,9 +237,8 @@ export function DocumentTemplateModal({
       modal.close();
       onSaved();
     } catch {
-      // Eden rejects on a transport failure rather than answering `{ error }`, and only the second
-      // was handled — so an offline save closed nothing, said nothing, and left an unhandled
-      // rejection behind.
+      // NOTE: Eden rejects on a transport failure rather than answering `{ error }`, so an
+      // offline save lands here.
       if (session === sessionRef.current) {
         showToast(
           t("documents.saveError", "Could not save this template."),
@@ -331,11 +322,9 @@ export function DocumentTemplateModal({
                 onChange={(e) => setNumberPrefix(e.target.value)}
               />
             </FormField>
-            {/* The tool name the model will be offered, and the operator's to change. It was
-                read-only, which made the rename trap unfixable from the screen that caused it: the
-                field kept showing the tool derived from the ORIGINAL name with nothing saying why.
-                The refusal shows HERE rather than in a toast, because the only thing that answers
-                it is this input. */}
+            {/* The tool name the model will be offered, and the operator's to change, so a rename
+                can be fixed from this screen. The refusal shows HERE rather than in a toast,
+                because the only thing that answers it is this input. */}
             <FormField
               label={t("documents.toolName", "Agent tool")}
               hint={t("documents.toolNameHint", "The agent calls it {{tool}}", {
@@ -503,16 +492,9 @@ export function DocumentTemplateModal({
           </div>
         </div>
 
-        {/* `self-start` is what makes the sticky actually stick. A grid item stretches to the
-            row height by default, so `sticky` has nothing to travel within and the preview scrolls
-            away as soon as the form below it is longer than the viewport — which is exactly when it
-            is being used.
-
-            And `h-`, not `max-h-`, for the other half of the same fact: `self-start` also removes
-            the stretch that WAS giving this column a height, so a ceiling leaves the box sitting at
-            `min-h-96` and the iframe's `h-full` resolving against nothing. The document then
-            rendered into 384px of a modal twice that tall. A definite height is what both `sticky`
-            and the iframe need. */}
+        {/* `self-start` makes the sticky stick: a stretched grid item leaves `sticky` nothing to
+            travel within. `h-`, not `max-h-`: without the stretch the column needs a definite
+            height, or the iframe's `h-full` resolves against nothing and sits at `min-h-96`. */}
         <DocumentPreview
           state={preview}
           className="min-h-96 lg:sticky lg:top-0 lg:h-[70vh] lg:self-start"

@@ -4,10 +4,10 @@ import { useTranslation } from "react-i18next";
 import { Card, HelpPopover } from "@/client/components";
 import { cn } from "@/client/lib/utils";
 
-// Shared building blocks for the heavy editor tabs (item 9): a titled <Section> card with an anchor
-// id + icon, and a left-rail <SectionNav> index that scrolls to a section on click and highlights the
-// one currently in view (scroll-spy). Lets the operator see WHERE they are across the many sections of
-// the Behavior/Tools tabs instead of scrolling blindly.
+// Shared building blocks for the heavy editor tabs: a titled <Section> card with an anchor id + icon,
+// and a left-rail <SectionNav> index that scrolls to a section on click and highlights the one
+// currently in view (scroll-spy), so the operator sees WHERE they are across the many sections of
+// the Behavior/Tools tabs.
 
 export interface SectionDef {
   id: string;
@@ -25,9 +25,9 @@ export interface SectionProps {
   help?: ReactNode;
   children: ReactNode;
   className?: string;
-  // Drawn but not shown: the form inside keeps its state. A Behavior section that does not apply
-  // to the agent's mode (issue #494) is hidden this way rather than unmounted, so flipping the
-  // mode back shows it again exactly as it was, unsaved edits included.
+  // Drawn but not shown: the form inside keeps its state. A Behavior section that does not apply to
+  // the agent's mode is hidden this way rather than unmounted, so flipping the mode back shows it
+  // again exactly as it was, unsaved edits included.
   hidden?: boolean;
 }
 
@@ -53,11 +53,10 @@ export function Section({
         className,
       )}
     >
-      {/* The icon is 28px and one line of the title is 20px, so how they align depends on whether
-          there is a second line. With a description the text column is the taller of the two and
-          the icon rides its FIRST line (`items-start` + the nudge). Without one, the shape most
-          sections took once their prose moved behind the `?`, the same rule leaves the title
-          sitting 6px above the icon's centre, so the two are centred against each other instead. */}
+      {/* The icon is 28px and one line of the title is 20px, so the alignment depends on whether
+          there is a second line. With a description the icon rides the text column's FIRST line
+          (`items-start` + the nudge); without one, the same rule would leave the title 6px above
+          the icon's centre, so the two are centred against each other instead. */}
       <div
         className={cn(
           "flex gap-2.5",

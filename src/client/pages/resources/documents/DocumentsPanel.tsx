@@ -61,10 +61,6 @@ function companySummary(
   return parts.join(" · ");
 }
 
-// The message the API actually sent, when there is one. Eden hands an HTTP failure back as
-// `{ error }` whose `value` is the parsed body, and a refusal here is written for the operator (which
-// template has the name, which rule the name breaks) — throwing it away for a generic string is how
-// a fixable mistake becomes a dead end.
 // The keys of the create body. `name` is the one an operator can act on here — a duplicate answers
 // with which template already holds it — and the rest come from the starter, not from an input.
 const STARTER_FIELDS = ["name"] as const;
@@ -130,17 +126,11 @@ export function DocumentsPanel() {
   const deleteModal = useModalController<{ id: string; name: string }>();
   const confirm = useModalController<ConfirmPayload>();
 
-  // `loading` and `error` are both the FIRST load only, and for one reason: this panel reloads
-  // itself constantly — after a template is saved or deleted, after a starter is used, whenever the
-  // operator switches language — while the company profile below is an open form somebody may be
-  // typing into. The card sits inside a boundary keyed on these flags, so either one taking the
-  // screen away discards the edit and the guard that would have warned about leaving it, over an
-  // action that had nothing to do with it. A refresh replaces the data underneath; it does not take
-  // the screen away, and a refresh that FAILS says so without taking it away either.
-  //
-  // It means "a load has SUCCEEDED", not "a load has finished": set after the setters below, not in
-  // `finally`. A failed first load leaves nothing on screen, and there the retry card IS the answer
-  // — including for its own retry, which must show a skeleton rather than an empty account.
+  // NOTE: `loading` and `error` are the FIRST load only: this panel reloads constantly (a template
+  // saved or deleted, a starter used, a language switch), and a boundary keyed on them would take
+  // the screen away over an unrelated action. A refresh, even a failing one, replaces data without
+  // taking the screen. This means "a load SUCCEEDED" (set after the setters, not in `finally`), so
+  // a failed first load keeps the retry card, whose own retry shows a skeleton.
   const loadedOnce = useRef(false);
   // Which load is the CURRENT one. `load` is re-created when the operator switches language, and the
   // starters are the one thing here whose content is locale-specific — so two loads can be in flight
@@ -148,11 +138,10 @@ export function DocumentsPanel() {
   // older list landing after a newer one leaves the operator creating a template in the language
   // they just switched away from, permanently and with no sign anything went wrong.
   const loadSeq = useRef(0);
-  // How many times the company block has been WRITTEN from this screen. A load reads four endpoints
-  // at once and applies them together, so its settings response can be a snapshot taken before a
-  // save or a logo upload that has since answered — and applying it then puts the operator's own
-  // change back to what it replaced, on screen, with nothing saying so. The load generation does not
-  // cover this: no newer load started, a different request answered.
+  // NOTE: how many times the company block has been WRITTEN from this screen. A load's settings
+  // response can predate a save or logo upload that has since answered, and applying it would undo
+  // the operator's change on screen. The load generation does not cover this: no newer load
+  // started, a different request answered.
   const companyWrites = useRef(0);
   const applyCompany = useCallback((next: CompanyProfile) => {
     companyWrites.current++;
@@ -195,10 +184,9 @@ export function DocumentsPanel() {
         api.api.v1["tenant-settings"].get(),
         api.api.v1.documents.get({ query: { limit: "20" } }),
       ]);
-      // Every request's error, not just the list's. Eden RESOLVES an HTTP failure as `{ error }`
-      // rather than rejecting, so an unchecked call reads as empty data: a settings failure rendered
-      // a blank editable profile over settings that may well have values, and a starters or
-      // documents failure showed "none" for a list that failed to load.
+      // NOTE: every request's error, not just the list's. Eden RESOLVES an HTTP failure as
+      // `{ error }`, so an unchecked call reads as empty data: a blank profile over stored
+      // settings, or "none" for a list that failed to load.
       // Superseded: a newer load started while this one was in flight, so every setter below would
       // be writing an answer to a question nobody is asking any more.
       if (!current()) return;
@@ -280,8 +268,8 @@ export function DocumentsPanel() {
       showToast(t("documents.created", "Template created."), "success");
       void load();
     } catch (e) {
-      // Eden REJECTS on a transport failure instead of answering `{ error }`, and only the second
-      // was handled: offline, the button spun and then said nothing at all.
+      // NOTE: Eden REJECTS on a transport failure instead of answering `{ error }`, so an offline
+      // create lands here.
       setCreateError(
         refusal.capture(
           e,
@@ -374,9 +362,8 @@ export function DocumentsPanel() {
     // on it instead, which is the same protection without losing the tab.
     const tab = window.open("", "_blank");
     if (tab) tab.opener = null;
-    // The fetch can REJECT — offline, DNS, a dropped connection — and not merely answer non-OK. That
-    // path skipped the branch below entirely, leaving the tab we just opened blank forever and the
-    // operator with no message at all: a button that visibly does nothing.
+    // NOTE: the fetch can REJECT (offline, DNS, a dropped connection), not merely answer non-OK;
+    // uncaught, the tab just opened would stay blank with no message to the operator.
     let url: string;
     try {
       const res = await mediaFetch(`/api/v1/documents/${doc.id}/pdf`);
@@ -464,11 +451,9 @@ export function DocumentsPanel() {
         )}
       </div>
 
-      {/* Two things live on this screen and only one of them is configuration. A template is authored
-          once and granted; an issued document is a RECORD, read when somebody asks about a document
-          the customer already has. Stacking the second under the first made the page read as one
-          long list, and it is the reason the letterhead — edited once and forgotten — sat above the
-          thing the page is named after. */}
+      {/* Two things live on this screen and only one of them is configuration: a template is
+          authored once and granted, while an issued document is a RECORD, read when somebody asks
+          about a document the customer already has. Tabs keep them from reading as one list. */}
       <Tabs
         items={[
           {
@@ -489,10 +474,8 @@ export function DocumentsPanel() {
 
       {tab === "templates" ? (
         <>
-          {/* A summary, not the form. The letterhead is filled once and then forgotten, so an open
-              editable form at the top of the page spent the first screenful on the thing that
-              changes least — and being open is also what made a background refresh able to discard
-              what somebody was typing into it. In a modal it cannot. */}
+          {/* A summary, not the form: the letterhead is filled once and then forgotten, and in a
+              modal a background refresh cannot discard what somebody is typing into it. */}
           <DataBoundary loading={loading} error={error} onRetry={load}>
             <Card className="flex items-center justify-between gap-4 py-3">
               <div className="flex min-w-0 items-center gap-2">
@@ -688,9 +671,8 @@ export function DocumentsPanel() {
       <Modal
         modal={companyModal}
         title={t("documents.company.title", "Company profile")}
-        // Guarded like any other form modal: the letterhead is typed into, and dismissing on a
-        // backdrop click used to be free because the form lived on the page, where the nav guard
-        // caught it. In a modal the nav guard never fires.
+        // NOTE: guarded like any other form modal: in a modal the nav guard never fires, so a
+        // backdrop click would discard the letterhead edit.
         onCloseRequest={
           companyDirty
             ? () => {

@@ -154,10 +154,9 @@ function FunnelBar({
 // timeseries points (for calls) or cost-days from Langfuse (for cost).
 type CostDay = NonNullable<Extract<Costs, { status: "ok" }>["days"][number]>;
 
-// The operator's IANA timezone. The daily buckets are computed in THIS zone — both here (the
-// zero-fill window) and on the backend (the SQL date_trunc gets `?tz=`) — so a late-night turn
-// lands on the right LOCAL day instead of leaking into "tomorrow" in UTC. This is the recurring
-// "21h BRT shows usage on tomorrow (00h UTC)" bug; the fix is to never reason in UTC for days.
+// The operator's IANA timezone. The daily buckets are computed in THIS zone, both here (the
+// zero-fill window) and on the backend (the SQL date_trunc gets `?tz=`), so a late-night turn lands
+// on the right LOCAL day instead of on "tomorrow" in UTC. Never reason in UTC for days.
 export const OPERATOR_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 // Local day key (YYYY-MM-DD) of a Date in the operator's zone. Browser Date getters already read in
@@ -179,10 +178,8 @@ export function buildCostTrend(
   points: Point[],
   costDays: CostDay[],
   range: Range,
-  // THE SEGMENT, not a flag: the rule for when the ratio means anything belongs to this function
-  // rather than to whoever calls it (review round 1). The divisor is our own conversation count and
-  // a playground turn has no conversation, so dividing combined or playground-only cost by it
-  // prints a cost per conversation those dollars never had. Only the real segment can be divided.
+  // The segment, not a flag, so the rule lives here: the divisor is our own conversation count and a
+  // playground turn has no conversation, so only the real segment's cost can be divided by it.
   source: Source,
 ): TrendPoint[] {
   const withRatio = source === "inbox";
@@ -439,11 +436,9 @@ export function DashboardPage() {
   const [kpis, setKpis] = useState<Kpis | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
   const [costs, setCosts] = useState<Costs | null>(null);
-  // The cost's OWN pending state (review round 4). It settles outside the section's loading gate, so
-  // between the local figures arriving and Langfuse answering there is a window with no cost yet:
-  // rendering `costs === null` there tells a configured tenant to connect Langfuse, and keeping the
-  // previous value puts the inbox's cost beside the playground's metrics. The slot holds a skeleton
-  // instead, which is what the shape of that card is for.
+  // NOTE: The cost's own pending state: it settles after the section's figures, and in that window
+  // `costs === null` would tell a configured tenant to connect Langfuse, while keeping the previous
+  // value would pair another segment's cost with these figures. The slot shows a skeleton instead.
   const [costsLoading, setCostsLoading] = useState(true);
   const [ceiling, setCeiling] = useState<Ceiling | null>(null);
   const [agentNames, setAgentNames] = useState<Record<string, string>>({});
@@ -491,12 +486,9 @@ export function DashboardPage() {
     }
   }, []);
 
-  // Usage section (source-dependent): token figures + timeseries follow the selected segment. Keeps
-  // the previous data while reloading so the section shows a skeleton, not a flash of stale values.
-  // A LOAD THAT SETTLES AFTER A NEWER ONE IS DROPPED (review round 1). Switching segments starts a
-  // second load while the first is still out, and the older answer landing last would put the inbox
-  // cost card beside the playground ceiling — one row showing two different questions. Each load
-  // takes a number, and only the latest number's answer, or failure, reaches the state.
+  // NOTE: Usage section (source-dependent): token figures + timeseries follow the selected segment,
+  // with a skeleton while reloading. Each load takes a sequence number and only the latest one's
+  // answer reaches the state, so an older segment's answer landing last cannot mix two segments.
   const usageSeq = useRef(0);
   const loadUsage = useCallback(async (r: Range, src: Source) => {
     const seq = ++usageSeq.current;
@@ -511,17 +503,13 @@ export function DashboardPage() {
       ...(src === "all" ? {} : { source: src }),
       tz: OPERATOR_TZ,
     };
-    // The cost FOLLOWS THE SEGMENT (issue #427), which is what lets the ceiling's bar sit beside
-    // it: both are now the same query, fenced to this tenant and to the segment's Langfuse
-    // environment. The ceiling itself is read from our own snapshot, never from Langfuse, so the
-    // page carries no extra third-party call. Neither failing blanks the section: a ceiling that
-    // cannot be read is a card that says so, not an error page over the usage figures.
+    // NOTE: The cost follows the segment, the same query the ceiling's bar sits beside. The ceiling is
+    // read from our own snapshot, never from Langfuse. Neither failing blanks the section: each has
+    // a card that says so.
     const costQuery = { ...query, ...(src === "all" ? {} : { source: src }) };
-    // THE COST DOES NOT GATE THE SECTION (review round 3). It is the only third-party call here and
-    // it waits up to ten seconds for a Langfuse that is slow or gone; sharing the gate meant the
-    // tokens, the timeseries and the ceiling — all already in hand, all ours — sat behind a
-    // skeleton for that whole timeout. It is best-effort with a card of its own for the failure,
-    // so it settles on its own and only the latest segment's answer is taken.
+    // NOTE: The cost does not gate the section: it is the only third-party call and can wait ten seconds
+    // on a slow Langfuse, which would hold the figures already in hand behind a skeleton. It settles on
+    // its own, and only the latest segment's answer is taken.
     setCostsLoading(true);
     void api.api.v1.metrics.costs
       .get({ query: costQuery })
@@ -535,10 +523,9 @@ export function DashboardPage() {
         setCosts({ status: "error" as const });
         setCostsLoading(false);
       });
-    // The ceiling's own number is RESERVED HERE, when the request goes out, not taken when it
-    // commits (review round 3): its answer can be ready and still be waiting inside the `Promise.all`
-    // for a slower sibling, and a periodic refresh landing in that window would be overwritten by
-    // this older read, walking the figure backwards until the next refresh.
+    // NOTE: The ceiling's number is reserved when the request goes out, not when it commits: its answer
+    // can wait inside the `Promise.all` for a slower sibling, and a periodic refresh landing meanwhile
+    // would otherwise be overwritten by this older read.
     const cseq = ++ceilingSeq.current;
     try {
       const [m, ts, ceilingRes] = await Promise.all([
@@ -569,13 +556,10 @@ export function DashboardPage() {
     void load(range);
   }, [load, range]);
 
-  // THE CEILING RE-READS WHILE THE PAGE STAYS OPEN (review round 1), QUIETLY (review round 2). The
-  // health beside each bar is the server's per read and the poll writes a new figure every period,
-  // so a dashboard left on a wall screen would otherwise keep the first read's figure and its
-  // "refreshed" line for as long as it is up. It is its own read, not the segment loader's: driving
-  // the timer through `loadUsage` would put the whole usage section back into its skeleton every
-  // period, and hold it there for as long as a slow Langfuse cost request took. Its own sequence
-  // number too, so a slow refresh cannot land over the read a segment switch just made.
+  // NOTE: The ceiling re-reads while the page stays open, since the poll writes a new figure every
+  // period and a wall-screen dashboard would otherwise keep its first read. It is its own quiet read:
+  // going through `loadUsage` would put the usage section back in its skeleton every period. Its own
+  // sequence number keeps a slow refresh from landing over a segment switch's read.
   const ceilingSeq = useRef(0);
   const loadCeiling = useCallback(async () => {
     const seq = ++ceilingSeq.current;
@@ -613,10 +597,9 @@ export function DashboardPage() {
       maximumFractionDigits: 1,
     }).format(v);
 
-  // The funnel KPIs are REAL traffic only, so cost-per-conversation stays in that segment. The cost
-  // itself now follows the segment (issue #427) and is shown in all three: playground spend is real
-  // money and the ceiling refuses on it, so a screen that only priced the inbox hid the half an
-  // operator is most likely to have blown through while testing.
+  // NOTE: The funnel KPIs are REAL traffic only, so cost-per-conversation stays in that segment. The
+  // cost itself follows the segment and shows in all three: playground spend is real money and the
+  // ceiling refuses on it.
   const realView = source === "inbox";
   const costsOk = costs?.status === "ok";
   const showCost = costsOk;
@@ -641,8 +624,8 @@ export function DashboardPage() {
       dateStyle: "short",
       timeStyle: "short",
     });
-  // "Open in Langfuse" target: the tenant's project page when the project id could be resolved
-  // (item 6), else the instance root as a fallback.
+  // NOTE: "Open in Langfuse" target: the tenant's project page when the project id could be resolved,
+  // else the instance root.
   const langfuseUrl =
     showCost && costs?.status === "ok"
       ? (costs.projectUrl ?? costs.baseUrl)
@@ -650,8 +633,8 @@ export function DashboardPage() {
   const costDays = costsOk && costs.status === "ok" ? costs.days : [];
   const totalCostUsd =
     costsOk && costs.status === "ok" ? costs.totalCostUsd : 0;
-  // NOTE: the card renders for Langfuse's models, and also when Langfuse answered with none but the ledger
-  // has usage: the models only this app recorded are the check's finding then (issue #868 review).
+  // NOTE: The card renders for Langfuse's models, and also when Langfuse answered with none but the
+  // ledger has usage: the models only this app recorded are then the check's finding.
   const costByModel =
     showCost &&
     costs.status === "ok" &&
@@ -676,13 +659,10 @@ export function DashboardPage() {
   // empty (no usage AND no cost) → the "no data" placeholder instead of an axes-only empty chart.
   const chartData = buildCostTrend(points, costDays, range, source);
   const hasChartData = points.length > 0 || costDays.length > 0;
-  // Cost per conversation across the whole window (item 7): the robust aggregate (total cost ÷ total
-  // conversations), free of the per-day line's UTC/local day-boundary caveat. Only in the Real segment
-  // with actual cost (never in playground/all, and not while cost is still $0 from ingestion lag).
-  // REAL SEGMENT ONLY, and the gate is not decoration: the divisor is `kpis.totalConversations`,
-  // which counts real traffic and is not re-read per segment, so dividing the playground's cost by
-  // it would print a cost-per-conversation for conversations that half never had (issue #427,
-  // caught the moment the cost stopped being real-only).
+  // NOTE: Cost per conversation across the whole window: total cost / total conversations, free of the
+  // per-day line's UTC/local day-boundary caveat. Real segment only, because the divisor
+  // `kpis.totalConversations` counts real traffic and is not re-read per segment; and not while cost
+  // is still $0 from ingestion lag.
   const costPerConversation =
     realView &&
     showCost &&
@@ -996,11 +976,9 @@ export function DashboardPage() {
                     )}
                   </Card>
 
-                  {/* Cost + token summary. The cost slot is ALWAYS present (item 8): it shows the
-                      value with Langfuse, or a compact disabled/error state in the SAME slot — so
-                      switching tabs never inserts/removes a separate notice card below and the block
-                      height stays stable. It follows the segment now (issue #427), so the playground
-                      is priced too. */}
+                  {/* Cost + token summary. The cost slot is ALWAYS present: the value with Langfuse, or a
+                      compact disabled/error state in the SAME slot, so switching tabs keeps the block height
+                      stable. It follows the segment, so the playground is priced too. */}
                   <div
                     className={cn(
                       "grid gap-4",
@@ -1056,8 +1034,8 @@ export function DashboardPage() {
                                 "Connect Langfuse to track actual LLM spend from your real usage.",
                               )}
                             </p>
-                            {/* Issue #868: the cost check needs Langfuse, and a screen without it must not
-                                read as a check that passed. */}
+                            {/* The cost check needs Langfuse, and a screen without it must not read as a check that
+                                passed. */}
                             <p
                               className="text-text-muted text-xs"
                               data-testid="cost-check-unavailable"
@@ -1136,18 +1114,11 @@ export function DashboardPage() {
                     />
                   </div>
 
-                  {/* THE CEILING, ON THE PAGE WHERE SPEND IS WATCHED (issue #427). The figures lived
-                      behind a settings tab, so the number an operator opens the console to see had
-                      nothing to be measured against. It gets a ROW OF ITS OWN rather than a cell in
-                      the grid above: a progress bar reads by length, and the caveats under it (a
-                      stale reading, a month Langfuse only priced half of, spend carried from a
-                      project the tenant left) are sentences, not figures. Under "All" both halves
-                      stack here, because the ceiling is enforced per half and there is no combined
-                      number to draw. The bar and its caveats are the same component the Advanced
-                      panel draws, and its colour is the gate's own verdict, so this page cannot say
-                      "fine" while the runtime is refusing. The period is the CALENDAR MONTH while
-                      the selector above says 7d/30d/90d/all, so the card names its own period
-                      instead of looking like a bar that ignores the page. */}
+                  {/* The spend ceiling, on its own row: a progress bar reads by length and its caveats are
+                      sentences. Under "All" both halves stack, since the ceiling is enforced per half. The bar
+                      is the Advanced panel's component, coloured by the gate's own verdict, so this page cannot
+                      say "fine" while the runtime refuses. The period is the CALENDAR MONTH, not the range
+                      selector's, so the card names it. */}
                   <Card className="flex flex-col gap-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <h3 className="flex items-center gap-2 font-medium text-sm text-text-primary">
@@ -1185,12 +1156,10 @@ export function DashboardPage() {
                       </p>
                     ) : (
                       <div className="flex flex-col gap-4">
-                        {/* TWO THINGS FROM TWO PLACES, as the Advanced card says them (review round
-                            2, and rounds 9-10 of #426): the flag above the bars is the credential's
-                            PRESENT, and each bar is its own row's last reading. A credential removed
-                            after a good poll leaves the gate still refusing on that figure until the
-                            next poll writes the sentinel, so hiding the bars here would claim the
-                            ceiling stopped applying while it had not. */}
+                        {/* Two things from two places, as the Advanced card says them: the flag is the
+                            credential's PRESENT, each bar its row's last reading. A removed credential leaves the
+                            gate refusing on that figure until the next poll, so hiding the bars would claim the
+                            ceiling stopped applying. */}
                         {!ceiling.langfuseConfigured && (
                           <p className="text-sm text-warning">
                             {t(
@@ -1344,7 +1313,7 @@ export function DashboardPage() {
                     </Card>
                   </div>
 
-                  {/* Cost by model, with the local price table checked against it (issue #868): only when Langfuse answered */}
+                  {/* Cost by model, with the local price table checked against it: only when Langfuse answered */}
                   {costByModel && costs?.status === "ok" && (
                     <CostByModelCard
                       byModel={costByModel}

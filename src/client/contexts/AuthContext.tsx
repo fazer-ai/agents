@@ -22,9 +22,9 @@ export interface User {
   email: string;
   name: string | null;
   role: string;
-  // NOTE: null only for SUPER_ADMIN (cross-tenant). Used by the UI to scope per-tenant
-  // concerns (branding, realtime topic). For everyone else it is the tenant THIS session runs
-  // under: the membership the console selected, or the person's default (issue #756).
+  // Null only for SUPER_ADMIN (cross-tenant). Used by the UI to scope per-tenant concerns (branding,
+  // realtime topic). For everyone else it is the tenant THIS session runs under: the membership the
+  // console selected, or the person's default.
   tenantId: string | null;
   // The tenant's display name (header chip). Only /auth/me returns it; login/signup/accept
   // responses omit it (optional here), and login() backfills it via a /me refresh. Null for
@@ -34,8 +34,8 @@ export interface User {
   // it; drives the settings change-password form vs the "you sign in with Google" note. Optional
   // because login/signup/accept responses omit it (backfilled by the /me refresh).
   hasPassword?: boolean;
-  // Every tenant the person belongs to, with the role held there (issue #756). Only /auth/me returns
-  // it; more than one puts the membership switcher in the header. Empty for the SUPER_ADMIN.
+  // Every tenant the person belongs to, with the role held there. Only /auth/me returns it; more than
+  // one puts the membership switcher in the header. Empty for the SUPER_ADMIN.
   tenants?: { id: string; name: string; role: string }[];
 }
 
@@ -55,7 +55,7 @@ interface AuthContextType {
   setupTokenRequired: boolean;
   signupEnabled: boolean;
   mcpStdioEnabled: boolean;
-  // The deployment's audio detector, as far as the editor needs it (issue #802).
+  // The deployment's audio detector, as far as the editor needs it.
   ttsCheck: { configured: boolean; mode: TtsCheckMode };
   login: (user: User) => void;
   logout: () => Promise<boolean>;
@@ -78,17 +78,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }>({ configured: false, mode: "off" });
   const [loading, setLoading] = useState(true);
 
-  // THE ONLY CALLER OF `setUser`, and that is the point rather than a tidiness: what has to happen
-  // on every transition to unauthenticated is written once, where the transition IS, instead of at
-  // each of the places that can cause one. The tool editor keeps the last saved sample response in
-  // memory (`client/lib/toolSample`), which is the customer's data; left behind, the next sign-in on
-  // this same tab would be offered the previous operator's responses.
-  //
-  // Rounds 4 and 5 of review are the same finding twice, which is why this is a chokepoint now and
-  // not a third call added beside the other two. The paths that end a session are the explicit
-  // logout below, a 401 on any request and the socket's auth-loss close (both through the
-  // `auth:unauthorized` event), and a `/me` that answers with a null user, which is how a refresh
-  // observes a session the server has already ended. Only the first is spelled like a logout.
+  // NOTE: THE ONLY CALLER OF `setUser`, so what has to happen on every transition to unauthenticated
+  // is written once, where the transition IS. The tool editor keeps the last sample response in memory
+  // (`client/lib/toolSample`), the customer's data, which the next sign-in on this tab must not be
+  // offered. The paths that end a session are the explicit logout below, a 401 on any request and the
+  // socket's auth-loss close (both via `auth:unauthorized`), and a `/me` answering a null user, which
+  // is how a refresh observes a session the server already ended.
   const applyUser = useCallback((next: User | null) => {
     setUser(next);
     // UNCONDITIONAL, and the comparison is the module's: what it owns is whose captured responses it
@@ -112,10 +107,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const { data, error } = await api.api.auth.me.get();
       if (data && !error) {
-        // NOTE: `applyUser(data.user ?? null)` (not the prior conditional
-        // `if (data.user)`) so a refresh() that observes a logged-out server
-        // state clears any stale signed-in client state. The boot path is
-        // unaffected (user defaults to null), but refresh() relies on this.
+        // NOTE: applied even when null, so a refresh() that observes a logged-out server clears any stale
+        // signed-in client state. The boot path is unaffected (user defaults to null).
         applyUser(data.user ?? null);
         adoptSessionTenant(data.user ?? null, data.defaultTenantId ?? null);
         const next: AuthProviders = {};
@@ -164,13 +157,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
 
-    // NOTE: The server is briefly unreachable during `bun dev --hot` reloads
-    // and during transient network blips in production. The prior code treated
-    // any failed /me at boot as "logged out", so a refresh landing in that
-    // window sporadically redirected to /login (via ProtectedRoute) even though
-    // the auth cookie was still valid. Retry network/5xx with a short backoff
-    // (~4.5s worst case); only a 200 (session resolved, user or null) or a 4xx
-    // ends the check. On the happy path the first attempt resolves instantly.
+    // NOTE: the server is briefly unreachable during `bun dev --hot` reloads and network blips in
+    // production, and treating a failed /me at boot as "logged out" would redirect to /login (via
+    // ProtectedRoute) with the auth cookie still valid. So network/5xx retries with a short backoff
+    // (~4.5s worst case); only a 200 (user or null) or a 4xx ends the check.
     const resolveAuth = async () => {
       const backoffMs = [300, 600, 1200, 2400];
       for (let attempt = 0; ; attempt++) {
@@ -251,8 +241,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
-// The deployment's audio detector, read without requiring a provider (issue #802): the Behavior tab
-// is also rendered on its own (tests, previews), and there "no detector" is the honest answer.
+// The deployment's audio detector, read without requiring a provider: the Behavior tab is also
+// rendered on its own (tests, previews), and there "no detector" is the honest answer.
 export function useTtsCheckInfo(): { configured: boolean; mode: TtsCheckMode } {
   return (
     useContext(AuthContext)?.ttsCheck ?? { configured: false, mode: "off" }

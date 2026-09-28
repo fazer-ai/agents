@@ -44,17 +44,14 @@ function renderHighlighted(
   return out;
 }
 
-// Box model shared by both layers. Matches <Input>/<Textarea> (border, bg-bg-tertiary, focus ring).
-// Font-size/line-height come from `textClassName` (applied to BOTH layers) so the glyphs line up;
-// padding differs (multiline px-3 like <Textarea>, single-line px-4 like <Input>).
-// `block` is load-bearing: without it the control is inline-block and its line-box adds a baseline
-// descender gap, so the wrapper grows taller than the control and the absolute backdrop shows below
-// the border as a thin band. `block` makes wrapper height == control height so the two layers align.
-// Below this fraction of the cap the counter is noise: the value is nowhere near the wall and the
-// field should look like any other. At it, the operator gets warning before the wall, not at it.
-// Same number `Textarea` uses, because it is the same affordance on a different control.
+// Below this fraction of the cap the counter is noise, so the operator gets warning before the wall
+// rather than at it. Same number `Textarea` uses, for the same affordance.
 const COUNTER_FROM = 0.8;
 
+// Box model shared by both layers, matching <Input>/<Textarea>; font size and leading come from
+// `textClassName` on BOTH layers so the glyphs line up. `block` is load-bearing: an inline-block
+// control adds a baseline descender gap, so the wrapper grows taller than the control and the
+// absolute backdrop shows below the border as a thin band.
 const FIELD_BASE =
   "block w-full rounded-lg border bg-bg-tertiary py-2 focus:border-border-focus focus:outline-none";
 
@@ -122,21 +119,12 @@ export const HighlightedTemplateField = forwardRef<
       b.scrollTop = el.scrollTop;
       b.scrollLeft = el.scrollLeft;
     };
-    // Both layers reserve the scrollbar's gutter, so their content boxes stay the same width
-    // whether or not the control is showing a scrollbar. Without it the two wrap at different
-    // columns wherever a scrollbar takes layout space: the textarea is a scroll container and its
-    // bar eats its content box, the backdrop is `overflow: hidden` and keeps the full width, and
-    // `mirror()` then assigns a scrollTop the shorter backdrop clamps. The caret lands lines away
-    // from the glyph the operator sees, by more the further the prompt is scrolled (#649: 612px
-    // against 622px of content, one line of drift at the end of a 16k-character prompt, measured in
-    // Chromium/Linux).
-    // What decides it is the SCROLLBAR, not the OS, and the same binary answers both ways: with
-    // "show scroll bars: always" a macOS Chromium reserves 15px for a plain `overflow: auto` and
-    // this field measures 598px of content in both layers; with "when scrolling" it reserves 0 and
-    // the field measures 620px in both. Windows and Linux are the first case by default. The
-    // reservation is free in the second, because an overlay scrollbar takes no space and the
-    // gutter of a scroll container that has none is zero.
-    // Multiline only: the single-line control scrolls its text internally and shows no scrollbar.
+    // NOTE: both layers reserve the scrollbar's gutter so their content boxes stay the same width. The
+    // textarea is a scroll container whose bar eats its content box while the `overflow: hidden`
+    // backdrop keeps the full width, so without it the layers wrap at different columns and the caret
+    // drifts from the glyph the operator sees. The SCROLLBAR decides, not the OS (a macOS "always show"
+    // setting reserves 15px, an overlay scrollbar reserves 0 and the gutter costs nothing). Multiline
+    // only: the single-line control shows no scrollbar.
     const gutter = multiline ? "[scrollbar-gutter:stable]" : "";
     const sharedText = cn(FIELD_BASE, pad, textClassName, wrapCls, gutter);
     // Raw length, the same thing the browser enforces `maxLength` against and the same thing the
@@ -147,12 +135,10 @@ export const HighlightedTemplateField = forwardRef<
     const showCount =
       maxLength !== undefined && value.length >= maxLength * COUNTER_FROM;
     return (
-      // TWO WRAPPERS, and the inner one is load-bearing. The backdrop is `absolute inset-0` over its
-      // positioned parent, so anything else inside that parent grows it and the backdrop stops
-      // matching the control: at ~400 characters the counter made the highlighted layer taller than
-      // the textarea, spilling text below the field and giving the two layers different maximum
-      // scroll offsets, so the caret drifted from the text it sat in. Found in review of #599.
-      // The counter and the over-limit line therefore sit OUTSIDE the positioned box.
+      // NOTE: TWO WRAPPERS, and the inner one is load-bearing. The backdrop is `absolute inset-0` over its
+      // positioned parent, so anything else inside that parent (the counter) grows it past the control,
+      // spilling text below the field and giving the layers different scroll offsets, which drifts the
+      // caret. The counter and the over-limit line therefore sit OUTSIDE the positioned box.
       <div
         className={cn(
           "min-w-0",

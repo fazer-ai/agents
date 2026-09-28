@@ -17,24 +17,13 @@ import {
   useBeforeUnload,
 } from "@/client/lib/unsavedGuard";
 
-// App-wide guard for unsaved page changes. A page registers its dirty flag via
-// `useNavGuard(dirty)`. While any registered page is dirty, this provider
-// intercepts every way out and shows the shared "discard changes?" confirm:
-//   - in-app <a> clicks (sidebar, breadcrumbs, the page's own Back link) — a
-//     capture-phase document listener that pre-empts react-router's own click
-//     handler (which bails when defaultPrevented);
-//   - the browser Back button — via the history sentinel in unsavedGuard;
-//   - the native refresh/tab-close prompt — via beforeunload.
-// Programmatic state-losing actions that are NOT plain <a> navigations (e.g. the
-// header's tenant switch, which persists then does a full reload) route through
-// `useConfirmLeave()` so they are gated by the same dialog instead of relying on
-// the native prompt (which can be canceled AFTER the side effect already ran).
-//
-// In-page navigation that keeps the component mounted (the agent editor's tab
-// bar, where state survives) is deliberately NOT guarded.
-//
-// Modals use their own guard inside <Modal> (see Modal.tsx); this one is only
-// for inline page forms that have no enclosing modal.
+// App-wide guard for unsaved page changes, registered via `useNavGuard(dirty)`. While any page is
+// dirty it intercepts every way out with the shared "discard changes?" confirm: in-app <a> clicks (a
+// capture-phase listener that pre-empts react-router's handler), browser Back (the history sentinel
+// in unsavedGuard) and refresh or tab-close (beforeunload). Programmatic state-losing actions (the
+// tenant switch's full reload) go through `useConfirmLeave()`, since the native prompt can be
+// canceled AFTER the side effect ran. In-page navigation that keeps the component mounted (the
+// agent editor's tab bar) is deliberately NOT guarded. Modals have their own guard (Modal.tsx).
 
 type Pending =
   | { kind: "href"; href: string }

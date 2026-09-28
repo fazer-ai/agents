@@ -3,9 +3,9 @@ import type { LimitsState } from "./BehaviorTab";
 
 // The agent editor's Limits block, as a pair of pure functions: stored settings → form state →
 // stored settings. The Behavior save REPLACES the whole `limits` block with what the form holds, so a
-// key the form does not carry is DELETED on the next save. `retrySilence` (issue #885) has no control
-// on the tab and rides through the form untouched; the round-trip test checks the pair against the
-// reader's own keys, so the next key cannot be added and forgotten here.
+// key the form does not carry is DELETED on the next save. `retrySilence` has no control on the tab
+// and rides through the form untouched; the round-trip test checks the pair against the reader's own
+// keys, so the next key cannot be added and forgotten here.
 
 export function limitsToForm(settings: unknown): LimitsState {
   const read = readLimitsConfig(settings);

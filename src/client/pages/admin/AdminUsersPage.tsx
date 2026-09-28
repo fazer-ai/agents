@@ -173,16 +173,16 @@ export function AdminUsersPage() {
   };
 
   const handleToggleRole = async (user: AdminUser) => {
-    // A fleet administrator belongs to no tenant, and the row that would replace theirs cannot exist
-    // without one, so this demote is a question before it is a write (#534). Everyone else keeps the
+    // NOTE: A fleet administrator belongs to no tenant, and the row that would replace theirs cannot
+    // exist without one, so this demote is a question before it is a write. Everyone else keeps the
     // tenant they already have, and stays one click.
     if (user.role === "SUPER_ADMIN") {
       demoteFleetModal.open({ id: user.id, email: user.email });
       return;
     }
     const newRole = isAdminRole(user.role) ? "AGENT" : "TENANT_ADMIN";
-    // The role is held per tenant (issue #756): in the fleet view a person has a row per membership,
-    // and the write names the one this row is. A tenant admin's write is fenced to their tenant.
+    // NOTE: The role is held per tenant: in the fleet view a person has a row per membership, and the
+    // write names the one this row is. A tenant admin's write is fenced to their tenant.
     const { data, error } = await api.api.admin
       .users({ id: user.id })
       .role.patch({
@@ -217,9 +217,9 @@ export function AdminUsersPage() {
     }
   };
 
-  // Irreversible (step-up password). The server refuses self-delete / last-admin and returns a
+  // NOTE: Irreversible (step-up password). The server refuses self-delete / last-admin and returns a
   // localized message, surfaced in the toast. The fleet deletes the ACCOUNT; a tenant admin removes
-  // the person from their tenant, and their account and other tenants stay (issue #756).
+  // the person from their tenant, and their account and other tenants stay.
   function openDeleteUser(user: AdminUser) {
     deleteUserModal.open({
       title: isSuperAdmin

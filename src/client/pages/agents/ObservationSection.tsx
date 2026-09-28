@@ -8,13 +8,9 @@ import {
 } from "./observationFormState";
 import { Section } from "./SectionNav";
 
-// The Behavior tab's Observation block (issue #494): WHEN a monitoring agent looks, and how much of
-// the conversation it reads. Drawn only for an agent in monitoring mode.
-//
-// What it does with what it reads is no longer configured here (issue #568). It used to be: a
-// taxonomy of label groups, because the mode was a classifier. A watcher is now the ordinary agent
-// that cannot answer the customer, so its behaviour is its prompt and its tools, on the same tabs
-// every other agent uses.
+// The Behavior tab's Observation block: WHEN a monitoring agent looks, and how much of the
+// conversation it reads. Drawn only for an agent in monitoring mode. What it does with what it reads
+// is its prompt and its tools, on the same tabs every other agent uses.
 export function ObservationSection({
   observation,
   setObservation,

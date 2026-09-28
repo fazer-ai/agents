@@ -1,14 +1,8 @@
 // What a review actually changed, and therefore what the console sends to
-// `PATCH /v1/knowledge/approvals/:id`.
-//
-// The rule that needed a name: `editApprovalItem` unconditionally stamps the item `EDITED`, and that
-// status is a claim about a human ("someone revised this before approving it"). Opening the editor
-// and closing it must not make that claim, so a review with nothing changed sends nothing at all. A
-// status that lies is worse than no status: the reviewer of the next queue reads `EDITED` as "the
-// wording was already looked at".
-//
-// Comparison is on trimmed text because the textarea round-trips a trailing newline that no reviewer
-// typed and that no reader would call a revision.
+// `PATCH /v1/knowledge/approvals/:id`. `editApprovalItem` always stamps the item `EDITED`, a claim
+// that a human revised it, so a review with nothing changed sends nothing: the next reviewer reads
+// `EDITED` as "the wording was already looked at". Comparison is on trimmed text because the
+// textarea round-trips a trailing newline no reviewer typed.
 
 export interface ApprovalOriginal {
   proposedTitle: string | null;

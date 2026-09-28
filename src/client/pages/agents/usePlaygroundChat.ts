@@ -10,7 +10,7 @@ type PlaygroundData = NonNullable<
   >["data"]
 >;
 
-// What a turn spent, as the provider reported it (issue #839): the same numbers as its ledger rows.
+// What a turn spent, as the provider reported it: the same numbers as its ledger rows.
 export type PlaygroundUsage = PlaygroundData["usage"];
 
 // How long a turn took and how much of that was model time. Live turns only: the ledger keeps no
@@ -85,7 +85,7 @@ export type PlaygroundTurn =
       pending?: boolean;
     }
   // `turnId`: the turn the failure ended, when the server named it, for the link to its lines on the
-  // Logs page (issue #841).
+  // Logs page.
   | { role: "error"; text: string; turnId?: string }
   | {
       role: "note";
@@ -202,27 +202,14 @@ function loadSim(agentId: string): PersistedSim {
   };
 }
 
-// The one definition of what an agent turn LOOKS like, shared by every path that produces one: the
-// text turn, the file turn, the voice note, the follow-up, and the reload that rebuilds them from
-// the server. The rule it carries — a turn the guardrail emptied renders as a NOTE carrying the
-// verdict, never as a bubble reading "(no reply)" — used to be written once per call site, and the
-// two media paths were born without it (issue #136): a suppressed file turn showed an empty bubble
-// live and a note after a reload. A bubble reads as the agent having had nothing to say, which is
-// precisely the distinction the transcript store exists to keep.
-//
-// NOTE: `silent` has no reload counterpart, and that predates this hook's guardrail work: a
-// follow-up the agent declined leaves an empty AI message, which the rebuild drops by design. Only
-// turns the guardrail acted on get a stored note.
 // The app's catch-all answer to an unhandled failure outside development (`src/app.ts`). It says
 // nothing the generic sentence does not, so it is not shown as if it were the server's reason.
 const UNHANDLED_PLACEHOLDER = "Something went wrong";
 
-// What a failed playground call tells the operator (issue #841). The server's own reason when the
-// call carried one: a refusal's JSON `error`, or a plain-text body, which is the unhandled failure's
-// detail in development. Otherwise a sentence that says what is known and nothing more: the old one
-// pointed at the model's configuration on every failure, and the failure that prompted this was a
-// database error with the model configured. A call that never got an answer is a failure to reach
-// the server, which is a different thing to tell the operator.
+// What a failed playground call tells the operator: the server's own reason when the call carried
+// one (a refusal's JSON `error`, or a plain-text body, the unhandled failure's detail in
+// development). Otherwise only what is known: an answer without a reason, or a failure to reach the
+// server, never a guess at the model's configuration.
 export function playgroundFailure(
   err: unknown,
   t: (key: string, fallback: string) => string,
@@ -244,9 +231,9 @@ export function playgroundFailure(
         : undefined;
   const turnId =
     typeof body?.turnId === "string" && body.turnId ? body.turnId : undefined;
-  // A request that never reached the server is not an answer, even though the client hands it back
-  // as one: Eden turns a failed `fetch` into an error of status 503 whose value is the fetch's own
-  // TypeError (measured against a closed port), so its presence says nothing about the server.
+  // NOTE: A request that never reached the server is not an answer, even though the client hands it
+  // back as one: Eden turns a failed `fetch` into a 503 error whose value is the fetch's own
+  // TypeError, so its presence says nothing about the server.
   const answered = !!err && !(value instanceof Error);
   const text =
     reason ??
@@ -262,6 +249,11 @@ export function playgroundFailure(
   return turnId ? { text, turnId } : { text };
 }
 
+// The one definition of what an agent turn LOOKS like, shared by every path that produces one (text,
+// file, voice note, follow-up, and the reload that rebuilds them). A turn the guardrail emptied
+// renders as a NOTE carrying the verdict, never as a "(no reply)" bubble, which would read as the
+// agent having had nothing to say. `silent` has no reload counterpart: a declined follow-up leaves
+// an empty AI message, which the rebuild drops by design.
 export function agentTurn(
   t: (key: string, fallback: string) => string,
   r: {
@@ -283,9 +275,9 @@ export function agentTurn(
     ...(r.timing ? { timing: r.timing } : {}),
   };
   if (r.suppressed) {
-    // A hand-over with no message to the customer empties the reply too, and it is a different
-    // outcome from a suppression: the case would reach a person (issue #704). Read off the verdict,
-    // which a reload restores with the turn.
+    // NOTE: A hand-over with no message to the customer empties the reply too, and it is a different
+    // outcome from a suppression: the case would reach a person. Read off the verdict, which a reload
+    // restores with the turn.
     const handedOff = r.trace.some(
       (e) => e.type === "guardrail" && e.outcome === "handed-off",
     );
@@ -341,9 +333,9 @@ export function usePlaygroundChat(
   );
   getDraftRef.current = opts.getDraft;
   const [turns, setTurns] = useState<PlaygroundTurn[]>([]);
-  // The open session's total (issue #839). Always the ledger's, re-read after every turn rather than
-  // grown from the replies: a turn can fail after a call it was billed for, and the ledger is the
-  // one place that has it. The per-turn line comes from the reply.
+  // NOTE: The open session's total, always the ledger's, re-read after every turn rather than grown
+  // from the replies: a turn can fail after a call it was billed for, and the ledger is the one place
+  // that has it. The per-turn line comes from the reply.
   const [sessionUsage, setSessionUsage] = useState<PlaygroundUsage>(NO_USAGE);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -570,8 +562,8 @@ export function usePlaygroundChat(
               suppressed: rt.suppressed,
               followup: rt.followup,
               ...(ttsM ? { audioUrl: mediaUrl(ttsM.id) } : {}),
-              // The ledger's rows for this turn (issue #839): the same line the turn had live, less
-              // its timing, which the ledger does not keep.
+              // NOTE: The ledger's rows for this turn: the same line the turn had live, less its timing, which
+              // the ledger does not keep.
               ...(rt.usage ? { usage: rt.usage } : {}),
               trace: rt.trace,
               sources: rt.sources,
@@ -819,8 +811,8 @@ export function usePlaygroundChat(
         }
         kind = data.kind;
         extracted = data.extracted;
-        // The read is billed to the session it is sent into, so the turn below runs on the thread
-        // the extraction named, and its line counts the read with the reply (issue #839).
+        // NOTE: The read is billed to the session it is sent into, so the turn below runs on the thread
+        // the extraction named, and its line counts the read with the reply.
         threadId.current = data.threadId;
         extractUsage = data.usage;
         extractTiming = data.timing;

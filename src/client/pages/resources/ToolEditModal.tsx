@@ -127,8 +127,8 @@ const TOOL_TOKEN_SOURCE = "\\{\\{\\s*([a-zA-Z0-9_]+)\\s*\\}\\}";
 // a credential is selected).
 const NATIVE_VAR_NAMES = new Set<string>(CONTEXT_VAR_NAMES);
 // Plus the names the runtime mints on the call rather than reads from the conversation
-// (`{{conversation_ref}}`, issue #818): valid in a template, but not a value a test run asks for,
-// because a test run has no conversation to mint one for.
+// (`{{conversation_ref}}`): valid in a template, but not a value a test run asks for, because a
+// test run has no conversation to mint one for.
 const KNOWN_VAR_NAMES = new Set<string>([
   ...CONTEXT_VAR_NAMES,
   ...HTTP_TOOL_ONLY_VAR_NAMES,
@@ -156,36 +156,8 @@ export function sendsConversationRef(
   return renderedVariableNames(shapes).has("conversation_ref");
 }
 
-// The conversation placeholders a definition actually writes, read off the NORMALIZED shapes rather
-// than off what the operator typed, because those are two different texts. An OpenAPI-style
-// `{contact_id}` is a supported way to write a placeholder — the whole point of
-// `normalizeToolShapes` — and the runtime rewrites it to `{{contact_id}}` before interpolating, at
-// write time AND at build time. A scan that knew only the double-brace form found nothing to ask
-// for, and the test run then refused for a context value the dialog never offered a box to fill.
-// Running the runtime's own normalizer here is what makes the two unable to answer differently, and
-// it also reaches the placeholders inside fixed field values, which the hand-listed set of form
-// strings it replaced had no entry for.
-//
-// Exported and pure so that agreement is a test rather than a claim.
-// What the model would be handed for the sample on screen. The point of the whole response section:
-// a template is a promise about the model's input, and this is the only place an operator can read
-// that input before a customer does — which is exactly why it has to follow the runtime's rule and
-// not a friendlier one.
-//
-// `projectResponse` runs on 2xx ALONE, and deliberately: a non-2xx body is the error message the
-// model needs to read literally, and a template aimed at success fields would render a block of
-// absent markers over it. So a sample captured from a 404 the tool declares a result is previewed
-// RAW, clipped the way the runtime clips. Rendering the template there would have contradicted the
-// `modelText` the very same test run reported, one dialog away.
-//
-// `status: null` means the sample was pasted by hand, and reads as 2xx: nobody pastes an error body
-// to design a success template against.
-//
-// Exported and pure so the agreement is a test rather than a claim.
 // Whether the server would refuse this template, in the server's own words, or null when it would
-// not. Exported and pure so that "the console's gate and the service's refinement are one reader"
-// is a test rather than a claim: they are the same function, and the test says so by putting each
-// shape through both.
+// not. The same function as the service's refinement, and the test puts each shape through both.
 export function templateSaveProblem(template: string): string | null {
   const t = template.trim();
   if (!t) return null;
@@ -193,14 +165,19 @@ export function templateSaveProblem(template: string): string | null {
   return r.declared && !r.ok ? r.problem : null;
 }
 
+// What the model would be handed for the sample on screen, by the runtime's rule and not a
+// friendlier one. `projectResponse` runs on 2xx ALONE: a non-2xx body is an error the model reads
+// literally, so a sample from a 404 is previewed RAW, clipped the way the runtime clips, which is
+// what the test run's `modelText` reports too. `status: null` is a hand-pasted sample and reads as
+// 2xx: nobody pastes an error body to design a success template against. Exported and pure so the
+// agreement is a test.
 export function templatePreviewFor(args: {
   template: string;
   sample: string;
   status: number | null;
 }): {
-  // The runtime's OWN reason, carried rather than collapsed. A boolean here made one sentence cover
-  // two causes: a 2xx body that is not JSON was explained as "outside 2xx", with a hand-pasted
-  // sample's absent status interpolated as `null`.
+  // The runtime's OWN reason, carried rather than collapsed to a boolean: a 2xx body that is not
+  // JSON and a status outside 2xx are different causes with different sentences.
   skipped: ProjectedResponse["skipped"];
   text: string;
   missing: string[];
@@ -215,15 +192,12 @@ export function templatePreviewFor(args: {
   // body" would answer a question about a template that cannot be saved.
   const decl = readResponseTemplateResult({ mode: "template", template });
   if (!decl.declared || !decl.ok) return null;
-  // An empty sample is only "nothing to preview" for a template that reads the body: with neither
-  // a token nor a block, the template IS the answer whatever came back, and the case that proves it
-  // is a tool answering 204 with no body, where the runtime hands the model the operator's own text
-  // and this box was blank.
+  // NOTE: an empty sample is only "nothing to preview" for a template that reads the body: with
+  // neither a token nor a block the template IS the answer (a 204 with no body hands the model the
+  // operator's own text).
   if (!sample.trim() && templateNeedsBody(template)) return null;
-  // The runtime's decision, made by the runtime's own function. Everything this preview used to
-  // decide for itself drifted from it within a round: the 2xx gate, the token-less render, the
-  // clip. `status: null` is a hand-pasted sample and reads as 200 — nobody pastes an error body to
-  // design a success template against.
+  // NOTE: the runtime's own function decides (the 2xx gate, the token-less render, the clip), so
+  // the preview cannot drift from it. `status: null` is a hand-pasted sample and reads as 200.
   const p = projectToolResponse(
     { mode: "template", template },
     args.status ?? 200,
@@ -242,6 +216,11 @@ export function templatePreviewFor(args: {
       };
 }
 
+// The conversation placeholders a definition actually writes, read off the NORMALIZED shapes: the
+// runtime rewrites an OpenAPI-style `{contact_id}` to `{{contact_id}}` before interpolating, so a
+// scan of the typed text alone misses it and the test run refuses for a value the dialog offered
+// no box for. The runtime's own normalizer also reaches placeholders inside fixed field values.
+// Exported and pure so the agreement is a test.
 export function contextNamesReferencedBy(
   payload: {
     urlTemplate?: unknown;
@@ -270,14 +249,10 @@ export function contextNamesReferencedBy(
       if (NATIVE_VAR_NAMES.has(name)) found.add(name);
     }
   };
-  // THE STRINGS THE RUNTIME INTERPOLATES, and only those. This was a generic deep walk, which is
-  // one line shorter and asks a different question: it found `{{contact_name}}` inside a field's
-  // DESCRIPTION (prose written for the model) and inside a NESTED header or query value, neither of
-  // which `buildHttpTool` ever interpolates — `headers[k] = interpolate(String(v), …)` turns a
-  // nested object into `[object Object]` on the way out, placeholder and all. The cost of the extra
-  // names lands on the operator: a box for a value that will not be used whatever they type in it.
-  // The list below pairs site for site with `graph/tools/http.ts`, and the test proves the pairing
-  // against the runtime rather than against this comment.
+  // NOTE: only the strings the runtime interpolates, paired site for site with
+  // `graph/tools/http.ts` (a test checks the pairing). A generic deep walk would also find tokens
+  // in a field's DESCRIPTION and in NESTED header or query values, which `buildHttpTool` never
+  // interpolates, and ask the operator for a value nothing uses.
   scan(shapes.urlTemplate);
   for (const bag of [shapes.headers, shapes.query]) {
     if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
@@ -353,19 +328,17 @@ function emptyForm() {
     bodyMode: "kv" as "kv" | "raw",
     bodyRaw: "",
     credentialRef: "",
-    // The GENERIC integration this tool hands `{{conversation_ref}}` for (issue #818), by id.
+    // NOTE: the GENERIC integration this tool hands `{{conversation_ref}}` for, by id.
     conversationRefIntegrationId: "",
     expectedStatuses: "",
     ackEnabled: false,
     ackMessage: "",
-    // The response template (issue #456), edited as the plain markdown the operator writes; the
-    // {mode, template} envelope is assembled on save. Empty means "hand the model the raw response",
-    // which is what every tool did before the feature.
+    // NOTE: the response template, edited as the plain markdown the operator writes; the
+    // {mode, template} envelope is assembled on save. Empty means "hand the model the raw response".
     outputTemplate: "",
-    // Whatever else `outputSchema` was carrying, kept verbatim so editing a tool cannot silently
-    // delete it. This column has been writable through MCP since it existed, unvalidated and read
-    // nowhere, so a row may hold a JSON Schema someone still reads back — and a form that renders
-    // nothing for it would send `{}` on the next save.
+    // NOTE: whatever else `outputSchema` carries, kept verbatim so editing a tool cannot silently
+    // delete it: a row may hold a JSON Schema written through MCP that someone still reads back,
+    // and a form that renders nothing for it would send `{}` on the next save.
     outputSchemaOther: null as Record<string, unknown> | null,
     outputSchemaProblem: null as string | null,
     apptAction: "" as "" | "book" | "cancel",
@@ -375,24 +348,17 @@ function emptyForm() {
     apptSummaryPath: "",
     apptOffsets: "",
     apptAskConfirm: false,
-    // THE SAMPLE IS PART OF THE FORM SINCE #566, where it used to be local state deliberately kept
-    // out of it. Nothing about it is submitted, and nothing about it is stored: it is remembered in
-    // this tab (`client/lib/toolSample`) but it is remembered BY THE SAVE, so pasting one is an
-    // unsaved change like any other and the discard dialog on close is correct. The alternative is
-    // telling the operator the sample survives a reopen and then dropping it when they close.
+    // NOTE: the sample is never submitted or stored server-side. This tab remembers it
+    // (`client/lib/toolSample`) BY THE SAVE, so pasting one is an unsaved change and the discard
+    // dialog on close is correct; otherwise a sample said to survive a reopen is lost on close.
     sample: "",
     sampleStatus: null as number | null,
   };
 }
 
-// Maps a stored tool (any of the new or legacy shapes) into the editor form. Legacy tools carry their
-// fixed values + body assembly inside inputSchema/body.mode==="fields"; we reconstruct them as explicit
-// rows so the operator sees what was previously assembled by magic. Saving then writes the new shape.
-// NOTE: exported for the load/save regression tests (pure over its argument).
 // Parses the operator's comma/space separated list into the numbers the API takes. Deliberately
 // permissive: the server normalizes (dedupes, sorts, drops 2xx and out-of-range values), so a stray
-// separator or a repeated entry is not something to reject a save over.
-// NOTE: exported for the tests.
+// separator or a repeated entry is not something to reject a save over. Exported for the tests.
 export function parseExpectedStatuses(raw: string): number[] {
   return raw
     .split(/[\s,;]+/)
@@ -402,23 +368,11 @@ export function parseExpectedStatuses(raw: string): number[] {
 
 type ToolForm = ReturnType<typeof emptyForm>;
 
-// The body this modal writes, from the form it renders. ONE function, because it is also what a
-// refusal is matched against: `capture` compares the value that was SENT with the value the inputs
-// hold NOW, and two spellings of "the payload" would disagree about a field nobody edited.
-//
-// `null` when the headers are not parseable JSON, which is a client-side check with no server
-// sentence behind it.
-// WHAT THE SAMPLE DESCRIBES, as the part of the definition that decides WHICH RESPONSE comes back.
-// A sample captured by "Send a test request" and then followed by an edit to the URL, the method,
-// the headers, the body, the query or the credential is a response to a call the tool no longer
-// makes: saved, it would pass the revision check (the save is what set that revision) and go on
-// offering paths that describe an endpoint nobody calls (round 12 of review).
-//
-// An EXCLUSION list, not an inclusion one, and the direction is the point: a field added later
-// counts as response-affecting until someone says otherwise, so the failure is a sample dropped too
-// eagerly rather than a stale one kept. What is excluded is what cannot change the bytes the API
-// sends back: the tool's names, how the reply is projected for the model, and what the runtime does
-// with it afterwards.
+// The payload keys that cannot change WHICH RESPONSE comes back. A sample followed by an edit to
+// the URL, method, headers, body, query or credential describes a call the tool no longer makes,
+// and would still pass the revision check (the save is what sets that revision). An EXCLUSION list
+// on purpose: a key added later counts as response-affecting until someone says otherwise, so the
+// failure is a sample dropped too eagerly rather than a stale one kept.
 const NOT_RESPONSE_AFFECTING = new Set([
   "name",
   "label",
@@ -439,33 +393,26 @@ export function requestShapeOf(payload: unknown): string {
   return JSON.stringify(kept);
 }
 
-// AND THE CREDENTIAL IS PART OF THE REQUEST WITHOUT BEING PART OF THE PAYLOAD. `credentialRef` is a
-// name; what it resolves to is a row in the vault, and editing that row's base URL or its secret
-// changes the host a relative `urlTemplate` reaches and the authorization it carries while the
-// payload is byte for byte the same. So the marker carries which vault this tab had when the sample
-// was captured, and a save made after an edit to that vault finds a marker that no longer matches
-// (round 14 of review). NUL as the separator because no JSON `JSON.stringify` produces holds one.
+// The credential is part of the request without being part of the payload: `credentialRef` is a
+// name, and editing that vault row's base URL or secret changes the host a relative `urlTemplate`
+// reaches and the authorization it carries while the payload stays the same. So the marker carries
+// this tab's vault generation at capture, and a save after a vault edit finds it no longer matches.
+// NUL as the separator because no JSON `JSON.stringify` produces holds one.
 export function captureShapeOf(payload: unknown): string {
   const shape = requestShapeOf(payload);
-  // ONLY FOR A TOOL THAT NAMES ONE. A definition with no credential cannot be changed by a vault
-  // edit, and prefixing it anyway made any credential saved anywhere in the console refuse a sample
-  // that nothing could have invalidated — round 6's over-rejection arriving through the marker
-  // (round 15 of review).
+  // NOTE: only for a tool that names a credential. A definition with none cannot be changed by a
+  // vault edit, and prefixing it anyway would make any vault save refuse a sample nothing invalidated.
   const ref = (payload as { credentialRef?: unknown } | null)?.credentialRef;
   return typeof ref === "string" && ref !== ""
     ? `${vaultGeneration()}\u0000${shape}`
     : shape;
 }
 
-// WHICH DEFINITION THE SAMPLE ON SCREEN WAS CAPTURED AGAINST, decided in one place and returned,
-// because it is maintained at four sites and review round 13 found two of them wrong: a sample
-// restored from this tab's memory recorded NO definition (so a later edit to the URL was invisible
-// to the save's refusal, which is the very defect round 12 fixed, surviving a reopen), and Format
-// re-recorded the definition on screen NOW (so pretty-printing a sample after editing the URL erased
-// the mismatch).
-//
-// The rule is one sentence: the shape changes only when a NEW sample arrives. `against` is the form
-// the sample is going into, or null for an arrival that carries no capture with it.
+// Which definition the sample on screen was captured against, decided here for every site that
+// records one. The shape changes only when a NEW sample arrives: a sample restored from this tab's
+// memory records the form it opens into, and Format (no capture) keeps the shape it had, so neither
+// hides a later edit to the URL from the save. `against` is the form the sample is going into, or
+// null for an arrival that carries no capture with it.
 export function shapeOfArrival(args: {
   text: string;
   status: number | null;
@@ -493,23 +440,21 @@ export function shapeOfOpening(form: ToolForm): string | null {
 
 // WHETHER THE SAMPLE ON SCREEN STILL DESCRIBES THE REQUEST BEING SAVED, which is the question the
 // revision cannot answer: the save is what sets the revision, so a response captured against one URL
-// and saved after the URL changed passes that check by construction (round 12 of review).
+// and saved after the URL changed passes that check by construction.
 export function sampleDescribes(
   shape: string | null,
   payload: unknown,
 ): boolean {
-  // NO SAMPLE WAS CAPTURED, so there is nothing that could have stopped describing anything, and
-  // whether this save keeps one is the module's emptiness rule rather than this question. Null used
-  // to mean "no objection" as well, and carried three of them: a restored sample, an empty body with
-  // a status, and a reformat all recorded null and then survived any edit at all (round 13).
+  // NOTE: null means no sample was captured, so nothing can have stopped describing anything, and
+  // whether the save keeps one is the module's emptiness rule. Every arrival that carries a sample
+  // records a shape (`shapeOfArrival`), so null never stands for a sample that escapes this check.
   if (shape === null) return true;
   return shape === captureShapeOf(payload);
 }
 
-// WHAT A SAVE HANDS THE MODULE, as a value rather than as an object literal assembled at the call
-// site. The module cannot see a call site, so every field spelled there is a field a mutation can
-// change with nothing to notice: `credentialRef` taken from the form instead of the payload, or
-// dropped for null, survived the battery when this was written inline.
+// What a save hands the module, as a value rather than an object literal assembled at the call
+// site, so a test catches a field taken from the wrong place (`credentialRef` read from the form
+// instead of the payload, or dropped for null).
 export function sampleToRemember(args: {
   revision: string | null;
   text: string;
@@ -523,21 +468,18 @@ export function sampleToRemember(args: {
     revision: args.revision,
     text: args.text,
     status: args.status,
-    // From the payload and not from the form, so it is the reference the request that was just
-    // saved carries. A change of SELECTION is caught by the shape; this is for the credential
-    // being edited under the same name (round 13 of review).
+    // NOTE: from the payload and not from the form, so it is the reference the request that was
+    // just saved carries. A change of SELECTION is caught by the shape; this is for the credential
+    // being edited under the same name.
     credentialRef: args.payload.credentialRef,
   };
 }
 
-// WHETHER THIS SAVE HAS ANYTHING FOR THE SERVER. The sample is part of the form since #566, so
-// pasting one is an unsaved change and Save is the way to keep it, but `payloadOf` sends nothing
-// about it: with the persisted half untouched, a PATCH would rewrite the whole definition from a
-// form loaded before someone else's edit, and would advance `updatedAt` for a change the row does
-// not contain (round 11 of review).
-//
-// Only ever true for an edit with a baseline and a known revision: a create has nothing to compare
-// against and must always be sent.
+// Whether this save has anything for the server. Pasting a sample is an unsaved change, but
+// `payloadOf` sends nothing about it: with the persisted half untouched, a PATCH would rewrite the
+// definition from a form loaded before someone else's edit and advance `updatedAt` for a change
+// the row does not contain. Only ever true for an edit with a baseline and a known revision: a
+// create has nothing to compare against and must always be sent.
 export function sendsNothing(args: {
   editing: boolean;
   opened: string | null;
@@ -552,14 +494,10 @@ export function sendsNothing(args: {
   );
 }
 
-// WHICH DEFINITION THE SAMPLE DESCRIBES, decided in one place and returned rather than spelled out
-// at the call site. When the save sent something, it is the row that came back, because the save is
-// what moved the revision and the row the form opened with already names a definition that stopped
-// existing. When it sent nothing (a sample-only change), the row did not move, so the revision this
-// dialog opened with is still the right answer. Null means neither is known, and nothing is kept.
-//
-// A value rather than a source fence, because two rounds of review found this call site holding a
-// judgement the module could not see, and a fence over a spelling is what a refactor walks past.
+// Which definition the sample describes, decided here and returned rather than judged at the call
+// site. When the save sent something, it is the row that came back, because the save moved the
+// revision. When it sent nothing (a sample-only change), the row did not move, so the revision this
+// dialog opened with is still the answer. Null means neither is known, and nothing is kept.
 export function revisionForSave(
   row: { updatedAt: unknown } | null,
   opened: string | null,
@@ -572,6 +510,10 @@ export function revisionForSave(
   return row ? String(row.updatedAt) : opened;
 }
 
+// The body this modal writes, from the form it renders. ONE function, because it is also what a
+// refusal is matched against: `capture` compares the value that was SENT with the value the inputs
+// hold NOW, and two spellings of "the payload" would disagree about a field nobody edited. `null`
+// when the headers are not parseable JSON, a client-side check with no server sentence behind it.
 export function payloadOf(form: ToolForm) {
   let headers: Record<string, unknown>;
   try {
@@ -619,9 +561,9 @@ export function payloadOf(form: ToolForm) {
     outputSchema: form.outputTemplate.trim()
       ? { mode: "template", template: form.outputTemplate.trim() }
       : (form.outputSchemaOther ?? {}),
-    // What the tool's response says about an appointment, or null when it says nothing (issue #352).
-    // Here rather than at the call site: this function is the one place the body is built, and the
-    // refusal reader below keys off exactly these fields.
+    // NOTE: what the tool's response says about an appointment, or null when it says nothing. Here
+    // because this function is the one place the body is built, and the refusal reader below keys
+    // off exactly these fields.
     appointment: appointmentPayload(form),
   };
 }
@@ -651,6 +593,10 @@ const TOOL_FIELDS = [
 const TOOL_BODY_FIELDS = ["body"] as const;
 const TOOL_ACK_FIELDS = ["ackMessage"] as const;
 
+// Maps a stored tool (any of the new or legacy shapes) into the editor form. Legacy tools carry their
+// fixed values + body assembly inside inputSchema/body.mode==="fields"; we reconstruct them as explicit
+// rows so the operator sees what was previously assembled by magic. Saving then writes the new shape.
+// Exported for the load/save tests (pure over its argument).
 export function formFromTool(tool: Tool) {
   // NOTE: legacy rows authored programmatically may still carry pre-normalization shapes
   // (JSON-Schema inputSchema, single-brace {var}); render the canonical form so the real AI
@@ -751,9 +697,8 @@ export function formFromTool(tool: Tool) {
   };
 }
 
-// The sample comes back from this tab alone (issue #566): nothing about it is stored anywhere, so a
-// reload, a second tab or a second machine gets no offer, the same as before the feature, and "Send
-// a test request" is still the way back.
+// The sample comes back from this tab alone: nothing about it is stored anywhere, so a reload, a
+// second tab or a second machine gets no offer, and "Send a test request" is the way back.
 function sampleForm(tool: Tool) {
   // `String(...)` because the treaty TYPES this as `Date` while the wire carries a string: the
   // client runs with `parseDate: false`, so nothing ever constructs one (`docs/eden-treaty.md`).
@@ -765,17 +710,10 @@ function sampleForm(tool: Tool) {
 
 // The stored `outputSchema`, split into the part this form edits and the part it must not lose. The
 // same reader the runtime uses decides which is which, so a declaration the runtime would ignore
-// shows here as no template rather than as text in a box that does nothing.
-//
-// THREE OUTCOMES, not two, and the third is a lockout. `mode:"template"` with a template the reader
-// refuses (`{mode:"template", template:42}`, which MCP could store before this feature validated
-// the column) used to fall through to "keep it verbatim": the editor showed an empty box, resent
-// the broken object on every save, and the service refinement — new in this same change — rejected
-// it. The operator could then not edit the tool's URL, its headers, anything, and nothing on screen
-// said why. `outputSchemaOther` is for a legacy schema that is NOT a template declaration (a real
-// JSON Schema, which must survive an edit that never showed it); a declaration that IS one and is
-// broken is dropped, and `outputSchemaProblem` carries the reader's own sentence so the operator
-// reads what was discarded rather than discovering it.
+// shows here as no template. A legacy non-template schema is kept in `outputSchemaOther`; a
+// declaration the reader refuses (`{mode:"template", template:42}`) is dropped with the reader's
+// sentence in `outputSchemaProblem`, because resent verbatim the service would refuse every save
+// and lock the operator out of editing the tool.
 export function outputSchemaForm(raw: unknown) {
   const read = readResponseTemplateResult(raw);
   const isBag = !!raw && typeof raw === "object" && !Array.isArray(raw);
@@ -818,30 +756,17 @@ function appointmentForm(raw: unknown) {
   };
 }
 
-// The flat fields back into the declaration the API takes, or null for "this tool has nothing to do
-// with appointments" — which is what an empty action means and what every tool means today.
-// Pick a path instead of typing one. The form's gates catch a MALFORMED path; nothing catches a
-// well-formed path aimed at the wrong key, and that one is silent all the way to production — the
-// tool answers, the platform reads nothing, and no appointment is ever recorded. Offering the
-// operator's OWN response to click removes the typing, and with it that whole class.
-//
-// Rendered as a sibling of its FormField, never inside it: FormField wraps its children in a
-// <label>, which forwards a click on the field title to the first focusable descendant, so a button
-// in there would fire when the operator clicked the title.
-//
-// The template's picker also offers the LISTS in the sample (#459), each inserted as a block to
-// repeat over, and it is caret-aware: with the caret inside a block it offers the fields of that
-// list's items instead, relative, under a heading that says so. Both are the same `leaves` shape
-// to this component; what differs is what `onPick` inserts, and the caller decides that.
-//
-// The toggle is what lets the operator move the caret and ask again, so it must not disappear on an
-// offer that is empty for THIS caret: with `emptyLabel` set, an empty offer renders the toggle and
-// that line instead of nothing (round 3 of review: inside a block over an empty list the whole
-// control unmounted while open, and nothing could re-read the caret).
 // The sample field's grammar, built once. `CodeMirrorField` reconfigures on this value's identity,
 // so a fresh array per render would reconfigure per render.
 const SAMPLE_LANGUAGE = [json()];
 
+// Pick a path instead of typing one: the form's gates catch a MALFORMED path, but a well-formed path
+// aimed at the wrong key is silent all the way to production (no appointment is ever recorded), and
+// clicking the operator's OWN response removes that class. Rendered as a sibling of its FormField,
+// never inside it: the <label> would forward a click on the field title to a button in here.
+// The template's picker also offers the sample's LISTS (inserted as a block) and, inside a block,
+// that list's item fields; the caller decides what `onPick` inserts. With `emptyLabel` set an empty
+// offer keeps the toggle, so the operator can move the caret and ask again.
 export function PathPicker({
   leaves,
   lists = [],
@@ -871,24 +796,21 @@ export function PathPicker({
   closeLabel: string;
   listsLabel?: string;
   listLength?: (n: number) => string;
-  // Declares that this caller's `onPick` puts focus somewhere ITSELF, so Radix's return to the
-  // trigger has to be suppressed or it would land after and take the focus back. Only the template
-  // does that (it refocuses the textarea at the caret it wrote); the single-path fields just write
-  // a value, and for them the trigger IS the right place to come back to. The picker cannot observe
-  // the difference: the caller's focus move happens in a later frame, which is the whole reason the
-  // suppression exists (round 2 of review).
+  // Declares that this caller's `onPick` puts focus somewhere ITSELF (only the template does, at
+  // the caret it wrote), so Radix's return to the trigger is suppressed or it would land a frame
+  // later and take the focus back. The picker cannot observe that later move, hence the flag.
   restoresFocus?: boolean;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const anchorRef = useRef<HTMLDivElement | null>(null);
-  // Set by a pick when this caller restores focus itself, read once by `onCloseAutoFocus`. Every
-  // other way out of the offer keeps Radix's return to the trigger (round 1 of review).
+  // NOTE: set by a pick when this caller restores focus itself, read once by `onCloseAutoFocus`.
+  // Every other way out of the offer keeps Radix's return to the trigger.
   const pickedRef = useRef(false);
-  // The filter is per visit, and clearing it in `onOpenChange` would miss the ordinary way out.
+  // NOTE: The filter is per visit, and clearing it in `onOpenChange` would miss the ordinary way out.
   // Every caller closes by setting the controlled `open` prop from its own `onPick`, which Radix
   // never sees: `onOpenChange` fires for the interactions IT handles, not for a prop the parent
-  // changed. So the transition itself is what clears, whoever caused it (round 1 of review).
+  // changed. So the transition itself is what clears, whoever caused it.
   useEffect(() => {
     if (!open) setQuery("");
   }, [open]);
@@ -935,29 +857,23 @@ export function PathPicker({
           side="bottom"
           align="start"
           sideOffset={6}
-          // THE OFFER LEAVES THE FLOW (issue #462). Rendered inline it sat in the same container as
-          // the field below, so opening it pushed that field down mid-edit; a portal makes the shift
-          // impossible rather than small.
-          // `--z-popover` (85), not a Tailwind `z-*` class: the scale in `public/index.css` is a set
-          // of tokens, and `z-50` there is `--z-drawer`, which sits BELOW `--z-modal` (80). This
-          // picker only ever opens inside a modal, so a bare `z-50` renders the offer behind the
-          // dialog — positioned correctly, sized correctly, and invisible. Found by opening it in a
-          // browser; happy-dom has no stacking context to fail in.
+          // NOTE: portalled so opening the offer never pushes the field below it down mid-edit.
+          // `--z-popover` (85), not a Tailwind `z-*`: `z-50` is `--z-drawer`, BELOW `--z-modal`
+          // (80), so the offer would render invisible behind the dialog (happy-dom has no stacking
+          // context, so only a browser shows it).
           className="z-(--z-popover) w-[min(28rem,calc(100vw-2rem))] rounded-md border border-border bg-bg-secondary shadow-lg"
           // Radix renders this as `role="dialog"`, and this screen opens three of them from three
           // fields that differ only in what they fill. The filter's own label names the input, never
           // the dialog around it, so an unnamed one is announced as a bare dialog.
           aria-label={openLabel}
-          // The caret restore wins over Radix's focus return, FOR A PICK. `insertToken` refocuses
+          // NOTE: the caret restore wins over Radix's focus return, FOR A PICK. `insertToken` refocuses
           // the textarea in a `requestAnimationFrame` and puts the caret after the token it wrote;
           // Radix's default close behaviour focuses the TRIGGER, which lands after that frame and
           // takes the caret away from the box the operator is writing in.
           //
-          // Only for a pick BY A CALLER THAT RESTORES FOCUS: everywhere else nothing refocuses
-          // anything, so preventing it unmounts the content under the focused element and drops
-          // focus to the document body, restarting the keyboard operator's next Tab from the top of
-          // the page. That covers Escape and an outside click, and also a pick on the three
-          // single-path fields, whose `onPick` only writes a value (round 2 of review).
+          // Only for a pick BY A CALLER THAT RESTORES FOCUS: anywhere else (Escape, an outside
+          // click, a single-path field's pick) preventing it drops focus to the document body and
+          // restarts the keyboard operator's next Tab from the top of the page.
           onCloseAutoFocus={(e) => {
             if (!pickedRef.current) return;
             pickedRef.current = false;
@@ -1045,9 +961,9 @@ export function PathPicker({
 // outside the server's own [1, 8760], or more than the five the server keeps. The empty field is an
 // ordinary answer, not an error — it is how an operator whose system already reminds says so.
 //
-// Refusing rather than filtering, because filtering here is INVISIBLE: `24h` and `0` were simply
-// dropped, the tool saved, the field went on showing them, and no reminder was ever armed. Same rule
-// as the path and provider gates below, and it is the rule the field's own hint already states.
+// Refusing rather than filtering, because filtering is INVISIBLE: `24h` and `0` would be dropped
+// while the field goes on showing them, and no reminder is armed. Same rule as the path and
+// provider gates below, and the one the field's own hint states.
 export function readOffsetsField(raw: string): number[] | null {
   const tokens = raw.split(/[,\s]+/).filter((t) => t !== "");
   if (tokens.length === 0) return [];
@@ -1063,6 +979,8 @@ export function readOffsetsField(raw: string): number[] | null {
   return out;
 }
 
+// The flat fields back into the declaration the API takes, or null for "this tool has nothing to do
+// with appointments", which is what an empty action means.
 function appointmentPayload(form: {
   apptAction: "" | "book" | "cancel";
   apptProvider: string;
@@ -1219,15 +1137,9 @@ function spliceSelection(
   return before + insert(before, after) + after;
 }
 
-// Inserts a `{{#each path}}` block at the caret, markers on lines of their own (so each takes its
-// line with it when rendered), and leaves the caret on the empty line BETWEEN them: reopening the
-// picker from there offers the items' fields. A caret mid-line gets a line break first, so the
-// opening marker lands standalone; the same for the text after it.
-// THE EDIT ITSELF, apart from who applies it, because two widgets now do: the textarea the
-// appointment fields still are, and the CodeMirror the template became (issue #563). Written once
-// so the line-break rule cannot differ between them — a block whose opening marker is not
-// standalone renders a blank line per item, which is the defect the standalone rule exists to
-// avoid, and it would have appeared in one widget and not the other.
+// The edit itself, apart from who applies it (the appointment textareas and the template's
+// CodeMirror), so the line-break rule cannot differ between them: a block whose opening marker is
+// not standalone renders a blank line per item.
 export function eachBlockEdit(
   current: string,
   start: number,
@@ -1244,6 +1156,10 @@ export function eachBlockEdit(
   return { insert: `${open}\n{{/each}}${tail}`, caret: start + open.length };
 }
 
+// Inserts a `{{#each path}}` block at the caret, markers on lines of their own (so each takes its
+// line with it when rendered), and leaves the caret on the empty line BETWEEN them: reopening the
+// picker from there offers the items' fields. A caret mid-line gets a line break first, so the
+// opening marker lands standalone; the same for the text after it.
 export function insertEachBlock(
   el: HTMLTextAreaElement | null,
   current: string,
@@ -1450,8 +1366,8 @@ export function ToolEditModal({
   const apptAskConfirmId = useId();
   const { showToast } = useToast();
   const [form, setForm] = useState(emptyForm());
-  // The generic webhook integrations a tool can hand `{{conversation_ref}}` for (issue #818), read
-  // on open. Null until loaded; an empty list is an answer, and the picker says so.
+  // NOTE: the generic webhook integrations a tool can hand `{{conversation_ref}}` for, read on
+  // open. Null until loaded; an empty list is an answer, and the picker says so.
   const [genericIntegrations, setGenericIntegrations] = useState<
     { id: string; name: string }[] | null
   >(null);
@@ -1460,24 +1376,16 @@ export function ToolEditModal({
   // rather than under a box that no longer holds it.
   const formRef = useRef(form);
   formRef.current = form;
-  // The pasted (or tested) sample response, and the STATUS it came back under (null when it was
-  // pasted by hand). ONE sample for the whole screen: the response template and the appointment
-  // declaration point into the same body, and asking for it twice is the kind of duplication an
-  // operator reads as two different questions.
-  //
-  // Part of `form` since #566, where it was local state. The status exists because the runtime
-  // projects on 2xx alone: a sample captured from a 404 the tool declares a result would be handed
-  // to the model RAW, and a preview that rendered the template over it would promise something the
-  // runtime never does, under a label that says "exactly what the agent would receive". Null reads
-  // as 2xx, which is the right assumption for a hand-pasted body: nobody pastes an error response
-  // to design a success template against.
+  // NOTE: the pasted (or tested) sample response, and the STATUS it came back under. ONE sample
+  // for the whole screen: the template and the appointment declaration read the same body. The
+  // status matters because the runtime projects on 2xx alone, so a 404 sample previews RAW; null
+  // (pasted by hand) reads as 2xx.
   const sample = form.sample;
   const sampleStatus = form.sampleStatus;
   // Always together: a body and the status it is judged under are one fact, and setting the text
   // while leaving the previous run's status judges this body by that one's.
-  // The definition the sample on screen describes, recorded when it is put there. Null when there
-  // is no sample, or when it came back from this tab's memory (where it is already matched to a
-  // revision, which is the same question asked at the other end).
+  // The definition the sample on screen describes, recorded when it is put there (including a
+  // restore on open). Null when there is no sample.
   const sampleShapeRef = useRef<string | null>(null);
 
   const setSample = (text: string, status: number | null) =>
@@ -1516,8 +1424,8 @@ export function ToolEditModal({
   // offer only has to be right for the click that follows it, and clicking the picker's button
   // moves focus off the field without moving its selection.
   const [templateCaret, setTemplateCaret] = useState(0);
-  // The template field is a CodeMirror since #563, so the caret is a position in ITS document and
-  // the picker writes through a dispatch. Held as state and not a ref because the completion's
+  // NOTE: the template field is a CodeMirror, so the caret is a position in ITS document and the
+  // picker writes through a dispatch. Held as state and not a ref because the completion's
   // extensions are memoized against the sample, and the view has to exist before they matter.
   const templateViewRef = useRef<EditorView | null>(null);
   const testModal = useModalController<ToolTestTarget>();
@@ -1618,10 +1526,9 @@ export function ToolEditModal({
           }
           const initial = formFromTool(data.tool);
           setForm(initial);
-          // A sample this tab kept was captured against the definition it is being restored beside,
-          // so THAT is the shape it describes: `recallToolSample` only answers when the revision it
-          // was stored under is the one that just loaded. Left null, an edit to the URL after a
-          // reopen would save the old response against the new definition (round 13 of review).
+          // NOTE: a kept sample describes the definition it is restored beside (`recallToolSample`
+          // only answers for the revision that just loaded). Left null, an edit to the URL after a
+          // reopen would save the old response against the new definition.
           sampleShapeRef.current = shapeOfOpening(initial);
           baselineRef.current = JSON.stringify(initial);
           openedRevisionRef.current = String(data.tool.updatedAt);
@@ -1632,9 +1539,9 @@ export function ToolEditModal({
         }
       })();
     } else {
-      // Reset here too: the session token now drops the previous opening's answer, and that answer
-      // is what used to clear this flag on its way out — leaving the create form skeletonized
-      // forever if it never arrived. Every state this handler sets belongs to THIS opening.
+      // NOTE: reset here too: the session token drops the previous opening's answer, so nothing
+      // else clears this flag and the create form would stay skeletonized. Every state this
+      // handler sets belongs to THIS opening.
       setLoadingForm(false);
       const initial = emptyForm();
       setForm(initial);
@@ -1645,14 +1552,11 @@ export function ToolEditModal({
       // A create has no revision yet, and no persisted half to compare against either.
       openedRevisionRef.current = null;
     }
-    // ONE hook per dialog, and the early return that used to sit above is gone for that reason: the
-    // per-session reset and the child dialog's teardown both belong to this opening, and a second
-    // `useOnModalOpen(modal, …)` beside it is a second reset site that has to repeat every clear the
-    // first one does (`tests/client/field-refusal-fence.test.ts` says so, and it caught this).
-    //
-    // The test dialog belongs to the tool session that opened it, so closing the editor takes it
-    // with it — otherwise it lingers describing a definition that is no longer on screen
-    // (`docs/modals.md`, "parent close invalidates nested state").
+    // NOTE: ONE `useOnModalOpen` per dialog, with no early return above: a second one is a second
+    // reset site that must repeat every clear (`tests/client/field-refusal-fence.test.ts`). The
+    // test dialog belongs to this session, so closing the editor takes it along instead of leaving
+    // it describing a definition no longer on screen (`docs/modals.md`, "parent close invalidates
+    // nested state").
     return () => {
       sessionRef.current = null;
       testModal.close();
@@ -1669,8 +1573,8 @@ export function ToolEditModal({
       setFormError(t("tools.invalidJson", "Headers must be valid JSON."));
       return;
     }
-    // A test run has no conversation to hand a reference for (issue #818); the server refuses the
-    // same way, and saying it here spares the round trip.
+    // NOTE: a test run has no conversation to hand a reference for; the server refuses the same
+    // way, and saying it here spares the round trip.
     if (sendsConversationRef(payload)) {
       setFormError(
         t(
@@ -1704,18 +1608,12 @@ export function ToolEditModal({
     // Cancel is disabled while saving), and the continuation below would then close the dialog the
     // operator reopened and write this tool's state into it (docs/modals.md).
     const session = sessionRef.current;
-    // Read BEFORE the request, handed to the write below. A save can be in flight while this tool
-    // is deleted or the session ends, and both of those clear what this tab remembers; without the
-    // ticket, the response arriving afterwards would put the sample back (round 4 of review).
+    // NOTE: read BEFORE the request, handed to the write below. A save can be in flight while this
+    // tool is deleted or the session ends, and both clear what this tab remembers; without the
+    // ticket, the response arriving afterwards would put the sample back.
     const ticket = sampleTicket();
-    // READ HERE, WITH THE TICKET, for the same reason the ticket is read here. `sample`,
-    // `sampleStatus` and `payload` are all values this closure captured when Save was pressed; this
-    // is a REF, and reading it in the continuation asks what the form says NOW. Dismiss a slow save
-    // and reopen, and the opening that follows writes its own marker into it: the answer that comes
-    // back is then compared against another opening's capture, which can only turn a right answer
-    // into a wrong one — the sample that did describe this payload discarded, or one that did not
-    // kept. Fourth round to find this shape, something the continuation reads at the end that had
-    // already moved (round 18 of review).
+    // NOTE: read here too, because this is a REF: in the continuation it would answer for whatever
+    // opening followed a dismissed slow save, and compare this payload against that capture.
     const captured = sampleShapeRef.current;
     setFormError(null);
     const payload = payloadOf(form);
@@ -1728,10 +1626,7 @@ export function ToolEditModal({
     const held = (e: unknown) =>
       refusal.capture(e, fallback, payload, payloadOf(formRef.current) ?? {});
     try {
-      // NOTHING FOR THE SERVER TO DO. The sample is part of the form since #566, so pasting one is
-      // an unsaved change and Save is the way to keep it, but `payloadOf` sends nothing about it: a
-      // PATCH here would rewrite the whole definition from a form loaded before someone else's edit,
-      // and would advance `updatedAt` for a change the row does not contain (round 11 of review).
+      // NOTE: a sample-only change sends nothing (see `sendsNothing`).
       const untouched = sendsNothing({
         editing: !!editId,
         opened: baselineRef.current,
@@ -1757,20 +1652,10 @@ export function ToolEditModal({
         sampleDescribes(captured, payload),
       );
       const id = row?.id ?? (editId as string);
-      // The response itself, remembered in THIS tab and keyed by the id the row got (issue #566).
-      // Here rather than on every keystroke, so what comes back is the sample the tool was last
-      // saved with and not a draft the operator abandoned. Nothing to await, nothing that can fail
-      // in a way the operator could act on, and nothing written down. See `toolSample.ts`.
-      // Handed over whole, with no judgement here about whether it is worth keeping: what counts as
-      // nothing is the module's rule, and it was written in both places until a mutation walked past
-      // the copy that lives here (round 8 of review).
-      // Null is `revisionForSave` saying there is nothing to keep: the sample describes another
-      // definition, or neither revision is known.
-      // UNCONDITIONALLY, null included, because null is the save saying there is nothing to keep and
-      // that is a thing the module has to hear: it is what deletes the entry that was there and
-      // marks the write. Guarded, a sample that stopped describing this definition was refused here
-      // and the previous one stayed in the map, holding a customer's response nobody can be served
-      // and occupying one of the eight slots (round 15 of review).
+      // NOTE: remembered in THIS tab on save (not per keystroke), so what comes back is the sample
+      // the tool was last saved with (`toolSample.ts`). Handed over whole: what counts as nothing
+      // is the module's rule. Called UNCONDITIONALLY, null included: null deletes the previous
+      // entry, which would otherwise hold a response nobody can be served and occupy a slot.
       rememberToolSample(
         id,
         sampleToRemember({
@@ -1801,9 +1686,9 @@ export function ToolEditModal({
     }
   }
 
-  // NOTE: the DIALABLE base, not the stored one (#504): a relative url_template is valid only when a
+  // NOTE: the DIALABLE base, not the stored one: a relative url_template is valid only when a
   // credential supplies a base the runtime will actually prepend, and a stray value on a kind that
-  // takes none is no longer one.
+  // takes none is not one.
   const credBaseUrl = dialableBaseUrl(
     selectedCredential?.kind,
     selectedCredential?.baseUrl,
@@ -1815,17 +1700,7 @@ export function ToolEditModal({
   const relativeWithoutBase = isRelativeTemplate && !credBaseUrl;
   const urlTemplateInvalid =
     !relativeWithoutBase && !isValidUrlTemplate(form.urlTemplate);
-  // The ack tone example is required when the holding message is enabled: the runtime gate keys off a
-  // non-empty ackMessage, so saving it blank would silently turn the feature off.
-  // The declaration is read by ONE function, and the server stores nothing it would not follow: a
-  // book without a usable id and start path is REFUSED on save, and an unusable provider or summary
-  // path is silently dropped. Either way the operator gets a tool that does not do what the form
-  // showed them, and the modal's only report is the generic "check the name and URL". So the same
-  // reader answers here, per field, before there is anything to save. Same shape as ackInvalid
-  // above: a value the runtime will not honour is not a value to save.
   const apptOn = form.apptAction !== "";
-  // Deliberately NOT part of `form`: the sample is a filling aid, never a stored field, so pasting
-  // one must not mark the modal dirty and must not raise the discard dialog on close.
   const sampleParse = useMemo(() => {
     const raw = sample.trim();
     const none = {
@@ -1837,8 +1712,8 @@ export function ToolEditModal({
     if (raw === "") return { state: "empty" as const, ...none };
     try {
       const body: unknown = JSON.parse(raw);
-      // TWO offers from one sample, because the two readers accept different things: an appointment
-      // id may not be a boolean or the empty string, and a template that could not render
+      // NOTE: TWO offers from one sample, because the two readers accept different things: an
+      // appointment id may not be a boolean or the empty string, and a template that could not render
       // `"active": false` would show the model a blank where the API said no. Each picker offers
       // exactly what its own reader takes. The lists are the template's third offer: what a block
       // may repeat over.
@@ -1854,32 +1729,27 @@ export function ToolEditModal({
       // above and a second opinion could hide the offer while the line below called the text fine.
       // The POSITION comes from the editor's own grammar, because the engine's message does not
       // carry one portably: V8 appends `at position N` to some errors and not others, and JSC
-      // (Safari) to none. When the two disagree the sentence simply says less (issue #562).
+      // (Safari) to none. When the two disagree the sentence simply says less.
       return {
         state: "invalid" as const,
-        // NOTE: the SAMPLE, not the trimmed copy above. This number is read by a person looking at
-        // their own document, and measuring the trimmed one points at line 1 for a break on line 3
-        // (round 1 of review).
+        // NOTE: the SAMPLE, not the trimmed copy above: the operator reads this position in their
+        // own document, and the trimmed one would point at line 1 for a break on line 3.
         problem: firstJsonProblem(sample),
         ...none,
       };
     }
   }, [sample]);
-  // The formatted sample, or null with the NAME of why there is nothing to write. The BUTTON is
-  // gated on this and not on `sampleParse`, so "enabled" can only mean "there is a different text
-  // ready": two readers of one field WILL disagree eventually — round 1 of review found the first
-  // pair, where a byte-order mark parsed (`String.trim` eats it) and the formatter refused — and the
-  // disagreement showed up as an enabled button doing nothing. The reason is carried rather than
-  // collapsed because the row below says it: a disabled button beside a sentence about something
-  // else is the same silent refusal wearing a different hat (round 6 of review).
+  // NOTE: the formatted sample, or null with the NAME of why there is nothing to write. The button
+  // is gated on this and not on `sampleParse`, so "enabled" always means a different text is ready
+  // (the two readers can disagree, e.g. on a byte-order mark). The reason is carried so the row
+  // beside the button says why it is disabled.
   const sampleFormat = useMemo((): {
     text: string | null;
     why: "verbatim" | "unreadable" | "too-large" | "already" | null;
   } => {
-    // NOTE: a body the model reads VERBATIM is kept verbatim. `templatePreviewFor` shows a non-2xx
-    // sample raw, clipped the way the runtime clips it, so reformatting it would preview a document
-    // the API never sent (round 5 of review). The status question is asked of the runtime's own
-    // function rather than answered again here, which is the rule this file already lives by.
+    // NOTE: a body the model reads VERBATIM is kept verbatim: `templatePreviewFor` shows a non-2xx
+    // sample raw, so reformatting it would preview a document the API never sent. The status
+    // question is asked of the runtime's own function.
     if (sampleStatus !== null && readsBodyVerbatim(sampleStatus)) {
       return { text: null, why: "verbatim" };
     }
@@ -1909,7 +1779,7 @@ export function ToolEditModal({
     };
   }, [form.outputTemplate, templateCaret, sampleParse]);
   // The grammar the template field is edited with: the token highlighting and the completion over
-  // the sample's own paths (#563). Memoized because `CodeMirrorField` reconfigures on this value's
+  // the sample's own paths. Memoized because `CodeMirrorField` reconfigures on this value's
   // IDENTITY, so a fresh array per render would reconfigure per keystroke; keyed on the sample
   // because that is what the offer is computed from, and on the language because the list's
   // "N items" is a translated string.
@@ -1946,17 +1816,19 @@ export function ToolEditModal({
   const strayTemplateDelimiter = unmatchedTemplateDelimiter(
     form.outputTemplate,
   );
-  // AND THE GATE IS THE READER'S, not the sum of the two checks above. Those name the two problems
-  // this screen can phrase well; the reader refuses more than they see — a template past
-  // MAX_TEMPLATE_CHARS, a NUL or a lone surrogate the jsonb column cannot store — and it is the
-  // same function the service refines with. Gating on the pair left Save enabled on a payload the
-  // server was always going to reject, with nothing inline saying why.
+  // NOTE: the gate is the READER's, not the sum of the two checks above: those phrase two problems
+  // well, but the reader (the same function the service refines with) also refuses a template past
+  // MAX_TEMPLATE_CHARS or holding a NUL or lone surrogate, which the checks above would let through.
   const templateDeclProblem = useMemo(
     () => templateSaveProblem(form.outputTemplate),
     [form.outputTemplate],
   );
   const templateTooLong =
     form.outputTemplate.trim().length > MAX_TEMPLATE_CHARS;
+  // NOTE: the server stores no appointment declaration it would not follow: a book without a usable
+  // id and start path is REFUSED, and an unusable provider or summary path is silently dropped,
+  // with only a generic error in the modal. So the same reader answers here, per field, before
+  // there is anything to save: a value the runtime will not honour is not a value to save.
   const apptIdPathInvalid = apptOn && !isUsablePath(form.apptIdPath.trim());
   const apptStartPathInvalid =
     form.apptAction === "book" && !isUsablePath(form.apptStartPath.trim());
@@ -1970,6 +1842,8 @@ export function ToolEditModal({
     readProviderSlug(form.apptProvider) === null;
   const apptOffsetsInvalid =
     form.apptAction === "book" && readOffsetsField(form.apptOffsets) === null;
+  // NOTE: the ack tone example is required when the holding message is enabled: the runtime gate keys off a
+  // non-empty ackMessage, so saving it blank would silently turn the feature off.
   const ackInvalid = form.ackEnabled && !form.ackMessage.trim();
   const valid =
     !loadingForm &&
@@ -2125,10 +1999,8 @@ export function ToolEditModal({
               </FormField>
               <FormField
                 label={t("tools.url", "URL template")}
-                // The children are a highlighted field PLUS a variable picker, which is what `group`
-                // is for: there is no single control for the label to name. It was missing, and the
-                // wrapping label used to paper over it by forwarding a click to the first labelable
-                // descendant; now that the label points, a dangling `htmlFor` is a visible failure.
+                // NOTE: the children are a highlighted field PLUS a variable picker, so `group`:
+                // there is no single control for the label to name.
                 group
                 required
                 description={
@@ -2192,9 +2064,9 @@ export function ToolEditModal({
               </FormField>
             </div>
 
-            {/* The allowlist the runtime has always enforced and the console never let anyone write
-                (review round 1 of #615). It is also the per-tool half of reaching an internal
-                service: SSRF_INTERNAL_TARGETS opens a host only for a tool that names it here. */}
+            {/* The allowlist the runtime enforces. It is also the per-tool half of reaching an
+                internal service: SSRF_INTERNAL_TARGETS opens a host only for a tool that names it
+                here. */}
             <FormField
               label={t("tools.allowedHosts", "Allowed hosts")}
               description={t(
@@ -2499,7 +2371,7 @@ export function ToolEditModal({
                   "One response from this API, so you can pick fields instead of typing their paths. It is never saved: it stays open for as long as this tab is, and is gone after a reload.",
                 )}
                 group
-                // THE FIELD'S OWN ERROR, not a line beside the buttons (round 6 of review). Through
+                // NOTE: THE FIELD'S OWN ERROR, not a line beside the buttons. Through
                 // `FormField` it reaches the accessibility tree the way every other field's does:
                 // the `role="group"` wrapper carries `aria-describedby` to this message and
                 // `aria-invalid`, so entering the editor announces the line and column instead of
@@ -2525,24 +2397,21 @@ export function ToolEditModal({
                 <CodeMirrorField
                   value={sample}
                   onChange={(next) => {
-                    // Typed or pasted by hand: there is no status behind it any more.
+                    // NOTE: typed or pasted by hand, so there is no status behind it.
                     setSample(next, null);
                   }}
                   extensions={SAMPLE_LANGUAGE}
                   invalid={sampleParse.state === "invalid"}
                   minHeight="6rem"
-                  // A response with a thousand records would otherwise make this field a thousand
-                  // lines tall and push the template and the appointment controls off the screen.
-                  // Past this it scrolls inside itself, which is what the `rows` of the textarea it
-                  // replaced gave for free (round 4 of review).
+                  // NOTE: capped so a response with a thousand records scrolls inside the field
+                  // instead of pushing the template and appointment controls off the screen.
                   maxHeight="24rem"
                   placeholder='{"data": {"id": "ap_1", "start": "2026-09-02T14:00:00-03:00"}}'
                   aria-label={t("tools.sample", "Sample response (optional)")}
                 />
               </FormField>
-              {/* One row for both buttons and one sentence. They are the same decision — fill the
-                  sample, tidy the sample — and stacked they spent a hundred pixels of a modal that
-                  is already tall on two controls and a hint. */}
+              {/* One row for both buttons and one sentence: they are the same decision (fill the
+                  sample, tidy the sample), and the modal is already tall. */}
               <div className="-mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
                 <Button
                   variant="secondary"
@@ -2554,10 +2423,10 @@ export function ToolEditModal({
                   disabled={
                     !form.urlTemplate.trim() ||
                     urlTemplateInvalid ||
-                    // Deliberately separate from `urlTemplateInvalid`, which is false for a
+                    // NOTE: Deliberately separate from `urlTemplateInvalid`, which is false for a
                     // relative template on purpose. `buildHttpTool` refuses that shape before a
                     // request goes out, so without this the button spends a real round trip to be
-                    // told what the form already knows — and Save has always known it.
+                    // told what the form already knows, as Save does.
                     relativeWithoutBase ||
                     templateDeclProblem !== null
                   }
@@ -2568,10 +2437,9 @@ export function ToolEditModal({
                 <Button
                   variant="secondary"
                   size="sm"
-                  // Formatting requires reading, so on a paste that does not read there is nothing
-                  // it could do but drop what it could not understand — and the operator got that
-                  // text from somewhere and cannot get it back from us. The line beside this button
-                  // is the refusal, and it says where.
+                  // NOTE: formatting requires reading, so on a paste that does not read it could
+                  // only drop text the operator cannot get back from us. The line beside this
+                  // button is the refusal, and it says where.
                   disabled={sampleFormat.text === null}
                   onClick={() => {
                     const tidy = sampleFormat.text;
@@ -2625,7 +2493,7 @@ export function ToolEditModal({
                   "Markdown, with {{path.to.field}} for each value and {{#each list}}…{{/each}} around what repeats per item. A number picks a list position: data.items.0.name",
                 )}
                 group
-                // SAME SHAPE AS THE SAMPLE ABOVE (#562): a CodeMirror has no single labelable
+                // NOTE: same shape as the sample above: a CodeMirror has no single labelable
                 // control for a `<label for>` to point at, so the wrapper carries the group role and
                 // this message reaches the editor through `aria-describedby`.
                 error={
@@ -2697,8 +2565,8 @@ export function ToolEditModal({
                       )
                 }
                 emptyLabel={
-                  // Only while the sample offers SOMETHING: with no sample there is nothing to
-                  // move the caret towards, and the control stays hidden as before.
+                  // NOTE: only while the sample offers SOMETHING: with no sample there is nothing
+                  // to move the caret towards, and the control stays hidden.
                   sampleParse.templates.length + sampleParse.lists.length > 0
                     ? t(
                         "tools.outputTemplatePickNone",
@@ -3015,11 +2883,10 @@ export function ToolEditModal({
                         )}
                         description={t(
                           "tools.appointmentOffsetsHint",
-                          // The last sentence is a WARNING and it went missing once already: a booking
-                          // system that reminds the customer itself plus reminders here is two
-                          // notifications for one appointment, and nothing on this screen can tell
-                          // that the other system does it. Inline by the outcome-1 test in
-                          // docs/ui.md.
+                          // NOTE: the last sentence is a WARNING, kept: a booking system that
+                          // reminds the customer itself plus reminders here is two notifications
+                          // for one appointment, and nothing on this screen can tell. Inline by the
+                          // outcome-1 test in docs/ui.md.
                           "Enter up to five lead times from 1 to 8760 hours, separated by commas, such as 24, 1; empty disables reminders only. Leave it empty if your own booking system already reminds them.",
                         )}
                       >
@@ -3131,19 +2998,11 @@ export function ToolEditModal({
       <ToolTestModal
         modal={testModal}
         onResponse={(raw, status) => {
-          // FORMATTED ON ARRIVAL, on a status whose body gets a template. This is not something the
-          // operator wrote: it is what we just fetched, and an API answers minified. Landing on one
-          // unreadable line and asking them to press Format is a step that has one right answer, so
-          // it is not a step. What comes back unreadable — an HTML error page, XML, plain text — is
-          // kept exactly as the server sent it, because then there is nothing to format and the raw
-          // body IS the diagnosis.
-          //
-          // And a body the model reads VERBATIM is kept verbatim whatever it holds: the preview
-          // shows a non-2xx sample raw, clipped the way the runtime clips it, so reformatting would
-          // preview a document the API never sent (round 5 of review).
-          //
-          // Safe to do here for the same reason Format is safe at all: `reindentJson` copies every
-          // literal out verbatim, so an id no JavaScript number can hold survives the trip.
+          // NOTE: formatted on arrival, on a status whose body gets a template: an API answers
+          // minified, and the operator did not write it. A body that does not read (HTML, XML,
+          // text) is kept as sent, since the raw body IS the diagnosis, and a body the model reads
+          // VERBATIM (non-2xx) is kept verbatim so the preview shows what the API sent.
+          // `reindentJson` copies every literal verbatim, so an id past JS number precision survives.
           const tidy = readsBodyVerbatim(status) ? null : reindentJson(raw);
           setSample(tidy?.ok ? tidy.text : raw, status);
         }}

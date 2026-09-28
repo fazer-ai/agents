@@ -3,14 +3,10 @@ import { mediaFetch } from "@/client/lib/media";
 
 // The tenant's letterhead as a blob URL, or null while there is none to show.
 //
-// Not a plain <img src>: the logo endpoint is tenant-scoped, so a browser navigation would omit the
-// active-tenant header and a SUPER_ADMIN would get "a target tenant is required" instead of a
-// picture. mediaFetch + a blob URL is the same fix MediaImage applies.
-//
-// Keyed on the VERSION, not on the key: the file name is derived from the tenant id and the
-// extension, so replacing a PNG with another PNG leaves it identical and this would never run again
-// — the card would keep showing the previous letterhead while issued documents carry the new one.
-// It is also the cache buster the response's own max-age needs.
+// Not a plain <img src>: the endpoint is tenant-scoped, and a navigation omits the active-tenant
+// header a SUPER_ADMIN needs (mediaFetch + a blob URL, as MediaImage does). Keyed on the VERSION,
+// not the key: the key is derived from the tenant id and extension, so replacing a PNG with a PNG
+// leaves it identical. The version is also the cache buster the response's max-age needs.
 export function useCompanyLogoUrl(
   logoKey: string | null | undefined,
   logoVersion: number | undefined,

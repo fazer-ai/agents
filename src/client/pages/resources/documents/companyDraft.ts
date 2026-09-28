@@ -14,17 +14,11 @@ export type CompanyDraft = Record<(typeof COMPANY_FIELDS)[number], string>;
 
 // The form's whole state: the text in the inputs, and the copy that text was seeded FROM.
 //
-// The baseline is what makes the question answerable at all. The panel hands down a fresh `company`
-// object on every reload — including reloads caused by something else entirely, like deleting a
-// template — so "the prop changed" says nothing. Comparing the draft against the INCOMING copy does
-// not work either: it cannot tell "the operator typed a new address" from "the address changed on
-// the server", and it answers "keep the draft" to both, so the next Save overwrites the other
-// writer silently. Against the baseline the two separate cleanly.
-//
-// It also removes the case that would otherwise need its own branch. A form nobody has opened is
-// not "empty" — an operator can legitimately clear every field, so all-blank cannot double as
-// never-filled-in — but a blank form whose baseline is also blank is untouched by this rule's own
-// definition, and adopts the first copy that arrives. One rule, no special case.
+// The baseline separates "the operator typed" from "the server changed": the panel hands down a
+// fresh `company` on every reload, so "the prop changed" says nothing, and comparing against the
+// INCOMING copy keeps the draft in both cases and silently overwrites the other writer on Save. A
+// blank form with a blank baseline is untouched by the same rule and adopts the first copy that
+// arrives (all-blank cannot mean never-filled-in, since an operator may clear every field).
 export interface CompanyDraftState {
   draft: CompanyDraft;
   seededFrom: CompanyDraft;
@@ -68,13 +62,9 @@ export function companyChanges(form: CompanyDraftState): Partial<CompanyDraft> {
 
 // What the form holds once a save succeeds: the same text, now baselined on what was SENT.
 //
-// Without this the form is permanently "typed in" after its first save — the text matches what the
-// server stores and the baseline still holds what it stored before — so it stops adopting anything
-// ever again, and a later Save overwrites whatever another writer put there in the meantime.
-//
-// The draft is deliberately NOT replaced by the echo: the operator can keep typing while the
-// request is in flight, and the echo carries what we sent, not what they have now. Keystrokes made
-// during the request stay, and stay marked as unsaved.
+// Otherwise the form stays "typed in" after its first save and stops adopting anything, so a later
+// Save overwrites another writer. The draft is deliberately NOT replaced by the echo: keystrokes
+// made during the request stay, and stay marked as unsaved.
 export function afterCompanySave(
   current: CompanyDraftState,
   sent: Partial<CompanyDraft>,

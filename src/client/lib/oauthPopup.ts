@@ -1,24 +1,11 @@
-// OAuth-popup result watcher, shared by the vault OAuth credential sections (GoogleOAuthSection,
-// McpOAuthSection). Its design is dictated by what was empirically PROVEN to work for these flows
-// (verified live against an external OAuth provider with Playwright):
-//
-//   - BroadcastChannel — delivers the callback page's result to the opener reliably, because it is
-//     origin-scoped and browsing-context-group-independent. This is the PRIMARY success signal.
-//   - window.opener.postMessage — a secondary signal. It only arrives when the opener↔popup link
-//     survives; in practice the link is severed (window.opener becomes null in the callback) the
-//     moment the popup hits the provider's `same-origin` COOP, so this often does NOT fire. Harmless
-//     when it doesn't.
-//   - A server-status poll (pollStatus) — the callback persists the tokens server-side, so the
-//     server is the source of truth. Polling it is the robust backstop that also covers any case
-//     where the BroadcastChannel message is missed.
-//
-// What this deliberately does NOT use is `popup.closed`. Under these flows the opener's handle to the
-// popup is DISOWNED at the cross-origin hop (the provider's authorize endpoint answers with COOP
-// `same-origin`), after which `popup.closed` reads `true` while the popup is still alive on the
-// consent screen. Polling it therefore fires a FALSE "the user closed it" almost immediately and
-// tears the watcher down mid-consent — the exact bug where the status failed to refresh after the
-// first authorization and forced a second click. We cannot fix that from our side because the
-// disowning COOP comes from the provider, so we don't depend on `popup.closed` at all.
+// OAuth-popup result watcher shared by GoogleOAuthSection and McpOAuthSection, built on the signals
+// that work for these flows: a BroadcastChannel (origin-scoped and independent of the browsing
+// context group, the PRIMARY success signal), `window.opener.postMessage` (secondary, often absent
+// once the provider's `same-origin` COOP severs the opener link), and a server-status poll (the
+// callback persists tokens server-side, so the server is the source of truth). It never reads
+// `popup.closed`: that COOP disowns the opener's handle at the cross-origin hop, after which
+// `popup.closed` reads `true` while consent is still on screen, tearing the watcher down
+// mid-consent. The COOP is the provider's, so it cannot be fixed from our side.
 
 export type OAuthPopupOutcome =
   | { type: "success"; message?: string }

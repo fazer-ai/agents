@@ -25,9 +25,9 @@ export function TenantSwitcher() {
   return <TenantPicker tenants={tenants} activeId={activeId} canCreate />;
 }
 
-// The same picker for a PERSON with several memberships (issue #756): their tenants come on the
-// session (`/auth/me`), the active one is the tenant the session runs under, and there is nothing to
-// create. Choosing one is the same persisted X-Tenant-Id and the same full reload.
+// The same picker for a PERSON with several memberships: their tenants come on the session
+// (`/auth/me`), the active one is the tenant the session runs under, and there is nothing to create.
+// Choosing one is the same persisted X-Tenant-Id and the same full reload.
 export function MembershipSwitcher({
   tenants,
   activeId,
@@ -55,8 +55,8 @@ function TenantPicker({
   const upgrade = useModalController();
   const active = activeId ?? "";
 
-  // The fallback label now only ever means what it says. A stored id the list does not have is
-  // cleared by the hook, so "Select tenant" no longer doubles as the display for a dead selection.
+  // NOTE: the fallback label means only what it says: the hook clears a stored id the list does not
+  // have, so "Select tenant" is never the display for a dead selection.
   const activeName =
     tenants.find((tn) => tn.id === active)?.name ??
     t("tenant.select", "Select tenant");

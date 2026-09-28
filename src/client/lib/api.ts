@@ -18,9 +18,9 @@ export const api = treaty<App>(window.location.origin, {
     const headers: Record<string, string> = {
       "Accept-Language": i18n.language,
     };
-    // The selected tenant: any tenant for a SUPER_ADMIN, one of the person's memberships otherwise
-    // (issue #756). Sent unconditionally; a value the session may not use is refused with the id
-    // named, and `recoverFromRejectedSelector` below drops it.
+    // NOTE: the selected tenant: any tenant for a SUPER_ADMIN, one of the person's memberships
+    // otherwise. Sent unconditionally; a value the session may not use is refused with the id named,
+    // and `recoverFromRejectedSelector` below drops it.
     const tenantId = getActiveTenantId();
     if (tenantId) headers["X-Tenant-Id"] = tenantId;
     return headers;

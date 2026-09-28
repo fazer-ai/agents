@@ -25,20 +25,12 @@ export function Layout({ children }: LayoutProps) {
       <AnnouncementBanner />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
-        {/* `relative` is load-bearing, and it is about `sr-only` rather than about anything
-            this element positions. `sr-only` is `position: absolute`, so a screen-reader label
-            anywhere in the page tree resolves against the nearest POSITIONED ancestor — and with
-            this one static, that was the initial containing block, i.e. the document. A label far
-            down the scrolled content stream then landed at that document coordinate and stretched
-            `documentElement.scrollHeight` past the viewport, giving the page a SECOND scrollbar that
-            scrolled the whole shell (header and sidebar) out of view.
-
-            The scroller's own `overflow-y: auto` could not clip it either, by the same rule read
-            from the other side: a scroll container only clips absolutely positioned descendants
-            whose containing block is inside it. Measured on /audit with one row expanded, at
-            1280x720: `document.scrollHeight` 2529 with this static, 720 with it relative (issue
-            #511). Fixing the label instead would fix one instance of a class that ~20 files under
-            src/client can reach. */}
+        {/* `relative` is load-bearing, for `sr-only` rather than for anything this element
+            positions. `sr-only` is `position: absolute`, so with this static a screen-reader label
+            deep in the scrolled content resolves against the document, stretches `scrollHeight` past
+            the viewport and adds a second scrollbar that scrolls the whole shell away. The scroller's
+            `overflow-y: auto` cannot clip it: it only clips descendants whose containing block is
+            inside it. Fixing the label instead would fix one of the ~20 files that can reach this. */}
         <main
           id="main-content"
           tabIndex={-1}

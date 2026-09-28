@@ -176,8 +176,8 @@ export function ConversationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [status, setStatus] = useState("");
-  // The agent filter lives in the URL (issue #607), so a view narrowed to one persona can be linked
-  // and survives a reload. Empty means every agent.
+  // NOTE: The agent filter lives in the URL, so a view narrowed to one persona can be linked and
+  // survives a reload. Empty means every agent.
   const [searchParams, setSearchParams] = useSearchParams();
   const agentId = searchParams.get("agentId") ?? "";
   const setAgentId = useCallback(

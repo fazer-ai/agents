@@ -1,11 +1,7 @@
-// Which unit a duration in seconds should be READ in, and at what precision. The choice is here,
-// away from the render, because it is the only part with a rule: the formatting itself is
-// `Intl.NumberFormat`'s job and needs no help.
-//
-// The thresholds are not powers of sixty. They are where the number stops being useful in the
-// smaller unit: a first-response median lives between half a minute and a few minutes, so seconds
-// are kept until two of them (95 s reads as 95 s, not as "2 min"), and minutes until two hours.
-// Rounding to the unit is deliberate above that: "5.3 h" answers "how long did the team take"
+// Which unit a duration in seconds should be READ in, and at what precision; the formatting itself
+// is `Intl.NumberFormat`'s job. The thresholds are where a number stops being useful in the smaller
+// unit, not powers of sixty: seconds until two minutes (95 s reads as 95 s), minutes until two
+// hours. Rounding to the unit above that is deliberate: "5.3 h" answers "how long did the team take",
 // and "5 h 17 min 42 s" only looks like it does.
 
 export type DurationUnit = "second" | "minute" | "hour" | "day";

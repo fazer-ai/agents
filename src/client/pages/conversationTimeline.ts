@@ -16,9 +16,9 @@ export type TrailEntry = NonNullable<ConversationDetail>["trail"][number];
 export type TurnUsageEntry =
   NonNullable<ConversationDetail>["usage"]["turns"][number];
 
-// What a proactive bubble says about where it came from (issue #846): an inactivity follow-up (with
-// its step), a channel-redirect follow-up, or an inbound integration's event, named when the
-// integration still exists.
+// What a proactive bubble says about where it came from: an inactivity follow-up (with its step), a
+// channel-redirect follow-up, or an inbound integration's event, named when the integration still
+// exists.
 export type FollowUpBadgeInfo = {
   kind: "followup" | "redirect" | "event";
   step: number | null;
@@ -64,12 +64,12 @@ export type TimelineItem =
 
 export type Timeline = {
   items: TimelineItem[];
-  // message key → the follow-up badge to stamp on that outgoing bubble (item 20).
+  // message key → the follow-up badge to stamp on that outgoing bubble.
   followUpBadges: Map<string, FollowUpBadgeInfo>;
-  // the key of the LAST (latest) follow-up bubble — where the "sequence complete" line anchors (item 19).
+  // the key of the LAST (latest) follow-up bubble, where the "sequence complete" line anchors.
   lastFollowUpKey: string | null;
-  // message key → the turn whose usage sits at the foot of that bubble (issue #858): the last loaded
-  // message among the ones the turn created.
+  // message key → the turn whose usage sits at the foot of that bubble: the last loaded message among
+  // the ones the turn created.
   usageOnMessage: Map<string, TurnUsageEntry>;
 };
 
@@ -85,15 +85,11 @@ export function buildTimeline(
   // Whether the thread has older messages still to page in.
   olderPending = false,
 ): Timeline {
-  // A proactive send draws no trail line of its own when its bubble can be found: the bubble carries
-  // a badge saying where it came from instead (items 19/20, issue #846). A send whose bubble cannot be
-  // found keeps a trail marker, so nothing is silently lost.
-  //
-  // HOW THE BUBBLE IS FOUND depends on what the line recorded. Since #846 a turn records the Chatwoot
-  // id of the message it sent the customer, and only that message is badged; a turn that sent none
-  // (it left a note, or stayed silent) badges nothing, however close in time an ordinary reply is.
-  // A line from before that has no id and keeps the old guess: the first unclaimed outgoing message
-  // from five seconds before the line to five minutes after.
+  // NOTE: A proactive send whose bubble can be found draws no trail line: the bubble carries a badge
+  // instead; one whose bubble cannot be found keeps a marker, so nothing is lost. A line that recorded
+  // the Chatwoot id of the message it sent badges only that message (none if it sent none). A line
+  // with no recorded id falls back to a guess: the first unclaimed outgoing message from five seconds
+  // before the line to five minutes after.
   const badgeable = (e: TrailEntry) =>
     e.kind === "followup" || e.kind === "redirect" || e.kind === "event";
   const followUpEntries = trail.filter(badgeable);
@@ -105,10 +101,8 @@ export function buildTimeline(
   const sortedFollowUps = [...followUpEntries].sort(
     (a, b) => Date.parse(a.at) - Date.parse(b.at),
   );
-  // Every id a recorded entry names is reserved before an old line guesses (review round 1). During
-  // the deploy that brings this in, a conversation holds both kinds, and an old line's time window
-  // could otherwise take the bubble a newer recorded line names: the event's own message would read
-  // "Follow-up" and the event would fall to a marker.
+  // NOTE: Every id a recorded entry names is reserved before an unrecorded line guesses, so a
+  // guess's time window cannot take the bubble a recorded line names.
   const reserved = new Set(
     followUpEntries.flatMap((e) =>
       e.originRecorded && e.messageId != null ? [e.messageId] : [],
@@ -177,16 +171,11 @@ export function buildTimeline(
       entry: e,
     });
   });
-  // What each turn spent (issues #853 and #858). It sits at the foot of the last message the turn
-  // created that is on screen, and only a turn with none keeps a line of its own in the timeline, at
-  // the time of its last billed call: a silent turn, a turn whose messages are not loaded, a turn
-  // from before its messages were recorded. Dropping those would leave the header's total with
-  // parts the screen no longer shows.
-  //
-  // While older messages are still to page in, a line older than the oldest loaded message waits for
-  // them: it would otherwise stack above the first bubble, far from the exchange it belongs to. With
-  // the whole thread loaded every line shows, including a turn that opened the conversation (an
-  // event, a follow-up) and so ran before its own first message.
+  // NOTE: What each turn spent sits at the foot of the last message the turn created that is on
+  // screen; a turn with none (silent, messages not loaded or never recorded) keeps its own line at the
+  // time of its last billed call, so the header's total stays accounted for. While older messages are
+  // still to page in, a line older than the oldest loaded message waits for them rather than stacking
+  // above the first bubble; with the whole thread loaded every line shows.
   const keyById = new Map<number, string>();
   messages.forEach((m, i) => {
     if (m.id != null) keyById.set(m.id, messageKey(m, i));

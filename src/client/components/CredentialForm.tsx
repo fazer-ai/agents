@@ -299,8 +299,8 @@ export function CredentialForm({
   }, [typeOpen]);
 
   // Build the value to send for multi-field types. Sent VERBATIM, like the single-value path: the
-  // server refuses a secret that begins or ends in whitespace rather than repairing it (#338), and
-  // trimming here would hide that refusal from the console while the MCP surface still got it.
+  // server refuses a secret that begins or ends in whitespace rather than repairing it, and trimming
+  // here would hide that refusal from the console while the MCP surface still got it.
   function buildMultiFieldValue(): Record<string, string> {
     const result: Record<string, string> = {};
     for (const f of fields ?? []) {
@@ -464,16 +464,10 @@ export function CredentialForm({
     ),
   };
 
-  // The refusal, at the input it names.
-  //
-  // What this replaces was `mapSaveError`, which answered its OWN localized sentence for a 409 and
-  // the server's for a 400. The premise was that a 409 arrives unlocalized, and it does not: the
-  // server translates `errors.vaultNameInUse` for the request's Accept-Language, and its pt-BR
-  // sentence ("Já existe um segredo com esse nome e tipo") names the type as well, which the console
-  // copy did not. So the override was a shorter duplicate of a better sentence.
-  //
-  // The declared names include the per-field keys of a multi-field type (`api_key`, `public_key`):
-  // `assertNoSurroundingWhitespace` refuses by the inner key, and the form draws one input per key.
+  // NOTE: the refusal, at the input it names, in the server's own sentence: a 409 arrives localized for
+  // the request's Accept-Language and names the type too, so a console override would only be a
+  // shorter duplicate. The declared names include the per-field keys of a multi-field type (`api_key`,
+  // `public_key`): `assertNoSurroundingWhitespace` refuses by the inner key.
   const held = (e: unknown, sent: Record<string, unknown>) =>
     refusal.capture(
       e,
@@ -671,10 +665,9 @@ export function CredentialForm({
   const genericTypes = GENERIC_TYPE_ORDER.filter(matchesTypeSearch);
   const noTypeResults = serviceTypes.length === 0 && genericTypes.length === 0;
 
-  // The Save button label changes to "Save anyway" after a failed test — but only for a failure the
-  // operator can decide to ignore. `surrounding_whitespace` is the write's own verdict, not a
-  // connectivity one, so saving anyway is refused by createVaultEntry/updateVaultEntry every time:
-  // offering it advertises an action that cannot succeed (#338).
+  // NOTE: the Save button reads "Save anyway" after a failed test, but only for a failure the operator
+  // can decide to ignore. `surrounding_whitespace` is the write's own verdict, refused by
+  // createVaultEntry/updateVaultEntry every time, so offering it advertises an action that cannot succeed.
   const testFailedRecoverably =
     testResult?.kind === "fail" && testResult.code !== "surrounding_whitespace";
   const saveLabel = testFailedRecoverably

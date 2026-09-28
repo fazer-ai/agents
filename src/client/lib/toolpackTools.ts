@@ -38,17 +38,12 @@ export const TOOLPACK_TOOL_ICONS: Record<string, LucideIcon> = {
   resend_email_status: MailCheck,
 };
 
-// An operator-only note about one ARGUMENT, shown on that argument's pill in the console.
-//
-// It lives here rather than in the tool's zod `.describe()` because the two audiences want opposite
-// things from that field: the model reads it on EVERY turn the tool is bound, and the operator reads
-// it once, in a list the console builds from the STATIC schema. `calendarId` is the case that made
-// the difference concrete (issue #118): `calendarArgSchema` removes the argument whenever the
-// integration has exactly one calendar, so the only context in which a model can read "this arg only
-// appears when there are several" is the one where it is already true — tokens spent every turn to
-// state a condition guaranteed by the fact that it can be read at all. The console shows the
-// argument regardless (it is keyed by catalogType, not by instance), so without this note an
-// operator has no way to know why their agent never receives an argument they can see documented.
+// An operator-only note about one ARGUMENT, shown on that argument's pill in the console. Not in the
+// tool's zod `.describe()`: the model reads that on EVERY turn, and `calendarArgSchema` removes
+// `calendarId` whenever the integration has one calendar, so "this appears when there are several"
+// would spend tokens to state what being readable already guarantees. The console shows the argument
+// regardless (keyed by catalogType, not instance), so without this note an operator cannot tell why
+// the agent never receives an argument they can see documented.
 export function toolpackArgNote(
   toolName: string,
   argName: string,

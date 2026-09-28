@@ -61,24 +61,17 @@ export interface ToolPreconditionRow {
   equals: string;
 }
 
-// THE MARKS THE EDITOR HANDS ITS TABS.
-//
-// One object per tab and not one prop per input, and the shape is forced rather than chosen. The
-// fence in `tests/client/field-refusal-fence.test.ts` asks that every name a form DECLARES be read
-// back by an `at(…)` call in the SAME file, so the readings have to stay in `AgentEditorPage` and
-// only their answers travel. Handing a tab a `refusalAt` callback instead would move the readings
-// into the tab and leave the declaration answered by nothing — which is the exact shape that rule
-// exists to catch, since a declared name with no control behind it makes `placeRefusal` report a
-// placement and the caller then keeps the toast quiet.
-//
-// Null is the normal value of every one of these: at most one input is refused at a time.
+// The refusal marks the editor hands its tabs, one object per tab. The readings stay in
+// `AgentEditorPage` because `tests/client/field-refusal-fence.test.ts` requires every name a form
+// declares to be read by an `at(…)` call in that same file; a `refusalAt` callback here would leave
+// the declaration unanswered. Null is the normal value: at most one input is refused at a time.
 export interface BehaviorRefusals {
   sttCredential: string | null;
   ttsCredential: string | null;
   ttsNormalizeCredential: string | null;
   visionCredential: string | null;
   visionExtractionPrompt: string | null;
-  // Issue #859: the spoken-reply notice and the reply_as_text note.
+  // The spoken-reply notice and the reply_as_text note.
   ttsSpokenNoticeText: string | null;
   ttsTextChoiceNote: string | null;
   contactAuthCredential: string | null;

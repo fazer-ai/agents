@@ -21,10 +21,8 @@ interface FormFieldProps {
   // What the operator needs to DECIDE whether the field applies to them (why it exists, when to
   // use it, what it costs), as opposed to what they need to fill it correctly, which is
   // `description` and stays on screen. Rendered behind a `?` next to the label, so a page of forms
-  // reads as a form instead of as prose with inputs in it (issue #411).
-  //
-  // A POPOVER and not a tooltip, because a tooltip cannot be opened by touch at all, measured in
-  // the note on Popover.tsx.
+  // reads as a form instead of as prose with inputs in it. A POPOVER and not a tooltip, because a
+  // tooltip cannot be opened by touch at all (see the note on Popover.tsx).
   help?: ReactNode;
   error?: string | null;
   required?: boolean;
@@ -72,28 +70,14 @@ function wireNativeControl(
   } as Partial<typeof own>);
 }
 
-// Label + control + (description | error) stack.
-//
-// THE LABEL POINTS AT THE CONTROL (`htmlFor`), it does not wrap it, and that is not a style
-// preference: a wrapping <label> forwards a click on any NON-INTERACTIVE descendant to the control
-// it labels. The `?` beside the title is a `<span role="button">`, and ARIA makes a span operable
-// without making it *interactive content* in the HTML sense, so the label kept forwarding: measured
-// on a field wrapping a checkbox, where clicking the `?` toggled the checkbox. The earlier version
-// with a real <button> had the mirror-image defect, because `button` IS labelable and so became the
-// labelled control, which took the input's accessible name with it.
-//
-// Pointing fixes a third thing on the way: a <label> that contains the control is as wide as the
-// field, so the whole row, empty space included, was a click target. Now only the words are.
-//
-// The MESSAGE is a sibling for the same algorithm read the other way: an accessible name is
-// computed from the whole label subtree, so a description or an error inside the label would be
-// appended to the field's name instead of describing it. It reaches the control through
-// `aria-describedby` (FormFieldContext) rather than through containment.
-//
-// Pass `group` when the children are NOT a single focusable control. There is nothing for `htmlFor`
-// to name, so the wrapper carries `role="group"` + `aria-labelledby` instead, and the context hands
-// down neither an id nor a label: a child that took the group's heading as its own name would be
-// announced as the group.
+// Label + control + (description | error) stack. THE LABEL POINTS AT THE CONTROL (`htmlFor`) and
+// never wraps it: a wrapping <label> forwards a click on any non-interactive descendant, so the `?`
+// (a `<span role="button">`) would toggle a wrapped checkbox, and a real <button> there would become
+// the labelled control and take the input's name. Pointing also keeps the click target to the words.
+// The MESSAGE is a sibling because an accessible name is computed from the whole label subtree; it
+// reaches the control through `aria-describedby`. Pass `group` when the children are NOT a single
+// focusable control: the wrapper carries `role="group"` + `aria-labelledby`, and the context hands
+// down neither an id nor a label, or each child would be announced as the group.
 export function FormField({
   label,
   children,
@@ -131,12 +115,9 @@ export function FormField({
       // would announce the same words three times.
       labelledById: group ? undefined : titleId,
       controlId: group ? undefined : controlId,
-      // Also for the ONE control, and for the same reason the ids are. A group's `required` and its
-      // `error` are statements about the COMPOSITE, and handing them down painted every <Input> and
-      // <Select> inside red over a single refusal about the whole thing, while a bare <input> in
-      // the same group stayed normal because nothing wires it. Worse for `required`, which is not
-      // decoration: it would make each part of a composite individually mandatory to submit. The
-      // group says both about itself, on the wrapper.
+      // NOTE: also for the ONE control. A group's `required` and `error` are statements about the
+      // COMPOSITE: handed down, one refusal would paint every <Input> inside red, and `required` would
+      // make each part of the composite individually mandatory. The group says both on the wrapper.
       required: group ? undefined : required,
       invalid: group ? undefined : !!error,
     }),

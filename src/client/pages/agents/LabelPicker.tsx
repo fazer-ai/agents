@@ -3,11 +3,11 @@ import { ComboBox } from "@/client/components";
 
 export type InboxLabelOption = { title: string; color: string | null };
 
-// Multi-select label picker, shared by a follow-up step's "assign label" action (item 4) and the
-// labels open_case_in_inbox puts on every case (issue #901): one ComboBox over the agent inbox's
-// known labels (with their Chatwoot color), where the operator picks any number of labels and can
-// still type one that doesn't exist yet. When the agent spans more than one Chatwoot
-// account (item 5) the label set can't be listed coherently, so it shows a warning and stays free-text.
+// Multi-select label picker, shared by a follow-up step's "assign label" action and the labels
+// open_case_in_inbox puts on every case: one ComboBox over the agent inbox's known labels (with
+// their Chatwoot color), where the operator picks any number and can still type a new one. When the
+// agent spans more than one Chatwoot account the label set can't be listed coherently, so it shows
+// a warning and stays free-text.
 export function LabelPicker({
   values,
   onChange,

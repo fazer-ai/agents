@@ -1,33 +1,21 @@
 import { jsonLanguage } from "@codemirror/lang-json";
 import type { SyntaxNode, Tree } from "@lezer/common";
 
-// Reading a pasted API response as TEXT, for the sample-response field (issue #562).
-//
-// Both functions here parse with the editor's own grammar rather than with `JSON.parse`, and each
-// has its own reason.
-//
-// The position, because `JSON.parse`'s message is not an answer. Measured: V8 appends
-// `at position 20 (line 3 column 3)` to some of its errors and not to others, JSC (Bun, and Safari)
-// appends nothing at all and says only `Expected '}'`, and every one of those sentences is the
-// engine's own English that we would have to pattern-match to reuse and could never translate. The
-// syntax tree answers in one number, the same way in every engine.
-//
-// The formatting, because `JSON.stringify(JSON.parse(text), null, 2)` does not return the operator's
-// document. It returns what JavaScript made of it, and JavaScript loses things a response cares
-// about: `12345678901234567890` comes back `12345678901234567000`, `1.0` comes back `1`, and the
-// earlier of two duplicate keys is gone. Formatting is not the moment to decide what a response
-// really meant, so the literals below are copied out of the document verbatim and only the
-// whitespace between them is ours.
+// Reading a pasted API response as TEXT, for the sample-response field, with the editor's own
+// grammar rather than `JSON.parse`. The position, because engines word `JSON.parse` errors in their
+// own untranslatable English and only some include a position; the syntax tree answers in one
+// number, the same in every engine. The formatting, because `JSON.stringify(JSON.parse(text), null,
+// 2)` returns what JavaScript made of the document (`12345678901234567890` becomes
+// `12345678901234567000`, `1.0` becomes `1`, a duplicate key vanishes), so the literals are copied
+// verbatim and only the whitespace between them is ours.
 
 const parser = jsonLanguage.parser;
 const INDENT = "  ";
 
-// What a formatted sample may grow to. Indentation is depth-sized, so expansion is a factor of the
-// document's DEPTH and not of its length: measured, 4001 characters of nested arrays produce
-// 8,008,001, from a document well under the 100,000-character cap `test-run.ts` puts on a raw
-// response (round 4 of review). Nobody reads that, it is re-parsed on the next keystroke, and since
-// this field formats a test response on arrival it is produced without anyone asking. Ten times the
-// wire cap leaves every ordinary response — which expands by a small factor — far below it.
+// What a formatted sample may grow to. Indentation is depth-sized, so expansion scales with DEPTH:
+// 4001 characters of nested arrays format to about 8,000,000, from a document well under the raw
+// response cap of `test-run.ts` (100,000 characters), and this field formats a test response on
+// arrival, unasked. Ten times the wire cap leaves every ordinary response far below it.
 const MAX_FORMATTED = 1_000_000;
 
 // A place in the document, in the three coordinates the two readers of it want: the offset for a
@@ -36,20 +24,16 @@ export interface JsonSpot {
   // A UTF-16 index, which is what a selection in the editor is measured in.
   offset: number;
   line: number;
-  // Counted in CHARACTERS, because the only reader of this number is a person counting along a line
-  // (round 2 of review). The offset is UTF-16 and an emoji is two of those, so a response carrying
-  // one before the break — a name, a message, a status, which a customer-facing API sends all day —
-  // named the character after the one it meant, once per astral character. Code points and not
-  // grapheme clusters: a ZWJ sequence still counts as its parts, which is a smaller error than the
-  // one this fixes and would cost `Intl.Segmenter` to remove.
+  // Counted in CHARACTERS (code points), because its only reader is a person counting along a line;
+  // the UTF-16 offset counts an emoji as two, which would name the character after the one meant. Not
+  // grapheme clusters: a ZWJ sequence still counts as its parts, a smaller error that would cost
+  // `Intl.Segmenter` to remove.
   column: number;
 }
 
-// What CodeMirror draws as a line break, which is what the reader of these coordinates is looking
-// at: it splits a document on `\r\n?|\n` (round 3 of review). A bare CR cannot arrive by typing or
-// pasting, because the editor normalizes what it is handed — it arrives through the door this field
-// advertises, since "Send a test request" writes the RAW response body here and an HTTP body is
-// whatever the server sent.
+// What CodeMirror draws as a line break (it splits on `\r\n?|\n`), which is what the reader of these
+// coordinates sees. A bare CR cannot arrive by typing or pasting, since the editor normalizes, but
+// "Send a test request" writes the RAW response body here, and an HTTP body is whatever was sent.
 const BREAK = /\r\n?|\n/;
 
 function spotAt(text: string, offset: number): JsonSpot {
@@ -83,10 +67,9 @@ function firstErrorNode(tree: Tree): SyntaxNode | null {
 }
 
 // What both readers below agree to ignore around the document: the surrounding whitespace, and with
-// it the byte-order mark, which `String.trim` counts as whitespace and `JSON.parse` therefore never
-// sees. Normalizing in ONE place is what keeps them from disagreeing — round 1 of review found a BOM
-// that the field called readable (the pickers filled) and the formatter refused, which is an enabled
-// button that does nothing when pressed.
+// it the byte-order mark, which `String.trim` counts as whitespace. Normalizing in ONE place keeps
+// them from disagreeing: a BOM the field called readable and the formatter refused would be an
+// enabled button that does nothing.
 function bodyOf(text: string): { body: string; lead: number } {
   return { body: text.trim(), lead: text.length - text.trimStart().length };
 }
@@ -94,19 +77,16 @@ function bodyOf(text: string): { body: string; lead: number } {
 // A place in the BODY, translated to the same place in the text the operator is looking at. An
 // offset at the body's end means the document simply stopped, and the document that stopped is the
 // one on screen: reporting the trimmed end there puts the message above the blank lines under an
-// unclosed brace, which is exactly where the cursor is when it appears (round 6 of review).
+// unclosed brace, which is exactly where the cursor is when it appears.
 function inText(text: string, body: string, lead: number, offset: number) {
   return offset >= body.length ? text.length : lead + offset;
 }
 
-// Where this text stops being JSON, or null when it does not stop.
-//
-// The coordinates are about the text AS GIVEN, never about the normalized copy: this number is read
-// by a person looking at their own document, and a caller that trimmed first would point at line 1
-// for a break on line 3 (round 1 of review).
-//
-// An empty document is a problem at the start, not an absence of one: the caller decides that an
-// empty field is simply empty, and never asks.
+// Where this text stops being JSON, or null when it does not stop. The coordinates are about the
+// text AS GIVEN, never the normalized copy: a person reads them against their own document, and a
+// caller that trimmed first would point at line 1 for a break on line 3. An empty document is a
+// problem at the start, not an absence of one: the caller decides an empty field is simply empty,
+// and never asks.
 export function firstJsonProblem(text: string): JsonSpot | null {
   const { body, lead } = bodyOf(text);
   const tree = parser.parse(body);
@@ -139,8 +119,7 @@ function valueEndFor(top: SyntaxNode, text: string): number {
 }
 
 // The two ways formatting can decline, kept apart because the operator is told which one happened.
-// Collapsing them left a disabled button next to a sentence about something else, which is the
-// silent refusal this field exists to remove (round 6 of review).
+// Collapsed, they would leave a disabled button next to a sentence about something else.
 export type Reindent =
   | { ok: true; text: string }
   // It does not parse. NOTHING is changed: a document that could not be read is not a document to

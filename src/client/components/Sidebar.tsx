@@ -151,10 +151,10 @@ function SidebarFooter({ collapsed = false, onNavigate }: SidebarFooterProps) {
 
   if (!SUPPORT_LINK && SECONDARY_LINKS.length === 0) return null;
 
-  // White-label overrides (issue #4): the operator's own site/support inbox replace the
-  // defaults, and the GitHub entry can be hidden. The server sanitizes what it stores, but
-  // the URL still only rides into an href after the same allowlist check we apply to any
-  // externally-sourced link (defense in depth against a tampered cache/response).
+  // NOTE: white-label overrides: the operator's own site and support inbox replace the defaults, and
+  // the GitHub entry can be hidden. The server sanitizes what it stores, but the URL still only rides
+  // into an href after the allowlist check any externally-sourced link gets (defense in depth against
+  // a tampered cache or response).
   const customSiteUrl =
     branding?.siteUrl && isSafeHttpUrl(branding.siteUrl)
       ? branding.siteUrl
@@ -273,7 +273,7 @@ function SidebarFooter({ collapsed = false, onNavigate }: SidebarFooterProps) {
   );
 }
 
-// App version line, pinned at the very bottom of the sidebar (item 2). Independent of the footer
+// App version line, pinned at the very bottom of the sidebar. Independent of the footer
 // links (which can be absent). Expanded → "v<version>"; collapsed → a "v" with the full version in a
 // tooltip. Renders nothing when no version is known (dev, where BUN_PUBLIC_* isn't inlined).
 function SidebarVersion({ collapsed = false }: { collapsed?: boolean }) {

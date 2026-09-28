@@ -30,13 +30,13 @@ type ApiKeysData = Awaited<
 type ApiKey = NonNullable<ApiKeysData>["apiKeys"][number];
 
 // API keys console. The per-tenant list (TENANT_ADMIN): keys fenced to the selected tenant. Below
-// it, for a SUPER_ADMIN only, the FLEET list: keys with no home tenant and SUPER_ADMIN authority,
-// the principal the operator's own session is (issue #308). Each list creates via a modal (the
-// plaintext token is revealed once) and revokes with a confirm. The same key authenticates the REST
-// v1 API and the MCP transport. The hash/plaintext never appear here — only the display prefix.
-// A key minted before keys were confirmed with a password (`stepUpAt` null) still answers the
-// destructive routes with its creator's password; the list marks it, since rotating it is the only
-// way to a key that answers by itself, and nothing else on the page would say which one that is.
+// it, for a SUPER_ADMIN only, the FLEET list: keys with no home tenant and SUPER_ADMIN authority, the
+// principal the operator's own session is. Each list creates via a modal (the plaintext token is
+// revealed once) and revokes with a confirm. The same key authenticates the REST v1 API and the MCP
+// transport. The hash/plaintext never appear here, only the display prefix. A key with `stepUpAt`
+// null (minted without a password confirmation) still answers the destructive routes with its
+// creator's password; the list marks it, since rotating it is the only way to a key that answers by
+// itself, and nothing else on the page would say which one that is.
 export function ApiKeysPage() {
   const { t } = useTranslation();
   const { user } = useAuth();

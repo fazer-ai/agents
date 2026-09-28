@@ -9,15 +9,10 @@ import {
   WINDOW_MESSAGES_MIN,
 } from "@/modules/observe/settings";
 
-// The agent editor's Observation block (issue #494), as the same pair of pure functions the Memory
-// and TTS blocks are: stored settings → form state → stored settings. The Behavior save REPLACES the
-// whole `monitoring` block with what the form holds, so a field the form does not carry is not
-// merely un-editable, it is DELETED on the next save. The round-trip test over this pair
-// (tests/client/observation-form-state.test.ts) is what makes the next such field impossible to
-// add silently.
-//
-// The label groups this block used to edit are gone with the classifier (issue #568). What is left
-// is what observing actually needs: when to look, and how much to read.
+// The agent editor's Observation block, as the same pair of pure functions the Memory and TTS blocks
+// are: stored settings → form state → stored settings. The Behavior save REPLACES the whole
+// `monitoring` block with what the form holds, so a field the form does not carry is DELETED on the
+// next save; the round-trip test (tests/client/observation-form-state.test.ts) guards the next field.
 
 export interface ObservationState {
   analysis: MonitoringAnalysis;
@@ -53,12 +48,10 @@ function intOr(v: string, fallback: number): number {
   return Number.isFinite(n) && v.trim() !== "" ? Math.round(n) : fallback;
 }
 
-// WHAT THE SERVER TOLERATES IS NORMALIZED HERE (issue #494 review, rounds 1 and 2): it accepts an
-// out-of-range window and the reader then narrows it on the next load, so left alone the operator is
-// told "saved" while the runtime runs something else. Run through the reader here, the form shows
-// the truth immediately. The rule to hold when a field is added: normalize it here only if the write
-// boundary lets it through — anything the server REFUSES must travel as typed, or the save succeeds
-// with the offending value quietly deleted and nobody is told what was wrong with it.
+// Normalized through the reader, since the server accepts an out-of-range window that the reader
+// narrows on load; otherwise "saved" would show one value while the runtime runs another. Normalize
+// a field here only if the write boundary lets it through: anything the server REFUSES must travel
+// as typed, or the save succeeds with the value quietly deleted.
 export function observationToStored(form: ObservationState): MonitoringConfig {
   return readMonitoringConfig({ monitoring: draftFromForm(form) });
 }

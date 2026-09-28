@@ -30,15 +30,10 @@ import { webhookEventLabel } from "@/client/lib/webhookEvents";
 // toggles enabled inline, and deletes with a confirm. The secret value never appears here — only
 // the vault reference name. The event catalog is fetched once for the modal.
 
-// WHAT THIS SUBSCRIPTION DOES, never what its column holds. This used to decide between three
-// states off the row, and a ref whose vault entry had been DELETED fell into the first one: the same
-// "Signed with: vault:11" the live credential gets, on the page that now also shows a delivery row
-// saying that very POST went out unsigned (issue #724). Three of the four values need the vault, so
-// the server answers the whole question in one field and this reads it.
-//
-// The ref is still named in the one case where naming it helps — it resolves, so there is a
-// credential to go look at. In the three that do not resolve the ref is not the useful half; the
-// errand is: nothing to go look at, a credential to recreate, a value to fill in.
+// WHAT THIS SUBSCRIPTION DOES, never what its column holds: a ref whose vault entry is gone must not
+// read "Signed with" like a live credential. Three of the four states need the vault, so the server
+// answers in `signingState` and this reads it. The ref is named only when it resolves, the one case
+// with a credential to go look at.
 function signingLabel(
   sub: { signingState: string; secretRef: string | null },
   t: (k: string, d: string, o?: Record<string, unknown>) => string,
@@ -141,11 +136,8 @@ export function WebhooksPage() {
         return;
       }
       if (result.ok) {
-        // Delivered, and then the thing a bare success would let the operator believe wrongly: that
-        // it was signed. Until #724 this case never reached here — the probe refused outright, with
-        // a red toast — so a green "Test delivered" is exactly the feedback the refusal used to
-        // give, minus the reason. The probe stopped refusing because its own worker never did; that
-        // only improves the answer if the answer still carries the warning.
+        // NOTE: Delivered, but possibly unsigned: the probe delivers without a signature, as the worker
+        // does, so the warning is the only thing telling the operator a green result was not signed.
         if (result.warning) {
           showToast(
             t(

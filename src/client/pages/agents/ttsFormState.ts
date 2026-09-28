@@ -29,9 +29,8 @@ import {
 
 // The agent editor's TTS block, as a pair of pure functions: stored settings → form state → stored
 // settings. It lives outside the page because the Behavior save REPLACES the whole `tts` block with
-// what the form holds, so a field the form does not carry is not merely un-editable, it is DELETED on
-// the next save. That happened to `normalizeBaseURL`, which the REST and MCP transports accept: the
-// round-trip test over this pair is what makes the next one impossible to add silently.
+// what the form holds, so a field the form does not carry is DELETED on the next save; the
+// round-trip test over this pair guards the next field (such as `normalizeBaseURL`, set over REST/MCP).
 
 export interface TtsFormState {
   mode: string;
@@ -55,18 +54,18 @@ export interface TtsFormState {
   style: string;
   speed: string;
   speakerBoost: boolean | null;
-  // The audio check for this agent (issue #802). "" = the instance's default, which is stored as
-  // null so saving the tab never pins the agent to whatever the instance says today.
+  // The audio check for this agent. "" = the instance's default, which is stored as null so saving
+  // the tab never pins the agent to whatever the instance says today.
   checkMode: TtsCheckMode | "";
-  // When a reply goes as text instead of audio (issue #856): the switch, then the limits. Hydrated
-  // through the runtime's reader, so the limits show the defaults an agent gets when it turns the
-  // switch on; "" = that criterion off, stored as null (absent would bring the default back).
+  // When a reply goes as text instead of audio: the switch, then the limits. Hydrated through the
+  // runtime's reader, so the limits show the defaults an agent gets when it turns the switch on;
+  // "" = that criterion off, stored as null (absent would bring the default back).
   textInstead: boolean;
   textOverChars: string;
   textOverListItems: string;
   textOverNumbers: string;
-  // What the model is told about a spoken reply (issue #859): the notice and its wording ("" = the
-  // built-in default, stored as null), and the reply_as_text tool and its note.
+  // What the model is told about a spoken reply: the notice and its wording ("" = the built-in
+  // default, stored as null), and the reply_as_text tool and its note.
   spokenNotice: boolean;
   spokenNoticeText: string;
   textChoice: boolean;
@@ -185,14 +184,10 @@ export function ttsSettingsFrom(tts: TtsFormState): Record<string, unknown> {
   };
 }
 
-// Switching the rewrite's provider invalidates everything that was picked FOR the old one: the model
-// id (another vendor refuses it), the API key (same), and the base URL, which is the dangerous one
-// because its field only renders for openai-compatible. Left behind, it keeps steering the new
-// provider's client at an endpoint the operator can no longer see, and the rewrite fails or hangs.
-// The rule these project is not specific to speech — "which model does a secondary call run on, on
-// whose key" — so it lives in ./modelOverrideForm and the summariser shares it. What is specific to
-// speech is the SPELLING: the four overrides are stored on the `tts` block under `normalize*` names,
-// and translating them is all that is left here.
+// The rewrite's four overrides, stored on the `tts` block under `normalize*` names, translated to the
+// shared ./modelOverrideForm shape (the summariser uses it too). Switching provider there clears the
+// model, key and base URL; the base URL matters most, because its field only renders for
+// openai-compatible and a stale one would steer the new provider at an endpoint nobody can see.
 function toOverride(tts: NormalizeOverrides): ModelOverride {
   return {
     provider: tts.normalizeProvider ?? "",
@@ -263,10 +258,7 @@ export function ttsNormalizerPickerSource(
 
 // The two guards below answer the shared rule's `sectionOn` question: with audio replies off, or the
 // rewrite switched off, the whole block is hidden, so blocking Save would freeze the Behavior tab
-// with nothing on screen to explain it — including the save that turns audio off in the first place.
-// That precondition used to live here as an early return, which is why the summariser's override
-// arrived without it; it is a required argument of the shared helper now, so the next feature to add
-// one has to answer it.
+// with nothing on screen to explain it, including the save that turns audio off.
 export function ttsNormalizerBaseUrlUnsupported(
   tts: TtsFormState,
   agent: AgentModelSource,

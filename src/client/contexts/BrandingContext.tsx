@@ -21,16 +21,12 @@ import {
 } from "@/lib/branding";
 import { derivePalette } from "@/lib/palette";
 
-// GLOBAL app identity/branding (applied app-wide — including anonymous pages like login/setup).
-// Colors are applied via setProperty on <html> (CSP-safe, NOT an inline <style>); the favicon link
-// is swapped in place. Both re-apply on theme change so SIMPLE-mode derivation and per-theme
-// ADVANCED tokens stay correct, and so the logo/favicon pick the right variant.
-//
-// FOUC: the config is cached in localStorage and used to SEED the initial state synchronously, and
-// colors are applied in a layout effect (before the first paint). So a returning visitor renders
-// with the custom brand on the first frame — no flash of the default accent — while the network
-// fetch revalidates in the background (stale-while-revalidate). Only the very first visit (cold
-// cache) shows the default until the fetch resolves.
+// GLOBAL app identity/branding, applied app-wide, anonymous pages like login/setup included. Colors
+// go through setProperty on <html> (CSP-safe, NOT an inline <style>) and the favicon link is swapped
+// in place; both re-apply on theme change so SIMPLE-mode derivation, per-theme ADVANCED tokens and
+// the logo/favicon variant stay correct. FOUC: the localStorage cache SEEDS the initial state
+// synchronously and colors apply in a layout effect, so a returning visitor's first frame already
+// carries the brand while the fetch revalidates; only a cold first visit shows the default.
 
 type BrandingData = NonNullable<
   Awaited<ReturnType<typeof api.api.v1.branding.get>>["data"]

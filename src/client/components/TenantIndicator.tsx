@@ -6,7 +6,7 @@ import {
 import { useAuth } from "@/client/contexts/AuthContext";
 
 // A SUPER_ADMIN gets the target-tenant switcher, a person who belongs to several tenants gets one over
-// their memberships (issue #756), and everyone else sees the tenant-name badge.
+// their memberships, and everyone else sees the tenant-name badge.
 export function TenantIndicator() {
   const { user } = useAuth();
   if (user?.role === "SUPER_ADMIN") return <TenantSwitcher />;

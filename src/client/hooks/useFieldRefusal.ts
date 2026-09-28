@@ -19,7 +19,7 @@ export interface FieldRefusal {
   //
   // Keyed by VALUE rather than cleared by a call: an edit takes the mark off because the box stops
   // holding what the server refused, so there is no `onChange` line to forget. Forgetting the
-  // argument is a type error; forgetting a `clear(field)` was invisible.
+  // argument is a type error, where a forgotten `clear(field)` would be invisible.
   at: (field: string, value: unknown) => string | null;
   // Take a failed call. Returns the sentence the CALLER must render, or null once the operator has
   // already been told — either because it landed on an input, or because the form was gone and this
@@ -42,41 +42,21 @@ export interface FieldRefusal {
   //
   // Null while the standing refusal is about no input of this form's, which `message` still carries.
   field: string | null;
-  // The standing refusal's sentence, whether or not it could be placed at an input.
-  //
-  // Here rather than in the caller because a caller that keeps its own copy has a SECOND source of
-  // truth for one fact, and the two drift in ways nothing can see: the copy outlives the mark it
-  // duplicates, it is tagged with the wrong owner, a second refusal about the same field leaves the
-  // first copy standing. Three review rounds on fazer-ai/agents#414 found three spellings of that,
-  // all of them a page holding the sentence beside a hook that was already holding it.
-  //
-  // Expires with the hold and never on its own: every `capture` overwrites it, and `clear` drops it.
-  // A caller rendering it for a PLACED mark still has to ask `at`, because that one expires by value.
+  // The standing refusal's sentence, whether or not it could be placed at an input. Here rather than
+  // in the caller: a caller's own copy is a SECOND source of truth that drifts unseen (it outlives the
+  // mark, carries the wrong owner, survives a second refusal about the same field). Expires with the
+  // hold, never on its own: every `capture` overwrites it and `clear` drops it. A caller rendering it
+  // for a PLACED mark still asks `at`, which expires by value.
   message: string | null;
 }
 
-// `rendered` is what the form is DRAWING RIGHT NOW, and the tense is the whole of it.
-//
-// This started as a constant list plus a boolean for "is the form on screen", and the boolean grew a
-// new meaning every review round: a dialog that closed, then a tab that changed. It was always an
-// approximation of the question `placeRefusal` actually asks — is THIS name one the operator can see
-// — and it is too coarse for a form that hides some of its own controls. Measured, five of those are
-// already here: the setup token renders only where enforcement is on, the vault's per-key inputs and
-// its base URL disappear when the operator switches to pasting a `.env`, its parameter-name box
-// belongs to three of the secret kinds, and the add-content dialog draws the text box on one of its
-// two tabs. In every one of them a refusal the server named by that field was marked onto a control
-// nobody was rendering, and `capture` told the caller to keep the toast quiet.
-//
-// So the caller answers with the list, per render, and the boolean is gone: a form that is not on
-// screen renders nothing, which is `[]`.
-//
-// Read through a ref, because the answer is needed AFTER the await and a submit handler closes over
-// the render it started in. That was the point of the boolean's ref too; it is the same fix, applied
-// to the thing that was always the real question.
-// `owned` is every name this form can mark, drawn or not, and it is the second argument because
-// almost nobody needs it: a form whose controls are all on screen together owns exactly what it
-// renders, and leaving it out says so. The agent editor is the one that does — thirty-odd values
-// behind eight tabs — and for it the two lists are genuinely different questions. See placeRefusal.
+// `rendered` is what the form is DRAWING RIGHT NOW, per render: a form hides some of its own controls
+// (the setup token where enforcement is off, the vault's per-key inputs once it pastes a `.env`, a
+// dialog's other tab), and a refusal marked on an undrawn control is silence with the toast held
+// back. A form that is not on screen renders nothing, which is `[]`. Read through a ref, because the
+// answer is needed AFTER the await, and a submit handler closes over the render it started in.
+// `owned` is every name the form can mark, drawn or not; leave it out when all controls are on
+// screen together. The agent editor (values behind tabs) is the one that needs it. See placeRefusal.
 export function useFieldRefusal(
   rendered: readonly string[],
   owned?: readonly string[],
@@ -145,15 +125,11 @@ export function useFieldRefusal(
           ? { field: null, message: placed.toast, value: undefined }
           : null,
       );
-      // The caller's OTHER channel is inside the form for ten of the holders here: an error line
-      // drawn between the dialog's title and its buttons, which `useOnModalOpen` then clears on the
-      // next opening. Handing them a sentence for a form the operator has dismissed only moves the
-      // silence one step over — the mark used to be written where nobody looked, and the sentence
-      // would be. So when the form is gone the hook raises the global toast itself.
-      //
-      // Only for a sentence it HAS. An empty fallback is how a caller says it words this refusal
-      // better than the server does (ChannelsPage names the affordance — disconnect first — which
-      // the server cannot know about); swallowing its turn would be the new silence.
+      // NOTE: for most holders the caller's OTHER channel is inside the form too (an error line in the
+      // dialog, cleared by `useOnModalOpen` on the next opening), so handing it a sentence for a dismissed
+      // form only moves the silence. So when the form is gone the hook raises the global toast itself, but
+      // only for a sentence it HAS: an empty fallback is a caller wording the refusal better than the
+      // server can (ChannelsPage names the affordance), and swallowing its turn would be silence again.
       if (!onForm && placed.toast) {
         showToast(placed.toast, "error");
         return null;

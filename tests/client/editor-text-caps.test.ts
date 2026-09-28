@@ -3,23 +3,13 @@ import { readdirSync, readFileSync } from "node:fs";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 
 // A field whose stored value is clamped by its reader has to say so on the control, or the operator
-// meets the cap only in what the model receives. `maxLength` is the whole mechanism, which makes
-// "someone adds a guidance field and forgets it" the way this regresses — a silent one, since the
-// field looks and behaves exactly right until the text is long.
-//
-// TWO CONTROLS, not one, and the second arrived the way the first one warns about. This scanned
-// `<Textarea` only, so the signature field (#599) — a `<HighlightedPromptEditor`, because it
-// highlights `{{variables}}` — carried a reader that clamped at 500 and a control that declared
-// nothing: the holdout scenario found no "500" anywhere on the page, no counter and no `maxLength`
-// in the DOM, while `clipText` silently dropped whatever was pasted past it. The scan reads both
-// component names now, since what makes a control need the declaration is its READER, not which
-// component someone reached for.
-//
-// Checked on the source rather than by rendering: the tabs pull the auth/theme/toast providers and a
-// live catalog, and the only alternative to that setup is `mock.module`, which is global to the
-// process and leaks into whatever else shares the worker. What the render WOULD add over this is
-// covered elsewhere: Textarea.test.tsx proves the counter, GuardrailsTab.test.tsx proves a real tab
-// renders its fields with the cap on them.
+// meets the cap only in what the model receives. `maxLength` is the whole mechanism, so a new field
+// that forgets it regresses silently. Two controls are scanned (`<Textarea` and
+// `<HighlightedPromptEditor`): what makes a control need the declaration is its READER, not which
+// component renders it.
+// Checked on the source: rendering needs the auth/theme/toast providers and a live catalog, or a
+// process-global `mock.module`. components/Textarea.test.tsx proves the counter, and
+// pages/GuardrailsTab.test.tsx a tab rendering its fields with the cap.
 const DIR = "src/client/pages/agents";
 
 // Files with no reader clamp behind any of their textareas: nothing is ever cut, so there is no cap
@@ -64,22 +54,17 @@ describe("agent editor text caps", () => {
     expect(offenders).toEqual([]);
   });
 
-  // "Stays honest" below is one direction only: it removes an entry whose file or field is gone. The
+  // NOTE: "Stays honest" below is one direction only: it removes an entry whose file or field is gone. The
   // other one is what lets a new uncapped textarea ship, because both lists are subtracted from a set
-  // read out of the editor sources. tests/utils/ledger.ts, issue #293.
+  // read out of the editor sources (tests/utils/ledger.ts).
   test("the ledgers this file waives with may only shrink", () => {
     expectWaiverLedger("UNCLAMPED_FILES", UNCLAMPED_FILES, 2);
     expectWaiverLedger("UNCLAMPED_FIELDS", UNCLAMPED_FIELDS, 2);
   });
 
-  // THE SECOND CONTROL, and it needs no ledger. `<Textarea>` is asked to declare a cap unless waived,
-  // which is why that rule carries two waivers; a highlighted editor is asked something narrower and
-  // exactly right: if the block CLAMPS, it must also DECLARE. Nothing has to be argued for, because
-  // the system prompt — the one uncapped highlighted field — clamps nothing and is not flagged.
-  //
-  // It exists because the signature field (#599) shipped clamped and undeclared: `clipText(v,
-  // SIGNATURE_MAX)` in the onChange, no `maxLength` in the DOM, no counter, and no "500" anywhere on
-  // the page. The holdout scenario found it, not this file, because this file only knew one tag.
+  // NOTE: the second control, and it needs no ledger: a highlighted editor whose block CLAMPS (a `_MAX`,
+  // e.g. `clipText(v, SIGNATURE_MAX)`) must also DECLARE. The system prompt, the one uncapped
+  // highlighted field, clamps nothing and is not flagged.
   test("a highlighted editor that clamps also declares the cap", () => {
     const offenders: string[] = [];
     for (const file of readdirSync(DIR).filter((f) => f.endsWith(".tsx"))) {

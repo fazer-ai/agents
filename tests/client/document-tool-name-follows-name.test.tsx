@@ -11,16 +11,10 @@ import {
 import { useEffect, useRef } from "react";
 import { MemoryRouter } from "react-router";
 
-// THE TOOL NAME FOLLOWS THE NAME, AND THE OPERATOR CAN STILL OVERRIDE IT.
-//
-// The slug becomes the agent's tool (`send_<slug>`) and used to be derived ONLY at create time, so
-// renaming a template left "Contrato de prestação" behind a tool called `send_orcamento` — with the
-// field showing it, read-only, and nothing saying why. The rule now is the one an operator would
-// guess from watching it once: the name is the source, every keystroke re-derives, and a slug typed
-// by hand survives until the name is edited again.
-//
-// That last clause is the one worth pinning. It is a deliberate asymmetry (the name wins), not an
-// oversight, and it is invisible in the code — one `setSlug` call inside the name's onChange.
+// The tool name follows the name, and the operator can still override it. The slug becomes the
+// agent's tool (`send_<slug>`), so the name is the source and every keystroke re-derives it; a slug
+// typed by hand survives until the name is edited again. That last clause is a deliberate asymmetry
+// (the name wins), invisible in the code: one `setSlug` call inside the name's onChange.
 
 const { DocumentTemplateModal } = await import(
   "@/client/pages/resources/documents/DocumentTemplateModal"
@@ -115,14 +109,12 @@ async function open() {
   return (await screen.findByDisplayValue("Orçamento")) as HTMLInputElement;
 }
 
-// By its LABEL, not by the value it happens to hold. The first version matched "an input whose value
-// starts with orcamento" and silently fell back to the first input on the form, so the test typed
-// into the name field and asserted about the tool field — green for the wrong reason, in the one
-// test whose whole point is that the two fields are independent.
+// By its LABEL, not by the value it happens to hold: matching by value can silently fall back to
+// the first input on the form, typing into the name and asserting about the tool field.
 function toolInput(): HTMLInputElement {
-  // Through `htmlFor`, because a <FormField> label POINTS at its control instead of wrapping it: a
-  // wrapping label forwards a click on any non-interactive descendant to the control, which is how
-  // clicking the help `?` came to toggle the field beside it (issue #411).
+  // NOTE: through `htmlFor`, because a <FormField> label POINTS at its control instead of wrapping
+  // it: a wrapping label forwards a click on any non-interactive descendant (the help `?`) to the
+  // control.
   const label = Array.from(document.querySelectorAll("label")).find((l) =>
     /ferramenta do agente|agent tool/i.test(l.textContent ?? ""),
   ) as HTMLLabelElement | undefined;
@@ -172,9 +164,8 @@ test("a slug typed by hand sticks, until the name is edited again", async () => 
   await waitFor(() => {
     expect(slugValue()).toBe("proposta_v2");
   });
-  // A DIFFERENT name, not the one already in the field: `fireEvent.change` with an unchanged value
-  // dispatches nothing, so re-typing "Orçamento" here asserted that the hand-typed slug survived an
-  // event that never happened.
+  // NOTE: A DIFFERENT name, not the one already in the field: `fireEvent.change` with an unchanged value
+  // dispatches nothing, so the hand-typed slug would "survive" an event that never happened.
   fireEvent.change(name, { target: { value: "Recibo" } });
   await waitFor(() => {
     expect(slugValue()).toBe("recibo");

@@ -6,8 +6,8 @@ import {
 import { readLimitsConfig } from "@/modules/agents/limits";
 
 // The Behavior save REPLACES the `limits` block, so a key this pair drops is DELETED from the agent's
-// bag on the next save. `retrySilence` (issue #885) has no control on the tab, and an operator who
-// turned it off through the API would get it back on by saving an unrelated setting.
+// bag on the next save. `retrySilence` has no control on the tab, and an operator who turned it off
+// through the API would get it back on by saving an unrelated setting.
 
 describe("limits form ↔ stored round trip", () => {
   test("every stored key survives the trip, the retry switch included", () => {

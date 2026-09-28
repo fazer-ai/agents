@@ -7,19 +7,13 @@ import {
   readObservabilityConfig,
 } from "@/modules/flowlog/settings";
 
-// TWO facts about the console's "recording more than the default" warning that no type can hold,
-// and both were review findings rather than guesses.
-//
-// 1. It must read what the SERVER is doing, not what the form is about to ask it to do. Driven by
-//    the form, flipping the tool-values switch off makes the warning disappear on the touch — while
-//    the server is still storing the customer's PII, and an operator who leaves without saving takes
-//    that answer with them. The opposite is a false positive on a switch just turned on.
-// 2. It must go through the shared derivation rather than spell the same `||` out again. A switch
-//    added to `readDebugModes` would light the indicator everywhere except in a copy, and a copy in
-//    a `.tsx` is invisible to every test that covers that module.
-//
-// Both are properties of the SOURCE, so the source is what is read. The alternative — rendering the
-// component — would cover (1) and could not see (2) at all.
+// Two facts about the console's "recording more than the default" warning that no type can hold:
+// 1. It reads what the SERVER is doing, not what the form is about to ask: driven by the form,
+//    switching tool values off would hide the warning while the server still stores the PII (and a
+//    switch just turned on would be a false positive).
+// 2. It goes through the shared derivation rather than a copy of the `||`: a switch added to
+//    `readDebugModes` would miss a copy in a `.tsx`, invisible to that module's tests.
+// Both are properties of the SOURCE; rendering could not see (2).
 
 const SOURCE = await Bun.file(
   new URL("../../src/client/pages/agents/BehaviorTab.tsx", import.meta.url),
@@ -48,8 +42,8 @@ describe("the debug warning reads the server's state, through the shared derivat
 
   test("it reads the saved config and not the form", () => {
     expect(memo).toContain("savedObservability");
-    // `observability` is the form state, and it is a SUBSTRING of `savedObservability`, so the
-    // check has to be for the bare identifier — matched by a word boundary that a preceding
+    // NOTE: `observability` is the form state, and it is a SUBSTRING of `savedObservability`, so the
+    // check has to be for the bare identifier, matched by a word boundary that a preceding
     // `saved` defeats.
     expect(/(?<![A-Za-z])observability\b/.test(memo)).toBe(false);
   });
@@ -58,16 +52,16 @@ describe("the debug warning reads the server's state, through the shared derivat
     expect(memo).toContain("debugModesFrom(");
   });
 
-  // The copy this fence exists to prevent, in miniature: the warning must not test the individual
-  // switches to decide whether ANYTHING is on. Reading the fields to build the LIST is fine — that
-  // is labelling, not deciding — so what is forbidden is a second condition over the raw config.
+  // NOTE: the copy this fence exists to prevent, in miniature: the warning must not test the individual
+  // switches to decide whether ANYTHING is on. Reading the fields to build the LIST is labelling,
+  // not deciding, so what is forbidden is a second condition over the raw config.
   test("it does not re-derive the condition from the raw inputs", () => {
     expect(memo).not.toContain("savedObservability.logToolValues");
     expect(memo).not.toContain("savedObservability.fullDetail");
-    // The tenant flag as a BARE identifier appears exactly twice, and both are structural: once as
+    // NOTE: the tenant flag as a BARE identifier appears exactly twice, and both are structural: once as
     // the argument to the derivation, once in the dependency array. A third would be a label branch
     // reading the raw prop instead of the derivation's own field, which is the copy again. Matched
-    // bare on purpose — `m.langfuseSendContent` is the derivation's field and is the correct read.
+    // bare on purpose: `m.langfuseSendContent` is the derivation's field and is the correct read.
     expect(
       memo.match(/(?<![.A-Za-z])langfuseSendContent\b/g)?.length ?? 0,
     ).toBe(2);
@@ -93,8 +87,7 @@ describe("the debug warning reads the server's state, through the shared derivat
   });
 });
 
-// Two more properties of the warning, both review findings, both about a state that changes with
-// nothing being clicked.
+// Two more properties of the warning, both about a state that changes with nothing being clicked.
 describe("the warning stops claiming the mode is on once the window closes", () => {
   const armed = (msAhead: number) =>
     readObservabilityConfig(
@@ -131,7 +124,7 @@ describe("the warning stops claiming the mode is on once the window closes", () 
 
 // The deadline is computed from the OPERATOR's clock and judged against the SERVER's. Arming for
 // exactly the maximum makes any forward skew push the value past the reader's bound, and the reader
-// then refuses it silently — a switch that turns on in the browser and arms nothing.
+// then refuses it silently: a switch that turns on in the browser and arms nothing.
 describe("the console arms for less than the ceiling, and the gap is the skew it tolerates", () => {
   test("the armed window is strictly shorter than the bound", () => {
     expect(FULL_DETAIL_ARM_HOURS).toBeLessThan(FULL_DETAIL_MAX_HOURS);
@@ -172,13 +165,12 @@ describe("the console arms for less than the ceiling, and the gap is the skew it
   });
 });
 
-// Two more states that change with nothing being clicked, and both were review findings about the
-// SAME frozen instant.
+// Two more states that change with nothing being clicked, both about the SAME frozen instant.
 describe("the editor re-judges the window instead of freezing at mount", () => {
   test("a deadline armed later is not measured against a stale instant", () => {
-    // The tab was opened this morning; the operator arms the mode this evening. Judged against the
-    // mount-time instant, the fresh deadline reads as more than the ceiling ahead — the reader's own
-    // far-side bound — and the warning would stay silent for the whole window just armed.
+    // NOTE: the tab was opened this morning; the operator arms the mode this evening. Judged against the
+    // mount-time instant, the fresh deadline reads as more than the ceiling ahead (the reader's own
+    // far-side bound), and the warning would stay silent for the whole window just armed.
     const mounted = new Date();
     const armedLater = new Date(
       mounted.getTime() + 13 * 3_600_000 + FULL_DETAIL_ARM_HOURS * 3_600_000,
@@ -195,12 +187,10 @@ describe("the editor re-judges the window instead of freezing at mount", () => {
   });
 
   test("the component refreshes its instant when a deadline changes, not only when one expires", () => {
-    // The refresh is keyed on BOTH deadlines. Keyed on nothing (a mount-only effect) it would leave
-    // the instant frozen at page load, which is the bug this replaced: the initial state is already
-    // `serverNowDate()`, so a mount-only refresh does nothing at all.
-    // Anchored at the start of the line, because the failure this guards against is a statement
-    // that is still THERE and no longer runs — an `if (…)` in front of it matches any check that
-    // starts at the call.
+    // NOTE: the refresh is keyed on BOTH deadlines. A mount-only effect would do nothing, since the
+    // initial state is already `serverNowDate()`, leaving the instant frozen at page load.
+    // Anchored at the start of the line: the failure is a statement still THERE that no longer runs,
+    // and an `if (…)` in front of it would match any check that starts at the call.
     expect(
       /\n {4}setJudgedAt\(serverNowDate\(\)\);\n {2}\}, \[savedUntilMs, formUntilMs\]\);/.test(
         SOURCE,
@@ -209,19 +199,17 @@ describe("the editor re-judges the window instead of freezing at mount", () => {
   });
 
   test("the scheduler re-runs after each timer, so the later deadline is not lost", () => {
-    // It arms the EARLIER of the two deadlines. Without `judgedAt` in its dependencies nothing
+    // NOTE: it arms the EARLIER of the two deadlines. Without `judgedAt` in its dependencies nothing
     // changes when that timer fires, so the effect never runs again and the later deadline is never
-    // scheduled — a form window of 12h under a saved window of 20h would leave the warning standing
+    // scheduled: a form window of 12h under a saved window of 20h would leave the warning standing
     // after the saved one closed.
     expect(SOURCE).toContain("}, [savedUntilMs, formUntilMs, judgedAt]);");
   });
 
   test("the switch is derived from the deadline, and from the FORM's", () => {
-    // Two facts, and they pull in opposite directions. Derived, because frozen at the read the
-    // switch stays checked past its own deadline, shows a hint naming a moment that has gone, and
-    // needs two clicks to re-arm. And from the FORM's deadline, not the saved one, because the
-    // switch is where the operator's not-yet-saved choice lives — reading the saved deadline would
-    // make it spring back off the instant they turned it on.
+    // NOTE: derived, because frozen at the read the switch stays checked past its own deadline and
+    // needs two clicks to re-arm. And from the FORM's deadline, not the saved one: the switch holds
+    // the operator's unsaved choice, and the saved deadline would spring it back off.
     const at = SOURCE.indexOf("checked={isFullDetailWindowOpen(");
     expect(at).toBeGreaterThan(-1);
     const block = SOURCE.slice(at, at + 200);
@@ -308,9 +296,8 @@ describe("the debug window is judged on the server's clock, not the browser's", 
 
 describe("the editor says which deadline it is talking about", () => {
   test("`Save to apply` is gated on the form deadline differing from the saved one", () => {
-    // An armed-and-saved window that still said "Save to apply" contradicted the warning above it —
-    // which speaks for the server — and left an operator no way to tell a mode that is RUNNING from
-    // one that is merely typed.
+    // NOTE: an armed-and-saved window must not say "Save to apply": that would contradict the
+    // warning above it (which speaks for the server) and blur a RUNNING mode with a typed one.
     const at = SOURCE.indexOf(
       "{isFullDetailWindowOpen(observability.fullDetailUntil, judgedAt)",
     );
@@ -336,12 +323,10 @@ describe("the editor says which deadline it is talking about", () => {
   });
 });
 
-// The census, because the question is "which reads of the window run in a BROWSER", not "does
-// BehaviorTab use the offset". Judging the window in the component was one of two, and the one that
-// was missed is the one that PERSISTS: `observabilityToForm` decodes the deadline on load, so a
-// window it reads as expired becomes the `null` that the next save of any unrelated Behavior field
-// writes back. Every server-side reader is already on the server's clock by construction; a third
-// client-side one added later is not, and would be invisible to every test above.
+// The census, because the question is "which reads of the window run in a BROWSER". The one that
+// PERSISTS matters most: `observabilityToForm` decodes the deadline on load, so a window it reads as
+// expired becomes the `null` that the next save of any Behavior field writes back. Server-side
+// readers are on the server's clock by construction; a new client-side one would not be.
 describe("every client-side read of the window is on the server's clock", () => {
   test("there are exactly two, and neither reads the browser's clock", async () => {
     const dir = new URL("../../src/client/", import.meta.url).pathname;

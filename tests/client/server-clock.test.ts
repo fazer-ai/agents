@@ -6,13 +6,9 @@ import {
   serverNowDate,
 } from "@/client/lib/serverClock";
 
-// The console arms a deadline the SERVER enforces (`fullDetailUntil`, issue #58), so the browser's
-// clock being wrong is not a display detail: it changes the length of the window that gets armed
-// and it makes the warning stop, or keep going, at a different moment than the recording does.
-//
-// The offset is read off the `Date` header of responses the page already makes. This file covers
-// what that reader does with a header it can and cannot use, because the failure mode of getting it
-// wrong is silent in both directions.
+// The console arms a deadline the SERVER enforces (`fullDetailUntil`), so a wrong browser clock
+// changes the length of the armed window and when the warning stops. The offset is read off the
+// `Date` header of responses the page already makes; getting it wrong is silent in both directions.
 
 const withDate = (raw: string) =>
   new Response(null, { headers: { date: raw } });
@@ -58,8 +54,8 @@ describe("the offset comes off the response, and only when it is readable", () =
   test("`serverNowDate` is the same instant as a Date", () => {
     const ahead = new Date(Date.now() + 600_000);
     noteServerDate(withDate(ahead.toUTCString()));
-    // Both read the browser clock, so an unfrozen one can tick between the two calls and the
-    // comparison fails by a millisecond (measured on CI, PR #840).
+    // NOTE: both read the browser clock, so an unfrozen one can tick between the two calls and the
+    // comparison fails by a millisecond.
     const now = spyOn(Date, "now").mockReturnValue(Date.now());
     try {
       expect(serverNowDate().getTime()).toBe(serverNow());

@@ -6,8 +6,8 @@ import {
 } from "@/client/pages/agents/observationFormState";
 import { readMonitoringConfig } from "@/modules/observe/settings";
 
-// The Behavior save REPLACES the whole `monitoring` block with what the form holds (issue #494), so
-// a field the form does not carry is DELETED on the next save. Same guard the Memory block has.
+// The Behavior save REPLACES the whole `monitoring` block with what the form holds, so a field the
+// form does not carry is DELETED on the next save. Same guard the Memory block has.
 describe("agent editor observation round-trip", () => {
   test("a configured watcher survives form → stored → form", () => {
     const stored = {
@@ -40,9 +40,9 @@ describe("agent editor observation round-trip", () => {
     );
   });
 
-  // A LABEL GROUP LEFT IN A STORED BAG IS NOT CARRIED FORWARD (issue #568). The taxonomy is gone,
-  // and the save replaces the block, so an agent configured before this change loses it on the next
-  // Behavior save — which is the intent: what it classified into now lives in its prompt.
+  // NOTE: A label group left in a stored bag is not carried forward: the taxonomy no longer exists, and
+  // the save replaces the block, so the next Behavior save drops it (what it classified into lives
+  // in the prompt).
   test("a stored taxonomy is not read back, and does not survive a save", () => {
     const legacy = {
       monitoring: {

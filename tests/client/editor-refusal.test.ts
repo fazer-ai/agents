@@ -12,21 +12,14 @@ import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 
-// WHERE A REFUSAL ABOUT A BAG GOES, when the control for it is behind one of eight tabs.
-//
-// #320 wired every form in the console to put a refusal at the input the server named, and stopped at
-// this one: the editor holds `name` and `systemPrompt`, and everything else it writes lives in bags
-// edited on another tab. A mark written to a control nobody is looking at is silence, which is the
-// one outcome the mechanism may not produce, so the missing half was never the mark — it was knowing
-// WHERE the control is, and saying so.
-//
-// The map that answers it already existed twice, disagreeing. This file is the guard against it
-// disagreeing again.
+// Where a refusal about a bag goes, when the control for it is behind one of eight tabs. The editor
+// holds `name` and `systemPrompt`; everything else it writes lives in bags edited on another tab,
+// and a mark on a control nobody is looking at is silence. So the editor has to know WHERE the
+// control is and say so. This file guards the maps that answer that against disagreeing.
 
 // A settings bag holding every capped field, each one over its cap, so the walker reports the
-// complete set of paths a text refusal can name. Built rather than listed: the point of the sweep
-// below is to catch the field somebody adds to `text-caps.ts` next week, and a hand-written list
-// would be exactly as blind as the map it is checking.
+// complete set of paths a text refusal can name. Built rather than listed: the sweep below has to
+// catch a field added to `text-caps.ts` later, and a hand-written list would be as blind as the map.
 function everyCappedPath(): string[] {
   const long = "x".repeat(4001);
   const bag = {
@@ -47,21 +40,20 @@ function everyCappedPath(): string[] {
 }
 
 // The thirteen native tools accept a note and the console draws three. The other ten can only have
-// been written through REST or MCP, so a refusal about one has nowhere to send anybody — and saying
+// been written through REST or MCP, so a refusal about one has nowhere to send anybody, and saying
 // "go to the Tools tab" about a control that is not there is worse than saying nothing.
 
 describe("editorTargetFor", () => {
   test("every capped field either has a place in the editor or is one of the ten with no control", () => {
-    // The sweep that would have caught this issue's own finding: `availability.awayMessage` and
-    // `contactAuth.denyMessage` are capped, have a textarea on the Behavior tab, and were in neither
-    // of the two maps that used to answer this. A warning about either told the operator the console
-    // has no field for it.
+    // NOTE: every capped field with a textarea must be mapped, e.g. `availability.awayMessage` and
+    // `contactAuth.denyMessage` on the Behavior tab; otherwise the warning says the console has no
+    // field for it.
     const unplaced = everyCappedPath().filter(
       (p) => editorTargetFor(p, { guardrailsEnabled: true }) === null,
     );
-    // Compared against the exported set rather than a copy of it, and it is still a real comparison:
+    // NOTE: compared against the exported set rather than a copy of it, and it is still a real comparison:
     // `editorTargetFor` never consults that list, so this says the map's gaps are exactly the notes
-    // the editor draws no field for — nothing more and nothing less.
+    // the editor draws no field for, nothing more and nothing less.
     expect(unplaced.sort()).toEqual([...UNDRAWN_TOOL_NOTES].sort());
   });
 
@@ -90,9 +82,8 @@ describe("editorTargetFor", () => {
   });
 
   test("every credential the agent holds is placed, from the list the server refuses by", () => {
-    // Derived from SETTINGS_CREDENTIAL_PATHS rather than restated, so a block that grows a
-    // credential next week is placed by construction. `modelConfig` is the eighth and lives on its
-    // own column.
+    // NOTE: derived from SETTINGS_CREDENTIAL_PATHS rather than restated, so a block that grows a
+    // credential is placed by construction. `modelConfig` is the eighth and lives on its own column.
     for (const p of SETTINGS_CREDENTIAL_PATHS) {
       const field = `settings.${p.path.join(".")}`;
       expect(
@@ -107,9 +98,9 @@ describe("editorTargetFor", () => {
   });
 
   test("with guardrails off, a guardrails field targets the section that is actually mounted", () => {
-    // GuardrailsTab draws gr-input/gr-output/gr-policy only while guardrails are ON, so with them off
+    // NOTE: GuardrailsTab draws gr-input/gr-output/gr-policy only while guardrails are ON, so with them off
     // the anchor is not in the DOM and the jump scrolls to nothing. gr-model always mounts and holds
-    // the switch that brings the rest back — the same redirect the config-health warning already does.
+    // the switch that brings the rest back (the config-health warning redirects the same way).
     expect(editorTargetFor("guardrails.customPolicy")).toEqual({
       tab: "guardrails",
       sectionId: "gr-model",
@@ -125,9 +116,9 @@ describe("editorTargetFor", () => {
   });
 
   test("a grant id is not an input, and is not placed", () => {
-    // `bigOrThrow` names five id fields, and every one of them is filled by a picker from the
-    // catalog — measured in ToolGrantsEditor, which builds each grant from `inst.id`. Nothing in the
-    // console types one, so the refusal cannot arrive from here and there is no box to mark.
+    // NOTE: `bigOrThrow` names five id fields, and every one is filled by a picker from the catalog
+    // (ToolGrantsEditor builds each grant from `inst.id`). Nothing in the console types one, so the
+    // refusal cannot arrive from here and there is no box to mark.
     for (const f of [
       "toolDefinitionId",
       "mcpServerConnectionId",
@@ -163,10 +154,10 @@ function view(over: Partial<EditorControlsShown> = {}): EditorControlsShown {
 
 describe("hasNoConsoleControl", () => {
   test("only the native-tool notes the editor draws no field for", () => {
-    // The claim has to be DERIVABLE, not inferred from this map having no entry. Reading it off an
-    // absent target is what told the operator that `settings.modelFallback.model` and
-    // `observability.fullDetailUntil` can only be changed through the API, about pickers that are on
-    // screen. `toolGuidance` is the one closed set: thirteen names in NATIVE_TOOL_NAMES, three drawn.
+    // NOTE: the claim has to be DERIVABLE, not inferred from this map having no entry: an absent
+    // target would say `settings.modelFallback.model` or `observability.fullDetailUntil` can only be
+    // changed through the API, about pickers that are on screen. `toolGuidance` is the one closed
+    // set: thirteen names in NATIVE_TOOL_NAMES, three drawn.
     for (const f of UNDRAWN_TOOL_NOTES) {
       expect(hasNoConsoleControl(f), f).toBe(true);
       // Both wire spellings, since the credential producer prefixes and the text one does not.
@@ -206,10 +197,9 @@ describe("hasNoConsoleControl", () => {
 
 describe("editorRefusalFields", () => {
   test("every credential the server can refuse is owned by the editor", () => {
-    // The direction the first version of this file did not check, and it cost a real gap:
-    // `settings.modelFallback.credentialRef` reached SETTINGS_CREDENTIAL_PATHS without reaching the
-    // editor's own list, so the server could refuse a field this page neither marked nor announced.
-    // Asserted against the SERVER's list, which is the one that grows.
+    // NOTE: the other direction: every path in SETTINGS_CREDENTIAL_PATHS must reach the editor's own
+    // list (e.g. `settings.modelFallback.credentialRef`), or the server could refuse a field this page
+    // neither marks nor announces. Asserted against the SERVER's list, which is the one that grows.
     const { owned } = editorRefusalFields(view());
     for (const p of SETTINGS_CREDENTIAL_PATHS) {
       const field = `settings.${p.path.join(".")}`;
@@ -247,10 +237,9 @@ describe("editorRefusalFields", () => {
   });
 
   test("a control behind an off switch is owned and NOT drawn", () => {
-    // The case the tab-only declaration got wrong, and it is not about when the refusal arrives: the
-    // operator can turn Vision off while its credential refusal is standing. The mark is then held on
-    // a control that is no longer in the DOM, and only `drawn` saying so gets the sentence back on
-    // screen.
+    // NOTE: not about when the refusal arrives: the operator can turn Vision off while its credential
+    // refusal is standing, so the mark is held on a control no longer in the DOM, and only `drawn`
+    // saying so gets the sentence back on screen.
     const off = editorRefusalFields(view({ visionEnabled: false }));
     expect(off.owned).toContain("settings.vision.credentialRef");
     expect(off.owned).toContain("vision.extractionPrompt");
@@ -263,8 +252,8 @@ describe("editorRefusalFields", () => {
   });
 
   test("each switch answers for its own controls and nobody else's", () => {
-    // A table rather than one case, because the failure this guards is a wire crossed between two
-    // switches — a field that disappears when the wrong section is turned off is exactly as silent as
+    // NOTE: A table rather than one case, because the failure this guards is a wire crossed between two
+    // switches: a field that disappears when the wrong section is turned off is exactly as silent as
     // one that never disappears.
     const cases: Array<[Partial<EditorControlsShown>, string[]]> = [
       [{ awayEnabled: false }, ["availability.awayMessage"]],
@@ -325,11 +314,10 @@ describe("editorRefusalFields", () => {
 });
 
 describe("the write boundary the declaration rests on", () => {
-  // The per-tab lists do not carry the switches inside a section (vision off hides the extraction
+  // NOTE: the per-tab lists do not carry the switches inside a section (vision off hides the extraction
   // prompt; the gate off hides the deny message). That is exact only because the server refuses text
-  // a write INTRODUCES or CHANGES and nothing else — change one of these and its control was on
-  // screen. If that ever stops being true, the declaration starts claiming controls the operator
-  // cannot see, and this is the test that says so.
+  // a write INTRODUCES or CHANGES and nothing else, so a changed field's control was on screen. If
+  // that stops being true, the declaration claims controls the operator cannot see, and this fails.
   test("a stored oversized value this write does not touch is not refused", () => {
     const long = "x".repeat(5000);
     const stored = { vision: { extractionPrompt: long } };
@@ -345,20 +333,18 @@ describe("the write boundary the declaration rests on", () => {
   });
 });
 
-// WHAT A WRITE CARRIED, read from the request rather than from what is on screen.
-//
-// `sent` decides two things — whether `placeRefusal` compares the refused value against the box, and
-// whether a successful save clears the mark — and both go wrong quietly when it under-reports. The
-// first version built it from what the tab was DRAWING, and the editor sends more than it draws:
-// `buildSettings()` serializes the whole bag, `saveGuardrails` resends the guardrails block whether
-// or not the switch is on.
+// What a write carried, read from the request rather than from what is on screen. `sent` decides
+// whether `placeRefusal` compares the refused value against the box, and whether a successful save
+// clears the mark; both go wrong quietly when it under-reports. The editor sends more than it
+// draws: `buildSettings()` serializes the whole bag, and `saveGuardrails` resends the guardrails
+// block whether or not the switch is on.
 describe("sentFromPatch", () => {
   const OWNED = editorRefusalFields(view()).owned;
 
   test("a settings block carried by a switched-off section still counts as sent", () => {
-    // The case the visibility-derived version missed: guardrails off, the block still on the wire.
-    // Without it the refusal is marked with no staleness comparison at all, so the server's sentence
-    // lands under whatever the operator typed while the request was out.
+    // NOTE: guardrails off, the block still on the wire. Without it the refusal is marked with no
+    // staleness comparison, so the server's sentence lands under whatever the operator typed while
+    // the request was out.
     const sent = sentFromPatch(
       { settings: { guardrails: { customPolicy: "over the cap" } } },
       OWNED,

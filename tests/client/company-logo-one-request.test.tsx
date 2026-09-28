@@ -10,16 +10,11 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 
-// A logo write answers with the WHOLE company block, and the card applies what comes back. Two of
-// them in flight at once is therefore not two independent requests: whichever ANSWERS last decides
-// what the card shows, and that is not necessarily the one that wrote last.
-//
-// The upload and the remove both go to the same key, so an older response landing last puts a
-// superseded `logoKey` on screen — usually one whose file the newer write already deleted, which
-// renders as a broken letterhead until the page is reloaded.
-//
+// A logo write answers with the WHOLE company block, and the card applies what comes back, so with
+// two in flight whichever ANSWERS last decides what the card shows. An older response landing last
+// puts a superseded `logoKey` on screen, usually one whose file the newer write already deleted.
 // Serialised rather than reconciled: an upload is a deliberate act, one at a time is what the
-// operator expects, and the same shape is already how creating from a starter behaves.
+// operator expects, and creating from a starter behaves the same way.
 //
 // NOTE: assertions reduce to a boolean or a string BEFORE expect; a failing expectation holding a
 // DOM node serializes a cyclic happy-dom tree and stalls the runner.
@@ -145,9 +140,8 @@ test("a second logo write cannot start while one is in flight", async () => {
     .map((b) => (b as HTMLButtonElement).disabled);
   expect(enabled.some((d) => d === false)).toBe(false);
 
-  // Clicked the way an operator can reach them — the file picker is opened BY the upload button, so
-  // a disabled button is a picker that never opens. Dispatching a change on the hidden input
-  // directly would be testing a surface no click can reach.
+  // NOTE: clicked the way an operator reaches them: the file picker is opened BY the upload button,
+  // so dispatching a change on the hidden input would test a surface no click can reach.
   const removeButton = screen.queryByLabelText(/Delete|Excluir/);
   if (removeButton) fireEvent.click(removeButton);
   const uploadButton = [...document.querySelectorAll("button")].find((b) =>
@@ -168,10 +162,8 @@ test("a second logo write cannot start while one is in flight", async () => {
   });
 });
 
-// The other direction, which is the half a single test would miss: while the REMOVE is in flight,
-// the upload button has to be out of reach too. Its own `loading` flag is false then, so nothing
-// but the shared busy state disables it — and an upload landing on a key the remove is deleting is
-// the same interleaving from the other side.
+// The other direction: while the REMOVE is in flight, the upload button has to be out of reach
+// too. Its own `loading` flag is false then, so only the shared busy state disables it.
 test("an upload cannot start while a removal is in flight", async () => {
   inFlight.length = 0;
   holdRemove = true;
@@ -207,12 +199,10 @@ test("an upload cannot start while a removal is in flight", async () => {
   });
 });
 
-// The THIRD writer of the same block, and the one a per-control flag misses: saving the profile text
-// answers with the whole company block too, logo key included. An operator who saves while an upload
-// is out gets whichever response lands last — and if that is the older one, the card adopts a
-// logoKey whose file the newer write already deleted, so the letterhead renders broken until reload.
-//
-// One state for "a write to this block is in flight", not one per control.
+// The THIRD writer of the same block, which a per-control flag misses: saving the profile text
+// answers with the whole company block too, logo key included, so an older response landing last
+// installs a logoKey whose file was already deleted. One state for "a write to this block is in
+// flight", not one per control.
 test("saving the profile cannot start while a logo write is in flight", async () => {
   inFlight.length = 0;
   holdRemove = true;

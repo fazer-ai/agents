@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 
 // Every warning the import can emit has a sentence in the editor. The codes are string literals on
-// both sides and nothing ties them together: a code added to transfer.ts without its case (PR #485,
-// round 15 added `httpToolRenamed`) would reach the operator as whatever the switch's fallback says,
-// which is the one place a rename that a prompt may still depend on must not be quiet.
+// both sides and nothing ties them together: a code added to transfer.ts without its case (e.g.
+// `httpToolRenamed`) would reach the operator as the switch's fallback, and a rename a prompt may
+// still depend on must not be quiet.
 test("every import warning code emitted by transfer.ts is rendered by the editor", async () => {
   const transfer = await Bun.file("src/modules/agents/transfer.ts").text();
   const editor = await Bun.file(

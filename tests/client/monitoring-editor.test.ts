@@ -2,11 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { MONITORING_SECTIONS } from "@/client/pages/agents/BehaviorTab";
 
-// A watcher's editor (issue #494). The editor is one page with eight tabs and a Behavior tab of
-// fifteen sections, and a monitoring agent runs almost none of it: drawn for one, the page says
-// the agent could answer, and the one block that does run for it — what it does with what it
-// reads — had no screen at all. The gates live in JSX, so they are read as source, the way the
-// conversation page's ownership gates are.
+// A watcher's editor. The page has eight tabs and a Behavior tab of fifteen sections, and a
+// monitoring agent runs almost none of it: drawn in full, the page would say the agent could answer.
+// The block that does run for it (what it does with what it reads) has its own screen. The gates
+// live in JSX, so they are read as source, the way the conversation page's ownership gates are.
 const EDITOR = readFileSync(
   "src/client/pages/agents/AgentEditorPage.tsx",
   "utf8",
@@ -21,8 +20,8 @@ describe("the editor of a monitoring agent", () => {
     const def = EDITOR.indexOf("const MONITORING_TABS");
     expect(def).toBeGreaterThan(-1);
     const body = EDITOR.slice(def, EDITOR.indexOf("]);", def));
-    // TOOLS AND KNOWLEDGE ARE DRAWN (issue #568): a watcher runs the ordinary graph, so its grants
-    // and its knowledge bases are the whole of what it can do.
+    // NOTE: tools and knowledge are drawn: a watcher runs the ordinary graph, so its grants and its
+    // knowledge bases are the whole of what it can do.
     for (const key of [
       "general",
       "channels",
@@ -47,10 +46,9 @@ describe("the editor of a monitoring agent", () => {
   });
 
   test("no tab a watcher draws offers the playground", () => {
-    // The playground loads the agent WITHOUT `ignoreMode`, so a monitoring agent cannot run there:
-    // an action that opens a panel whose every run fails as `agentNotRunnable` is worse than no
-    // action. General and Behavior already guarded it; Tools and Knowledge became watcher-visible in
-    // this issue and did not (review round 31). Read as source, the way the tab gates above are.
+    // NOTE: the playground loads the agent WITHOUT `ignoreMode`, so a monitoring agent cannot run
+    // there: an action that opens a panel whose every run fails as `agentNotRunnable` is worse than
+    // no action. Every watcher-visible tab guards it. Read as source, like the tab gates above.
     for (const tab of [
       "GeneralTab",
       "BehaviorTab",
@@ -69,16 +67,16 @@ describe("the editor of a monitoring agent", () => {
 
   test("the Behavior tab keeps the blocks that apply to a watcher and hides the rest", () => {
     expect([...MONITORING_SECTIONS].sort()).toEqual([
-      // The prompt block built on every turn, this one included (issue #568).
+      // NOTE: the prompt block built on every turn, this one included.
       "attributeContext",
-      // ...and the ceiling on the tool calls a watcher now actually makes.
+      // NOTE: ...and the ceiling on the tool calls a watcher actually makes.
       "limits",
       "memory",
       "modelFallback",
       "observability",
       "observation",
-      // Media analysis runs on the observer's route under its own settings (issue #494 review,
-      // round 2), so its controls stay reachable.
+      // NOTE: media analysis runs on the observer's route under its own settings, so its controls
+      // stay reachable.
       "stt",
       "vision",
     ]);
@@ -97,20 +95,19 @@ describe("the editor of a monitoring agent", () => {
         hidden: !MONITORING_SECTIONS.has(id),
       });
     }
-    // ...and a warning is kept for a watcher by its own deep-link TARGET rather than by a list of
-    // keys (issue #494 review, round 3): the filter asks whether the section it would scroll to is
-    // one the watcher's editor draws, so a new issue kind that targets a visible section is kept
-    // without anybody remembering to add it.
+    // NOTE: ...and a warning is kept for a watcher by its own deep-link TARGET rather than a list of
+    // keys: the filter asks whether the section it would scroll to is one the watcher's editor
+    // draws, so a new issue kind targeting a visible section is kept automatically.
     expect(EDITOR).toContain("function watcherCanActOn(");
-    // ...and RAG issues are no longer dropped by key: a watcher searches the knowledge bases it was
+    // NOTE: ...and RAG issues are not dropped by key: a watcher searches the knowledge bases it was
     // granted, so a broken embedding credential is a real fault with a real screen behind it.
     expect(EDITOR.replace(/\s+/g, " ")).not.toContain(
       'issue.key === "knowledge" || issue.key === "embedding"',
     );
     expect(EDITOR).toContain("MONITORING_SECTIONS.has(sectionId)");
-    // ...and the import warnings' Review button asks the SAME question (issue #494 review, round 6):
-    // it deep-links by the same tab+section pair, and a target the watcher does not draw is an
-    // action that appears to work and exposes no setting.
+    // NOTE: ...and the import warnings' Review button asks the SAME question: it deep-links by the
+    // same tab+section pair, and a target the watcher does not draw is an action that appears to work
+    // and exposes no setting.
     expect(EDITOR).toContain("function watcherSectionReachable(");
     expect(EDITOR.replace(/\s+/g, " ")).toContain(
       "watcherSectionReachable( w.target.tab, w.target.sectionId, )",
@@ -133,11 +130,11 @@ describe("the editor of a monitoring agent", () => {
   });
 });
 
-// The Channels tab of a watcher (issue #494 review, round 1). The role an agent has on an inbox is
-// a property of the INBOX ROW, not of the mode: an inbox can carry a monitoring agent as its
-// responder — the state a mode change on a bound agent leaves, which docs/chatwoot.md keeps — and
-// reading the role from the mode showed that binding as off, with no way to remove it, while
-// hiding the observer binding a watcher being promoted still had.
+// The Channels tab of a watcher. The role an agent has on an inbox is a property of the INBOX ROW,
+// not of the mode: an inbox can carry a monitoring agent as its responder (the state a mode change
+// on a bound agent leaves, which docs/chatwoot.md keeps). Reading the role from the mode would show
+// that binding as off with no way to remove it, and hide the observer binding of an agent being
+// promoted.
 describe("the Channels tab of a watcher", () => {
   // The needles below quote SOURCE that interpolates, and a plain string holding `${` is itself a
   // lint error (`noTemplateCurlyInString`) — so the placeholder is assembled instead of written.
@@ -155,8 +152,8 @@ describe("the Channels tab of a watcher", () => {
     );
     // The switch is on when either role is there...
     expect(CHANNELS).toContain("const mine = role.responds || role.observes;");
-    // ...and turning it off removes whatever is actually there, both if the inbox carries both —
-    // stopping at the first failure (round 11), which is what the guard on the return value is.
+    // NOTE: ...and turning it off removes whatever is actually there, both if the inbox carries both,
+    // stopping at the first failure (the guard on the return value).
     expect(CHANNELS).toContain(
       "if (role.observes && !(await setObserving(ib.id, false))) return;",
     );
@@ -176,9 +173,9 @@ describe("the Channels tab of a watcher", () => {
     // ...and the repair for that pair is an observe, not the inbox reconnect, which would fix the
     // responder's bot and leave this one exactly as broken.
     expect(CHANNELS).toContain("async function reobserve(inboxId: string) {");
-    // ...and a row we only WATCH is judged by that pair alone (issue #494 review, round 4): falling
-    // through to the responder's map marked a healthy observer missing because ANOTHER agent's bot
-    // was gone, and offered to repair that agent's bot.
+    // NOTE: ...and a row we only WATCH is judged by that pair alone: falling through to the
+    // responder's map would mark a healthy observer missing because ANOTHER agent's bot was gone,
+    // and offer to repair that agent's bot.
     expect(CHANNELS).toContain(
       "const observerOnly = role.observes && !role.responds;",
     );
@@ -192,14 +189,11 @@ describe("the Channels tab of a watcher", () => {
     );
   });
 
-  // REMOVAL SURVIVES A DISCONNECTED ACCOUNT (issue #494 review, round 3). `unobserveInbox` asks no
-  // account, and the observer row is what refuses to change this agent out of monitoring mode or
-  // delete it — replaced by plain text, the operator was locked out of the agent from this tab.
-  // THE SECOND OBSERVER IS REFUSED BY THE WRITE, so the editor stops offering it (issue #494 review,
-  // round 8). `observeInbox` answers 422 `errors.inboxAlreadyObserved` for an inbox another agent
-  // already watches — one watcher per inbox, since the memory thread is the contact-inbox's — and
-  // this switch rendered OFF and routed its transition to `setObserving` all the same. The main
-  // Channels page has never offered it; the editor was the one surface that still did.
+  // NOTE: removal survives a disconnected account: `unobserveInbox` asks no account, and the observer row
+  // is what blocks switching this agent out of monitoring or deleting it, so plain text would lock
+  // the operator out. The second observer is refused by the write (`observeInbox` answers 422
+  // `errors.inboxAlreadyObserved`: one watcher per inbox, since the memory thread is the
+  // contact-inbox's), so the editor does not offer it, like the main Channels page.
   test("a switch that would write a second observer is blocked and says why", () => {
     const flat = readFileSync(
       "src/client/pages/agents/ChannelsTab.tsx",
@@ -218,11 +212,10 @@ describe("the Channels tab of a watcher", () => {
     expect(flat).toContain('"editor.channels.watchedBy"');
   });
 
-  // AN OBSERVE CAN COME BACK HAVING DONE SOMETHING ELSE (issue #494 review, round 10). Where it
-  // races a bind of this same agent, `observeInbox` lets the RESPONDER win and answers 200 with a
-  // DTO naming this agent as the inbox's responder and no observer row. Applying only
-  // `observerAgentIds` left `agentId` stale, so the row's combined switch described a role the
-  // server had already decided differently, and the next toggle acted on the wrong one.
+  // NOTE: an observe can come back having done something else. Racing a bind of this same agent,
+  // `observeInbox` lets the RESPONDER win and answers 200 with a DTO naming this agent as responder
+  // and no observer row. Both `observerAgentIds` and `agentId` are applied, or the combined switch
+  // would describe a stale role and the next toggle act on the wrong one.
   test("an observe applies both roles from the answer, on both callers", () => {
     const flat = readFileSync(
       "src/client/pages/agents/ChannelsTab.tsx",
@@ -244,11 +237,10 @@ describe("the Channels tab of a watcher", () => {
     expect(flat).toContain('"channels.observeResponderWon"');
   });
 
-  // THE COMBINED REMOVAL STOPS AT THE FIRST FAILURE (issue #494 review, round 11). The switch means
-  // "this agent is on this inbox", so turning it off has to leave nothing behind — but the two
-  // removals are two calls, and `setObserving` swallows its own failure into a toast. Chained, that
-  // read as success: the responder unbind ran anyway and the agent came off in one role only, with
-  // an error toast and a success toast side by side.
+  // NOTE: the combined removal stops at the first failure. The switch means "this agent is on this inbox",
+  // so turning it off must leave nothing behind, but the two removals are two calls and
+  // `setObserving` swallows its own failure into a toast. Chained without a check, the unbind would
+  // run anyway: the agent removed in one role only, with an error and a success toast side by side.
   test("the combined removal does not unbind the responder after a failed unobserve", () => {
     const flat = readFileSync(
       "src/client/pages/agents/ChannelsTab.tsx",
@@ -277,9 +269,8 @@ describe("the Channels tab of a watcher", () => {
       "src/client/pages/agents/BehaviorTab.tsx",
       "utf8",
     ).replace(/\s+/g, " ");
-    // Only the sections a watcher does NOT draw sit behind the exemption. The fallback's three came
-    // back out of it with the section itself (issue #567): a validator is asked wherever its fields
-    // are, and those are on screen again.
+    // NOTE: only the sections a watcher does NOT draw sit behind the exemption. The fallback's
+    // validators are asked because its section is drawn for a watcher.
     expect(behavior).toContain(
       "(!watcher && (contactAuthUrlInvalid || contactAuthRuleBad || normalizeBaseUrlInvalid || normalizeBaseUrlUnsupported))",
     );
@@ -288,17 +279,9 @@ describe("the Channels tab of a watcher", () => {
     );
   });
 
-  // ...AND THE HIDDEN SECTION IS NOT SERIALIZED EITHER, which the round-3 change above made load
-  // bearing (issue #494 review, round 7). Dropping the validator for a hidden block is only half the
-  // move: the Behavior save still WROTE the fallback draft, so a provider picked without its model
-  // and then a flip to monitoring sent a half-named pair to a write boundary that refuses it by name
-  // (`assertSettingsModelFallback`), with the only control that could fix it off screen. The fallback
-  // is the one hidden block whose invalid state the server refuses, so it is the one whose key the
-  // save omits; `...settings` then carries the stored value through byte for byte.
-  // ...AND THE SAVE WRITES IT AGAIN (issue #567). Rounds 7 and 9 of #494 taught the save to skip the
-  // half-named pair for a watcher, because the section was hidden and the boundary's refusal reached
-  // the operator as a 400 on a control off screen. The section is back and so is its validator, so
-  // the skip would now discard an edit the operator can see themselves making.
+  // NOTE: the fallback section is drawn for a watcher, with its validator, so the save writes the block
+  // like any other. Skipping a half-named pair for a watcher would discard an edit the operator can
+  // see themselves making.
   test("a watcher's save writes the fallback block like any other", () => {
     const flat = EDITOR.replace(/\s+/g, " ");
     expect(flat).toContain(
@@ -307,20 +290,18 @@ describe("the Channels tab of a watcher", () => {
     expect(flat).not.toContain("watcher && fallbackModelIsMissing");
   });
 
-  // ...AND THE PANEL CLOSES WITH ITS TRIGGER (issue #494 review, round 6). Flipping a production
-  // agent to monitoring removed the entry point and left an already-open playground mounted and
-  // usable — a reply surface for an agent whose answering UI is meant to be gone.
+  // NOTE: the panel closes with its trigger: flipping a production agent to monitoring removes the entry
+  // point, and an already-open playground must not stay mounted as a reply surface.
   test("an open playground closes when the mode hides it", () => {
     expect(EDITOR.replace(/\s+/g, " ")).toContain(
       'if (agentMode === "monitoring") setPlaygroundOpen(false);',
     );
   });
 
-  // THE CEILING ACTS ON A WATCHER, BUT NOT WHERE THE HELP SAID IT DID (review round 40). An
-  // observation carries no contact history: the tick rebuilds the conversation into one message and
-  // the window always keeps the current turn, so nothing is ever trimmed off a tick. It is not inert
-  // either — `runCompaction` loads a watcher's config with `ignoreMode` and hands this same ceiling
-  // to the summariser — so the control stays and the prose is the thing that changes.
+  // NOTE: the ceiling acts on a watcher, but not on the tick: an observation rebuilds the conversation into
+  // one message and the window always keeps the current turn, so nothing is trimmed off a tick.
+  // `runCompaction` loads a watcher's config with `ignoreMode` and hands this ceiling to the
+  // summariser, so the control stays and only the help text differs.
   test("the history ceiling tells a watcher what it actually bounds", () => {
     const at = BEHAVIOR.indexOf("editor.limitsMaxHistoryTokensHelpObserving");
     expect(at).toBeGreaterThan(-1);

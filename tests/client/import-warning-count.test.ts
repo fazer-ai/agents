@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { importWarningCount } from "@/client/lib/importWarningCount";
 
-// THE ROLLING-DEPLOY OVERLAP, from the reading side. `docs/deploy.md` promises two live containers
-// during a deploy, so an editor loaded from this release can be answered by one from the previous
-// release, which sends the count under `n` and not `count` (issue #513 renamed it). Coercing a
-// missing `count` straight to a number gives 0, and the sentence then reads "0 bundled documents"
-// about a base that skipped one — wrong, quietly, and only during the window nobody tests in.
+// The rolling-deploy overlap, from the reading side. `docs/deploy.md` promises two live containers
+// during a deploy, so an editor from this release can be answered by the previous one, which sends
+// the count under `n`, not `count`. Coercing a missing `count` to a number gives 0, and the
+// sentence would read "0 bundled documents" about a base that skipped one.
 describe("importWarningCount", () => {
   test("reads the current name", () => {
     expect(importWarningCount({ name: "KB", count: 3 })).toBe(3);

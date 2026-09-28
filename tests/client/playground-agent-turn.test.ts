@@ -6,11 +6,9 @@ import {
   type PlaygroundTurn,
 } from "@/client/pages/agents/usePlaygroundChat";
 
-// Five paths in the hook produce an agent turn — text, file, voice note, follow-up, and the reload
-// that rebuilds them from the server — and each one used to decide for itself what a suppressed
-// turn looks like. Three had the rule and two did not, so a guardrail that emptied a file or voice
-// reply showed an empty bubble live and a note after a reload: the same turn, two transcripts.
-// The rule now lives in one function, and this is its table (issue #136).
+// Five paths in the hook produce an agent turn (text, file, voice note, follow-up, and the reload
+// that rebuilds them from the server). What a suppressed turn looks like is decided in one function,
+// so a guardrail that empties a reply reads the same live and after a reload; this is its table.
 
 const t = (_key: string, fallback: string) => fallback;
 
@@ -34,8 +32,8 @@ describe("agentTurn", () => {
     expect(turn.role === "note" && turn.trace).toBe(trace);
   });
 
-  // Issue #704: a hand-over with nothing to say to the customer empties the reply too, and it must
-  // not read as a suppression. It says where the case went, from the verdict a reload restores.
+  // NOTE: a hand-over with nothing to say to the customer empties the reply too, and it must not read
+  // as a suppression. It says where the case went, from the verdict a reload restores.
   test("an empty hand-over is a note saying the case would go to the team", () => {
     const trace = [
       { type: "guardrail", direction: "output", outcome: "handed-off" },
@@ -107,9 +105,8 @@ describe("agentTurn", () => {
   });
 });
 
-// The table above proves the FUNCTION. It cannot prove that the five paths call it, and that is
-// exactly the half that was broken: the rule was written and correct, and two call sites did not
-// have it. So the source is the assertion — one construction site, and every append reaching it.
+// The table above proves the FUNCTION. It cannot prove that the five paths call it, so the source
+// is the assertion: one construction site, and every append reaching it.
 describe("agentTurn is the only place an agent turn is built", () => {
   const src = readFileSync(
     "src/client/pages/agents/usePlaygroundChat.ts",
@@ -134,10 +131,9 @@ describe("agentTurn is the only place an agent turn is built", () => {
   });
 });
 
-// The other row-level renderer of this PR, and the same failure twice over: two independent fields
-// decide the sentence, and a nested ternary answered one of them with a constant. The direction arm
-// was caught in review round 8; the action arm survived to round 11, telling the operator "the
-// configured reply" on text the judge itself had written.
+// Two independent fields (direction and action) decide the sentence, so a nested ternary that
+// answers one of them with a constant tells the operator "the configured reply" on text the judge
+// itself wrote.
 describe("guardrailTraceLabel", () => {
   const t = (_k: string, fallback: string) => fallback;
 

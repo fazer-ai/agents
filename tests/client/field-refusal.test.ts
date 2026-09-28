@@ -298,13 +298,10 @@ describe("placeRefusal", () => {
   });
 });
 
-// A FORM THAT OWNS AN INPUT IT IS NOT DRAWING.
-//
-// The agent editor writes about thirty values across eight tabs and draws one tab's worth, so a
-// refusal about `guardrails.output.templateMessage` is about a control that exists and is off screen.
-// Two answers were available before this and both lose something real: send it to the toast and the
-// mark never appears when the operator opens that tab; mark it and stay quiet and the save fails into
-// silence, because `capture` has reported "it is on the control".
+// A form that owns an input it is not drawing. The agent editor writes about thirty values across
+// eight tabs and draws one tab's worth, so a refusal about `guardrails.output.templateMessage` is
+// about a control that exists and is off screen. A toast alone would never put the mark on that
+// tab; a mark alone would fail into silence, because `capture` has reported "it is on the control".
 describe("placeRefusal with an owned list wider than the drawn one", () => {
   const FALLBACK = "Could not save.";
   const OWNED = ["name", "guardrails.customPolicy"];
@@ -393,13 +390,9 @@ describe("placeRefusal with an owned list wider than the drawn one", () => {
   });
 });
 
-// THE SENTENCE HAS ONE HOME.
-//
-// `capture` used to drop what it could not place: it returned the sentence and set `held` to null, so
-// a caller with somewhere to render it had to keep a copy. Three rounds of review on #414 found three
-// ways that copy drifts from the hold it duplicates — it outlives the mark, it carries the wrong
-// owner, and a second refusal about the same field leaves the first copy standing because the field
-// identity never changed. Holding it here is what closes the class rather than the instances.
+// The sentence has one home. `capture` holds what it cannot place instead of returning it for the
+// caller to keep: a caller-side copy drifts from the hold (it outlives the mark, carries the wrong
+// owner, or survives a second refusal about the same field).
 describe("useFieldRefusal holds what it cannot place", () => {
   const FALLBACK = "Could not save.";
   const form = (over: Partial<FormAtAnswer> = {}): FormAtAnswer => ({
@@ -416,12 +409,12 @@ describe("useFieldRefusal holds what it cannot place", () => {
       FALLBACK,
       form(),
     );
-    // placeRefusal itself is unchanged — the toast-only shape is what the hook now keeps.
+    // NOTE: `placeRefusal` still answers the toast-only shape; the hook is what keeps it.
     expect(placed).toEqual({ toast: "forbidden" });
   });
 
   test("a placement at an input still carries its value", () => {
-    // The half that must NOT change: a mark expires by value, and only a placement has one.
+    // NOTE: a mark expires by value, and only a placement has one.
     expect(
       placeRefusal(
         { message: "taken", field: "name" },

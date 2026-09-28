@@ -9,10 +9,10 @@ import clientEn from "@/client/locales/en.json";
 import clientPt from "@/client/locales/pt-BR.json";
 import { CostByModelCard } from "@/client/pages/dashboard/CostByModel";
 
-// Issue #868: the "Cost by model" card marks a model whose local price-table cost diverges from
-// Langfuse's, and the marker opens both figures and what to do. A model that agrees, or that the
-// local table could not price in full, carries no marker: the card never claims a check it did not
-// make, and never flags one it could not.
+// The "Cost by model" card marks a model whose local price-table cost diverges from Langfuse's, and
+// the marker opens both figures and what to do. A model that agrees, or that the local table could
+// not price in full, carries no marker: the card never claims a check it did not make, and never
+// flags one it could not.
 
 afterEach(cleanup);
 

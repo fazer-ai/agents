@@ -12,15 +12,12 @@ import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components/Toast";
 import { DocumentsPanel } from "@/client/pages/resources/documents/DocumentsPanel";
 
-// Revoking is not undoable, and it does more than hide a row: the PDF stops being served, and the
-// agent's idempotency key is derived from the VALUES, so every later send of the same document
-// resolves to the revoked row instead of issuing a fresh one. A misclick in a list is therefore
-// permanent, and it takes the customer's copy with it.
-//
-// Driven through the rendered panel rather than through the handler, because the defect was the
-// WIRING — the handler was always correct, and the button called it straight away.
-//
-// NOTE: every assertion reduces to a boolean or a string BEFORE expect — a failing expectation that
+// Revoking is not undoable: the PDF stops being served, and the agent's idempotency key is derived
+// from the VALUES, so every later send of the same document resolves to the revoked row. A misclick
+// is permanent and takes the customer's copy with it. Driven through the rendered panel, because
+// what must hold is the WIRING: the button asks before calling the handler.
+
+// Every assertion reduces to a boolean or a string BEFORE expect: a failing expectation that
 // holds a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 (globalThis as { happyDOM?: { setURL(u: string): void } }).happyDOM?.setURL(
@@ -110,8 +107,8 @@ function mount() {
   );
 }
 
-// The issued documents live on their own tab now: a template is configuration, an issued document is
-// a record, and only the second one can be revoked.
+// The issued documents live on their own tab: a template is configuration, an issued document is a
+// record, and only the second one can be revoked.
 async function openIssuedTab() {
   fireEvent.click(await screen.findByRole("tab", { name: /issued|emitidos/i }));
 }
@@ -123,7 +120,7 @@ describe("revoking a document asks first", () => {
     await openIssuedTab();
     const button = await screen.findByText("Revoke");
     fireEvent.click(button);
-    // Nothing has been revoked yet — that is the whole finding.
+    // NOTE: nothing has been revoked yet: the click only opened the confirm.
     expect(posted).toEqual([]);
     expect((document.body.textContent ?? "").includes("Revoke document")).toBe(
       true,

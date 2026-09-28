@@ -10,21 +10,12 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 
-// THE REFUSAL THAT LANDS ON THE INPUT IT IS ABOUT, AND THE ONE THAT CANNOT.
-//
-// #231 put the refused field on the wire: `{ error, field }`, where `field` is the server's own name
-// for the value it refused and reads the same in every language. Measured before this change, the
-// console read it in ZERO of the thirteen places that already destructure that body — the sentence
-// went to a toast, and the operator of a six-input form still had to work out which input to fix.
-//
-// A toast is also the wrong container for it twice over: it is far from the control, and it scrolls
-// away carrying the only copy of the reason.
-//
-// The rule this file holds is not "always render at the input" — it is that the two channels are
-// EXCLUSIVE and one of them always fires. A refusal about an input this form renders goes to that
-// input and the toast stays silent; a refusal about anything else (a field on another screen, a
-// refusal about no input at all, a transport failure with no server behind it) goes to the toast.
-// Silence is the one outcome that must never happen, and showing it twice is its own kind of noise.
+// The refusal that lands on the input it is about, and the one that cannot. The server's refusal
+// body is `{ error, field }`, `field` being its own name for the refused value in every language.
+// A toast is the wrong container for it twice over: far from the control, and it scrolls away with
+// the only copy of the reason. The two channels are EXCLUSIVE and one always fires: a refusal about
+// an input this form renders goes there and the toast stays silent; anything else (another screen,
+// no input at all, a transport failure) goes to the toast. Silence must never happen.
 
 const { CompanyProfileCard } = await import(
   "@/client/pages/resources/documents/CompanyProfileCard"
@@ -50,8 +41,8 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
-// The body an AppError answers with since #231: the localized sentence, and the field it is about
-// when the refusal is about one. `field` is absent — not null — whenever it is not.
+// The body an AppError answers with: the localized sentence, and the field it is about when the
+// refusal is about one. `field` is absent (not null) whenever it is not.
 function refusingPut(body: { error: string; field?: string }) {
   globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
     if ((init?.method ?? "GET").toUpperCase() !== "PUT") {
@@ -127,9 +118,8 @@ function toastCount(): number {
 }
 
 test("a refusal that names an input this form renders lands on that input, once", async () => {
-  // Worded the way `updateCompanySettings` words it (tenant-settings/service.ts): the sentence names
-  // the character, and `field` names the patch key — which is the same string this form uses for the
-  // input, because the console's company form is what that name was chosen for.
+  // NOTE: worded the way `updateCompanySettings` words it (tenant-settings/service.ts): the sentence names
+  // the character, and `field` names the patch key, the same string this form uses for the input.
   const reason =
     'document contains a character the document fonts cannot print: "😀"';
   refusingPut({ error: reason, field: "document" });
@@ -170,8 +160,8 @@ test("a refusal about an input this form does not render still reaches the opera
 });
 
 test("a refusal about no input at all is still a toast", async () => {
-  // Most refusals are not about one input (a 403, a 404, a conflict) and answer with no `field` at
-  // all. They must keep behaving exactly as they did before this mechanism existed.
+  // NOTE: most refusals are not about one input (a 403, a 404, a conflict) and answer with no `field` at
+  // all. They go to the toast, unchanged by this mechanism.
   const reason = "this tenant is not allowed to change the letterhead";
   refusingPut({ error: reason });
   mountCompany();
@@ -318,11 +308,9 @@ test("a save that goes through takes the mark off", async () => {
 });
 
 // ── The three ways a mark can be held and never seen ──────────────────────────────────────────
-//
 // `capture` answers "is this input one the form declared", and the invariant needs "will the
-// operator actually read this". The three below are where those diverge, all found by review on the
-// first round of #313 and all the same defect: a placement that renders nothing is silence, and
-// silence is the one outcome this mechanism may not produce.
+// operator actually read this". The three below are where those diverge: a placement that renders
+// nothing is silence, which this mechanism may not produce.
 
 // A `fetch` whose answer is released by hand, so the test can act between the click and the reply.
 function deferredPut(body: { error: string; field?: string }) {
@@ -368,9 +356,9 @@ function DismissableCompany({ gone }: { gone: boolean }) {
 }
 
 test("a refusal that arrives after the form is gone still reaches the operator", async () => {
-  // This card is a modal body, and the file already records that a save is slow enough for the
-  // operator to close the modal while the request is out. Closing it unmounts the hook, so the mark
-  // is written to state nobody renders — and `capture` had already reported "it is on the control".
+  // NOTE: this card is a modal body, and a save is slow enough for the operator to close the modal while
+  // the request is out. Closing it unmounts the hook, so a mark would be written to state nobody
+  // renders after `capture` had reported "it is on the control".
   const reason =
     "document contains a character the document fonts cannot print";
   const release = deferredPut({ error: reason, field: "document" });

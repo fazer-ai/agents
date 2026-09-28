@@ -1,17 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { withoutComments } from "../utils/source-text";
 
-// ── A REGRA DO RÓTULO SAI DA PÁGINA PARA PODER SER MEDIDA (issue #726) ──
+// ── A REGRA DO RÓTULO MORA NUM MÓDULO PRÓPRIO, PARA PODER SER CHAMADA ──
 //
-// Hoje a regra é um `switch` dentro de um hook dentro de `ConversationDetailPage.tsx`, e a página só
-// tem teste de fonte porque renderizá-la puxa auth, tema, toast, realtime e uma conversa viva. Uma
-// regra que ninguém consegue chamar é uma regra que ninguém consegue provar, e é por isso que a
-// mudança começa tirando-a de lá: o rótulo do silêncio passa a depender de um segundo argumento, e
-// esse é exatamente o tipo de condição que se erra em silêncio.
+// Renderizar `ConversationDetailPage.tsx` puxa auth, tema, toast, realtime e uma conversa viva, e o
+// rótulo do silêncio depende de um segundo argumento (se o turno entregou algo), o tipo de condição
+// que se erra em silêncio. Por isso a regra é pura e testada aqui.
 //
 // O módulo devolve chave + texto padrão em vez de texto traduzido, porque traduzir é do `t()` e o
-// extrator de i18n lê chamadas estáticas. As duas superfícies (a trilha e o indicador ao vivo)
-// passam pela mesma função, que é o que impede uma delas de ficar para trás.
+// extrator de i18n lê chamadas estáticas. A trilha e o indicador ao vivo passam pela mesma função.
 
 const MODULO = "src/client/lib/tool-label.ts";
 
@@ -42,11 +39,9 @@ describe("a regra do rótulo de ferramenta", () => {
     expect(toolLabel(null)).toBeNull();
   });
 
-  // O ACHADO DA RODADA 1 DE REVIEW. O nome vem do operador (ferramenta HTTP, servidor MCP), e num
-  // objeto literal `BY_TOOL["constructor"]` devolve o construtor herdado, que é truthy: o rótulo sai
-  // como `t(undefined, undefined)`, uma string vazia, e o operador perde até o nome humanizado que a
-  // ferramenta desconhecida teria. O `switch` de antes não tinha esse buraco, então ele entrou com
-  // esta entrega.
+  // NOTE: o nome vem do operador (ferramenta HTTP, servidor MCP), e num objeto literal
+  // `BY_TOOL["constructor"]` devolve o construtor herdado, que é truthy: o rótulo sairia vazio e o
+  // operador perderia até o nome humanizado da ferramenta desconhecida.
   test("nome herdado do Object não vira rótulo", async () => {
     const toolLabel = await regra();
     for (const nome of [
@@ -77,8 +72,8 @@ describe("a regra do rótulo de ferramenta", () => {
     );
   });
 
-  // Ausente é "não sei", e "não sei" não pode virar "entregou": uma linha escrita antes desta entrega
-  // não carrega o fato, e a tela não pode inventá-lo por omissão.
+  // NOTE: ausente é "não sei", e "não sei" não pode virar "entregou": uma linha escrita antes de o
+  // fato ser gravado não o carrega, e a tela não pode inventá-lo por omissão.
   test("sem o fato, o rótulo é o de hoje", async () => {
     const toolLabel = await regra();
     const key = "conversation.activity.skip";
@@ -87,8 +82,8 @@ describe("a regra do rótulo de ferramenta", () => {
     expect(toolLabel("skip_reply", { delivered: null })?.key).toBe(key);
   });
 
-  // A cerca nasce na rota que revelou o defeito: a página não pode voltar a decidir o rótulo do
-  // silêncio por conta própria, que é o `switch` sobre o nome com que esta issue começou.
+  // NOTE: a página não pode voltar a decidir o rótulo do silêncio por conta própria, com um `switch`
+  // sobre o nome da ferramenta.
   test("a página delega a regra em vez de repeti-la", async () => {
     const src = withoutComments(
       await Bun.file("src/client/pages/ConversationDetailPage.tsx").text(),

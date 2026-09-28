@@ -1,21 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-// THE BUTTON THAT ASKS FOR A RANK (issue #753).
-//
-// `POST /v1/conversations/:id/reengage` asks for `TENANT_ADMIN`, and this page is the one console
-// route deliberately NOT admin-gated (`docs/ui.md`): it is the attendant's screen. So "Respond now"
-// has to be off for a rank the route will refuse, or an AGENT gets a 403 for pressing a button —
-// which reads as a broken product and invites pressing it again on a conversation they will never
-// re-engage. The other three ops on the screen stay: they are what an attendant is for.
-//
-// It is reachable, not hypothetical: the offer is raised by a SUCCESSFUL return-to-AI, which an
-// AGENT may do, so before the fence the button appeared for them one click later.
-//
-// CHECKED ON THE SOURCE, for the reason `conversation-outcomes.test.ts` gives about the same file:
-// rendering this page pulls auth, theme, toast, realtime and a live conversation, and what is under
-// test is one condition. The rank's own meaning is covered in `tests/api/v1/reengage-role-gate.test.ts`,
-// against the real route; what is left here is that nobody drops the condition from the screen.
+// The button that asks for a rank. `POST /v1/conversations/:id/reengage` requires `TENANT_ADMIN`,
+// and this page is deliberately NOT admin-gated (`docs/ui.md`): it is the attendant's screen. So
+// "Respond now" is off for a rank the route will refuse, or an AGENT gets a 403 for a button raised
+// by a successful return-to-AI they may do. The other three ops stay.
+// Checked on the source, for the reason `conversation-outcomes.test.ts` gives about the same file:
+// rendering it pulls auth, theme, toast, realtime and a live conversation. The rank itself is
+// covered against the real route in `tests/api/v1/reengage-role-gate.test.ts`.
 const SRC = readFileSync("src/client/pages/ConversationDetailPage.tsx", "utf8");
 
 describe("the re-engage button is not offered below TENANT_ADMIN", () => {
@@ -28,9 +20,9 @@ describe("the re-engage button is not offered below TENANT_ADMIN", () => {
   });
 
   test("BOTH re-engage buttons carry it, and the second one is the trap", () => {
-    // The page has two doors to the same endpoint: the header's "Respond now" and the failure
+    // NOTE: the page has two doors to the same endpoint: the header's "Respond now" and the failure
     // card's "Re-engage", which appears whenever the conversation still carries a `lastError`. The
-    // card outlives the turn that failed, so an attendant meets it long after — and gating only the
+    // card outlives the turn that failed, so an attendant meets it long after, and gating only the
     // header would leave the 403 exactly where it is least expected.
     for (const label of [
       't("conversation.respondNow"',

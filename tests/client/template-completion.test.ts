@@ -8,15 +8,11 @@ import {
   templateLists,
 } from "@/modules/tool-definitions/response-template";
 
-// TYPING `{{` OFFERS THE SAMPLE'S PATHS, at the caret (issue #563).
-//
-// #462 named this and left it out of scope, because measuring a caret's coordinates inside a
-// textarea is the problem CodeMirror does not have. The picker it shipped instead is a popover the
-// operator opens; this is the list arriving where they are typing.
+// TYPING `{{` OFFERS THE SAMPLE'S PATHS, at the caret.
 //
 // The RULE is `templateWriteAt` + `templateOfferAt`, both tested in `tests/modules`. What is driven
 // here is the seam: the range the answer replaces, which of the two vocabularies is offered, and
-// what accepting one leaves in the document.
+// what accepting one leaves in the document (where a half-written token would escape to the model).
 
 const BODY = {
   cliente: { nome: "Ana" },
@@ -107,15 +103,10 @@ describe("the offer at the caret", () => {
   });
 });
 
-// WHAT ACCEPTING ONE LEAVES BEHIND, which is where a half-written token would escape to the model.
-// WHEN THE SOURCE HAS TO BE ASKED AGAIN (round 4 of review).
-//
-// `validFor` is what lets CodeMirror keep one result while the operator keeps typing, and a pattern
-// that only excluded braces kept it across a change of VOCABULARY: pausing after `{{` until the
-// scalar list opens and then typing `#each ` left the path options in place, filtered against
-// `#each `, so the popup emptied and the lists never arrived. The two characters that change the
-// answer are the `#` that starts a marker and the whitespace that moves where the path begins;
-// neither can appear in a path, so excluding them costs nothing while typing one.
+// WHEN THE SOURCE HAS TO BE ASKED AGAIN. `validFor` lets CodeMirror keep one result while the
+// operator types; excluding only braces would keep the path list across a change of VOCABULARY
+// (`{{` then `#each `), filtered to nothing. The `#` that starts a marker and the whitespace that
+// moves the path's start change the answer, and neither can appear in a path.
 describe("the offer's own validity", () => {
   const keepsResult = (typed: string): boolean => {
     const r = ask("{{");
@@ -154,8 +145,8 @@ describe("accepting an answer", () => {
       changes: { from: number; to: number; insert: string };
       selection: { anchor: number };
     }[] = [];
-    // The view carries a STATE now: the apply re-reads the document at acceptance rather than
-    // trusting what the offer was built from.
+    // NOTE: the apply re-reads the document from the view's state at acceptance rather than trusting
+    // what the offer was built from.
     const view = {
       state: EditorState.create({ doc }),
       dispatch: (s: unknown) => {
@@ -184,26 +175,19 @@ describe("accepting an answer", () => {
     expect(caret).toBe(text.length);
   });
 
-  // THE ORDINARY CASE, and the one this test had backwards until the browser said so. Typing `{{`
-  // makes `closeBrackets` write `{{}}`, so the braces are already there and the caret sits between
-  // them. Asserting the caret at the end of the inserted path passed here and left the cursor
-  // INSIDE the token on screen: the next thing typed went in with it, and typing a value and then a
-  // block produced `{{cliente.nome{{#each resultados}}}}` on one line.
+  // NOTE: the ordinary case. Typing `{{` makes `closeBrackets` write `{{}}`, so the caret sits
+  // between braces already there; the apply steps over them, or the next thing typed lands INSIDE the
+  // token (`{{cliente.nome{{#each resultados}}}}`).
   test("does not add braces the document already has, and steps over them", () => {
     const { text, caret } = accept("Nome: {{}} hoje", "cliente.nome", 8);
     expect(text).toBe("Nome: {{cliente.nome}} hoje");
     expect(caret).toBe("Nome: {{cliente.nome}}".length);
   });
 
-  // THE DOCUMENT MOVES WHILE THE POPUP IS OPEN (round 1 of review). `validFor` keeps ONE result
-  // alive while the operator types the path, so the offer is computed against `{{}}` and applied
-  // against `{{cli}}`. An `apply` closing over the close-brace position captured at opening is then
-  // answering about a document three characters shorter: the caret landed inside the token, and on
-  // a deletion the anchor could exceed the document and make the dispatch throw.
-  //
-  // Driven the way CodeMirror does it: ask ONCE at the opening caret, then apply with the range of
-  // a later document. Asking again at the new caret is what the helper above does, and it is
-  // exactly the step that hides this.
+  // NOTE: the document moves while the popup is open. `validFor` keeps ONE result alive, so the offer
+  // is computed against `{{}}` and applied against `{{cli}}`; an `apply` holding the close position
+  // from opening lands the caret inside the token, or throws on a deletion. Driven as CodeMirror does
+  // it: ask ONCE, then apply with a later document's range (the helper above asks again, which hides it).
   test("steps over the close as it stands NOW, not as it stood when the list opened", () => {
     const opened = ask("Nome: {{}} hoje", 8);
     const option = opened?.options.find((o) => o.label === "cliente.nome");
@@ -236,10 +220,9 @@ describe("accepting an answer", () => {
     expect(spec.selection.anchor).toBe("Nome: {{cliente.nome}}".length);
   });
 
-  // THE OLD PATH GOES, and the range that removes it is not the range the list filtered on (rounds
-  // 2 and 3 of review). Completing at the start of `{{foo}}` and picking a field wrote
-  // `{{cliente.nomefoo}}`; stretching the RESULT's range to fix it filtered every candidate against
-  // `foo` instead, so the fix lives in the apply, which reads the document at acceptance.
+  // NOTE: the old path goes, and the range that removes it is not the range the list filtered on.
+  // Stretching the RESULT's range would filter every candidate against `foo`, so the apply reads the
+  // document at acceptance and replaces the whole path.
   test("replaces the path already in the token, not just what was typed", () => {
     const { text, caret } = accept("{{foo}} hoje", "cliente.nome", 2);
     expect(text).toBe("{{cliente.nome}} hoje");

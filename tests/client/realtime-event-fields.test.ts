@@ -4,15 +4,11 @@ import { withoutComments } from "../utils/source-text";
 // ── UM CAMPO NOVO NO EVENTO PRECISA CHEGAR NA PONTA, E O TYPESCRIPT NÃO COBRA ISSO ──
 //
 // `useTenantEvents` remonta cada evento campo a campo antes de entregá-lo ao consumidor. Todo campo
-// OPCIONAL que alguém acrescente ao evento do servidor e esqueça nessa remontagem some em silêncio:
-// o tipo do cliente declara o campo, a página o lê, o compilador aprova, e o valor nunca sai do
-// hook. Não é hipótese — foi exatamente o que aconteceu com `delivered` na issue #726, e o sintoma
-// foi o indicador ao vivo dizendo "Decidiu não responder" um segundo depois de a mensagem já estar
-// na thread, que é a superfície onde o operador não tem como conferir depois.
+// OPCIONAL acrescentado ao evento do servidor e esquecido nessa remontagem some em silêncio: o tipo
+// do cliente declara o campo, a página o lê, o compilador aprova, e o valor nunca sai do hook.
 //
-// A cerca nasce na rota que revelou o defeito, e a rota é a remontagem. Fonte porque é uma pergunta
-// sobre transporte, não sobre comportamento: renderizar o hook exige WebSocket, auth e um tenant, e
-// mesmo assim só provaria o campo que o teste lembrasse de mandar. Isto cobre o PRÓXIMO campo.
+// Fonte porque é uma pergunta sobre transporte, não sobre comportamento: renderizar o hook exige
+// WebSocket, auth e um tenant, e só provaria o campo que o teste lembrasse de mandar.
 
 const HOOK = "src/client/hooks/useTenantEvents.ts";
 const SERVICE = "src/api/features/realtime/realtime.service.ts";

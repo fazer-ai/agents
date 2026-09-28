@@ -2,15 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { contextNamesReferencedBy } from "@/client/pages/resources/ToolEditModal";
 import { buildHttpTool } from "@/graph/tools/http";
 
-// Round 2 of review, finding 4. The test dialog asks the operator for exactly the conversation
-// placeholders the definition writes, and it used to ask by scanning the raw form text for
-// `{{name}}`. A definition written the other supported way — OpenAPI-style `{contact_id}`, which
-// `normalizeToolShapes` exists to accept — got no box, and the run then refused for a value nobody
-// was offered a chance to supply.
+// The test dialog asks the operator for exactly the conversation placeholders the definition writes,
+// in either supported form (`{{name}}` or OpenAPI-style `{contact_id}`, which `normalizeToolShapes`
+// accepts); a missed one gets no box and the run refuses for a value nobody was offered.
 //
-// So the control here is not the list this function returns but its AGREEMENT with the runtime: the
-// same definition is put through `buildHttpTool`, and whatever it demands is what the dialog has to
-// have asked for.
+// So the control is not the list this function returns but its AGREEMENT with the runtime: the same
+// definition goes through `buildHttpTool`, and whatever it demands the dialog has to ask for.
 
 const HOST = "8.8.8.8";
 
@@ -54,7 +51,7 @@ async function runsWith(
 describe("contextNamesReferencedBy", () => {
   test.each([
     ["{{contact_id}}", ["contact_id"]],
-    // The form the whole finding is about.
+    // NOTE: the OpenAPI-style form, which a raw `{{name}}` scan would miss.
     ["{contact_id}", ["contact_id"]],
     ["{ contact_id }", ["contact_id"]],
     // Not a context variable, so not a box: the operator does not supply these.
@@ -80,16 +77,14 @@ describe("contextNamesReferencedBy", () => {
         query: { c: "{conversation_id}" },
         headers: { "x-inbox": "{{inbox_id}}" },
         body: { mode: "raw", raw: '{"who": "{contact_name}"}' },
-        // A legacy fixed field is a template too, and the set of form strings this replaced had no
-        // entry for one.
+        // NOTE: a legacy fixed field is a template too.
         inputSchema: { who: { source: "fixed", value: "{contact_phone}" } },
       }).sort(),
     ).toEqual(["contact_name", "contact_phone", "conversation_id", "inbox_id"]);
   });
 
-  // Round 16 of review. The scan was a generic deep walk over the normalized shapes, so it also
-  // reached places the runtime never interpolates — and the cost lands on the operator, who is
-  // handed a box for a value that will not be used no matter what they type in it.
+  // NOTE: the scan reads only where the runtime interpolates. A generic deep walk would also reach
+  // prose and nested values, handing the operator a box for a value that is never used.
   test.each([
     [
       "a field's description, which is prose for the model",

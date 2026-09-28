@@ -9,17 +9,11 @@ import { EditorView } from "@codemirror/view";
 import { act, cleanup, render } from "@testing-library/react";
 import { CodeMirrorField } from "@/client/components/CodeMirrorField";
 
-// THE SHELL IS THE FIELD WITHOUT A LANGUAGE (issue #562).
-//
-// `CodeEditor` was the console's only CodeMirror, and everything in it was written for one caller:
-// the JavaScript grammar, the completion over declared arguments, and the two sentences that report
-// the code tool's character cap. The sample response wants the same field with a different grammar,
-// so what is generic moved into `CodeMirrorField` and what is about JavaScript stayed behind.
-//
-// The 90 tests of `code-editor-completions` are the fence for that move being behaviour-preserving:
-// they drive `CodeEditor` and none of them changed. What they cannot see is the seam itself, which
-// is what this file drives — the two ways a caller can silently cost the operator their cursor and
-// their undo history, and the one way the shell could smuggle a caller's words back in.
+// The shell is the field without a language. `CodeMirrorField` holds what is generic (the view,
+// the cap, the height); `CodeEditor` adds the JavaScript grammar and completion, and is fenced by
+// `code-editor-completions.test.tsx`. This file drives the seam: the two ways a caller can silently
+// cost the operator their cursor and undo history, and the one way the shell could smuggle a
+// caller's words back in.
 
 afterEach(cleanup);
 
@@ -29,13 +23,9 @@ function viewNow(): EditorView {
   ) as EditorView;
 }
 
-// A CAP IS A NUMBER PLUS TWO SENTENCES, AND ONLY THE NUMBER REACHES THE VIEW.
-//
-// The cap travels as one object so that a cap cannot be set without the words that report it. But an
-// object is a fresh identity on every render of the caller, and the view is built against the cap:
-// depending on the object rebuilds the editor whenever the caller re-renders — a new view holding
-// the same text, with the cursor at the start and the undo history gone. The number is what the
-// change filter needs, so the number is what the editor is built against.
+// A cap is a number plus two sentences, and only the number reaches the view. The object is a fresh
+// identity on every render of the caller, so building the view against it would rebuild the editor
+// (cursor at the start, undo history gone) whenever the caller re-renders.
 test("a caller that rebuilds its cap object keeps the same view, with its history", () => {
   const capFor = (max: number) => ({
     max,
@@ -70,12 +60,8 @@ test("a caller that rebuilds its cap object keeps the same view, with its histor
   expect(second.state.doc.toString()).toBe("");
 });
 
-// THE LANGUAGE RECONFIGURES, IT DOES NOT REBUILD.
-//
-// This is the seam the code tool already depends on — renaming a declared argument reconfigures the
-// completion source under a mounted editor — generalized to whatever the caller passes. Listing the
-// extensions as a lifecycle dependency of the build would answer the same rename by throwing the
-// editor away mid-keystroke.
+// The language reconfigures, it does not rebuild: listing the extensions as a dependency of the
+// build would throw the editor away mid-keystroke when the caller passes new ones.
 test("changing the extensions keeps the same view, with its history", () => {
   const { rerender } = render(
     <CodeMirrorField
@@ -104,12 +90,9 @@ test("changing the extensions keeps the same view, with its history", () => {
   expect(second.state.doc.toString()).toBe("");
 });
 
-// AND THE WORDS ARE THE CALLER'S, WHICH IS THE POINT OF THE PROP.
-//
-// The shell counts characters; it cannot name what is being counted. Left inside, the code tool's
-// "Shorten the body" would greet an operator whose sample response is too long. Driven rather than
-// read off the source, because a string the shell never renders is a string that does not report
-// anything.
+// And the words are the caller's, which is the point of the prop: the shell counts characters but
+// cannot name what is counted. Driven rather than read off the source, because only a rendered
+// string reports anything.
 test("the over-limit line is the caller's sentence, not one of the shell's", () => {
   render(
     <CodeMirrorField
@@ -126,12 +109,8 @@ test("the over-limit line is the caller's sentence, not one of the shell's", () 
   expect(document.body.textContent).toContain("SAMPLE over by 2 of 4");
 });
 
-// AND THE FIELD HAS A CEILING, or the document decides how tall the form is (round 4 of review).
-//
-// `minHeight` alone means the editor grows with its content, so a response with a thousand records
-// makes a field a thousand lines tall and pushes everything under it off the screen. The textarea it
-// replaced had `rows`, which is a bounded viewport that scrolls inside itself. Asserted on the style
-// the wrapper carries, because happy-dom has no layout to measure.
+// And the field has a ceiling, or the document decides how tall the form is: `minHeight` alone
+// grows with the content. Asserted on the wrapper's style, because happy-dom has no layout.
 test("a maximum height reaches the editor, and is absent when not asked for", () => {
   render(
     <CodeMirrorField
@@ -163,16 +142,10 @@ test("a maximum height reaches the editor, and is absent when not asked for", ()
   expect(bare?.className ?? "").not.toContain("max-h-");
 });
 
-// AND A CALLER THAT WRITES AT THE CARET NEEDS THE VIEW (issue #563).
-//
-// The template field keeps the picker #462 shipped, which inserts a token where the cursor is. In a
-// textarea that is `selectionStart` and a string splice; in CodeMirror it is a dispatch, and the
-// caller cannot make one without the view. Handed over rather than reached for: the alternative is
-// `EditorView.findFromDOM` on a query the caller writes, which is a second, silent coupling to this
-// component's markup.
-//
-// The `null` on unmount is the half that matters: a caller holding a destroyed view dispatches into
-// nothing, and CodeMirror throws rather than ignoring it.
+// And a caller that writes at the caret needs the view: in CodeMirror an insertion is a dispatch.
+// Handed over rather than reached for with `EditorView.findFromDOM`, which would couple the caller
+// to this component's markup. The `null` on unmount matters: dispatching into a destroyed view
+// throws.
 test("the view is handed to the caller, and taken back when it goes", () => {
   const seen: (EditorView | null)[] = [];
   const { unmount } = render(

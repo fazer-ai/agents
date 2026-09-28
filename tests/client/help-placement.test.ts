@@ -2,14 +2,10 @@ import { describe, expect, test } from "bun:test";
 import en from "@/client/locales/en.json";
 import ptBR from "@/client/locales/pt-BR.json";
 
-// The rule in docs/ui.md → "Where help goes", as a check rather than a paragraph somebody has to
-// remember. It is here because the failure mode it guards is not a bug: a 500-character hint
-// renders correctly, passes every other test, and only shows up as a page that reads like prose
-// with inputs embedded in it (issue #411).
-//
-// What it actually enforces is the SORTING, not the prose. A hint that grows past a sentence has
-// stopped being what the operator needs to fill the field and started being what they need to
-// decide whether the field applies to them, which is the other outcome and has its own home.
+// The rule in docs/ui.md, "Where help goes", as a check. The failure it guards is not a bug: a
+// 500-character hint renders and passes every other test, and only shows as a page that reads like
+// prose. It enforces the SORTING: a hint past a sentence is about whether the field applies, which
+// belongs behind the `?`.
 
 const HINT_MAX = 200;
 

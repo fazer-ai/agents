@@ -10,25 +10,19 @@ import {
   CompanyProfileCard,
 } from "@/client/pages/resources/documents/CompanyProfileCard";
 
-// The letterhead is the only form on the Documents tab that is NOT inside a modal, so nothing else
-// stands between an unsaved edit and a click on another tab — or on a tenant switch, which is a full
-// reload. The agent editor and the template modal both register with the guard; this one did not,
-// and the edits went silently.
-//
-// Driven through a real <a> click, because that is what the guard actually intercepts (a
-// capture-phase document listener that pre-empts react-router's own handler). Asserting on the
-// component's internal dirty flag would pass without the registration that makes it matter.
+// The letterhead is the only form on the Documents tab that is NOT inside a modal, so only the
+// navigation guard stands between an unsaved edit and a click on another tab (or a tenant switch,
+// a full reload). Driven through a real <a> click, which is what the guard intercepts (a
+// capture-phase document listener ahead of react-router's); an internal dirty flag would pass
+// without the registration.
 //
 // NOTE: every assertion reduces to a boolean or a string BEFORE expect — a failing expectation that
 // holds a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 // happy-dom starts at about:blank, where the guard's same-origin test cannot resolve a relative
-// href — so the page it thinks it is on has to be a real URL before anything is rendered.
-//
-// Reset BEFORE EACH test, not once: the guard pushes a history sentinel while it is active, which
-// moves window.location for whatever runs next. Left shared, a later test compares the link against
-// the sentinel's path instead of the page's and quietly stops intercepting — the file passed while
-// the same test failed on its own.
+// href, so the page has to be a real URL before anything renders. Reset BEFORE EACH test: the guard
+// pushes a history sentinel while active, and a later test would compare the link against the
+// sentinel's path and quietly stop intercepting.
 const setUrl = () =>
   (globalThis as { happyDOM?: { setURL(u: string): void } }).happyDOM?.setURL(
     "http://localhost/recursos/documentos",

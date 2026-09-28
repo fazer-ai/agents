@@ -3,19 +3,11 @@ import en from "@/client/locales/en.json";
 import ptBR from "@/client/locales/pt-BR.json";
 import { withoutComments } from "@/tests/utils/source-text";
 
-// A `t()` DEFAULT IS NOT THE ENGLISH TEXT. `i18next-parser` writes a default into the catalog the
-// first time it sees a key and never overwrites an existing value, so editing the literal in the
-// source changes nothing a user reads: the catalog answers, the default is dead code, and nothing
-// fails (docs/i18n.md, "Extract DELETES keys").
-//
-// Measured while it happened here: the test dialog's hint was rewritten in the source to say that a
-// blank `agent_name` sends the default, and en.json kept saying every blank is omitted, so the
-// dialog described a payload it no longer sends.
-//
-// The sweep is scoped to `codeTools.*` rather than the whole console because the whole console does
-// not pass: 39 of 2,687 call sites carry a default the catalog contradicts, 38 of them older than
-// this file. Widening it is a separate change with a separate fix list; what it must not do is stay
-// silent about the namespace being added.
+// A `t()` default is not the English text. `i18next-parser` writes a default into the catalog the
+// first time it sees a key and never overwrites it, so editing the literal changes nothing a user
+// reads (docs/i18n.md, "Extract DELETES keys").
+// Scoped to `codeTools.*` because the whole console does not pass yet (dozens of call sites carry a
+// default the catalog contradicts); widening it is a separate fix list.
 
 const FILES = [
   "src/client/components/CodeEditor.tsx",
@@ -59,11 +51,9 @@ describe("the code tool catalog says what the source says", () => {
     // If this drops to zero the sweep has stopped reading anything, which is the failure that looks
     // like success.
     expect(seen).toBeGreaterThan(15);
-    // The starter body is console text the same as a label: it is the first thing an author of a
-    // code tool reads, and it shipped in English until a browser showed it over a pt-BR form. It is
-    // ONE line now (`starterHint` replaced `starterInput` and `starterReturn`), and it carries the
-    // hotkey, so it is also the line most likely to be edited in one catalog and forgotten in the
-    // other.
+    // NOTE: the starter body is console text like a label, the first thing a code tool's author
+    // reads. It is ONE line carrying the hotkey, so it is the line most likely to be edited in one
+    // catalog and forgotten in the other.
     expect(at(en, "codeTools.starterHint")).toBeDefined();
     expect(at(ptBR, "codeTools.starterHint")).toBeDefined();
     expect(wrong).toEqual([]);

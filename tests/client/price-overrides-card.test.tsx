@@ -9,11 +9,11 @@ import {
   waitFor,
 } from "@testing-library/react";
 
-// Issue #865: the tenant's own prices, edited as a list. What the save sends is the assertion: an
-// emptied optional rate is "not set" (absent), never a zero that would price the cache for free, and
-// a removed row is gone from the list the server replaces.
+// The tenant's own prices, edited as a list. What the save sends is the assertion: an emptied
+// optional rate is "not set" (absent), never a zero that would price the cache for free, and a
+// removed row is gone from the list the server replaces.
 //
-// NOTE: `globalThis.fetch` is swapped rather than `mock.module`, for the reason
+// `globalThis.fetch` is swapped rather than `mock.module`, for the reason
 // credential-whitespace-not-overridable.test.tsx gives. Assertions reduce to plain values first.
 
 const { PriceOverridesCard } = await import(

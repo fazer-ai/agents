@@ -1,17 +1,10 @@
 /// <reference lib="dom" />
 
-// THE WALK RESTARTS WHENEVER THE QUESTION CHANGES (issue #532).
-//
-// A keyset cursor is an id cut from the page before, and it only means "continue" against the rows
-// it was cut from. Every filter on this page changes which rows those are, so every one of them has
-// to restart the walk -- and the reset has to be visible on the render that recreates the load, not
-// one commit later.
-//
-// WHAT MAKES THESE TESTS DIFFERENT from the ones already in `audit-scope-control.test.tsx` is not
-// the filter they drive, it is that they assert EVERY request the change produced. The page has
-// always ended up on the right rows, because `reqRef` discards the answer to the stale pair; the
-// defect was only ever visible in the requests that were made and thrown away. A test that reads
-// the last URL is green against both the bug and the fix.
+// The walk restarts whenever the question changes. A keyset cursor only means "continue" against
+// the rows it was cut from, so every filter must reset it on the render that recreates the load.
+// These tests assert EVERY request the change produced, not the last URL: `reqRef` discards the
+// answer to a stale pair, so the page lands on the right rows either way and a stale cursor only
+// shows in the requests made and thrown away.
 
 import {
   afterEach,
@@ -98,7 +91,7 @@ function mount() {
 const asked = () => sent.at(-1) ?? "";
 
 // Walks to page two, so there is a cursor to carry over in the first place. On page one the cursor
-// is null and any reset looks correct: the assertion would hold against the bug.
+// is null and any reset looks correct: the assertion would hold even with no reset.
 async function toPageTwo(view: ReturnType<typeof mount>) {
   await waitFor(() => expect(sent.length).toBeGreaterThan(0));
   const next = view.getByRole("button", { name: /next/i });
@@ -138,8 +131,8 @@ for (const [name, label, value] of [
   });
 }
 
-// The action filter is not a <select>, it is set from a row's own action chip -- the same reset has
-// to happen there, and it is the path an operator actually takes.
+// The action filter is not a <select>, it is set from a row's own action chip: the same reset has
+// to happen there.
 test("filtering by an action from the table restarts the walk too", async () => {
   const view = mount();
   const mark = await toPageTwo(view);

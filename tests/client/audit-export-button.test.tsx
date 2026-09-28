@@ -1,15 +1,9 @@
 /// <reference lib="dom" />
 
-// THE BUTTON, AND WHAT IT ASKS FOR (#521).
-//
-// The export is quoted to a customer, an auditor or an incident review, so the failure worth
-// designing against is not a broken CSV -- it is a correct CSV of rows the operator was not looking
-// at. The assertions here are therefore about the REQUEST: it carries every applied filter, it
-// carries the scope, and it carries no cursor, because the page's position is not part of the
-// question. The server owns the bounding and the serialization; the page owns the ask.
-//
-// The truncation has its own test for the same reason it has its own field: an export that was cut
-// and says nothing is a wrong answer with a filename.
+// The export is quoted to a customer or an auditor, so the failure worth designing against is a
+// correct CSV of rows the operator was not looking at. The assertions are about the REQUEST: every
+// applied filter, the scope, and no cursor. The server owns bounding and serialization.
+// Truncation has its own test: an export that was cut and says nothing is a wrong answer.
 
 import {
   afterEach,
@@ -89,13 +83,9 @@ beforeEach(() => {
       headers: { "content-type": "application/json" },
     });
   }) as unknown as typeof fetch;
-  // The download itself is a DOM gesture, not a network one: capture the anchor rather than let
-  // happy-dom navigate.
-  //
-  // RESTORED IN `afterEach`, and that is not tidiness. These are GLOBALS, and Bun runs a worker's
-  // files in one process: a `document.createElement` left patched here answers for every suite that
-  // shares the worker, so any later test whose component builds an element gets this stub. Measured:
-  // leaving it took down 27 tests across nine files that never mention an export.
+  // NOTE: the download is a DOM gesture: capture the anchor rather than let happy-dom navigate.
+  // Restored in `afterEach` because these are GLOBALS and Bun runs a worker's files in one process:
+  // a `document.createElement` left patched answers for every suite sharing the worker.
   globalThis.URL.createObjectURL = () => "blob:stub";
   globalThis.URL.revokeObjectURL = () => {};
   const realCreate = document.createElement.bind(document);
@@ -137,13 +127,9 @@ function mount(url: string) {
   );
 }
 
-// THE REAL PROVIDER, and the toast read off the screen rather than out of a stub. Mocking
-// `@/client/components/Toast` works and then keeps working: `mock.module` is installed for the WHOLE
-// WORKER, so it answers for every suite that shares the process, and restoring it in `afterAll` did
-// not undo it for the files that reach `useToast` through the components barrel. Measured: 27 tests
-// across nine files that never mention an export, all waiting on a message nobody rendered.
-//
-// Radix renders each toast as an `<li>` in its viewport.
+// The real provider, with the toast read off the screen. A `mock.module` of
+// `@/client/components/Toast` is installed for the WHOLE WORKER and outlives `afterAll` for files
+// that reach `useToast` through the components barrel. Radix renders each toast as an `<li>`.
 const toastText = () =>
   Array.from(document.querySelectorAll("li[data-state]"))
     .map((el) => el.textContent ?? "")
@@ -172,12 +158,8 @@ test("the button is on the page and downloads the server's file under its own na
   expect(clicked[0]?.download).toBe("agents-audit-2026-09-03T12-00-00.csv");
 });
 
-// THE ASSERTION THIS FEATURE IS ABOUT.
-// FROM PAGE THREE, and that is not decoration: on page one the cursor is null, so an export that
-// faithfully forwarded the page's position would send nothing and still look correct. Asserting the
-// absence of a value that is absent anyway proves nothing about the code -- measured, by a mutation
-// that added `if (cursor) query.cursor = cursor` and left this whole file green. The walk has to have
-// happened before the question is worth asking.
+// From page three: on page one the cursor is null, so an export that forwarded the page's position
+// would send nothing and still pass. The walk has to happen before the question is worth asking.
 test("every applied filter reaches the export, and the page's position does not", async () => {
   const view = mount(
     "/audit?action=agent.update&actorType=mcp&from=2026-08-01&to=2026-08-31",
@@ -231,10 +213,9 @@ test("a truncated export says so, and says how many it kept", async () => {
   expect(toastText()).toContain("500");
 });
 
-// A CUT THAT KEPT NOTHING IS NOT AN EMPTY MATCH. When the newest matching row alone exceeds the byte
-// ceiling the server answers `count: 0, truncated: true` -- rows matched, none fit. Reading only the
-// count tells the operator that nothing happened in the period they are auditing, which is the one
-// sentence an audit trail must never say when it is false.
+// A cut that kept nothing is not an empty match. When the newest matching row alone exceeds the
+// byte ceiling the server answers `count: 0, truncated: true`; reading only the count would tell
+// the operator nothing happened in the period they audit.
 test("a cut that kept nothing is not reported as an empty match", async () => {
   dump = {
     ...dump,

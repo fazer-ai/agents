@@ -12,20 +12,13 @@ import {
 import { useEffect, useRef } from "react";
 import { MemoryRouter } from "react-router";
 
-// THE PICKER IS AN AFFORDANCE OF THE FIELD, NOT A SECTION THAT OPENS UNDER IT (issue #462).
+// THE PICKER IS AN AFFORDANCE OF THE FIELD, NOT A SECTION THAT OPENS UNDER IT.
 //
-// Three costs were reported by an operator using this for the first time, and two of them are
-// structural rather than cosmetic, which is what makes them assertable here:
-//
-//   - opening the offer PUSHES the fields below it down, in the middle of editing. The cause is in
-//     the DOM: the list is rendered in the same flow container as the next field, so the browser has
-//     no choice. Asserted as that containment, because happy-dom has no layout to measure.
-//   - there is no filter. A real API response has dozens of leaves; the one measured for #456 has
-//     40+, so the offer is a scroll and the operator reads it rather than searching it.
-//
-// The third cost (the affordance sitting below a four-row textarea, far from the caret it writes at)
-// is about distance on screen and is not assertable without layout; it is covered by where the
-// control is mounted, which the template test pins separately.
+// Two properties are structural, which makes them assertable here: opening the offer must not PUSH
+// the fields below it down (the list stays out of the next field's flow container; asserted as that
+// containment, since happy-dom has no layout), and the offer has a filter, because a real API
+// response has dozens of leaves. Distance from the caret is a layout matter, pinned by where the
+// template test mounts the control.
 
 const { ToolEditModal } = await import(
   "@/client/pages/resources/ToolEditModal"
@@ -116,11 +109,8 @@ async function openBookForm() {
   writeSample(SAMPLE);
 }
 
-// Every control that offers one of the sample's paths, whatever the widget calls itself.
-// THE SAMPLE IS A CODEMIRROR NOW (issue #562), so it is written by dispatching into its view rather
-// than by firing `change` on a textarea. Found by the accessible name on the contenteditable, which
-// is the element CodeMirror gives the `textbox` role to, so this does not depend on how many editors
-// the screen holds.
+// The sample is a CodeMirror, written by dispatching into its view. Found by the accessible name on
+// the contenteditable (CodeMirror gives it the `textbox` role), whatever other editors are on screen.
 function writeSample(text: string): void {
   const content = Array.from(document.querySelectorAll(".cm-content")).find(
     (el) =>
@@ -139,10 +129,8 @@ function writeSample(text: string): void {
   });
 }
 
-// THE TEMPLATE FIELD IS A CODEMIRROR NOW (issue #563), so its caret is a position in the editor's
-// document and its text comes from the view, not from a `.value`. Found by the accessible name on
-// the contenteditable, the same way `writeSample` finds the sample's, so this does not depend on
-// how many editors the screen holds.
+// The template field is a CodeMirror too: its caret is a position in the editor's document and its
+// text comes from the view. Found by accessible name, the same way `writeSample` finds the sample's.
 function templateView(): EditorView {
   const content = Array.from(document.querySelectorAll(".cm-content")).find(
     (el) =>
@@ -193,14 +181,11 @@ function openerFor(field: Element): HTMLButtonElement {
 }
 
 // The filter box has to belong to the OFFER, not merely be on screen: this modal is full of empty
-// text inputs, and any of them would satisfy a document-wide search while typing into it narrows
-// nothing.
+// text inputs, and typing into any of them narrows nothing.
 //
-// Walks out from an option until a container also holds a text input. That container IS "the offer
-// owning a filter", and the walk is safe to run to the end because the offer is portalled: it never
-// reaches the form, so finding nothing means there is nothing rather than meaning the search
-// wandered into the page. Stopping at the smallest container of all the options would be too tight —
-// the filter sits BESIDE the list, not inside it.
+// Walks out from an option until a container also holds a text input. Safe to run to the end because
+// the offer is portalled and never reaches the form. Stopping at the smallest container of all the
+// options would be too tight: the filter sits BESIDE the list, not inside it.
 function filterOfTheOffer(): HTMLInputElement {
   const options = Array.from(
     document.querySelectorAll("li button, [role='option'], [role='menuitem']"),
@@ -263,14 +248,10 @@ test("a path offer can be narrowed by typing", async () => {
   });
 });
 
-// THE CARET SURVIVES THE OFFER OPENING, which the portal put at risk rather than fixed.
-//
-// The template's picker inserts AT the cursor, and `insertToken` reads `selectionStart` off the
-// textarea at pick time and then refocuses it in a `requestAnimationFrame`. That worked while the
-// offer was inline, because clicking a button moves focus without moving a textarea's selection.
-// A popover autofocuses its content and, on close, Radix returns focus to the TRIGGER — which lands
-// after that frame and takes the caret away from the box being written in. `onCloseAutoFocus` is
-// prevented for exactly this, and prevention is invisible until something asserts it.
+// THE CARET SURVIVES THE OFFER OPENING. The template's picker inserts AT the cursor, but a popover
+// autofocuses its content and, on close, Radix returns focus to the TRIGGER, landing after the
+// picker's own refocus of the field and taking the caret away. `onCloseAutoFocus` is prevented for exactly this, and prevention
+// is invisible until something asserts it.
 test("a token is inserted at the caret, not appended", async () => {
   serving();
   render(
@@ -321,15 +302,12 @@ test("a token is inserted at the caret, not appended", async () => {
   });
 });
 
-// THE OFFER HAS TO BE ABOVE THE MODAL IT OPENS IN, and no rendering test can see that: happy-dom
-// has no stacking context, so the offer was in the document, positioned correctly, sized correctly
-// and invisible — behind the dialog — with every assertion above passing. Found by opening it in a
-// browser.
+// THE OFFER HAS TO BE ABOVE THE MODAL IT OPENS IN, which happy-dom cannot see (no stacking context):
+// the offer is in the document and correctly placed either way, but invisible behind the dialog.
 //
 // `public/index.css` defines the z scale as TOKENS, and a Tailwind `z-50` is not a step on it: 50 is
-// `--z-drawer`, which sits BELOW `--z-modal` (80). This picker only ever opens inside a modal, so a
-// numeric class is always wrong here. Read off the source because the property is about paint order
-// rather than about behaviour.
+// `--z-drawer`, BELOW `--z-modal` (80). This picker only ever opens inside a modal, so a numeric class
+// is always wrong here. Read off the source because the property is about paint order.
 test("the offer's z-index comes from the popover token, not a numeric class", async () => {
   const source = await Bun.file(
     new URL(
@@ -340,19 +318,15 @@ test("the offer's z-index comes from the popover token, not a numeric class", as
   const content = source.slice(source.indexOf("PopoverPrimitive.Content"));
   const className = /className="([^"]*)"/.exec(content)?.[1] ?? "";
   expect(className.includes("z-(--z-popover)")).toBe(true);
-  // And no bare numeric z anywhere on it, which is what it carried when it was invisible.
+  // NOTE: and no bare numeric z anywhere on it.
   expect(/\bz-\d+\b/.test(className)).toBe(false);
 });
 
 // THE OFFER PORTALS INTO THE DIALOG, NOT INTO THE BODY, and the difference is a scroll that works.
 //
-// Radix's Dialog installs `react-remove-scroll`, which cancels wheel events whose target sits
-// outside its subtree. A popover portalled to `document.body` is outside it, so the list clicked
-// fine and would not scroll: `overflow-y: auto` honoured, `scrollTop` movable programmatically, and
-// every wheel event arriving already `preventDefault`ed. Reported from the browser, because nothing
-// here dispatches a real wheel.
-//
-// Asserted as the containment that causes it, which is the part this file can see.
+// Radix's Dialog installs `react-remove-scroll`, which cancels wheel events whose target sits outside
+// its subtree, so a popover portalled to `document.body` clicks fine and never scrolls. Nothing here
+// dispatches a real wheel, so this asserts the containment that causes it.
 test("the offer is portalled inside the dialog, not into the body", async () => {
   await openBookForm();
   const idField = controlFor<HTMLInputElement>(
@@ -366,10 +340,8 @@ test("the offer is portalled inside the dialog, not into the body", async () => 
     if (!el) throw new Error("the offer never appeared");
     return el;
   });
-  // By the WRAPPER's parent, never by `closest('[role=dialog]')` from the option: Radix's Popover
-  // Content is itself `role="dialog"`, so that search matches the popover no matter where it was
-  // portalled and reports success against the body-portalled build. Measured: mutating the portal
-  // target left the first version of this test green.
+  // NOTE: by the WRAPPER's parent, never by `closest('[role=dialog]')` from the option: Radix's
+  // Popover Content is itself `role="dialog"`, so that search matches wherever it was portalled.
   const wrapper = anOption.closest("[data-radix-popper-content-wrapper]");
   expect(Boolean(wrapper)).toBe(true);
   expect(wrapper?.parentElement === document.body).toBe(false);
@@ -385,8 +357,6 @@ test("the offer is portalled inside the dialog, not into the body", async () => 
   while (flow && !flow.contains(startField)) flow = flow.parentElement;
   expect(flow?.contains(anOption)).toBe(false);
 });
-
-// Round 1 of review, three findings, all of them costs the portal introduced.
 
 // THE FILTER IS PER VISIT, and a pick does not close the popover the way Radix thinks it does.
 //
@@ -483,14 +453,12 @@ test("the offer carries an accessible name of its own", async () => {
   expect((label ?? "").trim().length).toBeGreaterThan(0);
 });
 
-// AND A PICK IS NOT ONE THING EITHER (round 2 of review).
+// AND A PICK IS NOT ONE THING EITHER.
 //
-// The suppression above belongs to the template, whose `onPick` refocuses the textarea at the caret
-// it wrote. The three single-path fields only write a value, so suppressing the return there
-// unmounts the focused option with nothing to catch the focus, and it falls to the document body —
-// the same defect the round-1 fix was for, moved to the other three sites. The picker cannot tell
-// them apart by watching: the caller's focus move happens a frame later, which is why the
-// suppression exists at all. So the caller declares it, and this is that declaration's fence.
+// The suppression above belongs to the template, whose `onPick` refocuses the editor at the caret.
+// The three single-path fields only write a value, so suppressing the return there drops focus to the
+// document body. The picker cannot tell them apart by watching (the caller's focus move lands a frame
+// later), so the caller declares it, and this is that declaration's fence.
 test("picking a single-path field returns focus to the control that opened it", async () => {
   await openBookForm();
   const idField = controlFor<HTMLInputElement>(

@@ -9,14 +9,11 @@ import {
   waitFor,
 } from "@testing-library/react";
 
-// UNIQUENESS IN THE VAULT IS THE (NAME, KIND) PAIR, AND THE MARK EXPIRES BY THE NAME.
-//
-// A held refusal comes off the control when the box stops holding what the server refused, which is
-// what keeps it from needing an `onChange` line per input. `assertUniqueVaultName` refuses the pair,
-// though, so a duplicate answered for (Alfa, openai) says nothing at all about (Alfa, anthropic) —
-// and switching type while keeping the name leaves "already in use" standing under a name that is
-// free. The read is by value, so nothing about the switch expires it.
-//
+// Uniqueness in the vault is the (name, kind) pair, and the mark expires by the name. A held
+// refusal comes off when the box stops holding what the server refused, but `assertUniqueVaultName`
+// refuses the PAIR: a duplicate for (Alfa, openai) says nothing about (Alfa, anthropic), so switching
+// type while keeping the name must clear "already in use" explicitly.
+
 // NOTE: assertions reduce to a string or a boolean BEFORE expect: a failing expectation holding a
 // DOM node serializes a cyclic happy-dom tree and stalls.
 
@@ -111,9 +108,9 @@ test("switching the type drops a name conflict the new pair never had", async ()
 test.each(["publicKey", "baseUrl"])(
   "a %s refused in .env mode is read out, not marked on a hidden input",
   async (field) => {
-    // Langfuse opens in paste mode: the per-key boxes are replaced by one `.env` textarea, so
-    // `publicKey` — the name `assertNoSurroundingWhitespace` refuses by — has no control on screen.
-    // Declaring it anyway placed the sentence on nothing and told `capture` to keep the toast quiet.
+    // NOTE: Langfuse opens in paste mode: the per-key boxes are replaced by one `.env` textarea, so
+    // `publicKey` (the name `assertNoSurroundingWhitespace` refuses by) has no control on screen, and
+    // declaring it would place the sentence on nothing and keep the toast quiet.
     const reason = `refused: ${field}`;
     refusing({ error: reason, field });
     render(

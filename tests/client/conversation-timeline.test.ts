@@ -7,10 +7,9 @@ import {
   type TrailEntry,
 } from "@/client/pages/conversationTimeline";
 
-// Issue #846: a proactive bubble said "Follow-up" whatever sent it, and the bubble was picked by time
-// (the first outgoing message up to five minutes after the line). The badge now says where the turn
-// came from, and a turn that recorded the message it sent badges exactly that message; a line from
-// before that keeps the time guess.
+// The badge says where a proactive turn came from, and a turn that recorded the message it sent
+// badges exactly that message. A line without that record falls back to the time guess (the first
+// outgoing message up to five minutes after the line).
 
 const T0 = Date.parse("2026-09-24T12:00:00Z");
 
@@ -48,7 +47,7 @@ const markers = (tl: ReturnType<typeof buildTimeline>) =>
 
 describe("which bubble a proactive turn badges", () => {
   test("a recorded event badges the message it sent, not the first outgoing one after it", async () => {
-    const reply = msg(10, T0 + 30_000); // an ordinary reply, inside the old five-minute window
+    const reply = msg(10, T0 + 30_000); // NOTE: an ordinary reply, inside the time guess window
     const sent = msg(11, T0 + 60_000);
     const tl = buildTimeline(
       [reply, sent],
@@ -112,8 +111,8 @@ describe("which bubble a proactive turn badges", () => {
     expect(tl.followUpBadges.get("m-41")?.step).toBe(2);
   });
 
-  // Review round 1: during the deploy a conversation holds both kinds of line, and an older one's
-  // time guess must not take the bubble a newer recorded line names.
+  // NOTE: A conversation can hold both kinds of line, and an older one's time guess must not take the
+  // bubble a newer recorded line names.
   test("an old line's guess cannot take the bubble a recorded line names", async () => {
     const tl = buildTimeline(
       [msg(80, T0 + 60_000), msg(81, T0 + 120_000)],

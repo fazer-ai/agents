@@ -12,16 +12,11 @@ import {
 import { useEffect, useRef } from "react";
 import { MemoryRouter } from "react-router";
 
-// THE REFUSAL THAT REACHES THE INPUT IT NAMES, ON THE FORMS THAT WRITE.
-//
-// #232 built the mechanism and wired one card as the reference. This file holds the sweep's own
-// proof, on the screen the defect was MEASURED on: creating a second MCP connection under a name
-// already taken answers 409 "mcp connection name already in use", and the modal answered "Could not
-// save (check the URL/command)" — the wrong input, named confidently (#329).
-//
-// Both halves are asserted, because the rule is that exactly one channel fires: the sentence lands
-// at the control the server named, and the form's own error line stays empty. A message rendered at
-// the input AND repeated in the banner is the noise that teaches people to stop reading either.
+// The refusal that reaches the input it names, on the forms that write. Driven on the MCP
+// connection modal: a second connection under a taken name answers 409 "mcp connection name already
+// in use", which a fixed "Could not save (check the URL/command)" would pin on the wrong input.
+// Exactly one channel fires: the sentence lands at the control the server named and the form's own
+// error line stays empty; repeating it in the banner teaches people to read neither.
 
 const { McpEditModal } = await import("@/client/pages/resources/McpEditModal");
 const { ToastProvider, useModalController } = await import(
@@ -111,8 +106,7 @@ async function fillAndSave(name: string, url: string) {
 }
 
 // The field the sentence was rendered INTO, by the input that shares its FormField. Asserting only
-// that the text is on screen somewhere passes with the sentence sitting in the banner, which is the
-// state this whole sweep is replacing.
+// that the text is on screen somewhere passes with the sentence sitting in the banner.
 function fieldShowing(text: string): HTMLElement | null {
   for (const node of screen.queryAllByText(text)) {
     // The field is the message's PARENT, not its `closest("label")`: a <FormField> renders the
@@ -139,7 +133,7 @@ test("a name already taken marks the name input, not the URL", async () => {
   expect((fieldShowing(reason) as HTMLInputElement).value).toBe(
     "Servidor Alfa",
   );
-  // The sentence the operator was being sent to the wrong input by.
+  // NOTE: the fixed sentence that names the wrong input.
   expect(
     screen.queryAllByText(/check the URL\/command|URL\/comando/i).length,
   ).toBe(0);
@@ -159,11 +153,10 @@ test("a refusal about no input at all still reaches the operator", async () => {
 });
 
 test("a refusal that lands after the dialog is dismissed is still read out", () => {
-  // The half a mounted check could not answer. `useModalController` keeps this wrapper mounted when
-  // the dialog closes, so the save that was in flight comes back to a live component and a form the
-  // operator has already dismissed — and the error line it would be written to is drawn between the
-  // dialog's title and its buttons. Placing the mark there, or handing the caller a sentence for
-  // that line, are two spellings of the same silence.
+  // NOTE: the half a mounted check cannot answer. `useModalController` keeps this wrapper mounted
+  // when the dialog closes, so the in-flight save comes back to a live component and a dismissed
+  // form; placing the mark there, or handing the caller a sentence for that error line, are two
+  // spellings of the same silence.
   let release: () => void = () => {};
   const held = new Promise<void>((r) => {
     release = r;

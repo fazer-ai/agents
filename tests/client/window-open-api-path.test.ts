@@ -4,15 +4,11 @@ import { join } from "node:path";
 
 // A sweep, not an example, because the defect it guards is one nobody sees while writing the line.
 //
-// `window.open("/api/…")` is a plain browser navigation: it carries cookies and nothing else. Every
-// tenant-scoped route resolves the tenant from the `X-Tenant-Id` header the Eden client and
-// `mediaFetch` add, and a SUPER_ADMIN has no tenant anywhere else — so for them the new tab lands on
-// "a target tenant is required" instead of the file. It looks right in every developer's own browser,
-// because a TENANT_ADMIN's tenant comes off the session.
-//
-// The fix is always the same: fetch through `mediaFetch` and open the blob URL. The rule is stated
-// here as a sweep so the next byte endpoint gets it for free — a per-page test would only ever cover
-// the page that already had the bug.
+// `window.open("/api/…")` is a plain navigation carrying cookies only, while tenant-scoped routes read
+// the tenant from the `X-Tenant-Id` header that the Eden client and `mediaFetch` add. A SUPER_ADMIN has
+// no tenant anywhere else, so their tab lands on "a target tenant is required"; a TENANT_ADMIN's comes
+// off the session, so it looks right in a developer's browser. Fetch through `mediaFetch` and open
+// the blob URL instead; as a sweep, the next byte endpoint is covered too.
 
 const ROOT = new URL("../../src/client", import.meta.url).pathname;
 
@@ -31,8 +27,8 @@ describe("no client code opens a same-origin API path in a new tab", () => {
     const offenders: string[] = [];
     for (const file of await sourceFiles(ROOT)) {
       const src = await Bun.file(file).text();
-      // The argument as written: a string or template literal starting with /api/. An expression
-      // (a variable, a blob URL) is out of reach here and is exactly what the fix produces.
+      // NOTE: the argument as written: a string or template literal starting with /api/. An expression
+      // (a variable, a blob URL) is out of reach here and is exactly what the `mediaFetch` pattern produces.
       for (const m of src.matchAll(/window\.open\(\s*[`"']\/api\//g)) {
         const line = src.slice(0, m.index).split("\n").length;
         offenders.push(`${file.slice(ROOT.length + 1)}:${line}`);

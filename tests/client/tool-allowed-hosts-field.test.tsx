@@ -5,11 +5,10 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { useEffect, useRef } from "react";
 import { MemoryRouter } from "react-router";
 
-// THE ALLOWLIST IS WRITABLE FROM THE CONSOLE (review round 1 of #615). The runtime has always
-// enforced `allowedHosts`, and the modal carried the field in its form state and payload without a
-// control to type into, so every console-made tool saved `[]`. Since #615 the list is also the
-// per-tool half of reaching an internal service, which made the missing field the difference between
-// the feature existing and not. Asserted on what the SAVE sends, not on the field being drawn.
+// THE ALLOWLIST IS WRITABLE FROM THE CONSOLE. The runtime enforces `allowedHosts`, and the list is
+// the per-tool half of reaching an internal service, so a modal that carries it in its payload with no
+// control to type into saves `[]` for every console-made tool. Asserted on what the SAVE sends, not
+// on the field being drawn.
 
 const { ToolEditModal } = await import(
   "@/client/pages/resources/ToolEditModal"
@@ -61,11 +60,10 @@ function Harness() {
   );
 }
 
-// By the field's own CAPTION — the first span inside its label — never by the label's whole
-// textContent. A label carries its hint, its error message and (for a select) every option, so a
-// substring search matches fields it was not aiming at: a fixture URL of `/v1/appointments` made
-// the URL field answer for the appointment section, and the section's caption answered for
-// "start time".
+// By the field's own CAPTION (the first span inside its label), never by the label's whole
+// textContent: a label carries its hint, its error and (for a select) every option, so a substring
+// search matches fields it was not aiming at (a fixture URL of `/v1/appointments` answers for the
+// appointment section).
 function captionOf(label: Element): string {
   return (label.textContent ?? "").trim();
 }

@@ -1,17 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { codeOnly, withoutComments } from "@/tests/utils/source-text";
 
-// A COUNTER HAS TO HAVE A SINGULAR, and the console had thirteen that did not: `audit.fields` read
-// "1 campos" for a row that changed one field, and "1 fields" in English (issue #509).
-//
-// The cause is worth knowing before reading the rules below, because it is what makes the class
-// refill itself. `i18next-parser` writes the SAME `defaultValue` into every plural category it
-// generates, in every locale — so pluralizing a key produces a wrong singular, and a pt-BR catalog
-// full of English, until somebody edits the file by hand. Measured while fixing #509: extracting
-// after the call sites moved to `count` replaced fourteen pt-BR translations with their English
-// defaults in one run. Nothing fails when that is left as it lands; it just renders.
-//
-// Hence a sweep rather than a note. It reads the catalogs, which is where the answer lives.
+// A counter has to have a singular: "1 campos" / "1 fields" for one changed field is wrong. The class
+// refills itself: `i18next-parser` writes the SAME `defaultValue` into every plural category it
+// generates, in every locale, so pluralizing a key produces a wrong singular and English in the
+// pt-BR catalog until someone edits the file by hand, and nothing fails. Hence a sweep over the
+// catalogs, where the answer lives.
 const LOCALES = {
   en: ["one", "other"],
   // CLDR gives Portuguese a `many` category as well, and the parser generates it, so a set missing
@@ -34,31 +28,24 @@ const IDENTICAL_ON_PURPOSE: Record<string, string> = {
 
 // Keys that interpolate `{{count}}` and are still FLAT. Each one would be a call site the extractor
 // cannot read a literal `count` from, so plural forms added by hand would be deleted by the next
-// `bun run i18n:extract` (`keepRemoved: false`) — the fix for one of these is always at the call
-// site, never in the catalog. Empty since #513 closed the last four; keep it that way.
+// `bun run i18n:extract` (`keepRemoved: false`): the fix is always at the call site, never in the
+// catalog. Empty; keep it that way.
 const KNOWN_FLAT = new Set<string>([]);
 
-// THE PARENTHETICAL DODGE: "1 window(s)", "1 janela(s)". Grammatical for both numbers, which is why
-// it survives review, and machine-sounding for both, which is why it is not a translation. It is the
-// same defect as a missing singular seen from the catalog side rather than the call-site side, and
-// it catches what the `{{count}}` sweep above structurally cannot: a counted string that names its
-// variable something else (`{{n}}`) never says a number is being counted, so nothing above looks at
-// it. Both of #513's `{{n}}` keys were invisible here until they were renamed to `count`.
-// The lookbehind is what keeps this from being a per-key decision: `http(s)` is a real spelling of
-// two schemes and never a plural, in any string, in either edition. Waiving it by key instead made
-// this sweep edition-DEPENDENT — `branding.siteUrlHint` exists in the master catalog and not yet in
-// the Free one, so the waiver dangled there and failed a tree that had nothing wrong with it.
+// The parenthetical dodge: "1 window(s)", "1 janela(s)". Grammatical for both numbers and
+// machine-sounding for both; the same defect as a missing singular, seen from the catalog. It also
+// catches a counted string whose variable is not `count` (`{{n}}`), which the sweep above cannot.
+// The lookbehind keeps `http(s)` (two schemes, never a plural) out without a per-key waiver, which
+// would make the sweep edition-DEPENDENT: a key absent from the Free catalog would dangle there.
 const PARENTHETICAL_PLURAL =
   /(?<=\w)(?<!\bhttp)\((s|es|is|as|os|ns|ões|ãos)\)/i;
 
 // Strings where the parentheses are a decision rather than a dodge, with the reason. Only strings
 // the regex above cannot rule out on its own belong here.
 const DODGE_WAIVED: Record<string, string> = {
-  // Two INDEPENDENT counts in one sentence ("{{created}} nova(s), {{updated}} atualizada(s)"), and
-  // i18next pluralizes a key on exactly one `count`. So this one cannot be fixed the way the four in
-  // #513 were: it has to become two keys, which is a change to the sentence rather than to the
-  // catalog. English carries no defect here at all, because its adjectives do not inflect. Written
-  // up in `docs/roadmap.md`; deliberately not in the queue yet.
+  // NOTE: two INDEPENDENT counts in one sentence, and i18next pluralizes a key on exactly one
+  // `count`, so the fix is two keys (a change to the sentence, not the catalog). English carries no
+  // defect here, since its adjectives do not inflect. Written up in `docs/roadmap.md`.
   "channels.synced": "two independent counts in one key; needs splitting",
 };
 
@@ -70,14 +57,11 @@ function stripPlural(key: string): string {
   return PLURAL_SUFFIX.exec(key)?.[1] ?? key;
 }
 
-// The remainder of the `t(...)` call that starts at `from` — which is just past the key literal, so
-// we are already one paren deep. Balanced rather than a fixed window: a 400-character window
-// swallowed neighbouring code that happens to mention `count` and waved the mutation through.
-//
-// The text handed in is `codeOnly`, so string bodies are already blank, and neither the parens in a
-// default like "(more matched the filters)" nor the `{{count}}` in the call's own default value can
-// be read as code. That second one is the whole trap: the default stays right while the options go
-// wrong, which is exactly the edit this test exists to refuse.
+// The remainder of the `t(...)` call that starts at `from`, just past the key literal, so already one
+// paren deep. Balanced rather than a fixed window, which would swallow neighbouring code that
+// mentions `count`. The text is `codeOnly`, so string bodies are blank: neither parens in a default
+// nor the `{{count}}` in the call's own default can be read as code (the default can stay right
+// while the options go wrong).
 function restOfCall(code: string, from: number): string {
   let depth = 1;
   let i = from;
@@ -115,13 +99,10 @@ async function catalog(locale: string): Promise<Record<string, string>> {
   return flatten(JSON.parse(await Bun.file(file).text()) as Catalog);
 }
 
-// A waiver is a standing exemption, so it has to keep earning its place: it must still name a string
-// that actually dodges. The check is CROSS-CATALOG on purpose, and the per-locale version of it was
-// a hole. `channels.synced` dodges only in pt-BR, so asserting per locale forces a tolerance, and the
-// tolerance that fits ("the key still exists") passes for a waiver whose string was FIXED — leaving
-// a standing exemption over a name that no longer dodges anywhere, ready to wave through the next
-// parenthetical plural to land under it. Asking the question once, over every catalog, needs no
-// tolerance: one hit anywhere is enough, and zero hits everywhere means the waiver is spent.
+// A waiver is a standing exemption, so it must still name a string that actually dodges. The check
+// is CROSS-CATALOG on purpose: `channels.synced` dodges only in pt-BR, so a per-locale check needs a
+// tolerance, and the one that fits ("the key still exists") would keep a waiver whose string was
+// FIXED. Over every catalog, one hit anywhere is enough and zero everywhere means the waiver is spent.
 test("every declared dodge waiver still names a string that dodges somewhere", async () => {
   const all = await Promise.all(Object.keys(LOCALES).map(catalog));
   const spent = Object.keys(DODGE_WAIVED).filter(
@@ -149,13 +130,10 @@ describe.each(Object.entries(LOCALES))(
       expect(flatCounters).toEqual([]);
     });
 
-    // A BASE CANNOT BE BOTH FLAT AND PLURALIZED. `i18next-parser` writes whatever it sees, so while
-    // ONE call site of a key still passes `{ n: … }` the catalogs carry the flat key next to the
-    // plural set — and the flat one is dead weight the next extract deletes, which turns the
-    // generated-file check in CI red on a tree that looked finished. Review found exactly that here:
-    // `editor.tools.mcpSelected` kept its flat entry in both catalogs because a third call site had
-    // been missed, and the rule above could not see it, since the leftover interpolates `{{n}}`
-    // rather than `{{count}}`.
+    // NOTE: a base cannot be both flat and pluralized. While ONE call site of a key still passes
+    // `{ n: … }`, `i18next-parser` keeps the flat key next to the plural set, and the next extract
+    // deletes it, turning CI's generated-file check red. The rule above cannot see it, since the
+    // leftover interpolates `{{n}}` rather than `{{count}}`.
     test("no base is both flat and pluralized", async () => {
       const entries = await catalog(locale);
       const pluralized = new Set(
@@ -197,10 +175,9 @@ describe.each(Object.entries(LOCALES))(
       expect(same).toEqual([]);
     });
 
-    // THE CATALOG BEING RIGHT IS HALF OF IT. i18next picks the plural category from `count` and from
-    // nothing else, so a call site that still passes `{ n: … }` to a pluralized key renders the
-    // `_other` form for every number — "1 campos" again, with both catalogs perfect. Nothing above can
-    // see that, because nothing above reads the code. This does.
+    // NOTE: the catalog being right is half of it. i18next picks the plural category from `count`
+    // and from nothing else, so a call site still passing `{ n: … }` to a pluralized key renders
+    // `_other` for every number, with both catalogs perfect. This reads the code.
     test("every pluralized key is called with a count", async () => {
       const entries = await catalog(locale);
       const bases = [
@@ -217,11 +194,10 @@ describe.each(Object.entries(LOCALES))(
         ...new Bun.Glob("src/client/**/*.{ts,tsx}").scanSync("."),
         "src/modules/agents/config-health-message.ts",
       ];
-      // TWO LENSES OVER THE SAME BYTES, and this globs `src/`, so it reads through
-      // `tests/utils/source-text` as every sweep in this repo must. `withoutComments` keeps the
-      // string literals, which is where the KEY lives; `codeOnly` blanks them, which is where the
-      // `count` must NOT be found. Both blank in place rather than deleting, so one offset addresses
-      // both.
+      // NOTE: two lenses over the same bytes, read through `tests/utils/source-text` as every sweep
+      // over `src/` must. `withoutComments` keeps the string literals (where the KEY lives);
+      // `codeOnly` blanks them (where `count` must NOT be found). Both blank in place, so one offset
+      // addresses both.
       const raw = await Promise.all(files.map((f) => Bun.file(f).text()));
       const located = raw.map(withoutComments);
       const codes = raw.map(codeOnly);
@@ -237,10 +213,8 @@ describe.each(Object.entries(LOCALES))(
             at = text.indexOf(needle, at + 1)
           ) {
             anyCall = true;
-            // EVERY OCCURRENCE, never "the key is fine because one call was fixed". Review found
-            // that exact hole: `editor.tools.mcpSelected` is called from three places in
-            // `ToolGrantsEditor`, two of them moved to `count` and the third left on `n` — so a
-            // single enabled integration tool still read "1 selecionadas" while this test was green.
+            // NOTE: EVERY OCCURRENCE, never "the key is fine because one call was fixed": a key
+            // called from three places with one left on `n` still renders "1 selecionadas".
             if (!/\bcount\b/.test(restOfCall(code, at + needle.length))) {
               const line = text.slice(0, at).split("\n").length;
               missing.push(`${files[file]}:${line} ${base}`);
@@ -254,13 +228,10 @@ describe.each(Object.entries(LOCALES))(
       expect(missing).toEqual([]);
     });
 
-    // Portuguese resolves a `many` category (CLDR gives it to counts in the millions) and the noun
-    // takes the SAME form there as in `other` — so the two differing is not a translation choice, it
-    // is a form somebody never translated. That is exactly how the parser leaves a catalog: it seeds
-    // every category with the English default, and whoever fixes the file by hand fixes the forms they
-    // can see rendered. Measured on this branch: `knowledge.documentsTitleWithCount_many` still read
-    // "Documents in {{name}} ({{count}})" next to a translated `_other`, and `knowledge.docCountPlural_many`
-    // read "{{count}} documents" next to "{{count}} documentos" (issue #509).
+    // NOTE: Portuguese resolves a `many` category (counts in the millions) and the noun takes the
+    // SAME form there as in `other`, so the two differing is a form somebody never translated. The
+    // parser seeds every category with the English default, and a hand fix covers only the forms
+    // that are seen rendered.
     test.if(locale === "pt-BR")(
       "many and other carry the same form",
       async () => {
@@ -275,19 +246,11 @@ describe.each(Object.entries(LOCALES))(
       },
     );
 
-    // ZERO IS PLURAL IN BRAZILIAN PORTUGUESE, and CLDR disagrees: its rule for `pt` is `one: i = 0..1`,
-    // so i18next resolves a count of 0 to the SINGULAR form and the console read "0 campo". That is
-    // the same defect as "1 campos" seen from the other end, and it is the one this fix introduced
-    // while removing the first (measured on /audit: "0 campo" appeared the moment `audit.fields` was
-    // pluralized).
-    //
-    // i18next answers it without touching the CLDR rules: for a count of exactly 0 it looks for
-    // `<key>_zero` before asking the resolver. `i18next-parser` does not generate that form for pt —
-    // there is no `zero` category to generate — but it does PRESERVE it, which is what makes this
-    // usable rather than a value the next `bun run i18n:extract` deletes.
-    //
-    // The rule is therefore: wherever the singular and the plural differ, zero takes the plural.
-    // Sets whose forms are identical on purpose need nothing, because there is no wrong answer to give.
+    // NOTE: zero is plural in Brazilian Portuguese, and CLDR disagrees: its `pt` rule is
+    // `one: i = 0..1`, so i18next would render "0 campo". For a count of exactly 0 i18next looks for
+    // `<key>_zero` first; `i18next-parser` does not generate it for pt but PRESERVES it, so the next
+    // extract keeps it. Wherever the singular and plural differ, zero takes the plural; sets
+    // identical on purpose need nothing.
     test.if(locale === "pt-BR")("zero takes the plural form", async () => {
       const entries = await catalog(locale);
       const wrong: string[] = [];

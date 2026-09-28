@@ -10,17 +10,11 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 
-// THE GUARD, WHERE IT ACTUALLY LIVES.
-//
-// `company-save-session.test.tsx` proves the card reports which OPENING a save belongs to, and it
-// proves that a parent which checks that number keeps the right modal open. Neither proves THIS
-// panel checks it: the first asserts the card's half, and the second asserts a harness written in
-// the test file. Removing the guard from `DocumentsPanel` left the whole suite green.
-//
-// So this drives the real panel. The letterhead is a modal, which means the card is UNMOUNTED while
-// it is closed and a new one is mounted on reopen — the stale card's request is still out, holding a
-// callback closed over the previous generation. Reading that generation off a ref is what lets the
-// stale closure see the current value; reading it off state would hand it the frozen one.
+// The guard, where it actually lives. `company-save-session.test.tsx` proves the card reports which
+// opening a save belongs to, against a harness parent; this drives the real `DocumentsPanel`. The
+// letterhead is a modal, so the card UNMOUNTS on close and a new one mounts on reopen while the
+// stale card's request is still out. The generation is read off a ref so the stale closure sees the
+// current value; state would hand it the frozen one.
 
 (globalThis as { happyDOM?: { setURL(u: string): void } }).happyDOM?.setURL(
   "http://localhost/recursos/documentos",
@@ -78,9 +72,8 @@ afterAll(() => {
   globalThis.fetch = realFetch;
 });
 
-// By its TITLE, so the discard confirm cannot be mistaken for it. Measured rather than guessed: the
-// first version matched on "timbre", which is the word in the CONFIRM dialog's message and not in
-// this modal at all, so it reported the wrong dialog as the letterhead.
+// By its TITLE, so the discard confirm cannot be mistaken for it: the word "timbre" appears in the
+// CONFIRM dialog's message and not in this modal.
 function letterheadOpen(): boolean {
   return screen
     .queryAllByRole("dialog")
@@ -119,8 +112,8 @@ test("a letterhead save from a previous opening does not close the reopened edit
     expect(puts).toBe(1);
   });
 
-  // Closed while the request is out. The form still holds unsaved text, so this goes through the
-  // discard confirm — which is the path the operator actually takes.
+  // NOTE: closed while the request is out. The form still holds unsaved text, so this goes through
+  // the discard confirm, the path the operator actually takes.
   fireEvent.keyDown(document.body, { key: "Escape" });
   // The confirm appears; the letterhead is already hidden behind it, so it is the Discard button
   // that says the dismissal reached the guard, not a dialog count.

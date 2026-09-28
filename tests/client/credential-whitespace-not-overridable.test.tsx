@@ -10,12 +10,10 @@ import {
 } from "@testing-library/react";
 
 // A failed connection test relabels Save to "Save anyway", because a probe can fail for reasons the
-// operator is entitled to overrule: a provider that is down, an endpoint we cannot reach from here.
-//
-// `surrounding_whitespace` is not one of them. It is the WRITE's verdict, reported early by the
-// probe, and `createVaultEntry`/`updateVaultEntry` refuse it every time — so "Save anyway" advertises
-// an action that cannot succeed, on the one failure the operator cannot see for themselves (#338).
-//
+// operator may overrule (a provider down, an endpoint unreachable from here). `surrounding_whitespace`
+// is not one: it is the WRITE's verdict reported early, and `createVaultEntry`/`updateVaultEntry`
+// refuse it every time, so "Save anyway" would advertise an action that cannot succeed.
+
 // NOTE: `globalThis.fetch` is swapped rather than `mock.module`, whose restore is global to the
 // process and tears down other files' mocks. Assertions reduce to a string or a boolean BEFORE
 // expect: a failing expectation holding a DOM node serializes a cyclic happy-dom tree and stalls.

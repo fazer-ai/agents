@@ -4,29 +4,13 @@ import { join } from "node:path";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 import { codeSkeleton } from "@/tests/utils/source-text";
 
-// THE GUARD AGAINST THE NEXT HANDLER THAT ASKS THE SERVER AND THEN INVENTS ITS OWN SENTENCE.
-//
-// The API answers a refusal with a sentence already localized for the request's Accept-Language, and
-// since #231 with the field it is about. A handler that catches that and shows "could not save"
-// throws away the only part the operator can act on — and a fixed sentence that sounds SPECIFIC is
-// worse than one that does not: `hours.saveError` said "Could not save (check the timezone)" for
-// every refusal the business-hours write can answer, duplicate name included.
-//
-// Measured before this sweep: 112 error toasts, 10 of them reading the server's sentence.
-//
-// What counts as an offender is a rule and not a list, because the two legitimate reasons to show a
-// fixed sentence are both derivable from the source:
-//
-//   - the toast fires BEFORE the handler has talked to the server, so it is a client-side check
-//     (an empty name, an unparseable file) and there is no server sentence in existence yet;
-//   - the toast is in a bare `catch {}` that no `throw` of the request's error can reach. Measured:
-//     Eden does NOT reject on a transport failure, it resolves with `{ status: 503, value: { message,
-//     line, column, sourceURL } }` — a `value` with no `error` key. So such a catch sees only a fault
-//     in our own handler, and there is nothing of the server's to show.
-//
-// Everything else is an offender, including the shape that reads as if it were the second case and is
-// not: `catch {}` sitting under `if (err || !data) throw err`, which receives the Eden error object
-// and discards it at the binding.
+// The guard against a handler that asks the server and then invents its own sentence. The API
+// answers a refusal with a localized sentence naming the field; a fixed "could not save" throws
+// away the part the operator can act on, and one that sounds SPECIFIC ("check the timezone") is
+// worse. A fixed sentence is legitimate only when the toast fires BEFORE the handler talked to the
+// server (a client-side check), or sits in a bare `catch {}` no `throw` of the request's error
+// reaches (Eden resolves a transport failure with a `value` that has no `error` key). `catch {}`
+// under `if (err || !data) throw err` is NOT that case: it receives the Eden error and drops it.
 
 const ROOT = "src/client";
 
@@ -60,11 +44,9 @@ function callArgs(src: string, openParen: number): string {
 
 // Every `{` still open at `at`, innermost last. Brace-matched rather than indentation-matched: this
 // tree formats at two spaces and at four, and a JSX handler nests.
-//
-// The CHAIN and not just the innermost, and the positive control below is what forced that: a toast
-// inside `if (error || !data) { … }` sits in a block that contains no `await` at all, so an innermost
-// reading answers "this handler never talked to the server" about the single commonest shape there
-// is. The question is about the HANDLER, so it has to be asked of the handler.
+// The CHAIN, not just the innermost: a toast inside `if (error || !data) { … }` sits in a block
+// with no `await`, so an innermost reading would call the commonest shape a preflight. The question
+// is about the HANDLER.
 export function openBlocks(code: string, at: number): number[] {
   const opens: number[] = [];
   for (let i = 0; i < at; i++) {
@@ -74,23 +56,15 @@ export function openBlocks(code: string, at: number): number[] {
   return opens;
 }
 
-// Anything whose head ends in a parameter list: a declaration, a method, an arrow. The annotation
-// between the `)` and the `{` is why this cannot exclude parens — `function ensureSavedForConnect():
-// Promise<string | null> {` was read as "no function here", the search fell back to the whole
-// component body, and two client-side preflights were accused because something ELSE in the
-// component awaited.
+// Anything whose head ends in a parameter list: a declaration, a method, an arrow. The return
+// annotation between `)` and `{` is why this cannot exclude parens (`function f(): Promise<string |
+// null> {`); excluding them falls back to the whole component and accuses its preflights.
 const FUNCTION_HEAD = /\)\s*(?::[^={}]*)?(?:=>)?\s*\{$/;
 // The keyword that opens the block starting at `brace`, or "" when its head is not `<word>(…) {`.
-//
-// `\w+(args) {` is also how every control statement reads, and treating `if (error || !data) {` as
-// the handler is what the first positive control caught: the search for the request stopped one brace
-// too early and answered "this handler never talked to the server" about the commonest shape there
-// is.
-//
-// Matched by PARENS and not by a regex over the head, because `[^()]*` cannot cross a nested call:
-// `if (error && isKnown(error)) {` failed the control test while `FUNCTION_HEAD` matched its trailing
-// `) {`, so the `if` was taken for the handler, the request above it fell outside, and the scan
-// answered "no offender". Blindness, which is the direction that passes silently.
+// `\w+(args) {` is also how every control statement reads, and `if (error || !data) {` taken for the
+// handler would stop the search one brace too early. Matched by PARENS, not a regex over the head:
+// `[^()]*` cannot cross a nested call (`if (error && isKnown(error)) {`), and taking that `if` for
+// the handler leaves the request outside, answering "no offender" silently.
 export function headKeyword(code: string, brace: number): string {
   let i = brace - 1;
   while (i >= 0 && /\s/.test(code[i] as string)) i--;
@@ -154,10 +128,9 @@ function catchSeesTheError(code: string, blockStart: number): boolean {
   const bound = /catch\s*\(\s*\w+\s*\)\s*\{$/.test(head);
   if (bound) return true;
   if (!/catch\s*\{$/.test(head)) return false;
-  // The `try` this catch belongs to, brace-matched. A fixed window backwards instead accepted a
-  // `throw err` from ANOTHER function entirely: a local `JSON.parse` catch two functions below a
-  // request handler was read as receiving a server error, and the tree scan then demanded a fix for a
-  // refusal that does not exist.
+  // NOTE: the `try` this catch belongs to, brace-matched. A fixed window backwards would accept a
+  // `throw err` from ANOTHER function (a local `JSON.parse` catch below a request handler) and
+  // demand a fix for a refusal that does not exist.
   const tryEnd = code.lastIndexOf("}", blockStart);
   if (tryEnd < 0) return false;
   let depth = 0;
@@ -193,20 +166,10 @@ function awaitedExpression(body: string, afterKeyword: number): string {
   return body.slice(afterKeyword, i);
 }
 
-// Has this handler awaited a request, up to here?
-//
-// Asked of each awaited EXPRESSION, not of the text `await api.`, because the call is routinely not
-// the first thing after the keyword. Two shapes in this tree, and reading the literal text missed
-// both:
-//
-//   - the endpoint named first — `KnowledgeApprovals.act` writes `const endpoint =
-//     api.api.v1.knowledge.approvals({ id })` and awaits `endpoint.approve.post()`. The fence passed
-//     while that handler discarded its `err` in a fixed "Action failed.";
-//   - four requests at once — `DocumentsPanel.load` awaits `Promise.all([api…, api…, api…, api…])`,
-//     and ten files in `src/client` load a screen that way.
-//
-// It is the same shape as every other bug this predicate has had: a rule stated over the TEXT rather
-// than over what the text means.
+// Has this handler awaited a request, up to here? Asked of each awaited EXPRESSION, not of the text
+// `await api.`, because the call is routinely not the first thing after the keyword: an endpoint
+// named first (`const endpoint = api…; await endpoint.approve.post()`), or several requests at
+// once (`await Promise.all([api…, api…])`). A rule over the TEXT rather than its meaning misses both.
 export function talkedToTheServer(body: string): boolean {
   const aliases = [...body.matchAll(/(?:const|let)\s+(\w+)\s*=\s*api\./g)].map(
     (m) => m[1] as string,
@@ -223,12 +186,8 @@ export function talkedToTheServer(body: string): boolean {
 // The handler's own name, when it has one: `function load() {`, `const save = async () => {`,
 // `const failed = useCallback(\n  (reason) => {`. Anonymous callbacks answer null, and the delegation
 // question is simply not asked of them.
-//
-// Walked back as TOKENS, not matched on the line the block opens. A one-line regex read the
-// production shape as anonymous, because biome wraps `useCallback(` the moment its argument grows a
-// parameter — which is exactly what the fix for `DocumentsPanel` made it do. The conservative
-// direction of that miss is the dangerous one: the fence went quiet about the site it had just been
-// taught to see, and reverting the fix produced no offender at all. Found by review.
+// Walked back as TOKENS, not matched on the line the block opens: biome wraps `useCallback(` once
+// its argument has a parameter, and a one-line regex would read that as anonymous and go quiet.
 function handlerName(code: string, start: number): string | null {
   let i = start - 1;
   let seen: string | null = null;
@@ -283,17 +242,11 @@ function handlerName(code: string, start: number): string | null {
   return null;
 }
 
-// Is this handler CALLED from a place that had already asked the server?
-//
-// A handler that never awaits anything is normally a client-side check, and that is what the rule
-// above assumes. It stops being true the moment the toast is delegated: `DocumentsPanel` writes
-// `const failed = useCallback(…)` holding the sentence, and `load` calls it from inside
-// `if (list.error || settings.error)` — the refusal is right there at the call site, and the helper,
-// asked on its own, looks like a preflight. Found by review; the fence claimed an invariant it was
-// not enforcing, which is the only kind of hole in a fence that matters.
-//
-// The call site is asked the SAME question, so a helper called from another preflight stays a
-// preflight. On this tree exactly one toast changes hands, and it is the one above.
+// Is this handler CALLED from a place that had already asked the server? A handler that awaits
+// nothing is normally a client-side check, unless the toast is delegated: `DocumentsPanel` holds the
+// sentence in `const failed = useCallback(…)` and `load` calls it inside `if (list.error ||
+// settings.error)`, so the refusal is at the call site. The call site is asked the SAME question,
+// so a helper called from another preflight stays a preflight.
 function calledAfterARequest(code: string, start: number): boolean {
   const name = handlerName(code, start);
   if (!name) return false;
@@ -340,18 +293,12 @@ function entersOnItsOwn(condition: string, name: string): boolean {
   return condition.trim() === name;
 }
 
-// Is `name` provably falsy where this toast is raised?
-//
-// `apiErrorMessage(err)` reads as compliance, and the fence took it as such — from the ARGUMENT TEXT,
-// which says nothing about whether the argument can still hold anything. This sweep put one of those
-// in by hand: `WebhooksPage.runTest` guards with `if (err || !result) { … return; }` and then reads
-// `err` again in the branch below, where the guard has proved it null. The toast looked swept and
-// showed the fixed sentence for every refusal, which is the defect this issue is about wearing the
-// costume of the fix for it. Found by review.
-//
-// The discriminator is whether the guard's block CLOSED before the toast: a toast inside
-// `if (err || !data) { … }` is exactly where the binding is live, and it is also the commonest shape
-// in this tree, so getting that backwards would accuse every correct site at once.
+// Is `name` provably falsy where this toast is raised? `apiErrorMessage(err)` reads as compliance
+// from its ARGUMENT TEXT, but after `if (err || !result) { … return; }` the binding is null and the
+// toast always shows the fixed sentence (`WebhooksPage.runTest` has that shape, waived below).
+// The discriminator is whether the guard's block CLOSED before the toast: inside `if (err || !data)
+// { … }` the binding is live, and it is the commonest shape, so getting it backwards accuses every
+// correct site at once.
 function bindingIsDead(body: string, name: string): boolean {
   for (const m of body.matchAll(
     new RegExp(`\\bif\\s*\\(\\s*${name}\\b`, "g"),
@@ -367,17 +314,16 @@ function bindingIsDead(body: string, name: string): boolean {
       }
     }
     if (close < 0) continue;
-    // The guard has to DOMINATE the toast: nested under another condition
+    // NOTE: the guard has to DOMINATE the toast: nested under another condition
     // (`if (skip) { if (err) return; }`) it proves nothing about the path that skipped it. Every block
-    // open at the guard must still be open at the toast — `body` ends there, so that is the whole
-    // test. Second rule in a row pointing outward, and the direction that refuses correct code.
+    // open at the guard must still be open at the toast; `body` ends there, so that is the whole
+    // test. Getting this wrong refuses correct code.
     const atGuard = openBlocks(body, m.index);
     const atToast = openBlocks(body, body.length);
     if (!atGuard.every((b, k) => atToast[k] === b)) continue;
-    // Leaving proves the binding falsy only when the binding ALONE would have entered: `if (err)` and
-    // `if (err || !data)` do, `if (err && err.status === 409)` does not — its exit is compatible with
-    // a truthy `err`, and the read below it is real. One such guard on this tree
-    // (`AgentEditorPage.handleConflict`), so this is a rule about correctness, not a count.
+    // NOTE: leaving proves the binding falsy only when the binding ALONE would have entered: `if (err)` and
+    // `if (err || !data)` do, `if (err && err.status === 409)` does not (its exit is compatible with
+    // a truthy `err`, and the read below it is real; `AgentEditorPage.handleConflict` has that shape).
     if (!entersOnItsOwn(body.slice(paren + 1, close), name)) continue;
     let i = close + 1;
     while (i < body.length && /\s/.test(body[i] as string)) i++;
@@ -419,37 +365,20 @@ function bindingIsDead(body: string, name: string): boolean {
   return false;
 }
 
-// THE TWO CHANNELS a refusal reaches the operator through on this tree, as one trigger.
-//
-// #233 swept `showToast(…, "error")` and the fence written with it keyed on that call, so a form that
-// renders the refusal INSIDE itself — an error line in the modal, a banner over the fields — was
-// invisible to this file by construction. That is where the worst measured case lived: creating a
-// second MCP connection under a name already taken answers 409 "mcp connection name already in use"
-// and the modal says "Could not save — check the URL/command", sending the operator to the wrong
-// input entirely (#329).
-//
-// The setter is recognised by NAME because that is where a React state channel declares what it
-// holds: `set` + an optional CamelCase middle + `Err`, and then the call. `settingsTextError(` is not
-// a setter and does not match — the character after `set` has to be uppercase, or `Err` itself. Nor
-// does `setUsageErrorStatus(`, and the trailing paren is what excludes it: a name that CONTINUES past
-// the error holds something else about it, and that one holds an HTTP status.
+// The two channels a refusal reaches the operator through, as one trigger: `showToast(…, "error")`
+// and an error setter that renders the refusal INSIDE the form (an error line in a modal, a banner).
+// Keying on the toast alone would miss e.g. a 409 "name already in use" shown as "check the
+// URL/command". The setter is recognised by NAME: `set` + optional CamelCase middle + `Err`, then
+// the call. `settingsTextError(` does not match (uppercase after `set`), nor `setUsageErrorStatus(`
+// (the trailing paren excludes a name that continues past the error, here an HTTP status).
 const ERROR_CHANNEL = /showToast\(|\bset(?:[A-Z]\w*)?Err(?:or)?\(/g;
 
-// A trigger that is actually SHOWING a sentence.
-//
-// A toast declares its level in the second argument, and the trailing comma is not optional to allow
-// for: biome writes one on every multi-line call, and requiring the quote to be last silently skipped
-// every toast the formatter had wrapped — which is most of the long ones, and they are the ones with
-// a sentence worth replacing.
-//
-// An error setter declares its level in its name, so every call qualifies but two shapes.
-//
-// The same setter is how a form CLEARS the box, and `setError("")` at the top of a submit shows
-// nothing. And a BOOLEAN error state is not a sentence at all: measured on this tree, all 34 of them
-// drive a "could not load this page" boundary after a failed READ, where there is no input to attach
-// anything to and the operator's only move is to retry. A refusal reduced to a flag by a WRITE would
-// be a real gap, and it is a different question from this one — asked and answered by the form fence
-// in tests/client/field-refusal-forms.test.ts, which requires every write to hold its refusal.
+// A trigger that is actually SHOWING a sentence. A toast declares its level in the second argument,
+// and the trailing comma is allowed for: biome writes one on every multi-line call, and those are
+// the long toasts with a sentence worth replacing. An error setter declares its level in its name,
+// so every call qualifies but two shapes: `setError("")` clears, and a BOOLEAN error state drives a
+// "could not load" boundary after a failed READ, with nothing to attach. A WRITE reduced to a flag
+// is a different question, asked by tests/client/field-refusal-forms.test.tsx.
 function showsASentence(trigger: string, args: string): boolean {
   if (trigger.startsWith("showToast")) {
     return /["']error["'],?$/.test(args.trim());
@@ -459,14 +388,9 @@ function showsASentence(trigger: string, args: string): boolean {
   );
 }
 
-// The names in one scope that end up carrying the server's sentence — directly, or through another
-// name that does.
-//
-// A chain and not one hop, because the shape a form reaches for is two: `const held = (e) =>
-// refusal.capture(…)` and then `const toast = held(err)`, with the toast showing `toast`. Following
-// only the first hop calls that an offender while it is the rule's own implementation. The loop runs
-// to a fixed point rather than a fixed depth: the number of hops is the form's business, not this
-// scanner's.
+// The names in one scope that end up carrying the server's sentence, directly or through another
+// name that does. A chain, not one hop: a form writes `const held = (e) => refusal.capture(…)` then
+// `const toast = held(err)`. Runs to a fixed point, since the number of hops is the form's business.
 function readingNames(scope: string): Set<string> {
   const names = new Set<string>();
   for (;;) {
@@ -487,9 +411,7 @@ function readingNames(scope: string): Set<string> {
 }
 
 // Every error toast in one file, each with the verdict the rules above reach about it. One walker
-// rather than two: the filter chain was copied once, and a rule added to one copy and not the other
-// is how a fence starts claiming an invariant it does not hold — which is the defect this whole file
-// is a guard against.
+// rather than two copies of the filter chain, so a rule cannot be added to one and not the other.
 type Verdict =
   // the sentence is already read, or computed by name from a read
   | "reads"
@@ -527,18 +449,11 @@ function verdicts(
       continue;
     }
 
-    // `.value.error` is the same read by hand, and one screen does it on purpose: `mapSaveError`
-    // (CredentialForm) answers a LOCALIZED sentence for 409 and the server's own for 400, which is a
-    // policy, not an oversight. A fence that only knows the helper's name calls that an offender and
-    // the sweep then overrides the 409 branch.
-    //
-    // The hook is often held under a qualified name (`embRefusal`, `lfRefusal`) because a screen with two
-    // forms needs one per form, so the capital is part of the pattern rather than a typo.
-    //
-    // `ApiErrorPayload` is the same read with a CAST in the middle —
-    // `(apiError.value as ApiErrorPayload)?.error` — which the dotted spelling above does not match.
-    // Twelve copies of it, and they are reading what the server said; what they do NOT do is place it
-    // at the input, which is a different question and is asked by the form fence.
+    // NOTE: `.value.error` is the same read by hand, and `mapSaveError` (CredentialForm) does it on
+    // purpose: a LOCALIZED sentence for 409 and the server's own for 400. The hook is often held under
+    // a qualified name (`embRefusal`, `lfRefusal`), so the capital is part of the pattern.
+    // `(apiError.value as ApiErrorPayload)?.error` is the same read with a CAST; whether it is placed
+    // at the input is asked by the form fence.
     if (
       /apiErrorMessage|[Rr]efusal\.|ApiErrorPayload|\.value\??\.error/.test(
         args,
@@ -556,15 +471,10 @@ function verdicts(
       continue;
     }
 
-    // The sentence can be computed a few lines up and shown by NAME — `const toast =
-    // refusal.capture(…)` then `showToast(toast, "error")` — or through a small local helper the
-    // handler calls twice, `setError(held(err))`, which is the shape a form with a resolved branch
-    // and a catch branch reaches for. Reading only the argument list calls both an offender while
-    // they are the reference implementation of the rule.
-    //
-    // Every identifier in the argument list is asked, not just a leading one: `held(err) ?? ""` and
-    // `msg ?? fallback` are the same question with different punctuation, and enumerating the
-    // punctuation is how the previous version of this branch missed the helper form entirely.
+    // NOTE: the sentence can be computed a few lines up and shown by NAME (`const toast =
+    // refusal.capture(…)` then `showToast(toast, "error")`), or through a local helper called twice
+    // (`setError(held(err))`). Every identifier in the argument list is asked, not just a leading
+    // one: `held(err) ?? ""` and `msg ?? fallback` are the same question with other punctuation.
     const carriers = readingNames(src.slice(chain[0] ?? 0, m.index));
     if (
       [...args.matchAll(/\b[A-Za-z_$][\w$]*/g)].some((i) =>
@@ -592,10 +502,9 @@ function verdicts(
     // A client-side check: the handler has not asked the server BEFORE this line, so no sentence of
     // its exists yet. Asked of the handler, not of the `if` the toast happens to sit in.
     const handler = enclosingHandler(code, chain);
-    // NOTE: unreachable on this tree and on every fixture here — every toast sits inside some
-    // function — and kept anyway, deliberately: a source scanner that meets a shape it does not
-    // understand must answer "I cannot tell", not throw a null dereference in the middle of the
-    // suite. Mutation-surviving on purpose; the alternative is a crash instead of an abstention.
+    // NOTE: unreachable on this tree and on every fixture here (every toast sits inside some
+    // function), and kept deliberately: a source scanner that meets a shape it does not understand
+    // must answer "I cannot tell", not throw a null dereference in the middle of the suite.
     if (!handler) {
       say("unasked");
       continue;
@@ -641,13 +550,10 @@ export function unaskedToasts(src: string, file = "<memory>"): Offender[] {
     .map((v) => v.at);
 }
 
-// `a || b ? c : d` is `(a || b) ? c : d`, and that is how the sweep for this issue broke the one
-// call site whose fallback was a ternary: `apiErrorMessage(err) || status === 409 ? <409 sentence> :
-// <generic>` answered the 409 sentence for EVERY refusal that carried a message. It is the defect
-// this whole issue is about — a fixed sentence that sounds specific — reintroduced by the fix for it.
-//
-// Neither the compiler nor the fence above can see it: both branches are strings, and
-// `apiErrorMessage` is right there in the argument. So it gets its own rule.
+// `a || b ? c : d` is `(a || b) ? c : d`: `apiErrorMessage(err) || status === 409 ? <409 sentence>
+// : <generic>` answers the 409 sentence for EVERY refusal that carries a message, a fixed sentence
+// that sounds specific. Neither the compiler nor the fence above can see it (both branches are
+// strings, and `apiErrorMessage` is in the argument), so it gets its own rule.
 export function unparenthesisedFallback(
   src: string,
   file = "<memory>",
@@ -683,16 +589,10 @@ export function unparenthesisedFallback(
 }
 
 // The judgement calls: a toast raised AFTER the handler has talked to the server that is still
-// correctly a fixed sentence, for a reason the source cannot state. Each one is named with why.
-//
-// Not a place to put a handler you did not get to. Every entry here is a toast about something the
-// server did NOT refuse.
-//
-// Keyed by the SENTENCE and not by the line. A line number is a fact about the rest of the file:
-// adding one import to `GoogleOAuthSection` moved four waivers by two lines each and un-waived all of
-// them at once. The sentence is what the waiver is actually about, and when someone rewrites it the
-// waiver SHOULD come back for review — a key that rots on an unrelated edit is noise, one that rots
-// when the subject changes is the point.
+// correctly a fixed sentence, for a reason the source cannot state. Each one is named with why, and
+// every entry is a toast about something the server did NOT refuse.
+// Keyed by the SENTENCE, not the line: a line number moves on an unrelated edit, while a rewritten
+// sentence SHOULD bring the waiver back for review.
 const WAIVED: Record<string, string> = {
   "pages/agents/AgentEditorPage.tsx :: toolsText":
     "settingsTextError is OUR OWN preflight over the bag, run after a re-read of the stored settings. There is no refusal: the request it would have made was never sent.",
@@ -741,9 +641,8 @@ export function waiverKey(o: Offender): string {
 
 describe("an error toast shows what the server said", () => {
   test("the predicate flags a handler that discards the error it has", () => {
-    // The positive control, and the reason it is written out rather than trusted to the tree: after
-    // this sweep the real scan finds nothing, and a predicate that matched NOTHING would pass that
-    // assertion exactly as well as one that works.
+    // NOTE: the positive control, written out rather than trusted to the tree: the real scan finds
+    // nothing, and a predicate that matched NOTHING would pass that assertion exactly as well.
     const offending = `
       async function save() {
         const { data, error } = await api.api.v1.things.post(body);
@@ -771,8 +670,8 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a bare catch with nothing thrown into it is not an offender", () => {
-    // Measured: Eden resolves a transport failure rather than rejecting, so this catch holds only a
-    // fault in our own handler, and `apiErrorMessage` would answer null for it anyway.
+    // NOTE: Eden resolves a transport failure rather than rejecting, so this catch holds only a fault
+    // in our own handler, and `apiErrorMessage` would answer null for it anyway.
     const ownFault = `
       async function save() {
         try {
@@ -786,8 +685,8 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("an endpoint named before it is awaited still counts as a request", () => {
-    // The alias shape, verbatim from `KnowledgeApprovals.act`. Reading `await api.` as literal text
-    // called this handler "never talked to the server" and let it discard its error.
+    // NOTE: the alias shape, verbatim from `KnowledgeApprovals.act`: reading `await api.` as literal
+    // text would call this handler "never talked to the server".
     const aliased = `
       async function act(id) {
         try {
@@ -815,9 +714,8 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a toast the formatter wrapped is still read", () => {
-    // biome writes a trailing comma on every multi-line call, so requiring the `"error"` to be LAST
-    // skipped every long toast — and the long ones are the ones with a sentence worth replacing.
-    // Measured: that alone hid 50 of the 67.
+    // NOTE: biome writes a trailing comma on every multi-line call, so requiring the `"error"` to be
+    // LAST would skip every long toast, the ones with a sentence worth replacing.
     const wrapped = `
       async function save() {
         const { data, error } = await api.api.v1.things.post(body);
@@ -847,9 +745,9 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a return annotation does not hide the function", () => {
-    // `function f(): Promise<string | null> {` has parens in its head, so a pattern that excluded
-    // them read "no function here", fell back to the whole component, and accused two preflights
-    // because something ELSE in that component awaited.
+    // NOTE: `function f(): Promise<string | null> {` has parens in its head, so a pattern that
+    // excluded them would read "no function here", fall back to the whole component, and accuse
+    // preflights because something ELSE in that component awaited.
     const annotated = `
       async function ensureSaved(): Promise<string | null> {
         if (!name) {
@@ -863,11 +761,9 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a nested call in an `if` head does not make it the handler", () => {
-    // `if (error && isKnown(error)) {` reads as `<word>(…) {` just like a function head does, and a
-    // regex over the head cannot tell them apart: `[^()]*` stops at the inner call's paren. The `if`
-    // was then taken for the handler, the request above it fell OUTSIDE the body being searched, and
-    // the scan answered "never talked to the server" — blindness, which is the direction that passes
-    // in silence.
+    // NOTE: `if (error && isKnown(error)) {` reads as `<word>(…) {` just like a function head, and
+    // `[^()]*` stops at the inner call's paren. Taking the `if` for the handler would put the request
+    // OUTSIDE the searched body and answer "never talked to the server", silently.
     const nested = `
       async function save() {
         const { data, error } = await api.api.v1.things.post(body);
@@ -879,9 +775,9 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a throw in another function does not feed this catch", () => {
-    // The `try` a bare catch belongs to is brace-matched, not a fixed window backwards. With a
-    // window, any earlier `throw err` in the file counted: a local `JSON.parse` catch was read as
-    // holding a server refusal, and the tree scan demanded a fix for a sentence that cannot exist.
+    // NOTE: the `try` a bare catch belongs to is brace-matched, not a fixed window backwards: with a
+    // window, an earlier `throw err` anywhere in the file would count, and a local `JSON.parse` catch
+    // would be read as holding a server refusal.
     const elsewhere = `
       async function save() {
         const { data, error: err } = await api.api.v1.things.post(body);
@@ -901,8 +797,8 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("four requests awaited at once still count as a request", () => {
-    // Ten files in `src/client` load a screen with `await Promise.all([api…, api…])`, and reading
-    // `await api.` as literal text answered "never talked to the server" about every one of them.
+    // NOTE: `src/client` loads screens with `await Promise.all([api…, api…])`, and reading
+    // `await api.` as literal text would answer "never talked to the server" about every one.
     const batched = `
       async function load() {
         const [list, settings] = await Promise.all([
@@ -917,9 +813,9 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a toast delegated to a helper is asked about its caller", () => {
-    // Verbatim in shape from `DocumentsPanel`: the sentence lives in a `useCallback` that awaits
-    // nothing, and the refusal is at the call site. Asked on its own the helper looks like a
-    // preflight, which is how it passed a fence that claims exactly this invariant.
+    // NOTE: verbatim in shape from `DocumentsPanel`: the sentence lives in a `useCallback` that
+    // awaits nothing, and the refusal is at the call site. Asked on its own the helper looks like a
+    // preflight.
     const delegated = `
       const failed = useCallback(() => {
         showToast(t("x.refreshError", "Could not refresh."), "error");
@@ -935,11 +831,9 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a wrapped `useCallback(` still names its handler", () => {
-    // The production shape, and the reason it is a fixture of its own: biome wraps `useCallback(` the
-    // moment its argument grows a parameter, which is exactly what the fix for `DocumentsPanel` made
-    // it do. Reading the name off the line the block opens then answered "anonymous", the delegation
-    // question was never asked, and the fence went quiet about the site it had just been taught to
-    // see. Measured by reverting the fix: zero offenders, with and without it.
+    // NOTE: the production shape, as a fixture of its own: biome wraps `useCallback(` once its
+    // argument grows a parameter, and reading the name off the line the block opens would answer
+    // "anonymous", so the delegation question would never be asked.
     const wrapped = `
       const failed = useCallback(
         (reason?: unknown) => {
@@ -976,10 +870,9 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a read of a binding the guard already killed is not a read", () => {
-    // The sweep's own idiom applied one branch too far, verbatim from `WebhooksPage.runTest`: the
-    // guard proves `err` null and returns, and the branch below reads it again. It looks swept and
-    // shows the fixed sentence for every refusal — the defect this issue is about, wearing the
-    // costume of the fix for it.
+    // NOTE: the rule's own idiom applied one branch too far, verbatim from `WebhooksPage.runTest`:
+    // the guard proves `err` null and returns, and the branch below reads it again. It looks swept
+    // and shows the fixed sentence for every refusal.
     const dead = `
       async function runTest() {
         const { data, error: err } = await api.api.v1.things.test.post();
@@ -1059,11 +952,9 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a guard with a second condition proves nothing", () => {
-    // `if (err && err.status === 409) return;` exits on ONE kind of error and leaves every other kind
-    // truthy below it. A rule that matched any condition starting with the binding called that read
-    // dead and would have refused correct code — the direction that shouts instead of going quiet,
-    // and the only one of this predicate's bugs to point that way. The shape is real:
-    // `AgentEditorPage.handleConflict` is exactly it.
+    // NOTE: `if (err && err.status === 409) return;` exits on ONE kind of error and leaves every
+    // other kind truthy below it. A rule matching any condition starting with the binding would
+    // call that read dead and refuse correct code (`AgentEditorPage.handleConflict` has this shape).
     const partial = `
       async function save() {
         const { data, error: err } = await api.api.v1.things.post(body);
@@ -1096,10 +987,9 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a sentence computed by a local helper is a read", () => {
-    // The shape a form with two failure branches reaches for: one helper, called from the resolved
-    // branch and from the catch. Neither call site mentions the read, and the fence has to follow the
-    // name to find it — the previous version of this branch only understood a bare identifier
-    // followed by a comma, and called every one of these an offender.
+    // NOTE: the shape a form with two failure branches reaches for: one helper, called from the
+    // resolved branch and from the catch. Neither call site mentions the read, so the fence has to
+    // follow the name to find it.
     const src = `
       async function save() {
         const held = (e: unknown) =>
@@ -1137,7 +1027,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("an unrelated local name does not make a fixed sentence a read", () => {
-    // The other direction of the same widening: the handler DOES read the sentence, somewhere, and
+    // NOTE: the other direction of following names: the handler DOES read the sentence, somewhere, and
     // then shows a fixed one anyway. Asking "is any identifier in this call assigned from a read"
     // has to answer about the identifiers of THIS call.
     const src = `
@@ -1177,7 +1067,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a ternary fallback without parentheses is flagged", () => {
-    // The positive control for the rule below, and the shape it is about, verbatim from the sweep.
+    // NOTE: the positive control for the rule below, in the shape it is about.
     const broken = `showToast(
       apiErrorMessage(err) || status === 409 ? t("a", "A") : t("b", "B"),
       "error",
@@ -1218,21 +1108,11 @@ describe("an error toast shows what the server said", () => {
     ).toEqual([]);
   });
 
-  // The ledger may only shrink, and its size is the anchor the tree cannot supply: appending a name
-  // silences a new offender AND satisfies every other rule here.
-  //
-  // RAISED to 12 by #605, and the raise is the one shape this pin tolerates: a SECOND MEMBER of a
-  // class already waived here, not a new class. The alert-channel Test button is the same call the
-  // webhooks one makes — a 200 carrying the destination's refusal, `err` proven null by the guard
-  // above, `result.error` the endpoint's own words — so `apiErrorMessage(err)` at that line could
-  // only ever answer null. Three of the entries above are already pairs for the same reason
-  // (`popupBlocked`, `authFailed`, `googleSignInFailed`), which is what a class with two doors looks
-  // like in this ledger.
-  //
-  // The alternative was tried on paper and RELOCATES the offender rather than removing it: extracting
-  // the two pages' shared handler leaves the `t(...)` sentences at the call sites (the two results
-  // differ — only the alert one carries `enabled` and `warning`), so the sweep flags them there, and
-  // the ledger ends the same size with one more file refactored for nothing.
+  // NOTE: the ledger may only shrink, and its size is the anchor the tree cannot supply: appending a name
+  // silences a new offender AND satisfies every other rule here. A raise is tolerated only for a
+  // SECOND MEMBER of a class already waived (the alert-channel Test button beside the webhooks one,
+  // like the `popupBlocked`/`authFailed`/`googleSignInFailed` pairs). Extracting the two pages'
+  // shared handler would only relocate the `t(...)` sentences to the call sites.
   test("the waiver ledger is pinned to its size", () => {
     expectWaiverLedger("WAIVED", WAIVED, 12);
   });

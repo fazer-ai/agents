@@ -11,16 +11,11 @@ import {
 import { useRef, useState } from "react";
 import { MemoryRouter } from "react-router";
 
-// The letterhead form used to live on the page, where a save that finished was simply a save. It is
-// a modal now, and the parent CLOSES the modal on `onSaved` — which turns two ordinary bits of
-// timing into lost work:
-//
-//   the operator keeps typing while the request is out. `afterCompanySave` deliberately keeps those
-//   keystrokes and marks them unsaved; announcing the save anyway closes the editor and throws them
-//   away, which is exactly what the preservation exists to prevent.
-//
-//   the operator closes the editor and reopens it while the request is out. The older response then
-//   closes the modal they are typing into NOW.
+// The parent CLOSES the letterhead modal on `onSaved`, which turns two timings into lost work:
+// the operator keeps typing while the request is out (`afterCompanySave` keeps those keystrokes
+// unsaved, and announcing the save would close the editor and throw them away), or the operator
+// closes and reopens the editor while the request is out (the older response would close the
+// modal they are typing into now).
 
 const { CompanyProfileCard } = await import(
   "@/client/pages/resources/documents/CompanyProfileCard"
@@ -135,10 +130,9 @@ test("a save with nothing typed after it does announce itself", async () => {
 });
 
 // The card's half of the rule: it does not JUDGE the opening, it reports which one the save belongs
-// to. The judgement moved to the parent, because this component unmounts with the modal (see the
-// last test in this file) — but the parent can only judge with a number to judge, and the number has
-// to be the one from when the request STARTED. A card that reported whatever session it happened to
-// hold at response time would hand the parent the new one and pass every guard.
+// to, since it unmounts with the modal and only the parent can judge. The number has to be the one
+// from when the request STARTED: reporting the session held at response time would hand the parent
+// the new one and pass every guard.
 test("announces the opening the save belongs to, not the one on screen when it lands", async () => {
   const held = heldFetch();
   const reported: (number | undefined)[] = [];
@@ -173,15 +167,11 @@ test("announces the opening the save belongs to, not the one on screen when it l
   expect(reported[0]).toBe(1);
 });
 
-// THE SAME RULE, ACROSS AN UNMOUNT — which the test above does NOT cover, and the difference is the
-// whole finding. `rerender` keeps the component mounted, so its `sessionRef` follows the new prop.
-// The real modal is a Radix dialog: closing it unmounts the card and reopening MOUNTS A NEW ONE. The
-// old instance keeps running its request with a `session` and a `sessionRef` both frozen at the old
-// value, so a guard the card owns compares them and finds them equal — and announces a save that
-// belongs to a session nobody is looking at, closing the modal the operator just reopened.
-//
-// So the generation cannot be answered by the card. It is answered by the parent, which never
-// unmounts, through a ref whose identity survives the stale closure holding it.
+// The same rule across an unmount, which `rerender` above does not cover (it keeps `sessionRef`
+// following the prop). The real Radix dialog unmounts the card on close and mounts a new one on
+// reopen, and the old instance's `session` and `sessionRef` are both frozen, so a guard the card
+// owned would find them equal. The generation is answered by the parent, which never unmounts,
+// through a ref whose identity survives the stale closure.
 function CompanyHarness({ onClosed }: { onClosed: () => void }) {
   const [session, setSession] = useState(1);
   const sessionRef = useRef(1);
@@ -213,8 +203,8 @@ function CompanyHarness({ onClosed }: { onClosed: () => void }) {
               company={COMPANY as never}
               onChanged={() => undefined}
               onSaved={(from?: number) => {
-                // The parent decides, reading the CURRENT generation off a ref rather than off a
-                // value its own closure captured — the stale card holds a stale callback too.
+                // NOTE: the parent reads the CURRENT generation off a ref rather than a value its
+                // own closure captured: the stale card holds a stale callback too.
                 if (from !== undefined && from !== sessionRef.current) return;
                 onClosed();
               }}

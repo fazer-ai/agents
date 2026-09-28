@@ -1,17 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-// EVERY SAVE OF THE AGENT EDITOR THAT CAN BE FORCED DECLARES THE REPLACEMENT WHEN IT IS (#614).
-//
-// The server refuses a settings bag that would drop blocks the row holds, and the editor's bags are
-// built from the last-synced settings, so a block another writer added after the load is missing
-// from all of them. An ordinary save should be refused for that. The "overwrite anyway" retry after a
-// 409 should not: the operator chose their copy, and a retry that does not say so answers 400 on
-// every attempt with nothing on screen they can change. Review round 1 found it on the four PATCH
-// sites of this page, none of which sent the word.
-//
-// A source fence rather than a rendered test, for the reason this repo's other fences give: the
-// question is "does every call site do it", and a new save added next month is the case that
-// matters. Counted per call, so a fifth PATCH without the spread fails here by name of the file.
+// Every save of the agent editor that can be forced declares the replacement when it is. The server
+// refuses a settings bag that would drop blocks the row holds, and the editor builds its bags from
+// the last-synced settings, so a block another writer added is missing from all of them. An
+// ordinary save should be refused for that; the "overwrite anyway" retry after a 409 should not
+// (the operator chose their copy), and without the declaration it answers 400 on every attempt.
+// A source fence, since the question is "does every call site do it": counted per call, so a new
+// PATCH without the spread fails here.
 const SRC = await Bun.file(
   "src/client/pages/agents/AgentEditorPage.tsx",
 ).text();

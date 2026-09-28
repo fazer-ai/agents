@@ -6,10 +6,10 @@ import {
 } from "@langchain/core/tools";
 import type { z } from "zod";
 
-// NOTE: Marks a friendly tool reply as an INTEGRATION FAILURE: the model still sees the exact same string
-// (graceful degradation is the right model-facing contract), but the flow log records the call as
-// warn/error so alert channels can fire on it (issue #40). Business-level replies — "no free slots",
-// policy limits, bad model input — must NOT use this: they are normal operation, not failures.
+// Marks a friendly tool reply as an INTEGRATION FAILURE: the model still sees the exact same string
+// (graceful degradation), but the flow log records the call as warn/error so alert channels can fire
+// on it. Business-level replies ("no free slots", policy limits, bad model input) must NOT use this:
+// they are normal operation, not failures.
 export class ToolFailure {
   constructor(readonly message: string) {}
 }
@@ -25,17 +25,13 @@ type FailableFn = (
   config: ToolRunnableConfig,
 ) => Promise<string | ToolFailure>;
 
-// NOTE: tool() wrapper whose fn may return toolFailure(...): the failure reaches the model as a
-// ToolMessage with status "error" and the SAME friendly string as content. LangChain's
-// direct-tool-output passthrough (_formatToolOutput → isDirectToolOutput) hands that ToolMessage
-// intact both to handleToolEnd (where ToolFlowLogger reads the status and logs warn/error) and to
-// ToolNode (so the model sees the string unchanged). Without a tool_call in scope (direct invocation
-// with plain args, e.g. unit tests) the failure degrades to the plain string — today's behavior —
-// because a ToolMessage requires a real tool_call_id.
-// NOTE: @langchain/anthropic and the OpenAI-family adapters currently ignore ToolMessage.status;
-// @langchain/google-genai wraps status "error" content as functionResponse.response.error.details
-// (string preserved). If an adapter upgrade starts emitting is_error, re-check the model-facing
-// contract for marked failures.
+// tool() wrapper whose fn may return toolFailure(...): the failure reaches the model as a ToolMessage
+// with status "error" and the SAME string as content. LangChain's direct-tool-output passthrough
+// hands that ToolMessage intact to handleToolEnd (ToolFlowLogger logs warn/error) and to ToolNode.
+// Without a tool_call in scope (direct invocation, unit tests) it degrades to the plain string,
+// since a ToolMessage requires a real tool_call_id. Anthropic and OpenAI-family adapters ignore
+// ToolMessage.status and google-genai wraps it as an error detail with the string preserved; if an
+// adapter starts emitting is_error, re-check this model-facing contract.
 export function failableTool(
   fn: FailableFn,
   fields: { name: string; description: string; schema: z.ZodTypeAny },

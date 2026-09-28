@@ -143,15 +143,10 @@ const TIME_VARS: Record<
 
 // ── schedule variables ──
 
-// The agent's own Availability, as the three questions a customer actually asks it: whether it is
-// open, when it opens next, and what its hours are. Without these the agent answers all three from
-// whatever the operator typed into the system prompt, which drifts from the schedule the gate
-// enforces the moment either one changes — and the customer is then told one thing by the agent and
-// another by the gate.
-//
-// The pt-BR and EN names are NOT two aliases of one value, the way {{nome_contato}}/{{contact_name}}
-// are: each answer is prose, and the name the operator reached for is the only signal of which
-// language the surrounding prompt is written in. An agent has no language of its own.
+// The agent's own Availability, as the three questions a customer asks: whether it is open, when it
+// opens next, and its hours. Answering from the schedule the gate enforces keeps the agent from
+// contradicting the gate when hand-typed hours drift. The pt-BR and EN names are not aliases: each
+// answer is prose, and the name the operator used is the only signal of the prompt's language.
 type ScheduleVarKind = "is_open" | "next_open" | "summary";
 // Exported so the audit can key its collapse on the SAME names this resolves, EN aliases included
 // (`src/graph/prompt-audit.ts`): one spelling left out would keep expanding.
@@ -220,9 +215,9 @@ function renderScheduleVar(
   const next = nextOpening(schedule, now);
   if (next.kind === "now") return w.now;
   if (next.kind === "never") return w.never;
-  // An explicit :FORMAT is the operator asking for a shape; the default is the one #154 argued for
-  // the away message (weekday AND date, because a bare weekday is ambiguous for exactly the closures
-  // #148 added). Both surfaces speak to the same customer, so they render the instant identically.
+  // NOTE: an explicit :FORMAT is the operator asking for a shape; the default matches the away
+  // message (weekday AND date, since a bare weekday is ambiguous across closures), because both
+  // surfaces speak to the same customer.
   if (fmt) return formatWithPattern(next.when, tz, fmt);
   return formatNextOpen(next.when, now, tz, w.locale);
 }
@@ -235,12 +230,9 @@ export const PROMPT_PLACEHOLDER_SOURCE =
   "\\{\\{\\s*([a-z_]+)(?::([^}]+))?\\s*\\}\\}";
 const PLACEHOLDER = new RegExp(PROMPT_PLACEHOLDER_SOURCE, "g");
 
-// Everything that decides WHAT a placeholder resolves to. Named, rather than inline on the
-// signature, because a second caller has to render the same template to the same text: the audited
-// prompt the Logs page keeps (`src/graph/prompt-audit.ts`) reproduces this call and differs from it
-// only by `wrap`. Listing the fields twice is what let the schedule variables land resolved in the
-// prompt and literal in the audit, so `PromptRenderOpts` is passed WHOLE and an option added here
-// reaches both renderings without a second edit.
+// Everything that decides WHAT a placeholder resolves to. Named because the audited prompt
+// (`src/graph/prompt-audit.ts`) renders the same template and differs only by `wrap`: it is passed
+// whole, so an option added here reaches both renderings, where a re-listed copy would drift.
 export interface PromptRenderOpts {
   timezone?: string;
   now?: Date;
@@ -249,12 +241,10 @@ export interface PromptRenderOpts {
   // has no notion of a schedule (the WhatsApp template path), and the schedule placeholders are then
   // left as the operator's own literal rather than answered with a guess.
   availability?: { schedule: Schedule | null };
-  // WHEN THE CUSTOMER'S MESSAGE ARRIVED, for the age variables (issue #749). The instant of the
-  // message that TRIGGERED this turn, and never a column of the mirror: `last_inbound_at` is null on
-  // exactly the conversation that motivated the issue — one the mirror created from an event that is
-  // not a message, which is what every re-engaged conversation is. Omitted (or null) by the callers
-  // that have no triggering message at all (memory compaction, the observer, the playground), and
-  // the variable then resolves EMPTY rather than to an invented age.
+  // When the message that TRIGGERED this turn arrived, for the age and date variables. Never the
+  // mirror's `last_inbound_at`, which is null on a conversation the mirror created from a non-message
+  // event (every re-engaged one). Null for callers with no triggering message (compaction, the
+  // observer, the playground), and the variables then resolve empty rather than invent an age.
   messageAt?: Date | null;
 }
 
@@ -302,16 +292,10 @@ const MESSAGE_AGE_VARS: Record<string, "pt-BR" | "en"> = {
   message_age: "en",
 };
 
-// WHEN the customer wrote, as a date rather than an elapsed phrase. The age above answers "how long
-// ago" and that is not the same question: an agent told only "9 days ago" still has to subtract to
-// know what day the customer meant, and it does not — measured on the Guichê Web e-mail agent in
-// 21/09/2026, a prompt that asked for exactly that subtraction turned the customer's "the event is
-// today" into "the event is on 21/09/2026", which is TODAY's date asserted as the event's, in the
-// reply AND in the note the human agent then acts on. Forbidding the model to write any date it did
-// not read instead halved the legitimate dates (the deadlines the prompt requires it to quote), so
-// neither wording works: what is missing is the instant itself, which the renderer has had all
-// along and was spending only on the phrase. Same emptiness rule as the age: a caller with no
-// triggering message resolves it to "" rather than to an invented day.
+// WHEN the customer wrote, as a date rather than an elapsed phrase. An agent told only "9 days ago"
+// does not reliably subtract: it asserts TODAY's date as the day the customer meant. Forbidding
+// the model to write unread dates is wrong too, since it also drops the deadlines the prompt needs
+// quoted, so the renderer hands over the instant itself. No triggering message resolves to "".
 const MESSAGE_DATE_VARS: Record<string, { defaultFormat: string }> = {
   data_ultima_mensagem: { defaultFormat: "DD/MM/YYYY HH:mm" },
   message_date: { defaultFormat: "DD/MM/YYYY HH:mm" },

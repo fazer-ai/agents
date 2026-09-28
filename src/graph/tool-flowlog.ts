@@ -25,7 +25,7 @@ function declaredKeysByTool(
         map.set(t.name, new Set(Object.keys(props)));
       }
     } catch {
-      // NOTE: an unreadable schema simply contributes no names — the safe direction.
+      // NOTE: an unreadable schema simply contributes no names, the safe direction.
     }
   }
   return map;
@@ -48,11 +48,9 @@ function parseToolInput(
   }
 }
 
-// A tool run's output reaches the callback as a ToolMessage-like object; surface its `content` (the
-// text the model sees) rather than the LangChain wrapper. Other shapes pass through unchanged.
-// How many times a tool had to ask its provider again before it answered, when it says so in its
-// artifact (`search_knowledge`'s query embedding, issue #844). Only a positive count: the key is
-// absent on a line that retried nothing, so its presence is the signal.
+// How many times a tool had to ask its provider again before it answered, when its artifact says so
+// (`search_knowledge`'s query embedding). Only a positive count: the key is absent on a line that
+// retried nothing, so its presence is the signal.
 function toolRetries(output: unknown): number | undefined {
   const artifact =
     output && typeof output === "object" && "artifact" in output
@@ -65,6 +63,8 @@ function toolRetries(output: unknown): number | undefined {
   return typeof n === "number" && n > 0 ? n : undefined;
 }
 
+// A tool run's output reaches the callback as a ToolMessage-like object; surface its `content` (the
+// text the model sees) rather than the LangChain wrapper. Other shapes pass through unchanged.
 function toolOutputValue(output: unknown): unknown {
   if (output && typeof output === "object" && "content" in output) {
     return (output as { content: unknown }).content;
@@ -72,18 +72,10 @@ function toolOutputValue(output: unknown): unknown {
   return output;
 }
 
-// NOTE: A ToolMessage with status "error" is a tool-marked integration failure (failableTool/toolFailure —
-// the friendly string went to the model, but the call must be logged as a failure). Thrown errors
-// take the handleToolError path instead; this only classifies returned outputs.
-// The cause line of a failure a tool RETURNED (as opposed to threw). The string it returned serves
-// two contracts at once: the model needs the provider's body to answer, and this column is
-// documented to carry none of it. An operator's HTTP tool answers `HTTP 422\n{"erro":"CPF … não
-// encontrado"}` (`src/graph/tools/http.ts`), and its `detail.output` was already being reduced to a
-// shape on the very same emit. What is kept is the part WE wrote: `toolFailure(...)` is only ever
-// called with a message we compose, and the newline that follows it in the HTTP builder is ours too,
-// so the first line is the diagnosis (`HTTP 422`, `Google Calendar returned HTTP 401.`) and
-// everything after it came from the other end. `logToolValues` keeps the whole string, exactly as it
-// keeps the arguments and the result.
+// The cause line of a failure a tool RETURNED (as opposed to threw). The model needs the provider's
+// body and this column is documented to carry none of it, so only the first line is kept: it is the
+// part WE wrote (a `toolFailure(...)` message, `HTTP 422` from ./tools/http.ts), and everything after
+// it came from the other end. `logToolValues` keeps the whole string, like the arguments and result.
 function failureCause(value: unknown, logValues: boolean): string {
   // NOTE: `JSON.stringify` is TYPED as string but returns undefined for `undefined`, and this
   // callback takes `unknown` from LangChain, so the coalesce is a runtime guard the type does not
@@ -94,6 +86,8 @@ function failureCause(value: unknown, logValues: boolean): string {
   return text.split("\n", 1)[0] ?? "";
 }
 
+// A ToolMessage with status "error" is a tool-marked integration failure (failableTool/toolFailure),
+// logged as a failure although the model got a friendly string. Thrown errors take handleToolError.
 function isErrorToolOutput(output: unknown): boolean {
   return (
     !!output &&
@@ -103,23 +97,16 @@ function isErrorToolOutput(output: unknown): boolean {
   );
 }
 
-// Logs each tool call the agent makes during a turn as a `tool` execution-flow line (name + status +
-// duration + the redacted args/result), so the operator can SEE which tools ran AND expand the marker
-// to inspect what was passed and returned (parity with the playground trace). Bound to the running
-// turn's FlowContext (shares its turnId, so the tool lines group under the same turn). Like
-// AgentStatusReporter, LangChain sets `runName` to the tool's registered name for tool runs (the
-// serialized `tool` is a not-implemented stub); fall back to a generic label when absent. The
-// args/result ride in `detail`, which emitFlowEvent passes through redactSecretsDeep (credential-named
-// keys dropped, secret-shaped strings scrubbed, everything truncated) before the write. Emits are
-// fire-and-forget (emitFlowEvent never throws into the turn).
+// Logs each tool call of a turn as a `tool` execution-flow line (name, status, duration, redacted
+// args/result), grouped under the turn's FlowContext. LangChain sets `runName` to the tool's
+// registered name (the serialized `tool` is a stub), with a generic label as fallback. `detail` goes
+// through redactSecretsDeep inside emitFlowEvent, and emits are fire-and-forget.
 export class ToolFlowLogger extends BaseCallbackHandler {
   name = "fazerai-tool-flowlog";
-  // INLINE, not on LangChain's background queue. Left at the default, a handler runs on one
-  // process-wide queue (concurrency 1, `LANGCHAIN_CALLBACKS_BACKGROUND` unset) behind every other
-  // backgrounded callback, so under load `handleToolEnd` ran AFTER the turn had returned: the line
-  // was not even scheduled when a reader settled, and `turnDelivered` was asked late, answering for
-  // a moment after the tool ended. Awaiting costs nothing here: every handler is synchronous and
-  // the write itself stays fire-and-forget (emitFlowEvent).
+  // INLINE, not on LangChain's background queue: by default a handler runs on one process-wide queue
+  // (concurrency 1) behind every other backgrounded callback, so under load `handleToolEnd` would run
+  // after the turn returned and `turnDelivered` would answer for the wrong moment. Awaiting costs
+  // nothing: every handler here is synchronous and the write stays fire-and-forget.
   override awaitHandlers = true;
 
   private readonly flow: FlowContext;
@@ -134,13 +121,10 @@ export class ToolFlowLogger extends BaseCallbackHandler {
   // cause is a string the operator has to be able to read, not a shape.
   private readonly logValues: boolean;
   private readonly declaredKeys: Map<string, ReadonlySet<string>>;
-  // Whether the TURN has put something in front of the customer, asked at the moment a line is
-  // written. Only `skip_reply` carries the answer, because only its marker asserts a silence: the
-  // operator's timeline reads "decided not to respond" off a turn that transferred WITH a closing
-  // line, and no tool name and no recorded argument can tell that turn from the one that transferred
-  // with nothing to say (issue #726). Absent on the paths that have no turn to ask (playground, the
-  // observe runner), and absent is not `false`: the reader treats it as unknown and keeps today's
-  // label rather than claiming a silence it cannot check.
+  // Whether the TURN has put something in front of the customer, asked when a line is written. Only
+  // `skip_reply` carries it: its marker asserts a silence, and no tool name or argument tells a
+  // transfer WITH a closing line from one with nothing to say. Absent where there is no turn to ask
+  // (playground, observe runner), and absent is not `false`: the reader treats it as unknown.
   private readonly turnDelivered?: () => boolean;
   private readonly starts = new Map<
     string,
@@ -191,8 +175,8 @@ export class ToolFlowLogger extends BaseCallbackHandler {
     const failed = isErrorToolOutput(output);
     const value = toolOutputValue(output);
     const retries = toolRetries(output);
-    // NOTE: Integration failure returned as a friendly string (failableTool): ONE line, level warn —
-    // same level as handleToolError, so alert channels (minLevel warn) can subscribe (issue #40).
+    // NOTE: an integration failure returned as a friendly string (failableTool) is ONE line at level
+    // warn, like handleToolError, so alert channels (minLevel warn) can subscribe.
     emitFlowEvent(this.flow, {
       stage: "tool",
       level: failed ? "warn" : "info",

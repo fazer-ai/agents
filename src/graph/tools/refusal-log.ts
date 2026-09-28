@@ -7,32 +7,13 @@ import { toJsonSchema } from "@langchain/core/utils/json_schema";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { type DeclaredKeys, describeShape } from "@/modules/flowlog/shape";
 
-// THE CALL THE SCHEMA REFUSED, WHICH LEFT NO TRACE AT ALL (issue #667).
-//
-// LangChain validates a tool's arguments inside `StructuredTool.call`, BEFORE the callback manager
-// exists:
-//
-//   parsed = await interopParseAsync(this.schema, inputForValidation);  // throws here
-//   ...
-//   const callbackManager_ = CallbackManager.configure(...);            // only here
-//
-// So neither `handleToolStart` nor `handleToolError` fires, and `ToolFlowLogger` is blind to the
-// refusal by construction: no handler it could implement would see it. The model does see it:
-// LangGraph's `ToolNode` catches the exception and answers the call with `Error: Received tool input
-// did not match expected schema`, and it tries again, or gives up. Neither shows up anywhere the
-// operator looks: a turn where the agent tried three times to hand a conversation over and never
-// managed to was byte for byte identical, in `execution_logs`, to a turn where it tried nothing.
-//
-// The wrap happens at the single seam where every source's tools meet (`buildToolset`), the same
-// seam `applyToolPreconditions` uses, so the reactive turn, the nudge, the observation and the
-// playground are covered by one wrapper instead of four call sites remembering to.
-//
-// WHAT THE LINE IS NOT: it is not a failure. The tool did not break and no integration is down; the
-// model sent arguments its own schema does not accept, which it then usually fixes on the next step.
-// So the line is `level: 'info'`, the same level, and for the same reason, as the precondition
-// refusal next door (`precondition.ts`): visible in the Logs page, and NOT paging an operator's
-// alert channel, whose `minLevel: warn` is what stops a model looping on one bad argument from
-// becoming a burst of alerts. `status: 'skipped'` because the stage's work never happened.
+// THE CALL THE SCHEMA REFUSED. LangChain validates arguments inside `StructuredTool.call` BEFORE the
+// callback manager exists, so `ToolFlowLogger` never sees the refusal; `ToolNode` answers the model
+// with a schema error, and without this line a turn of refused attempts is identical in
+// `execution_logs` to a turn that tried nothing. Wrapped at `buildToolset`, the seam every source
+// and every turn kind shares. Not a failure: `level: 'info'` like the precondition refusal (visible,
+// but below the alert channel's `minLevel: warn`, so a model looping on one bad argument does not
+// page), and `status: 'skipped'` because the stage's work never happened.
 
 // One declared parameter the refusal is about, in the schema's own vocabulary.
 type RefusedParam =
@@ -107,18 +88,12 @@ function typeAgrees(
   );
 }
 
-// WHY THE REASON IS REBUILT INSTEAD OF FORWARDED. The vendor's own text cannot be published here:
-// `ToolInputParsingException.output` is `JSON.stringify(arg)`, the arguments verbatim, and a zod
-// `unrecognized_keys` message quotes the key the MODEL invented. Both are precisely what the
-// argument side of a tool line refuses to write (`modules/flowlog/shape.ts`), and `detail` is
-// exportable through `GET /v1/logs/export`.
-//
-// So this names parameters from the DECLARATION and nothing else, and it deliberately does not
-// re-decide the refusal: the vendor already refused, and this runs only on that path. It reports the
-// two shapes a refusal takes in practice (a required parameter that did not come, a declared one
-// whose type disagrees) and, when it can name none of them (a constraint inside a parameter, a
-// nested object, a union), says exactly that rather than guessing. A generic reason still leaves the
-// line, which is the whole point of the issue: the COUNT of refused calls is what was missing.
+// WHY THE REASON IS REBUILT INSTEAD OF FORWARDED: `ToolInputParsingException.output` is the arguments
+// verbatim and a zod `unrecognized_keys` message quotes a key the MODEL invented, both of which a
+// tool line refuses to write (`modules/flowlog/shape.ts`), and `detail` is exportable. So this names
+// parameters from the DECLARATION only and does not re-decide the refusal: it reports a missing
+// required parameter or a type disagreement, and otherwise a generic reason, since the line (the
+// COUNT of refused calls) must exist either way.
 function refusedParams(
   args: Record<string, unknown>,
   d: Declared,
@@ -231,8 +206,7 @@ export function logSchemaRefusals(
               // `precondition_unmatched`, the side-effect phases), so nothing on the reading side
               // has to learn a new field to tell this line from the others.
               phase: "schema_refusal",
-              // The payload, under the name the issue proposed: which declared parameters the
-              // refusal was about, and in what way.
+              // NOTE: Which declared parameters the refusal was about, and in what way.
               refused: refusedParams(args, d),
               // What ARRIVED, by the same rule the executed call's line follows: the shape of each
               // value, keys named only where the tool declared them, and a key the model invented

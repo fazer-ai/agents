@@ -103,11 +103,10 @@ export async function buildConnConfig(
   if (!effectiveUrl)
     throw new Error(`mcp ${sel.name}: ${transport} requires a url`);
   await assertSafeOutboundUrl(effectiveUrl, { allowHttp: opts.allowHttp });
-  // Apply the credential per its catalogued injection (Bearer / Basic / custom header / query),
+  // NOTE: Apply the credential per its catalogued injection (Bearer / Basic / custom header / query),
   // reusing the shared resolver so MCP authenticates the same way HTTP tools and secret-test do.
   // For managed OAuth (mcp_oauth/google_oauth) sel.secret is the resolved access token → Bearer.
-  // An uncatalogued kind (legacy string secret / generic) falls back to Bearer, preserving prior
-  // behavior.
+  // An uncatalogued kind (legacy string secret / generic) falls back to Bearer.
   let url = effectiveUrl;
   let headers: Record<string, string> | undefined;
   if (sel.secret) {
@@ -149,19 +148,10 @@ const MCP_NS = "mcp";
 const MAX_TOOL_NAME = 64;
 
 // ASCII-safe server segment, derived from the connection's (unique) display name. (Own normalization
-// rather than normalizeToolName, whose "tool" fallback would mask an empty slug.)
-//
-// A PURE FUNCTION OF THE NAME, and the row id is deliberately not a parameter (#412). The fallback
-// used to be `mcp_<connId>`, for the names that yield no usable characters at all — emoji-only,
-// CJK-only. `exportAgent` carries the connection by NAME and `importAgent` matches on it, so
-// everything else about the exposed name is portable; the id was the one part the import reassigns,
-// and the same connection came back on the other side under a different tool name. Hashing the name
-// keeps the fallback readable-ish, keeps it unique for the same reason the name is unique
-// (`@@unique([tenantId, name])`), and makes it the same on both sides of a transfer.
-//
-// The digest is of the RAW name, before sanitizing: two different emoji both sanitize to the empty
-// string, and hashing the sanitized form would give them one slug and put them back in the collision
-// this is meant to take them out of.
+// rather than normalizeToolName, whose "tool" fallback would mask an empty slug.) A pure function of
+// the NAME, never the row id: export/import match connections by name and reassign ids, so an
+// id-based fallback would rename the tool across a transfer. A name with no usable characters falls
+// back to a digest of the RAW name, since two emoji-only names sanitize to the same empty string.
 export function mcpServerSlug(name: string): string {
   const slug = name
     .normalize("NFD")

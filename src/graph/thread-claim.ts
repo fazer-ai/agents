@@ -8,38 +8,13 @@ import {
   markTurnInFlight,
 } from "./inflight";
 
-// The DURABLE half of ./inflight.ts, for the one thread key that has a row to hang on.
-//
-// A LangGraph invoke is a read-modify-write of the WHOLE message channel: it saves the state it
-// loaded plus its own messages, erasing anything that landed meanwhile. ./inflight.ts is what makes
-// a turn and the three writers of that channel exclusive, and it is a `Map` in one process. On the
-// topology docs/deploy.md §4 sanctions, extra web replicas with the workers off, one leader with
-// them on, the turn runs wherever the webhook landed and continuous ingestion runs on the leader,
-// so they hold different Maps and every writer reads a busy thread as free (issue #203).
-//
-// Of the three writers only ingestion's failure is irreversible: the append is undone AND the row
-// records the message as ingested, so it is gone and marked handled. That is what this covers.
-//
-// WHY THE ROW IS `agent_threads` AND NOT A TABLE OF ITS OWN. Continuous ingestion only exists for a
-// thread keyed by contact inbox (its params carry one), so the race that loses a message always has
-// a row already. Both sides of it, the turn in ../graph/runtime.ts and the append in ./ingest.ts,
-// already read that row inside the same critical section, so the durable read costs no query at all.
-// The keys that have no such row (a thread resolved by CONVERSATION when the contact inbox is
-// unknown, and the per-conversation key the follow-up nudge uses) stay in the Map, and their cost
-// stays what issue #203 measured it to be: a nudge races one reply, a compaction is undone and
-// re-armed at the next attendance boundary. Neither loses a message.
-//
-// THE LEASE IS NOT OPTIONAL. A crashed holder would otherwise strand the thread and every later
-// append would defer forever, which is worse than the Map it replaces, a restart clears that one.
-// Expiry lands on exactly the Map's behaviour (the writer proceeds), so this is never worse than
-// today and better whenever the turn finishes inside the lease.
-//
-// AND NEITHER IS THE WRITE CLAIM. Marking alone only NARROWS the window, it does not close it: the
-// append's check and its write are not one atomic step across processes, so an ingestion that read
-// "free" can still land inside an invoke that marked itself and loaded the channel in between. The
-// two sides therefore claim the same row against each other, and a starting turn waits out an append
-// in flight. That wait is bounded by one `graph.updateState`, not by a model turn, which is what
-// separates it from holding a lock for the length of a turn (the shape issue #203 rejects on cost).
+// The DURABLE half of ./inflight.ts, for the thread key that has a row (`agent_threads`) to hang on.
+// A LangGraph invoke saves the WHOLE message channel it loaded, erasing what landed meanwhile, and
+// the `Map` in ./inflight.ts only excludes writers inside one process, while on the docs/deploy.md §4
+// topology the turn and continuous ingestion run in different processes. Ingestion's loss is the
+// irreversible one (the append is undone AND the row marks it ingested), so appends and turns claim
+// the same row against each other. Keys with no row stay in the Map. Both leases renew while the
+// holder lives, so expiry means a crash and lands on the Map's behaviour. Model: docs/graph.md, "Why the durable claim lives on `agent_threads`".
 
 // What a turn got when it took the thread, and must hand back to release it. The epoch is null only
 // when the claim could not be read back, which no path produces today; a null hold releases nothing,
@@ -55,7 +30,7 @@ export interface ThreadOwner {
 
 // Long enough for a model turn with tools, and the same order as the scheduler's own stale-claim
 // window. Overshooting costs a deferred append (owed, then drained by the next reader); undershooting
-// costs exactly today's behaviour.
+// costs the Map's behaviour (the writer proceeds).
 const TURN_LEASE_SECONDS = 300;
 // One append: a checkpointer write and a short transaction. Nothing here waits on a model.
 const WRITE_LEASE_SECONDS = 30;
@@ -69,29 +44,6 @@ const WRITE_LEASE_SECONDS = 30;
 const WRITE_WAIT_MS = (WRITE_LEASE_SECONDS + 5) * 1_000;
 const WRITE_POLL_MS = 25;
 
-// HOW LONG A SECOND INVOKE WAITS OUT THE FIRST (issue #658). ABSOLUTE, measured from the moment the
-// wait starts, and that is where it parts company with the two bounds above (PR review, round 2).
-// They follow the lease because what they wait for is ONE checkpointer write, where "still renewing"
-// really does mean "still going to finish in a moment". A turn is not that: a model call that hangs
-// keeps its process alive, so the renewal timer goes on extending the lease every 100 seconds, and a
-// deadline that resets on every extension is unreachable in exactly the runaway case it was written
-// for. Following the lease here would be a ceiling that only ever fires on holders that did not need
-// one.
-//
-// One full lease plus the same slack, and the slack is load-bearing: a lease read at any point in
-// the wait is at most TURN_LEASE_SECONDS in the future, so a holder that stops renewing expires
-// BEFORE this runs out and is taken over rather than merely waited for — which is what makes expiry,
-// not this ceiling, the ordinary way a crashed holder is cleared.
-//
-// AND PAST THE CEILING THE TURN JOINS, it does not refuse (PR review, round 3). Refusing was written
-// on the premise that the work could be handed back, and the premise is false: a direct turn that
-// throws is caught in ../modules/chatwoot/webhook.ts, which records the error, announces the failure
-// inside Chatwoot and settles the delivery — "There is no retry on this path", in that file's own
-// words, and the sweep only ever sees PENDING and PROCESSING. So the two outcomes here are not
-// "retry later" against "run beside it": they are NO ANSWER AT ALL against the behaviour that
-// predates this issue, where the second invoke joins and the boundary, the hand-back note and the
-// token rollback are all deferred to keep it survivable. A customer waiting is better served by the
-// second. The ceiling's job is therefore to stop waiting and to SAY so, not to fail the turn.
 // A turn that waited the thread out and still landed on an occupancy: it gave the hold back and has
 // to leave the `ingest:` queue before waiting again, which is a thing the section cannot say by
 // returning its own result or null. Lives HERE, next to `waitForTurnToClear` and `turnWaitDeadline`,
@@ -99,6 +51,13 @@ const WRITE_POLL_MS = 25;
 // provably the same vocabulary: a second sentinel meaning the same thing is how the two loops drift.
 export const WAIT_AGAIN = Symbol("wait for the thread and try again");
 
+// How long a second invoke waits out the first. ABSOLUTE from when the wait starts, unlike the
+// bounds above: those wait on one checkpointer write, but a hung model call keeps its process
+// renewing the lease, so a deadline reset on each renewal would never fire. One full lease plus
+// slack, so a holder that stops renewing expires (and is taken over) before this runs out. PAST THE
+// CEILING THE TURN JOINS rather than refusing: a direct turn that throws is settled with no retry
+// (../modules/chatwoot/webhook.ts), so refusing means no answer at all. The ceiling stops the wait
+// and logs it.
 export const TURN_WAIT_MS = (TURN_LEASE_SECONDS + 5) * 1_000;
 const TURN_POLL_MS = 50;
 
@@ -146,10 +105,10 @@ function renewing(
       })
       .catch(() => {
         // NOTE: a renewal that fails is not worth failing the turn over. The next tick tries again,
-        // and if none succeeds the lease expires, which is exactly the pre-renewal behaviour.
+        // and if none succeeds the lease expires, which is the crash-recovery path.
       });
   }, RENEW_EVERY_MS);
-  // Never keep the process alive for a lease.
+  // NOTE: never keep the process alive for a lease.
   timer.unref?.();
   return { ...hold, stopRenewal: () => clearInterval(timer) };
 }
@@ -217,13 +176,10 @@ async function insertHeldByTurn(
   return rows[0]?.turn_epoch ?? null;
 }
 
-// IS THE TURN LEASE STILL LIVE, ANSWERED BY POSTGRES. The comparison is in the statement and not in
-// this process on purpose (PR review, round 2): the lease is minted as `now() + interval` by the
-// database, so a replica whose clock runs ahead would read an expired lease that Postgres still
-// considers live, acquire on it, and — because `bumpTurnHolders` renews unconditionally — push the
-// lease of the holder it is waiting for. A two-second skew is enough to keep a crashed holder alive
-// indefinitely, which is the round-1 defect coming back through the clock. Same shape as
-// `readTurnClaimOn`, which has always asked it this way.
+// IS THE TURN LEASE STILL LIVE, ANSWERED BY POSTGRES. The lease is minted as `now() + interval` by
+// the database, so a replica whose clock runs ahead would read a live lease as expired, acquire,
+// and (since `bumpTurnHolders` renews unconditionally) push the lease of the holder it waits for:
+// a two-second skew keeps a crashed holder alive indefinitely. `readTurnClaimOn` asks the same way.
 async function turnLeaseIsLive(
   owner: ThreadOwner,
   base: PrismaClient,
@@ -260,22 +216,14 @@ async function readWriteLease(
   return until === null ? null : until.getTime();
 }
 
-// Take the thread for this turn, durably, and mark the Map with it so a same-process reader that
-// still asks the Map (the conversation key, ./inflight.ts) is never told less than the truth.
+// Take the thread for this turn, durably, and mark the Map with it so a same-process reader of the
+// Map (the conversation key, ./inflight.ts) is never told less than the truth.
 //
-// IT ALWAYS JOINS, and the count is why: the exclusion is not in here, and `clearTurnOwning` releases
-// one holder at a time to serve the callers that legitimately overlap — an append beside a turn, a
-// compaction reservation. A caller that must NOT join — one that DELIVERS to a customer, so the
-// message the losing invoke erases is one somebody already read — waits for the thread with
-// `waitForTurnToClear` before it gets here, and gives the hold back and waits again if it still
-// lands on an occupancy (issues #658 and #689).
-//
-// WHICH IS BOTH TURNS, and the shorter rule it used to state ("one that owes a customer a single
-// reply") is why it took two issues: read that way, the proactive turn looked exempt, because nobody
-// is waiting on the other end of it. Nobody waiting is not the same as nothing delivered. #689
-// measured the proactive message reaching the customer and the channel ending without it, which is
-// the same loss as the reactive one — and worse in the other direction, since the nudge finishing
-// second erases the customer's own message along with the reply to it.
+// IT ALWAYS JOINS: `clearTurnOwning` releases one holder at a time for the callers that legitimately
+// overlap (an append beside a turn, a compaction reservation). A caller that DELIVERS to a customer
+// must not join: it waits with `waitForTurnToClear` first, and gives the hold back to wait again if
+// it still lands on an occupancy. That is BOTH turns: nobody waits on the proactive nudge, but either
+// finishing order still erases a message the customer already saw or sent (docs/graph.md).
 export async function markTurnOwning(
   owner: ThreadOwner,
   base: PrismaClient,
@@ -283,30 +231,22 @@ export async function markTurnOwning(
   return acquireTurnHold(owner, base);
 }
 
-// WHEN A TURN THAT MUST NOT JOIN AN OCCUPANCY GIVES UP WAITING FOR IT. The caller holds the deadline
-// rather than this function, because the wait is not one call: the acquisition it guards is taken
-// under the `ingest:` queue, this wait runs OUTSIDE that queue (PR review, round 4), and a caller
-// that loses the acquiring race comes back here. One deadline across all of those attempts is the
-// bound that means anything.
+// WHEN A TURN THAT MUST NOT JOIN AN OCCUPANCY GIVES UP WAITING. The caller holds the deadline because
+// the wait is not one call: the acquisition runs under the `ingest:` queue, this wait runs OUTSIDE
+// it, and a caller that loses the acquiring race comes back here. One deadline across all attempts
+// is the only bound that means anything.
 export function turnWaitDeadline(): number {
   return Date.now() + TURN_WAIT_MS;
 }
 
-// WAIT FOR THE THREAD TO READ FREE, TAKING NOTHING (issue #658). Returns true when nobody is on it,
-// false when `deadline` ran out and the caller should proceed beside whoever is — the outcome
-// TURN_WAIT_MS describes, and never a throw.
+// WAIT FOR THE THREAD TO READ FREE, TAKING NOTHING. True when nobody is on it, false when `deadline`
+// ran out and the caller should proceed beside whoever is (see TURN_WAIT_MS); never throws.
 //
-// IT ONLY READS, and that is the whole shape of it. Acquiring to find out is the obvious
-// alternative and it is the one thing this cannot do: `bumpTurnHolders` sets
-// `turn_held_until = now() + TURN_LEASE_SECONDS` unconditionally, so a waiter that acquired on every
-// poll would RENEW the lease of the very holder it is waiting for, twenty times a second, and
-// `clearTurnOwning` keeps that extension while the holder is still counted. A holder that CRASHED
-// would then never expire and the thread would be stranded for good — strictly worse than the Map
-// this module replaces, which a restart clears, and the exact failure the lease exists to prevent.
-//
-// Taking nothing is also what lets the caller wait outside the `ingest:` queue: holding that queue
-// across the wait starves the previous turn's own rollback, which needs the same key and runs after
-// it releases the thread.
+// IT ONLY READS. Acquiring to find out would RENEW the lease of the holder being waited for
+// (`bumpTurnHolders` extends `turn_held_until` unconditionally), so a CRASHED holder would never
+// expire and the thread would be stranded for good. Taking nothing also lets the caller wait outside
+// the `ingest:` queue: holding it across the wait starves the previous turn's own rollback, which
+// needs the same key after it releases the thread.
 export async function waitForTurnToClear(
   owner: ThreadOwner,
   base: PrismaClient,
@@ -319,9 +259,8 @@ export async function waitForTurnToClear(
     )
       return true;
     if (Date.now() >= deadline) {
-      // Loud, because degrading quietly to the old behaviour is how a hung turn stops being visible:
-      // the only thing that reaches this line is a holder that goes on renewing and never finishes,
-      // and nothing else in the system reports it.
+      // NOTE: loud, because the only thing that reaches this line is a holder that goes on renewing
+      // and never finishes, and nothing else in the system reports it.
       logger.warn(
         { thread: owner.graphThreadId, waitedMs: TURN_WAIT_MS },
         "a turn has held this thread past its lease without finishing; starting beside it rather than leaving the message unanswered",
@@ -336,21 +275,15 @@ async function acquireTurnHold(
   owner: ThreadOwner,
   base: PrismaClient,
 ): Promise<TurnHold> {
-  // Asked BEFORE this turn marks itself, or the answer is about this turn. The Map half still counts:
-  // an invoke in THIS process may hold a key that has no row to hold (./inflight.ts), so a claim that
-  // only reported what the row knew would report less than the registry it replaces.
-  //
-  // INVOKES only, not reservations. A reservation is a turn that has not started — the stretch a
-  // delivery recovery holds until it reaches this call — and counting it here answers "another
-  // invoke is reading" about the caller itself, which defers the attendance divider and the marker
-  // for the very turn taking the claim (./inflight.ts states the measurement).
+  // NOTE: asked BEFORE this turn marks itself, or the answer is about this turn. The Map half still
+  // counts: an invoke in THIS process may hold a key that has no row (./inflight.ts). INVOKES only,
+  // not reservations: a reservation is this very caller before it starts (a delivery recovery on its
+  // way here), and counting it would defer the attendance divider and marker for its own turn.
   const alreadyHere = isTurnRunning(owner.graphThreadId);
   markTurnInFlight(owner.graphThreadId);
-  // WHAT THE WAIT IS MEASURED AGAINST. Not a fixed span from the moment this call started: the
-  // append renews its own lease while it is alive, so a legitimate slow append would blow a fixed
-  // deadline and fail a customer's turn for something that is not a failure. What has to run out is
-  // the CLAIM, so the deadline restarts every time the lease moves forward, and only a lease that
-  // stopped moving (a holder that is neither finishing nor renewing) ends the wait.
+  // NOTE: the wait runs against the CLAIM, not a fixed span: the append renews its lease while alive,
+  // so a fixed deadline would fail a customer's turn over a legitimately slow append. The deadline
+  // restarts whenever the lease moves, and only a lease that stopped moving ends the wait.
   let seenLease: number | null = null;
   let deadline = Date.now() + WRITE_WAIT_MS;
   try {
@@ -363,15 +296,15 @@ async function acquireTurnHold(
         });
       }
       const inserted = await insertHeldByTurn(owner, base);
-      // A row this call created cannot have had a previous holder.
+      // NOTE: a row this call created cannot have had a previous holder.
       if (inserted !== null) {
         return renewing(owner, base, {
           epoch: inserted,
           heldBefore: alreadyHere,
         });
       }
-      // The row exists and the update was refused, so an append is in flight. It holds the claim for
-      // one checkpointer write, and says so by pushing the lease forward.
+      // NOTE: the row exists and the update was refused, so an append is in flight. It holds the claim
+      // for one checkpointer write, and says so by pushing the lease forward.
       const lease = await readWriteLease(owner, base);
       if (lease !== null && lease !== seenLease) {
         seenLease = lease;
@@ -405,11 +338,10 @@ export async function clearTurnOwning(
 ): Promise<void> {
   hold.stopRenewal?.();
   clearTurnInFlight(owner.graphThreadId);
-  // ONLY THE OCCUPANCY THIS TURN JOINED. A lease expires under a turn that is merely slow, and that
-  // turn still reaches here: without the epoch it decrements a count that now belongs to a DIFFERENT
-  // turn, zeroes it, and hands the thread to an append the newer invoke goes on to erase, which is
-  // the exact loss this module exists to stop. A stale release matching nothing is the correct
-  // outcome: the occupancy it belonged to was already ended by expiry.
+  // NOTE: ONLY THE OCCUPANCY THIS TURN JOINED. A lease expires under a turn that is merely slow, and
+  // that turn still reaches here: without the epoch it decrements a count that now belongs to a
+  // DIFFERENT turn, zeroes it, and hands the thread to an append the newer invoke goes on to erase. A
+  // stale release matching nothing is correct: its occupancy was already ended by expiry.
   await runScopedOn(
     base,
     sysCtx(owner.tenantId),
@@ -425,20 +357,14 @@ export async function clearTurnOwning(
   );
 }
 
-// Does ANY process have an invoke reading this thread's channel right now? The Map first, because a
-// turn in this process is already known here and the answer costs nothing; the row second, for the
-// replica that does not share it.
+// Does ANY process have an invoke reading this thread's channel right now? The Map first (free for a
+// turn in this process), the row second, for the replica that does not share it.
 //
-// AN UNREADABLE ANSWER IS "HELD", and that belongs here rather than at each call site. What this
-// replaces was `isTurnInFlight`, a Map lookup that could not fail; every caller was written against
-// a question that always answered, and each one uses the FALSE to act: /reset takes a conversation
-// off a human with it, compaction rewrites the channel with it, and ingestion writes the divider
-// with it. None of those may run on a guess. The true side costs a deferral the next attempt
-// retries, and /reset is a command the operator can simply type again.
-//
-// Caught here and not at four call sites because the next caller is the one that would arrive
-// without the guard. `turnOwnsThreadOn` keeps propagating: it runs on a transaction the caller
-// already holds and inside a step that reports its own failure, so there the throw is the report.
+// AN UNREADABLE ANSWER IS "HELD", decided here rather than at each call site so a new caller cannot
+// arrive without the guard. Every caller acts on FALSE (/reset takes a conversation off a human,
+// compaction rewrites the channel, ingestion writes the divider) and none may run on a guess; TRUE
+// costs a deferral the next attempt retries. `turnOwnsThreadOn` propagates instead: it runs on the
+// caller's transaction inside a step that reports its own failure, so there the throw is the report.
 export async function turnOwnsThread(
   owner: ThreadOwner,
   base: PrismaClient,
@@ -446,12 +372,10 @@ export async function turnOwnsThread(
   return (await readTurnClaim(owner, base)).held;
 }
 
-// WHAT THE ROW SAYS ABOUT THE CLAIM, which is one question more than `turnOwnsThread` projects. A
-// caller that can RECOVER from a dead holder needs to tell "nobody has this" from "somebody had this
-// and their lease lapsed": the two look identical through the boolean, and issue #593 names the cost
-// of that — "there is no durable claim to find expired, so there is no recovery to log". Expiry
-// lands on exactly the Map's behaviour (the writer proceeds), so the recovery is not a new
-// permission; what it lacked was a way to be reported.
+// WHAT THE ROW SAYS ABOUT THE CLAIM, one question more than `turnOwnsThread` projects. A caller that
+// can RECOVER from a dead holder must tell "nobody has this" from "somebody's lease lapsed", which
+// look identical through the boolean, so that the recovery can be logged. Expiry lands on the Map's
+// behaviour (the writer proceeds), so the recovery grants no new permission.
 export interface TurnClaimState {
   // Is an invoke reading this thread's channel right now, here or on another replica.
   held: boolean;
@@ -460,9 +384,9 @@ export interface TurnClaimState {
   staleHolders: number;
 }
 
-// The same read `turnOwnsThread` does, projected whole. Fail-closed like the boolean it replaces:
-// an unreadable row answers "held", for the reason the comment above `turnOwnsThread` gives, and
-// reports no stale holders, since a read that failed saw no lapsed lease either.
+// The same read `turnOwnsThread` does, projected whole, and fail-closed the same way: an unreadable
+// row answers "held" (see `turnOwnsThread`) and reports no stale holders, since a read that failed
+// saw no lapsed lease either.
 export async function readTurnClaim(
   owner: ThreadOwner,
   base: PrismaClient,
@@ -483,10 +407,9 @@ export async function readTurnClaim(
 }
 
 // The same question, asked on a transaction the caller ALREADY holds. A helper that opens its own
-// transaction from inside one waits for a connection the outer one cannot release until it returns,
-// and `DB_POOL_MAX=1` is a supported setting: measured, the nested transaction fails after 2047ms
-// with "Unable to start a transaction in the given time". The rule is the one
-// `revokeJobsByKeyPrefixOn` already follows.
+// transaction from inside one waits for a connection the outer one cannot release, and under the
+// supported `DB_POOL_MAX=1` the nested one fails ("Unable to start a transaction in the given
+// time"). `revokeJobsByKeyPrefixOn` follows the same rule.
 export async function turnOwnsThreadOn(
   db: ScopedDb,
   owner: ThreadOwner,
@@ -538,16 +461,13 @@ async function ensureRowToLock(
     ON CONFLICT (tenant_id, chatwoot_instance_id, contact_inbox_id) DO NOTHING`;
 }
 
-// IS ANYONE AT ALL MID-WRITE ON THIS THREAD, asked by `/reset` and by nobody else. The two claims
-// answer different questions and only this caller wants both: an append asks whether a TURN holds
-// the channel (counting its own write claim would make it refuse itself), while a reset is about to
-// delete the row and the checkpoint, so an append in flight is just as disqualifying as an invoke.
-// Measured from the topology docs/deploy.md §4 sanctions: the append runs on the leader and the
-// reset arrives on a web replica, so "no turn" said nothing about the append at all, and the reset
-// went on to delete a checkpoint that a live append then wrote a watermark for.
-//
-// Locks the row for the rest of the caller's transaction, and creates one first when the thread has
-// none, for the reason `ensureRowToLock` states.
+// IS ANYONE AT ALL MID-WRITE ON THIS THREAD, asked only by `/reset`. An append asks whether a TURN
+// holds the channel (counting its own write claim would make it refuse itself); a reset deletes the
+// row and the checkpoint, so an append in flight disqualifies it as much as an invoke does. On the
+// docs/deploy.md §4 topology the append runs on the leader and the reset on a web replica, so a turn
+// check alone says nothing about the append.
+// Locks the row for the rest of the caller's transaction, creating one first when the thread has
+// none (see `ensureRowToLock`).
 export async function threadBusyForResetOn(
   db: ScopedDb,
   owner: ThreadOwner,
@@ -566,14 +486,11 @@ export async function threadBusyForResetOn(
 }
 
 // Take the thread for ONE append.
-//
-//   "busy"      a turn owns it, or another append is mid-flight. The caller stands down with nothing
-//               written: the message stays OWED, which is the whole point, because recording it as
-//               handled and not having it is the loss this closes.
-//   "claimed"   held on a row that already existed. Release it.
-//   "created"   held on a row this call created, because the thread had none. Release it the same
-//               way; the difference is what release does with a row nothing went on to write, which
-//               is delete it (see `releaseIngestWrite`).
+//   "busy"     a turn owns it or another append is mid-flight. Nothing is written and the message
+//              stays OWED, since recording it as handled without having it is the loss this closes.
+//   "claimed"  held on a row that already existed.
+//   "created"  held on a row this call created; the release deletes it if nothing went on to write
+//              (see `releaseIngestWrite`).
 export type IngestWriteState = "claimed" | "created" | "busy";
 
 // The claim, plus the token that proves it. Same reason the turn side carries an epoch: a write
@@ -648,17 +565,11 @@ export async function claimIngestWrite(
   );
   if (updated > 0)
     return renewingWrite(owner, base, { state: "claimed", token });
-  // NO ROW YET, and that is not the same as protected. Leaving it unclaimed was the hole: a turn on
-  // another replica inserts its own claim right after this read, loads the channel, and the append
-  // lands inside the invoke exactly as it would have with no fence at all. It is the FIRST message
-  // on a thread, which is the one case where the row does not exist yet.
-  //
-  // So the claim is taken by CREATING the row, held by this append alone (`ON CONFLICT DO NOTHING`
-  // yields to whoever inserted first, and the caller reads that as busy). The row this creates
-  // carries nothing but the claim: no watermark, no conversation, no remembered ids. That matters
-  // because of what has to stay true afterwards, and `releaseIngestWrite` is where it is made true:
-  // an append that ends up writing nothing (a job the operator revoked with /reset while it waited)
-  // must leave no row behind either.
+  // NOTE: no row yet is not protected: a turn on another replica could insert its claim right after
+  // this read and load the channel under the append (the FIRST message on a thread). So the claim is
+  // taken by CREATING the row, held by this append alone (`ON CONFLICT DO NOTHING` yields to the
+  // first inserter, read as busy). The row carries only the claim, so `releaseIngestWrite` can delete
+  // it when the append ends up writing nothing (a job /reset revoked while it waited).
   const created = await runScopedOn(
     base,
     sysCtx(owner.tenantId),
@@ -684,12 +595,11 @@ export async function releaseIngestWrite(
   claim.stopRenewal?.();
   if (claim.token === null) return;
   if (claim.state === "created") {
-    // The row exists only because the claim needed something to hold. If the append went on to
-    // write, the row now carries that write and stays; if it stood down (the message was already
-    // known, or `/reset` revoked the job while it waited), deleting it is what keeps "an append that
-    // writes nothing leaves nothing" true, including for the operator who was just told the thread
-    // was cleared. Gated on the row's own emptiness AND on this claim's token, so neither a
-    // concurrent writer's data nor a renewed claim is thrown away by a release that arrived late.
+    // NOTE: the row exists only because the claim needed something to hold. If the append wrote, the
+    // row carries that write and stays; if it stood down (message already known, or `/reset` revoked
+    // the job), deleting it keeps "an append that writes nothing leaves nothing" true. Gated on the
+    // row's emptiness AND this claim's token, so a late release throws away neither a concurrent
+    // writer's data nor a renewed claim.
     const deleted = await runScopedOn(
       base,
       sysCtx(owner.tenantId),

@@ -18,29 +18,12 @@ import {
 } from "./thread-claim";
 import { buildThreadStateGraph, THREAD_STATE_NODE } from "./thread-state";
 
-// WHAT A PROACTIVE TURN LEAVES BEHIND WHEN IT IS REFUSED AFTER IT WAS GENERATED.
-//
-// `runAgentNudge` invokes the graph, and the graph checkpoints as it runs: the nudge directive and
-// the assistant's answer are in the thread's history the moment `invoke` returns. Every refusal that
-// comes AFTER that point suppresses the send and leaves the pair there: an operator took the
-// conversation, a `/reset` retired the job, the agent was switched off mid-turn. The customer never
-// received the message, and the NEXT turn reads it as something they did, and answers "as I
-// mentioned" about a sentence nobody was shown (issue #251).
-//
-// Measured before this module existed, against the test database, with the job retired during
-// generation:
-//
-//   OUTCOME: stale   SENT TO CUSTOMER: []
-//   channel: [human] An external system event just occurred…   [ai] Oi, ainda precisa de ajuda?
-//
-// Removing it is the only shape that leaves the history equal to what the customer received. The two
-// alternatives were weighed and rejected in the issue: DELIVERING what was generated is wrong in the
-// direction that matters (the refusals exist precisely because the conversation stopped being ours to
-// write in), and MARKING the turn as undelivered keeps the text in every prompt from here on and
-// makes every reader of the history responsible for understanding the mark.
-//
-// The mechanism is the one memory compaction already uses (src/modules/memory/compact.ts): name the
-// ids, never REMOVE_ALL_MESSAGES, so a message that arrived from anywhere else is left alone.
+// What a proactive turn leaves behind when it is refused after it was generated. The graph
+// checkpoints as it runs, so a suppressed send (takeover, `/reset`, agent switched off) leaves the
+// directive and the answer in history, and the next turn would say "as I mentioned" about a sentence
+// nobody was shown. Removing them is the only shape that matches what the customer received:
+// delivering is wrong (the conversation stopped being ours to write in), and marking the turn keeps
+// the text in every later prompt. Removal names ids, never REMOVE_ALL_MESSAGES, like compaction.
 
 export type RollbackPlan =
   | { action: "remove"; ids: string[] }
@@ -53,51 +36,21 @@ export type RollbackPlan =
         | "another-invoke-is-reading";
     };
 
-// A tool call is the line between a turn that only SAID something and one that DID something. The
-// transfer is the case that forces it: `handoffAnsweredTheTurn` hands the conversation to the human
-// queue from inside the graph, and `runAgentNudge` says so in its own words: "the transfer itself
-// still stands: the tool ran inside the graph and this fence was never able to reverse it". Erasing
-// the turn would erase the only record of an act that really happened, to the outside world, and no
-// removal here can undo. So the question is asked of the whole slice and answered conservatively:
-// any tool call at all, and the turn stays.
-// `skip_reply` is the one tool that acts on NOTHING — it is the decision to stay quiet, and since
-// #454 it is how a follow-up says so. Counting it as an action pins a refused turn's directive and
-// tool result in shared memory after a `/reset`, a takeover, or any post-generation refusal: exactly
-// the residue this planner exists to clear, and now reachable through the silence protocol itself.
-// A NAME IS NOT AN IDENTITY HERE EITHER, and this one is a real collision rather than a hypothetical:
-// `toolDefinitionCreateSchema` does not reserve the native names, so an agent with native tools
-// disabled can grant a custom HTTP tool called `skip_reply` that really does call something. Judging
-// by name alone would let a refused turn be removed after that call went out, which is the exact case
-// `actedOnTheWorld` exists to preserve. So the CALLER — the only side that knows which tool was
-// actually bound — passes the set, and an empty set means nothing was inert.
-//
-// THE SECOND WAY A CALL PERFORMS NOTHING is that it never ran at all (issue #449): the graph's tool
-// boundary refuses a batch when the turn was called off mid-invoke and answers each call with a
-// marked `ToolMessage`. That one is not a set of NAMES and could not be — the refusal covers every
-// tool source, so the names are whatever the operator granted — and it is not the content either,
-// since a tool is free to return the same sentence. It is the marker only the graph writes.
-//
-// PAIRED BY POSITION, WHICH IS WHAT THE MECHANISM ACTUALLY IS. The boundary refuses a BATCH: it
-// either answers every call of the assistant turn it just read, or none of them, and it emits those
-// answers directly after that turn. So the assistant turn a refusal follows is the one whose calls
-// did not run.
-//
-// Pairing by `tool_call_id` was the first version of this and it read the wrong axis. A provider may
-// emit a call with no id — LangChain types it optional — and the refusal then carries `""`, which
-// matches no call: the turn came back as "a tool ran" and the cancelled nudge stayed in shared
-// memory, which is the defect this branch exists to close (review round 3).
-//
-// Positional rather than "the slice contains a refusal", because a turn can run a tool on one hop
-// and be refused on the NEXT: that first result is a real act and the slice has to stay whole.
+// A tool call separates a turn that only SAID something from one that DID something (a transfer
+// cannot be undone), so any tool call keeps the whole slice. Two calls perform nothing: `skip_reply`,
+// judged from the bound set the caller passes (a custom HTTP tool may carry that name and really
+// act), and a call the graph's boundary refused, recognized by the graph-only marker. A refusal pairs
+// by POSITION with the assistant turn right before it (the boundary answers a whole batch there);
+// `tool_call_id` is wrong, since a call may have no id. Positional rather than "the slice contains a
+// refusal", because a turn can run a tool on one hop and be refused on the next.
 function isInertToolCall(
   m: BaseMessage,
   inert: ReadonlySet<string>,
   // The message directly after `m` in the slice, or undefined at the end of it.
   next: BaseMessage | undefined,
 ): boolean {
-  // NOTE: No early return on an empty set, deliberately: `inert.has` already answers false for one, and
-  // the shortcut made a by-name mutation of the branch below unobservable — the battery could not
-  // tell the two implementations apart.
+  // NOTE: no early return on an empty set: `inert.has` already answers false, and the shortcut would
+  // make a by-name mutation of the branch below unobservable to the tests.
   if (m.getType() === "tool") {
     if (isCalledOffToolResult(m)) return true;
     const name = (m as { name?: string }).name;
@@ -150,8 +103,7 @@ export function planTurnRollback(
   produced: readonly BaseMessage[],
   current: readonly BaseMessage[],
   // Tools whose call performed NOTHING, so a turn holding only those can still be taken back. Named
-  // by the caller because only the toolset knows which tool a name resolved to; empty by default,
-  // which is the behaviour every caller had before the silence protocol existed.
+  // by the caller because only the toolset knows which tool a name resolved to.
   inertTools: ReadonlySet<string> = new Set(),
 ): RollbackPlan {
   // NOTE: the LAST one, not the first: the thread can already carry the directive of an earlier nudge that
@@ -191,25 +143,12 @@ function nameWhatSurvived(
   return { action: "remove", ids };
 }
 
-// WHAT A REACTIVE TURN LEAVES BEHIND, which is the same residue and NOT the same slice (issue #315).
-//
-// `runLoadedTurn` appends the customer's own message and then invokes, so the pair in the channel is
-// [their message][our answer] — and every refusal below the invoke suppresses only the second half.
-// The proactive plan above removes the directive together with the answer because this process wrote
-// the directive; doing that here would delete the customer's message, and on `superseded` it is
-// precisely the message the re-armed flush exists to answer.
-//
-// So the removable part is named directly rather than by a boundary: the trailing run of assistant
-// messages that neither called a tool nor are a tool result. It stops at the first message that is
-// anything else, which means it can never reach a HumanMessage of any kind — the customer's, a
-// divider, a memory head, a nudge, or an attendant's — and it needs no rule about where a turn
-// "starts".
-//
-// That also answers the tool case better than the proactive plan could. There, the directive and the
-// act are one slice, so any tool call keeps everything. Here the act sits OUTSIDE the trailing run by
-// construction: the tool call and its result stay, and only the sentence nobody read comes out. A
-// transfer that really happened keeps its record, and the closing line the customer never saw does
-// not go on to be read as something they were told.
+// What a reactive turn leaves behind: the same residue, not the same slice. The channel holds
+// [customer message][our answer], and removing the first would delete the message a re-armed flush
+// exists to answer. So the removable part is the trailing run of assistant messages with no tool
+// call; it can never reach a HumanMessage of any kind, and needs no rule about where a turn starts.
+// A tool call and its result sit outside that run, so a real transfer keeps its record and only the
+// unread closing line goes.
 function saidSomethingAndNothingElse(m: BaseMessage): boolean {
   return (
     m.getType() === "ai" && ((m as AIMessage).tool_calls?.length ?? 0) === 0
@@ -238,44 +177,13 @@ export function planReactiveTurnRollback(
   return nameWhatSurvived(produced.slice(start), current);
 }
 
-// Reads the channel and writes the removal under the SAME key the append and the compaction rewrite
-// take (`ingest:<graphThreadId>`), so the read and the write are one step as far as those two are
-// concerned.
-//
-// THE QUEUE IS NOT ENOUGH, AND THE COUNT IS WHY. A turn takes that key to mark itself and RELEASES
-// it before the model runs, so an invoke in flight is not holding anything this could queue behind.
-// What it is holding is a claim in `src/graph/inflight.ts`, and the hazard that registry exists for
-// is exactly this one: an invoke is a read-modify-write of the WHOLE channel, so one that loaded the
-// refused turn will save it back the moment it finishes, undoing a removal written underneath it.
-//
-// Memory compaction answers this by reading the count before adding its own claim and standing down
-// (`isTurnInFlight` -> "busy"), and so does this. The difference is what standing down costs: a
-// deferred compaction runs again at the next attendance boundary, and a deferred rollback has no
-// later, so the refused turn stays in the history. That is the honest outcome rather than a better
-// one: writing a removal that another invoke is about to undo leaves the same history and a
-// checkpoint that says otherwise. It is named and logged so the case is visible instead of silent.
-//
-// The nudge's own claim is already released by the time any refusal reaches here (the `finally` that
-// clears it sits above them all), so this never stands down on account of itself.
-//
-// AND THE MAP IS NOT ENOUGH EITHER, WHICH IS WHAT `owner` IS FOR. `isTurnInFlight` is a Map in ONE
-// process, and on the topology docs/deploy.md §4 sanctions — extra web replicas, workers on one
-// leader — the turn runs wherever the webhook landed. A caller reaches this line just after
-// releasing its own durable claim (it has to: the check above would otherwise read that claim and
-// stand down on itself), so the moment this runs is exactly the moment another replica may start.
-//
-// THIS IS AN APPEND, so it takes the claim appends take. Writing to the message channel from outside
-// an invoke is what `claimIngestWrite` exists to fence (thread-claim.ts), and it is the same shape:
-// a bounded read-plan-write, not a model turn. Held, a turn STARTING on any replica waits for it and
-// then loads a channel the sentinel has already left; held by someone else, this stands down under
-// the name it already had. The durable TURN claim would not have done: `turn_holders` is counted, so
-// two turns share a thread by design and holding one excludes no other turn at all.
-//
-// WHERE IT STILL STOPS. An invoke ALREADY reading the channel cannot be excluded by anything here —
-// it will save back what it loaded — and a thread with no `contactInboxId` has no row to hang a
-// claim on, so the fallback key keeps the Map alone. Losing either race costs exactly what happens
-// with no rollback: the refused turn stays in the history. Best-effort against a concurrent invoke,
-// and never worse than not having run.
+// Reads the channel and writes the removal under the same `ingest:<graphThreadId>` key the append
+// and compaction take. The queue alone is not enough: an invoke in flight holds no key but loads and
+// saves back the whole channel, so like compaction this stands down when `isTurnInFlight`, and the
+// refused turn then stays (a removal about to be undone is worse). Across replicas it also takes
+// `claimIngestWrite`, the append claim (the counted turn claim excludes no other turn). An invoke
+// already reading, or a thread with no contact inbox, still cannot be excluded: best-effort, never
+// worse than not running. Details in docs/graph.md, "The tool boundary, when the turn was called off".
 export async function undoRefusedTurn(params: {
   checkpointer: BaseCheckpointSaver;
   graphThreadId: string;
@@ -289,8 +197,8 @@ export async function undoRefusedTurn(params: {
   // that happens to be named like a native one is never mistaken for the inert one.
   inertTools?: ReadonlySet<string>;
   // The DURABLE half of the exclusion, for the one thread key that has a row to hang it on. Both or
-  // neither: without them this keeps the process-local answer it always had, which is all a thread
-  // with no contact inbox can ever have.
+  // neither: without them only the process-local check applies, which is all a thread with no
+  // contact inbox can have.
   owner?: ThreadOwner | null;
   base?: PrismaClient;
 }): Promise<RollbackPlan> {
@@ -303,10 +211,9 @@ export async function undoRefusedTurn(params: {
     if (isTurnInFlight(graphThreadId)) {
       return { action: "keep", reason: "another-invoke-is-reading" };
     }
-    // BEFORE the Map mark, and the order is forced rather than chosen: `claimIngestWrite` asks
-    // `isTurnInFlight` itself, so a mark taken first would make this call refuse on account of the
-    // caller. Same order continuous ingestion uses (ingest.ts), which is also why the two cannot
-    // deadlock: queue, then claim, both times.
+    // NOTE: before the Map mark, forced: `claimIngestWrite` asks `isTurnInFlight` itself, so marking
+    // first would refuse on account of the caller. Same order as ingest.ts (queue, then claim), which
+    // is why the two cannot deadlock.
     let write: IngestWriteClaim | null = null;
     if (owner && base) {
       const held = await claimIngestWrite(owner, base);
@@ -337,14 +244,9 @@ export async function undoRefusedTurn(params: {
       return decided;
     } finally {
       clearTurnInFlight(graphThreadId);
-      // NOTE: Released on every exit, including a throw: a claim left behind defers every append on this
-      // thread until its lease runs out.
-      //
-      // ...and BEST-EFFORT, the way ingestion releases its own. A transient failure here would
-      // otherwise throw out of a `finally` that runs after the rollback already succeeded, turning a
-      // clean removal into an error the caller reports — and the claim would be stranded either way,
-      // since the release stops the lease renewal before it touches the database. The lease is the
-      // recovery path; what this owes is a name in the log (round 21).
+      // NOTE: released on every exit (a stranded claim defers every append until its lease ends), and
+      // best-effort: a throw here would turn a successful removal into an error, and the claim is
+      // stranded either way since release stops the renewal first. The lease is the recovery path.
       if (write && owner && base) {
         try {
           await releaseIngestWrite(owner, base, write);

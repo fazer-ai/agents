@@ -3,31 +3,11 @@ import { estimateTokenCount } from "tokenx";
 import { contentToText } from "./message-text";
 
 // Token estimation for the per-agent history ceiling (agent.settings.limits.maxHistoryTokens).
-//
-// THIS IS AN ESTIMATE, ON PURPOSE, because precision here would be false precision. The ceiling
-// bounds the HISTORY only: the system prompt and the tool definitions sit above it and are never
-// counted, and on the install that motivated this feature those were 15,806 tokens. Being exact
-// about the history while ignoring a floor that size buys nothing, and exactness is expensive — a
-// real BPE table costs ~176MB of resident memory (measured inside the deploy image on both
-// architectures), it is OpenAI-only (js-tiktoken ships no table for Anthropic or Google, which
-// expose token-counting ENDPOINTS instead, i.e. a network round trip per turn), it forces a choice
-// of encoding that is wrong for whichever models you did not pick, and its `encode` THROWS on a
-// control marker such as <|endoftext|> — text a customer can simply type into WhatsApp.
-//
-// `tokenx` is 84KB, has no dependencies, adds ~3MB of RSS and is calibrated against o200k_base, the
-// encoding every current OpenAI model uses. Measured against that tokenizer on a realistic clinic
-// thread (12 turns of customer prose, agent replies, tool calls and tool results carrying ids and
-// ISO timestamps):
-//
-//   whole thread  -17.3%      prose only  -7.1%      JSON payloads  -18.8%
-//   worst single sample: a URL carrying a uuid, -42%
-//
-// It runs LOW, so a ceiling of N lets through roughly N * 1.2 of what OpenAI actually bills on a
-// tool-heavy thread. That is disclosed in the operator hint rather than papered over with a
-// correction factor: a factor would be right for one content mix and wrong for the next, and it
-// would be a pure guess outside the OpenAI family, where any local estimate is an approximation
-// regardless. What matters is that the thread ends up BOUNDED — the measured problem was 79.8k
-// tokens and climbing, not the difference between 12k and 14k.
+// AN ESTIMATE ON PURPOSE: the ceiling bounds the HISTORY only (system prompt and tool definitions are
+// never counted), so exactness buys nothing, while a real BPE table costs ~176MB resident, is
+// OpenAI-only, and THROWS on control markers a customer can type. `tokenx` runs LOW against
+// o200k_base, so a ceiling of N admits roughly N * 1.2; the operator hint discloses that instead of a
+// correction factor, which would fit one content mix only. Figures in docs/graph.md, History ceiling.
 
 export type TokenCounter = (message: BaseMessage) => number;
 

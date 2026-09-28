@@ -318,16 +318,11 @@ export interface DirectGeneration {
   at?: Date;
 }
 
-// A BILLED CALL NO CALLBACK SAW, written to Langfuse by hand (#426, review round 2). Vision reaches
-// its provider by raw fetch, so the handler above never observes it and Langfuse never prices it:
-// the ledger had the row (`recordDirectUsage`) and the dollar ceiling, which sums Langfuse's
-// generations, had nothing. Same trace identity as the handler (id = turnId, sessionId = threadId,
-// userId = tenant slug) and the same cached client, so the same environment: the poll's filters
-// find it exactly as they find a turn's generations, and a later turn under the same id merges
-// into the same trace. `usageDetails` carries the keys the LangChain handler writes (`input` net of
-// the cached subsets, the subsets under `input_cache_read` / `input_cache_creation`), so one model
-// definition prices both paths alike. Best-effort, like every trace here: never throws, and says
-// whether it queued anything so the caller can log the miss.
+// A billed call no callback saw, written to Langfuse by hand: vision reaches its provider by raw
+// fetch, so without this the dollar ceiling (which sums Langfuse generations) misses it. Same trace
+// identity and client as the handler, so the poll finds it and a later turn merges into the trace;
+// `usageDetails` uses the LangChain handler's keys so one model definition prices both paths.
+// Best-effort: never throws, and returns whether it queued anything so the caller can log a miss.
 export function recordDirectGeneration(
   cfg: LangfuseConfig | null,
   ctx: DirectGenerationContext,

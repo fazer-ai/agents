@@ -1,29 +1,12 @@
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 
-// Whether the customer messages a turn answers are what reopened a RESOLVED conversation (issue
-// #897): a thank-you after a close, which an `acknowledged` silence should put back to `resolved`.
-//
-// Read off Chatwoot's own activity trail on the page the turn fetches, not off anything we record.
-// `ActivityMessageHandler#status_change_activity` writes a `conversation_status_changed` activity,
-// with the status in `content_attributes.activity`, for every status change made by a person, by
-// the API (our own resolve included) or by an automation. It writes NONE when the contact's own
-// message reopens a bot inbox's conversation (`Message#reopen_resolved_conversation` moves it to
-// `pending` with no user and no `executed_by`, so the activity content is blank and skipped).
-// Measured on one deployment's e-mail inbox over three days: 582 activities for the agent's
-// resolves, 449 + 436 for automation reopens, none for a contact's reopen. So the trail answers
-// the question directly, with no clock and no webhook ordering:
-//
-//   * the LAST status activity on the page says `resolved`, and it comes before the burst: the
-//     conversation was closed and nothing since has reopened it except a message; and
-//   * no public message sits between that activity and the burst: the burst is the first thing
-//     anybody said after the close, not an "ok" later in an episode the reopen already started;
-//   * nothing public comes after the burst either: a turn that runs late, after a newer message was
-//     already answered, would otherwise close the case that newer message opened.
-//
-// Conservative on every edge, which leaves today's behaviour (the conversation waits in `pending`):
-// the close scrolled off the page, a close written after the message (the activity job is
-// asynchronous, so a thank-you seconds after the close can precede its row), an operator's reopen,
-// any status row at all after the close.
+// Whether the customer messages a turn answers are what reopened a RESOLVED conversation (a
+// thank-you after a close), so an `acknowledged` silence can put it back to `resolved`. Read off
+// Chatwoot's activity trail: every status change by a person, the API or an automation writes a
+// `conversation_status_changed` activity, but a contact's message reopening a bot inbox writes none.
+// True only when the last status row is `resolved`, precedes the burst, and no other public message
+// sits after it. Every uncertain edge (close scrolled off the page, the async activity row landing
+// after the message, an operator reopen) answers false, leaving the conversation in `pending`.
 export function burstReopenedResolved(
   page: readonly ChatwootMessageRow[],
   burstIds: readonly number[],

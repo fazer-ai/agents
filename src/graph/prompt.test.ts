@@ -65,10 +65,9 @@ describe("interpolatePromptVars time rounding", () => {
   });
 });
 
-// ISSUE #749. The wording table, kept here because the end-to-end files prove the SEAM (the instant
-// reaching the prompt) and would be a slow place to enumerate boundaries. The steps are minutes →
-// hours → days, and each boundary is asserted on both sides: a unit that only checks the middle of a
-// range passes with the comparison flipped.
+// The wording table, kept here because the end-to-end files prove only the seam (the instant reaching
+// the prompt). Steps are minutes, hours, days, and each boundary is asserted on both sides: a unit
+// that only checks the middle of a range passes with the comparison flipped.
 describe("interpolatePromptVars message age", () => {
   const now = new Date("2026-09-20T12:00:00-03:00");
   const ago = (ms: number) => new Date(now.getTime() - ms);
@@ -118,11 +117,9 @@ describe("interpolatePromptVars message age", () => {
   });
 });
 
-// The DATE the customer wrote, which is a different question from how long ago. An agent told only
-// "há 9 dias" still has to subtract to know which day "hoje" meant in the message, and measured on
-// the Guichê Web e-mail agent it does not: asked to do that subtraction it answered with TODAY's
-// date as the event's. The cases below fence the three things that made the phrase insufficient —
-// the day is the customer's, the zone is the one the clock variables use, and no instant is empty.
+// The DATE the customer wrote, a different question from how long ago: an agent told only "há 9
+// dias" does not subtract, and answers with TODAY's date as the event's. These cases fence that
+// the day is the customer's, the zone matches the clock variables, and no instant is empty.
 describe("interpolatePromptVars message date", () => {
   const now = new Date("2026-09-21T12:00:00-03:00");
   const tz = "America/Sao_Paulo";

@@ -42,10 +42,9 @@ export interface DocumentToolDeps {
   // not receive a quote dated tomorrow.
   timezone?: string;
   // The playground SIMULATES conversation tools rather than running them, and a document tool is
-  // conversation-scoped in the same way — it needs a turn to attach to. Without this it was listed
-  // as a live tool and refused every call with the proactive-message message, so the operator saw
-  // behaviour the production path never produces. Simulated, they see the agent CHOOSE it, which is
-  // the thing the playground is for, and no number is consumed and no row is written.
+  // conversation-scoped in the same way (it needs a turn to attach to). Run live, it would refuse
+  // every call with the proactive-message message, behaviour production never shows. Simulated, the
+  // operator sees the agent CHOOSE it, and no number is consumed and no row is written.
   simulate?: boolean;
 }
 
@@ -78,10 +77,8 @@ function fieldSchema(field: DocumentField): z.ZodTypeAny {
     case "lineItems":
       return described(
         z.array(
-          // Strict INSIDE the item too. The outer object's strictness cannot see a nested key, so a
-          // model putting a discount inside a line item had it stripped before the tool body ran and
-          // issued a document without data it believed it sent — the exact silent drop the strict
-          // schema exists to stop, one level down.
+          // NOTE: strict INSIDE the item too. The outer object's strictness cannot see a nested key,
+          // so a discount inside a line item would be stripped silently, one level down.
           z
             .object({
               description: z.string(),
@@ -108,25 +105,12 @@ export function documentToolSchema(fields: DocumentField[]): z.ZodTypeAny {
   return z.object(shape).strict();
 }
 
-// Same values, same day, same document. Derived from the thread and the values rather than taken as
-// an argument, so a retried turn — the model repeating itself, the graph resuming — reuses the row
-// instead of putting a second numbered document in front of one customer.
-//
-// The DAY is in the key because a retry is what this covers, and a key with nothing time-bound in it
-// never expires: a customer coming back weeks later for the same service, with the same values, was
-// answered with the frozen document — its old number, its old date, and a validity that may have run
-// out. A conversation is not a window; a day is a generous one for a retry and a short one for
-// everything else.
-//
-// It is also the answer to a document the agent issued for a turn that was then DISCARDED — taken
-// over, superseded, blocked. The row stays: it is the record that the agent produced it, and the
-// operator can see it and send it by hand. Within the day, the same request reuses it rather than
-// burning a second number; after that, it stops being reachable by accident.
-//
-// Key ORDER is not part of the value. Zod rebuilds the parsed object in the schema's order, and the
-// schema's order is the template's declared fields — so reordering those between a call and its
-// retry changes `JSON.stringify` and therefore the key, and the retry issues a SECOND numbered
-// document instead of recovering the frozen one. The values are the same values either way.
+// Same values, same day, same document. Derived from the thread and values rather than taken as an
+// argument, so a retried turn reuses the row instead of issuing a second numbered document. The DAY
+// bounds that reuse: a key with nothing time-bound would answer a customer returning weeks later
+// with the frozen document (old number, old date, lapsed validity). A document issued for a turn
+// later DISCARDED stays as the record, reusable within the day. Keys are sorted because Zod rebuilds
+// the object in schema order, and reordered template fields would otherwise change the key.
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (typeof value !== "object" || value === null) return value;
@@ -207,20 +191,10 @@ export function buildDocumentTools(
         if (!turnState) {
           return "Não é possível anexar um documento neste momento (mensagem proativa). Diga ao cliente que ele será enviado na conversa.";
         }
-        // AT MOST ONE document per turn, across every document tool. The file is ours and small, so
-        // the byte budget send_image carries buys nothing here, while two priced documents in one
-        // message is the actual failure mode.
-        //
-        // The slot is taken BEFORE the await, like send_image's, and for a sharper reason: one model
-        // response's tool calls run under Promise.all, so a check that only reads the QUEUE is read
-        // by every call in the batch while the queue is still empty. All of them would pass, all of
-        // them would issue — a numbered row and a rendered PDF each — and all but one would then be
-        // thrown away, leaving documents on the tenant's list that were never sent and that nobody
-        // can account for.
-        //
-        // Released in `finally`, so a refusal does not burn the turn. The model is told what to fix
-        // and its corrected call arrives in the same turn; on the way out the queue carries the
-        // claim instead.
+        // NOTE: at most one document per turn, across every document tool. The slot is taken BEFORE
+        // the await: one response's tool calls run under Promise.all, so a check that only reads the
+        // queue passes every call in the batch, each issuing a numbered row nobody sends. Released in
+        // `finally`, so a refusal does not burn the turn; on the way out the queue carries the claim.
         if (
           turnState.documentsInFlight > 0 ||
           turnState.pendingAttachments.some((a) => a.kind === "document")
@@ -229,15 +203,10 @@ export function buildDocumentTools(
         }
         turnState.documentsInFlight++;
         const order = turnState.attachmentsSeq++;
-        // ONE clock read for the whole issuance. The key carries a calendar day and the document
-        // prints one, and two `new Date()` calls straddling midnight would disagree: the key would
-        // say yesterday while the page says today, so a retry an hour later computes a different key
-        // and issues a SECOND numbered document for one request.
-        //
-        // NOT COVERED BY A TEST: reaching it needs the clock to advance across a day boundary
-        // between two adjacent statements, which a frozen test clock cannot do and a real one cannot
-        // be asked to. The property is structural instead — there is one read, and both consumers
-        // are handed it.
+        // NOTE: one clock read for the whole issuance. The key carries a calendar day and the document
+        // prints one; two reads straddling midnight would disagree and a later retry would issue a
+        // SECOND numbered document. Not testable (a frozen clock cannot cross a day between two
+        // statements), so the property is structural: one read, handed to both consumers.
         const at = new Date();
         try {
           const issued = await issueDocument({

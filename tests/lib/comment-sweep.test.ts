@@ -151,6 +151,19 @@ describe("the line ceiling", () => {
     expect(commentBlocks("// biome-ignore lint/x: reason #12")).toEqual([]);
     expect(commentBlocks("// @full-only\nconst a = 1;")).toEqual([]);
   });
+
+  test("a server i18n anchor is a directive, and the prose above it is still its own block", () => {
+    const anchors = Array.from(
+      { length: BLOCK_LINE_CEILING + 2 },
+      (_, i) => `// translate('errors.k${i}', 'Default ${i}.')`,
+    ).join("\n");
+    expect(commentBlocks(anchors)).toEqual([]);
+    const withProse = `// Declared here for the extractor.\n${anchors}`;
+    expect(commentBlocks(withProse).map((b) => b.lines)).toEqual([1]);
+    expect(commentBlocks("// we translate here before sending")).toHaveLength(
+      1,
+    );
+  });
 });
 
 describe("history narration is reported, not enforced", () => {

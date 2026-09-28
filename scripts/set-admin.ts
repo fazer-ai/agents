@@ -7,7 +7,7 @@ import { PrismaClient, type UserRole } from "../generated/prisma/client";
 
 export interface ExistingUserUpdatePlan {
   // Present only when a promotion is actually needed (the role the person holds where it counts is
-  // below target). Role and tenant travel TOGETHER because they are one fact (issue #756):
+  // below target). Role and tenant travel TOGETHER because they are one fact:
   // SUPER_ADMIN is the person, with no tenant, and any other role is a membership in `tenantId`.
   promotion?: { role: UserRole; tenantId: bigint | null };
   passwordHash?: string;
@@ -16,9 +16,8 @@ export interface ExistingUserUpdatePlan {
 
 // Pure decision logic for updating an EXISTING user (no DB/hashing I/O), so the "never
 // silently demote, never split role from tenant" rule is unit-testable. Setting a password
-// must NOT force a role change: a SUPER_ADMIN given a password used to get unconditionally
-// reset to the computed TENANT_ADMIN role. Promotion only happens when the user's current role
-// ranks below the target. `currentRole` is SUPER_ADMIN for a fleet administrator, the role held in
+// must NOT force a role change (a SUPER_ADMIN given a password would drop to TENANT_ADMIN):
+// promotion only happens when the user's current role ranks below the target. `currentRole` is SUPER_ADMIN for a fleet administrator, the role held in
 // the target tenant otherwise, and null when the person does not belong to it yet.
 export function planExistingUserUpdate(params: {
   email: string;

@@ -90,12 +90,11 @@ const parseDomainList = (
 };
 
 // SSRF_INTERNAL_TARGETS names the internal services one HTTP tool may reach without turning the SSRF
-// guard off for the whole instance (issue #615). Each entry is `host:port`, and the port is required:
-// a hostname on a shared Docker network can be claimed by another container, and pinning the port is
-// what keeps one entry from covering every service that answers to that name. A malformed entry
-// fails the boot by name instead of being skipped, because skipping it leaves the operator with a
-// list that reads as configured and a tool that is refused for a reason nobody can see. The host goes
-// through `new URL` so it is compared in the same normal form the guard reads off the request URL.
+// guard off for the whole instance. The port is required: another container on a shared Docker
+// network can claim the hostname, and the port keeps one entry from covering every service with that
+// name. A malformed entry fails the boot by name, because skipping it leaves a list that reads as
+// configured and a tool refused for a reason nobody can see. The host goes through `new URL` so it is
+// compared in the same normal form the guard reads off the request URL.
 export interface InternalTarget {
   host: string;
   port: number;
@@ -103,7 +102,7 @@ export interface InternalTarget {
 
 // The host part refuses every character `new URL` would read as the end of the host, the backslash
 // included: WHATWG URL treats `\` as `/` in an http URL, so `sidecar\renderer:8080` would parse to host
-// `sidecar` and silently open a target nobody wrote (review round 1 of #615).
+// `sidecar` and silently open a target nobody wrote.
 const INTERNAL_TARGET_RE = /^(\[[0-9a-fA-F:.]+\]|[^:/\\\s[\]@?#]+):(\d{1,5})$/;
 
 export const parseInternalTargets = (
@@ -147,25 +146,11 @@ const parseTrustProxy = (raw: string | undefined, envName: string): boolean => {
   );
 };
 
-// A hop count selects WHICH X-Forwarded-For entry is believed to be the client, so a silently
-// defaulted bad value would change who shares a bucket. Fail by name at boot instead.
-// NOTE: the upper bound is not tidiness, it is the second half of the same defect. A window that
-// `Number.isInteger` accepts can still be one the limiter cannot honour: at 1e12 minutes the
-// millisecond duration passes Date's ±8.64e15 range, and the reset lands on an invalid date exactly
-// like Infinity does. Bounding the window at a day is well past any real throttle and puts every
-// unrepresentable value on the other side of the check. The budgets are bounded for the mirror-image
-// reason: an absurd ceiling is a bucket that never trips while reading as a configured one.
-//
-// NOTE: `Number.isInteger` is what makes the rest of this safe, not `> 0`. The pattern these budgets used to
-// share (`RAW && Number(RAW) > 0 ? Number(RAW) : fallback`) accepts `Infinity`, and `1e309` parses to
-// exactly that. Measured with an infinite window: the limiter advertises `RateLimit-Reset: NaN` and
-// the bucket NEVER resets, so the endpoints it guards answer 429 permanently once the budget is
-// spent. On a max instead of a window it is the mirror image, an unlimited bucket that reads as a
-// configured one. `isInteger` refuses Infinity, NaN and fractions in one go.
-//
-// NOTE: it also throws on garbage instead of falling back. Falling back is how a typo becomes a
-// budget nobody chose, silently: same reasoning as TRUST_PROXY above, where the quiet default is the
-// strict side and guessing would mean the opposite of what the operator wrote.
+// The upper bounds below are part of the same check as `Number.isInteger`: an integer window of 1e12
+// minutes still passes Date's ±8.64e15 ms range and resets on an invalid date, and an absurd budget
+// is a bucket that never trips while reading as configured. `> 0` alone is not enough: it accepts
+// `Infinity` (`1e309`), which leaves a window that never resets (429 for good) or an unlimited max.
+
 // A day. Any real throttle is orders of magnitude under this, and every window whose millisecond
 // duration Date cannot represent is orders of magnitude over it.
 const MAX_WINDOW_MINUTES = 1440;
@@ -175,11 +160,10 @@ const MAX_WINDOW_MINUTES = 1440;
 const MAX_COUNT = 1_000_000;
 // The runtime's own limit for the five that reach `setInterval` (the webhook, scheduler, debounce,
 // compaction and alert workers), and a generous ceiling for the three other millisecond spans.
-// `setInterval` takes a 32-bit signed delay and anything it cannot represent it sets to 1: measured
-// in Bun, twenty ticks at a NaN delay took 23.6ms and twenty at Infinity took 22.8ms, about 1.15ms
-// each, against the 15_000ms the operator wrote. A worker whose tick claims jobs then spins against
-// the database instead of idling. The other three are date and cache arithmetic, where the same
-// values produce an Invalid Date rather than a hot loop; 24 days is past any real span for them too.
+// `setInterval` takes a 32-bit signed delay and sets anything it cannot represent (NaN, Infinity) to
+// about 1ms, so a worker whose tick claims jobs spins against the database instead of idling. The
+// other three are date and cache arithmetic, where the same values produce an Invalid Date rather
+// than a hot loop; 24 days is past any real span for them too.
 const MAX_DURATION_MS = 2_147_483_647;
 // The protocol's own limit.
 const MAX_PORT = 65_535;
@@ -187,17 +171,11 @@ const MAX_PORT = 65_535;
 // millisecond value Date cannot represent is orders of magnitude over it.
 const MAX_RETENTION_DAYS = 36_500;
 
-// NOTE: every numeric environment variable in this file goes through here, and tests/config.test.ts
-// reads this source to keep that true: it asserts that `raw`, this function's own input, is the only
-// thing the file ever hands to `Number`. The shape this replaced was `RAW ? Number(RAW) : fallback`,
-// which converts and asks nothing, so `Number("15s")` reached consumers as NaN and `Number("1e309")`
-// as Infinity. See MAX_DURATION_MS for what that did to the seven that feed a timer.
-//
-// NOTE: `minimum` is 1 for every setting but one. Zero is admitted only where the CONSUMER treats it
-// as a value rather than as an absence, which is a narrower test than "the old code let it through":
-// the old code let zero through on nine of these, and on eight of the nine it was the pathology, not
-// a setting. `setInterval(fn, 0)` is the same 1ms tick as NaN, a heartbeat due at `now` is a storm,
-// and `PORT=0` binds an ephemeral port nothing can route to.
+// Every numeric environment variable in this file goes through here: tests/config.test.ts asserts
+// that `raw` is the only thing the file hands to `Number`, since a bare `Number(RAW)` lets "15s"
+// through as NaN and "1e309" as Infinity. Garbage throws instead of falling back, because a fallback
+// turns a typo into a value nobody chose. `minimum` is 1 except where the consumer treats zero as a
+// value: `setInterval(fn, 0)` is the same 1ms tick as NaN, and `PORT=0` binds an unroutable port.
 export const parseIntSetting = (
   raw: string | undefined,
   envName: string,
@@ -216,6 +194,8 @@ export const parseIntSetting = (
   return value;
 };
 
+// A hop count selects WHICH X-Forwarded-For entry is believed to be the client, so a silently
+// defaulted bad value would change who shares a bucket. Fail by name at boot instead.
 const parseHops = (raw: string | undefined, envName: string): number => {
   if (raw === undefined || raw.trim() === "") return 1;
   const value = Number(raw);
@@ -227,13 +207,11 @@ const parseHops = (raw: string | undefined, envName: string): number => {
   return value;
 };
 
-// The three things an audio check can do with a synthesized reply (issue #779). Declared, never
-// inferred from anything but the URL: with no detector there is nothing to call, and with one the
-// default is `shadow`, the mode that records and never changes a send. `enforce` is the one that
-// holds a reply back, and holding a reply back is not a thing a deployment should drift into.
-//
-// The list lives in the TTS settings module because an agent can now pick one of them too (issue
-// #802), and the console reads that module; re-exported here so the deployment side keeps one name.
+// The three things an audio check can do with a synthesized reply. Declared, never inferred from
+// anything but the URL: with no detector there is nothing to call, and with one the default is
+// `shadow`, which records and never changes a send. `enforce` holds a reply back, which a deployment
+// should not drift into. The list lives in the TTS settings module because an agent can pick a mode
+// too and the console reads that module; re-exported here so the deployment side keeps one name.
 export {
   TTS_CHECK_MODES,
   type TtsCheckMode,
@@ -283,12 +261,8 @@ const config = {
     MAX_PORT,
   ),
   publicUrl: PUBLIC_URL || "http://localhost:3000",
-  // "test" IS ONE OF THE VALUES, and leaving it out of the union was not cosmetic. `bun test` sets
-  // NODE_ENV=test itself, and it WINS over the `.env` (measured: a suite file reads
-  // `config.env === "test"` with `NODE_ENV=development` sitting in `.env`). So every `=== "development"`
-  // in this codebase is false under the suite while the type says that branch is the only alternative
-  // to production, which is how the logger below ended up building a thread-stream worker in a
-  // context nobody meant it to. Anything guarded on `!== "production"` still covers test, as intended.
+  // NOTE: "test" belongs in the union: `bun test` sets NODE_ENV=test and it wins over the `.env`, so
+  // every `=== "development"` is false under the suite. Guard on `!== "production"` to cover test.
   env: (NODE_ENV || "development") as "development" | "production" | "test",
   // NOTE: Distribution edition. Single source of truth shared with the frontend bundle
   // (BUN_PUBLIC_EDITION is baked into the client at build AND kept as a runtime ENV by the
@@ -302,16 +276,11 @@ const config = {
   allowSuperuserRuntime: ALLOW_SUPERUSER_RUNTIME === "true",
   // NOTE: filesystem root for issued document PDFs (`<dir>/<tenantId>/documents/<documentId>.pdf`)
   // and the tenant's letterhead logo (`<dir>/company/<tenantId>-logo.<ext>`). Served ONLY via the
-  // authenticated, tenant-scoped /v1/documents routes — never under staticPlugin. The `documents/`
+  // authenticated, tenant-scoped /v1/documents routes, never under staticPlugin. The `documents/`
   // segment keeps them clear of the `<tenantId>/<quoteId>.pdf` an upgraded install already has in
-  // this directory (see storageKey).
-  //
-  // The QUOTES_STORAGE_DIR fallback is NOT tidiness, it is the upgrade path, and dropping it loses
-  // files. Coolify FREEZES a compose `environment:` value when the installation is created, so an
-  // existing install keeps the QUOTES_STORAGE_DIR it was created with and never learns the new name
-  // no matter what the compose says today. Without this chain, that install falls through to the
-  // default — which is inside the container, not on the volume — and every PDF it writes disappears
-  // on the next redeploy, silently.
+  // this directory (see storageKey). The QUOTES_STORAGE_DIR fallback is the upgrade path: Coolify
+  // freezes a compose `environment:` value at install time, so without it an older install writes to
+  // the in-container default and loses every PDF on the next redeploy.
   documentsStorageDir:
     DOCUMENTS_STORAGE_DIR || QUOTES_STORAGE_DIR || "./data/documents",
   // NOTE: filesystem root for the GLOBAL identity assets (logo/favicon, at most 4 files:
@@ -324,15 +293,11 @@ const config = {
   // a derived-but-distinct value so the separation holds even if MCP_JWT_SECRET is unset.
   mcpJwtSecret:
     MCP_JWT_SECRET || `${JWT_SECRET || "change-me-in-production"}:mcp`,
-  // NOTE: Dynamic Client Registration is ON by default: every MCP client we support self-registers
-  // and NONE has a fallback — with `registration_endpoint` absent from the metadata, Codex aborts
-  // with "Dynamic client registration not supported" and Claude Code with "Incompatible auth
-  // server", both before any login screen. Pre-registering a client does not rescue them either
-  // (Codex's loopback callback uses a random port, and /authorize matches redirect_uri exactly), so
-  // a closed default means the MCP transport is simply unreachable. Set MCP_DCR_ENABLED=false to
-  // close it: /register 404s and the metadata stops advertising it. A self-registered client is
-  // still shown as "unverified" on the consent screen, /register is rate-limited, and the effective
-  // grant stays role-gated at /authorize.
+  // NOTE: Dynamic Client Registration is ON by default: every supported MCP client (Codex, Claude
+  // Code) self-registers and aborts before login without `registration_endpoint`, and
+  // pre-registering does not help (Codex's loopback port is random, /authorize matches redirect_uri
+  // exactly). MCP_DCR_ENABLED=false closes it. A self-registered client still shows as "unverified",
+  // /register is rate-limited, and the grant stays role-gated at /authorize.
   mcpDcrEnabled: MCP_DCR_ENABLED !== "false",
   encryptionKey: ENCRYPTION_KEY || "change-me-in-production",
   corsOrigin: CORS_ORIGIN || "localhost:3000",
@@ -373,7 +338,7 @@ const config = {
   setupTokenRequired: SETUP_TOKEN_REQUIRED !== "false",
   // NOTE: Global cap on concurrent agent model calls — the LLM round-trip in the LangGraph agent node
   // (graph.ts) plus the opt-in TTS-normalize call. Conversations drain fully in parallel (the debounce
-  // worker no longer serializes them); this is the ONLY throttle on model calls, applied process-wide
+  // worker does not serialize them); this is the ONLY throttle on model calls, applied process-wide
   // across every entrypoint (debounce/webhook/nudge/playground) so a burst does not hammer the
   // provider. Per-process (single-replica). Pair with dbPoolMax so the DB pool is not the effective cap.
   agent: {
@@ -385,9 +350,9 @@ const config = {
       MAX_COUNT,
     ),
     // NOTE: How long one call to an agent's own model may take, retries included, when no fallback
-    // model is configured (issue #809). Without it a provider that accepts the connection and never
-    // answers held the turn for as long as it liked: measured in #807 at 5 min 36 s. A turn with a
-    // fallback is bounded by the fallback's own 45 s ceiling instead (src/graph/model-fallback.ts).
+    // model is configured, so a provider that accepts the connection and never answers cannot hold
+    // the turn. A turn with a fallback is bounded by the fallback's own 45 s ceiling instead
+    // (src/graph/model-fallback.ts).
     modelCallTimeoutMs: parseIntSetting(
       AGENT_MODEL_CALL_TIMEOUT_MS,
       "AGENT_MODEL_CALL_TIMEOUT_MS",
@@ -395,10 +360,10 @@ const config = {
       "It is how long one call to the agent's own model may take, retries included, when no fallback model is configured.",
       MAX_DURATION_MS,
     ),
-    // NOTE: How long a reply may wait for capacity before the operator is told (issue #812): a due
-    // flush waiting for a slot of a full debounce lane, or a model call waiting for a permit of the
-    // semaphore above. Delay, not occupancy: a full lane that drains in seconds is healthy. The lane
-    // ticks every 2.5 s and a measured turn takes ~10 s, so 30 s is several turns of queue.
+    // NOTE: How long a reply may wait for capacity before the operator is told: a due flush waiting
+    // for a slot of a full debounce lane, or a model call waiting for a permit of the semaphore above.
+    // Delay, not occupancy: a full lane that drains in seconds is healthy. The lane ticks every 2.5 s
+    // and a turn takes about 10 s, so 30 s is several turns of queue.
     capacityWaitAlertMs: parseIntSetting(
       AGENT_CAPACITY_WAIT_ALERT_MS,
       "AGENT_CAPACITY_WAIT_ALERT_MS",
@@ -412,16 +377,11 @@ const config = {
     // adherence. Intentionally surfaced only as a save error — no UI affordance points here.
     promptMaxChars: agentPromptMaxChars,
     // NOTE: How long ONE HTTP tool call may take, headers and body together, before it is aborted.
-    // Configurable because the right value belongs to the provider, not to us: this is one end of a
-    // chain, and each link has to be more patient than the one below it. A provider that caps its
-    // own request at 30s can only deliver ITS error if the gateway in front of it waits longer than
-    // 30s and this waits longer than that gateway; set equal, we abort first and the operator gets
-    // our generic failure instead of the provider's message, which is strictly less information.
-    // 30s is the default rather than the ceiling: it clears providers that cap at 15-20s without
-    // committing every deployment to waiting longer, and the deployment behind a 30s cap raises it.
-    // Nothing structural bounds it: there is no turn deadline, and the Chatwoot webhook acks in
-    // under 5s with the processing detached, so a slow tool holds nothing on the ingress side. What
-    // it does cost is a customer waiting, which is what a tool's ackMessage exists to cover.
+    // Configurable because each link of the chain must be more patient than the one below it: set
+    // equal to a provider's own cap, we abort first and the operator gets our generic failure instead
+    // of the provider's message. 30s clears providers that cap at 15-20s; one behind a 30s cap raises
+    // it. Nothing structural bounds it (no turn deadline, the Chatwoot webhook acks detached in under
+    // 5s); the cost is a customer waiting, which a tool's ackMessage covers.
     httpToolTimeoutMs: parseIntSetting(
       HTTP_TOOL_TIMEOUT_MS,
       "HTTP_TOOL_TIMEOUT_MS",
@@ -499,7 +459,7 @@ const config = {
       MAX_DURATION_MS,
     ),
   },
-  // NOTE: Cadence of the per-tenant `SPEND_CEILING_POLL` scheduler job (issue #426): how often a
+  // NOTE: Cadence of the per-tenant `SPEND_CEILING_POLL` scheduler job: how often a
   // tenant's month-to-date cost is read from Langfuse into the local snapshot the spend ceiling's
   // gate reads. Armed only while the tenant's ceiling is on. The ceiling's effective lag is THIS plus
   // Langfuse's own ingestion lag, and the two ADD, so it is the overshoot bound an operator accepts
@@ -553,11 +513,10 @@ const config = {
   // single-tenant/self-hosted box you control. Network transports (http/sse) are always allowed
   // and pass the SSRF guard.
   mcpStdioEnabled: MCP_STDIO_ENABLED === "true",
-  // NOTE: Corrupted-audio check for synthesized replies (issue #779, docs/tts.md "Checking the
-  // audio"). The detector is deployment-level: it is infrastructure the operator runs (an HTTP
-  // service next to this one), the same way the database is, so its address and token stay here.
-  // Empty URL = off. `mode` is the DEFAULT for an agent that never chose one; an agent can pick its
-  // own (`settings.tts.checkMode`, issue #802), which applies only while a URL is set.
+  // NOTE: Corrupted-audio check for synthesized replies (docs/tts.md "Checking the audio"). The
+  // detector is deployment-level: infrastructure the operator runs next to this service, like the
+  // database, so its address and token stay here. Empty URL = off. `mode` is the DEFAULT for an agent
+  // that never chose one; an agent's own `settings.tts.checkMode` applies only while a URL is set.
   ttsCheck: {
     url: ttsCheckUrl,
     mode: parseTtsCheckMode(TTS_CHECK_MODE, ttsCheckUrl),
@@ -580,7 +539,7 @@ const config = {
         : SSRF_ALLOW_PRIVATE_TARGETS === "false"
           ? false
           : (NODE_ENV || "development") === "development",
-    // The internal services an HTTP tool may reach with the guard ON (issue #615). Read only by the
+    // NOTE: The internal services an HTTP tool may reach with the guard ON. Read only by the
     // HTTP tool, and there only when the tool's own allowedHosts names the host. See src/lib/ssrf.ts.
     internalTargets: parseInternalTargets(
       SSRF_INTERNAL_TARGETS,
@@ -601,13 +560,8 @@ const config = {
   // throttles: navigating the console fires dozens of parallel reads, and one MCP client funnels
   // every tool call through a single address, so the buckets must be generous. CAVEAT: everyone
   // behind one NAT counts against the same bucket. The static (1000/min) and DCR (10/min) limits are
-  // fixed in the middleware.
-  //
-  // NOTE: the credential budget is the exception, and it is deliberately NOT per-minute. A
-  // per-minute ceiling resets 60 times an hour, so 10/min is 600 password guesses an hour against
-  // one account; the window is what bounds brute force, not the number. 20 per 5 minutes is 240 an
-  // hour and still absorbs a burst, which is what an office arriving at once looks like through a
-  // single NAT.
+  // fixed in the middleware. The credential budget is deliberately NOT per-minute: 10/min is 600
+  // password guesses an hour, while 20 per 5 minutes is 240 and still absorbs an office behind one NAT.
   rateLimit: {
     userPerMin: parseIntSetting(
       RATE_LIMIT_USER_PER_MIN,
@@ -680,18 +634,10 @@ if (
   }
 }
 
-// NOTE: `elysia-rate-limit` registers itself as an Elysia plugin named "elysia-rate-limit" seeded
-// with `max:duration:scoping`, so ANY TWO of the five limiters mounted in src/app.ts that share all
-// three are DEDUPLICATED by Elysia and the later one silently never mounts. Measured on 4.6.3: two
-// limiters at max=3 guarding different paths, and the path guarded by the SECOND served 4 of 4
-// requests with no `RateLimit-*` header at all and nothing logged.
-//
-// The failure is not symmetric, which is why this throws instead of warning. Whichever limiter loses
-// is the ONLY one counting its traffic, so a collision never tightens anything, it deletes a bucket.
-// It is also exactly the trap the credential budget was walking into: the DCR limiter is
-// (10, 60000, scoped) and the limiter written for the credential endpoints shipped as
-// (10, 60000, scoped) and mounted nowhere, so mounting it as written would have left those endpoints
-// with the global budget they already had, while every test and every reader said otherwise.
+// `elysia-rate-limit` registers itself as an Elysia plugin seeded with `max:duration:scoping`, so any
+// two of the limiters mounted in src/app.ts that share all three are deduplicated by Elysia and the
+// later one silently never mounts (no `RateLimit-*` header, nothing logged). This throws rather than
+// warns because a collision never tightens anything: it deletes the losing limiter's bucket.
 export function assertLimiterBudgetsAreDistinct(
   seeds: readonly (readonly [name: string, max: number, durationMs: number])[],
 ): void {

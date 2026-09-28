@@ -1,14 +1,10 @@
 import { clipText, makeStorable } from "@/lib/text";
 
 // Non-throwing secret redaction for human-facing debug surfaces (the agent playground trace and
-// the conversation `lastError` shown to the operator). This is the REPLACE-and-continue cousin of
-// n8n-export's `assertNoSecrets`, which THROWS as an export backstop; here we must never break the
-// surface, only scrub it. Two layers, same spirit as the export scanner:
-//   1. a KEY-name layer — values under credential-named keys are dropped wholesale;
-//   2. a VALUE layer — any concrete secret-shaped substring is scrubbed in place.
-// By construction the playground trace can never carry a RESOLVED credential (those flow only into
-// request headers at fetch time, never into a message), so this is defense-in-depth, not the only
-// barrier.
+// the conversation `lastError`): the REPLACE-and-continue cousin of n8n-export's `assertNoSecrets`,
+// which THROWS as an export backstop. Two layers: values under credential-named KEYS are dropped
+// wholesale, and secret-shaped VALUE substrings are scrubbed in place. The playground trace never
+// carries a RESOLVED credential (those go only into request headers), so this is defense-in-depth.
 
 const REDACTED = "‹redacted›";
 
@@ -20,17 +16,11 @@ const SECRET_VALUE_PATTERNS: RegExp[] = [
   /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, // Slack tokens
   /\bAKIA[0-9A-Z]{16}\b/g, // AWS access key id
   /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{6,}\b/g, // JWT
-  // A JWT HEAD THAT RUNS TO THE END OF WHAT IS BEING SCANNED.
-  //
-  // Every other shape here is a prefix plus a RUN, so a long enough piece of one still matches and
-  // a wide enough scan window is all it takes to recognise a token the cut is about to split. A JWT
-  // is not: its match requires two separators and a final segment, and a real payload puts them
-  // hundreds of characters in. What is missing from a cut JWT is not length, it is STRUCTURE, so no
-  // margin can fix it — the token has to be recognised by its head.
-  //
-  // Anchored at the end because that is where a cut leaves it, and because anchoring is what keeps
-  // this from redacting every base64 blob that happens to start with `eyJ` in the middle of a
-  // sentence. The one above still handles a complete token and runs first.
+  // NOTE: a JWT HEAD that runs to the end of the scanned window. The other shapes are a prefix plus
+  // a run, so a long enough piece still matches; a cut JWT is missing STRUCTURE (two dots and a last
+  // segment), which no scan margin restores, so it is recognised by its head. Anchored at the end,
+  // where a cut leaves it, so a mid-sentence base64 blob starting with `eyJ` is not redacted. The
+  // complete-token pattern above runs first.
   /\beyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]*)*$/g, // JWT truncated by a cut
 ];
 
@@ -57,18 +47,10 @@ export function truncate(s: string, max = MAX_STRING): string {
 // or before the cut keeps enough of itself to be recognised.
 const SECRET_SCAN_MARGIN = 64;
 
-// HOW MUCH SOURCE TO TAKE so the repaired window is `need` characters long.
-//
-// The repair happens INSIDE the window, and one half of it DELETES: `makeStorable` drops every NUL
-// and replaces a lone surrogate one for one. So a source window of `need` characters comes back
-// shorter by however many NULs it held, and the margin that is supposed to sit past the cut is
-// spent on characters that no longer exist. Sixty-four NULs are enough to spend all of it, and the
-// cut-before-scrub leak comes straight back: measured, `sk-` plus fifteen of a sixteen-character
-// token, stored raw, from a value a webhook can send.
-//
-// Counted rather than estimated, because the count is exactly the number of NULs and nothing else
-// shrinks. The walk stops as soon as it has enough, so it costs `need` plus whatever NULs sit in
-// front of it, and an input that is all NULs costs one pass and stores nothing anyway.
+// HOW MUCH SOURCE TO TAKE so the repaired window is `need` characters long. `makeStorable` DELETES
+// every NUL, so a source window of `need` characters comes back shorter by its NUL count, and enough
+// NULs would spend the whole scan margin and let a token cut before the scrub be stored raw. Counted
+// exactly (only NULs shrink); the walk stops at `need` plus the NULs in front of it.
 function sourceFor(value: string, need: number): number {
   let end = 0;
   let kept = 0;
@@ -79,24 +61,11 @@ function sourceFor(value: string, need: number): number {
   return end;
 }
 
-// REPAIR, SCRUB, THEN CUT — the one order, in the one place, because every surface that stores a
-// third party's text needs all three and two of the three orders leak.
-//
-// The cut cannot come first. A cut landing inside a credential leaves a prefix, and a prefix
-// shorter than its pattern's minimum no longer matches: eighteen characters of room turn `sk-` plus
-// a sixteen-character token into fifteen characters of that token, stored raw, in a row an operator
-// reads. Measured, and it is why this function exists.
-//
-// The repair cannot come second. `makeStorable` DELETES a NUL rather than replacing it, so a token
-// the pattern missed only because a NUL sat inside it (`sk-<NUL>abcd…`) would be handed back whole
-// by a repair that ran after the scrub (issue #241 review).
-//
-// And the scan still does not read the whole input, because the cut is the cheap bound and a 10 MB
-// tool result is not scanned six times to store two thousand characters of it. It reads the cut
-// plus `SECRET_SCAN_MARGIN`, which is what makes "cut last" affordable.
-//
-// The marker is decided by the INPUT's length, not the scrubbed one: a redaction shrinks the text,
-// and content past the margin was still dropped.
+// REPAIR, SCRUB, THEN CUT: the one order, in one place, because every surface storing a third
+// party's text needs all three and the other orders leak. Cut first, a credential's prefix falls
+// under its pattern's minimum and is stored raw. Repair after the scrub, a token hidden by a NUL
+// (`sk-<NUL>abcd…`) comes back whole once the NUL is deleted. The scan reads only the cut plus
+// `SECRET_SCAN_MARGIN`, so a 10 MB tool result is not scanned to store two thousand characters.
 export function scrubbedClip(
   value: string,
   max: number,
@@ -132,29 +101,14 @@ function redactSecretsInText(input: string): string {
 // strings scrubbed, strings truncated, arrays/objects bounded. Non-JSON primitives (functions,
 // symbols, bigint) collapse to null/string so the result is always JSON-serializable.
 //
-// `maxString` is a parameter rather than the constant it was because the ceiling on a stored string
-// is a SIZE policy, and the caller is the only one that knows which policy applies to this write —
-// see the flowlog's debug mode (`FlowContext.fullDetail`). It is never absent: the default is the
-// same 2000 every caller had before.
-//
-// `budget` is the OTHER half of that, and it is opt-in because a per-string cap bounds no ROW.
-// `detail` is a tree, an object's key count is not bounded here (only arrays and depth are), and
-// fifty leaves under a 300k allowance is a 15 MB row. A caller that raises the ceiling therefore
-// passes a budget too: the number is spent as the walk proceeds, the first string may take all of
-// it, and the next one gets what is left. On the line the debug mode exists for this changes
-// nothing — a `generate` line's detail holds exactly one string — and on a tool line with the
-// values switch also on it is the difference between bounded and not.
-//
-// It is opt-in rather than the default because sharing the ordinary 2,000 across every string of an
-// event would silently shorten what every existing caller already writes. Absent, each string is
-// capped on its own, exactly as before.
+// `maxString` is the caller's SIZE policy (see the flowlog's `FlowContext.fullDetail`), default 2000.
+// `budget` bounds the ROW, which a per-string cap does not (object key counts are unbounded here):
+// strings spend it as the walk proceeds. Opt-in, because sharing 2000 across every string of an event
+// would shorten what existing callers write.
 
-// The placeholder a credential-named key gets, CHARGED like any other value. It is bytes in the
-// column exactly as a string is, and an object's key count is not bounded here — so a tool result
-// with a thousand `password`-ish fields would write a thousand placeholders past an exhausted
-// budget, which is the truncation marker's leak arriving through the key layer instead of the value
-// layer. Emitted whole rather than cut, because half of `‹redacted›` says nothing; the overshoot is
-// one placeholder, not one per field.
+// The placeholder a credential-named key gets, CHARGED like any other value: an object's key count
+// is unbounded here, so a thousand `password`-ish fields would otherwise write a thousand placeholders
+// past an exhausted budget. Emitted whole rather than cut, because half of `‹redacted›` says nothing.
 function redactedLeaf(budget?: { left: number }): string {
   if (!budget) return REDACTED;
   if (budget.left <= 0) return "";
@@ -176,24 +130,14 @@ export function redactSecretsDeep(
     // ceiling stopped being consulted; `maxString` alone bounds no row. Repair, scrub and cut live
     // in `scrubbedClip` — this decides the LENGTH, that decides the order.
     const allowed = Math.min(maxString, budget ? budget.left : maxString);
-    // Past exhaustion the leaf goes out EMPTY, marker and all, and this is the ONE place that says
-    // so — a spent budget goes negative, and every guard downstream of it was a second spelling of
-    // this same check.
-    //
-    // `truncate(s, max)` appends its marker whenever `s.length > max`, so with nothing left to
-    // spend it emits the marker BY ITSELF, for an empty string as readily as for a long one. An
-    // object's key count is not bounded here, so one long string that spends the budget followed by
-    // a thousand short fields would write a thousand `…[truncated]`s: the whole-row bound the
-    // budget exists to be, gone by however many fields the tree happens to have. The marker on the
-    // string that spent the budget is what tells a reader where the row was cut; the empty leaves
-    // after it say the same thing by being empty.
+    // NOTE: past exhaustion the leaf goes out EMPTY, marker and all, and this is the ONE place that
+    // says so. `truncate` would emit `…[truncated]` BY ITSELF for every later field (keys are
+    // unbounded), defeating the row bound; the marker on the string that spent the budget already
+    // shows where the row was cut.
     if (budget && allowed <= 0) return "";
     const out = scrubbedClip(value, allowed);
-    // What is CHARGED is what is WRITTEN, not what came in. The marker is bytes in the column and so
-    // is a `‹redacted›` that replaced a longer token, so charging the input both overshot the row by
-    // one marker per cut string and spent the budget on tokens that never reached the column. It
-    // also stops `maxString` from being able to SHRINK the budget: the old arithmetic ASSIGNED
-    // `allowed - n`, so a per-string ceiling below the remaining budget threw the rest of it away.
+    // NOTE: what is CHARGED is what is WRITTEN (the marker, a `‹redacted›` shorter than its token),
+    // subtracted rather than assigned so a `maxString` below the remaining budget cannot shrink it.
     if (budget) budget.left -= out.length;
     return out;
   }
@@ -236,18 +180,10 @@ export function redactSecretsDeep(
 // A short, safe one-line string for an error surfaced to the operator (conversation lastError):
 // the message only, secret-scrubbed and length-bounded, never a stack trace or raw provider body.
 //
-// Also the ONE place the storability rule is applied to error text, because every column that holds
-// an error message is written through here. A `text` column refuses a NUL outright, and a lone
-// surrogate costs a character off the tail before it either lands corrupted or refuses. What the
-// refusal costs is not the string: `failJob`'s write IS the transition that schedules the retry or
-// dead-letters the job, so refused, the row stops moving. tests/lib/storable-write-sweep.test.ts is
-// the ledger of these columns, and carries how a third party's bytes reach one (issue #243).
-//
-// `makeStorable` runs BEFORE the scrub, never after. It DELETES the NUL rather than replacing it,
-// so a token the pattern missed only because a NUL sat inside it (`sk-<NUL>abcd…`) would be handed
-// back whole by a repair that ran second (issue #241 review). The cut stays last: it cannot
-// manufacture an orphan half for the repair to have to catch, and repairing first is what makes
-// the length it measures the length that gets stored.
+// Also the ONE place error text is made storable, since every error-message column is written through
+// here: a `text` column refuses a NUL, and a refused `failJob` write is a job that stops moving.
+// tests/lib/storable-write-sweep.test.ts is the ledger of these columns. The order is the one
+// `scrubbedClip` documents: repair, scrub, cut.
 export function sanitizeErrorMessage(err: unknown, max = 500): string {
   const raw = err instanceof Error ? err.message : String(err);
   // Scanned WHOLE, not to the cut plus a margin, and this surface is the one that can afford it: it

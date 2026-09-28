@@ -150,6 +150,9 @@ describe("the line ceiling", () => {
   test("a directive is not prose and is never counted", () => {
     expect(commentBlocks("// biome-ignore lint/x: reason #12")).toEqual([]);
     expect(commentBlocks("// @full-only\nconst a = 1;")).toEqual([]);
+    expect(
+      commentBlocks("// translate('errors.x', 'X.')\n// translate('errors.y', 'Y.')"),
+    ).toEqual([]);
   });
 
   test("a server i18n anchor is a directive, and the prose above it is still its own block", () => {

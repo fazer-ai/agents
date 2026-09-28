@@ -36,8 +36,8 @@ const STYLE_DESC =
   'Rendering style: {"font":"sans"|"serif"|"mono","baseFontSize":8-14,"accentColor":"#rrggbb","margin":"narrow"|"normal"|"wide","pageSize":"A4"|"LETTER","locale":"pt-BR"|"en-US","currency":"BRL","footerText"?,"showPageNumbers":bool}. baseFontSize outside 8-14 is clamped, not refused.';
 
 // Exported for the schema-drift guard in tests: every field the service accepts must appear here, or
-// Elysia's `normalize` silently strips it from the request body — which is how a whole block list
-// arrives as `[]` and the operator sees a saved template with nothing in it.
+// Elysia's `normalize` silently strips it from the request body (a block list would arrive as `[]`
+// and save an empty template).
 export const writeBody = t.Object({
   name: t.Optional(t.String({ maxLength: 120, description: "Template name." })),
   slug: t.Optional(
@@ -54,7 +54,7 @@ export const writeBody = t.Object({
   ),
   // NOTE: deliberately permissive Records, not the structural union. Elysia's `normalize` STRIPS
   // what a schema does not declare, and a discriminated union of six block types declared field by
-  // field would drop every property it does not name — silently, with a 200. Passing the array
+  // field would drop every property it does not name, silently, with a 200. Passing the array
   // through intact is what lets the service refuse it with a message that says what to write.
   blocks: t.Optional(
     t.Array(t.Record(t.String(), t.Unknown()), { description: BLOCKS_DESC }),
@@ -150,9 +150,8 @@ export const documentTemplatesController = new Elysia({
     "/preview",
     async ({ tenantContext, body }) => {
       const bytes = await previewDocumentTemplate(ctxOrThrow(tenantContext), {
-        // `!== undefined`, not truthiness: "0" is a supplied id, and reading it as "no id given"
-        // answers a lookup for a template that does not exist with a blank draft preview — telling
-        // the operator their template rendered.
+        // NOTE: `!== undefined`, not truthiness: "0" is a supplied id, and reading it as "no id
+        // given" would answer a template that does not exist with a blank draft preview.
         id:
           body.id !== undefined
             ? requireDbId(body.id, "template id")
@@ -219,16 +218,10 @@ export const documentTemplatesController = new Elysia({
         "Preview document template",
         "Renders a saved template or an unsaved draft to PDF, without issuing anything.",
       ),
-      // 404 included: previewing by `id` LOOKS the template up, and a well-formed id that names
-      // nothing in this tenant answers the same way a GET does. Leaving it out publishes a union
-      // the endpoint does not honour, and an Eden caller narrowing on the declared statuses is
-      // handed a status its types say cannot happen.
-      //
-      // 409 for the same reason, and it is the one this rule was stated for and then missed: a
-      // preview by id alone authored neither blocks nor fields, so it takes the same refusal the
-      // write takes for a template a newer build wrote (`documentTemplateUnreadable`). Create and
-      // patch both declared it; nothing at runtime told anyone this one did not, because Elysia
-      // answers the 409 either way and only the generated client is left holding the wrong union.
+      // 404 and 409 because a preview by `id` looks the template up: an id naming nothing here is a
+      // 404 as on a GET, and a template a newer build wrote takes the write's 409
+      // (`documentTemplateUnreadable`). Elysia answers an undeclared status anyway, and the Eden
+      // client's types then say it cannot happen.
       response: errors(400, 401, 403, 404, 409, 422),
     },
   )

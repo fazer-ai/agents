@@ -12,16 +12,13 @@ import { emailEquals } from "@/lib/email-match";
 import { asPrincipalOn, type TenantContext } from "@/lib/tenancy";
 import { auditMutationOn } from "@/modules/audit/service";
 
-// User-invitation flow (adapted from the sibling app's single-tenant invite system to our
-// multi-tenant model). Security invariants:
-//   - the token is HASHED at rest (sha256); the plaintext is returned ONCE (the inviter pastes a
-//     copyable link — there is no mailer). A DB dump never yields a usable token.
-//   - the `invitations` table is GLOBAL (no RLS): every read/write here MUST carry an explicit
-//     tenant scope (tenantScope), exactly like admin.service does for `users`. A forgotten filter
-//     leaks/edits cross-tenant invites with no DB backstop.
+// User-invitation flow. Security invariants:
+//   - the token is HASHED at rest (sha256); the plaintext is returned ONCE (no mailer: the inviter
+//     pastes the link), so a DB dump never yields a usable token.
+//   - `invitations` is GLOBAL (no RLS): every read/write MUST carry tenantScope, like admin.service
+//     does for `users`. A forgotten filter leaks cross-tenant invites with no DB backstop.
 //   - role is bound to the invite ROW; SUPER_ADMIN is never invitable (ManageableRole + a DB CHECK).
-//   - acceptInvite binds tenantId + role from the persisted invite, NEVER from the request, and is
-//     single-use via a compare-and-set consume.
+//   - acceptInvite binds tenantId + role from the persisted invite, NEVER the request; single-use (CAS).
 // `base` is injectable so integration tests pass their own (real) client instead of the singleton.
 
 const INVITE_TTL_DAYS = 7;
@@ -69,8 +66,8 @@ export class InviteNotFoundError extends Error {
 }
 
 // The invitee ALREADY has an account and did not prove it is theirs: neither signed in as that person
-// nor the account's current password. An invitation joins an existing account to the tenant (issue
-// #756), and whoever holds the link must not be able to take that account over with it.
+// nor the account's current password. An invitation joins an existing account to the tenant, and
+// whoever holds the link must not be able to take that account over with it.
 export class InviteAccountProofError extends Error {
   constructor() {
     super("Sign in to the invited account, or give its current password");
@@ -88,7 +85,7 @@ export class InvitePasswordRequiredError extends Error {
 }
 
 // Whether the person behind `email` already belongs to `tenantId`. The email is unique across the
-// install (issue #756), so this is one person and the question is their membership.
+// install, so this is one person and the question is their membership.
 async function emailExistsInTenant(
   base: Pick<PrismaClient, "tenantUser">,
   email: string,
@@ -111,10 +108,9 @@ export interface CreateInviteParams {
   ttlDays?: number;
 }
 
-// What an invitation's row carries. The EMAIL is the subject here and there is nothing else it could
-// be: an invitation names a person who has no account yet, so an id would name nothing. The
-// `tokenHash` never appears — it is the verifier for a live credential that grants membership of the
-// tenant, and a trail its own admins read is the last place it belongs.
+// What an invitation's row carries. The EMAIL is the subject: the invitee may have no account yet,
+// so an id could name nothing. The `tokenHash` never appears: it verifies a live credential that
+// grants membership of the tenant, and a trail its own admins read is the last place it belongs.
 function inviteAuditProjection(row: {
   id: bigint;
   tenantId: bigint;
@@ -141,11 +137,9 @@ export interface CreatedInvite {
 
 // Mints (or rotates) an invite for (tenantId, email). The caller resolves tenantId + role per the
 // principal (a TENANT_ADMIN is forced to its own tenant; a SUPER_ADMIN targets any). Returns the
-// plaintext token ONCE.
-//
-// `invitedById` comes off the CONTEXT and is no longer an argument, for the same reason the audit
-// row's actor does: it is the one field saying who granted this membership, and a caller that could
-// pass its own would attribute an invitation to somebody who never issued it.
+// plaintext token ONCE. `invitedById` comes off the CONTEXT, never an argument: it says who granted
+// this membership, and a caller that could pass its own would attribute an invitation to somebody
+// who never issued it.
 export async function createInvite(
   ctx: TenantContext,
   params: CreateInviteParams,
@@ -162,8 +156,8 @@ export async function createInvite(
     Date.now() + (params.ttlDays ?? INVITE_TTL_DAYS) * DAY_MS,
   );
   const row = await asPrincipalOn(base, ctx, async (db) => {
-    // Moved INSIDE the transaction: it is a read that decides whether the write happens, and outside
-    // it decided against a snapshot the upsert could no longer be held to.
+    // NOTE: inside the transaction because this read decides whether the write happens; outside it,
+    // it would decide against a snapshot the upsert is not held to.
     if (await emailExistsInTenant(db, email, params.tenantId)) {
       throw new InviteEmailInUseError();
     }
@@ -334,13 +328,11 @@ const AUTH_USER_SELECT = {
 } as const;
 
 // Consumes an invite and makes the invitee a member. tenantId + role come from the ROW (never the
-// request). Single-use via CAS consume in the same transaction as the write.
-//
-// One person per email (issue #756): when the email already has an account, the invitation adds a
-// MEMBERSHIP to it and changes nothing else about the account (not its password, not its name).
-// Otherwise it creates the account with its first membership. The (tenant, user) unique index is the
-// DB backstop against joining twice. The session it answers runs under the invited tenant, which is
-// where the person just asked to go.
+// request). Single-use via CAS consume in the same transaction as the write. One person per email:
+// when the email already has an account, the invitation adds a MEMBERSHIP to it and changes nothing
+// else about the account (not its password, not its name). Otherwise it creates the account with its
+// first membership. The (tenant, user) unique index is the DB backstop against joining twice. The
+// session it answers runs under the invited tenant.
 export async function acceptInvite(
   params: AcceptInviteParams,
   base: PrismaClient = basePrisma,
@@ -421,9 +413,9 @@ export async function acceptInvite(
   });
   const session = sessionUserOf(row);
   if (!session) throw new InviteInvalidError();
-  // `joinedTenantId` is where the invitation LEADS, apart from the session's own scope: a fleet
+  // NOTE: `joinedTenantId` is where the invitation LEADS, apart from the session's own scope: a fleet
   // administrator's session has no tenant (null), and the console still has to open on the one they
-  // just joined (review round 8).
+  // just joined.
   if (session.role === "SUPER_ADMIN") {
     return { ...session, joinedTenantId: invite.tenantId };
   }

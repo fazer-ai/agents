@@ -21,9 +21,8 @@ import {
 // by stable numeric id; name is a display label that may be changed freely. The kind drives
 // auto-injection (see secret-types.ts) and is immutable after creation.
 
-// NOTE: these AppError translationKeys are localized centrally in `onError` (not via literal
-// translate() calls), so they are declared here for the i18n extractor (keepRemoved: false). Keep
-// the defaults in sync with src/api/locales/*.json.
+// These translationKeys are localized centrally in `onError`, so they are declared here for the i18n
+// extractor (keepRemoved: false). Keep the defaults in sync with src/api/locales/*.json.
 // translate('errors.credentialPending', 'The credential {{ref}} has not been filled yet')
 // translate('errors.credentialPendingUnsupportedKind', 'This credential type is set up via a connect flow and cannot be created as a pending reference')
 // translate('errors.credentialKindUnusableAsKey', 'This field reads an API key and the "{{kind}}" credential type cannot supply one: it either holds several fields instead of a single secret, or it is one this product never sends to another service. Pick a different credential.')

@@ -1,13 +1,10 @@
-// Allowlist of stdio MCP launchers we ship in the runtime image (Dockerfile). A stdio
-// McpServerConnection's `command` must start with one of these; the rest of the string is the
-// launcher's args. Pure module (no deps) so BOTH the server (validation) and the client (the
-// launcher picker) import the same source of truth.
-//
-//   bunx → runs npm-published MCP servers; native to the Bun image. Use it wherever a server's docs
-//          say `npx` (drop-in: `bunx <pkg>`, or `bunx -p <pkg> <bin>` when the bin name differs).
-//   uvx  → runs Python MCP servers (from `uv`, a static musl binary; auto-provisions CPython).
-//
-// npx is intentionally NOT here: the Bun image has no Node, and bunx already runs npm packages.
+// Allowlist of stdio MCP launchers shipped in the runtime image (Dockerfile). A stdio
+// McpServerConnection's `command` must start with one of these; the rest is the launcher's args.
+// Dependency-free so the server (validation) and the client (the launcher picker) share it.
+//   bunx: npm-published servers, the drop-in wherever a server's docs say `npx`
+//         (`bunx <pkg>`, or `bunx -p <pkg> <bin>` when the bin name differs).
+//   uvx:  Python servers (from `uv`, a static musl binary that provisions CPython).
+// npx is intentionally NOT here: the Bun image has no Node.
 export const MCP_STDIO_LAUNCHERS = ["bunx", "uvx"] as const;
 
 export type McpStdioLauncher = (typeof MCP_STDIO_LAUNCHERS)[number];

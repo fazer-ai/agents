@@ -17,7 +17,7 @@ export const chatwootController = new Elysia({
 }).post(
   "/webhook/:routeToken",
   async ({ params, request }) => {
-    // NOTE: read the RAW body — the HMAC signs the exact bytes Chatwoot sent; re-serializing the
+    // NOTE: read the RAW body: the HMAC signs the exact bytes Chatwoot sent; re-serializing the
     // parsed JSON would not match. We never declare/access `body`, so Elysia does not pre-parse.
     const rawBody = await request.text();
     const result = await receiveChatwootWebhook({
@@ -26,20 +26,10 @@ export const chatwootController = new Elysia({
       getHeader: (name) => request.headers.get(name),
     });
 
-    // Ack fast (<5s): a slow or non-2xx ack makes Chatwoot move the conversation pending→open
-    // (auto-escalate to a human). The dispatch runs detached.
-    //
-    // A DUPLICATE DISPATCHES TOO, and the CAS decides. `recordDelivery` calls every redelivery a
-    // duplicate the moment the ledger row exists, but the row existing is not the same as the work
-    // having been done: this dispatch is detached and fires AFTER the ack, so a process that dies in
-    // between (deploy, OOM, restart) strands the row on PENDING with nothing running. Dropping the
-    // redelivery there loses the message for good: Chatwoot, having been handed a 200, never sends
-    // it again. That is the one failure here that is not recoverable, and turning the retries
-    // back on upstream is what makes it reachable.
-    //
-    // Nothing double-processes: processChatwootDelivery opens with a CAS on `status: "PENDING"`, so
-    // a row already PROCESSING or PROCESSED matches zero rows and returns "skipped". The redelivery
-    // carries the same frozen payload, so a claim it wins reprocesses the same event.
+    // NOTE: ack fast (<5s): a slow or non-2xx ack makes Chatwoot move the conversation pending→open
+    // (auto-escalate to a human), so the dispatch runs detached. A redelivery dispatches too and the
+    // CAS in processChatwootDelivery decides: the row existing does not mean the work was done, and
+    // dropping it would lose a message Chatwoot never resends (docs/chatwoot.md, Idempotency ledger).
     if (
       result.outcome === "queued" &&
       result.tenantId !== undefined &&

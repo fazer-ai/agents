@@ -32,9 +32,9 @@ export interface JWTPayload {
 
 export interface AuthUser {
   id: bigint;
-  // The tenant THIS request runs under and the role the person holds there (issue #756): chosen among
-  // their memberships by `X-Tenant-Id` (src/lib/tenancy/membership.ts). SUPER_ADMIN: null tenant,
-  // and the selector is honored downstream by the tenancy boundary as before.
+  // The tenant THIS request runs under and the role the person holds there: chosen among their
+  // memberships by `X-Tenant-Id` (src/lib/tenancy/membership.ts). SUPER_ADMIN: null tenant, and the
+  // selector is honored downstream by the tenancy boundary.
   tenantId: bigint | null;
   email: string;
   name: string | null;
@@ -118,10 +118,10 @@ export const authPlugin = new Elysia({ name: "auth" })
       cookie[COOKIE_NAME]?.remove();
       cookie[LEGACY_COOKIE_NAME]?.remove();
     },
-    // WHICH PERSON the session cookie names, and nothing else: no tenant selector, no membership, no
-    // API key. For the one operation where the session is only proof of identity (accepting an
-    // invitation into the account it names), a stale selector must not turn that proof into "signed
-    // out" (review round 5 on #756).
+    // NOTE: WHICH PERSON the session cookie names, and nothing else: no tenant selector, no
+    // membership, no API key. For the one operation where the session is only proof of identity
+    // (accepting an invitation into the account it names), a stale selector must not turn that proof
+    // into "signed out".
     async getSessionUserId(): Promise<bigint | null> {
       const token =
         cookie[COOKIE_NAME]?.value ?? cookie[LEGACY_COOKIE_NAME]?.value;
@@ -176,15 +176,11 @@ export const authPlugin = new Elysia({ name: "auth" })
         return null;
       }
 
-      // NOTE: re-resolve role+tenant from the DB on every request (legacy/stale
-      // tokens never grant elevated access; a moved/demoted user loses it at once), from the
-      // person's memberships and the tenant this request selected.
-      // A DB failure HERE is a TRANSIENT infrastructure problem (the pool
-      // reconnecting during a dev hot-reload, a brief outage), NOT proof the
-      // session is invalid. Throw 503 so the request is retryable instead of
-      // returning a null user the client can't tell apart from a real logout
-      // (which would bounce the operator to /login on every blip, and close any
-      // WebSocket with the auth-lost code). The client retries /me at boot.
+      // NOTE: re-resolve role+tenant from the DB on every request (stale tokens never grant elevated
+      // access; a moved/demoted user loses it at once). A DB failure HERE is TRANSIENT (pool
+      // reconnecting, a brief outage), NOT proof the session is invalid: throw 503 so the request is
+      // retryable, never a null user the client reads as a logout (bouncing the operator to /login on
+      // every blip and closing any WebSocket with the auth-lost code). The client retries /me at boot.
       let row: {
         id: bigint;
         email: string;
@@ -224,7 +220,7 @@ export const authPlugin = new Elysia({ name: "auth" })
 
       // NOTE: fail-closed. A person with no membership has no tenant to run under, and is treated as
       // unauthenticated rather than degraded to a tenant-less session. A selector outside their
-      // memberships is refused with the id it named, so the console drops it (issue #756).
+      // memberships is refused with the id it named, so the console drops it.
       const current = resolveMembership(memberships, headers["x-tenant-id"]);
       if (current === null) return null;
       if ("rejected" in current) {
@@ -266,7 +262,7 @@ export const authPlugin = new Elysia({ name: "auth" })
         },
       };
     },
-    // NOTE: kept for compatibility — "admin" now means TENANT_ADMIN or above.
+    // NOTE: compatibility alias: "admin" means TENANT_ADMIN or above.
     requireAdmin(enabled: boolean) {
       if (!enabled) return;
 

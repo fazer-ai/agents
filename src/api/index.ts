@@ -43,15 +43,11 @@ import { vaultController } from "@/api/v1/vault.controller";
 import { webhooksController } from "@/api/v1/webhooks.controller";
 import config from "@/config";
 
-// DEV docs (Scalar): the x-tenant-id header is the SUPER_ADMIN tenant selector, read only on
-// tenant-scoped requests (tenancyPlugin) and ignored for non-super-admin principals (who are pinned
-// to their own tenant). It lives in no route schema, so it would never show in "Try it". We inject it
-// into every authenticated operation of the generated spec, prefilled with "1", purely as a docs
-// convenience. The default is not a grant — auth still decides whether the header is honored.
-//
-// `required: true` is DISPLAY-ONLY: Scalar pre-enables (checks) required params and skips optional
-// ones, so this is the only lever to have x-tenant-id sent by default. It is injected only into the
-// dev spec, never into a route's runtime validation schema, so it imposes no real requirement.
+// DEV docs (Scalar): x-tenant-id, the SUPER_ADMIN tenant selector, lives in no route schema, so it is
+// injected into every authenticated operation of the dev spec, prefilled with "1", to show in
+// "Try it". The default is not a grant: auth still decides whether the header is honored.
+// `required: true` is DISPLAY-ONLY (Scalar sends required params by default and skips optional
+// ones); it never reaches a route's runtime validation schema.
 const TENANT_HEADER_PARAM = {
   name: "x-tenant-id",
   in: "header",
@@ -110,7 +106,7 @@ const api = new Elysia()
     if (config.env === "production" || !path.endsWith("/docs/json")) return;
     injectTenantHeaderParam(response);
   })
-  // API docs (Scalar) — DEV ONLY (enabled:false in prod skips the routes + spec entirely). Mounted
+  // API docs (Scalar), DEV ONLY (enabled:false in prod skips the routes + spec entirely). Mounted
   // on the API instance so the OpenAPI spec is generated ONLY from the API route schemas (enums,
   // descriptions, tags), never the SPA/static/catch-all routes. Served at /api/docs (+ /api/docs/json).
   .use(
@@ -159,7 +155,7 @@ const api = new Elysia()
         },
         security: [{ bearerToken: [] }, { sessionCookie: [] }],
         // NOTE: every controller assigns a matching instance-level `tags` (or per-route
-        // `detail.tags` for the mixed v1 controller). Keep this list in sync — a tag declared
+        // `detail.tags` for the mixed v1 controller). Keep this list in sync: a tag declared
         // here with no operations shows as an empty group; an operation with no tag shows loose.
         tags: [
           {

@@ -201,7 +201,7 @@ const baseAuthController = new Elysia({
         set.status = 400;
         return {
           error: translate("errors.emailInUse", "Email already in use"),
-          // The one input the operator fixes, named the way every other refusal names one (#231).
+          // NOTE: the one input the operator fixes, named the way every other refusal names one.
           // Built by hand here rather than raised as an AppError, so `refusalBody` never sees it.
           field: "email",
         };
@@ -358,7 +358,7 @@ const baseAuthController = new Elysia({
       // settings form vs the "you sign in with Google" note.
       const hasPassword = user ? await getUserHasPassword(user.id) : false;
 
-      // Every tenant the person belongs to, with the role held there (issue #756). The console shows
+      // NOTE: every tenant the person belongs to, with the role held there. The console shows
       // its tenant selector when there is more than one; `tenantId` above is the one this request ran
       // under. Empty for the SUPER_ADMIN, who picks from the whole tenant list instead.
       const tenants =
@@ -391,8 +391,8 @@ const baseAuthController = new Elysia({
         // Whether stdio MCP transport is enabled server-side (config.mcpStdioEnabled). Surfaced so the
         // MCP connection form can clearly flag a stdio server as inert when the operator has it off.
         mcpStdioEnabled: config.mcpStdioEnabled,
-        // Whether this install runs the audio detector, and the mode an agent that never chose one
-        // gets (issue #802). The address and token stay server-side: the editor only needs to know
+        // NOTE: whether this install runs the audio detector, and the mode an agent that never chose
+        // one gets. The address and token stay server-side: the editor only needs to know
         // whether the per-agent choice can do anything, and what "the default" means.
         ttsCheck: {
           configured: config.ttsCheck.url !== "",
@@ -525,7 +525,7 @@ const baseAuthController = new Elysia({
   )
   // Consume the invite: join the invitee to the tenant (tenant + role bound to the invite row, never
   // the request) and auto-login. An email that already has an account gets a membership added to it,
-  // proven by being signed in as that account or by its current password (issue #756); otherwise the
+  // proven by being signed in as that account or by its current password; otherwise the
   // account is created. Bypasses SIGNUP_ENABLED / ALLOWED_SIGNUP_DOMAINS BY DESIGN — an
   // invite is explicit authorization by an admin, like the /setup operator bypass.
   .post(
@@ -533,9 +533,8 @@ const baseAuthController = new Elysia({
     async ({ body, set, setAuthCookie, getSessionUserId }) => {
       let user: Awaited<ReturnType<typeof acceptInvite>>;
       try {
-        // A signed-in session only matters as proof of WHICH person it is, so it is read without the
-        // tenant selector: a membership removed while the page was open must not make the invitee
-        // "signed out" here (review round 5).
+        // NOTE: a signed-in session only proves WHICH person it is, so it is read without the tenant
+        // selector: a membership removed while the page was open must not sign the invitee out here.
         user = await acceptInvite({
           token: body.token,
           password: body.password,

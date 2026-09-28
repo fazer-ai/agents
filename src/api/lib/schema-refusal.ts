@@ -6,44 +6,13 @@ import type { RefusalBody } from "@/api/lib/refusal";
 // translate('errors.invalidRequest', 'The request is not valid.')
 // translate('errors.internalError', 'Something went wrong')
 
-// What a refusal from the SCHEMA layer answers, and what it records.
-//
-// Elysia raises `VALIDATION` before the handler runs, and that error's `message` is TypeBox's own
-// JSON. src/app.ts had no branch for it, so that JSON WAS the body: no `error` key anywhere in it,
-// and `apiErrorMessage` (src/client/lib/apiError.ts) reads `value.error` and answers null for
-// everything else, which is its "transport failure, show the generic sentence" branch. Every schema
-// refusal in the console therefore showed a fixed sentence, on a family the call-site sweep cannot
-// reach: there was nothing in the body for a call site to surface. Issue #255.
-//
-// The diagnostics do NOT come back, and that is the half with teeth. Measured against the real app
-// with NODE_ENV=production: `POST /api/v1/vault` with `{ name: "", value: { api_key: "<secret>" } }`
-// answered `{"type":"validation","on":"body","found":{"name":"","value":{"api_key":"<secret>"}}}`,
-// and the `logger.error(path, error)` in that branch put the same string on stdout, which is what
-// the fleet ships to its log store. Two things make it reachable rather than theoretical: schema
-// validation runs BEFORE the role guard (the same request answers 422 unauthenticated), and `name`
-// carries `minLength: 1` right next to the write-only secret. In production Elysia already drops
-// `property` and `message` from that JSON and keeps only `found`, so the one field that survived to
-// the operator was the echo of what they had just sent.
-//
-// The sentence is GENERIC, and deliberately does not translate TypeBox's rule. In production the
-// body carried neither the field nor the rule, so naming the field is a strict gain; carrying the
-// rule would mean mapping roughly fourteen TypeBox error codes onto locale entries that age with the
-// dependency, and nothing measured asks for that. The rule goes to the log instead, where it is
-// diagnosis rather than contract. It is safe there: measured over twelve schema shapes, TypeBox's
-// message is derived from the SCHEMA ("Expected string length less or equal to 3", "Expected
-// 'only'") and never from the submitted value.
-//
-// `on: "response"` is the one row that is not the client's fault. It means OUR answer failed OUR
-// schema, so answering 422 with a `field` would tell the caller their input was wrong and point them
-// at an input they did not send. It is a server fault, recorded as one. It answers a localized
-// sentence where the app's other 500 answers plain text, and that divergence is deliberate rather
-// than overlooked: this branch already has the locale in hand, and a body a client can read costs
-// nothing here. Bringing the `INTERNAL_SERVER_ERROR` branch along is a separate change.
-//
-// Every OTHER side names its value, `params` and `headers` included, and not only the body. `field`
-// says which value the refusal is about by the server's name for it, and for a route parameter or a
-// header that name is the parameter's. The client that sent it can match on it; what a console does
-// with a name that is not an input on the screen is the renderer's question, not this one.
+// What a refusal from the schema layer answers, and what it logs. The submitted value reaches
+// neither: Elysia's VALIDATION error echoes it, validation runs before the role guard, and the log
+// leaves the box. The body names the field with a generic sentence; TypeBox's rule, derived from the
+// schema and never from the value, goes to the log rather than onto locale entries that would age
+// with the dependency. `on: "response"` is our answer failing our schema: a 500 with no `field`,
+// since a 422 would blame an input the caller never sent. Every other side, `params` and `headers`
+// included, names its value. More in docs/ui.md, "Where a server refusal goes".
 export interface SchemaRefusal {
   status: number;
   body: RefusalBody;
@@ -53,33 +22,12 @@ export interface SchemaRefusal {
   log: string;
 }
 
-// The name of the value that failed, in the vocabulary the rest of the app's refusals use: the
-// dotted path #245 put on the wire (`guardrails.output.templateMessage`, `systemPrompt`). What
-// arrives here is a JSON pointer into the validated value (`/settings/guardrails/templateMessage`),
-// which is the same path with a different separator, so the conversion is mechanical.
-//
-// The conversion is NOT the whole job, because a name has to be one the SERVER chose. A pointer
-// segment is not automatically that: TypeBox descends into a `t.Record` whose value type constrains
-// anything, and the segment it reports there is the key the CALLER wrote. Measured against the real
-// route schema, `POST .../playground/turn` with `draft.promptVars = { "<secret>": <501 chars> }`
-// (agents.controller.ts:120, reachable because line 746 mounts that schema directly rather than
-// inside a union) reported `/draft/promptVars/<secret>`, which would have put the caller's own string
-// in the log line this module exists to keep clean. `toolMocks` (line 117) and the document
-// template's field labels do the same. The vault's `value` does not, and the reason is worth
-// knowing: it is a `t.Union`, and TypeBox stops at `anyOf` instead of descending.
-//
-// So the pointer is walked against the schema that refused it, and a segment survives only if that
-// schema DECLARES it: an own property of an object, or an index into an array or tuple. The first
-// segment the schema does not declare ends the name and takes the rest of the path with it. A record
-// therefore answers with the record's own property (`draft.promptVars`), which is the input on the
-// screen anyway. What is lost is WHICH key of a many-key record failed; the rule in the log line
-// ("Expected string length less or equal to 500") is the half that says what to do about it.
-//
-// `unknown` in, for both arguments. A standard-schema validator (zod and friends) reports `path` as
-// an ARRAY of segments rather than a pointer string (elysia/dist/error.js, the `~standard` branch),
-// and its schema is not a JSON Schema at all. No route declares one today; when one does, both
-// arguments fail to resolve and the honest answer is to name no field rather than to publish "0" as
-// one.
+// The failing value's name in the app's refusal vocabulary (`guardrails.output.templateMessage`),
+// from the JSON pointer TypeBox reports. A segment survives only if the refusing schema declares it
+// (an own property, or an array or tuple index): under a `t.Record` TypeBox reports the key the
+// CALLER wrote, which would put the caller's string in the log. A record answers with its own name,
+// losing only which key failed. `unknown` in, because a standard-schema validator reports `path` as
+// an array against a schema that is not JSON Schema: that resolves to no field, not to "0".
 function declaredChild(node: unknown, segment: string): unknown {
   if (typeof node !== "object" || node === null) return undefined;
   const schema = node as { properties?: unknown; items?: unknown };

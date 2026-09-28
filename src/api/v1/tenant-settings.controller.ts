@@ -37,16 +37,12 @@ import {
   updateSpendCeiling,
 } from "@/modules/tenant-settings/service";
 
-// The error catalog this controller's routes answer with. `bun i18n:extract` materialises
-// src/api/locales/*.json from these lines and prunes anything nothing references, and
-// `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
-// throw site rather than an English sentence on a pt-BR caller's screen.
+// The error catalog this controller's routes answer with (`bun i18n:extract` reads these lines).
 // translate('errors.invalidCredentialKind', 'This setting requires a credential of kind {{kind}}.')
 
 // Per-tenant feature settings (TENANT_ADMIN). Embedding (provider/model/credential for RAG) and
 // Langfuse (tracing) configs live in Tenant.settings. Secret VALUES are never returned. The langfuse
-// credential is now a standard vault entry (kind `langfuse`) created via the vault UI — this endpoint
-// only stores the reference. GET exposes `credentialRef` (the picker needs it to show the selection).
+// credential is a vault entry (kind `langfuse`); this endpoint only stores the reference. GET exposes `credentialRef` (the picker needs it to show the selection).
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   if (!ctx) throw new ForbiddenError();
@@ -441,17 +437,10 @@ export const tenantSettingsController = new Elysia({
       return new Response(new Uint8Array(logo.data), {
         headers: {
           "Content-Type": LOGO_CONTENT_TYPE[ext],
-          // NOT STORED AT ALL, which is the only answer that holds for every principal.
-          //
-          // The URL carries just `logoVersion`, a millisecond timestamp, so two tenants uploading in
-          // the same millisecond share it. `private` keeps proxies out but not the ONE browser that
-          // saw both tenants, and `Vary: X-Tenant-Id` — the first fix here — only discriminates for
-          // a SUPER_ADMIN: that header selects a tenant for nobody else, so it is absent on both
-          // requests when a browser signs out of tenant A and into tenant B, and the cache replays
-          // A's letterhead without B's scoped read ever running.
-          //
-          // What the cache bought was one small image per remount inside a minute. That is not a
-          // trade worth making against a tenant seeing another tenant's asset.
+          // NOTE: not stored at all. `logoVersion` (a millisecond timestamp) can collide across
+          // tenants, `private` does not separate tenants inside ONE browser, and `Vary: X-Tenant-Id`
+          // only helps a SUPER_ADMIN (nobody else sends the header, so after signing into another
+          // tenant the cache would replay the previous tenant's logo). A refetch per remount is cheap.
           "Cache-Control": "private, no-store",
         },
       });

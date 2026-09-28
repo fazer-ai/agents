@@ -337,7 +337,7 @@ export const oauthMcpCallbackController = new Elysia({
         }
         // The role held in the STATE's tenant, not the callback request's: this navigation carries no
         // tenant selector, so the session runs under the person's default membership, which need not
-        // be the tenant the flow was started from (issue #756).
+        // be the tenant the flow was started from.
         const stateTenantId = parseDbId(state.tenantId);
         const roleThere =
           stateTenantId === null ? null : roleInTenant(user, stateTenantId);

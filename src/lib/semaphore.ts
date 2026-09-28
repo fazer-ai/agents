@@ -10,8 +10,8 @@ export class Semaphore {
     this.available = Math.max(1, Math.floor(permits));
   }
 
-  // A waiter whose `signal` aborts leaves the queue with the signal's reason and takes no permit
-  // (issue #834): removed from the queue, so the next release goes to whoever is behind it. An abort
+  // A waiter whose `signal` aborts leaves the queue with the signal's reason and takes no permit:
+  // removed from the queue, so the next release goes to whoever is behind it. An abort
   // after the permit was granted changes nothing, since the task is already running.
   private acquire(signal?: AbortSignal): Promise<void> {
     if (signal?.aborted) return Promise.reject(signal.reason);

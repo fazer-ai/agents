@@ -93,32 +93,14 @@ function makeScopedExtension(tenantId: bigint) {
   });
 }
 
-// A SUPER_ADMIN's target tenant is the only tenant id that reaches this boundary from OUTSIDE the
-// process: it comes from a per-request selector (the `X-Tenant-Id` header, which the console persists
-// in the browser, or an MCP call's `tenant` argument), so it can name a tenant that no longer exists.
-// Every context this process builds for itself carries an id it just read from a row, and carries
-// TENANT_ADMIN, which is what makes the role the whole predicate.
-//
-// Unverified, that id is not an error anywhere, which is the problem. RLS scopes the transaction to a
-// tenant with no rows, so a READ answers with defaults (a settings screen loads empty, looking
-// healthy) and a WRITE fails inside Prisma (measured: P2025 on an update, P2003 on an insert).
-// Neither of those is an AppError, so `onError` falls through to its generic branch and the operator
-// is told "something went wrong", with no reason, on a screen whose data was never real. Issue #223.
-//
-// The MCP transport already asks this question, per call, before it builds the principal
-// (`resolveTenantSelector`, answering "Tenant not found"). Same question, same answer, so the two
-// transports cannot diverge.
-//
-// They diverged anyway, twice, and both times the same way: a REST controller unwrapped the request
-// context down to `ctx.tenantId` and handed the bare id to a module that rebuilt a TENANT_ADMIN
-// context around it, so this check saw an internal id and skipped. #268 was the playground; #280 was
-// knowledge/RAG, experiments, integrations, documents and the n8n export. Nothing here can catch
-// that — the lie is well-formed by the time it arrives — so the fence is on the transport, where the
-// provenance is still known: `tests/modules/tenant-selector-entry-points.test.ts`.
-//
-// One statement, in a transaction that is already open, and only where the id is unverified. Asking
-// at the request boundary instead would cost a transaction of its own on every request the fleet
-// operator makes, and the first-run operator of EVERY installation is a SUPER_ADMIN.
+// A SUPER_ADMIN's target is the only tenant id that reaches this boundary from OUTSIDE the process
+// (the persisted `X-Tenant-Id`, an MCP `tenant` argument), so it can name a deleted tenant; unchecked,
+// RLS scopes to an empty tenant, reads load empty defaults and writes fail as non-AppError Prisma
+// errors ("something went wrong"). Same question and answer as MCP's `resolveTenantSelector`. A module
+// that rebuilds a TENANT_ADMIN context around a bare id defeats this check, which is why
+// `tests/modules/tenant-selector-entry-points.test.ts` fences the transports (docs/tenancy.md, rule 5).
+// One statement inside the already-open transaction, rather than a transaction of its own on every
+// fleet request at the boundary.
 async function requireTenantExists(
   db: ScopedDb,
   tenantId: bigint,
@@ -129,37 +111,23 @@ async function requireTenantExists(
     select: { id: true },
   });
   if (!row) {
-    // The same status and key the MCP selector and `getTenant` already answer with, in a class of
-    // its own: this is the only one of the seven that refuses the selector the CALLER WAS CARRYING
-    // rather than a tenant its request named, and the console has to tell them apart to know whether
-    // to drop what it has stored (src/lib/console-params.ts).
+    // NOTE: same status and key as the MCP selector and `getTenant`, in a class of its own because
+    // only this refusal is about the selector the CALLER WAS CARRYING, which the console must drop
+    // (src/lib/console-params.ts).
     throw new ActiveTenantNotFoundError(tenantId);
   }
 }
 
-// NOTE: no network/LLM await inside `fn` — the transaction pins a pooled connection and
-// long I/O would exhaust the pool. Keep fn to DB work; do network I/O outside.
-//
-// "Network" includes A SECOND POSTGRES. The `ingest:<threadId>` sections used to await the LangGraph
-// checkpointer, which has its own pool and its own connections, from in here, and the rule read as satisfied
-// because nothing was calling an HTTP API. It cost the same: a connection held idle-in-transaction
-// across another pool's round-trips, this pool drained, and every unrelated query failing on
-// `maxWait` (issue #225). If `fn` awaits anything that is not this transaction, it does not belong.
-//
-// `...On` variants take the base client explicitly so integration tests can pass their own
-// (real) client instead of the singleton, which unit tests mock globally.
-// Stated rather than inherited. These ARE the Prisma defaults, and that is the problem: the two
-// failures a drained pool produces name these exact numbers ("Unable to start a transaction in the
-// given time" is `maxWait`; "a query cannot be executed on an expired transaction" is `timeout`),
-// and neither number appeared anywhere in this repository. Naming them here is what makes the
-// budget greppable from the error, and tunable in one place if it ever has to move.
-//
-// THE OTHER HALF OF THE SAME EQUATION IS `DB_POOL_MAX` (issue #668): this says how long to wait for a
-// connection, and that says how many there are. An operator who arrives here from the `maxWait`
-// error is usually looking at a POOL that is too small for a burst rather than at a wait that is too
-// short, and the two pools (Prisma's and the checkpointer's) are each sized by it, so connections per
-// leader replica are about twice it. `docs/deploy.md` carries the arithmetic against `max_connections`
-// and the reason `connection_limit` in the URL is not that knob.
+// No network/LLM await inside `fn`: the transaction pins a pooled connection and long I/O would
+// exhaust the pool. That includes A SECOND POSTGRES (the LangGraph checkpointer has its own pool): a
+// connection held idle-in-transaction across another pool's round-trips drains this one just the
+// same. If `fn` awaits anything that is not this transaction, it does not belong. `...On` variants
+// take the base client explicitly so integration tests can pass their own (real) client.
+
+// Stated rather than inherited, although these ARE the Prisma defaults: a drained pool's two errors
+// name exactly these numbers ("Unable to start a transaction in the given time" is `maxWait`, "expired
+// transaction" is `timeout`), so naming them makes the budget greppable from the error. The other
+// half is `DB_POOL_MAX`, usually the real culprit behind a `maxWait` error (docs/deploy.md).
 export const SCOPED_TX_OPTIONS = {
   // Time to WAIT for a free connection before giving up.
   maxWait: 2_000,
@@ -195,30 +163,15 @@ export async function runScoped<T>(
   return runScopedOn(basePrisma, ctx, fn);
 }
 
-// NOTE: audited cross-tenant / fleet path. Becomes the fleet role for the length of this transaction,
-// which is what the `fleet_super_admin` policy on every table under RLS is written `TO` — so RLS
-// allows all rows (incl. tenant_id NULL audit rows and creating new tenants where WITH CHECK could
-// not otherwise pass). Caller must have role SUPER_ADMIN; enforce at the call site.
-//
-// This used to be `set_config('app.is_super_admin', 'on', true)`, read by an OR inside the same
-// policy that carries the tenant predicate. That OR is what made every tenant index unreachable
-// (issue #382, and the numbers are in the migration that split it) — a policy branch naming no
-// column cannot become an index condition, and neither can the branch beside it.
-//
-// `set_config('role', ...)` rather than `SET LOCAL ROLE`: it is the same transaction-local
-// mechanism (measured: `current_user` is back to the session user after both commit and rollback)
-// and, unlike `SET ROLE`, it takes the role as an EXPRESSION — which is what lets the name be
-// resolved by the database rather than assembled here.
-//
-// `Prisma.raw` rather than `$executeRawUnsafe`: the function CALL has to reach Postgres as SQL and
-// not as a bind parameter, and this is the spelling that keeps the tagged template. It carries no
-// caller input — `FLEET_ROLE_FN` is a constant of this repository — and the name it resolves to
-// never leaves the server.
-//
-// It is not a privilege escalation the old GUC did not already allow: reaching this needs a
-// statement on the runtime connection, which is what setting the GUC needed too. What DID change is
-// that the GUC now grants nothing at all, so the old spelling fails closed rather than silently
-// still working — `tests/lib/rls-policy-shape.test.ts` asserts that.
+// Audited cross-tenant / fleet path. Becomes the fleet role for the length of this transaction,
+// which is what the `fleet_super_admin` policy on every table under RLS is written `TO`, so RLS
+// allows all rows (incl. tenant_id NULL audit rows and creating new tenants). Caller must have role
+// SUPER_ADMIN; enforce at the call site. The legacy `app.is_super_admin` GUC grants nothing, which
+// `tests/lib/rls-policy-shape.test.ts` asserts.
+
+// `set_config('role', ...)` rather than `SET LOCAL ROLE`: equally transaction-local, but it takes the
+// role as an EXPRESSION, so the database resolves the name. `Prisma.raw` keeps the function CALL as
+// SQL rather than a bind parameter; `FLEET_ROLE_FN` is a constant, never caller input.
 export async function asSuperAdminOn<T>(
   base: TransactionCapable,
   fn: (db: ScopedDb) => Promise<T>,
@@ -235,25 +188,13 @@ export async function asSuperAdmin<T>(
   return asSuperAdminOn(basePrisma, fn);
 }
 
-// The transaction a mutation on a GLOBAL table opens, at whatever reach the principal's role has.
-//
-// The tenant-scoped families never need this: their row carries a tenant, so the transaction follows
-// from what is being written. The identity tables (`users`, `invitations`, `mcp_oauth_*`) carry no
-// tenant of ours to follow — RLS is not on them and the scope is a hand-written `where` — so the
-// transaction can only follow from WHO is writing. A tenant admin gets the scoped one and can record
-// against their own tenant and no other; a SUPER_ADMIN reaches every tenant and the fleet, and
-// `asSuperAdmin` is the only mode that can write `tenant_id NULL` at all — which is what a row about
-// a SUPER_ADMIN user, who belongs to no tenant, has to be.
-//
-// It keys on the ROLE and never on the subject, which is what keeps it free of the shape that bit
-// this epic four times: choosing the mode from the target's tenant would mean reading that tenant
-// before the transaction that locks the row, and a concurrent write could move it in between. The
-// subject's tenant is read INSIDE, under the lock, and reaches `auditMutationOn` from there.
-//
-// NOTE: for a SUPER_ADMIN this sets no `app.tenant_id`, so a tenant-scoped model written in here
-// gets no auto-injected tenant_id — same as `asSuperAdminOn`, which this becomes. Fine for the
-// identity families (their tables are global and the audit row names its tenant explicitly), and the
-// reason this is not a general replacement for `runScopedOn`.
+// The transaction a mutation on a GLOBAL identity table (`users`, `invitations`, `mcp_oauth_*`, no
+// RLS, scoped by a hand-written `where`) opens, at the reach of WHO is writing: a tenant admin gets
+// the scoped one, a SUPER_ADMIN gets `asSuperAdmin`, the only mode that can write `tenant_id NULL`.
+// Keyed on the ROLE, never the subject: choosing by the target's tenant would read it before the
+// transaction locks the row, and a concurrent write could move it; the subject's tenant is read
+// INSIDE, under the lock. For a SUPER_ADMIN no `app.tenant_id` is set, so tenant_id is not
+// auto-injected, which is why this is not a general replacement for `runScopedOn`.
 export async function asPrincipalOn<T>(
   base: TransactionCapable,
   ctx: TenantContext,

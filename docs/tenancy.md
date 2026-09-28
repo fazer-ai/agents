@@ -99,18 +99,20 @@ Who may do what to a person follows from that split. A tenant administrator mana
 
 Since #308 `api_keys` carries a CHECK "`SUPER_ADMIN` ⟺ `tenant_id IS NULL`", so a fleet-scoped API key resolves to the same kind of principal as a SUPER_ADMIN user (no tenant, `X-Tenant-Id` honoured per request; see [`api-and-fleet.md`](api-and-fleet.md) → API keys). The first account is created via `/setup` as `SUPER_ADMIN` together with an initial `Tenant`, inside one `asSuperAdmin` transaction with an advisory lock + count re-check. `bun set-admin` makes the person `TENANT_ADMIN` of the first tenant (or `SUPER_ADMIN` when no tenant exists yet).
 
-### Role attributes are not inherited, and the boot guard asks the neighbouring question
+### Role attributes are not inherited, so the reach checks ask about SET
 
-`SUPERUSER` and `BYPASSRLS` are **role attributes**, and attributes are not inherited through membership — only object privileges are. Against an RLS table, a role that inherits a `BYPASSRLS` role still sees 1 row; it sees 2 only after `SET ROLE` to it. So `assertRuntimeRoleIsNotSuperuser` (`src/lib/db-guard.ts`) asks `pg_has_role(…, 'USAGE')`, which is inheritance, while the real escalation depends on `set_option`, and it is wrong in both directions:
+`SUPERUSER` and `BYPASSRLS` are **role attributes**, and attributes are not inherited through membership: only object privileges are. Against an RLS table, a role that inherits a `BYPASSRLS` role still sees 1 row; it sees 2 only after `SET ROLE` to it. Inheritance (`pg_has_role(…, 'USAGE')`) is therefore the wrong question, and the escalation depends on SET permission, which is transitive along a chain of grants.
 
-| membership | escalates? | guard |
+The reach checks (the boot guard in `src/lib/db-guard.ts`, and the runtime-role and fleet-role checks in `scripts/db-bootstrap.ts` and its `.sql` twin) ask whether a role can BECOME a privileged one, through `privilegedReachSql` in `src/lib/tenancy/privileged-reach.ts`. On PostgreSQL 16 and later they ask `SET`; before 16 a grant carries no options, so `MEMBER` is the whole answer, and the server picks the branch from its own `server_version_num`. On 16 and later:
+
+| membership | escalates? | check |
 | --- | --- | --- |
-| INHERIT TRUE, SET TRUE | yes | refuses ✓ |
-| INHERIT FALSE, SET TRUE | yes | accepts ✗ |
-| INHERIT FALSE, SET FALSE | no | accepts ✓ |
-| INHERIT TRUE, SET FALSE | no | refuses ✗ |
+| INHERIT TRUE, SET TRUE | yes | refuses |
+| INHERIT FALSE, SET TRUE | yes | refuses |
+| INHERIT FALSE, SET FALSE | no | accepts |
+| INHERIT TRUE, SET FALSE | no | accepts |
 
-Under Postgres defaults the two questions coincide (an `INHERIT` role plus a plain `GRANT` is `INHERIT TRUE, SET TRUE`), which is why the guard works. They diverge on a `NOINHERIT` runtime role, where a plain `GRANT` already yields `inherit_option false, set_option true` and escalates unseen, with no deliberate syntax involved. **Deliberately not fixed** (#197): `set_option` is PG16-only, the real predicate is transitive, and hardening would refuse installs that boot today. `MEMBER` is not a substitute — it is true on all four rows, including the two that do not escalate. The limit is recorded in #197's public body under "Not validated", and the measurement in `tests/scripts/db-bootstrap.test.ts`.
+The second row is the one an inheritance check misses, and it is not exotic: on a `NOINHERIT` runtime role a plain `GRANT` already yields `inherit_option false, set_option true`. Each privileged role found is reported as inherited or reachable via SET ROLE, because the repairs differ (revoke the membership, or `GRANT … WITH SET FALSE`). The fleet role is checked against a wider attribute set (`OUTLIVES_SET_ROLE`: SUPERUSER, BYPASSRLS, CREATEDB, CREATEROLE, REPLICATION), since the runtime role acquires each of them on entering it; LOGIN is excluded because a session is already open by then. The measurement is in `tests/scripts/db-bootstrap.test.ts`.
 
 ## LangGraph checkpointer
 

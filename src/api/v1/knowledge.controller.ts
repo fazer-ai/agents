@@ -41,13 +41,11 @@ import {
 import type { ChunkHit } from "@/modules/rag/sql";
 
 // Knowledge base + human-approval REST surface (same core the agent tools and MCP project over).
-// Reads need auth; mutations and approvals require TENANT_ADMIN (the approval gate is the
-// load-bearing "nothing enters a KB without a human" invariant — it must be enforced server-side,
-// not by the UI).
-//
-// i18n anchor — keys referenced via AppError third argument (not direct translate() calls),
-// so they are declared here for the i18n extractor (keepRemoved: false). Keep in sync with
-// src/modules/rag/loaders.ts and src/modules/rag/documents.ts.
+// Reads need auth; mutations and approvals require TENANT_ADMIN, enforced server-side and not by
+// the UI: the approval gate is the load-bearing "nothing enters a KB without a human" invariant.
+
+// i18n extractor anchors, one line per AppError key (keepRemoved: false prunes a key with no
+// literal reference). Keep in sync with src/modules/rag/loaders.ts and src/modules/rag/documents.ts.
 // translate('errors.documentTooLarge', 'Document is too large to process')
 // translate('errors.invalidKnowledgeBaseName', 'Name must be 1 to {{max}} characters and cannot be blank')
 // translate('errors.embeddingEmpty', 'The embedding credential is empty.')
@@ -94,13 +92,10 @@ export function readerSafeBlock(
   return block ? { reason: block.reason } : null;
 }
 
-// One search hit on the wire. Written out field by field, NOT as a spread of the row: `ChunkHit`
-// carries three bigint columns and the spread published all of them, with only two given a spelling
-// JSON accepts. `documentId` rode out as a BigInt and every search that MATCHED something answered
-// 500 (issue #253) — the empty-result case serialized fine, so the endpoint looked half-alive. The
-// two other readers of `ChunkHit` (the MCP tool and the agent's search_knowledge) already project
-// explicitly; this is the one that did not. A column added to the row now reaches the client only
-// when someone gives it a spelling here.
+// One search hit on the wire, written out field by field, NOT as a spread of the row: `ChunkHit`
+// carries bigint columns, and one without a JSON spelling makes every search that MATCHES something
+// answer 500 while the empty result still serializes. A column added to the row reaches the client
+// only when someone gives it a spelling here.
 export function searchHitDto(h: ChunkHit) {
   return {
     id: String(h.id),
@@ -124,8 +119,8 @@ export const knowledgeController = new Elysia({
     "/bases",
     async ({ tenantContext }) => {
       const bases = await listKnowledgeBases(ctxOrThrow(tenantContext));
-      // BigInt is not JSON-serializable (Elysia 500s) and the Eden treaty types must match the
-      // wire — serialize ids to string at the boundary (service keeps bigint for internal callers).
+      // NOTE: BigInt is not JSON-serializable (Elysia 500s) and the Eden treaty types must match the
+      // wire, so ids become strings at the boundary (the service keeps bigint for internal callers).
       return {
         instance: instanceIdentity,
         bases: bases.map((b) => ({ ...b, id: String(b.id) })),
@@ -186,8 +181,8 @@ export const knowledgeController = new Elysia({
       const ctx = ctxOrThrow(tenantContext);
       const id = requireDbId(params.id);
       const kb = await getKnowledgeBase({ ctx, id });
-      // The base's help center source, if it has one (issue #794): its config and the last run's
-      // outcome, which is where an operator reads a failed or suspicious sync.
+      // NOTE: the base's help center source, if it has one: its config and the last run's outcome,
+      // which is where an operator reads a failed or suspicious sync.
       const source = await getSource(ctx, id);
       return {
         instance: instanceIdentity,
@@ -407,10 +402,9 @@ export const knowledgeController = new Elysia({
       const block = await readEmbeddingBlock(ctx);
       return {
         instance: instanceIdentity,
-        // The tenant's CURRENT embedding block (null when indexing would work). Resolved per read,
-        // not stamped on the rows when they were blocked: a token stored back then would still be
-        // telling the operator to fill a credential they have since filled (issue #80).
-        //
+        // NOTE: the tenant's CURRENT embedding block (null when indexing would work). Resolved per
+        // read, not stamped on the rows when they were blocked: a stamped token would keep telling
+        // the operator to fill a credential they have since filled.
         embeddingBlock: readerSafeBlock(block),
         documents: page.documents.map((d) => ({
           ...d,

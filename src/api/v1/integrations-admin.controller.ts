@@ -144,7 +144,7 @@ export const integrationsAdminController = new Elysia({
   .get(
     "/instances/:id",
     async ({ tenantContext, params, set }) => {
-      // NOTE: no-store — this is the ONE read that returns the decrypted routeToken, and nothing
+      // NOTE: no-store: this is the ONE read that returns the decrypted routeToken, and nothing
       // global sets the header. Keeps the webhook URL out of the browser's disk cache.
       set.headers["cache-control"] = "no-store";
       return {
@@ -187,8 +187,7 @@ export const integrationsAdminController = new Elysia({
       return {
         instance: instanceIdentity,
         id: String(created.id),
-        // NOTE: Paste into the upstream provider. Also readable later via GET /instances/:id, so
-        // losing this response is no longer a dead end.
+        // NOTE: pasted into the upstream provider; also readable later via GET /instances/:id.
         routeToken: created.routeToken,
       };
     },
@@ -299,8 +298,8 @@ export const integrationsAdminController = new Elysia({
     },
   )
   // NOTE: Rotation is a POST because it MUTATES: the old URL stops resolving the moment it commits.
-  // It exists for the two cases the stored token cannot cover — an instance created before the
-  // token was persisted (hash only), and a URL that leaked.
+  // It exists for the two cases the stored token cannot cover: an instance whose token is stored as
+  // a hash only, and a URL that leaked.
   .post(
     "/instances/:id/route-token",
     async ({ tenantContext, params }) => ({

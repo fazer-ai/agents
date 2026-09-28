@@ -2,15 +2,10 @@ import { AppError } from "@/lib/errors";
 
 // A caller-supplied string as a database id, or nothing.
 //
-// `BigInt` is arbitrary precision and lenient, and both halves of that bite. It accepts spellings a
-// column does not (`0x7`, `+7`, ` 7 `, `1e3`), and it accepts values no column can hold: an id past
-// 2^63-1 parses here and is refused by POSTGRES instead, when the query binds it — a 500 for what is
-// plainly a malformed field, and on a path that meant to answer "no such row".
-//
-// The rule was learned in the vault (requireVaultRef) and then re-derived, badly, everywhere else: a
-// digits-only regex is the half people remember, and the range is the half they do not. It lives
-// here so the next reader inherits both, and so "is this an id?" has one answer instead of one per
-// caller. What the caller DOES with `null` is still theirs: a 400, a null row, or a fallback.
+// `BigInt` alone is too lenient: it accepts spellings a column does not (`0x7`, `+7`, ` 7 `, `1e3`)
+// and values past 2^63-1, which Postgres then refuses at bind time as a 500 on a path that meant to
+// answer "no such row". A digits-only regex covers only the first half; the range is the second.
+// What the caller DOES with `null` is still theirs: a 400, a null row, or a fallback.
 export const MAX_DB_ID = 9223372036854775807n;
 
 const DIGITS = /^\d+$/;
@@ -38,18 +33,12 @@ export function requireDbId(
   return id;
 }
 
-// The same parse for an id a request BODY carries, where "no id" has two spellings and they are not
-// the same instruction: an absent key leaves the column as it is, and an explicit `null` detaches it.
-// Collapsing the two is how a PATCH that meant to clear a reference silently kept it.
+// The same parse for an id a request BODY carries, where an absent key leaves the column as it is
+// and an explicit `null` detaches it; collapsing the two makes a PATCH that clears a reference keep it.
+// An empty string is refused, since `BigInt("")` is `0n` and would address row zero.
 //
-// An empty string is neither, and is refused. It reached `BigInt("")` on two of these paths, which
-// is `0n` — a request that named no row addressed row zero. The console never sends it (it writes
-// `value || null` before the request), so refusing costs nothing a caller cannot fix by sending the
-// `null` the schema already documents.
-//
-// `label` is the name the BODY uses for the field, not a noun phrase: the caller is looking at a
-// key they wrote, and "Not a valid businessHoursId" points straight at it. Path segments keep the
-// noun-phrase form, because a URL has no field to name.
+// `label` is the name the BODY uses for the field ("Not a valid businessHoursId"), not a noun phrase:
+// the caller is looking at a key they wrote. Path segments keep the noun-phrase form.
 export function optionalDbId(
   raw: string | null | undefined,
   label = "id",

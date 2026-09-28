@@ -1,14 +1,9 @@
-// Which trail an audit read answers for.
+// Which trail an audit read answers for. It imports nothing, like `actions.ts`, so the console can
+// build its selector from it without crossing the bundle boundary.
 //
-// It lives HERE, beside `actions.ts` and for the same reason: a module that imports nothing, so the
-// browser bundle can read it without dragging a `src/modules` file across the boundary
-// `tests/client/bundle-boundary.test.ts` guards. The console needs the vocabulary to build its
-// selector; the service needs it to decide which role to read under.
-//
-// `tenant` is the RLS read every caller has always had. The other two are a DIFFERENT QUERY rather
-// than a wider filter: the rows keyed to no tenant are not filtered out of the tenant read, they are
-// unreachable from it, because the policy is `tenant_id = current_setting('app.tenant_id')` and NULL
-// satisfies no comparison. Reaching them means entering the fleet role, and that is SUPER_ADMIN's.
+// `fleet` and `all` are a DIFFERENT QUERY rather than a wider filter: rows keyed to no tenant are
+// unreachable from the RLS read (`tenant_id = app.tenant_id`, which NULL never satisfies), so
+// reaching them means entering the fleet role, which is SUPER_ADMIN's.
 export const AUDIT_SCOPES = ["tenant", "fleet", "all"] as const;
 
 export type AuditScope = (typeof AUDIT_SCOPES)[number];

@@ -7,27 +7,14 @@
 // reverse proxy in front. Being wrong toward the shared bucket is a worse limit; being wrong toward
 // the header is no limit at all, so the trust is declared rather than guessed.
 
-// NOTE: Only ONE thing in a request is reliably written by our own proxy: the entry a proxy APPENDS
-// to X-Forwarded-For. Everything else is a guess at a name — `cf-connecting-ip`, `x-real-ip` and
-// friends are set by SOME proxies, and a proxy that does not manage a header forwards it verbatim,
-// so on a generic Traefik/Caddy/nginx deployment a client can send `CF-Connecting-IP: <anything>`
-// and, if we prefer it, name its own rate-limit bucket.
-//
-// So this counts hops instead of trusting names. `hops` is how many proxies sit between the client
-// and us: with the usual single proxy the LAST entry is the one it wrote (a client that sends
-// `X-Forwarded-For: 1.2.3.4` only turns the list into `1.2.3.4, <real client>`, and can prepend but
-// never append). With Cloudflare in front of that proxy the last entry is Cloudflare, so hops is 2.
-// A chain shorter than `hops` means the configuration and the topology disagree; that returns
+// Reads the client address from X-Forwarded-For by counting hops, never by trusting header names:
+// the entry a proxy APPENDS is the only one our own proxy reliably writes, while `cf-connecting-ip`,
+// `x-real-ip` and friends pass verbatim through a proxy that does not manage them, so a client could
+// name its own bucket. `hops` is how many proxies sit in front: at 1 the LAST entry is our proxy's (a
+// client can prepend, never append); behind Cloudflare it is 2. A chain shorter than `hops` returns
 // nothing and the caller falls back to the peer, which over-groups rather than handing a client the
-// key.
-//
-// NOTE: each hop counted moves the read one entry LEFT, and the leftmost entry is the one a client
-// can write. At hops 1 that never matters — the entry read is the one our own proxy appended. Above
-// 1 it does: a caller who can reach the SECOND proxy directly, skipping the first, sends an
-// X-Forwarded-For of their choosing and the proxy that answers appends their peer, producing a chain
-// exactly as long as the legitimate path. Nothing in the request tells the two apart, so raising
-// `hops` is only safe when every proxy counted is itself unreachable except through the one in front
-// of it — the precondition .env.example states for the app port, applied to the whole chain.
+// key. Above 1, every proxy counted must be unreachable except through the one in front of it, or a
+// caller skipping one forges a chain of the right length (.env.example, TRUSTED_PROXY_HOPS).
 export function extractForwardedIp(
   request: Request,
   hops: number,

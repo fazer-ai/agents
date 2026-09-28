@@ -11,7 +11,7 @@ import {
 } from "./branding.admin.service";
 import { getGlobalBranding, readBrandingAsset } from "./branding.service";
 
-// GLOBAL identity/branding transport. Reads (the config + the binary assets) are PUBLIC — they
+// GLOBAL identity/branding transport. Reads (the config + the binary assets) are PUBLIC: they
 // must load before any auth/tenant context (login/setup pages, the favicon). Writes are gated to
 // SUPER_ADMIN (identity is fleet-level, not tenant-level). Mounted under the /api group.
 const variantParams = t.Object({
@@ -23,17 +23,12 @@ const variantParams = t.Object({
   }),
 });
 
-// The writes need a principal to attribute their audit row to. Resolved per WRITE HANDLER and not by
-// mounting `tenancyPlugin`: that plugin derives globally, so it would run on the two PUBLIC routes
-// here as well, on the identity config the login page loads before any session exists and on the
-// favicon. Measured on both routes, driving the real app: mounting it adds ONE `user.findUnique` per
-// request that carries a session cookie (0 -> 1 on each) and none for an anonymous one, and it turns
-// a transient DB failure into a 503 on the one route that has to answer before auth. These three are
-// SUPER_ADMIN-only
-// and rare, so paying one extra lookup here is the cheaper side by far.
-//
-// `tenantId` is pinned null rather than read: branding is fleet-level, and the audit row must not
-// follow whichever tenant this admin happens to have selected.
+// The writes need a principal for their audit row, resolved per WRITE HANDLER rather than by
+// mounting `tenancyPlugin`: that plugin derives globally, so the two PUBLIC routes (the identity
+// config the login page loads, the favicon) would pay a user lookup per cookie-carrying request and
+// answer a transient DB failure with a 503 before auth. The writes are rare, so they pay it instead.
+// `tenantId` is pinned null: branding is fleet-level, and the audit row must not follow whichever
+// tenant the admin has selected.
 async function actorOf(
   getAuthUser: () => Promise<{
     id: bigint;
@@ -58,7 +53,7 @@ export const brandingController = new Elysia({
   .use(authPlugin)
   // Public: the resolved global identity (colors + which asset variants exist + cache version).
   // no-store: this config changes on every branding edit and the client re-fetches after each
-  // mutation (e.g. removing a logo) — a heuristically-cached stale copy would point the UI at an
+  // mutation (e.g. removing a logo); a heuristically-cached stale copy would point the UI at an
   // asset that no longer exists (broken/empty logo). The binary assets stay long-cached (?v=).
   .get(
     "/",

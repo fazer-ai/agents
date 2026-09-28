@@ -1,12 +1,7 @@
 // Names the SERVER writes and the BROWSER reads back: query parameters, routes, and one response
-// header.
-//
-// They live here, with no imports of their own, because both ends need them and the two ends have
-// opposite constraints: `src/modules/mcp/console-links.ts` builds the URLs and needs `config`
-// (server-only, reads `process.env`), while the console reads them in the browser, where importing
-// `config` throws before any route renders (`docs/frontend-env-vars.md`). A constant shared through
-// the builder would drag the whole server config into the SPA bundle; the boundary is checked by
-// `tests/client/bundle-boundary.test.ts`.
+// header. Import-free because `src/modules/mcp/console-links.ts` builds the URLs with `config`
+// (server-only), and importing `config` in the browser throws before any route renders
+// (`docs/frontend-env-vars.md`); `tests/client/bundle-boundary.test.ts` checks the boundary.
 
 // Asks the console to OPEN a given tenant. Deliberately not `tenant`: `/admin/users?tenant=<id>`
 // already exists as that page's fleet-wide filter, linked to from the tenants list, and a component
@@ -24,13 +19,10 @@ export const CONSOLE_ROUTES = {
 } as const;
 
 // Names the id on the 404 that refuses the tenant SELECTOR a request was carrying (the console's
-// stored `X-Tenant-Id`), which `ActiveTenantNotFoundError` separates from every other 404 answering
-// the same key and sentence (src/lib/errors.ts).
-//
-// A header rather than a code in the body because of who reads it: Eden's `onResponse` sees the
-// `Response` before the body is parsed, and reading the body there consumes the stream Eden is about
-// to read. The body's one machine-readable key is `field`, whose contract is an INPUT the operator
-// can go and fix (src/api/lib/refusal.ts); an ambient target is not one. Issue #252.
+// stored `X-Tenant-Id`), separated by `ActiveTenantNotFoundError` from every other 404 (src/lib/errors.ts).
+// A header rather than a body code: Eden's `onResponse` sees the `Response` before the body is parsed,
+// and reading it there consumes the stream. The body's `field` key means an INPUT the operator can fix
+// (src/api/lib/refusal.ts), which an ambient target is not.
 //
 // NOTE: readable from script because the console is same-origin with the API. A cross-origin reader
 // would need it in `Access-Control-Expose-Headers`, which this app does not send.

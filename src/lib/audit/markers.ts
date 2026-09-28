@@ -1,18 +1,10 @@
 // The keys a projection carries to say "this write moved a value the row does not show".
-//
-// There are two of them because they were built for two different halves of the same problem and
-// neither can be expressed as the other: `undisclosedChanged` is the seam's, put on BOTH sides of a
-// projection by `markUndisclosed` (`src/modules/audit/projection.ts`) when a column in a module's
-// `UNDISCLOSED` list moved; `unreadConfigChanged` is #394's, put on the settings bag by
-// `src/modules/agents/audit-projection.ts` when a key no canonical reader looks at moved.
-//
-// They live HERE, in a module that imports nothing, because the only reader that needs BOTH is the
-// console, and the console cannot import a `src/modules` file (`tests/client/bundle-boundary.test.ts`
-// keeps the server out of the browser bundle). A reader that knows one marker and not the other
-// renders "this action recorded no field values" over a change that did happen, which is worse than
-// saying nothing: it is the trail actively denying a mutation it holds. That is the bug this list
-// exists to make impossible for the NEXT marker, and `tests/modules/audit-markers.test.ts` fails
-// while a producer writes one that is not here.
+// `undisclosedChanged` is put on BOTH sides of a projection by `markUndisclosed`
+// (`src/modules/audit/projection.ts`) when an `UNDISCLOSED` column moved; `unreadConfigChanged` is put
+// on the settings bag by `src/modules/agents/audit-projection.ts` when a key no reader looks at moved.
+// They live in a module that imports nothing because the console reads both and cannot import
+// `src/modules`. A reader missing one renders "no field values" over a real change, so
+// `tests/modules/audit-markers.test.ts` fails while a producer writes a marker not listed here.
 export const AUDIT_MARKER_KEYS = [
   "undisclosedChanged",
   "unreadConfigChanged",

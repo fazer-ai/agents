@@ -53,7 +53,7 @@ export const DEFAULT_BRAND_NAME = "fazer.ai agents";
 
 // Where the client caches the resolved global branding. Named here rather than in the provider
 // because a second reader lives outside the bundle: the inline <head> script that stamps the tab
-// title before React exists (#277).
+// title before React exists.
 export const BRANDING_CACHE_KEY = "@app:branding";
 
 // The white-label name to display: the configured one, or the product's own. Blank and whitespace
@@ -89,5 +89,5 @@ export function pickVariant(
 // Where the page's DECLARED icon links are kept, so a cleared favicon can restore them. The inline
 // <head> script that applies the custom icon before the first paint has to remove them (leaving
 // them in place makes the browser fetch the default too), so it writes them here on the way out
-// and `applyFavicon` reads them back (#290).
+// and `applyFavicon` reads them back.
 export const BRANDING_DEFAULT_FAVICONS_KEY = "__brandingDefaultFavicons";

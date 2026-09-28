@@ -13,16 +13,10 @@ export const WS_CLOSE = {
 
 export type WsCloseCode = (typeof WS_CLOSE)[keyof typeof WS_CLOSE];
 
-// NOTE: idleTimeoutSec is below Bun's default of 120s so a half-open
-// connection is detected faster. Bun sends ping frames automatically
-// (`sendPings: true` is the default), so we don't need application-level
-// heartbeats; the schema's `ping`/`pong` types below are purely didactic.
-//
-// `maxConnectionsPerUser` caps how many simultaneous WS connections one
-// authenticated user can hold open at once. The HTTP rate limiter in
-// `src/api/middlewares/rateLimit.ts` already throttles new upgrade
-// requests per IP; this cap protects against a single authenticated user
-// pinning many sockets open (file descriptors, tick intervals, memory).
+// idleTimeoutSec is below Bun's 120s default so a half-open connection is detected sooner; Bun
+// pings on its own (`sendPings` defaults to true), so the schema's `ping`/`pong` are didactic.
+// `maxConnectionsPerUser` caps sockets per authenticated user, which the per-IP HTTP rate limiter
+// on upgrades does not (file descriptors, tick intervals, memory).
 export const realtimeConfig = {
   idleTimeoutSec: 60,
   maxPayloadBytes: 16 * 1024,

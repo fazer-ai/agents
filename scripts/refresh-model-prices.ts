@@ -1,13 +1,12 @@
 #!/usr/bin/env bun
 // Regenerates src/modules/pricing/model-prices.json from LiteLLM's price table (MIT), pinned to the
-// commit it was read at. Run by hand when a provider changes its prices or a model the operators use
-// comes up "no price"; the diff is the review. Nothing reads the network at runtime.
+// commit it was read at; the diff is the review, and nothing reads the network at runtime.
 //
 //   bun scripts/refresh-model-prices.ts
 //
-// Only the chat models of the providers the model factory speaks to are kept, and only the four
-// rates a ledger row can use, in USD per MILLION tokens so a reviewer can hold them against the
-// vendor's page. A rate above a context threshold (OpenAI's >272K, Gemini's >200K) is kept as a tier.
+// Keeps only chat models of the providers the model factory speaks to, and the four rates a ledger
+// row can use, in USD per MILLION tokens so a reviewer can hold them against the vendor's page. A
+// rate above a context threshold (OpenAI's >272K, Gemini's >200K) is kept as a tier.
 
 import { plausibleRefresh } from "./refresh-guard";
 

@@ -22,13 +22,10 @@ import {
 
 // Bearer API keys for external clients of the REST v1 API and the MCP transport, in two scopes: the
 // per-tenant key (TENANT_ADMIN-gated, RLS-fenced to the selected tenant) and, under `/fleet`, the
-// fleet-scoped key (SUPER_ADMIN, no tenant — the principal a SUPER_ADMIN session is, issue #308).
-// The plaintext token is returned ONLY by a POST (once, at creation); list and delete never expose
-// the hash or plaintext. Revocation is soft (revokedAt) — a revoked key 401s immediately on the
-// next use.
-//
-// NOTE: the service throws this AppError translationKey; declared here (under src/api/**) so the API
-// i18n extractor keeps it — its input glob does not reach src/modules.
+// fleet-scoped key (SUPER_ADMIN, no tenant: the principal a SUPER_ADMIN session is). The plaintext
+// token is returned ONLY by a POST, once; list and delete never expose the hash or plaintext.
+// Revocation is soft (revokedAt): a revoked key 401s on its next use. The service's translationKey
+// is declared here because the API i18n extractor's glob does not reach src/modules.
 // translate('errors.apiKeyNotFound', 'API key not found')
 
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {
@@ -69,10 +66,9 @@ export const apiKeysController = new Elysia({
     "/",
     async ({ tenantContext, body }) => {
       const ctx = ctxOrThrow(tenantContext);
-      // A credential is minted by a person: a key is refused (it would outlive the key that minted
-      // it), and the session answers its password here, because the key it mints answers every
-      // later step-up by itself — a stolen seven-day session must not be able to carry a key past
-      // the password the destructive routes ask of it. Rounds 1 and 2 of the review on #308.
+      // NOTE: a credential is minted by a person: a key is refused (it would outlive the key that
+      // minted it), and the session answers its password here, because the minted key answers every
+      // later step-up by itself: a stolen session must not carry a key past that password.
       requireSession(ctx);
       await confirmStepUp(ctx, body.password);
       const created = await createApiKey(ctx, {

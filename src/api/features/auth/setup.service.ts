@@ -42,17 +42,10 @@ export function isSetupRequired(): boolean {
   return !setupComplete;
 }
 
-// NOTE: Self-heals a stale in-memory `setupComplete=false`. Two cases:
-// (1) The DB has users (multi-instance: another replica or `bun set-admin`
-//     created the first user since this replica booted). Flip the local flag.
-// (2) The DB has no users AND `setupToken` is null (boot-time DB outage where
-//     `initSetupState()` bailed before it could generate a token). Generate a
-//     token now and log the URL so SETUP_TOKEN_REQUIRED mode is not
-//     permanently broken on this replica until restart. The freshly-logged
-//     URL is what the operator uses; the original `initSetupState()` warning
-//     in the log gives them the bread crumb to scroll forward to this entry.
-// Short-circuits when the local flag is already true so only a stale replica
-// pays the round-trip.
+// Self-heals a stale in-memory `setupComplete=false` (a no-op once the local flag is true):
+// (1) the DB has users (another replica or `bun set-admin` created the first one): flip the flag;
+// (2) no users AND no `setupToken` (a boot-time DB outage stopped `initSetupState()` before it made
+//     one): generate and log it now, or SETUP_TOKEN_REQUIRED stays broken here until a restart.
 export async function refreshSetupState(): Promise<void> {
   if (setupComplete) return;
   const existing = await prisma.user.findFirst({ select: { id: true } });

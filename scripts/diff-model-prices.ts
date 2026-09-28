@@ -1,18 +1,12 @@
 #!/usr/bin/env bun
-// What a refresh of the price table changed, as the Markdown body of the pull request the weekly
-// price refresh opens (issue #869). Also useful by hand after running
-// scripts/refresh-model-prices.ts, against the table as it was before:
+// What a refresh of the price table changed, as the Markdown body of the weekly refresh's pull
+// request; by hand, run it against the table as it was before a refresh:
 //
 //   git show HEAD:src/modules/pricing/model-prices.json > old.json
-//   bun scripts/diff-model-prices.ts old.json src/modules/pricing/model-prices.json
-//   bun scripts/diff-model-prices.ts --changed old.json src/modules/pricing/model-prices.json
+//   bun scripts/diff-model-prices.ts [--changed] old.json src/modules/pricing/model-prices.json
 //
-// The second form prints `true` or `false` and nothing else: whether any model's rates moved. A
-// refresh always rewrites the source commit and the date it was read, because LiteLLM's file changes
-// most days for providers this table does not keep; that alone is not a change worth a review.
-//
-// The provider defaults come first, because they are what an operator who never picked a model is
-// billed at, and they are the rows tests/modules/pricing.test.ts holds to the vendors' own pages.
+// `--changed` prints only whether any rates moved (every refresh rewrites source commit and date).
+// Provider defaults come first: they bill an operator who never picked a model.
 
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 import { tableKeys } from "@/modules/pricing/price";

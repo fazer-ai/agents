@@ -1,18 +1,13 @@
 import type { UserRole } from "@/../generated/prisma/client";
 import { parseDbId } from "@/lib/db-id";
 
-// Which of a person's memberships a request runs under (issue #756). Pure, so the rule is tested
-// without Elysia or a database.
-//
-// A person is one user with a membership per tenant, the way Chatwoot has `account_users`, and the
-// console picks one per request with `X-Tenant-Id`, the same header a SUPER_ADMIN already sends.
-//
+// Which of a person's memberships a request runs under. Pure, so the rule is tested without Elysia
+// or a database. A person is one user with a membership per tenant (like Chatwoot's
+// `account_users`), and the console picks one per request with `X-Tenant-Id`:
 //   - a selector naming one of the person's memberships runs under it, with the role held THERE;
 //   - a selector naming anything else is REFUSED (`rejected`), never exchanged for another
-//     membership. Landing in a tenant the person did not choose, with nothing on screen saying so, is
-//     the defect #756 was opened on;
-//   - no selector runs under the OLDEST membership. A person with one membership never needs to
-//     choose, and for one with several it is the stable default until the console sends a choice;
+//     membership, since silently landing in a tenant the person did not choose is the failure;
+//   - no selector runs under the OLDEST membership, a stable default until the console sends one;
 //   - no membership at all is no tenant, and the session is refused upstream (fail-closed).
 export interface Membership {
   tenantId: bigint;

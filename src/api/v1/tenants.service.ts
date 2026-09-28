@@ -82,7 +82,7 @@ export async function resolveTenantSelector(
     const row = await asSuperAdminOn(base, async (db) => {
       // NOTE: `parseDbId`, not a digits test. A run of digits past 2^63-1 passes `/^\d+$/`,
       // converts, and is refused by POSTGRES when the query binds it — a 500 on a lookup whose
-      // other outcome is a 404. A selector that is not an id is simply tried as a slug. Issue #407.
+      // other outcome is a 404. A selector that is not an id is simply tried as a slug.
       const asId = parseDbId(sel);
       if (asId !== null) {
         const byId = await db.tenant.findUnique({
@@ -147,24 +147,17 @@ export type TenantCreate = z.infer<typeof tenantCreateSchema>;
 // What `createTenant`/`updateTenant` decide about their INPUT, before any database is involved.
 // They live HERE rather than beside the mutations because the Free derivation swaps
 // tenants.admin.service for a stub, and the MCP preview has to ask the same question the apply asks
-// in both editions (#490).
+// in both editions.
 export function assertTenantCreatable(input: TenantCreate): TenantCreate {
   return parseInput(tenantCreateSchema, input);
 }
 
-// The other half of what `createTenant` refuses, and it is a DIFFERENT KIND of answer. The one
-// above judges the input, so its verdict cannot change between preview and apply. This one reads
-// the fleet, from outside the write's transaction: it is ADVISORY. Someone can take the slug in
-// the gap, and then the preview said "will create" and the apply answers 409 — which is the exact
-// divergence #490 is about, one race narrower.
-//
-// It is still worth asking, because the case that actually happens is a slug the operator already
-// used, not a slug someone takes in the millisecond after the preview. What keeps the GUARANTEE is
-// the unique index the create runs into; this only moves the common refusal to where the operator
-// asked for it. Nothing below may be read as "the slug is reserved".
-//
-// asSuperAdminOn for the same reason `resolveTenantSelector` uses it: slugs are unique fleet-wide,
-// and a scoped read would hide the very row that will cause the 409.
+// The other half of what `createTenant` refuses, and it is ADVISORY: it reads the fleet outside the
+// write's transaction, so a slug taken in the gap makes the preview say "will create" and the apply
+// answer 409. Still worth asking, since the common case is a slug the operator already used. The
+// GUARANTEE is the unique index the create runs into; nothing below means "the slug is reserved".
+// asSuperAdminOn like `resolveTenantSelector`: slugs are unique fleet-wide, and a scoped read would
+// hide the very row that will cause the 409.
 export async function assertTenantSlugAvailable(
   slug: string,
   base: PrismaClient = basePrisma,

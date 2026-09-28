@@ -20,8 +20,7 @@ export interface TenantContext {
   // action, told apart here.
   actorType?: ActorType;
   // For an "api_key" principal: when the person minting the key answered the password step-up, or
-  // null for a key that predates the rule (review round 3 on #308). Absent for every other actor.
-  // Read by `confirmStepUp` only.
+  // null for a key minted without one. Absent for every other actor. Read by `confirmStepUp` only.
   stepUpAt?: Date | null;
 }
 

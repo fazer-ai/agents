@@ -4,7 +4,7 @@
 // the file (`--write`, wired as `bun openapi:generate`) or verifies the committed copy matches and fails
 // on drift (default, wired into `bun check` + CI). GitHub Pages serves the committed file (see
 // `.github/workflows/deploy-swagger.yml`), so this is the single source of truth for the public docs.
-//
+
 // NOTE: The `@elysiajs/openapi` plugin is `enabled: env !== "production"` (src/api/index.ts), and
 // config reads NODE_ENV at module-eval time. Force development BEFORE anything imports config: this
 // assignment must run before the dynamic `@/app` import evaluates, so `@/app`/`@/config` are imported
@@ -62,11 +62,10 @@ function stripNonOpenApiKeys(node: unknown): unknown {
 }
 
 // NOTE: Elysia emits a group's index route as `/v1/agents/` (the `.get("/")` inside the group),
-// but the server answers both spellings — probed live: `/api/health` and `/api/health/` both 200,
-// `/api/v1/agents` and `/api/v1/agents/` both 401. The trailing slash is therefore an artifact of
-// how the route is declared, not the canonical path, and it makes readers think the two forms
-// differ. Strip it so the published paths are the canonical ones. Guarded against collisions: if
-// the unslashed twin already exists, the entries would silently overwrite each other.
+// but the server answers both spellings, so the trailing slash is an artifact of how the route is
+// declared, not the canonical path, and it makes readers think the two forms differ. Strip it.
+// Guarded against collisions: if the unslashed twin already exists, the entries would silently
+// overwrite each other.
 function stripTrailingSlashes(
   paths: Record<string, unknown>,
 ): Record<string, unknown> {

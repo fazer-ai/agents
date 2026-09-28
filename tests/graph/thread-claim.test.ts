@@ -25,7 +25,7 @@ import { runScopedOn } from "@/lib/tenancy";
 import { sysCtx } from "@/modules/documents/issue";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #203. The in-process registry cannot see a turn running on another replica, so the claim it
+// The in-process registry cannot see a turn running on another replica, so the claim it
 // answers with has to live in a row. What is asserted here is the ROW's behaviour, read back with a
 // second client, the closest a single process gets to being two of them, and enough for every rule
 // this module states, because every one of them is a predicate Postgres evaluates.
@@ -90,8 +90,8 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
   // test marked would answer "held" without the row being asked at all.
   let nextInbox = 77_000;
   // THE COMPOSITION `runLoadedTurn` USES, kept in one place here so these tests exercise the same
-  // ordering it does: wait for the thread OUTSIDE the `ingest:` queue, acquire, and — when the
-  // acquiring statement says this turn joined an occupancy anyway — give the hold back and wait
+  // ordering it does: wait for the thread OUTSIDE the `ingest:` queue, acquire, and (when the
+  // acquiring statement says this turn joined an occupancy anyway) give the hold back and wait
   // again. Past the deadline it stops giving it back, which is the declared outcome of the ceiling.
   async function waitThenTake(o: ThreadOwner): Promise<TurnHold> {
     const until = turnWaitDeadline();
@@ -201,11 +201,9 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     expect(await turnOwnsThread(o, appDb)).toBe(false);
   });
 
-  // AN UNREADABLE CLAIM IS A HELD ONE. What this replaced was a Map lookup that could not fail, and
-  // every caller uses the false to ACT: /reset takes a conversation off a human with it, compaction
-  // rewrites the channel with it, ingestion writes the divider with it. A rejected read reaching any
-  // of them as `false` is worse than the registry this module replaces, because the registry never
-  // produced one.
+  // NOTE: AN UNREADABLE CLAIM IS A HELD ONE. Every caller uses the false to ACT: /reset takes a
+  // conversation off a human with it, compaction rewrites the channel with it, ingestion writes the
+  // divider with it. A rejected read must never reach any of them as `false`.
   //
   // Asserted on the client-level read, not on a stubbed helper: what has to hold is that the
   // rejection cannot escape this function at all.
@@ -251,9 +249,9 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     expect((await claimIngestWrite(o, appDb)).state).toBe("claimed");
   });
 
-  // The row a `/reset` just deleted must not come back through a claim: rebuilding it is the write
+  // NOTE: The row a `/reset` just deleted must not come back through a claim: rebuilding it is the write
   // the revoked job is forbidden to make (tests/graph/ingest-job.test.ts pins the same rule end to
-  // end). The claim now CREATES a row to hold, so the rule moves to the release: an append that
+  // end). The claim CREATES a row to hold, so the rule sits in the release: an append that
   // wrote nothing leaves nothing. Asserted on the ROW COUNT, because "the call returned" and "the
   // database is as it was" are two different claims.
   test("an append that writes nothing leaves no row behind", async () => {
@@ -354,9 +352,9 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     expect((await claimIngestWrite(o, appDb)).state).toBe("claimed");
   });
 
-  // A LEASE THAT RENEWS WHILE THE INVOKE RUNS. 300 seconds is generous for one model call and far
+  // NOTE: A LEASE THAT RENEWS WHILE THE INVOKE RUNS. 300 seconds is generous for one model call and far
   // too short as a ceiling on a tool-heavy turn; without renewal the claim lapses under a turn that
-  // never stopped, an append reads the thread as free, and the invoke erases it. Measured against a
+  // never stopped, an append reads the thread as free, and the invoke erases it. Asserted against a
   // deliberately short window rather than by waiting 300 seconds.
   test("the hold outlives its own lease while the turn is alive", async () => {
     const o = owner();
@@ -388,14 +386,10 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     await clearTurnOwning(o, appDb, first);
   });
 
-  // ISSUE #658. The claim COUNTS, so joining an occupancy is refused nowhere, and the only caller
-  // that stood down was the one with somewhere to defer to. A turn that owes a customer one reply
-  // has nowhere, so it used to run beside the first — and an invoke is a read-modify-write of the
-  // whole channel, so the one that finishes second saves what it loaded and undoes the first.
-  //
-  // The deadline here is the assertion in BOTH directions: first that the waiter is still waiting
-  // while the occupancy stands (a short race it must lose), then that it comes back once the
-  // occupancy ends. Without the wait it returns immediately, with `heldBefore` true.
+  // NOTE: The claim COUNTS, so joining an occupancy is refused nowhere. A turn that owes a customer
+  // one reply has nowhere to defer to and must WAIT: an invoke is a read-modify-write of the whole
+  // channel, so running beside the first lets the one that finishes second undo it. The deadline
+  // asserts both directions: still waiting while the occupancy stands, back once it ends.
   test("a turn asked to wait does not join an occupancy, and starts one when it ends", async () => {
     const o = owner();
     const first = await markTurnOwning(o, appDb);
@@ -425,13 +419,10 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     await clearTurnOwning(o, appDb, second);
   }, 15_000);
 
-  // THE WAIT DOES NOT FEED THE THING IT IS WAITING FOR (PR review round 1). `bumpTurnHolders` pushes
-  // `turn_held_until` forward on every acquisition, so a waiter that acquired to find out whether the
-  // thread was free would renew the holder's lease twenty times a second. That is not a slow wait, it
-  // is a thread stranded for good: a holder that CRASHED stops renewing and its lease is what hands
-  // the thread to the next turn, and a waiter pushing it forever removes the only way out. Measured
-  // on the lease rather than on the crash, because the crash takes 300 seconds to show and this takes
-  // 400 milliseconds.
+  // NOTE: THE WAIT DOES NOT FEED THE THING IT IS WAITING FOR. `bumpTurnHolders` pushes
+  // `turn_held_until` forward on every acquisition, so a waiter that acquired to probe would renew the
+  // holder's lease forever, and a CRASHED holder's expiring lease is the only way the thread is handed
+  // on. Asserted on the lease rather than on the crash, which takes 300 seconds to show.
   test("waiting does not push the lease of the turn being waited for", async () => {
     const o = owner();
     const first = await markTurnOwning(o, appDb);
@@ -457,12 +448,10 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     }
   }, 15_000);
 
-  // THE SAME GUARANTEE ACROSS REPLICAS, and it is a different code path (PR review round 2). In one
-  // process the local Map answers first and the row is never consulted; the holder that matters here
-  // is on ANOTHER host, so the only thing that can say "occupied" is the lease, and the only thing
-  // that can read it correctly is Postgres. Compared in this process instead, a replica whose clock
-  // runs ahead reads a live lease as expired, acquires on it, and `bumpTurnHolders` renews the lease
-  // of the holder it is waiting for — the same stranded thread, arriving through the clock.
+  // NOTE: THE SAME GUARANTEE ACROSS REPLICAS, a different code path: the holder is on ANOTHER host,
+  // so only the lease says "occupied", and only Postgres reads it correctly. Compared in this process,
+  // a replica whose clock runs ahead reads a live lease as expired, acquires, and `bumpTurnHolders`
+  // renews the lease of the holder it is waiting for.
   test("across replicas too, waiting does not push the holder's lease", async () => {
     const o = owner();
     // Another replica holds it: the durable claim stands and its Map entry is dropped, because no
@@ -491,12 +480,9 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     }
   }, 15_000);
 
-  // THE WINDOW A SKEWED CLOCK OPENS, and the only one where reading the lease here instead of in the
-  // statement changes an answer (PR review round 2). A lease far from expiring reads the same on any
-  // clock; a lease about to expire reads as GONE on a clock that runs ahead, and the waiter then
-  // acquires on it — at which point `bumpTurnHolders`, which compares in Postgres, finds the claim
-  // still live, joins it, and renews it for another lease. Every 300 seconds the same window comes
-  // round again, so a holder that crashed is kept alive by the very turn waiting for it to die.
+  // NOTE: THE WINDOW A SKEWED CLOCK OPENS: a lease about to expire reads as GONE on a clock that runs
+  // ahead, the waiter acquires, and `bumpTurnHolders` (comparing in Postgres) finds the claim live and
+  // renews it. The window recurs every lease, so a crashed holder is kept alive by its own waiter.
   test("a lease about to expire is neither taken early nor renewed by the waiter", async () => {
     const o = owner();
     const crashed = await markTurnOwning(o, appDb);
@@ -574,10 +560,9 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     ).toBe(false);
   });
 
-  // The write lease renews too. It is the same property the turn lease has, and the append is the
-  // side whose failure is irreversible, so leaving it out was leaving the hole open on the half that
-  // matters most: a stalled checkpointer write past 30 seconds would let a turn start beside an
-  // append that is still going to write.
+  // NOTE: The write lease renews too: the append is the side whose failure is irreversible, and a
+  // stalled checkpointer write past 30 seconds would otherwise let a turn start beside an append that
+  // is still going to write.
   test("the write claim outlives its own lease while the append is alive", async () => {
     const o = owner();
     const claim = await claimIngestWrite(o, appDb);
@@ -607,10 +592,9 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     ).toBe(0);
   });
 
-  // WHAT /reset HAS TO EXCLUDE IS BOTH SIDES, not just a turn. On the sanctioned topology the append
-  // runs on the leader and the reset arrives on a web replica, so a question about turns alone said
-  // nothing about an append in flight, and the reset went on to delete the checkpoint that append
-  // was about to write a watermark for.
+  // NOTE: WHAT /reset HAS TO EXCLUDE IS BOTH SIDES, not just a turn. On the sanctioned topology the
+  // append runs on the leader and the reset on a web replica, so asking about turns alone would let
+  // the reset delete the checkpoint an in-flight append is about to write a watermark for.
   test("a live append makes the thread busy for a reset, not only a turn", async () => {
     const o = owner();
     const claim = await claimIngestWrite(o, appDb);
@@ -644,7 +628,7 @@ describe.skipIf(!dbUp)("the durable turn claim on a thread", () => {
     ).toBe(false);
   });
 
-  // A SLOW APPEND IS NOT A STUCK ONE. Once the write lease renews, a fixed deadline measured from
+  // NOTE: A SLOW APPEND IS NOT A STUCK ONE. Since the write lease renews, a fixed deadline counted from
   // the start of the wait would fail a customer's turn for an append that is working correctly and
   // saying so. What ends the wait is a lease that STOPPED moving.
   test("the wait follows the append's lease instead of a fixed span", async () => {

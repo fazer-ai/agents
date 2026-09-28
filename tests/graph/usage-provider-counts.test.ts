@@ -5,14 +5,12 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import { UsageCapture, type UsageRow } from "@/graph/usage";
 
-// Issue #334, and the reason these drive the vendor adapters instead of asserting on a fake result:
-// the defect was never in our arithmetic over a shape we control, it was in what an ADAPTER hands
-// over. `@langchain/google-genai` maps `output_tokens` from `candidatesTokenCount` alone and reads
-// `thoughtsTokenCount` nowhere — a hand-written `usage_metadata` fixture would have encoded that
-// belief instead of testing it, which is exactly how the wrong number got into the ledger.
-//
-// So each server below answers in its own vendor's raw response shape, the real client parses it,
-// and the assertion is on the ROW the ledger would have written.
+// These drive the vendor adapters instead of asserting on a fake result, because what can be wrong
+// is what an ADAPTER hands over, not our arithmetic: `@langchain/google-genai` maps `output_tokens`
+// from `candidatesTokenCount` alone and reads `thoughtsTokenCount` nowhere, and a hand-written
+// `usage_metadata` fixture would encode that belief instead of testing it. Each server answers in
+// its vendor's raw response shape, the real client parses it, and the assertion is on the ROW the
+// ledger would write.
 
 // NOTE: happy-dom's `fetch` enforces same-origin (so every call is preflighted) and its `Response`
 // is not the one Bun's socket layer recognises. Same two workarounds as
@@ -148,7 +146,7 @@ describe("the ledger records what the provider billed", () => {
     geminiMode = "thinking";
     const row = await rowFor(gemini(), "gemini-3.5-flash");
     expect(row.promptTokens).toBe(1200);
-    // NOTE: 180 candidates + 640 thoughts. Red before the fix: 180, and the 640 were billed to
+    // NOTE: 180 candidates + 640 thoughts. Counting the candidates alone would bill the 640 to
     // nobody.
     expect(row.completionTokens).toBe(820);
   });

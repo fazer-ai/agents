@@ -132,8 +132,8 @@ function fakeModel() {
   return new FakeListChatModel({ responses: [REPLY] });
 }
 
-// NOTE: Captures every message list the model is invoked with, so a test can assert what the model
-// actually SAW (issue #45: the rendered location marker).
+// Captures every message list the model is invoked with, so a test can assert what the model
+// actually SAW (e.g. the rendered location marker).
 class CaptureReplyModel {
   seen: unknown[][] = [];
   constructor(private reply: string) {}
@@ -147,7 +147,7 @@ class CaptureReplyModel {
 }
 
 // A real chat model reporting the provider's usage, so the turn's callbacks fire and `UsageCapture`
-// writes the ledger row the way it does for a provider (issue #853).
+// writes the ledger row the way it does for a provider.
 class SpendingReplyModel extends BaseChatModel {
   constructor(
     private readonly reply: string,
@@ -190,13 +190,10 @@ function makeStubClient(sent: Array<[number, string]>) {
 }
 
 // Ordered recorder for sendMessage/toggleStatus. `mirrorOnToggle` simulates the Chatwoot webhook
-// mirroring the status change into our Conversation row BEFORE the turn ends (worst case, zero
-// lag) — the production race behind the lost-final-reply bug. It advances `chatwootStatusAt` along
-// with the status, because a webhook that moved one without the other is not a webhook. The pair is
-// what makes this a faithful worst case, and it is what stops "refuse to stamp when the row moved
-// past what the caller observed" from ever looking like a safe guard (issue #188, review round 9):
-// under that guard this very case — our OWN close, mirrored fast — would be refused, and the one
-// closing the funnel counts would go unrecorded.
+// mirroring the status change into our Conversation row BEFORE the turn ends (worst case, zero lag,
+// the race that can lose a final reply). It advances `chatwootStatusAt` with the status, as a real
+// webhook does. That pair is why "refuse to stamp when the row moved past what the caller observed"
+// is not a safe guard: it would refuse our OWN close, mirrored fast, and leave it unrecorded.
 function makeResolveClient(
   calls: Array<[string, number, string]>,
   opts: { mirrorOnToggle?: number } = {},
@@ -356,7 +353,7 @@ async function mirroredStatus(convId: number) {
 }
 
 // What the graph memory thread HOLDS after a turn, which is a different question from what the
-// customer received and the only one that shows a refused turn's residue (issues #251, #315). Read
+// customer received and the only one that shows a refused turn's residue. Read
 // through the same one-node graph the rollback writes with, so the test sees what the next invoke
 // will load.
 async function threadChannel(
@@ -515,10 +512,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(sent).toEqual([[900, REPLY]]);
   });
 
-  // NOTE: Issue #454. `[[SKIP]]` is the FOLLOW-UP's way of saying "stay silent", and it is stripped
-  // on both proactive paths. The reactive path had no equivalent, so a model that reproduced the
-  // token — it is in the shared per-contact-inbox transcript every silent follow-up leaves behind —
-  // had it delivered verbatim. On an email inbox that is a real email, to whoever wrote in.
+  // NOTE: `[[SKIP]]` is the FOLLOW-UP's way of saying "stay silent", and the model can reproduce it
+  // on a reactive turn (it is in the shared per-contact-inbox transcript every silent follow-up
+  // leaves). Delivered verbatim, on an email inbox that is a real email to whoever wrote in.
   test("a reply that is only the follow-up's skip sentinel is silence, not text", async () => {
     await seedConversation(9454, null);
     const saver9454 = new MemorySaver();
@@ -556,7 +552,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(suppressed).toHaveLength(1);
     expect(suppressed[0]?.level).toBe("warn");
 
-    // Review round 5: and the token is not left in the thread to feed itself. The raw message was
+    // NOTE: And the token is not left in the thread to feed itself. The raw message was
     // already checkpointed, the thread is shared per contact-inbox, and the next turn reading one
     // more sentinel answer is what reinforces the condition that produced this one.
     const held = await threadChannel(saver9454, 9454);
@@ -565,11 +561,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     );
   });
 
-  // Review round 6. The rollback stands down while the GRAPH thread is in flight, and a conversation
-  // WITH a contact-inbox — the normal production shape — carries TWO claims on two different keys:
-  // the conversation one, and the durable `markTurnOwning` one on the contact-inbox thread. Placed
-  // between them, the rollback read this turn's own claim and did nothing, silently. The case above
-  // could not catch it: with no contact-inbox the two keys collapse into one.
+  // NOTE: The rollback stands down while the GRAPH thread is in flight, and a conversation WITH a
+  // contact-inbox (the normal production shape) carries TWO claims on two keys: the conversation one
+  // and the durable `markTurnOwning` one. A rollback placed between them reads this turn's own claim
+  // and silently does nothing; with no contact-inbox (the case above) the two keys collapse into one.
   test("the token is rolled back on a contact-inbox thread too", async () => {
     const contactInboxId = 7454;
     const contact = await suDb.contact.create({
@@ -629,12 +624,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ).toEqual([]);
   });
 
-  // Review round 11, and the twin of the case above one layer out. The rollback runs just after this
-  // turn released its durable claim, which is exactly when a turn on ANOTHER replica may start —
-  // and that one holds nothing in this process's Map. So the rollback takes the claim every write to
-  // the channel from outside an invoke takes, and stands down when the row says the thread is busy.
-  // Here to prove the WIRING: `runAgentTurn` handing its owner down is what the deferral depends on,
-  // and `tests/graph/nudge-refused-rollback.test.ts` proves the rule itself.
+  // NOTE: The twin of the case above, one layer out. The rollback runs just after this turn released
+  // its durable claim, exactly when a turn on ANOTHER replica (nothing in this process's Map) may
+  // start, so it takes the claim every out-of-invoke write takes and stands down on a busy row. This
+  // proves the WIRING (`runAgentTurn` handing its owner down); the rule itself is proved in
+  // `tests/graph/nudge-refused-rollback.test.ts`.
   test("another replica's turn is waited out, and the rollback then runs on a thread this turn owns alone", async () => {
     const contactInboxId = 7455;
     const contact = await suDb.contact.create({
@@ -666,10 +660,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
     const saver = new MemorySaver();
     const sent: Array<[number, string]> = [];
-    // The other replica is ALREADY reading this thread — on the row, not in this process's Map, so
-    // its entry is dropped at once and only the durable half answers. A turn that joined it here
-    // would have to defer its own rollback, because a removal the other invoke is about to undo
-    // leaves the same history and a checkpoint that lies. It waits instead (issue #658).
+    // NOTE: The other replica is ALREADY reading this thread, on the row and not in this process's
+    // Map, so only the durable half answers. A turn that joined it would have to defer its own
+    // rollback (a removal the other invoke is about to undo leaves a checkpoint that lies), so it waits.
     const otherReplica = await markTurnOwning(owner, appDb);
     clearTurnInFlight(graphThreadId);
     let released = false;
@@ -781,8 +774,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         checkpointer: new MemorySaver(),
       },
     });
-    // Review round 4: the token is NOT edited out of a real answer — that is the silent data loss
-    // docs/graph.md rejects. It rides along, and the operator gets a line saying so.
+    // NOTE: The token is NOT edited out of a real answer (the silent data loss docs/graph.md
+    // rejects). It rides along, and the operator gets a line saying so.
     expect(outcome).toBe("posted");
     expect(sent).toEqual([
       [9455, `${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`],
@@ -801,10 +794,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ).toHaveLength(1);
   });
 
-  // Review round 1, P2. The proactive path also reads a bare "SKIP" and a parenthetical-only reply
-  // as silence, because ITS prompt asked the model to produce nothing. Nothing asks that here, a
-  // customer is waiting, and these are ordinary short answers — importing that heuristic would trade
-  // a leaked marker for an ignored customer, which is the defect this PR exists to avoid.
+  // NOTE: The proactive path also reads a bare "SKIP" and a parenthetical-only reply as silence,
+  // because ITS prompt asked the model to produce nothing. Here a customer is waiting and these are
+  // ordinary short answers: importing that heuristic would trade a leaked marker for an ignored
+  // customer.
   test("a short reply the follow-up would read as silence is still delivered", async () => {
     for (const [conv, reply] of [
       [9457, "SKIP"],
@@ -829,8 +822,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     }
   });
 
-  // Review round 1, P3. `[[SKIP]][[SKIP]]` used to fall between the two answers: not equal to the
-  // sentinel, so "not silent", yet empty once stripped — silenced with no line explaining it.
+  // NOTE: `[[SKIP]][[SKIP]]` must not fall between the two answers: not equal to the sentinel, so
+  // "not silent", yet empty once stripped, which would silence it with no line explaining it.
   test("a reply of repeated sentinels is silence, and says so", async () => {
     await seedConversation(9459, null);
     const sent: Array<[number, string]> = [];
@@ -865,10 +858,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ).toHaveLength(1);
   });
 
-  // NOTE: Issue #63 end-to-end. A provider answering 200 with an empty completion used to end the
-  // turn, and if that was the customer's last message they were simply never answered. Both halves
-  // are asserted here: the reply IS delivered, and the recovered fault leaves a warn on the turn's
-  // trail, so a rate measured at 1 in 184 on one install can never go silent again.
+  // NOTE: A provider answering 200 with an empty completion must not end the turn, or a customer
+  // whose last message it was is never answered. Both halves are asserted: the reply IS delivered,
+  // and the recovered fault leaves a warn on the turn's trail, so it never goes silent.
   test("an empty provider response is retried and the customer still gets an answer", async () => {
     await seedConversation(995, null);
     const sent: Array<[number, string]> = [];
@@ -911,8 +903,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(retryLogged).toBe(true);
   });
 
-  // NOTE: Issue #45 end-to-end (direct path): a WhatsApp location pin must reach the model as the
-  // rendered <localização> marker — before the fix it arrived as an unusable "unsupported file".
+  // NOTE: Direct path: a WhatsApp location pin must reach the model as the rendered <localização>
+  // marker, not as an unusable "unsupported file".
   test("a location pin reaches the model as a <localização> marker", async () => {
     await seedConversation(960, null);
     const model = new CaptureReplyModel(REPLY);
@@ -1036,9 +1028,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // The customer's own message is untouched by the marker.
     expect(String(messages[3]?.content)).not.toContain("nova conversa");
     expect(String(messages[3]?.content)).toBe(String(messages[0]?.content));
-    // And the boundary is one the CUT can find. Recognition is by metadata, not by the text above,
-    // so a divider written without it would read as an ordinary turn here and the first attendance
-    // would never be compactable — the producer and the consumer only meet if this passes.
+    // NOTE: And the boundary is one the CUT can find. Recognition is by metadata, not by the text
+    // above, so a divider written without it would read as an ordinary turn and the first attendance
+    // would never be compactable: the producer and the consumer only meet if this passes.
     const cut = selectClosedPrefix(messages as unknown as BaseMessage[], {
       currentAttendanceClosed: false,
     });
@@ -1046,15 +1038,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(cut.open).toHaveLength(3);
   });
 
-  // Round-8 review finding (P1). Ingestion decides whether an out-of-order message may still speak
-  // for the thread's attendance by comparing it against the newest inbound id the thread has seen,
-  // and this writer recorded no id at all — so the frontier was blind to the most ordinary way a new
-  // attendance opens, which is the customer writing and the bot ANSWERING. A delayed message from the
-  // previous conversation then compared newer than a mark left behind in that same conversation,
-  // claimed a boundary, walked the marker back, and armed compaction for the LIVE one.
-  //
-  // Two writers in one test on purpose: the property only exists where they meet, and each of them
-  // alone is green with the bug in.
+  // NOTE: Ingestion decides whether an out-of-order message may still speak for the thread's
+  // attendance by comparing it with the newest inbound id the thread has seen, so the turn must record
+  // its id: otherwise a delayed message from the previous conversation claims a boundary, walks the
+  // marker back, and arms compaction for the LIVE one. Two writers in one test on purpose: the
+  // property only exists where they meet, and each alone passes without it.
   test("a turn's inbound id counts in the frontier a late ingestion is measured against", async () => {
     const contactInboxId = 7011;
     const graphThreadId = contactInboxThreadId(
@@ -1141,21 +1129,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(at.lastSyncedMessageId).toBe(5003);
   });
 
-  // Round-10 review finding (P1), and the case an earlier round DISMISSED: `advanceMarker` is false
-  // in two different situations, and only one of them is harmless. Here the boundary is DEFERRED
-  // because another invoke is reading the thread (../../src/graph/attendance-boundary.ts, case 1) —
-  // the conversation really is new, this turn really is handling its first message, and the marker
-  // deliberately stays on the previous one. A turn that records no inbound id there leaves the
-  // frontier back in the previous attendance, so a delayed message from it reads as CURRENT, stamps
-  // itself at the end of the channel, and the cut then reads the live conversation as closed.
-  // UMA ESPERA É UMA JANELA, E ALGUÉM PODE ENTRAR NELA (issue #688). O portão de posse do webhook
-  // respondeu ANTES da espera, e a espera dura até o teto (`TURN_WAIT_MS`); a re-checagem que já
-  // existe roda DEPOIS da geração, onde ela suprime o envio e não desfaz uma ferramenta que já mutou
-  // alguma coisa — um ticket aberto, uma etiqueta, uma chamada HTTP de saída.
-  //
-  // A PROVA NÃO É A PALAVRA DO DESFECHO, e é por isso que o teste mede o modelo. `taken-over`
-  // também é o que volta quando a re-checagem pós-geração pega o caso, e ali as ferramentas já
-  // rodaram: quem só olhasse o desfecho leria os dois como o mesmo evento.
+  // NOTE: UMA ESPERA É UMA JANELA. O portão de posse do webhook respondeu ANTES da espera (que dura
+  // até `TURN_WAIT_MS`), e a re-checagem pós-geração só suprime o envio, não desfaz uma ferramenta
+  // que já mutou algo. O teste mede o modelo, não a palavra do desfecho: `taken-over` também volta
+  // quando a re-checagem pós-geração pega o caso, depois de as ferramentas rodarem.
   test("issue #688: a person who takes the conversation over during the wait stops the turn before the invoke", async () => {
     const contactInboxId = 7477;
     const conv = await suDb.conversation.create({
@@ -1208,14 +1185,13 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
 
     expect(sent).toEqual([]);
     expect(model.seen).toEqual([]);
-    // A PALAVRA É OUTRA, e a diferença é toda a contabilidade que vem depois. `taken-over` significa
-    // que o invoke rodou e a mensagem do cliente ESTÁ no canal; aqui o turno parou antes, e a
-    // mensagem não está em memória nenhuma. Lidas como a mesma palavra, é a segunda que some: foi
-    // exatamente isso que fez a tentativa anterior (`1ec96449`) ser revertida.
+    // NOTE: A PALAVRA É OUTRA, e a diferença é toda a contabilidade que vem depois. `taken-over`
+    // significa que o invoke rodou e a mensagem do cliente ESTÁ no canal; aqui o turno parou antes, e
+    // a mensagem não está em memória nenhuma. Lidas como a mesma palavra, é a segunda que some.
     expect(await turn).toBe("taken-over-unread");
     // E A MARCA FICA ONDE ESTAVA, que é o que essa palavra compra. A lista de exclusão deste caminho
     // é lida por exclusão e só nomeia `superseded`, então uma palavra nova avança a marca por
-    // padrão — e uma marca por cima de uma mensagem que ninguém leu é a mensagem perdida.
+    // padrão, e uma marca por cima de uma mensagem que ninguém leu é a mensagem perdida.
     expect(
       (
         await suDb.conversation.findUniqueOrThrow({
@@ -1224,10 +1200,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         })
       ).lastHandledMessageId,
     ).toBeNull();
-    // E O OPERADOR VÊ. A #271 fixou que todo portão que fecha nesta pergunta escreve a MESMA linha,
-    // porque quem filtra o log por um desfecho tem que receber todos eles; este é o quarto, e sem a
-    // linha o turno para em silêncio e a conversa some do rastro de handoff. `emitFlowEvent` é
-    // fire-and-forget, daí o poll.
+    // NOTE: E O OPERADOR VÊ. Todo portão que fecha nesta pergunta escreve a MESMA linha, porque quem
+    // filtra o log por um desfecho tem que receber todos eles; sem ela a conversa some do rastro de
+    // handoff. `emitFlowEvent` é fire-and-forget, daí o poll.
     let handoff: unknown = null;
     for (let i = 0; i < 30 && handoff === null; i++) {
       const rows = await flowLogRows(suDb, {
@@ -1246,15 +1221,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     );
   }, 20_000);
 
-  // E UMA LEITURA DE POSSE QUE FALHA NÃO É UMA DESISTÊNCIA (issue #688). O `botOwnsItNow` de hoje é
-  // fail-closed: ele devolve `false` quando a query falha, o que é certo para os dois usos que ele
-  // tem (a nota de hand-back e o recibo de leitura, ambos suprimíveis — "leaving the note OWED,
-  // which costs nothing"). Usado para ENCERRAR o turno, o mesmo `false` transforma uma falha
-  // transitória de banco em desistência, e o cliente fica sem resposta com o bot ainda dono.
-  //
-  // A decisão é prosseguir, e ela é uma troca medida: prosseguir custa a janela que já existia hoje
-  // (e a re-checagem pós-geração ainda suprime o envio); parar custa uma resposta ao cliente toda
-  // vez que o banco piscar durante a espera, que é mais frequente do que um takeover dentro dela.
+  // NOTE: UMA LEITURA DE POSSE QUE FALHA NÃO É UMA DESISTÊNCIA. `botOwnsItNow` é fail-closed, certo
+  // para a nota de hand-back e o recibo de leitura (ambos suprimíveis), mas usado para ENCERRAR o
+  // turno transformaria uma falha transitória de banco em cliente sem resposta. Prosseguir custa só
+  // a janela (a re-checagem pós-geração ainda suprime o envio); parar custaria uma resposta toda vez
+  // que o banco piscar durante a espera, o que é mais frequente que um takeover dentro dela.
   test("issue #688: an ownership read that FAILS during the wait does not stand the turn down", async () => {
     const contactInboxId = 7478;
     await suDb.conversation.create({
@@ -1308,21 +1279,17 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(await turn).toBe("posted");
     expect(model.seen.length).toBe(1);
     expect(sent.length).toBe(1);
-    // E A LEITURA FOI TENTADA. Sem esta linha o teste passa por não exercitar nada — é verde no
-    // código de hoje, que não tem portão nenhum, e continuaria verde num conserto que perguntasse a
-    // posse em outro lugar ou não perguntasse. O que ele guarda é a FALHA não virar desistência, e
-    // isso só significa alguma coisa se a falha tiver acontecido no caminho do turno.
+    // NOTE: E A LEITURA FOI TENTADA. Sem esta linha o teste passaria sem exercitar nada, inclusive
+    // num código que perguntasse a posse em outro lugar ou não perguntasse. Ele guarda a FALHA não
+    // virar desistência, o que só significa algo se a falha aconteceu no caminho do turno.
     expect(leituras).toBeGreaterThan(0);
   }, 20_000);
 
-  // THE WAIT IS OUTSIDE THE `ingest:` QUEUE (PR review round 4), and this is what says so. That key
-  // is not ours alone: the PREVIOUS turn's own rollback takes it on the way out, AFTER it has
-  // released the thread, and so does continuous ingestion. A wait that held it would starve exactly
-  // that rollback — it would sit behind the wait, the thread would come free, this turn would take
-  // it, and the rollback would then find an invoke reading and KEEP what it came to undo, so this
-  // turn would load the undelivered answer or the silence token as history. Measured on the queue
-  // rather than on the rollback, because the queue is the mechanism and the rollback is one of its
-  // several victims.
+  // NOTE: THE WAIT IS OUTSIDE THE `ingest:` QUEUE. The PREVIOUS turn's rollback takes that key on
+  // the way out, AFTER releasing the thread, and so does continuous ingestion. A wait holding it
+  // would starve that rollback, which would then find this invoke reading and KEEP what it came to
+  // undo (an undelivered answer or the silence token). Asserted on the queue, the mechanism, rather
+  // than on the rollback, one of its several victims.
   test("while a turn waits for the thread, the ingest queue stays open to everyone else", async () => {
     const contactInboxId = 7466;
     await suDb.conversation.create({
@@ -1422,9 +1389,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
 
     expect(await turn(9320, 6001)).toBe("posted");
-    // The new conversation's first turn, arriving while ANOTHER invoke is still reading the thread.
-    // It waits that invoke out (issue #658) and then runs alone, so both the boundary and the
-    // frontier are this turn's to move.
+    // NOTE: The new conversation's first turn, arriving while ANOTHER invoke is still reading the
+    // thread. It waits that invoke out and then runs alone, so both the boundary and the frontier are
+    // this turn's to move.
     markTurnInFlight(graphThreadId);
     const second = turn(9321, 6003);
     setTimeout(() => clearTurnInFlight(graphThreadId), 150);
@@ -1440,7 +1407,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       select: { lastConversationId: true, lastSyncedMessageId: true },
     });
     expect(marker.lastConversationId).toBe(9321);
-    // THE FRONTIER IS THE POINT (issue #194), and it is what makes the message below late. It moves
+    // NOTE: THE FRONTIER IS THE POINT, and it is what makes the message below late. It moves
     // on the id the turn HANDLED, which is the ordinary way a new attendance opens: the customer
     // writes and the bot answers.
     expect(marker.lastSyncedMessageId).toBe(6003);
@@ -1469,19 +1436,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(last && stampedConversationId(last)).toBe(null);
   });
 
-  // THE BARRIER (issue #194), at the reader a customer is waiting on. Continuous ingestion is a
-  // queued job now, so a message the agent stayed silent on can still be a ROW when a turn starts,
-  // and a turn that answers without it answers without the context the feature exists to provide.
-  // Every reader of the memory thread drains it before reading; this pins the wiring at this one,
-  // which is not covered by the drain's own tests — those call it directly, and every one of them
-  // passes with this call site deleted.
-  //
-  // Asserted at MODEL time, not afterwards: "the message reached the thread eventually" is also true
-  // when the turn read the thread before it landed, which is the failure.
-  //
-  // The row is pushed into the future, which is what a deferral leaves behind and what a due-only
-  // claim would skip. It is also what makes this the barrier's test and not the tick's: no other
-  // path in this process would take this row.
+  // NOTE: THE BARRIER, at the reader a customer is waiting on. Continuous ingestion is a queued job,
+  // so a message the agent stayed silent on can still be a ROW when a turn starts; every reader of
+  // the memory thread drains it first, and this pins the wiring here (the drain's own tests call it
+  // directly). Asserted at MODEL time, since "reached the thread eventually" is also true of the
+  // failure. The row is pushed into the future (what a deferral leaves, and what a due-only claim
+  // skips), so only the barrier can take it.
   test("a turn folds in a message still queued for it, before calling the model", async () => {
     const contactInboxId = 7009;
     const graphThreadId = contactInboxThreadId(
@@ -1725,8 +1685,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
 
     await turn(980);
-    // A turn of the OLD conversation, still invoking when the new one arrives. It does NOT run
-    // beside it (issue #658): an invoke is a read-modify-write of the whole channel, so the one
+    // NOTE: A turn of the OLD conversation, still invoking when the new one arrives. It does NOT run
+    // beside it: an invoke is a read-modify-write of the whole channel, so the one
     // finishing second saves what it loaded and undoes the first. It waits, and the boundary is
     // then claimed in the ordinary way, by a turn that is alone on the thread.
     markTurnInFlight(graphThreadId);
@@ -1770,9 +1730,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       }),
     ).toBe(1);
 
-    // The marker advanced, and this turn is the one that moved it — there is no second turn here,
-    // which is the difference the wait makes: the boundary used to be deferred to whatever came
-    // next, and a next turn that never comes left it unclaimed.
+    // NOTE: The marker advanced, and this turn is the one that moved it: there is no second turn
+    // here. Deferring the boundary to whatever comes next would leave it unclaimed when no next turn
+    // comes.
     const after = await suDb.agentThread.findUniqueOrThrow({
       where: {
         tenantId_chatwootInstanceId_contactInboxId: {
@@ -1791,7 +1751,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(
       selectClosedPrefix(messages, { currentAttendanceClosed: false }).closed,
     ).toHaveLength(2);
-    // And the divider IS there, which it could not be while the boundary was deferred: it lands
+    // NOTE: And the divider IS there, which it could not be with the boundary deferred: it lands
     // before this conversation's own exchange, where a hint about a past attendance belongs.
     expect(messages.some(isConversationDivider)).toBe(true);
   });
@@ -1817,7 +1777,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // The sibling state, and the reason the two are not one word: a bound agent that is switched off
   // is silent by the operator's own decision, while an unbound inbox is a channel nobody finished
   // connecting. The caller writes an operator-facing line for the second and stays quiet for the
-  // first (issue #318), so the classification has to happen HERE, in the read that decides it — a
+  // first, so the classification has to happen HERE, in the read that decides it: a
   // caller re-reading the binding afterwards would answer about a later moment.
   test("bound inbox whose agent is switched off → agent-unavailable (silent)", async () => {
     const sent: Array<[number, string]> = [];
@@ -1871,10 +1831,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(sent).toEqual([]);
   });
 
-  // Round 25. A turn silenced by the TOKEN arms a rollback for the `finally`, and it can still be
-  // refused afterwards — a takeover, a supersede, a `/reset`. `refuse` then removes the same
-  // messages, and the armed rollback ran a second time: it took the ingest claim, read the channel,
-  // found nothing left and logged "could not roll back" — a warning about a removal that succeeded.
+  // NOTE: A turn silenced by the TOKEN arms a rollback for the `finally`, and it can still be refused
+  // afterwards (a takeover, a supersede, a `/reset`), where `refuse` removes the same messages. The
+  // armed rollback must not run again and log "could not roll back" about a removal that succeeded.
   test("a token-silenced turn that is then refused is not rolled back twice", async () => {
     await seedConversation(9462, null);
     const warn = spyOn(logger, "warn");
@@ -1936,18 +1895,14 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     }
   });
 
-  // NOTE: Both of these lose the ownership recheck and return the same "taken-over". What they must
-  // NOT share is the flow-log detail. A human assignee is a real handoff; a conversation that merely
-  // left `pending` with nobody assigned is Chatwoot auto-escalating (most often because our webhook
-  // ack was slow), which throws away a reply that was already written. Reporting both as
-  // `taken_over` is what sent an incident investigation to the wrong half of the system (#225).
-  // NOTE: scoped to the conversation asked for, via its DB id — `execution_logs.conversation_id`
-  // holds the INTERNAL id (`loaded.conversationDbId`), never the Chatwoot one the tests name. It
-  // read the tenant's newest handoff row unscoped before, so a turn whose row had not landed yet
-  // silently returned the PREVIOUS test's row: 8801 writes `taken_over`, 8802 asserts
-  // `ownership_lost`, and whichever write won the race decided the result. That is the ~1-in-4 CI
-  // failure this file kept producing, on a machine slower than a dev laptop.
-  // One read, for the assertion that a conversation has NO handoff row.
+  // NOTE: Both of these lose the ownership recheck and return the same "taken-over", but must NOT
+  // share the flow-log detail: a human assignee is a real handoff, while a conversation that merely
+  // left `pending` with nobody assigned is Chatwoot auto-escalating (usually a slow webhook ack).
+  // Reporting both as `taken_over` sends an investigation to the wrong half of the system.
+
+  // One read, for the assertion that a conversation has NO handoff row. Scoped by the DB id
+  // (`execution_logs.conversation_id` holds the INTERNAL id, never the Chatwoot one the tests name):
+  // unscoped, a row that has not landed yet reads as the PREVIOUS test's row.
   async function handoffRowNow(convId: number) {
     const conversation = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
@@ -1963,9 +1918,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const conversation = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
     });
-    // Scoped since #123; the wait is the other half. `findFirstOrThrow` on a row that has not landed
-    // yet does not answer wrong, it THROWS, so what the scoping converted was a silent wrong answer
-    // into a spurious failure. Poll for the row this conversation owes (#258).
+    // NOTE: Scoped, and polled: the row is written fire-and-forget, so a single read can run before
+    // it lands. Poll for the row this conversation owes.
     for (let i = 0; i < 30; i++) {
       const row = await flowLogRow(suDb, {
         where: { tenantId, stage: "handoff", conversationId: conversation.id },
@@ -1977,10 +1931,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     throw new Error(`no handoff flow line for conv ${convId}`);
   }
 
-  // NOTE: the guard for the reader above, not for the product. Before it was scoped, this returned
-  // the newest handoff row of ANY conversation in the tenant, so the two tests below could pass by
-  // reading each other's row. A conversation that never ran a turn has no handoff row at all, so a
-  // scoped reader has nothing to return; an unscoped one hands back a neighbour's and looks fine.
+  // NOTE: the guard for the reader above, not for the product. An unscoped reader would return the
+  // newest handoff row of ANY conversation in the tenant, so the two tests below could pass by
+  // reading each other's row. A conversation that never ran a turn has no handoff row, so a scoped
+  // reader has nothing to return; an unscoped one hands back a neighbour's and looks fine.
   test("handoffDetail refuses to answer with another conversation's row", async () => {
     await seedConversation(8803, "User", 5);
     await runAgentTurn({
@@ -2002,9 +1956,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // written fire-and-forget, so without this wait the null below can mean "nothing has landed
     // yet" and the test passes having proved nothing.
     expect(await handoffDetail(8803)).toBeDefined();
-    // Then one read, awaited. 8804 never ran a turn, so no write of its own is in flight and there
-    // is nothing to poll for: the waiting reader would spend its whole 3s to agree, and would spend
-    // it AFTER this test returned, because the assertion it was handed to was never awaited (#258).
+    // NOTE: Then one read, awaited. 8804 never ran a turn, so no write of its own is in flight and
+    // there is nothing to poll for: the polling reader would spend its whole 3s to agree.
     expect(await handoffRowNow(8804)).toBeNull();
   });
 
@@ -2144,7 +2097,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     }
     expect(resolvedLogged).toBe(true);
 
-    // Issue #188: the agent calling resolve_conversation is the ONE closing the Resolution funnel
+    // NOTE: The agent calling resolve_conversation is the ONE closing the Resolution funnel
     // counts, and it is only distinguishable from the five that are not because the origin is
     // recorded here. The row is read after the flow event above, so the write has had its turn.
     const resolvedRow = await suDb.conversation.findFirstOrThrow({
@@ -2152,7 +2105,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       select: { resolvedBy: true, resolvedByAt: true },
     });
     expect(resolvedRow.resolvedBy).toBe("agent");
-    // And the floor is the recheck's version, not the row's at write time — which by now is the
+    // NOTE: And the floor is the recheck's version, not the row's at write time, which by now is the
     // one `mirrorOnToggle` wrote. Getting this wrong dates the stamp to the wrong episode, and a
     // delayed webhook for this very close would then be judged to predate it.
     expect(resolvedRow.resolvedByAt).toBe(OBSERVED_AT);
@@ -2468,7 +2421,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
   });
 
-  // Review round 14. The deferred resolve fires AFTER delivery, and delivery on this path is not
+  // NOTE: The deferred resolve fires AFTER delivery, and delivery on this path is not
   // quick: the output guardrail is a model round-trip, TTS synthesises audio, and split delivery is
   // typing-paced on purpose. The ownership recheck's snapshot can therefore be seconds old by the
   // time the toggle runs, and an operator closing in that window makes it a silent no-op that the
@@ -2513,23 +2466,15 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(row.resolvedBy).toBeNull();
   });
 
-  // ── A DECISÃO DE SILÊNCIO NÃO É O FIM DO TURNO, E O MARCADOR DELA AFIRMA UM (issue #726) ──
-  //
-  // Achado da rodada 2 de review, e a premissa que ele derrubou: "a última linha de `skip_reply` do
-  // turno responde pelo turno". Desde a #639 um `skip_reply` SOZINHO não encerra o turno (encerrar e
-  // manter calado são garantias diferentes), então o lote seguinte ainda roda — e quando ele é uma
-  // transferência com linha de fechamento, o turno entrega uma mensagem DEPOIS da única decisão que
-  // deixou carimbo. Ler só os carimbos de `skip_reply` responde "não entregou" sobre uma resposta
-  // que está na tela.
-  //
-  // Então o carimbo da chamada continua sendo o que ele é — a melhor resposta NAQUELE instante, que
-  // é tudo que o balão ao vivo pode ter — e o turno escreve um fato próprio quando acaba, sobre o
-  // que de fato saiu. A trilha prefere o fato do turno.
-  // A LINHA DA FERRAMENTA SAI DENTRO DO TURNO, com a fila de callbacks ocupada (issue #836). Um
-  // handler sem `awaitHandlers` vai para a fila de segundo plano do LangChain, única no processo e de
-  // concorrência 1: sob carga, o `handleToolEnd` rodava depois de o turno voltar, a linha ainda nem
-  // tinha sido agendada quando o leitor esperou as escritas, e o carimbo `turnDelivered` era lido
-  // tarde. Aqui a fila é ocupada de propósito antes do turno, que é a carga reproduzida sem acaso.
+  // NOTE: A DECISÃO DE SILÊNCIO NÃO É O FIM DO TURNO. Um `skip_reply` SOZINHO não encerra o turno,
+  // então o lote seguinte ainda roda, e uma transferência com linha de fechamento entrega DEPOIS da
+  // decisão. O carimbo da chamada é a melhor resposta NAQUELE instante (tudo que o balão ao vivo pode
+  // ter); o turno escreve um fato próprio quando acaba, sobre o que de fato saiu, e a trilha o prefere.
+
+  // NOTE: A LINHA DA FERRAMENTA SAI DENTRO DO TURNO. Um handler sem `awaitHandlers` vai para a fila
+  // de segundo plano do LangChain, única no processo e de concorrência 1, e sob carga a linha sairia
+  // depois de o turno voltar, com o carimbo `turnDelivered` lido tarde. A fila é ocupada de propósito
+  // antes do turno, que é a carga reproduzida sem acaso.
   test("com a fila de callbacks ocupada, a linha da ferramenta já existe quando o turno volta, carimbada no fim da ferramenta", async () => {
     await seedConversation(9836, null);
     const CLOSING = "Já chamo uma pessoa do time.";
@@ -2622,7 +2567,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       cacheCreationTokens: 0,
       completionTokens: 100,
       byNode: { agent: 2 },
-      // Issue #863: each call at gpt-4o-mini's published rates, per million: $0.15 input, $0.075
+      // NOTE: Each call at gpt-4o-mini's published rates, per million: $0.15 input, $0.075
       // cached, $0.60 output. The cached part is charged at the cache rate and only the rest in full.
       costUsd: expect.closeTo(
         spends.reduce((sum, s) => sum + usd4oMini(s), 0),
@@ -2777,7 +2722,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       creates.slice(quiet).map(([, id]) => id),
     );
 
-    // A turn that ran the model and has no id to name still closes on its line (review round 2): the
+    // NOTE: A turn that ran the model and has no id to name still closes on its line: the
     // model was billed, so the screen has spend to place. An empty reply leaves a note, answered here
     // without an id, so nothing is recorded.
     await seedConversation(98554, null);
@@ -2830,12 +2775,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: 9726 },
     });
-    // O carimbo da chamada, que é provisório por construção: quando `skip_reply` rodou, a
-    // transferência ainda não tinha acontecido.
-    // A linha do `skip_reply`, pelo nome: o turno grava duas linhas `tool` (a do `handoff_to_human`
-    // vem depois e não carrega carimbo), e a ordem em que elas chegam à tabela não é a das chamadas,
-    // porque cada escrita é disparada sem espera. Ler "a primeira linha tool" era ler qualquer uma
-    // das duas (issue #836).
+    // NOTE: O carimbo da chamada é provisório por construção: quando `skip_reply` rodou, a
+    // transferência ainda não tinha acontecido. A linha é buscada pelo nome: o turno grava duas
+    // linhas `tool`, e a ordem em que chegam à tabela não é a das chamadas (cada escrita é disparada
+    // sem espera), então "a primeira linha tool" seria qualquer uma das duas.
     const decisao = await flowLogRow(suDb, {
       where: {
         tenantId,
@@ -2860,15 +2803,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const marcador = trail.find((e) => e.name === "skip_reply");
     expect(marcador?.turnDelivered).toBe(true);
 
-    // A FRASE QUE O DESENHO APOIA E QUE NINGUÉM TINHA EXECUTADO: a trilha lê uma JANELA (as 60 linhas
-    // mais novas de `tool`/`generate`), e o fato do turno só governa o marcador se os dois couberem
-    // nela. O argumento é que o fato é escrito no FIM do turno, então ele é mais novo que a linha da
-    // decisão — e, numa leitura do mais novo para o mais velho, nada que seja mais novo que uma linha
-    // dentro da janela fica de fora dela. O argumento inteiro se apoia nessa ordem, e `emitFlowEvent`
-    // não espera a escrita, então ela é uma afirmação sobre o que acontece, não sobre o que o código
-    // diz. Medida aqui, num turno de verdade.
-    // Procurada, nunca tomada por ordem: um turno escreve várias linhas `generate`, e "a última" é
-    // aquela em que a etapa por acaso terminou.
+    // NOTE: A trilha lê uma JANELA (as 60 linhas mais novas de `tool`/`generate`), e o fato do turno
+    // só governa o marcador se couber nela junto com a linha da decisão. Isso depende de o fato ser
+    // gravado DEPOIS dela, e `emitFlowEvent` não espera a escrita, então a ordem é verificada aqui,
+    // num turno de verdade. A linha é procurada, nunca tomada por ordem: um turno escreve várias
+    // linhas `generate`, e "a última" é aquela em que a etapa por acaso terminou.
     const geradas = await flowLogRows(suDb, {
       where: { tenantId, conversationId: conv.id, stage: "generate" },
       select: { id: true, detail: true },
@@ -2934,8 +2873,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // correção que neutralize os dois apaga um fato verdadeiro para consertar um falso.
   test("silêncio decidido e nada depois: o fato do turno diz que nada saiu", async () => {
     await seedConversation(9727, null);
-    // O nosso lado já falou aqui: numa conversa que ninguém respondeu, o silêncio passa a abri-la
-    // para uma pessoa (issue #659), e esse efeito não é o assunto deste teste.
+    // NOTE: O nosso lado já falou aqui: numa conversa que ninguém respondeu, o silêncio passa a
+    // abri-la para uma pessoa, e esse efeito não é o assunto deste teste.
     await suDb.conversation.updateMany({
       where: { tenantId, chatwootConversationId: 9727 },
       data: { lastRepliedMessageId: 1 },
@@ -3021,15 +2960,15 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       deps: {
         makeModel: () =>
           new HandoffThenReplyModel(FINAL, CLOSING) as unknown as BaseChatModel,
-        // Deliberately do NOT mirror toggleStatus: this is the production lag that allowed the final
-        // reply through after the tool had already sent customerMessage.
+        // NOTE: Deliberately do NOT mirror toggleStatus: the production lag in which the final reply
+        // could go out after the closing line.
         makeClient: makeResolveClient(calls),
         checkpointer: new MemorySaver(),
       },
     });
     expect(outcome).toBe("posted");
-    // One balloon, the closing line, and the model's own final text discarded — that is #158. The
-    // transfer lands FIRST now: the runtime cannot deliver until the tool call returns, and Chatwoot
+    // NOTE: One balloon, the closing line, and the model's own final text discarded as a duplicate.
+    // The transfer lands FIRST: the runtime cannot deliver until the tool call returns, and Chatwoot
     // never shows a status change to the customer, so what they read is unchanged.
     expect(calls).toEqual([
       ["toggleStatus", 996, "open"],
@@ -3037,14 +2976,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
-  // Composing the closing line is not the same event as the transfer happening. sendPrivateNote and
-  // toggleStatus are NOT best-effort inside the tool, so either can throw after the model already
-  // wrote a line promising a human. The conversation then stays `pending` — still the bot's, never
-  // queued to anyone — and the model gets the tool error plus one more step.
-  //
-  // Recording the line instead of sending it (#160) is what keeps the promise from going out at all:
-  // the customer reads the recovery reply and nothing else, where before they read both and the
-  // second contradicted the first.
+  // NOTE: Composing the closing line is not the transfer happening. sendPrivateNote and toggleStatus
+  // are NOT best-effort inside the tool, so either can throw after the model wrote a line promising
+  // a human; the conversation stays `pending` (still the bot's) and the model gets the tool error
+  // plus one more step. The tool records the line instead of sending it, so the customer reads the
+  // recovery reply and not a promise it contradicts.
   test("a handoff whose transfer throws delivers the recovery reply and NOT the promise", async () => {
     await seedConversation(997, null);
     const CLOSING = "Um humano já te atende.";
@@ -3094,11 +3030,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(row?.status).toBe("pending");
   });
 
-  // The shape three review findings arrived in: something between the transfer and the delivery
-  // fails, and the sentence the transfer promised is lost for good, because the conversation now
-  // reads `open` and every retry path stops at its own ownership gate. Here the supersede re-fetch
-  // throws, which ends the turn — and the line is out before it, which is the whole point of
-  // delivering it where nothing downstream can reach it.
+  // NOTE: Something between the transfer and the delivery fails, and the sentence the transfer
+  // promised would be lost for good: the conversation reads `open` and every retry path stops at its
+  // own ownership gate. Here the supersede re-fetch throws and ends the turn, and the line is out
+  // before it, delivered where nothing downstream can reach it.
   test("a failure after the transfer cannot take the closing line back", async () => {
     await seedConversation(9703, null);
     const calls: Array<[string, number, string]> = [];
@@ -3137,10 +3072,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
-  // The last of the four failures, and the only one that happens INSIDE the graph: the tool completes
-  // the transfer and the model's next step throws. The exception ends the turn, and the sentence the
-  // customer was promised has nobody left to deliver it — no retry can, because the conversation
-  // reads `open` from the moment the tool set it.
+  // NOTE: The failure that happens INSIDE the graph: the tool completes the transfer and the model's
+  // next step throws. The exception ends the turn, and no retry can deliver the promised sentence,
+  // because the conversation reads `open` from the moment the tool set it.
   test("a throw after the transfer still delivers the promised line", async () => {
     await seedConversation(9704, null);
     const calls: Array<[string, number, string]> = [];
@@ -3178,17 +3112,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
-  // THIS TEST USED TO ASSERT THE OPPOSITE, and the reason it changed is issue #662. An empty
-  // `customerMessage` was what a model that FORGOT the argument left behind, so the model's own final
-  // text was the only thing the customer would get and it had to go out. The argument is required
-  // now, so an empty one is the model SAYING this case receives no reply, and the tool answers it
-  // with "No message will be sent to the customer, as you indicated", a sentence the product has to
-  // keep. Measured once in 18 live turns of deliberate silence (`gpt-5.2`, three runs): the model
-  // declared the silence and then wrote `Encaminhado para a equipe responsável.`, which reached the
-  // customer on a credit-bureau notice.
-  //
-  // The predicate still has two conditions, for the transfer that THREW: nothing was recorded, the
-  // conversation is still ours, and the recovery text the model writes is the customer's only reply.
+  // NOTE: `customerMessage` is required, so an empty one is the model SAYING this case receives no
+  // reply, and the tool tells it "No message will be sent to the customer, as you indicated", a
+  // sentence the product has to keep even when the model then writes a closing line anyway. The
+  // recovery text only goes out for the transfer that THREW: nothing was recorded, the conversation
+  // is still ours, and that text is the customer's only reply.
   test("a handoff that declared silence sends nothing, not even the model's own next line", async () => {
     const contactInboxId = 7702;
     const graphThreadId = contactInboxThreadId(
@@ -3246,7 +3174,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
     expect(outcome).toBe("empty");
 
-    // AND THE WORDS ARE OUT OF THE THREAD (review round 3). The text was checkpointed by the invoke
+    // NOTE: AND THE WORDS ARE OUT OF THE THREAD. The text was checkpointed by the invoke
     // that produced it, the thread is shared per contact-inbox, and a later turn reading it would
     // believe the customer was answered. The transfer itself stays: the tool call and its result are
     // the record of what actually happened.
@@ -3309,11 +3237,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(outcome).toBe("empty");
   });
 
-  // A photo the model queued earlier in the same turn is not a second copy of the closing line, and
-  // the tool already told the model it was on its way. The closing line goes out first because it
-  // leaves before the gates the photo still has to pass — the same order the tool produced before
-  // #160. "Image before the text that talks about it" is a rule about the model's own reply, and a
-  // handed-off turn has none.
+  // NOTE: A photo the model queued earlier in the same turn is not a second copy of the closing
+  // line, and the tool already told the model it was on its way. The closing line goes out first
+  // because it leaves before the gates the photo still has to pass. "Image before the text that talks
+  // about it" is a rule about the model's own reply, and a handed-off turn has none.
   test("a handoff still delivers an image queued earlier in the same turn", async () => {
     await allowImageHost();
     await seedConversation(998, null);
@@ -3344,12 +3271,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
-  // AND THE QUEUE FALLS WITH THE DECLARED SILENCE, which is the one case where the rule above flips
-  // (review round 2 of the #662 PR). A photo is not a second copy of a closing line, so a transfer
-  // that spoke still delivers it; a transfer that declared "no reply at all" cannot mean "no text,
-  // plus the photo you queued two hops ago". The caption is the sharper half: it rides into the
-  // output guardrail with the reply, and a trip writes the safe reply BACK into the reply that was
-  // just blanked, which would put the declared silence on the wire as a moderation replacement.
+  // NOTE: AND THE QUEUE FALLS WITH THE DECLARED SILENCE, the one case where the rule above flips: a
+  // transfer that declared "no reply at all" cannot mean "no text, plus the photo you queued two
+  // hops ago". The caption is the sharper half: it rides into the output guardrail with the reply,
+  // and a trip writes the safe reply BACK into the blanked reply, putting the declared silence on
+  // the wire as a moderation replacement.
   test("a handoff that declared silence drops the image queued earlier in the same turn", async () => {
     await allowImageHost();
     await seedConversation(9981, null);
@@ -3376,25 +3302,15 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(calls).toEqual([["toggleStatus", 9981, "open"]]);
   });
 
-  // The deferred resolve falls with the TRANSFER, and with nothing else. The hardest case for that
-  // rule is a closing line that fails to reach the customer: the conversation is a human's either
-  // way, so resolving it would close an open request out from under them, and a customer who heard
-  // nothing is the last one whose thread should be marked done.
-  //
-  // The failure is a warn and not a failed turn (#160): the transfer succeeded, so stamping
-  // lastError and announcing "a human has to take over" would point an operator at a thread that
-  // already has one. Same rule the queued image follows below.
-  // ISSUE #671, and the three below are one scenario with its boundary. The pair the contract of
-  // #662 made expressable is the worst outcome it can produce: the customer gets nothing BY THE
-  // MODEL'S OWN DECLARATION, and the conversation leaves the queue that declaration handed it to, so
-  // nobody is looking either. Worse than the silence by omission #662 removed, which at least left
-  // the conversation open.
-  //
-  // The rule is old ("a conversation the human queue now owns is not ours to close", #159) and the
-  // reactive runtime keeps it by dropping the DEFERRED intent. What was missing is a test that says
-  // the forbidden pair is this pair: the one red case a mutation of that line produced was about a
-  // closing line that FAILS to send, and narrowing the condition from `completed` to
-  // `handoffAnsweredTheTurn` (which a declared silence makes false) survived the whole suite.
+  // NOTE: The deferred resolve falls with the TRANSFER, and with nothing else. Even when the closing
+  // line fails to reach the customer, the conversation is a human's, so resolving it would close an
+  // open request out from under them. That failure is a warn, not a failed turn: the transfer
+  // succeeded, and "a human has to take over" would point at a thread that already has one.
+
+  // NOTE: This and the two below are one scenario with its boundary. A silent transfer plus a resolve
+  // is the worst pair: the customer gets nothing BY THE MODEL'S OWN DECLARATION, and the conversation
+  // leaves the queue that declaration handed it to. The runtime drops the DEFERRED intent on
+  // `completed`; narrowing that to `handoffAnsweredTheTurn` (false on a declared silence) must fail.
   test("a resolve asked in the same turn as a silent transfer does not close the conversation", async () => {
     await seedConversation(6711, null);
     const calls: Array<[string, number, string]> = [];
@@ -3621,9 +3537,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
     });
     expect(outcome).toBe("posted");
-    // The only toggleStatus is the handoff's `open`. A "resolved" here would be the deferred intent
-    // closing a conversation the human queue had just been handed. And the model's own final text
-    // is NOT a fallback: it is the duplicate #158 is about, so a failed closing line means silence,
+    // NOTE: The only toggleStatus is the handoff's `open`. A "resolved" here would be the deferred
+    // intent closing a conversation the human queue had just been handed. And the model's own final
+    // text is NOT a fallback: it would be a duplicate, so a failed closing line means silence,
     // not a second attempt with different words.
     expect(calls).toEqual([
       ["toggleStatus", 9977, "open"],
@@ -3631,13 +3547,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
-  // The bound, pinned so it is a decision and not a surprise. The closing line left before this gate
-  // and is therefore untouched by it; everything the turn still holds when it arrives here does stop,
-  // photo included. Once the mirror reads "not ours" our own transfer and a human who accepted the
-  // conversation in the same window are indistinguishable — it records no reason for a status change
-  // — so the gate keeps failing closed for the one that matters, and the turn reports the takeover
-  // it saw. Identical to what shipped before #160, when the tool sent the line and the gate stopped
-  // the rest.
+  // NOTE: The bound, pinned so it is a decision and not a surprise. The closing line left before
+  // this gate and is untouched by it; everything the turn still holds here stops, photo included.
+  // Once the mirror reads "not ours", our own transfer and a human who accepted the conversation in
+  // the same window are indistinguishable (it records no reason for a status change), so the gate
+  // fails closed and the turn reports the takeover it saw.
   test("the takeover gate still stops everything the closing line did not carry", async () => {
     await allowImageHost();
     await seedConversation(9988, null);
@@ -3711,8 +3625,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         imageDeps,
       },
     });
-    // `posted-partial`, not plain `posted` (issue #429): the handoff line answered, so this is not a
-    // failed turn — but the customer was promised a photo that never arrived, and the word that
+    // NOTE: `posted-partial`, not plain `posted`: the handoff line answered, so this is not a
+    // failed turn, but the customer was promised a photo that never arrived, and the word that
     // clears the operator's badge is reserved for a delivery that arrived whole. Same two bits as
     // the resolve decision, which this branch already refused for the same reason.
     expect(outcome).toBe("posted-partial");
@@ -3739,14 +3653,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(calls).toEqual([]);
   });
 
-  // ISSUE #773, AND IT REPLACES AN ASSERTION THIS FILE USED TO MAKE. The test here was
-  // "resolve with an empty final reply still resolves after the turn", and what it was built to prove
-  // is the ORDER — the close comes after the reply, never instead of it. The shape it happened to use
-  // was a completion that merely came back EMPTY, so it also asserted that an unexplained silence may
-  // close, which is the defect. The order is proved by the tests above with a real reply; what the
-  // empty shape decides is a different question, and the pair below answers it.
-  //
-  // Measured on 115 replayed conversations: 6 turns produced nothing, 3 correctly and 3 like this.
+  // NOTE: An unexplained silence must not close the conversation. The ORDER (the close comes after
+  // the reply, never instead of it) is proved by the tests above with a real reply; what an EMPTY
+  // completion decides is a different question, and this pair answers it.
   test("an empty completion NOBODY chose does not close the conversation", async () => {
     await seedConversation(912, null);
     const calls: Array<[string, number, string]> = [];
@@ -3763,11 +3672,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         checkpointer: new MemorySaver(),
       },
     });
-    // The turn still produced nothing — that part is true and unchanged. What must NOT happen is the
-    // conversation closing as handled: nothing reached the customer and nothing in the turn chose
-    // that, so the deferred intent is discarded like a takeover or a blocked output discards it.
-    // Nobody on our side had spoken here either, so since issue #659 it goes to a person: `open`,
-    // with a note, and never `resolved`.
+    // NOTE: The turn still produced nothing. What must NOT happen is the conversation closing as
+    // handled: nothing reached the customer and nothing in the turn chose that, so the deferred intent
+    // is discarded like a takeover or a blocked output discards it. Nobody on our side had spoken here
+    // either, so it goes to a person: `open`, with a note, and never `resolved`.
     expect(outcome).toBe("empty");
     expect(
       calls.map(([op, id, arg]) => [op, id, op === "toggleStatus" ? arg : ""]),
@@ -3800,9 +3708,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(warned?.resolveDiscarded).toBe(true);
   });
 
-  // The control, and the half that must keep working: the model DECLARED the silence with the tool
-  // built for it. Three of the six empty turns in the report are this, and they are correct — the
-  // customer wrote "Amoooo." and there is nothing to answer.
+  // NOTE: The control, and the half that must keep working: the model DECLARED the silence with the
+  // tool built for it, which is correct when the customer wrote "Amoooo." and there is nothing to
+  // answer.
   test("a silence the model CHOSE still closes the conversation", async () => {
     await seedConversation(9773, null);
     const calls: Array<[string, number, string]> = [];
@@ -3841,12 +3749,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ).toBe(false);
   });
 
-  // REVIEW ROUND 1 OF THIS PR, and the case it caught is the one a name almost hid. A transfer that
-  // SUCCEEDED and declared silence (`customerMessage: ""`, issue #662) leaves `handoffAnsweredTheTurn`
-  // false, because that predicate asks whether the transfer supplies this turn's customer-facing
-  // TEXT. Read through it, this turn looks like nobody chose the silence — and it would page an
-  // operator about a conversation that is correctly sitting in a person's queue. The question here is
-  // only whether somebody is looking.
+  // NOTE: A transfer that SUCCEEDED and declared silence (`customerMessage: ""`) leaves
+  // `handoffAnsweredTheTurn` false, because that predicate asks whether the transfer supplies this
+  // turn's customer-facing TEXT. Read through it, nobody chose the silence, and an operator would be
+  // paged about a conversation correctly sitting in a person's queue. The question here is only
+  // whether somebody is looking.
   test("a transfer that declared silence explains it, with no skip_reply", async () => {
     await seedConversation(9776, null);
     const calls: Array<[string, number, string]> = [];
@@ -3906,12 +3813,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ).toBe(false);
   });
 
-  // THE SECOND EXIT, and the one the original report did not have. With no deferred resolve there is
-  // nothing to discard, so the conversation simply stays `pending` with no owner, which in the report
-  // is where the label the same turn wrote goes on saying the customer is being dealt with. Nothing
-  // at all marked this turn before the line below: it ended indistinguishable from a turn that never
-  // ran. What the model called first is incidental — any tool followed by an empty completion is this
-  // shape — and `set_labels` is here because it is the one the measurement caught.
+  // NOTE: THE SECOND EXIT. With no deferred resolve there is nothing to discard, so without the line
+  // below the conversation would sit `pending` with no owner, while a label the same turn wrote says
+  // the customer is being dealt with, indistinguishable from a turn that never ran. Any tool followed
+  // by an empty completion is this shape; `set_labels` is just a realistic one.
   test("an empty completion with no resolve intent is still reported", async () => {
     await seedConversation(9774, null);
     const calls: Array<[string, number, string]> = [];
@@ -3931,8 +3836,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
     });
     expect(outcome).toBe("empty");
-    // Nothing was closed and nothing reached the customer. Nobody on our side had ever spoken here,
-    // so since issue #659 the conversation leaves `pending` for a person, with a note saying why.
+    // NOTE: Nothing was closed and nothing reached the customer. Nobody on our side had ever spoken
+    // here, so the conversation leaves `pending` for a person, with a note saying why.
     expect(
       calls.map(([op, id, arg]) => [op, id, op === "toggleStatus" ? arg : ""]),
     ).toEqual([
@@ -3963,12 +3868,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(warned?.resolveDiscarded).toBe(false);
   });
 
-  // ISSUE #886. The reply WAS written, in the same assistant message as a tool call, and the turn
-  // then ended on an empty message. The runtime posted the LAST assistant message, so the answer the
-  // model wrote never left, and the turn read as an unexplained silence (#773). Measured on 51 real
-  // `silenceUnexplained` turns read from the checkpoint: 8 were this, every one a complete answer.
-  // The trigger is in the tool's own result: `resolve_conversation` says the close waits for "your
-  // final reply", and a model that already wrote it reads that as done.
+  // NOTE: The reply can be written in the same assistant message as a tool call, with the turn then
+  // ending on an empty message; posting only the LAST assistant message would drop that answer and
+  // read the turn as an unexplained silence. `resolve_conversation` invites it: its result says the
+  // close waits for "your final reply", and a model that already wrote it reads that as done.
   async function recoveredLine(threadConv: number) {
     for (let i = 0; i < 30; i++) {
       const rows = await flowLogRows(suDb, {
@@ -4234,10 +4137,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(calls.filter(([op]) => op === "sendMessage")).toEqual([]);
   });
 
-  // ISSUE #885. A turn that ends with nothing for the customer, no handoff and no `skip_reply` is
-  // asked once more, in the same round, with a late instruction naming both exits. Measured on 51
-  // real turns: most are correct silences after a thank-you that were never declared, and a few are
-  // customers owed an answer — the retry recovers both, without making anyone answer a thank-you.
+  // NOTE: A turn that ends with nothing for the customer, no handoff and no `skip_reply` is asked once
+  // more, in the same round, with a late instruction naming both exits. Most such turns are correct
+  // but undeclared silences after a thank-you, a few are customers owed an answer; the retry recovers
+  // both without making anyone answer a thank-you.
   async function silenceRetryLine(threadConv: number) {
     for (let i = 0; i < 30; i++) {
       const rows = await flowLogRows(suDb, {
@@ -4612,7 +4515,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(await silenceRetryLine(98858)).toBeNull();
   });
 
-  // Issue #886 delivers the reply the model wrote beside a tool call: that turn is not a silence.
+  // NOTE: The reply the model wrote beside a tool call is delivered, so that turn is not a silence.
   test("a recovered reply is not retried", async () => {
     await seedConversation(98857, null);
     const calls: Array<[string, number, string]> = [];
@@ -4643,9 +4546,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(await silenceRetryLine(98857)).toBeNull();
   });
 
-  // Something else already answers the turn: the picture the model queued. The text it wrote beside
-  // the call is not brought back on top of it, which keeps the recovery to the one shape measured
-  // (nothing at all reached the customer).
+  // NOTE: Something else already answers the turn: the picture the model queued. The text it wrote
+  // beside the call is not brought back on top of it; the recovery is only for a turn where nothing
+  // at all reached the customer.
   test("an earlier text is not recovered when an attachment answers the turn", async () => {
     await allowImageHost();
     await seedConversation(98866, null);
@@ -4767,9 +4670,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(await recoveredLine(98869)).toBeNull();
   });
 
-  // ISSUE #717. A person taking the conversation over WHILE the model runs: the gates before the
-  // invoke (#711) have already answered, and the recheck after it only holds the send. Between them
-  // the tools ran over the person. The mirror flip happens inside the model call, which is the
+  // A person taking the conversation over WHILE the model runs: the gates before the
+  // invoke have already answered, and the recheck after it only holds the send. Between them
+  // the tools would run over the person. The mirror flip happens inside the model call, which is the
   // window, and the next hop's calls are what the fence has to stop.
   function ownershipClient(calls: Array<[string, number, string]>) {
     let labels: string[] = [];
@@ -4865,7 +4768,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(outcome).toBe("taken-over");
     // Neither the label nor anything else reached the conversation the person now holds.
     expect(calls).toEqual([]);
-    // And the trail says the gate closed, from the read that refused (review round 2).
+    // NOTE: And the trail says the gate closed, from the read that refused.
     const closedLines = await flowLogRows(suDb, {
       where: {
         tenantId,
@@ -4919,10 +4822,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
-  // The turn's OWN transfer changes the owner too, and the calls after it in the same answer are the
-  // turn's intent: a label written after the handoff is not a write over somebody.
-  // Review round 2: the calls of one batch run concurrently, so the label's own ask inside its queue
-  // can read the `open` the handoff beside it just wrote. Still the turn's own transfer.
+  // NOTE: The turn's OWN transfer changes the owner too, and the calls after it in the same answer are the
+  // turn's intent: a label written after the handoff is not a write over somebody. The calls of one
+  // batch run concurrently, so the label's own ask inside its queue can read the `open` the handoff
+  // beside it just wrote: still the turn's own transfer.
   test("issue #717: a handoff and a label in the same batch both run", async () => {
     await seedConversation(9720, null);
     const calls: Array<[string, number, string]> = [];
@@ -5081,7 +4984,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(calls).toEqual([]);
   });
 
-  // Review round 3: a second transfer that throws must not erase the first one, which landed.
+  // NOTE: A second transfer that throws must not erase the first one, which landed.
   test("issue #717: a failed second transfer does not undo the first one's exemption", async () => {
     await seedConversation(9723, null);
     const calls: Array<[string, number, string]> = [];
@@ -5307,7 +5210,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
   });
 
-  // Issue #787: a URL or an e-mail address never goes into the speech. It is handed over verbatim in
+  // A URL or an e-mail address never goes into the speech. It is handed over verbatim in
   // one text message right after the voice note, or the whole reply goes as text when all that is
   // left to say is the introduction of the item.
   function recordingAudioClient(
@@ -5389,7 +5292,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(r.outcome).toBe("posted");
       expect(r.log.map((m) => m.kind)).toEqual(["audio", "text"]);
       expect(r.log[1]?.text).toBe(url);
-      // #792: the voice note also carries the whole reply, which is what goes as text if the channel
+      // NOTE: The voice note also carries the whole reply, which is what goes as text if the channel
       // refuses the audio; the speech alone reads "em a qualquer momento".
       expect(r.log[0]?.reply).toBe(reply);
       for (const said of [...r.spoken, ...r.normalized, r.log[0]?.text ?? ""]) {
@@ -5429,7 +5332,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
   });
 
-  // Issue #856: a reply built to be read goes as text, whole, even when the customer would get audio.
+  // A reply built to be read goes as text, whole, even when the customer would get audio.
   const PRICE_TABLE = `Os valores de 2 lugares ficam assim:
 
 - **Cadeira**: meia R$ 300,00, total R$ 600,00
@@ -5529,7 +5432,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     );
   });
 
-  // Issue #859: the model is TOLD when its reply will be spoken, and may choose text for it. What it
+  // NOTE: The model is TOLD when its reply will be spoken, and may choose text for it. What it
   // is told is a property of the request, so every test here reads the request the model received.
   const NOTICE_ON = { spokenNotice: true };
 
@@ -5934,7 +5837,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     );
   });
 
-  // Codex review of #879: once the reply goes as text, the rounds after the change must not read an
+  // NOTE: Once the reply goes as text, the rounds after the change must not read an
   // instruction that says it is a voice note (no lists, no formatting), which is exactly what the
   // model chose text to write.
   test("after the model chooses text, the next round is no longer told voice (#859)", async () => {
@@ -6090,7 +5993,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     );
   });
 
-  // Review round 1 of #788: the written follow-up is a second write, and a /reset or a disabled agent
+  // NOTE: The written follow-up is a second write, and a /reset or a disabled agent
   // landing while the voice note was being sent has to stop it like it stops any other write.
   test("an agent disabled during the voice note does not send the written follow-up (#787)", async () => {
     await withTtsMirror(async () => {
@@ -6133,13 +6036,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
   });
 
-  // #160, and the finding waived on #159: the closing line is a reply like any other, so a customer
-  // being answered in audio has to HEAR it. Today the tool writes it as text, so the one turn where
-  // the agent says the least is also the one where it drops the modality the customer asked for.
-  //
-  // The order is the visible cost of a single delivery owner: the transfer lands first and the line
-  // follows, because the runtime cannot deliver until the tool call returns. Chatwoot never shows a
-  // status change to the customer, so what they perceive is unchanged.
+  // NOTE: The closing line is a reply like any other, so a customer being answered in audio has to
+  // HEAR it. The order is the visible cost of a single delivery owner: the transfer lands first and
+  // the line follows, because the runtime cannot deliver until the tool call returns. Chatwoot never
+  // shows a status change to the customer, so what they perceive is unchanged.
   test("a handoff's closing line is spoken when the reply modality is audio", async () => {
     await withTtsMirror(async () => {
       await seedConversation(915, null);
@@ -6211,9 +6111,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
     });
     expect(outcome).toBe("posted");
-    // The line delivered is the second attempt's own, and the first attempt's promise never goes
-    // out. Since issue #662 the retry has to carry a line (or declare silence), so this is the
-    // shape a real retry takes.
+    // NOTE: The line delivered is the second attempt's own, and the first attempt's promise never
+    // goes out. A retry has to carry a line (or declare silence), so this is the shape a real retry
+    // takes.
     expect(calls).toEqual([
       ["toggleStatus", 961, "open"],
       ["sendMessage", 961, "Pronto, te transferi."],
@@ -6352,7 +6252,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
   });
 
-  // Issue #65 + review: the tool queues and the RUNTIME delivers, after the same gates the reply
+  // NOTE: The tool queues and the RUNTIME delivers, after the same gates the reply
   // passes. The customer sees the picture, then the sentence about it.
   test("a queued image is delivered before the reply, in the same turn", async () => {
     await allowImageHost();
@@ -6456,19 +6356,16 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         select: { id: true, status: true, number: true },
       });
       expect(row).toMatchObject({ status: "READY", number: 1 });
-      // And the bytes really went to the injected directory. Asserting this is not ceremony: the
-      // first version of this test passed a dir the runtime did not plumb through, so the PDF was
-      // written to the configured one and nothing said so.
+      // NOTE: And the bytes really went to the injected directory: a dir the runtime did not plumb
+      // through would leave the PDF in the configured one with nothing saying so.
       expect(
         await Bun.file(
           `${dir}/${storageKey(tenantId, row?.id ?? 0n)}`,
         ).exists(),
       ).toBe(true);
-      // And the trail names the tool the operator granted, not a constant: an operator filtering for
-      // it has to find the line it produced.
-      // Scoped AND polled. This reader had neither, and the missing wait is the one that already
-      // cost a CI run on an unrelated PR: `emitFlowEvent` is fire-and-forget, so the `send_orcamento`
-      // line had simply not landed when the assertion read the table (#258).
+      // NOTE: And the trail names the tool the operator granted, not a constant: an operator
+      // filtering for it has to find the line it produced. Scoped AND polled: `emitFlowEvent` is
+      // fire-and-forget, so the `send_orcamento` line may not have landed on the first read.
       let named = false;
       for (let i = 0; i < 30 && !named; i++) {
         const flow = await flowLogRows(suDb, {
@@ -6665,9 +6562,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           documentsStorageDir: dir,
         },
       });
-      // Nothing was sent and nothing failed: an empty turn, not a broken one. Nobody on our side had
-      // spoken here either, so since issue #659 this early exit also hands the conversation to a
-      // person, like every other way the turn ends empty.
+      // NOTE: Nothing was sent and nothing failed: an empty turn, not a broken one. Nobody on our
+      // side had spoken here either, so this early exit also hands the conversation to a person, like
+      // every other way the turn ends empty.
       expect(outcome).toBe("empty");
       expect(calls).toEqual([["toggleStatus", 946, "open"]]);
       // …and no deferred resolve closed a conversation the customer never heard back on.
@@ -6846,7 +6743,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           documentsStorageDir: dir,
         },
       });
-      // `posted-partial` (issue #429), and the same reasoning the flow line below states: a lookup
+      // NOTE: `posted-partial`, by the same reasoning the flow line below states: a lookup
       // that could not be made is not the operator withdrawing the file. The customer holds the text
       // and not the document they were promised, so the turn does not get the word that clears the
       // badge — the badge is the second place they can find out why the file never arrived.
@@ -6971,10 +6868,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   // through, nothing reached the customer. Reporting "empty" would let the deferred resolve close an
   // unanswered conversation, and the callers only record a turn error when the turn throws.
   //
-  // NOTE: the assertion matches the GENERAL wording, not "no image was delivered". The queue is
-  // shared with the document tools now, and a turn whose only artefact was a quote fails through
-  // exactly this branch — a message naming images would send the operator to the image allowlist to
-  // debug a PDF read off our own disk.
+  // NOTE: the assertion matches the GENERAL wording, not "no image was delivered": the queue is
+  // shared with the document tools, and a message naming images would send the operator to the image
+  // allowlist to debug a PDF read off our own disk.
   test("an image-only turn whose delivery fails does not resolve, and fails loudly", async () => {
     await allowImageHost();
     await seedConversation(933, null);
@@ -6999,10 +6895,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect((await mirroredStatus(933)) === "resolved").toBe(false);
   });
 
-  // THE CONTROL FOR ISSUE #773'S RULE, and the mutation battery is what asked for it: a turn with no
-  // text is not automatically a turn nobody answered. The picture WENT OUT, so the customer heard
-  // something, and the close is legitimate even though the model never called `skip_reply` — the
-  // decision it did not take is about SILENCE, and this turn was not silent.
+  // NOTE: THE CONTROL FOR THE UNEXPLAINED-SILENCE RULE: a turn with no text is not automatically a
+  // turn nobody answered. The picture WENT OUT, so the close is legitimate even though the model
+  // never called `skip_reply`: that decision is about SILENCE, and this turn was not silent.
   test("an image-only turn still closes: something reached the customer", async () => {
     await allowImageHost();
     await seedConversation(9775, null);
@@ -7048,7 +6943,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ).toBe(false);
   });
 
-  // The finding this defers for: a turn a human took over mid-flight must not have already put an
+  // NOTE: Why delivery is deferred to the runtime: a turn a human took over mid-flight must not have already put an
   // image in front of the customer. Nothing at all reaches Chatwoot.
   test("a turn taken over mid-flight delivers no image", async () => {
     await allowImageHost();
@@ -7158,14 +7053,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(conv.lastHandledMessageId).toBeNull();
   });
 
-  // AND THE NEWER MESSAGE SOMEBODY ELSE ALREADY ANSWERED IS NOT A SUPERSESSION (issue #698). The
-  // test above is the case the gate exists for: message 2 is still open, so the reply to 1 is
-  // obsolete and its own turn is coming. This is the other one, and it is the shape #690 measured on
-  // this exact path: two deliveries serialized (#658), the NEWER one takes the thread first and
-  // answers, and the older message's turn — the only actor in the system that ever loaded it — comes
-  // second. #690 made the claim grant it. Judged by arithmetic here, the gate then swallows the
-  // reply anyway: message 2 is above message 1, so the turn defers, hands nothing back and leaves
-  // the customer with no answer to what they wrote.
+  // NOTE: AND THE NEWER MESSAGE SOMEBODY ELSE ALREADY ANSWERED IS NOT A SUPERSESSION. Above, message
+  // 2 is still open, so the reply to 1 is obsolete and its own turn is coming. Here two serialized
+  // deliveries let the NEWER one take the thread first and answer, and the older message's turn (the
+  // only actor that ever loaded it) comes second. Judged by arithmetic (2 is above 1) the gate would
+  // defer and leave the customer with no answer to what they wrote.
   test("issue #698: a newer message somebody else answered does not supersede this reply", async () => {
     await seedConversation(9698, null);
     const { id } = await suDb.conversation.findFirstOrThrow({
@@ -7228,12 +7120,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(sent.length).toBe(1);
   });
 
-  // AND A PERSON WHO ANSWERED CLOSES THIS TURN TOO, not only the messages after it (PR #701, review
-  // round 1). The fence that stops an orphan from being re-offered removes the human-answered ids
-  // from the selection — including the one this turn is holding — so a gate that only asks "is
-  // anything NEWER still open?" reads that emptiness as "nothing came after me, go ahead" and posts
-  // over the person who already replied. The older gate was accidentally covered here: the newer
-  // inbound message was above the trigger and suppressed the post by arithmetic.
+  // NOTE: AND A PERSON WHO ANSWERED CLOSES THIS TURN TOO, not only the messages after it. The fence
+  // that stops an orphan from being re-offered removes the human-answered ids from the selection,
+  // including the one this turn holds, so a gate asking only "is anything NEWER still open?" reads
+  // that emptiness as "go ahead" and posts over the person who already replied.
   test("issue #698: a human reply closes the turn's own trigger, not just what came after it", async () => {
     await seedConversation(9699, null);
     const { id } = await suDb.conversation.findFirstOrThrow({
@@ -7278,20 +7168,17 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     // Nothing is said on top of the person who answered.
     expect(sent).toEqual([]);
-    // E a PALAVRA diz qual das duas recusas foi (issue #703). `superseded` afirma que o flush da
+    // NOTE: E a PALAVRA diz qual das duas recusas foi. `superseded` afirma que o flush da
     // mensagem nova está armado e por isso deixa a marca e o ledger onde estão; aqui ninguém vem
     // atrás, e a rajada é fechada como consumida.
     expect(outcome).toBe("answered-elsewhere");
   });
 
-  // E QUANDO AS DUAS VALEM AO MESMO TEMPO, QUEM VEM ATRÁS MANDA (issue #703, bateria de mutação, m6).
-  // Uma atendente responde e o cliente escreve de novo, na mesma janela: o portão vê uma resposta de
-  // terceiro fechando este gatilho E uma mensagem do cliente ainda aberta acima dele. As duas recusas
-  // são verdadeiras e as contabilidades são opostas, então a ordem da pergunta é a decisão, não um
-  // detalhe de escrita. `superseded` é a resposta certa: a mensagem nova arma um flush que vai decidir
-  // a rajada INTEIRA de novo, e fechá-la aqui como consumida tomaria essa decisão duas vezes, a
-  // primeira sem ter lido a mensagem que chegou. Com a ordem invertida a marca andaria por cima de uma
-  // mensagem que ninguém leu, que é o defeito que o `superseded` existe para não cometer.
+  // NOTE: E QUANDO AS DUAS VALEM AO MESMO TEMPO, QUEM VEM ATRÁS MANDA. Uma atendente responde e o
+  // cliente escreve de novo na mesma janela: as duas recusas são verdadeiras e as contabilidades
+  // opostas, então a ordem da pergunta é a decisão. `superseded` é o certo: a mensagem nova arma um
+  // flush que decide a rajada INTEIRA de novo; fechá-la aqui como consumida andaria a marca por cima
+  // de uma mensagem que ninguém leu.
   test("issue #703: a newer message and a human reply at once defer to the newer message", async () => {
     await seedConversation(9712, null);
     const { id } = await suDb.conversation.findFirstOrThrow({
@@ -7355,10 +7242,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ).toBeNull();
   });
 
-  // E A OUTRA ROTA POR ONDE UMA PESSOA RESPONDE, no caminho direto também (bateria de mutação da
-  // rodada 10, m31). A resposta digitada no aparelho pareado chega sem remetente nenhum, então a
+  // NOTE: E A OUTRA ROTA POR ONDE UMA PESSOA RESPONDE, no caminho direto também. A resposta digitada no aparelho pareado chega sem remetente nenhum, então a
   // cláusula acima não a vê, e este portão é o único que decide aqui: sem a rota do aparelho ele
-  // responde por cima da atendente. Vale só onde o provedor reserva os ids do envio — no `zapi` a
+  // responde por cima da atendente. Vale só onde o provedor reserva os ids do envio: no `zapi` a
   // mesma forma pode ser o eco da nossa própria resposta, e o control abaixo é o que prova a
   // diferença em vez de a afirmar.
   test("issue #698: a reply from the paired phone closes the direct turn, and only on a reserving provider", async () => {
@@ -7431,7 +7317,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     }
   });
 
-  // QUEM CLASSIFICA A SAÍDA É QUEM A PRODUZ, no caminho direto também (PR #701, review round 7). O
+  // NOTE: QUEM CLASSIFICA A SAÍDA É QUEM A PRODUZ, no caminho direto também. O
   // `agentBotId` é a ROTA que trouxe a entrega; quem envia é `loaded.agentBotToken`, da persona que o
   // inbox serve no momento do load. Religado o inbox entre uma coisa e outra, o aviso que ESTA
   // persona acabou de postar seria saída de terceiro, e o portão engoliria a resposta dela mesma.
@@ -7578,15 +7464,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
   });
 
-  // THE END OF THE HUMAN STRETCH GETS WRITTEN DOWN, and until this it never was (issue #457). The
-  // agent's own transfer turn and every message the person sent stay in the thread; the return
-  // leaves no trace at all, so an operator prompt like "após transferir, não responda mais" goes on
-  // applying to a condition that ended. Measured live: one model went silent (`outcome=empty`, the
-  // reported symptom) and another sent the silence to the customer as text.
-  //
-  // The note has to land BEFORE the customer's message, which is why it is written here and not
-  // when ownership changed: the model reads the thread in order, and a hand-back announced after
-  // the question it is meant to unblock announces nothing.
+  // NOTE: THE END OF THE HUMAN STRETCH GETS WRITTEN DOWN. The transfer turn and the person's messages
+  // stay in the thread, so without a note an operator prompt like "após transferir, não responda
+  // mais" keeps applying to a condition that ended (the model goes silent, or sends the silence as
+  // text). The note lands BEFORE the customer's message, written here rather than when ownership
+  // changed: the model reads in order, and a hand-back after the question unblocks nothing.
   test("issue #457: the turn after a hand-back writes the note, before the customer's message", async () => {
     // ON A CONTACT-INBOX THREAD, which is the shape this situation has: the message that OPENS the
     // human stretch is folded in by continuous ingestion, and that path is keyed by contact inbox.
@@ -7687,10 +7569,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ).toBe(1);
   });
 
-  // DEFERRED WHILE AN OLDER INVOKE IS READING, the same rule the divider follows: that invoke saves
-  // the channel it LOADED, so a note appended beside it is erased — and an erased note is the bug
-  // back, silently. Deferring costs nothing because the decision is derived: the next turn asks the
-  // same question of the same thread.
+  // NOTE: NEVER APPENDED BESIDE AN OLDER INVOKE, the same rule the divider follows: that invoke saves
+  // the channel it LOADED, so a note appended beside it is silently erased. The turn waits it out,
+  // and the decision is derived, so asking it after the wait costs nothing.
   test("issue #457: the note reaches the model after this turn waits the other invoke out", async () => {
     const contactInboxId = 7459;
     await suDb.conversation.create({
@@ -7719,9 +7600,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
       THREAD_STATE_NODE,
     );
-    // Another invoke is already reading this channel, so this turn waits it out (issue #658) rather
-    // than appending beside it. What #457 is about survives the wait unchanged: the customer is
-    // waiting on a transfer with no ending, and the note has to reach the model of THIS turn.
+    // NOTE: Another invoke is already reading this channel, so this turn waits it out rather than
+    // appending beside it. The note still has to reach the model of THIS turn: the customer is
+    // waiting on a transfer with no ending.
     const owner = {
       tenantId,
       instanceId,
@@ -7774,10 +7655,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(channel.filter(([, t]) => t === HUMAN_HANDBACK_NOTE)).toHaveLength(
       1,
     );
-    // AND IT IS A DURABLE APPEND, which is what the wait makes safe: `updateState` writes the note
-    // in a checkpoint of its own, before the customer's message exists. Deferring to the invoke's
-    // own input was the answer while an older invoke could erase that checkpoint; with nobody left
-    // to erase it, the note survives even a turn that dies before its invoke.
+    // NOTE: AND IT IS A DURABLE APPEND, which the wait makes safe: `updateState` writes the note in a
+    // checkpoint of its own, before the customer's message exists. With no older invoke left to erase
+    // it, the note survives even a turn that dies before its invoke.
     const withNote: string[][] = [];
     for await (const cp of checkpointer.list({
       configurable: { thread_id: threadId },
@@ -7792,11 +7672,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(withNote.at(-1)?.some((t) => t.includes("oi"))).toBe(false);
   });
 
-  // TWO TURNS, ONE NOTE (issue #457, review round 10). The turn can be beaten to the append by the
-  // very invoke it waited out: that one finishes, writes the note, and this turn would then write a
-  // second copy. Waiting narrows the window but does not close it — the other invoke's release and
-  // its last write are not one step — so the question is re-asked of the thread as it is immediately
-  // before the invoke, and a note already there is a note not written again.
+  // NOTE: TWO TURNS, ONE NOTE. The invoke this turn waited out can write the note first. Waiting
+  // narrows the window but does not close it (the other invoke's release and its last write are not
+  // one step), so the question is re-asked of the thread immediately before the invoke, and a note
+  // already there is not written again.
   test("issue #457: a note appended by the invoke we waited out is not written twice", async () => {
     const contactInboxId = 7462;
     await suDb.conversation.create({
@@ -7889,9 +7768,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     );
   });
 
-  // THE CONVERSATION-KEYED FALLBACK THREAD is a path the runtime supports, and a successful handoff
-  // is written there by the turn's own invoke like anywhere else — so leaving it out would leave
-  // this issue unfixed on it.
+  // NOTE: THE CONVERSATION-KEYED FALLBACK THREAD is a path the runtime supports, and a successful
+  // handoff is written there by the turn's own invoke like anywhere else, so it needs the note too.
   test("issue #457: a conversation-keyed thread gets the note too", async () => {
     await seedConversation(985, null);
     const checkpointer = new MemorySaver();
@@ -7932,12 +7810,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(channel.some(([, text]) => text === HUMAN_HANDBACK_NOTE)).toBe(true);
   });
 
-  // A TAKEOVER INSIDE THE WINDOW (issue #457, review round 7), on the reactive turn this time. The
-  // receiver's gate proved bot ownership before this turn was queued, and the note is written after
-  // the toolset is built, after the ingestion drain, and after a claim that WAITS. A person taking
-  // the conversation over in there leaves the gate's answer stale, and the note would announce that
-  // a human attendance ended while the human is in it — which the post-generation recheck can
-  // suppress the SEND for and never unwrite.
+  // NOTE: A TAKEOVER INSIDE THE WINDOW, on the reactive turn. The receiver's gate proved bot
+  // ownership before this turn was queued, and the note is written after the toolset, the ingestion
+  // drain, and a claim that WAITS. A takeover in there makes the gate stale, and the note would
+  // announce a human attendance ended while the human is in it; the post-generation recheck can
+  // suppress the SEND but never unwrite the note.
   test("issue #457: a takeover after the gate stops the note", async () => {
     const contactInboxId = 7461;
     await suDb.conversation.create({
@@ -8058,19 +7935,12 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     );
   });
 
-  // ONE CLAIM FOR EVERY POSTING PATH (issue #452). This direct turn and a manual re-engage of the
-  // same message are two paths to one reply, and the only thing that stops them both sending is
-  // that they claim the same column. While the claim was per caller — this one on the watermark,
-  // the button on a column of its own — an operator clicking during a delivery got the customer two
-  // answers.
-  //
-  // Ordered rather than raced, and stopped at the ONE instant where the claim is the only thing that
-  // can answer: the direct turn runs to completion inside the click's burst selection, and then its
-  // watermark write is undone. That is a real state — the claim is written before the send and the
-  // watermark only after the turn returns, so every reply passes through it. Letting the watermark
-  // stand instead makes this pass with the claim GONE, because the click's handled ceiling refuses
-  // it on the mark alone. (The other order proves nothing either: the click advances the watermark
-  // on its way out, and the direct turn's own ceiling would stop it whatever the claim did.)
+  // NOTE: ONE CLAIM FOR EVERY POSTING PATH. This direct turn and a manual re-engage of the same
+  // message are two paths to one reply, and only claiming the same column stops both sending. Ordered
+  // rather than raced: the direct turn completes inside the click's burst selection and its watermark
+  // write is then undone, a real state (the claim precedes the send, the watermark follows the turn).
+  // A standing watermark would let this pass with the claim GONE, since the click's handled ceiling
+  // refuses on the mark alone; the reverse order proves nothing for the same reason.
   test("issue #452: a direct turn completing inside an operator's click leaves one reply", async () => {
     await seedConversation(978, null);
     const inbox = await suDb.inbox.findFirstOrThrow({
@@ -8092,8 +7962,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const client = {
       getMessages: async () => {
         fetches += 1;
-        // The click's burst selection (its pre-fetch was #1). Guarded before the call, not by its
-        // result: the direct turn reads the thread through this same stub.
+        // NOTE: The click's burst selection (its pre-fetch was the first fetch). Guarded before the
+        // call, not by its result: the direct turn reads the thread through this same stub.
         if (fetches === 2 && !running) {
           running = true;
           const before = (
@@ -8234,16 +8104,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(sent).toEqual([]);
   });
 
-  // ── issue #315: what a refusal below the invoke leaves in the thread ──
-  //
-  // The invoke checkpoints as it runs, so by the time any of these gates answers, the customer's
-  // message and the assistant's reply are both in the history. The send is suppressed and the reply
-  // stays — and on `superseded` the next flush is guaranteed to read it, because that outcome exists
-  // precisely so the re-armed flush answers the whole burst. It then has the abandoned sentence in
-  // its context and can write "as I said" about something nobody was shown.
-  //
-  // What each of these asserts is the CHANNEL, not the outcome: the outcome was already right before
-  // the rollback existed, which is why the defect was invisible.
+  // NOTE: What a refusal below the invoke leaves in the thread. The invoke checkpoints as it runs, so
+  // when any of these gates answers the reply is already in the history; left there, the next turn
+  // (on `superseded`, the re-armed flush, guaranteed) can write "as I said" about something nobody
+  // was shown. Each test asserts the CHANNEL, not the outcome, which is right with or without the
+  // rollback.
   describe("a refused reactive turn leaves the thread as the customer saw it", () => {
     // The customer's own message SURVIVES, and that is the half that separates this from the
     // proactive rollback: `superseded` hands the burst to the next flush, so removing it would lose
@@ -8907,8 +8772,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(sent).toEqual([]);
     });
 
-    // Issue #315, the fourth refusal. A suppressed reply is the one case where keeping the text has
-    // an argument — the operator gets a private note either way, so the record is not lost. It still
+    // NOTE: A suppressed reply is the one case where keeping the text has an argument (the operator
+    // gets a private note either way, so the record is not lost). It still
     // comes out: the note is where the record belongs, and the thread is where the model READS. Left
     // in, the sentence a judge just refused to let out travels in every prompt of this attendance,
     // and the next turn treats it as something the customer was told.
@@ -8966,16 +8831,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ).toEqual([["human", "oi"]]);
     });
 
-    // On the INPUT direction there is no assistant reply to rewrite — the analyzed text is the
-    // CUSTOMER's own message — so `generated` has nothing to repair and the model composes from an
-    // empty desk: no agent prompt, no knowledge base, no account data (`runGuardrail` passes
-    // systemPrompt and customerMessage as undefined for input). Measured live, 32 runs per case:
-    // against gpt-5.4-mini it wrote in the CUSTOMER's voice 18/32 (the bot posting the customer's
-    // own complaint back at them) and named an operator-banned competitor 14/32. Worse on
-    // gpt-4o-mini, where the customer's message could DICTATE the reply: one instructing the
-    // reviewer to state a price and a partnership produced exactly that, verbatim, 16/16.
-    // So the replacement is dropped and the configured template goes out, exactly as
-    // answer_relevance already does for the same reason (issues #95, #99).
+    // NOTE: On the INPUT direction the analyzed text is the CUSTOMER's own message, so `generated`
+    // has nothing to repair and the model composes from an empty desk (`runGuardrail` passes no
+    // system prompt or customer message for input): it writes in the customer's voice, names banned
+    // competitors, and can be dictated to by the message itself. So the replacement is dropped and
+    // the configured template goes out, as answer_relevance does for the same reason.
     test("input 'generated' → sends the template, never a composed reply", async () => {
       await setGuardrails({
         enabled: true,
@@ -9198,10 +9058,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(notes[0]?.[1]).toContain("— template.");
     });
 
-    // #160: the handoff's closing line is customer-facing text the MODEL wrote, so the output policy
-    // owns it exactly like any other reply. Today the tool posts it from inside the tool call, before
-    // the turn has a reply to moderate, so the most rule-bound message is the only unscreened one.
-    // The promise guard on the delivery unit, which only shows itself when a judge is configured:
+    // NOTE: The promise guard on the delivery unit, which only shows itself when a judge is configured:
     // `customerMessage` starts as null, so on a turn with no transfer the screening would be asked
     // about NOTHING — and a `violated` verdict on nothing composes a replacement, which the unit
     // then delivers. The customer reads an unprompted template on a turn that promised them
@@ -9263,6 +9120,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ).toBe(1);
     });
 
+    // NOTE: The handoff's closing line is customer-facing text the MODEL wrote, so the output policy
+    // owns it exactly like any other reply.
     test("a handoff's closing line is screened by the output guardrail", async () => {
       await setGuardrails({
         enabled: true,
@@ -9311,8 +9170,8 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         },
       });
       expect(outcome).toBe("posted");
-      // The customer reads the screened line, once. The model's own final text is still discarded
-      // (that is #158) and the raw closing line never reaches Chatwoot.
+      // NOTE: The customer reads the screened line, once. The model's own final text is still
+      // discarded as a duplicate, and the raw closing line never reaches Chatwoot.
       expect(sent).toEqual([[956, "GEN-HANDOFF-LINE"]]);
       // The transfer is not hostage to the moderation: it happened either way.
       expect(toggles).toEqual([[956, "open"]]);
@@ -9489,11 +9348,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(toggles).toEqual([]);
     });
 
-    // The SHIPPED DEFAULT is the broken case: provider "openai" with an empty model is what the
+    // NOTE: The SHIPPED DEFAULT is the broken case: provider "openai" with an empty model is what the
     // editor persists when the operator enables guardrails and never opens the provider select (the
     // per-provider default is applied only on that select's change), while the model field shows a
-    // model name it never saved. Measured on the dependency we ship: `new ChatOpenAI({ model: "" })`
-    // puts `model: ""` on the wire verbatim, so the provider refuses the call and `analyzeGuardrail`
+    // model name it never saved. The shipped `new ChatOpenAI({ model: "" })` puts `model: ""` on the
+    // wire verbatim, so the provider refuses the call and `analyzeGuardrail`
     // fails open. What the operator sees is a guardrail that is on and never trips.
     test("an enabled guardrail with no model configured still screens the reply", async () => {
       await setGuardrails({
@@ -9551,12 +9410,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(sent).toEqual([[951, "TEMPLATE-NO-MODEL"]]);
     });
 
-    // Fail-open stays fail-open: a guardrail that cannot run must never cost the customer the reply.
-    // But it also must not be indistinguishable from a guardrail that ran and approved, or an
-    // Which shape the call takes is decided from the guardrail's PROVIDER, and this is the only
-    // place that decision becomes an actual request. Asserting it on the table alone would leave
-    // the wiring untested, which is how a provider ends up correctly classified and still asked the
-    // wrong way — the classification is one call away from the runtime, and nothing else reads it.
+    // NOTE: Which shape the call takes is decided from the guardrail's PROVIDER, and this is the only
+    // place that decision becomes an actual request. Asserting it on the table alone would leave the
+    // wiring untested: a provider correctly classified and still asked the wrong way.
     describe("the provider decides how the verdict is asked for", () => {
       const shapes = [
         // Constrained, in the dialect this endpoint speaks.
@@ -9643,8 +9499,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       }
     });
 
-    // operator whose credential expired reads "no violations" forever. Same argument that put
-    // `retriedEmptyResponse` in the trail on #63.
+    // NOTE: Fail-open stays fail-open: a guardrail that cannot run must never cost the customer the
+    // reply. But it also must not be indistinguishable from a guardrail that ran and approved, or an
+    // operator whose credential expired reads "no violations" forever.
     test("a guardrail that cannot run is reported on the screen that enabled it", async () => {
       await setGuardrails({
         enabled: true,
@@ -9689,11 +9546,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // The customer still gets answered: moderation failing is not the customer's problem.
       expect(sent).toEqual([[952, REPLY]]);
 
-      // ...and the console says so where the feature was turned on. The chain under test is the
-      // whole one: the vendor refuses the call, the turn records a guardrail failure, the health
-      // read counts it, and the editor's configuration-warning panel raises a line for it. Ending
-      // at the log row instead would assert a proxy: that row already existed and the operator
-      // still had no way to learn the screen was dead from the screen that switched it on.
+      // NOTE: ...and the console says so where the feature was turned on. The chain under test is
+      // the whole one: the vendor refuses the call, the turn records a guardrail failure, the health
+      // read counts it, and the editor's configuration-warning panel raises a line for it. Ending at
+      // the log row would assert a proxy: the operator learns nothing from a row alone.
       // emitFlowEvent is fire-and-forget, so poll briefly.
       const ctx: TenantContext = {
         tenantId: gTenantId,
@@ -10026,11 +9882,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(sent).toEqual([[963, REPLY]]);
     });
 
-    // The reason answer_relevance gets its own model call. Measured live against gpt-5.4-mini, with
-    // both checks in one call: a reply naming nobody was flagged competitor_mention in 11 of 16 runs
-    // because the CUSTOMER had named a competitor, and in 0 of 16 with the message absent. The
-    // reviewer below is that behaviour made deterministic: it flags whenever the competitor's name
-    // appears in the material it was handed, which is what a real one does often enough to matter.
+    // NOTE: The reason answer_relevance gets its own model call: with both checks in one call, a
+    // real reviewer often flags competitor_mention on a clean reply because the CUSTOMER named a
+    // competitor. The reviewer below makes that deterministic: it flags whenever the competitor's
+    // name appears in the material it was handed.
     test("a competitor named by the customer no longer replaces a clean reply", async () => {
       await setGuardrails({
         enabled: true,
@@ -10107,13 +9962,11 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       ).toEqual([]);
     });
 
-    // The other half of the split. Taking the policies off the relevance call is what stops the
-    // customer's words from tripping them, and it also takes away the rules a replacement would have
-    // to obey. Handing them back as writing guidance was tried and measured: 5 of 10 replacements
-    // still named a competitor the operator had banned, in the same breath as being told never to.
-    // Worse, a relevance violation has NOTHING to rewrite, so the model invents the answer: 3 of
-    // those 10 stated a commercial fact it could not know. So this half never proposes a
-    // replacement, and the configured template goes out instead.
+    // NOTE: The other half of the split. Taking the policies off the relevance call also takes away
+    // the rules a replacement would have to obey, and handing them back as writing guidance does not
+    // hold (replacements still name banned competitors). A relevance violation also has NOTHING to
+    // rewrite, so a model would invent the answer. So this half never proposes a replacement, and
+    // the configured template goes out instead.
     test("a relevance trip sends the template, never a replacement it invented", async () => {
       await setGuardrails({
         enabled: true,
@@ -10176,7 +10029,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(outcome).toBe("posted");
       expect(sent).toEqual([[965, "TEMPLATE-RELEVANCE"]]);
     });
-    // ISSUE #704: the `handoff` action. The refused text does not go out, the conversation goes to
+    // NOTE: The `handoff` action. The refused text does not go out, the conversation goes to
     // the team through the agent's own handoff target, and the customer reads the hand-over line
     // (or nothing, when the operator left it empty). The note is what the person taking over reads.
     describe("the 'handoff' action", () => {
@@ -10321,7 +10174,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         expect(log.toggles).toEqual([[7042, "open"]]);
         // `route` mode: Chatwoot's own routing, nothing assigned from here.
         expect(log.assigns).toEqual([]);
-        // The skip hand-over (#659) must not add a second note on top of this one.
+        // NOTE: The skip hand-over must not add a second note on top of this one.
         expect(log.notes).toHaveLength(1);
         // Nothing was sent, so nothing claims the burst as answered: the reply claim is permanent,
         // and a re-engage after the conversation comes back must still be able to answer it.
@@ -10711,10 +10564,10 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       });
     });
   });
-  // ISSUE #749. A metade REATIVA do mesmo eixo: aqui a entrega do webhook traz a mensagem, então o
-  // instante existe antes do prompt ser composto e vai direto ao `loadAgentConfig`. O caso que dói
-  // é a entrega que chega tarde — a fila do Chatwoot parada, o webhook reprocessado, a mensagem que
-  // ficou dias sem ninguém — e o agente responde como se tivesse acabado de acontecer.
+  // NOTE: A metade REATIVA da idade da mensagem: a entrega do webhook traz a mensagem, então o
+  // instante existe antes do prompt ser composto e vai direto ao `loadAgentConfig`. O caso que dói é
+  // a entrega que chega tarde (a fila do Chatwoot parada, o webhook reprocessado, a mensagem que
+  // ficou dias sem ninguém), e o agente responderia como se tivesse acabado de acontecer.
   describe("a idade da mensagem no caminho direto (issue #749)", () => {
     const COM_IDADE = "Você é prestativa. Idade: {{idade_ultima_mensagem}}.";
     let promptOriginal = "";
@@ -10768,9 +10621,9 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(capture.systemPrompts.join("\n")).toContain("Idade: há 3 dias");
     });
 
-    // A ENTREGA QUE NÃO DIZ QUANDO: o evento sem `createdAt` resolve vazio em vez de "agora mesmo",
+    // NOTE: A ENTREGA QUE NÃO DIZ QUANDO: o evento sem `createdAt` resolve vazio em vez de "agora mesmo",
     // pela mesma razão do caminho do religamento. Um `now` de consolo aqui seria pior do que a
-    // ausência, porque ele é exatamente a leitura errada que a issue existe para tirar.
+    // ausência, porque ele é exatamente a leitura errada que a variável existe para evitar.
     test("sem instante no evento, a variável some", async () => {
       await seedConversation(9750, null);
       const capture = new PromptCapturingModel(REPLY);

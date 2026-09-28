@@ -5,7 +5,7 @@ import { buildHttpTool, type HttpToolDef } from "@/graph/tools/http";
 import { unusedCredentialWarning } from "@/modules/tool-definitions/credential-wiring";
 import { runToolTest } from "@/modules/tool-definitions/test-run";
 
-// (#818) `{{conversation_ref}}`: the handle an HTTP tool gives the operator's own system so it can
+// `{{conversation_ref}}`: the handle an HTTP tool gives the operator's own system so it can
 // send an event back to THIS conversation later. Minted only for a tool that renders it, before the
 // request leaves, and never sent empty.
 
@@ -152,8 +152,8 @@ describe("an HTTP tool that renders {{conversation_ref}}", () => {
     expect(acks).toEqual([]);
   });
 
-  // Review round 9: the mint is a wait, and the ack asks the send fence only after sending. An agent
-  // switched off (or taken over) while the ref was minted sends neither the ack nor the request.
+  // NOTE: the mint is a wait, and the ack asks the send fence only after sending. An agent switched
+  // off (or taken over) while the ref was minted sends neither the ack nor the request.
   test("a run called off while the ref is minted sends neither the ack nor the request", async () => {
     const acks: string[] = [];
     let wanted = true;

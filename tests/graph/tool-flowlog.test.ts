@@ -19,9 +19,9 @@ import type { FlowContext } from "@/modules/flowlog/service";
 import { flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 
-// NOTE: The tool line of the execution-flow log must distinguish integration failures from successes:
+// The tool line of the execution-flow log must distinguish integration failures from successes:
 // a ToolMessage with status "error" (failableTool) is logged as ONE warn/error line with the
-// friendly string as errorMessage, so alert channels (minLevel warn) can fire (issue #40).
+// friendly string as errorMessage, so alert channels (minLevel warn) can fire.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -161,14 +161,10 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect(rows[0]?.errorMessage).toBeNull();
   });
 
-  // Issue #243, and the concrete way a third party's characters reach `execution_logs.error_message`.
-  // An HTTP tool passes the remote's response body through verbatim so the model can read it, and
-  // `toolFailure` makes that body the failure's cause. With `logToolValues` on, the operator asked to
-  // SEE that body, so `failureCause` hands the whole thing here instead of the first line.
-  //
-  // `error_message` is a `text` column and Postgres refuses a NUL in one (22021), while emitFlowEvent
-  // is fire-and-forget with a catch: the refusal never reaches the turn and the line is simply not
-  // there. Turning detailed logging ON is what used to make the log line disappear.
+  // NOTE: How a third party's characters reach `execution_logs.error_message`: an HTTP tool's response
+  // body is the failure's cause, and with `logToolValues` on `failureCause` hands all of it here.
+  // Postgres refuses a NUL in a `text` column (22021) and emitFlowEvent swallows the refusal, so
+  // without sanitizing, turning detailed logging ON makes the line silently disappear.
   test("a response body carrying a NUL still lands the tool line", async () => {
     const flow = flowCtx();
     const logger = new ToolFlowLogger(flow, { logValues: true });
@@ -196,7 +192,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect(rows[0]?.errorMessage).toContain("HTTP 400");
   });
 
-  // Issue #844: a slow search is attributed on its own line. `search_knowledge` counts the times its
+  // NOTE: A slow search is attributed on its own line. `search_knowledge` counts the times its
   // query embedding was asked again and puts the count in its artifact; the line carries it only
   // when there was one.
   test("a tool that had to ask again says how many times, and only then", async () => {
@@ -264,19 +260,18 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect(rows[0]?.errorMessage).toContain(
       "Google Calendar returned HTTP 500.",
     );
-    // The failure text lives in errorMessage, which has its own sanitizer and its own contract.
-    // `detail` keeps only the shape of what came back (issue #78): a tool result is a provider's
+    // NOTE: The failure text lives in errorMessage, which has its own sanitizer and its own contract.
+    // `detail` keeps only the shape of what came back: a tool result is a provider's
     // response body, which is no more allowlisted than the arguments that produced it.
     expect((rows[0]?.detail as Record<string, unknown> | null)?.output).toBe(
       "string(34)",
     );
   });
 
-  // The other half of that same contract, which was not being kept (issue #141). An operator's HTTP
-  // tool returns `HTTP <status>\n<body>`, and the body is the other end's: a business API answers a
-  // failed lookup with the customer's own record in it. `detail.output` was already reduced to a
-  // shape; `errorMessage` was taking the identical string whole, so the row kept by one column what
-  // the column beside it had just refused. The diagnosis is the part we wrote: the status line.
+  // NOTE: The other half of that contract. An operator's HTTP tool returns `HTTP <status>\n<body>`,
+  // and the body is the other end's (a business API answers a failed lookup with the customer's own
+  // record). `errorMessage` must not keep whole what `detail.output` reduces to a shape; the part we
+  // wrote, the status line, is the diagnosis.
   test("a returned failure keeps the status line we wrote, never the body the other end sent", async () => {
     const flow = flowCtx();
     const logger = new ToolFlowLogger(flow);
@@ -351,7 +346,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       undefined,
       "probe",
     );
-    // The ToolMessage-like shape the callback receives, with a structured content — which is where a
+    // The ToolMessage-like shape the callback receives, with a structured content, which is where a
     // provider's own keys would arrive.
     logger.handleToolEnd(
       { content: { cpf: "12345678900", nome: "Maria Souza" } },
@@ -441,8 +436,8 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       },
     );
 
-    // NOTE: The delivery row is what the alert worker POSTs from — before this fix the failure was
-    // logged info/ok and no channel could ever produce one (the issue's exact complaint).
+    // NOTE: The delivery row is what the alert worker POSTs from, so a failure logged info/ok would
+    // never reach a channel.
     let delivery: { stage: string | null; level: string | null } | null = null;
     for (let i = 0; i < 50 && !delivery; i++) {
       delivery = await suDb.alertDelivery.findFirst({
@@ -454,7 +449,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
     expect(delivery).not.toBeNull();
     expect(delivery?.level).toBe("warn");
   });
-  // Issue #65 review: a tool's ARGUMENTS land in ExecutionLog.detail, which docs/logs.md states never
+  // NOTE: A tool's ARGUMENTS land in ExecutionLog.detail, which docs/logs.md states never
   // carries message text or PII. send_image adds two shapes the secret redactor does not catch: a URL
   // whose credential rides in the query (a presigned link — `redactSecretsDeep` keys off names like
   // `api_key`, not off `X-Amz-Signature`), and a caption, which is text written for the customer.
@@ -484,8 +479,8 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
         { messages: [new HumanMessage("oi")] },
         {
           configurable: { thread_id: `tfl-args-${crypto.randomUUID()}` },
-          // Same as production: the logger gets the toolset, which is where the declared parameter
-          // names come from. Without it no key is ever named (issue #78, round 1).
+          // NOTE: Same as production: the logger gets the toolset, which is where the declared parameter
+          // names come from. Without it no key is ever named.
           callbacks: [new ToolFlowLogger(flow, { ...opts, tools: [probe] })],
         },
       );
@@ -531,8 +526,8 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       expect(JSON.stringify(logged)).not.toContain("usuario");
     });
 
-    // WHATWG ignores leading spaces and control characters, so this is a working URL to `new URL()`
-    // and to `fetch` — and was ordinary text to a `^https?` prefix check, which stored it whole.
+    // NOTE: WHATWG ignores leading spaces and control characters, so this is a working URL to
+    // `new URL()` and to `fetch`, while a `^https?` prefix check would take it for text and store it whole.
     test("whitespace in front of a URL does not smuggle it past the sanitizer", async () => {
       const logged = await argsLoggedFor({
         url: " \thttps://cdn.loja.com.br/fotos/x.png?token=segredo-escondido",
@@ -581,8 +576,8 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
         url: "https://cdn.loja.com.br/x.png",
         caption: "Oi Maria, aqui está o modelo que você pediu",
       });
-      // The caption used to be dropped by NAME; now it is described like anything else, and the
-      // text is gone either way — without a list of key names to keep adding to.
+      // NOTE: The caption is described like any other value, not dropped by NAME, so the text is gone
+      // without a list of key names to maintain.
       expect(logged?.caption).toMatch(/^string\(\d+\)$/);
       expect(JSON.stringify(logged)).not.toContain("Maria");
     });

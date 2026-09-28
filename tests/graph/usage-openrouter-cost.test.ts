@@ -26,7 +26,7 @@ import { callCostUsd } from "@/modules/pricing/price";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 import { getVisionProvider } from "@/modules/vision/providers";
 
-// WHAT OPENROUTER SAID A CALL COST, recorded instead of the table's estimate (issue #866).
+// WHAT OPENROUTER SAID A CALL COST, recorded instead of the table's estimate.
 //
 // Driven through the real `ChatOpenAI` against a server answering in OpenRouter's own response shape,
 // for the same reason as tests/graph/usage-provider-counts.test.ts: whether the adapter hands the
@@ -197,8 +197,8 @@ describe("an OpenRouter call records the cost OpenRouter reported", () => {
     expect(row.priceTable).toBe(OPENROUTER_REPORTED_PRICE_TABLE);
   });
 
-  // Issue #865: a price the tenant wrote for the model is what the account says it pays, and it
-  // comes before OpenRouter's figure as it comes before the table.
+  // NOTE: a price the tenant wrote for the model is what the account says it pays, and it comes
+  // before OpenRouter's figure as it comes before the table.
   test("a tenant's own price for the model wins over the reported cost", async () => {
     const tenant = 866_865n;
     await cachedPriceOverrides(tenant, async () => ({

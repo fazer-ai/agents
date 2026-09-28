@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { replyWrittenThisTurn } from "@/graph/graph";
 
-// Issue #886: the text a model wrote beside a tool call, read back when the turn ends empty. The
+// The text a model wrote beside a tool call, read back when the turn ends empty. The
 // bound is the LAST human message, the same one `silenceWasChosen` uses: the thread is checkpointed
 // per contact-inbox, so an answer given in an earlier turn is in this history and must not be sent
 // again now.

@@ -8,9 +8,8 @@ import {
   zonedWallClockToInstant,
 } from "@/graph/time";
 
-// O piso por EPOCH, que é o que a fonte fazia antes desta rodada e não é mais exportado por ninguém:
-// fica aqui porque é o CONTROLE do teste de Kathmandu abaixo, e é a única coisa que demonstra por que
-// a função local precisou existir.
+// O piso por EPOCH, que a fonte não exporta: é o CONTROLE do teste de Kathmandu abaixo, e mostra por
+// que o piso tem que ser do relógio local.
 function pisoPorEpoch(date: Date, minutes: number): Date {
   const ms = minutes * 60_000;
   return new Date(Math.floor(date.getTime() / ms) * ms);
@@ -72,7 +71,7 @@ describe("zonedWallClockToInstant", () => {
   });
 });
 
-// (#685, rodada 6 da review) Arredondar o EPOCH não é arredondar o relógio local onde o offset do
+// Arredondar o EPOCH não é arredondar o relógio local onde o offset do
 // fuso não é múltiplo do slot. Em Asia/Kathmandu (+05:45), meia hora: 00:05 do dia 18 cai em 23:45
 // do dia 17, então quem renderiza o resultado como "o momento atual" enuncia ONTEM, e quem raciocina
 // a partir dele erra o dia. A data é o que torna isto carregador: o arredondamento existe para o
@@ -90,8 +89,8 @@ describe("flooredLocalParts", () => {
     expect(at(now.toISOString(), "Asia/Kathmandu", 30)).toBe(
       "18/09/2026 00:00",
     );
-    // O controle: o piso por epoch, que é o que a fonte fazia antes, responde o dia anterior — o
-    // offset de :45 não é um múltiplo da meia hora, então a fatia do epoch não é a do calendário.
+    // NOTE: O controle: o piso por epoch responde o dia anterior, porque o offset de :45 não é
+    // múltiplo da meia hora, então a fatia do epoch não é a do calendário.
     expect(
       formatWithPattern(
         pisoPorEpoch(now, 30),
@@ -126,20 +125,20 @@ describe("flooredLocalParts", () => {
     }
   });
 
-  // As três formas em que a versão que devolvia INSTANTE errou, uma por rodada de review, e que esta
-  // não tem como errar porque a data sai da leitura e a hora é aritmética inteira sobre ela.
+  // NOTE: As três transições em que um piso que devolve INSTANTE erra; este não erra porque a data
+  // sai da leitura e a hora é aritmética inteira sobre ela.
   test("the three transition cases that broke the instant-returning versions", () => {
-    // Rodada 8, fall-back: o round trip respondia 01:00, 75 minutos atrás num slot de 30.
+    // NOTE: Fall-back: um round trip pelo instante responderia 01:00, 75 minutos atrás num slot de 30.
     expect(at("2026-11-01T02:15:00-05:00", "America/New_York", 30)).toBe(
       "01/11/2026 02:00",
     );
-    // Rodada 8, spring-forward: a guarda de avanço devolvia o instante SEM piso (03:15).
+    // NOTE: Spring-forward: a resposta é o limite de slot, não o instante lido sem piso (03:15).
     expect(at("2026-03-08T03:15:00-04:00", "America/New_York", 30)).toBe(
       "08/03/2026 03:00",
     );
-    // Rodada 10, dia cujo meia-noite local não existe (Santiago começa 6/set às 01:00): o piso por
-    // subtração respondia o dia 5 às 23:00. A data agora é a lida, e a hora é o limite de slot —
-    // 00:00 é uma hora que não aconteceu naquele dia, e é o preço declarado no comentário da função.
+    // NOTE: Dia cujo meia-noite local não existe (Santiago começa 6/set às 01:00): um piso por
+    // subtração responderia o dia 5 às 23:00. A data é a lida e a hora é o limite de slot; 00:00 não
+    // aconteceu naquele dia, e é o preço declarado no comentário da função.
     expect(at("2026-09-06T01:15:00-03:00", "America/Santiago", 120)).toBe(
       "06/09/2026 00:00",
     );
@@ -184,9 +183,8 @@ describe("flooredLocalParts", () => {
     }
   });
 
-  // TODAS as propriedades no mesmo laço, e não só a que estava em disputa: as rodadas 7, 8 e 10
-  // acharam três defeitos nesta função, cada um numa propriedade que a varredura da rodada anterior
-  // não perguntava. Sobre fusos exóticos (inclusive os de :45 e :30), slots e horas do dia.
+  // NOTE: TODAS as propriedades no mesmo laço, porque um defeito numa delas passa por uma varredura
+  // que só pergunta as outras. Sobre fusos exóticos (inclusive os de :45 e :30), slots e horas do dia.
   test("over a sweep of zones, days and slots: the date is the one read, the time is a slot boundary, and it never runs ahead", () => {
     let violacoes = 0;
     let n = 0;
@@ -219,7 +217,7 @@ describe("flooredLocalParts", () => {
               const minutosPiso = Number(piso.HH) * 60 + Number(piso.mm);
               n += 1;
               if (
-                // a data é a que foi lida, sempre: é a propriedade que o defeito da rodada 10 violava
+                // NOTE: a data é a que foi lida, sempre
                 piso.YYYY !== lido.YYYY ||
                 piso.MM !== lido.MM ||
                 piso.DD !== lido.DD ||
@@ -238,11 +236,8 @@ describe("flooredLocalParts", () => {
         }
       }
     }
-    // O grid é deliberadamente menor que o que já rodou aqui: a versão com 45.360 casos levava
-    // 6,3s no runner do CI e estourava o timeout de 5s do bun, verde só nesta máquina. E a terceira
-    // leitura que ela fazia por caso era uma falsa idempotência — chamar a função duas vezes com a
-    // MESMA entrada mede determinismo, não que o piso de um piso seja ele mesmo, que esta assinatura
-    // nem deixa expressar.
+    // NOTE: O grid é deliberadamente pequeno para caber no timeout de 5s do bun no runner do CI.
+    // Chamar a função duas vezes com a MESMA entrada mediria determinismo, não idempotência do piso.
     expect(n).toBe(17280);
     expect(violacoes).toBe(0);
   });

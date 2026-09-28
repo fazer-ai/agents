@@ -1,15 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
-// The bound on an HTTP tool call is the operator's, not ours (issue #589). What that has to mean, and
-// what these tests pin, is the WHOLE path: the variable reaches config, config reaches the exported
-// constant, and the constant is what the call actually aborts on when the caller names no timeout.
-// Asserting the constant alone would leave the last link untested, and that link is the one a
-// literal creeping back into `deps.timeoutMs ?? …` would break.
-//
-// IN SUBPROCESSES, for the reason tests/config.test.ts gives: `bun test` shares one module registry
-// per worker, so `@/config` is evaluated once with whatever the environment held at that moment and a
-// later dynamic import returns the cached module. A child process is the only way to ask what a
-// DIFFERENT environment produces — including the empty one, which is what pins the default.
+// The bound on an HTTP tool call is the operator's. These tests pin the WHOLE path: the variable
+// reaches config, config reaches the exported constant, and the constant is what the call aborts on
+// when the caller names no timeout (a literal in `deps.timeoutMs ?? …` would break only that last
+// link). In subprocesses because `bun test` evaluates `@/config` once per worker, so only a child
+// process can show what a DIFFERENT environment produces, the empty one included.
 
 const PUBLIC = "8.8.8.8";
 

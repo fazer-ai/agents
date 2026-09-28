@@ -6,19 +6,11 @@ import { ToolFlowLogger } from "@/graph/tool-flowlog";
 import type { FlowContext } from "@/modules/flowlog/service";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
-// ── QUEM SABE SE O TURNO FALOU É O TURNO, E ELE TEM QUE DEIXAR ISSO ESCRITO (issue #726) ──
-//
-// O rótulo do marcador de `skip_reply` precisa de um fato que só o turno conhece: se alguma coisa foi
-// posta na frente do cliente antes dele. A tela não tem como reconstruir isso, porque nem o nome da
-// ferramenta nem os argumentos gravados respondem (`handoff_to_human` com `customerMessage` vazio é
-// uma transferência que não falou, e os argumentos são reduzidos a forma por padrão).
-//
-// Então o fato nasce onde ele é conhecido, no momento em que a linha é escrita, e um leitor do turno
-// é o que o carrega até aqui. Ele é lido no fim da chamada, e não no começo: o começo de `skip_reply`
-// é concorrente com a companheira quando as duas vêm no mesmo lote.
-//
-// E ele só se aplica a `skip_reply`. Nenhuma outra ferramenta faz uma afirmação sobre o silêncio do
-// turno, então carimbar todas seria inventar uma coluna que ninguém lê.
+// O rótulo de `skip_reply` precisa saber se o turno já pôs algo na frente do cliente, e a tela não
+// reconstrói isso (nem o nome da ferramenta nem os argumentos gravados, reduzidos a forma, respondem).
+// Um leitor do turno carimba o fato quando a linha é escrita, no FIM da chamada: o começo de
+// `skip_reply` concorre com a companheira do mesmo lote. Só `skip_reply` leva o carimbo, porque
+// nenhuma outra ferramenta afirma nada sobre o silêncio do turno.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

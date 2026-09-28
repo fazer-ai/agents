@@ -3,9 +3,9 @@ import { ToolMessage } from "@langchain/core/messages";
 import { z } from "zod";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 
-// NOTE: failableTool contract (issue #40): a toolFailure(...) return surfaces to the model as the SAME
-// friendly string, but wrapped in a ToolMessage with status "error" so ToolFlowLogger can log the
-// call as a failure. Without a tool_call in scope it degrades to the plain string (old behavior).
+// failableTool contract: a toolFailure(...) return surfaces to the model as the SAME friendly
+// string, but wrapped in a ToolMessage with status "error" so ToolFlowLogger can log the call as a
+// failure. Without a tool_call in scope it degrades to the plain string.
 
 const MSG = "Provider returned HTTP 500.";
 

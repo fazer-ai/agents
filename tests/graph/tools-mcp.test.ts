@@ -246,10 +246,9 @@ describe("mcpServerSlug", () => {
   });
 
   test("and that fallback is the same for the same name, and different for a different one", () => {
-    // NOTE: The property the transfer depends on (#412): the slug is a function of the name alone, so the
-    // row id it used to carry cannot follow the connection into another tenant. Two names that both
-    // sanitize to nothing must still land on two slugs, which is why the digest is taken over the raw
-    // name and not over the (empty) sanitized one.
+    // NOTE: the agent transfer depends on the slug being a function of the name alone (a row id
+    // would not survive into another tenant). Two names that both sanitize to nothing must still land
+    // on two slugs, so the digest is taken over the raw name, not over the (empty) sanitized one.
     expect(mcpServerSlug("🎯")).toBe(mcpServerSlug("🎯"));
     expect(mcpServerSlug("🎯")).not.toBe(mcpServerSlug("🚀"));
   });

@@ -6,33 +6,12 @@ import { loadMcpToolsForAgent } from "@/graph/tools/mcp";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { replaceAgentToolSelections } from "@/modules/agents/service";
 
-// ── WHICH TOOL OWNS A CONTESTED NAME IS DECIDED BY THE ORDER OF A READ NOBODY ORDERED (#389) ──
-//
-// The exposed name of an MCP tool is `mcp__<slug>__<tool>`, and the slug is the connection's display
-// name sanitized and cut at 28 characters. Two different names can cut to the same slug, and then
-// `namespacedToolName` hands the plain name to whoever asks FIRST and `_2` to the next. The same
-// first-wins rule decides which of two instances of one toolpack survives `dropDuplicateToolNames`,
-// because a toolpack's names come from the pack and both instances expose exactly the same ones.
-//
-// "First" is the order `loadToolSelections` reads the grants in, and that read has no `orderBy`, so
-// it is the physical order of the rows. `replaceAgentToolSelections` deletes every row and recreates
-// the set on every save, in the order the client sent — and the editor's order is the operator's
-// CLICK HISTORY (`toggleMcp` appends on toggle-on, filters on toggle-off; `canonicalGrants` sorts
-// only for the dirty check, `normalizeGrants` does not sort at all). So toggling one of two
-// colliding connections off and back on swaps which one the model sees under the un-suffixed name.
-//
-// Measured in Postgres before writing this: grants inserted alphabetically read back
-// `6727 … 6734`, and after a delete+recreate that sent them reversed they read back `6734 … 6727`.
-// Ordering the read by `id` would NOT fix it — the recreated rows are assigned ids in the order the
-// client sent, so `ORDER BY id` reproduces the click history exactly. The anchor has to be the
-// SOURCE's identity (the connection / instance / definition row), which a grant re-save never
-// touches, and specifically its NAME, which an export/import preserves where its id is reassigned.
-//
-// SCOPE: this file is the re-save half, inside one tenant. The transfer half — the same question
-// asked across two tenants, where the import reassigns every id — is
-// tests/modules/agent-transfer-tool-names.test.ts (#412), and it is why the anchor below is the
-// source's NAME rather than its row id: the name is what the export carries, and it is unique per
-// tenant for both sources.
+// Which of two tools contesting one name gets the plain name (and which toolpack instance survives
+// `dropDuplicateToolNames`) must not move when the operator re-saves the grants: the read is
+// anchored on the source's NAME. Physical row order and `ORDER BY id` both reproduce the editor's
+// click history, since a save deletes and recreates every grant in the order the client sent (see
+// docs/graph.md, "Tool names"). This file is the re-save half, inside one tenant; the transfer half,
+// where the import reassigns every id, is tests/modules/agent-transfer-tool-names.test.ts.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -86,10 +65,10 @@ const connectStub = async () => [
   },
 ];
 
-// The PAIRING, never the bare list of names. Both orders produce the same two names — the plain one
-// and the `_2` one — so a test that asserted `tools.map(t => t.name)` passes with the defect in
-// place. What moves is which SERVER answers to which name, and that is what the model sees change
-// under it. Caught by running the first draft of this file against the unfixed tree.
+// The PAIRING, never the bare list of names. Both orders produce the same two names (the plain one
+// and the `_2` one), so a test that asserted `tools.map(t => t.name)` passes whatever the read
+// order. What moves is which SERVER answers to which name, and that is what the model sees change
+// under it.
 async function exposedNameByServer(): Promise<Record<string, string>> {
   const sel = await runScopedOn(appDb, ctx(), (db) =>
     loadToolSelections(db, agentId),
@@ -218,12 +197,11 @@ describe.skipIf(!dbUp)("the order a turn reads an agent's grants in", () => {
   });
 
   test("and the order does not follow the database's collation", async () => {
-    // NOTE: The comparison is done in code, by UTF-16 code unit, and not as `ORDER BY name` — SQL
+    // NOTE: The comparison is done in code, by UTF-16 code unit, and not as `ORDER BY name`: SQL
     // would compare under the database's collation, and a bundle exported from one deployment is
-    // imported into another. Measured on exactly these two names: `en_US.utf8` (this test database)
-    // orders "…connection a" before "…connection B", and `C` orders them the other way round. Under
-    // `ORDER BY name` this case therefore fails here and passes on a `C` install, which is the shape
-    // of a rule that holds until the two ends of a transfer disagree.
+    // imported into another. On these two names `en_US.utf8` (this test database) orders
+    // "…connection a" before "…connection B" and `C` orders them the other way round, so under
+    // `ORDER BY name` this case would fail here and pass on a `C` install.
     const lower = await suDb.mcpServerConnection.create({
       data: {
         tenantId,
@@ -268,12 +246,9 @@ describe.skipIf(!dbUp)("the order a turn reads an agent's grants in", () => {
   });
 
   test("and where no name is contested, the order is invisible either way", async () => {
-    // THE SAFETY CLAIM OF THIS CHANGE, measured rather than argued: reordering the read renames
-    // nothing for an agent whose connections do not contest a name. Every tool is
-    // `mcp__<slug>__<tool>` regardless of who is assembled first, so the exposure is a function of
-    // the connection alone. Without this case the PR's "names of tools running today do not move"
-    // rests on reading the code, and the one collision case above cannot speak for the population
-    // that has no collision — which is the population almost every install is in.
+    // NOTE: ordering the read renames nothing for an agent whose connections do not contest a name:
+    // every tool is `mcp__<slug>__<tool>` whoever is assembled first. The collision case above
+    // cannot speak for the installs with no collision, which is almost all of them.
     const distinct = await suDb.mcpServerConnection.create({
       data: {
         tenantId,

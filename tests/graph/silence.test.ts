@@ -33,13 +33,13 @@ describe("customerFacingReply — the REACTIVE rule", () => {
     ["the sentinel with whitespace", `\n  ${S}  \n`, true, ""],
     ["the sentinel twice", `${S}${S}`, true, ""],
     ["the sentinel twice, spaced", `${S} ${S}`, true, ""],
-    // Review round 2, P2. The token in a costume: strip it and only quotes are left.
+    // NOTE: The token in a costume: strip it and only quotes are left.
     ["the sentinel in quotes", `"${S}"`, true, ""],
     ["the sentinel in backticks", `\`${S}\``, true, ""],
     ["quotes around repeated sentinels", `"${S}${S}"`, true, ""],
     // ...and the other direction: quotes on a REAL reply are content and survive untouched.
     ["a quoted real reply", `"Olá!"`, false, `"Olá!"`],
-    // Review round 3. Quotes are tolerated only when the token was actually there: a customer asking
+    // NOTE: Quotes are tolerated only when the token was actually there: a customer asking
     // what an empty string literal looks like gets `""` back, and that is an answer.
     ["a reply that IS two quote characters", `""`, false, `""`],
     ["a reply that is a quoted empty string", `"''"`, false, `"''"`],
@@ -51,9 +51,9 @@ describe("customerFacingReply — the REACTIVE rule", () => {
       false,
       "Olá! Como posso ajudar?",
     ],
-    // Review round 4. The token inside a REAL answer is left alone: editing a substring out of a
-    // customer-facing reply is the silent data loss docs/graph.md rejects, and the cause fix means
-    // only a legacy transcript can still put it here. Reported, never mutated (see `carriesToken`).
+    // NOTE: The token inside a REAL answer is left alone: editing a substring out of a
+    // customer-facing reply is the silent data loss docs/graph.md rejects, and only a legacy
+    // transcript can still put it here. Reported, never mutated (see `carriesToken`).
     ["a real reply carrying the token", `${S} Claro.`, false, `${S} Claro.`],
     ["a real reply ending in the token", `Claro. ${S}`, false, `Claro. ${S}`],
     [
@@ -63,7 +63,7 @@ describe("customerFacingReply — the REACTIVE rule", () => {
       `${S}Bom${S} dia`,
     ],
     // The heuristics below belong to the proactive path ONLY. Here a customer is waiting, and these
-    // are ordinary short answers — swallowing one is its own defect (review round 1, P2).
+    // are ordinary short answers, and swallowing one is its own defect.
     ["a bare SKIP", "SKIP", false, "SKIP"],
     [
       "narrated emptiness (en)",
@@ -79,12 +79,12 @@ describe("customerFacingReply — the REACTIVE rule", () => {
       const out = customerFacingReply(raw);
       expect(out.silent).toBe(silent);
       expect(out.text).toBe(text);
-      // The contract the repeated-sentinel case used to fall through: emptiness and silence are one
+      // NOTE: The contract the repeated-sentinel case must hold: emptiness and silence are one
       // decision, so a caller can never see silent=false with nothing to send.
       expect(out.silent).toBe(out.text.length === 0);
       // ...and the one thing the rules erase on purpose: EVERY kind of silence comes out as `text:
       // ""`, so a caller asking "is there anything in the thread nobody received" needs the raw
-      // answer kept separately (round 15). It is about the model's words, never about ours.
+      // answer kept separately. It is about the model's words, never about ours.
       expect(out.wroteText).toBe(raw.trim().length > 0);
     });
   }
@@ -202,7 +202,7 @@ describe("followupSilenceChannel — what the directive may ASK for", () => {
     ).toBe("tool");
   });
 
-  // Round 10. A grant is not an assembled tool: `withFollowupSilenceChannel` grants generously (it
+  // NOTE: A grant is not an assembled tool: `withFollowupSilenceChannel` grants generously (it
   // cannot know the MCP server behind the only other source is down), so a turn can be granted the
   // channel and reach the model with nothing bound. The directive must not name it then.
   test("granted but not assembled is the sentinel", () => {
@@ -250,10 +250,9 @@ describe("withoutLoneSilenceTool — our tool is never the only one", () => {
   // Ours is bound: the grant left `skip_reply` in the allowlist, so the native wins the name.
   const OURS = { nativeToolsAllow: [SKIP_REPLY_TOOL] };
 
-  // Round 12, the defect. A source that is configured and yields nothing (an MCP server that is
-  // down) left the grant handing a lone function schema to an endpoint that had been running
-  // tool-less on the sentinel: the whole follow-up fails at the provider instead of one token
-  // leaking. Only the assembled list can tell the two apart.
+  // NOTE: A source that is configured and yields nothing (an MCP server that is down) would leave
+  // the grant handing a lone function schema to an endpoint running tool-less on the sentinel, and
+  // the whole follow-up fails at the provider. Only the assembled list can tell the two apart.
   test("a toolset that is nothing but the channel is a tool-less agent", () => {
     expect(withoutLoneSilenceTool(OURS, [t(SKIP_REPLY_TOOL)])).toEqual([]);
     // An undefined allowlist means every native is granted, so the name is ours there too.
@@ -283,10 +282,9 @@ describe("withoutLoneSilenceTool — our tool is never the only one", () => {
     );
   });
 
-  // Round 14, and the same mistake this whole file keeps correcting: a NAME is not an identity. With
-  // natives revoked the lone tool under that name is the operator's own HTTP tool — the grant
-  // refuses to install over it for exactly that reason — and removing it would delete their only
-  // tool from every follow-up because it happens to be spelled like ours.
+  // NOTE: A NAME is not an identity. With natives revoked the lone tool under that name is the
+  // operator's own HTTP tool (the grant refuses to install over it for that reason), and removing it
+  // would delete their only tool from every follow-up because it is spelled like ours.
   test("a lone tool that is theirs under OUR name is not ours to remove", () => {
     expect(
       withoutLoneSilenceTool({ nativeToolsAllow: [] }, [
@@ -316,11 +314,9 @@ describe("withoutLoneSilenceTool — our tool is never the only one", () => {
       { name: "cep" },
     ]);
     expect(followupSilenceChannel(granted, withOther)).toBe("tool");
-    // ...and the agent whose own tool holds the name reaches the same answer by the other road since
-    // issue #715: the grant now fires, so the tool left under this name is OURS, and when it is the
-    // whole toolset the drop takes it out — the directive falls back to the sentinel it can actually
-    // speak. The sentinel is the same, and what changed is why: before, the grant stood down and the
-    // turn kept a tool that the assembly had already dropped elsewhere.
+    // NOTE: ...and the agent whose own tool holds the name reaches the same answer by the other
+    // road: the grant fires, so the tool left under this name is OURS, and when it is the whole
+    // toolset the drop takes it out, so the directive falls back to the sentinel.
     const theirs = withFollowupSilenceChannel({
       nativeToolsAllow: [] as string[],
       httpToolDefs: [{ name: SKIP_REPLY_TOOL }],
@@ -328,8 +324,7 @@ describe("withoutLoneSilenceTool — our tool is never the only one", () => {
     const kept = withoutLoneSilenceTool(theirs, [{ name: SKIP_REPLY_TOOL }]);
     expect(kept).toHaveLength(0);
     expect(followupSilenceChannel(theirs, kept)).toBe("sentinel");
-    // And with anything else beside it the channel is real, which is the case the carve-out was
-    // costing: same agent, one ordinary tool more.
+    // NOTE: And with anything else beside it the channel is real: same agent, one ordinary tool more.
     const alongside = withoutLoneSilenceTool(theirs, [
       { name: SKIP_REPLY_TOOL },
       { name: "cep" },
@@ -353,9 +348,9 @@ describe("skipReplyRan — the MARK is the identity, not the name and not the te
     ).toBe(true);
   });
 
-  // Round 24. The ack is published in this repo, and with natives revoked an operator may bind a
-  // custom HTTP tool under this name whose response body they do not control — a third-party API, or
-  // a customer's own words echoed back. Read as identity, a body that begins with the ack ends the
+  // NOTE: The ack is published in this repo, and with natives revoked an operator may bind a custom
+  // HTTP tool under this name whose response body they do not control (a third-party API, or the
+  // customer's own words echoed back). Read as identity, a body that begins with the ack ends the
   // turn without answering: a denial of the customer's reply, reachable by injection.
   test("a response body that merely SAYS the ack is not the tool", () => {
     expect(skipReplyRan(msg(SKIP_REPLY_TOOL, `${SKIP_REPLY_ACK}. x`))).toBe(
@@ -363,11 +358,10 @@ describe("skipReplyRan — the MARK is the identity, not the name and not the te
     );
   });
 
-  // Round 10, the defect that made the name insufficient. `skip_reply` is a native name, so
-  // `isGuardableToolName` accepts a precondition on it; unmet, the wrapper returns a NORMAL tool
-  // result under the same name telling the model to carry on. Read by name that is silence, and the
-  // turn then ends with no text at all — a customer left waiting by the rule meant to make the agent
-  // more careful. Unmarked, so it is not the tool either.
+  // NOTE: Why the name is insufficient: `skip_reply` is a native name, so `isGuardableToolName`
+  // accepts a precondition on it; unmet, the wrapper returns a NORMAL tool result under the same
+  // name telling the model to carry on. Read by name that is silence, and the customer is left
+  // waiting. Unmarked, so it is not the tool either.
   test("a precondition refusal wearing the same name is NOT silence", () => {
     const refusal = unmetPreconditionMessage(SKIP_REPLY_TOOL, {
       kind: "attribute",
@@ -395,9 +389,9 @@ describe("skipReplyRan — the MARK is the identity, not the name and not the te
   });
 
   // The anti-drift half: the reader recognises what the REAL tool returns, both of its variants, and
-  // the mark is something only the tool can set — a response body cannot.
+  // the mark is something only the tool can set; a response body cannot.
   test("the real tool's own return is recognised, with and without a detail", async () => {
-    // `skip_reply` calls nothing, so the ctx it is bound to is never reached — the client below
+    // `skip_reply` calls nothing, so the ctx it is bound to is never reached: the client below
     // exists only to satisfy the signature, and a call reaching it would be the test's own failure.
     const skip = buildNativeTools({ client: {} as never, conversationId: 1 }, [
       SKIP_REPLY_TOOL,
@@ -422,26 +416,15 @@ describe("skipReplyRan — the MARK is the identity, not the name and not the te
   });
 });
 
-// The fence. The leak (issue #454) was not a wrong rule, it was a rule two of four sites knew, so
-// what has to fail here is a site N+1 that takes the model's final text and skips it.
-//
-// It is anchored on `lastAssistantText`, which is narrower than the invariant, and the gap is
-// declared rather than papered over. Anchoring on `contentToText` instead — the helper underneath —
-// was tried and accuses eleven sites that are correct: token counting, the turn trace, the memory
-// summarizer, and reading the HUMAN message. A scan that accuses everything proves as little as one
-// that finds nothing.
-//
-// WHAT IT DOES NOT COVER, said out loud so it is not left to be discovered:
-//   - `playground/sessions.ts` picks the reply with its own `lastAi`, deliberately not this one.
-//     Covered by BEHAVIOUR instead, in tests/modules/playground-sessions.test.ts.
-//   - `graph/trace.ts` renders the turn trace, which exists to show what the model actually
-//     produced, and is meant to stay raw.
-//   - `memory/summarize.ts` feeds the transcript to the summarizer. That is how the token reaches
-//     permanent memory, which is a recurrence question rather than a leak: it is named in the issue
-//     and left to its own change.
+// The fence: a new site that takes the model's final text and skips the rule fails here. Anchored
+// on `lastAssistantText`, narrower than the invariant; `contentToText` underneath would accuse
+// correct sites (token counting, the trace, the summarizer, the HUMAN message). Not covered:
+// `playground/sessions.ts` (own `lastAi`, covered by tests/modules/playground-sessions.test.ts),
+// `graph/trace.ts` (meant to stay raw), and `memory/summarize.ts` (how the token can reach
+// permanent memory, a recurrence question rather than a leak).
 describe("every site that reads the model's final text applies a rule", () => {
   // Kept as a predicate over TEXT rather than an inline scan, so the fixture below can prove it
-  // rejects the shape the defect had — a fence with no offender in the tree proves nothing about
+  // rejects the offending shape: a fence with no offender in the tree proves nothing about
   // whether it can see one.
   const READERS = /lastAssistantText\(/;
   function unguardedSites(source: string): string[] {
@@ -512,11 +495,10 @@ describe("every site that reads the model's final text applies a rule", () => {
   });
 });
 
-// The FOLLOW-UP SILENCE PROTOCOL, which is where round 3 landed and why it is a rule rather than a
-// line: the directive asks the model to call `skip_reply`, `skip_reply` is operator-revocable, and
-// there are TWO paths that render that directive. Round 2 changed the protocol in one of them.
+// The FOLLOW-UP SILENCE PROTOCOL, a rule rather than a line: the directive asks the model to call
+// `skip_reply`, `skip_reply` is operator-revocable, and TWO paths render that directive.
 describe("inertToolsFor", () => {
-  // Round 8: the name is not the identity. A native grant wins the name (natives are merged first),
+  // NOTE: The name is not the identity. A native grant wins the name (natives are merged first),
   // and only then may a call under it be read as "did nothing".
   test("the native tool is inert when it is the one bound", () => {
     expect([...inertToolsFor({ nativeToolsAllow: undefined })]).toEqual([
@@ -550,9 +532,8 @@ describe("withFollowupSilenceChannel", () => {
     ).toBe(allow);
   });
 
-  // Review round 12. Granting used to be gated on whether any source was CONFIGURED, which is not
-  // the same question as whether any tool gets BUILT. The gate is gone: this grants, and the
-  // assembled list decides (`withoutLoneSilenceTool`).
+  // NOTE: Whether any source is CONFIGURED is not whether any tool gets BUILT, so granting is not
+  // gated on it: this grants, and the assembled list decides (`withoutLoneSilenceTool`).
   test("natives revoked is no longer a reason to withhold the channel", () => {
     expect(
       withFollowupSilenceChannel({ nativeToolsAllow: [] as string[] })
@@ -560,18 +541,11 @@ describe("withFollowupSilenceChannel", () => {
     ).toEqual([SKIP_REPLY_TOOL]);
   });
 
-  // Issue #715. There WAS an exception here, and it was about somebody else's property: granting
-  // ours to an agent running a custom HTTP tool under this name would evict theirs from every
-  // follow-up, so the grant stood down and that agent kept the sentinel.
-  //
-  // The premise died with #457, whose `reserved` argument makes a native name unavailable to every
-  // other source EVEN WHEN THE NATIVE IS NOT BUILT. Their tool is dropped at assembly either way,
-  // so standing down protected nothing and only cost the agent its silence channel — and the
-  // follow-up then had neither: not ours, because the grant never fired, and not theirs, because
-  // the reservation ate it.
-  //
-  // Both halves are asserted here, and the second is why this is not just a rename: the assembly
-  // really does drop their tool, so "the grant costs them nothing" is measured rather than argued.
+  // NOTE: The grant also fires for an agent with a custom HTTP tool under this name. The `reserved`
+  // argument makes a native name unavailable to every other source EVEN WHEN THE NATIVE IS NOT
+  // BUILT, so their tool is dropped at assembly either way, and standing down would only leave the
+  // follow-up with no silence channel at all. Both halves are asserted: the assembly really drops
+  // their tool, so the grant costs them nothing.
   test("the collision already cost the operator the tool, so it no longer costs the channel", () => {
     const cfg = {
       nativeToolsAllow: [] as string[],
@@ -580,8 +554,7 @@ describe("withFollowupSilenceChannel", () => {
     expect(withFollowupSilenceChannel(cfg).nativeToolsAllow).toEqual([
       SKIP_REPLY_TOOL,
     ]);
-    // …and with natives revoked their tool is dropped whatever the grant does, which is the fact
-    // the old carve-out was written before.
+    // NOTE: …and with natives revoked their tool is dropped whatever the grant does.
     const noneBuilt = new Set<string>();
     const { tools, dropped } = dropDuplicateToolNames(
       [{ name: SKIP_REPLY_TOOL } as never],
@@ -591,10 +564,9 @@ describe("withFollowupSilenceChannel", () => {
     expect(dropped).toEqual([SKIP_REPLY_TOOL]);
   });
 
-  // s9 of the holdout. The refusal returned EARLY, so it skipped the precondition cleanup below it
-  // as well — leaving a fail-closed guard on the very call the directive depends on, for exactly
-  // the agent that also had no channel. Round 15 fixed this shape once for the granted case; this
-  // is the other door into it.
+  // NOTE: A refusal that returns EARLY must not skip the precondition cleanup below it, or a
+  // fail-closed guard stays on the very call the directive depends on, for exactly the agent that
+  // also has no channel. The granted case below is the other door into the same shape.
   test("and the precondition cleanup that the refusal skipped now runs for that agent", () => {
     const out = withFollowupSilenceChannel({
       nativeToolsAllow: [] as string[],
@@ -609,9 +581,9 @@ describe("withFollowupSilenceChannel", () => {
     });
   });
 
-  // Round 15. The guard fired on the NAME alone, including when the native was granted — and then
-  // natives win the name anyway, so it protected nothing and skipped the precondition cleanup below
-  // it, leaving a fail-closed guard on the very call the directive depends on.
+  // NOTE: A guard on the NAME alone, when the native is granted, protects nothing (natives win the
+  // name) and would skip the precondition cleanup, leaving a fail-closed guard on the very call the
+  // directive depends on.
   test("with the native already granted, theirs never wins and cleanup still runs", () => {
     const out = withFollowupSilenceChannel({
       nativeToolsAllow: [SKIP_REPLY_TOOL, "private_note"],
@@ -634,7 +606,7 @@ describe("withFollowupSilenceChannel", () => {
   });
 
   // Granting is only half. A precondition on the tool is fail-closed and refuses the very call the
-  // directive depends on, so the follow-up would answer with text instead — the leak by a third road.
+  // directive depends on, so the follow-up would answer with text instead: the leak by a third road.
   test("it also drops a precondition standing on the channel", () => {
     const preconditions: Record<string, unknown> = {
       [SKIP_REPLY_TOOL]: { kind: "attribute", key: "x" },
@@ -665,7 +637,7 @@ describe("withFollowupSilenceChannel", () => {
   test("the fence wants the channel ARGUMENT too, not just the grant", () => {
     const CHANNEL = /(?<![A-Za-z])followupSilenceChannel\(/;
     expect(CHANNEL.test("renderNudge(nudge, true)")).toBe(false);
-    // The shape round 10 removed: a renderer deciding the channel from the native allowlist by
+    // NOTE: The forbidden shape: a renderer deciding the channel from the native allowlist by
     // hand. It passes an argument and is still wrong, so the fence has to want THIS function and
     // not merely a third argument.
     expect(
@@ -700,8 +672,8 @@ describe("withFollowupSilenceChannel", () => {
     );
   });
 
-  // The fence for the invariant itself. Round 3 found the playground because the protocol lives in
-  // TWO places: whoever renders the directive owes the channel. A third renderer must fail here.
+  // NOTE: The fence for the invariant itself. The protocol lives in TWO places (production and the
+  // playground): whoever renders the directive owes the channel. A third renderer must fail here.
   test("every renderer of the follow-up directive grants the channel", () => {
     const files: string[] = [];
     const walk = (dir: string) => {
@@ -735,13 +707,10 @@ describe("withFollowupSilenceChannel", () => {
         .filter((l) => !l.trimStart().startsWith("import"))
         .join("\n");
       expect([f, CALL.test(body)]).toEqual([f, true]);
-      // ...AND it must CHOOSE the channel through the shared rule, not inherit the default and not
-      // re-derive it. Round 7 taught the grant to both renderers and left the directive's third
-      // argument in production only, so the playground told a tool-less agent to call a tool that
-      // was not bound — the same miss, one argument over; round 10 then found that argument reading
-      // `nativeToolsAllow` alone, which is the config rather than the toolset. The fence covers the
-      // pair because they are one obligation, and it wants the function so a hand-rolled ternary
-      // cannot satisfy it.
+      // NOTE: ...AND it must CHOOSE the channel through the shared rule, not inherit the default and
+      // not re-derive it: a renderer missing the directive's third argument tells a tool-less agent to
+      // call a tool that is not bound, and one reading `nativeToolsAllow` alone reads the config, not
+      // the toolset. It wants the function so a hand-rolled ternary cannot satisfy it.
       expect([f, /(?<![A-Za-z])followupSilenceChannel\(/.test(body)]).toEqual([
         f,
         true,

@@ -183,7 +183,8 @@ export interface CaseInbox {
 // THE CASE A CONTACT IS WAITING ON, open or pending in the destination inbox, other than the
 // conversation being asked about. Read two ways, because a case can sit on another contact (the
 // address belonged to someone else and nothing was merged): the attribute this conversation got when
-// it opened the case, and the contact's own conversations. Null ⇒ none. Throws when a read fails.
+// it opened the case, and the contact's own conversations. Null ⇒ none. Throws when a read fails or
+// when a full page of the listing may hide the case.
 export async function openCaseFor(
   client: Pick<CaseClient, "getConversation" | "listContactConversations">,
   conversationId: number,
@@ -206,8 +207,19 @@ export async function openCaseFor(
   const open = listed.find(
     (c) => c.id !== conversationId && waiting(c.inboxId, c.status),
   );
-  return open ? open.id : null;
+  if (open) return open.id;
+  // The listing is the contact's newest page only: a full one without the case does not prove there
+  // is none, so it answers like a read that failed.
+  if (listed.length >= CONTACT_CONVERSATIONS_PAGE) {
+    throw new Error(
+      `contact ${where.contactId} has at least ${CONTACT_CONVERSATIONS_PAGE} conversations; an older open case cannot be ruled out`,
+    );
+  }
+  return null;
 }
+
+// What `/contacts/:id/conversations` answers at most: the newest page, never older ones.
+export const CONTACT_CONVERSATIONS_PAGE = 25;
 
 // Pure: the private notes. PT-BR, like the webhook's other system notes.
 export function originLinkNote(caseUrl: string, inboxName: string): string {

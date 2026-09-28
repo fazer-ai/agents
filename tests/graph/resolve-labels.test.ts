@@ -255,6 +255,34 @@ describe("applyResolveLabels with an open case", () => {
     expect(out.heldBy).toBe(90);
   });
 
+  // The contact's listing is their newest 25 only: a full page with no case in it does not prove
+  // there is none, so it holds the label like a check that could not be read.
+  test("a full page of the contact's conversations with no case holds the label", async () => {
+    const cw = fakeChatwoot({
+      catalog: ["resolvido-pela-ia"],
+      contactConversations: Array.from({ length: 25 }, (_, i) => ({
+        id: 100 + i,
+        inboxId: 1,
+        status: "resolved",
+      })),
+    });
+    const out = await apply(cw);
+    expect(out.outcome).toBe("held");
+    expect(out.heldBy).toBe("unread");
+  });
+
+  test("a short listing with no case is read as none", async () => {
+    const cw = fakeChatwoot({
+      catalog: ["resolvido-pela-ia"],
+      contactConversations: Array.from({ length: 24 }, (_, i) => ({
+        id: 100 + i,
+        inboxId: 1,
+        status: "resolved",
+      })),
+    });
+    expect((await apply(cw)).outcome).toBe("written");
+  });
+
   test("a case that could not be read holds the label, and says why", async () => {
     const cw = fakeChatwoot({
       catalog: ["resolvido-pela-ia"],

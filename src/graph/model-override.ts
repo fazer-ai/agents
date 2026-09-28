@@ -5,45 +5,14 @@ import {
 } from "@/graph/model-config";
 import { PROVIDER_DEFAULT_MODEL } from "@/graph/model-defaults";
 
-// WHICH model a secondary call runs on, on WHOSE key, at WHICH endpoint, and whether that
-// configuration may run at all. One function answers all four, because they are one question: every
-// wrong answer here is the same failure, a secret belonging to one vendor arriving at another.
-//
-// A "secondary call" is any model call an agent makes that is not the customer-facing turn: the
-// speech rewrite before TTS, the summariser that writes an attendance into memory. Each is
-// configured as an OVERRIDE of the agent's own model, so a bag that says nothing keeps behaving
-// exactly as it did — which is what lets a feature that is ON by default grow this knob at all.
-//
-// This lived inside the speech rewrite until the summariser needed the same four answers. It is
-// shared rather than copied because the rules below were not designed, they were FOUND: review of
-// the rewrite turned up five separate paths into it, all with one shape — HALF of the destination
-// stored next to the key, the other half read from something that moves. A second copy would start
-// from the same wrong intuition and rediscover them one incident at a time.
-//
-// The shape of the rule:
-//
-//   * UNKNOWN provider (a name REST or MCP stored that is not a provider we support): nothing runs.
-//     Falling back to the agent's provider while keeping the dedicated credential would send that
-//     key to a vendor it does not belong to, which is how a typo becomes a leak.
-//   * SAME provider, ON THE AGENT'S KEY: each unset field falls back to the agent's, field by
-//     field. This is the case the feature exists for ("same account, cheaper model"), and it is what
-//     keeps an install that touches nothing behaving as before.
-//   * DIFFERENT provider: nothing is inherited, because everything the agent holds belongs to the
-//     old vendor. The model would be an id the new one refuses, the endpoint would send the NEW key
-//     to the OLD gateway, and the KEY would hand one vendor's secret to another.
-//   * DIFFERENT endpoint on the SAME provider: the vendor matches but the host does not, and the
-//     agent's key was not issued for that host either. It is the same leak with a smaller radius.
-//
-// And the credential, which is the part that decides whether a switched provider runs at all:
-//
-//   * `own`   — a credential was configured for the call. Always allowed, and inherits NOTHING
-//               about where it is sent: it names the vendor it belongs to, and it carries its own
-//               endpoint (or falls back to that vendor's, never to the agent's).
-//   * `agent` — the agent's own key, allowed ONLY while the DESTINATION is unchanged: same vendor
-//               and same host.
-//   * `none`  — no key travels at all. Reachable only for `openai-compatible`, which authenticates
-//               through its base URL (a local llama.cpp-style server has no key). Without this the
-//               only way to run against a local model would be to invent a dummy vault entry.
+// Which model a secondary call runs on (the speech rewrite before TTS, the summariser), on WHOSE key,
+// at WHICH endpoint, and whether it may run at all: one function, because every wrong answer is the
+// same failure, one vendor's secret arriving at another. Each call is an OVERRIDE of the agent's own
+// model, so an empty bag behaves as before. Shared, not copied: every leak path has one shape, half
+// the destination stored with the key and half read from something that moves. An UNKNOWN provider
+// runs nothing (falling back while keeping the credential would send it to the wrong vendor). The
+// SAME provider on the agent's key inherits unset fields one by one. A DIFFERENT provider inherits
+// nothing: the agent's model, endpoint and key all belong to the old vendor.
 
 // The agent's own model, which an unset override field falls back to.
 export interface OverrideAgentModel {
@@ -63,6 +32,11 @@ export interface ModelOverride {
   baseURL?: string | null;
 }
 
+// `own`: a credential configured for the call, always allowed, inheriting nothing about where it is
+// sent (its own endpoint, or its vendor's, never the agent's). `agent`: the agent's key, allowed ONLY
+// while the destination (vendor and host) is unchanged. `none`: no key travels, reachable only for
+// `openai-compatible`, which authenticates through its base URL (a local server has no key), so a
+// local model needs no dummy vault entry.
 export type ModelOverrideCredential = "own" | "agent" | "none";
 
 export type ModelOverrideNotRunnableReason =
@@ -91,7 +65,7 @@ export interface ModelOverrideResolution {
   // False when the saved configuration must not be built at all. What the caller does then is its
   // own: the speech rewrite is skipped and the audio goes out from the raw text, the summariser
   // fails its job rather than writing memory it cannot stand behind. Neither may fall back to the
-  // agent's model — that is the leak this resolution exists to prevent.
+  // agent's model: that is the leak this resolution exists to prevent.
   runnable: boolean;
   reason?: ModelOverrideNotRunnableReason;
   credential: ModelOverrideCredential;
@@ -101,14 +75,12 @@ function str(v: string | null | undefined): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
 }
 
-// Two spellings of one endpoint are one destination. The comparison that decides whether the
-// agent's key may travel used to be the raw string, so `https://host/v1/` next to the agent's
-// `https://host/v1` counted as another host: on openai-compatible the key was dropped and every
-// call failed to authenticate, on a keyed vendor the configuration was refused as
-// `credential_required`. Canonical form (as the URL parser sees it: case-insensitive scheme and
-// host, default port dropped) with the trailing slashes off the path. Deliberately NOT origin-only:
-// a gateway can key its paths (`/tenant-a/v1` vs `/tenant-b/v1`), and sending one path's key to
-// another is the leak with the smaller radius the rule above describes.
+// Two spellings of one endpoint are one destination: compared raw, `https://host/v1/` beside
+// `https://host/v1` would count as another host, dropping the key on openai-compatible and refusing
+// a keyed vendor as `credential_required`. Canonical URL form (case-insensitive scheme and host,
+// default port dropped) without trailing slashes. Deliberately NOT origin-only: a gateway can key its
+// paths (`/tenant-a/v1` vs `/tenant-b/v1`), and sending one path's key to another is the same leak
+// with a smaller radius.
 function sameEndpoint(a: string | null, b: string | null): boolean {
   if (a === null || b === null) return a === b;
   const canonical = (raw: string): string => {
@@ -160,14 +132,10 @@ export function resolveModelOverride(
   const switched = provider !== agent.provider;
   const own = str(override.credentialRef) !== null;
 
-  // Anything picked for a secondary call was picked FOR a vendor, and has to say which one, because
-  // nothing else does. The agent's provider is not that answer: it is a moving target, and the tabs
-  // of the editor do not even save together, so changing it on the General tab alone leaves these
-  // fields behind — a key now pointed at a vendor that never issued it, a model id now asked of one
-  // that has never heard of it. Naming the provider (even the agent's own, which the editor fills in
-  // the moment either field is set) is what pins them together in the settings bag, where they
-  // survive as a pair. Only a call that overrides NOTHING may leave it blank, and that one has
-  // nothing to go stale.
+  // NOTE: anything picked for a secondary call was picked FOR a vendor and has to name it. The
+  // agent's provider is a moving target (the editor's tabs do not save together), so changing it
+  // alone would leave a key and a model id pointed at a vendor that never issued them. Naming the
+  // provider pins them together in the settings bag; only a call overriding NOTHING may leave it blank.
   if ((own || str(override.model) !== null) && raw === null) {
     return NOT_RUNNABLE(provider, "override_without_provider");
   }
@@ -178,15 +146,10 @@ export function resolveModelOverride(
   const baseURL = inheritsAgent ? (ownBaseURL ?? agentBaseURL) : ownBaseURL;
   const hasEndpoint = baseURL !== null && usable(baseURL);
 
-  // An endpoint is not a courtesy for openai-compatible: it IS the address, and the credential can
-  // be nothing more than that address. Both checks below hang off it.
-  //
-  // What "usable" means is the CALLER's, and the editor's is stricter than the runtime's, so a
-  // configuration only the editor can refuse is one only the editor will ever judge. That makes the
-  // second half load-bearing: an endpoint the call brought ITSELF and that no client can dial is no
-  // endpoint at all, whatever provider it was typed for, and openrouter is a provider that accepts
-  // one. An INHERITED one is not judged, for the same reason endpoint_unsupported does not judge it:
-  // the call lands wherever the agent's own model lands.
+  // NOTE: for openai-compatible the endpoint IS the address, and the credential can be nothing more.
+  // "Usable" is the CALLER's, and the editor's is stricter than the runtime's, so an endpoint the call
+  // brought ITSELF that no client can dial is refused whatever the provider (openrouter accepts one).
+  // An INHERITED one is not judged: the call lands wherever the agent's own model lands.
   if (
     !hasEndpoint &&
     (provider === "openai-compatible" || ownBaseURL !== null)
@@ -194,14 +157,10 @@ export function resolveModelOverride(
     return NOT_RUNNABLE(provider, "endpoint_unusable");
   }
 
-  // And an endpoint the provider cannot carry is worse than no endpoint: the adapter drops it in
-  // silence and the request goes to the vendor's own host instead of the one the operator named.
-  // Refusing costs one secondary call; running costs a proxy that was chosen for a reason.
-  //
-  // Only the call's OWN endpoint is judged here. An INHERITED one is not a promise this feature
-  // made: the call lands wherever the agent's own model lands, dropped field and all, which is the
-  // one thing this whole resolution exists to guarantee. Refusing there would take the feature away
-  // from every install whose agent carries an endpoint its provider never used.
+  // NOTE: an endpoint the provider cannot carry is worse than none: the adapter drops it silently and
+  // the request goes to the vendor's own host. Refusing costs one secondary call. Only the call's OWN
+  // endpoint is judged: an inherited one lands wherever the agent's model lands, and refusing it would
+  // take the feature from every install whose agent carries an endpoint its provider never used.
   if (
     ownBaseURL !== null &&
     !(PROVIDERS_HONORING_BASE_URL as readonly string[]).includes(provider)
@@ -209,12 +168,10 @@ export function resolveModelOverride(
     return NOT_RUNNABLE(provider, "endpoint_unsupported");
   }
 
-  // What makes the agent's key reusable is not "the same vendor", it is the same DESTINATION: the
-  // vendor AND the host. An overridden endpoint on the agent's own provider is still somewhere the
-  // agent's key was never issued for, and sending it there is the same leak as sending it to another
-  // vendor. (Reachable from the editor, which shows the endpoint field for openai-compatible while
-  // leaving the key optional.) Pointing a secondary call at a proxy on purpose is still supported,
-  // and it is spelled out rather than inherited: name the credential and the endpoint it is for.
+  // NOTE: the agent's key is reusable at the same DESTINATION, vendor AND host: an overridden endpoint
+  // on the agent's own provider is somewhere the key was never issued for (reachable from the editor,
+  // which shows the endpoint for openai-compatible with the key optional). A proxy on purpose is
+  // supported by naming the credential and the endpoint it is for.
   const sameDestination = !switched && sameEndpoint(baseURL, agentBaseURL);
 
   let credential: ModelOverrideCredential;
@@ -223,7 +180,7 @@ export function resolveModelOverride(
   } else if (sameDestination) {
     credential = "agent";
   } else if (provider === "openai-compatible") {
-    // Guaranteed to have an endpoint by the check above, and that endpoint is the whole credential:
+    // NOTE: guaranteed an endpoint by the check above, and that endpoint is the whole credential:
     // nothing secret travels, so an unrelated host receives nothing of the agent's.
     credential = "none";
   } else {

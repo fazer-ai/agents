@@ -1,44 +1,34 @@
 import type { RunAgentNudgeOutcome } from "@/graph/nudge";
 
 // What a proactive job does with a nudge that posted NOTHING for a reason an operator (or time) can
-// repair. The three callers of `runAgentNudge` used to answer this separately, and only one of them
-// answered it at all: the generic follow-up retried `live-unavailable` and `deferred` while the
-// appointment reminder and the redirect ladder discarded every outcome, so an occasion that had
-// produced no message was consumed exactly like one that had. Issue #281 measured the cost with a
-// model credential that does not resolve: the agent exists, is enabled and is expected to answer,
-// and the follow-up episode burned step by step, the reminder was marked done, and the ladder
-// advanced a stage, none of them having said anything to anyone.
-//
-// The question is deliberately ONE predicate rather than a condition repeated per caller: the rule
-// was already duplicated when it existed in one place, because the next caller inherited nothing.
+// repair. Every caller of `runAgentNudge` (generic follow-up, appointment reminder, redirect ladder)
+// asks this ONE predicate rather than repeating a condition, so an occasion that produced no message
+// (say, a model credential that does not resolve) is retried instead of consumed like one that did,
+// and a new caller inherits the rule.
 
 // 15 minutes, 8 attempts: two hours of a broken credential or a held interrupt, which is the span an
 // operator plausibly fixes something in, and a bound short enough that a job cannot outlive the
-// occasion it exists for. Inherited unchanged from the generic follow-up handler, which is the only
-// one of the three that already had a ladder.
+// occasion it exists for.
 export const NUDGE_RETRY_BACKOFF_MS = 900_000;
 export const NUDGE_RETRY_LIMIT = 8;
 
-// Nothing was posted, and the reason may not hold next time. The three members differ in what is
-// broken and agree on what it costs, which is the only thing a caller has to decide about:
-//
+// Nothing was posted, and the reason may not hold next time. The members differ in what is broken
+// and agree on what it costs, which is all a caller has to decide:
 //   agent-unavailable  the agent cannot author right now (its credential does not resolve, or it is
-//                      switched off); see runAgentNudge, which separates this from "no agent here"
-//   live-unavailable   the live-state probe could not run, so ownership is unknown and the send was
-//                      fail-closed
+//                      switched off); runAgentNudge separates this from "no agent here"
+//   live-unavailable   the live-state probe could not run, so the send was fail-closed
 //   deferred           a human-in-the-loop interrupt is pending on the thread
-//
-// Every other outcome is excluded on purpose. `no-agent` and `no-conversation` have no occasion left
-// to preserve; `stale` means the conversation stopped being ours, which retrying cannot undo;
-// `silent`, `noted` and `noted-window` mean the agent DID take its turn and chose to say nothing or
-// to say it in a note, and re-running those would author a second turn for one occasion.
 export function isRepairableNudgeRefusal(
   outcome: RunAgentNudgeOutcome,
 ): boolean {
+  // NOTE: every other outcome is excluded on purpose. `no-agent` and `no-conversation` have no
+  // occasion left to preserve; `stale` means the conversation stopped being ours, which retrying
+  // cannot undo; `silent`, `noted` and `noted-window` mean the agent DID take its turn, and
+  // re-running those would author a second turn for one occasion.
   return (
     outcome === "agent-unavailable" ||
     outcome === "live-unavailable" ||
-    // The month turns over on its own, and the operator can raise the number: a follow-up step
+    // NOTE: the month turns over on its own, and the operator can raise the number: a follow-up step
     // burned against a ceiling would be a message the customer never gets and nobody re-sends.
     outcome === "over-ceiling" ||
     outcome === "deferred"
@@ -46,8 +36,8 @@ export function isRepairableNudgeRefusal(
 }
 
 // Whether the nudge left something in the conversation: a message, a template, or a private note.
-// What a job that owns an occasion reports as committed (JobContext.commit, issue #811): from here a
-// retry would say it again.
+// What a job that owns an occasion reports as committed (JobContext.commit): from here a retry would
+// say it again.
 export function nudgeReachedConversation(
   outcome: RunAgentNudgeOutcome,
 ): boolean {

@@ -14,7 +14,7 @@ import {
 // Per-agent/per-node model factory. The config SCHEMA lives in ./model-config (LangChain-free, so
 // the config/HTTP layer validates without importing the provider SDKs); this module turns a
 // validated config into a LangChain chat model. The API key is resolved from the vault by the
-// caller (never inlined here, never logged). An OpenAI-compatible endpoint is reached by setting
+// caller, never inlined or logged here. An OpenAI-compatible endpoint is reached by setting
 // baseURL on the OpenAI client.
 
 export {
@@ -27,31 +27,25 @@ export { REASONING_EFFORTS, type ReasoningEffort } from "./openai-reasoning";
 
 export interface ResolvedModelConfig extends ModelConfig {
   apiKey: string;
-  // WHAT ONE CALL ON THIS MODEL MAY SPEND, and absent for every caller that has nothing behind it.
-  //
-  // Absent means LangChain's AsyncCaller keeps its six retries with exponential backoff and no
-  // per-attempt ceiling. That default is wrong when there IS something behind the provider: measured
-  // through this factory against a local endpoint (issue #143), a single 503 becomes seven requests
-  // over 77s, a 502 99s. See ./model-fallback for the bounds. A caller with nothing behind the
-  // provider bounds the whole CALL instead (callWithDeadline in ./model-limit, issue #809), because
-  // a per-attempt ceiling is retried like any other failure and the Google adapter drops it.
+  // What one call on this model may spend; absent for every caller with no fallback behind it.
+  // Absent keeps LangChain's AsyncCaller default (six retries, exponential backoff, no per-attempt
+  // ceiling), which is wrong with a fallback behind the provider: one 5xx holds the turn for over a
+  // minute. See ./model-fallback for the bounds.
+  // A caller with nothing behind the provider bounds the whole CALL instead (callWithDeadline in
+  // ./model-limit), because a per-attempt ceiling is retried like any other failure and the Google
+  // adapter drops it.
   maxRetries?: number;
   timeoutMs?: number;
 }
 
-// The two bounds as each SDK family spells them, and the spellings are MEASURED off the built
-// instances (tests/graph/model-limits-transport.test.ts), never read off the option types:
-//
+// The two bounds as each SDK family spells them, checked against the built instances
+// (tests/graph/model-limits-transport.test.ts), never read off the option types:
 //   maxRetries   all six providers, landing on `caller.maxRetries`
-//   the ceiling  `timeout` on the four OpenAI-shaped clients, `clientOptions.timeout` on Anthropic,
-//                and NOWHERE on Google — its adapter accepts neither spelling and drops both.
-//
-// Anthropic is the correction that made this worth measuring: written as taking a plain `timeout` on
-// the strength of the option type ACCEPTING one, and the built instance showed the field arriving
-// undefined. It matters because the ceiling is the only bound a HANG has — a provider that accepts
-// the connection and never answers carries no status for the retry count to act on. So on Google a
-// hung endpoint still holds the turn and the fallback never gets it, which is the one gap this
-// change does not close.
+//   the ceiling  `timeout` on the four OpenAI-shaped clients, `clientOptions.timeout` on Anthropic
+//                (its option type accepts a plain `timeout` and the instance drops it), and nowhere
+//                on Google, whose adapter drops both spellings.
+// The ceiling is the only bound a HANG has (no status for the retry count to act on), so on Google
+// a hung endpoint still holds the turn and the fallback never gets it.
 function limits(cfg: ResolvedModelConfig): {
   maxRetries?: number;
   timeout?: number;
@@ -66,21 +60,13 @@ function limits(cfg: ResolvedModelConfig): {
 // base URL instead of asking the operator for one (unlike the generic "openai-compatible" provider).
 const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 
-// NOTE: OpenAI's reasoning families reject any `temperature` other than the default with a hard 400
-// ("Unsupported value: 'temperature' does not support 0.3 with this model"), which kills the whole
-// call — the agent's own turn, the guardrail pass and the TTS speech normalization all pin a
-// temperature and would 400 on every request. Drop the parameter for those models instead of clamping
-// it, and only for the OpenAI-shaped clients. Matches a bare id ("o4-mini", "gpt-5-mini") and a routed
-// one ("openai/o4-mini", OpenRouter); "gpt-4o" and "omni-…" deliberately do not match. gpt-5-chat* is
-// exempted: it is the non-reasoning chat family and accepts `temperature` (same carve-out as
-// @langchain/openai's isReasoningModel), so dropping it there would silently discard the operator's
-// preference. The optional "ft:" reads through a fine-tune to its base model ("ft:<base>:<org>:<name>:<id>"),
-// which is what actually decides the parameter rules — and since DEFAULT_MODEL_CONFIG ships a
-// temperature, a fine-tune of a reasoning model was the DEFAULT config, not an exotic one.
-// The gpt-6 family reasons too (issue #804, measured on gpt-6-luna on 2026-09-23: "'temperature'
-// does not support 0.7 with this model. Only the default (1) value is supported."). It is matched
-// with a boundary, so "gpt-60" and "gpt-6x" keep the operator's temperature, and with the same
-// "-chat" carve-out.
+// OpenAI's reasoning families reject any non-default `temperature` with a hard 400, which kills
+// every call that pins one (the agent turn, the guardrail pass, TTS normalization), so the parameter
+// is dropped for those models rather than clamped, and only on the OpenAI-shaped clients. Matches a
+// bare id ("o4-mini", "gpt-5-mini"), a routed one ("openai/o4-mini"), and a fine-tune ("ft:<base>:…",
+// whose base decides the rules; DEFAULT_MODEL_CONFIG ships a temperature). "gpt-4o", "omni-…",
+// "gpt-60" and "gpt-6x" do not match. gpt-5-chat*/gpt-6-chat are the non-reasoning chat families and
+// keep the operator's temperature (the same carve-out as @langchain/openai's isReasoningModel).
 const REASONING_MODEL_RE =
   /^(?:ft:)?(?:[\w.-]+\/)?(?:o\d+(?:-|$)|gpt-5(?!-chat)|gpt-6(?:[.-]|$)(?!chat))/i;
 
@@ -93,56 +79,18 @@ function openaiTemperature(
 
 type OpenAIChatFields = ConstructorParameters<typeof ChatOpenAI>[0];
 
-// Builds an OpenAI-shaped client from the transport plan (see ./openai-reasoning for what was
-// measured and why the endpoint, not the model family, is what decides).
-//
-// NOTE: `toolEffort` is pinned by binding a SECOND instance's bindTools onto the first, so the
-// parameter belongs to the bound model and nowhere else. That case exists only when nobody chose
-// an effort and the provider's own default is what breaks function tools. The raw instance is
-// invoked on purpose when the tool budget runs out (`hardLimit ? model : llm` in graph.ts) and
-// that call writes the final answer to the customer; the guardrail pass, the TTS normalization and
-// an agent with no grants never bind tools either. All of them are accepted at the provider's
-// default effort, so pinning "none" on the constructor would switch reasoning off exactly where
-// nothing required it. An effort the operator DID choose is about the agent, so it goes on the
-// constructor and covers those calls too.
-//
-// NOTE: both efforts travel via `modelKwargs` rather than the typed fields,
-// because @langchain/openai decides whether to send those by testing the model NAME
-// (isReasoningModel: /^o\d/, or startsWith("gpt-5") minus gpt-5-chat). Any id it does not
-// recognise loses the parameter: a routed "openai/gpt-5.6-luna" (OpenRouter), and — worse, because
-// it is a legitimate choice of a model that really does reason — a fine-tuned "ft:gpt-5.6-luna:…".
-// The request would still go to /v1/responses and arrive with no effort, discarding the operator's
-// choice in silence. modelKwargs is spread into the params unconditionally, and the typed path
-// overwrites it with the same value when it does fire, so the two can never disagree. A model with
-// no reasoning to constrain then answers 400 naming the parameter, which is the outcome the
-// operator can act on.
-//
-// NOTE: this also sidesteps the installed openai SDK typing `ReasoningEffort` without "max", which
-// the live API accepts on the gpt-5.6 family (measured 200 with function tools) and names in its
-// own rejection message elsewhere. Same shape of gap as issue #64: the measurement is what the
-// request has to satisfy, not the SDK's snapshot of it.
-//
-// NOTE: `zdrEnabled` only sends `store: false` (it does not enable zero data retention on the
-// OpenAI account, despite the name). Chat Completions stores nothing unless asked; the Responses
-// API stores for 30 days by default. Without this, choosing a reasoning effort would silently
-// change what OpenAI keeps of the customer's conversation. Measured: the two-turn tool round-trip
-// still works with storage off.
-// Whether this call will talk to /v1/responses. @langchain/openai decides that itself, from the
-// model id AND from the call: some ids are routed there whatever we ask (_modelPrefersResponsesAPI,
-// four substrings tested with case-SENSITIVE `includes` ANYWHERE in the id, so the free-text suffix
-// of a fine-tune flips a plain gpt-5.6 agent — and "Codex-support" does not flip it while
-// "codex-support" does), and so does any call carrying an OpenAI built-in or custom tool, or a
-// Responses-only option. Predicting all that is a copy of their list, plus its case rules, plus its
-// option rules, and each round of getting one slightly wrong costs a turn.
-//
-// NOTE: so the instance is asked instead of guessed, with the SAME options the call will carry.
-// `invocationParams` is public and returns the parameter set that will actually be sent, and the
-// two endpoints name the token cap differently (`max_output_tokens` on Responses,
-// `max_completion_tokens` on Completions).
+// Whether this call will talk to /v1/responses. @langchain/openai decides that from the model id
+// (case-sensitive substrings anywhere in it, so a fine-tune's free-text suffix can flip it) AND from
+// the call (built-in or custom tools, Responses-only options), so the instance is asked with the SAME
+// options the call carries rather than a copy of those rules guessed here. `invocationParams` returns
+// what will be sent, and the two endpoints name the token cap differently (`max_output_tokens` on
+// Responses, `max_completion_tokens` on Completions).
 function usesResponsesEndpoint(chat: ChatOpenAI, options: unknown): boolean {
   return "max_output_tokens" in chat.invocationParams(options as never);
 }
 
+// Builds an OpenAI-shaped client from the transport plan (see ./openai-reasoning for why the
+// endpoint, not the model family, decides).
 function makeOpenAIChat(
   fields: OpenAIChatFields,
   plan: OpenAITransportPlan,
@@ -152,7 +100,15 @@ function makeOpenAIChat(
     ...(plan.responses
       ? {
           useResponsesApi: true,
+          // NOTE: this only sends `store: false`; it does not enable zero data retention on the
+          // account. The Responses API stores for 30 days by default and Chat Completions stores
+          // nothing, so without it choosing an effort would change what OpenAI keeps.
           zdrEnabled: true,
+          // NOTE: efforts travel via `modelKwargs`, not the typed fields, because @langchain/openai
+          // sends those only for ids it recognises by NAME, which drops a routed or fine-tuned
+          // reasoning model's effort in silence. modelKwargs is always sent and the typed path
+          // writes the same value, so they never disagree; it also carries "max", which the live
+          // API accepts on gpt-5.6 and the installed SDK type omits.
           modelKwargs: {
             ...fields?.modelKwargs,
             reasoning: { effort: plan.effort },
@@ -162,6 +118,11 @@ function makeOpenAIChat(
   };
   const chat = new ChatOpenAI(withPlan);
   if (!plan.toolEffort) return chat;
+  // NOTE: `toolEffort` (only set when nobody chose an effort and the provider's default breaks
+  // function tools) is pinned on a SECOND instance's bindTools, so it reaches only tool-bound calls.
+  // The raw instance (the final answer when the tool budget runs out, the guardrail pass, TTS
+  // normalization, an agent with no grants) works at the provider default, so pinning "none" on
+  // the constructor would switch reasoning off where nothing required it.
   const withEffort = new ChatOpenAI({
     ...withPlan,
     modelKwargs: {
@@ -206,10 +167,9 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
           ...limits(cfg),
           configuration: { baseURL: cfg.baseURL },
         },
-        // NOTE: no operator choice reaches here — the config schema fences reasoningEffort to the
-        // "openai" provider, because /v1/responses is OpenAI's endpoint and these servers mostly do
-        // not implement it. What the plan still owns for them is the issue #66 pin, which applies
-        // to a routed gpt-5.6 id just the same.
+        // NOTE: no operator effort reaches here: the config schema fences reasoningEffort to the
+        // "openai" provider, because these servers mostly do not implement /v1/responses. The plan
+        // still owns the tool-effort pin, which applies to a routed gpt-5.6 id just the same.
         planOpenAITransport(model, undefined),
       );
     case "openrouter":
@@ -224,34 +184,19 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
         planOpenAITransport(model, undefined),
       );
     // NOTE: temperature is DROPPED for this provider, whoever set it. Anthropic's current generation
-    // rejects any non-default value of `temperature`, `top_p` and `top_k` with a hard 400 ("`temperature`
-    // is deprecated for this model"), and their migration guide for Sonnet 5 says to "remove these
-    // parameters ... the default value (or omitting the parameter) is accepted". So this is not a
-    // workaround for an error, it is the documented way to call the model: there is no sampling
-    // control left to honor. Steering moved to the system prompt.
-    //
-    // Dropped by PROVIDER rather than by model pattern, unlike `openaiTemperature`, because there is
-    // nothing reliable to match on. `claude-haiku-4-5` and `claude-sonnet-4-5` still accept the
-    // parameter, `claude-opus-4-5` accepts it while advertising the same `effort` capability as every
-    // model that refuses it, and /v1/models never mentions the parameter at all. A pattern would be a
-    // copy of a vendor policy that moves without us, and the cost of being wrong is not symmetric:
-    // the guardrail pass pins a temperature and is FAIL-OPEN, so one missed id is not a visible
-    // error, it is a moderation control that approves everything (measured: `claude-sonnet-5` as the
-    // guardrails model returned `violated: false` with a 400 attached, on every message).
-    //
-    // What the coarser rule costs is the operator's own value on the two models that still take it.
-    // Measured on `claude-haiku-4-5`, the guardrail battery is identical with `temperature: 0` and
-    // with the field absent: violations caught 16/16 in both arms, and on the output rewrite the
-    // customer-facing price survived 16/16 while the internal cost leaked 0/16 in both. Nothing is
-    // rewritten in storage either — the value stays as the operator set it, so the day Anthropic
-    // takes the parameter back this line is all that has to go.
+    // rejects any non-default `temperature`, `top_p` and `top_k` with a hard 400, and its migration
+    // guide says to omit them. It is dropped by PROVIDER, not by model pattern, because no field
+    // tells the models apart and a missed id is invisible: the guardrail pass pins a temperature and
+    // is fail-open, so a 400 there approves everything. On the older models that still accept it,
+    // omitting it leaves the guardrail results unchanged. The stored value is kept as the operator
+    // set it, so if Anthropic takes the parameter back this line is all that has to go.
     case "anthropic":
       return new ChatAnthropic({
         model,
         apiKey,
         ...(cfg.maxRetries !== undefined ? { maxRetries: cfg.maxRetries } : {}),
-        // NOTE: `clientOptions`, not the plain `timeout` the four OpenAI-shaped clients take.
-        // Measured: the option type accepts `timeout` and the built instance leaves it undefined.
+        // NOTE: `clientOptions`, not the plain `timeout` the OpenAI-shaped clients take: the option
+        // type accepts `timeout` and the built instance leaves it undefined.
         ...(cfg.timeoutMs !== undefined
           ? { clientOptions: { timeout: cfg.timeoutMs } }
           : {}),
@@ -261,17 +206,15 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
         model,
         apiKey,
         temperature,
-        // NOTE: no ceiling here in either spelling — measured, this adapter drops both. Picked apart
-        // rather than passed whole so the omission is visible instead of silently dropped.
+        // NOTE: no ceiling here in either spelling, because this adapter drops both. Picked apart
+        // rather than passed whole so the omission is visible.
         ...(cfg.maxRetries !== undefined ? { maxRetries: cfg.maxRetries } : {}),
       });
       // NOTE: the adapter declares tool parameters in the OpenAPI subset, whose closed field set
-      // rejects the whole request over a single unknown key (issue #64). Redeclaring them as JSON
-      // Schema is the carve-out; see ./gemini-tools for the field set and what was measured.
-      // Patched on the INSTANCE rather than by subclassing: LangChain derives the serialized model
-      // id from the constructor name, so a subclass renames the model to itself in every payload
-      // that reaches Langfuse (measured: the lc_id tail becomes the subclass name). An own property
-      // also shadows the prototype for the adapter's own internal `this.bindTools(...)` calls.
+      // rejects the whole request over one unknown key; ./gemini-tools redeclares them as JSON
+      // Schema. Patched on the INSTANCE, not by subclassing: LangChain derives the serialized model
+      // id from the constructor name, so a subclass renames the model in every Langfuse payload.
+      // An own property also shadows the prototype for the adapter's internal `this.bindTools`.
       type BindTools = typeof gemini.bindTools;
       const bindTools = gemini.bindTools.bind(gemini) as BindTools;
       gemini.bindTools = ((tools, kwargs) =>

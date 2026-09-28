@@ -3,7 +3,7 @@ import { AppError } from "@/lib/errors";
 import { modelOptionalFor } from "./model-defaults";
 import { REASONING_EFFORTS } from "./openai-reasoning";
 
-// Per-agent/per-node model config SCHEMA — deliberately LangChain-free so the config/HTTP layer
+// Per-agent/per-node model config SCHEMA, deliberately LangChain-free so the config/HTTP layer
 // can validate a modelConfig without importing the provider SDKs (those live in ./models, which
 // builds the actual chat model on top of this).
 
@@ -17,40 +17,23 @@ export const MODEL_PROVIDERS = [
 ] as const;
 
 // The providers whose adapter actually SENDS a configured endpoint. The rest accept one and drop it
-// without a word — measured on the built instances: deepseek keeps its own api.deepseek.com, and
-// openai/anthropic/google carry the value nowhere at all. That turns "route this through my proxy"
-// into "send it straight to the vendor", with the customer's text, which is why a caller that has an
-// endpoint to honor must ask here first rather than pass it and hope.
-//
-// NOTE: tests/graph/model-endpoint-support.test.ts probes each built instance, so this list cannot
-// drift away from what createChatModel does.
+// silently (deepseek keeps api.deepseek.com; openai, anthropic and google carry it nowhere), turning
+// "route through my proxy" into "send straight to the vendor" with the customer's text, so a caller
+// with an endpoint to honor asks here first. tests/graph/model-endpoint-support.test.ts probes each
+// built instance, so this list cannot drift from what createChatModel does.
 export const PROVIDERS_HONORING_BASE_URL = [
   "openai-compatible",
   "openrouter",
 ] as const;
 
-// How each provider is asked for a schema-constrained answer, or that it is not asked at all. A
-// claim about the ENDPOINT, never about how capable the model is, and every row was measured or
-// read off the vendor's own documentation. The consumer today is the guardrail verdict
-// (modules/guardrails/verdict.ts, issue #131):
-//
-//   * openai and anthropic take the json-schema dialect: a `strict` json_schema on one, a forced
-//     tool call on the other;
-//   * google takes the OpenAPI 3.0 subset instead, where `type` holds one value and nullability is
-//     `nullable: true`. Measured live on gemini-3.5-flash and -flash-lite: asked in the json-schema
-//     dialect the request comes back 400 and the analysis is remade in prose, so every screen costs
-//     two calls; asked in this one, a single call answers;
-//   * deepseek implements `json_object` only, and answers "unavailable now" to a json_schema;
-//   * openrouter's support is per ENDPOINT behind the router and changes without notice, so the
-//     same model id constrains today and fails the request tomorrow;
-//   * openai-compatible is an arbitrary server by definition. Measured against a local one that
-//     ignores the parameter: the client retried the same call six times across a minute and never
-//     settled, while the unconstrained call made today answered on the first try. One that refuses
-//     it outright (llama.cpp does, with a 400) fails immediately.
-//
-// Getting a row wrong is not symmetric. A provider wrongly on "prose" keeps exactly today's
-// behaviour; one asked in the wrong dialect pays a refusal on every screen, and only survives it
-// because the analysis is remade in prose when a request comes back refused.
+// How each provider is asked for a schema-constrained answer, if at all: a claim about the ENDPOINT,
+// never the model, read by the guardrail verdict (modules/guardrails/verdict.ts). openai and
+// anthropic take json-schema (a `strict` json_schema; a forced tool call); google takes the OpenAPI
+// 3.0 subset (asked in json-schema it answers 400 and the analysis is redone in prose, two calls per
+// screen); deepseek implements only `json_object`; openrouter's support is per endpoint behind the
+// router and changes without notice; openai-compatible is arbitrary, and a server that ignores the
+// parameter makes the client retry for a minute. A row wrongly on "prose" costs nothing; one in the
+// wrong dialect pays a refusal on every screen.
 export type VerdictAskMode = "prose" | "json-schema" | "openapi";
 
 const VERDICT_ASK_MODE: Record<
@@ -80,12 +63,12 @@ export const modelConfigSchema = z
     model: z.string().default(""),
     // Vault reference (`vault:<id>`) for the API key, never the key and never an entry name:
     // `vaultRefWhere` turns anything else into a filter that matches nothing, so the runtime
-    // finds no credential and the agent produces nothing. Refused at the write boundary (#254).
+    // finds no credential and the agent produces nothing. Refused at the write boundary.
     credentialRef: z.string().min(1).optional(),
     baseURL: z.string().url().optional(),
     temperature: z.number().min(0).max(2).optional(),
-    // How much the model may reason before answering. Absent = whatever the provider does today.
-    // See ./openai-reasoning for the measured table behind the values and the transport.
+    // How much the model may reason before answering. Absent = the provider's own default.
+    // See ./openai-reasoning for the table behind the values and the transport.
     reasoningEffort: z.enum(REASONING_EFFORTS).optional(),
   })
   .superRefine((cfg, ctx) => {
@@ -96,10 +79,10 @@ export const modelConfigSchema = z
         message: "model is required for this provider",
       });
     }
-    // Any effort above "none" needs /v1/responses, which is OpenAI's own endpoint: OpenAI-shaped
-    // servers (openrouter, openai-compatible) mostly do not implement it, and the other providers
-    // spell reasoning differently altogether (Anthropic thinking budgets, Google thinkingBudget).
-    // Accepting the field there would be a control that either does nothing or fails every turn.
+    // NOTE: any effort above "none" needs /v1/responses, OpenAI's own endpoint: OpenAI-shaped servers
+    // (openrouter, openai-compatible) mostly do not implement it, and the other providers spell
+    // reasoning differently (Anthropic thinking budgets, Google thinkingBudget). Accepting the field
+    // there would be a control that either does nothing or fails every turn.
     if (cfg.reasoningEffort !== undefined && cfg.provider !== "openai") {
       ctx.addIssue({
         code: "custom",

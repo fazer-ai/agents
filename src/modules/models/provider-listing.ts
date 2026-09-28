@@ -1,15 +1,10 @@
 import { AppError } from "@/lib/errors";
 
-// READING A PROVIDER'S ANSWER, for the two surfaces that list options from one (the chat/vision/STT
-// model list and the TTS voice list). It exists for the seam it draws, not for the two lines of
-// parsing: everything that goes wrong AFTER a Response exists is about the answer, and only what
-// goes wrong before it is about reaching the host.
-//
-// Both callers wrap the whole request in one `try` and answer its catch with "could not reach the
-// provider". A body that is not JSON, or is the literal `null`, throws inside that try — so the
-// catch reported a network the operator should go and check, about a host that answered. Found by
-// review on issue #292: before that PR both branches shared one vague sentence, and a mis-aimed
-// branch cost nothing; a sentence specific enough to be useful is specific enough to be wrong.
+// Reading a provider's answer, for the two surfaces that list options from one (the chat/vision/STT
+// model list and the TTS voice list). It draws the seam: what goes wrong AFTER a Response exists is
+// about the answer, and only what goes wrong before it is about reaching the host. Both callers
+// answer their catch with "could not reach the provider", so a non-JSON or `null` body must not throw
+// into it and send the operator to check a network that answered.
 export async function readProviderJson(
   res: Response,
   provider: string,

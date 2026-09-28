@@ -7,15 +7,11 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { recordAudit } from "@/modules/audit/service";
 import { generateApiKey } from "./verify";
 
-// CRUD for ApiKey — Bearer credentials for the REST v1 API and the MCP transport, in two scopes.
-// ctx-based (mirrors the webhooks/vault services); the controller is a thin projection. A TENANT key
-// is RLS-fenced to the active tenant on every read/write and TENANT_ADMIN-gated at the controller. A
-// FLEET key (the `*FleetApiKey` half below) has no tenant. The plaintext token is returned ONLY by
-// the create (once); listing exposes neither the hash nor the plaintext.
-//
-// NOTE: the AppError translationKeys thrown here (errors.apiKeyNotFound) are registered for the i18n
-// extractor via a translate() magic comment in the controller (api-keys.controller.ts), since the API
-// extractor only scans src/api.
+// CRUD for ApiKey: Bearer credentials for the REST v1 API and the MCP transport, in two scopes. A
+// TENANT key is RLS-fenced to the active tenant and TENANT_ADMIN-gated at the controller; a FLEET key
+// (the `*FleetApiKey` half below) has no tenant. The plaintext token is returned ONLY by the create.
+// The AppError translationKeys thrown here are registered for the i18n extractor by a translate()
+// magic comment in api-keys.controller.ts, since the extractor only scans src/api.
 
 // A tenant key's authority is fixed at TENANT_ADMIN, a fleet key's at SUPER_ADMIN (fine-grained
 // scopes deferred); see docs.
@@ -134,7 +130,7 @@ export async function createApiKey(
 
 // The half of `revokeApiKey` that decides whether there is anything to revoke: a key this tenant
 // can see, not already revoked. Same rule as the `updateMany` below, asked ahead of the write so
-// the MCP preview refuses exactly where the apply refuses (#490).
+// the MCP preview refuses exactly where the apply refuses.
 export async function assertApiKeyRevocable(
   ctx: TenantContext,
   id: bigint,
@@ -176,16 +172,11 @@ export async function revokeApiKey(
     throw new NotFoundError("api key not found", "errors.apiKeyNotFound");
 }
 
-// ── fleet-scoped keys (issue #308) ──
-//
-// A fleet key is the same row with no tenant and SUPER_ADMIN, the shape `users` gives a SUPER_ADMIN,
-// which is what lets the request boundary treat the principal it resolves to exactly like a
-// SUPER_ADMIN session (the tenant is chosen per request). Everything below follows from the NULL:
-// the row is never in a tenant's list and never reachable by the tenant revoke, because RLS hides it
-// from tenant scope; the fleet functions run cross-tenant and gate on the caller's ROLE, ignoring
-// whatever tenant the caller has selected (a SUPER_ADMIN in the console always has one, and the key
-// is not its); and the trail is fleet-level (tenant NULL), like `tenant.create`, because a row keyed
-// on the selected tenant would file the deployment's master credential under a stranger's history.
+// ── fleet-scoped keys ──
+// A fleet key is a row with no tenant and SUPER_ADMIN, so RLS hides it from every tenant list and
+// tenant revoke. The fleet functions run cross-tenant and gate on the caller's role, ignoring the
+// selected tenant, and audit at fleet level (tenant NULL): a row keyed on the selected tenant would
+// file the deployment's master credential under a stranger's history.
 
 function requireFleet(ctx: TenantContext): void {
   if (ctx.role !== "SUPER_ADMIN") throw new ForbiddenError();

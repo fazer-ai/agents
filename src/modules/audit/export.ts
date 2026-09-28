@@ -10,58 +10,26 @@ import {
   readInScope,
 } from "./service";
 
-// Bulk export of the audit trail (#521) -- the shared core the console's Export button and the REST
-// endpoint project over, the same shape `flowlog/export.ts` gave the Logs page.
-//
-// It reuses `buildAuditWhere`, which is the whole point: an export is quoted to a customer, an
-// auditor or an incident review, so rows that do not match what the operator was looking at are worse
-// than no export at all. Sharing the predicate makes that structural instead of a promise -- and the
-// scope comes with it, refused to the same callers and read under the same role as the list, because
-// a dump that ignored it would either answer for the wrong trail or repeat the omission #520 closed.
+// Bulk export of the audit trail, the shared core the console's Export button and the REST endpoint
+// project over. It reuses `buildAuditWhere` and the list's scope rules: an export is quoted to
+// auditors, so rows that do not match what the operator was looking at are worse than no export.
 
 export const AUDIT_EXPORT_FORMAT = "csv" as const;
 
-// TWO CEILINGS, WHICHEVER COMES FIRST, and the second one is why this does not just copy
-// `MAX_LOG_EXPORT_ROWS`. A log row is small (249 bytes on average, 2,614 at its measured peak) so a
-// row count bounds the file well enough. An audit row is not bounded the same way: `truncForAudit`
-// clips each STRING at 4,000 and nothing clips the object, and `agent.prompt_set` writes a prompt on
-// each side -- a worst-case row serializes to 8,120 bytes of CSV (measured), which at 10,000 rows is a
-// 77 MB download. Rows alone would therefore be a cap that is either useless for the fat trail or
-// needlessly tight for the ordinary one, where a row measures 161 bytes and a whole month fits.
+// Two ceilings, whichever comes first. A row count alone bounds a log export, but not an audit one:
+// `truncForAudit` clips each string, not the object, and `agent.prompt_set` carries a prompt on each
+// side, so a worst-case row is ~8 KB of CSV. Rows alone would be useless for the fat trail or
+// needlessly tight for the ordinary one.
 export const AUDIT_EXPORT_MAX_ROWS = 10_000;
 export const AUDIT_EXPORT_MAX_BYTES = 8 * 1024 * 1024;
 
-// HOW MANY ROWS PER TRIP, and this is the one number a fixed value gets wrong in both directions.
-//
-// The budget has to bound what is FETCHED and not only what is written, and a row has no structural
-// ceiling to bound it with: `truncForAudit` clips each STRING at 4,000 and clips neither the number
-// of fields nor the depth, so `agent.settings` -- an open-ended bag -- is as wide as the tenant made
-// it. Measured on this projection, a fixed batch of 500 materializes 8 MB at two fields per row,
-// 191 MB at fifty and 765 MB at two hundred, all of it read only to be discarded by a ceiling of
-// 8 MB. A batch small enough to be safe there would then walk an ordinary trail (161 bytes a row) in
-// a thousand round trips.
-//
-// So the trip is sized instead of chosen: the FIRST one is small, because nothing is known yet, and
-// each one after it is sized by the budget still unspent divided by the WIDEST row seen so far --
-// the widest and not the average, so one fat row shrinks the next trip immediately instead of being
-// averaged away by the thin ones around it. Doubling caps how fast it may grow, which is what keeps
-// the estimate honest: reaching a wide trip costs several trips that already fit inside the budget.
-//
-// THE WIDEST ROW OF THE LAST TRIP, and not of the walk. A running maximum never comes back down, so
-// one 400 KB `agent.settings` write in a trail of 161-byte logins would pin every later trip to what
-// that row cost -- about 19 rows against the default budget, turning a 10,000-row export into five
-// hundred sequential transactions. Forgetting it after one trip is safe here because the doubling
-// cap, not the estimate, is what bounds the recovery: a trip may only ever ask for twice the last
-// one, so an estimate that turns optimistic buys a single doubling and not a jump to the cap.
-// (Measured as a mutation: halving the remembered maximum each trip instead of dropping it produces
-// the identical sequence of trips, because whenever the two disagree the doubling cap is already the
-// smaller bound. The half-life was dead code.)
-//
-// What this does NOT promise: a trail whose first rows are thin and whose next ones are enormous can
-// still overshoot one trip, because no row count can bound bytes that are not known until they are
-// read. Bounding it exactly would mean asking the database for the sizes first, in SQL, which means
-// spelling the predicate a second time -- and a predicate that can drift from the list's is the one
-// failure this module exists to make structurally impossible.
+// Rows per trip, sized rather than fixed: an audit row has no structural ceiling (`truncForAudit`
+// clips strings, not field count or depth), so a fixed batch either materializes hundreds of MB to
+// discard or walks an ordinary trail in a thousand trips. The first trip is small; each next one is
+// the unspent budget over the widest row of the LAST trip (a running max would pin every later trip
+// to one fat row), capped at doubling the previous trip, which is what bounds recovery. A thin-then-
+// enormous trail can still overshoot one trip; bounding it exactly would spell the predicate a second
+// time in SQL, and a predicate that can drift from the list's is what this module exists to prevent.
 const BATCH_PROBE = 8;
 const BATCH_MAX = 500;
 
@@ -137,9 +105,9 @@ const SELECT = {
 type Row = Prisma.AuditLogGetPayload<{ select: typeof SELECT }>;
 
 // RFC 4180. Quote only when the cell holds a delimiter, a quote or a newline, and double the embedded
-// quotes -- which for this table is EVERY row with a projection, since a JSON cell always carries `"`
-// (measured: 72 of 72 on a dev trail). So this is the ordinary path here, not the edge case it is in
-// a log export, and the tests round-trip a value carrying all three characters through a real parser.
+// quotes -- which for this table is EVERY row with a projection, since a JSON cell always carries `"`.
+// So this is the ordinary path here, not the edge case it is in a log export, and the tests
+// round-trip a value carrying all three characters through a real parser.
 //
 // Split in two, because the columns are not one kind: seven of them are text and two of them are
 // JSON, and only the JSON pair may be re-parsed by whoever opens the file.
@@ -184,16 +152,10 @@ function timestampSlug(d: Date): string {
   return d.toISOString().slice(0, 19).replace(/:/g, "-");
 }
 
-// THE BOUND A SEQUENCE ROW MEANS, and `is_called` is half of it rather than a detail. A sequence
-// never called reports `last_value = 1` -- the value it WILL hand out -- and one that has handed out
-// exactly one row reports 1 as well; only this flag separates them (measured). Taking 1 in the first
-// case puts the bound one id ABOVE an empty trail, so the very first row ever written, landing
-// between the read and the first trip, would arrive inside a file that started before it existed.
-// Uncalled means the bound sits below the sequence's start.
-//
-// Split out because it is the one part of the bound a test can reach: the sequence behind a real
-// trail has always been called, so the branch that matters is not reproducible through `exportAudit`
-// without resetting shared state under every other suite.
+// The bound a sequence row means. An uncalled sequence reports `last_value = 1` (the value it WILL
+// hand out), same as one that handed out exactly one id; only `is_called` separates them, and taking
+// 1 when uncalled would admit a first-ever row written mid-export. Split out because a real trail's
+// sequence has always been called, so this branch is unreachable through `exportAudit` in tests.
 export function highWaterFrom(row: {
   last_value: bigint;
   is_called: boolean;
@@ -216,59 +178,26 @@ export async function exportAudit(
 
   const header = COLUMNS.join(",");
   const headerBytes = Buffer.byteLength(header, "utf8");
-  // NOTE: A CEILING THE FORMAT CANNOT MEET IS REFUSED, not quietly exceeded. Below the header there is no
-  // answer to give: the file is already over budget before a single row is weighed, and it would come
-  // back with `truncated: false` because nothing was cut -- a result that breaks the promise and
-  // reports having kept it. Same 400 the rest of the range checks raise.
+  // NOTE: a ceiling below the header is refused (400), not quietly exceeded: the file would be over
+  // budget before any row and still report `truncated: false`.
   if (maxBytes < headerBytes) badQueryParam("maxBytes");
   const lines: string[] = [];
-  // NOTE: BYTES AND NOT `.length`, which counts UTF-16 code units. The budget exists to bound a DOWNLOAD,
-  // and the file goes out as UTF-8: a trail written in Portuguese measures 1.18x its code-unit count
-  // (measured on an ordinary projection), and one carrying emoji or CJK measures up to 3x -- so a
-  // budget spent in code units is a budget silently overrun by everyone whose data is not ASCII.
-  // `Buffer.byteLength` costs ~104ns on a 4,000-character line, which against a per-row database read
-  // is nothing.
+  // NOTE: bytes, not `.length` (UTF-16 code units): the budget bounds a UTF-8 download, and non-ASCII
+  // text runs up to 3x its code-unit count.
   let bytes = Buffer.byteLength(header, "utf8");
   let truncatedBy: "rows" | "bytes" | null = null;
-  // NOTE: newest first, walked by the same keyset the page uses, so "the newest `count` win" is the
-  // same sentence for both readers. Since #530 that keyset is `(created_at, id)` -- and it has to
-  // move here in the same commit, because the promise this module exists to keep is that the file
-  // holds the rows the screen holds, in the screen's order. A walk still ordered by `id` would keep
-  // returning the same SET for most trails and a different ORDER for any trail whose stamps and ids
-  // disagree, which is the quietest way for the two readers to drift apart.
+  // NOTE: newest first, walked by the same `(created_at, id)` keyset the page uses, so the file holds
+  // the rows the screen holds in the screen's order; an `id`-ordered walk would drift from it.
   let cursor: { createdAt: Date; id: bigint } | null = null;
   // NOTE: the widest row of the last trip, which is what sizes the next one (see BATCH_PROBE above).
   let widest = 0;
   let batch = BATCH_PROBE;
-  // WHERE THE TRAIL ENDED WHEN THE EXPORT STARTED, held across every trip so the file is ONE
-  // snapshot. The walk takes several round trips and rows keep arriving between them; the old
-  // id-ordered walk excluded them for free, because a new row carries a higher id than any the
-  // descending walk will ever reach again. Ordered by `(created_at, id)` that stops being true:
-  // `created_at` comes from the writing process's clock, so a row appended by a replica running
-  // behind lands BELOW the cursor and gets picked up by a later trip, while one stamped ahead of it
-  // does not -- a file mixing two snapshots, under a filename claiming one. The id is the only
-  // monotonic thing here, so it is what bounds the walk.
-  //
-  // AND IT IS A BOUND, NOT AN MVCC SNAPSHOT, which is a narrower promise and the one this makes. A
-  // sequence hands out ids at INSERT time and the row becomes visible at COMMIT, so a transaction
-  // that had already taken an id below this bound can commit after the aggregate ran and be read by
-  // a later trip. What closed is the wide case -- any write during the whole export -- and what is
-  // left is the width of a transaction already open when the walk started. Closing that too would
-  // mean holding one REPEATABLE READ transaction across every trip, which is `readInScope`'s shape
-  // for the list as well; deliberately not done here (issue #530, review round 5).
-  //
-  // TAKEN FROM THE SEQUENCE, not from a `max(id)` over anything. A `max` needs an index led by `id`
-  // to answer in one row, and after this change no audit index is: over the operator's window it
-  // reads the window out (7,947 buffers, 23.0 ms for 30 days, 80 days back), and over the trail
-  // alone it degrades on an INACTIVE one -- a tenant whose rows are all old makes the planner walk
-  // the primary key backwards past every newer row belonging to somebody else (8,900 buffers,
-  // 21.6 ms measured on a trail of 500 old rows inside 500k). The sequence answers in 0.05 ms
-  // whatever the trail looks like, needs no index, and is readable by the runtime role.
-  //
-  // It is a LOOSER bound than `max(id)` -- it counts ids already handed out to transactions that
-  // have not committed -- which widens the gap named above rather than opening a new one: those are
-  // exactly the writes an id bound cannot separate either way. What it buys is that no export pays
-  // for the shape of the trail it is reading.
+  // NOTE: where the trail ended when the export started, so the file is one snapshot. `created_at`
+  // comes from the writer's clock, so a lagging replica's row can land below the cursor; the id is the
+  // only monotonic thing. It is a bound, not an MVCC snapshot: a transaction already open with a lower
+  // id can still commit into a later trip (closing that means one REPEATABLE READ across every trip,
+  // deliberately not done). Read from the sequence, not `max(id)`: no audit index is led by `id`, so a
+  // `max` degrades on an inactive trail, and the sequence answers in constant time for the runtime role.
   const seq = await readInScope(
     base,
     ctx,

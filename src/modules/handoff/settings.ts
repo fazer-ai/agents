@@ -3,7 +3,7 @@ import { clipText } from "@/lib/text";
 // conversation when the `handoff_to_human` native tool fires (the summary-note behavior stays on the
 // `Agent.transferWithSummary` column):
 //   * "route"        → just set the conversation to open; Chatwoot's inbox routing assigns whoever
-//                      (round-robin / assignment policy). Default — previous behavior, retrocompatible.
+//                      (round-robin / assignment policy). Default.
 //   * "pinned"       → assign to a fixed agent OR team the operator picked (targetAgentId/targetTeamId).
 //   * "agent_choice" → the model may pass a target NAME (agent or team), resolved against the live
 //                      Chatwoot list at call time; the operator lists the options in the prompt.
@@ -87,26 +87,12 @@ export function readHandoffConfig(settings: unknown): HandoffConfig {
 // would be silently reset to its default the next time anybody touched a tool. This one is not
 // tool-coupled either — it applies whether or not the agent has that tool at all.
 export interface TakeoverConfig {
-  // A person answering the customer in this conversation ends the agent's attendance on it, the same
-  // way the `handoff_to_human` tool does: the conversation leaves `pending` for the human queue, and
-  // the gate, the debounce flush and the follow-up ladder all go quiet on it with no new state.
-  // Covers both routes a person can answer by — the Chatwoot composer and the phone paired to the
-  // number the inbox is connected to (issue #430).
-  //
-  // ON BY DEFAULT, which is the opposite of how the rest of the settings bag defaults, so the reason
-  // is written down here the way `memory` writes its own. Without it the agent answers OVER a
-  // colleague who is already in the thread: MEASURED on a live fork, a composer reply and a phone
-  // reply both leave the conversation `pending` and bot-owned (the fork hard-returns false from
-  // `captain_pending_conversation?`, so Chatwoot's own
-  // `mark_pending_conversation_as_open_for_human_response` never fires), and on one production
-  // deployment the agent replied 31 seconds after an attendant's voice note and the follow-up ladder
-  // re-engaged a thread a person was running. Defaulting it off would mean every install keeps that
-  // behaviour until an operator goes looking for a switch they have no reason to suspect exists.
-  //
-  // It is a switch and not a constant because "a human spoke" is not universally a handoff: a flow
-  // where a person seeds context and hands the thread BACK to the agent is coherent, and this is the
-  // only knob that keeps it possible. Turning it off restores exactly the previous behaviour —
-  // nothing else reads it.
+  // A person answering the customer here (Chatwoot composer or the phone paired to the inbox's number)
+  // ends the agent's attendance, like `handoff_to_human`: the conversation leaves `pending`, and the
+  // gate, debounce flush and follow-ups go quiet with no new state. ON BY DEFAULT, unlike the rest of
+  // the bag: the fork never moves a human-answered conversation out of `pending` itself, so off would
+  // leave the agent answering over a colleague. A switch, not a constant, for flows where a person
+  // seeds context and hands back; off restores the prior behaviour, and nothing else reads it.
   onHumanReply: boolean;
 }
 
@@ -118,10 +104,9 @@ export function readTakeoverConfig(settings: unknown): TakeoverConfig {
       ? (settings as Record<string, unknown>).takeover
       : undefined;
   if (!s || typeof s !== "object") return { ...TAKEOVER_DEFAULTS };
-  // Explicit `false` is the only thing that turns it off. A bag written before this block existed has
-  // no key at all and must project ON, and so must a bag carrying any other value — a string, a null,
-  // a number from a hand-edited blob — because the safe answer for an unreadable switch is the one
-  // that keeps the agent off a conversation a person is holding.
+  // NOTE: explicit `false` is the only thing that turns it off. A bag with no key must project ON, and
+  // so must any other value (a string, a null, a hand-edited number): the safe answer for an unreadable
+  // switch keeps the agent off a conversation a person is holding.
   return {
     onHumanReply: (s as Record<string, unknown>).onHumanReply !== false,
   };
@@ -129,8 +114,8 @@ export function readTakeoverConfig(settings: unknown): TakeoverConfig {
 
 // The pinned target a transfer on THIS conversation may use, or null when the transfer goes to
 // Chatwoot's own routing. The rule `buildToolset` applies to the handoff tool (a pin picked in
-// another account names an id that is invalid here), as a function, for the transfer the runtime
-// makes on its own (issue #704), which has no model to fall back to `agent_choice` with.
+// another account names an id that is invalid here), for the transfer the runtime makes on its own,
+// which has no model to fall back to `agent_choice` with.
 export function pinnedHandoffTarget(
   hc: HandoffConfig,
   instanceId: bigint,

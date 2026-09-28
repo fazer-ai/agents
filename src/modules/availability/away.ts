@@ -8,12 +8,9 @@ import {
 } from "@/modules/business-hours/hours";
 
 // The customer-facing side of the availability gate. The gate silences the agent outside its schedule
-// and tells the OPERATOR with a private note; until this module existed the CUSTOMER was told nothing,
-// so from their side the business simply did not answer (issue #153). `awayMessage` is operator-authored
-// copy sent as the persona bot from the same branch that posts the note: no model call, no tokens.
-//
-// Switched off (the default) = the pre-#153 behavior (silence), so the block is additive for every
-// existing agent, and an operator who pauses the message keeps the text they wrote.
+// and tells the OPERATOR with a private note; `awayMessage` is operator-authored copy sent to the
+// CUSTOMER as the persona bot from the same branch: no model call, no tokens. Switched off by default
+// (silence), and an operator who pauses it keeps the text they wrote.
 
 export interface AvailabilityConfig {
   // The operator's on/off for the message. It exists so pausing does not mean DISCARDING the copy,
@@ -26,7 +23,7 @@ export interface AvailabilityConfig {
   awayMessage: string;
 }
 
-// Off, like every agent behaved before this block existed. Turning it on is a deliberate act.
+// Off by default, so the gate stays silent to the customer. Turning it on is a deliberate act.
 export const AVAILABILITY_DEFAULTS: AvailabilityConfig = {
   enabled: false,
   awayMessage: "",
@@ -98,14 +95,10 @@ export function renderAwayMessage(params: {
 }
 
 // Is the customer owed the message again? Once per LOCAL day per conversation, in the schedule's
-// timezone: a WhatsApp conversation is never closed, so once-per-conversation would mean once per
-// customer per lifetime, while a UTC comparison would roll the day over three hours early for
-// America/Sao_Paulo. Chatwoot's own inbox out-of-office lands on the same rule
-// (`conversation.messages.today.template.empty?`), so an operator migrating off that stopgap gets the
-// cadence they already know.
-//
-// This reads the away message's OWN watermark, never the operator note's: a conversation whose note
-// went out earlier today must still receive the message the first time an operator writes one.
+// timezone: a WhatsApp conversation is never closed, so once per conversation would mean once per
+// lifetime, and a UTC day rolls over three hours early for America/Sao_Paulo (Chatwoot's own
+// out-of-office uses the same daily rule). Reads the away message's OWN watermark, never the note's:
+// a note sent earlier today must not suppress the first message an operator writes.
 export function awayMessageDue(
   schedule: Schedule,
   now: Date,

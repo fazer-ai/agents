@@ -6,15 +6,10 @@ import {
   type WindowSpec,
 } from "./hours";
 
-// What a schedule says about ITSELF, for the surfaces that describe it to a person: is it open, when
-// does it open next, and what is the weekly grid. Deliberately structural — the wording and its
-// language belong to whoever is speaking (a prompt variable in pt-BR, an English one, a console
-// label), so nothing here returns prose except the grid, whose shape IS the answer.
-//
-// Every predicate below routes through `isOutOfHoursNow`, never through `isOpenAt` directly. That is
-// the whole point of the file: an agent with NO Availability configured and an agent whose schedule
-// has no windows are the SAME always-on state to the gate, and a description derived any other way
-// starts contradicting the gate it exists to describe.
+// What a schedule says about ITSELF (open now, next opening, weekly grid), structurally: the wording
+// and its language belong to whoever is speaking, so only the grid is prose. Every predicate routes
+// through `isOutOfHoursNow`, never `isOpenAt`: no Availability and a schedule with no windows are the
+// SAME always-on state to the gate, and a description derived otherwise would contradict the gate.
 
 export type NextOpening =
   // Open right now — including the always-on shapes, where "next" is not a future event.
@@ -89,15 +84,10 @@ export function formatWindowsSummary(
     .join(" · ");
 }
 
-// Weekday AND date, in both languages. A bare weekday reads fine for "closed for the night" and is
-// ambiguous for exactly the closures #148 added: a year-end shutdown answers "Saturday", which is the
-// Saturday eleven days out. One format that is never ambiguous beats two that are each right half the
-// time. `hourCycle: "h23"` keeps midnight at 00:00 instead of the 24:00 some ICU builds render.
-//
-// The year joins it only when the promise crosses into a different one, which is the same argument
-// one notch further out: `nextOpenAt` scans NEXT_OPEN_SCAN_DAYS ahead, so a schedule closed for
-// nearly a year answers with a date that reads as this week's ("01/01") and means the next year's.
-// Printing it always would tax every ordinary "back tomorrow" for a case almost nothing reaches.
+// Weekday AND date, in both languages: a bare weekday is ambiguous for closures (a year-end shutdown
+// answering "Saturday" means the one eleven days out). `hourCycle: "h23"` keeps midnight at 00:00
+// instead of the 24:00 some ICU builds render. The year joins only when the opening falls in a
+// different one (`nextOpenAt` scans NEXT_OPEN_SCAN_DAYS ahead), so ordinary "back tomorrow" stays short.
 export function formatNextOpen(
   at: Date,
   now: Date,

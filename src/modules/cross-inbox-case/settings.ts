@@ -1,16 +1,10 @@
 import { clipText } from "@/lib/text";
 
 // Per-agent config for the `open_case_in_inbox` native tool, read from `agent.settings.crossInboxCase`.
-//
-// WHERE the case goes is an operator decision and lives here, never in a tool argument: the model
-// decides WHETHER to open the case, not which inbox receives it (issue #700). A tool argument could
-// be steered by the customer's own words into an inbox the operator never meant to expose.
-//
-// `mergeContacts` is off by default on purpose. The address a customer types in a chat is only a
-// claim, and when it already belongs to another contact a merge is irreversible (Chatwoot has no
-// unmerge) and pulls that other contact's attributes into the prompt of the agent talking to whoever
-// typed it. Off, the case opens on the contact that already holds the address and the two link notes
-// join the halves; an operator who accepts the risk turns the merge on.
+// WHERE the case goes lives here, never in a tool argument, which the customer's words could steer
+// into an inbox the operator never meant to expose. `mergeContacts` is off by default: a typed address
+// is only a claim, and a merge is irreversible in Chatwoot and pulls the other contact's attributes
+// into the prompt. Off, the case opens on the contact holding the address and link notes join them.
 
 export interface CrossInboxCaseConfig {
   // The Chatwoot inbox id (chatwootInboxId) the case is opened in. Null ⇒ the tool is not offered.
@@ -21,9 +15,9 @@ export interface CrossInboxCaseConfig {
   targetInstanceId: number | null;
   // A label written on the ORIGIN conversation once the case is open. Null ⇒ none.
   originLabel: string | null;
-  // Labels written on every CASE this tool opens or continues, on top of the model's `labels`
-  // (issue #901). The model's choice varies per call; a team whose queue is a folder filtered by
-  // label needs one the operator controls, or the cases the agent opens never reach that folder.
+  // Labels written on every CASE this tool opens or continues, on top of the model's `labels`. A team
+  // whose queue is a label-filtered folder needs one the operator controls, or the agent's cases never
+  // reach it.
   caseLabels: string[];
   // The origin conversation's custom attribute that receives the case's conversation number.
   caseAttributeKey: string;

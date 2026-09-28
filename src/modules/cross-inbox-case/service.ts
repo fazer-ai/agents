@@ -1,18 +1,10 @@
-// Opening the contact's case in another inbox (issue #700): the operation behind the
-// `open_case_in_inbox` native tool. The tool (src/graph/tools/native.ts) owns what the model reads;
-// this owns what happens in Chatwoot, in this order:
-//
-//   1. an open case this conversation already opened is answered with that case, not a second one;
-//   2. the destination's identity (an email address for an email inbox) is settled on the contact;
-//   3. the conversation is opened in the destination inbox, or continued when the inbox is set to
-//      continue the contact's open case (the fork's `continue_open_conversation`);
-//   4. the case number is written back on the origin conversation, then the case is taken from any
-//      agent bot and given to the configured team, then the opening message, the notes that link the
-//      two sides and the labels.
-//
-// It does NOT close the origin conversation. `resolve_conversation` does that, and on the reactive
-// path it defers the close until after delivery and drops it when the customer writes again; closing
-// here would take that protection away.
+// Opening the contact's case in another inbox: the Chatwoot side of the `open_case_in_inbox` native
+// tool (src/graph/tools/native.ts owns what the model reads). In order: reuse an open case this
+// conversation already opened; settle the destination identity on the contact; open or continue the
+// case in the destination inbox; write the case number back on the origin, take the case from any
+// agent bot and give it to the team, then send the opening message, link notes and labels. It does
+// NOT close the origin: `resolve_conversation` defers that until after delivery and drops it when the
+// customer writes again, and closing here would lose that protection.
 
 import { withKeyedQueue } from "@/lib/locks";
 import {
@@ -103,7 +95,7 @@ export type OpenCaseResult =
       // The destination's reply window was closed (Chatwoot's `can_reply`), so the opening went to
       // the case as an explained private note instead of to the customer.
       openingOutsideWindow?: boolean;
-      // Operator case labels the account does not have, left off the case (issue #901).
+      // Operator case labels the account does not have, left off the case.
       unknownCaseLabels?: string[];
       // The case could not be read to settle its owner, so nothing past that point was written:
       // `before_clear` wrote nothing, `before_team` cleared the bot and wrote no team.
@@ -440,12 +432,10 @@ async function run(
       if (verdict === "drop") subject = null;
     }
 
-    // ONE CASE CONTACT AT A TIME, from the listing to the opening message (review round 9 of #881).
-    // The queue around this call is per ORIGIN, and two origins of the same contact can both list the
-    // contact's conversations before either creates: an inbox that continues open conversations then
-    // hands both the same case, and both would send it an opening. Keyed by the account, the inbox
-    // and the contact the case opens on, so the second one lists after the first created, and reads
-    // its case as continued.
+    // NOTE: one case contact at a time, from the listing to the opening message. The outer queue is per
+    // ORIGIN, so two origins of one contact could both list before either creates and both send an
+    // opening to the same continued case. Keyed by account, inbox and case contact, the second lists
+    // after the first created and reads its case as continued.
     const caseKey = `cross-inbox-case-contact:${client.conversationUrl(0)}:${target}:${caseContactId}`;
     return await withKeyedQueue(caseKey, async (): Promise<OpenCaseResult> => {
       // 3. Open, or continue. Which of the two happened is read from the contact's conversations
@@ -572,16 +562,11 @@ async function run(
       await attempt("origin_link_note", () =>
         client.sendPrivateNote(origin, originLinkNote(caseUrl, inboxName)),
       );
-      // Labels are a read-modify-write of the whole set, so both go through the queue every label
-      // writer shares (`set_labels`, the observer's verdict), and both READ inside it, a new case
-      // included: an automation or an operator can label it between the create and this write, and
-      // serializing only preserves a change the write has read.
-      //
-      // THE OPERATOR'S LABELS ARE CHECKED AGAINST THE ACCOUNT, the model's are not (issue #901). A
-      // label Chatwoot does not know is still stored as a tag, one the folders never list, so a typo
-      // in the configuration would pass as labelled while no queue shows the case. It is left off
-      // and reported to the operator. An unreadable catalog does not cost the label: the label is
-      // what puts the case in the team's queue, so it is written as configured.
+      // NOTE: labels are a read-modify-write of the whole set, so both writes go through the shared
+      // label queue and READ inside it (a new case included: an automation can label it after create).
+      // The operator's labels are checked against the account, the model's are not: an unknown label
+      // is stored as a tag no folder lists, so it is left off and reported. An unreadable catalog keeps
+      // the label as configured, since it is what puts the case in the team's queue.
       let unknownCaseLabels: string[] = [];
       let caseLabels = config.caseLabels;
       if (caseLabels.length > 0) {

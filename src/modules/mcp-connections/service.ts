@@ -73,11 +73,9 @@ function toDto(r: {
   createdAt: Date;
   updatedAt: Date;
 }): McpConnectionDto {
-  // The spread is what made this the easiest of the four to miss: `credentialRef` reached the
-  // reader because nobody named it. It is handed out only where it NAMES an entry — `requireVaultRef`
-  // has guarded both writers since #126 (dc6c467a) and this module predates that, so a row can hold
-  // a value no resolver ever matched, and `mcp_connection_list` returns this DTO under a scope
-  // narrower than the console's (issue #438).
+  // NOTE: `credentialRef` is handed out only where it NAMES an entry: rows can predate
+  // `requireVaultRef` and hold a value no resolver matches, and `mcp_connection_list` returns this DTO
+  // under a scope narrower than the console's.
   return {
     ...r,
     id: String(r.id),
@@ -85,25 +83,12 @@ function toDto(r: {
   };
 }
 
-// What the audit row carries.
-//
-// Same two halves as the other four families: identity, policy and shape are PROJECTED, everything
-// else is listed in `UNDISCLOSED` below and compared without being carried. A column in neither
-// half changes without the row noticing, and `projectionMoved` then suppresses the write entirely.
-//
-// `url` is REDACTED to its origin. An MCP endpoint accepts any absolute URL, and userinfo, a path
-// segment and a query parameter are all places a token is actually carried — this row is
-// append-only and readable by every tenant admin, so it would outlive the correction. `command` is
-// projected as its LAUNCHER (`bunx`/`uvx`) for the same reason: a stdio invocation carries its
-// arguments, and an argument is where a self-hosted server's key goes. Both whole values are
-// compared, so a change to either is still visible as a change.
-//
-// The RAW `credentialRef` is compared as well as projected, and that is not belt-and-braces: two
-// different opaque values both project as `{ref: null, opaque: true}`, so swapping one for the
-// other would move nothing. `requireVaultRef` has refused that spelling on the way in since #126,
-// which makes it a legacy row rather than a reachable write — but the fence answers for columns and
-// not for what today's writer happens to allow, and listing it costs one line.
-// `tests/modules/audit-config-families.test.ts` holds the fence over this model's columns.
+// What the audit row carries: identity, policy and shape are PROJECTED, the rest is in `UNDISCLOSED`
+// and compared without being carried (a column in neither changes without writing a row). `url` is
+// redacted to its origin and `command` projected as its launcher (`bunx`/`uvx`): both can carry a
+// token on an append-only row every tenant admin reads; both whole values are still compared. The raw
+// `credentialRef` is compared too, since two opaque values project identically and legacy rows can
+// hold them. `tests/modules/audit-config-families.test.ts` holds the fence over this model's columns.
 function auditProjection(r: {
   name: string;
   transport: string;
@@ -251,22 +236,18 @@ async function assertNameFree(
   }
 }
 
-// Everything `createMcpConnection` refuses about an input WITHOUT reading the database, as one
-// call, so the MCP dry run can answer with the verdict the apply will (issue #490). See the note on
-// `assertAgentCreatable`. Async only because `assertTransportValid` is; it makes no query.
+// Everything `createMcpConnection` refuses about an input WITHOUT reading the database, as one call,
+// so the MCP dry run answers with the apply's verdict. Async only because `assertTransportValid` is;
+// it makes no query.
 export async function assertMcpConnectionCreatable(input: McpConnectionCreate) {
   const data = parseInput(mcpConnectionCreateSchema, input);
   await assertTransportValid(data);
   return data;
 }
 
-// Same split, same caveat as `assertToolNameAvailable`: ADVISORY. It reads outside the write's
-// transaction, so a name free here can be taken before the apply arrives; `assertNameFree` inside
-// the tx stays the authority. It exists so the preview refuses the reuse the operator actually
-// makes, instead of promising a connection the apply will not create (#490).
-// `exceptId` for the update path: a connection keeping its own name is not a collision, and
-// omitting it would make every rename-to-itself preview refuse a write that succeeds — the inverse
-// divergence, which is just as wrong.
+// ADVISORY, like `assertToolNameAvailable`: it reads outside the write's transaction, so
+// `assertNameFree` inside the tx stays the authority; this lets the preview refuse the common reuse.
+// `exceptId` for the update path: a connection keeping its own name is not a collision.
 export async function assertMcpConnectionNameAvailable(
   ctx: TenantContext,
   name: string,
@@ -310,14 +291,10 @@ export async function createMcpConnection(
   });
 }
 
-// Everything `updateMcpConnection` decides before it writes: the schema, that the row exists, and
-// that the MERGED transport/url/command is coherent and reachable. Split out so the MCP preview can
-// ask the same question the apply asks (#490) — the merge is the point, since a patch that only
-// moves the url is judged against the transport already stored.
-// The judgement `updateMcpConnection` makes about a patch, against a snapshot the CALLER supplies.
-// The snapshot is a parameter rather than a read of its own so the MCP preview can validate and
-// render from the same row: reading it twice means a concurrent write can land between the two, and
-// the preview then describes a diff against one state while having approved another (#490).
+// The judgement `updateMcpConnection` makes about a patch (schema, and that the MERGED
+// transport/url/command is coherent and reachable), against a snapshot the CALLER supplies so the MCP
+// preview validates and renders from the same row; reading twice could approve one state and
+// describe another.
 export async function assertMcpConnectionUpdatable(
   patch: McpConnectionUpdate,
   current: { transport: string; url: string | null; command: string | null },

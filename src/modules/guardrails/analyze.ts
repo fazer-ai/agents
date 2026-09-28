@@ -43,19 +43,12 @@ function messageText(content: BaseMessage["content"]): string {
 
 type AnalysisParams = GuardrailPromptParams & { text: string };
 
-// answer_relevance is the only check whose input is the customer's own message, and putting that
-// message in the same call as the other policies CONTAMINATES them. Measured live against
-// gpt-5.4-mini, same reply and same checks, only the message differing: a reply naming nobody was
-// flagged competitor_mention in 11 of 16 runs because the CUSTOMER had named a competitor, against
-// 0 of 16 with the message absent. Prompt wording could not carry this: a sentence scoping the
-// message to one check took another configuration from 6/16 to 3/16, and the variant that named the
-// policies to ignore took it to 8/16 — telling a model not to consider something makes it consider
-// it. So the separation is structural. The policies keep exactly the call they had before this
-// feature existed, and answer_relevance gets its own, where there is nothing to contaminate.
-// Exported for its own test. What travels in each half is the property this whole change turns on,
-// and asserting it through the built prompt would pass for the wrong reason: `checks` already gates
-// the competitor list, the agent's instructions and the customer's message, so every strip below
-// looks redundant from the outside until the day one of those gates moves.
+// answer_relevance is the only check whose input is the customer's own message, and that message in
+// the same call CONTAMINATES the other policies (a customer naming a competitor gets the reply flagged
+// competitor_mention). Wording cannot fix it: telling a model to ignore something makes it consider
+// it. So relevance gets its own call and the policies keep theirs without the message. Exported for
+// its own test, since `checks` already gates most fields and every strip below looks redundant from
+// the built prompt until one of those gates moves.
 export function splitAnalyses(p: AnalysisParams): {
   policies: AnalysisParams | null;
   relevance: AnalysisParams | null;
@@ -88,36 +81,19 @@ export function splitAnalyses(p: AnalysisParams): {
       competitors: [],
       customPolicy: "",
       systemPrompt: undefined,
-      // NOTE: This half never writes a replacement, whatever the action is, and the runtime falls back to
-      // the configured template message. Two reasons, and the second is the one that settles it:
-      //
-      //   * the policies were stripped from this call so the customer's words cannot trip them, so
-      //     a replacement written here would be written without the rules it has to obey. Handing
-      //     them over as writing guidance was tried and MEASURED: 5 of 10 replacements still named
-      //     a competitor the operator had banned, in the same breath as being told never to;
-      //   * a relevance violation means the reply did not ANSWER, so there is nothing to rewrite
-      //     and the model would have to invent the answer, with no tools, no knowledge base and no
-      //     account data. In those same 10 runs, 3 stated a commercial fact it could not know
-      //     ("Sim, trabalhamos com a Zenvia"). Toxicity rewrites what the agent said; relevance
-      //     would be fabricating what the business does.
+      // NOTE: this half never writes a replacement; the runtime falls back to the configured template.
+      // The policies were stripped from this call, so a replacement would ignore them, and a relevance
+      // violation means the reply did not ANSWER, so the model would have to invent a commercial fact.
       generationPrompt: undefined,
     },
   };
 }
 
-// Strips the proposed replacement, so the runtime falls back to the configured template message.
-// Two callers, and they are the two analyses with nothing to rewrite: a relevance violation (below)
-// and the whole INPUT direction (see `analyzeGuardrail`). Dropping the generation guidance is not
-// enough on its own for either: the response shape still asks for `suggestedReply`, and a model that
-// writes one anyway would have it delivered.
-//
-// It must not write one. A relevance violation means the reply did not ANSWER, so there is nothing
-// to rewrite and the model has to invent the answer, with no tools, no knowledge base and no
-// account data. Measured against gpt-5.4-mini, 10 replacements for one such violation: 3 stated a
-// commercial fact the model could not know ("Sim, trabalhamos com a Zenvia", to a customer asking
-// whether we work with them), and 5 named a competitor the operator had banned while being told in
-// the same prompt never to mention it. Toxicity rewrites what the agent said; relevance would be
-// fabricating what the business does.
+// Strips the proposed replacement, so the runtime falls back to the configured template message. For
+// the two analyses with nothing to rewrite: a relevance violation and the whole INPUT direction.
+// Dropping the generation guidance alone is not enough: the response shape still asks for
+// `suggestedReply`, and one written anyway would be delivered. A relevance replacement would have to
+// invent the answer with no tools or data, fabricating what the business does.
 const withoutReplacement = (v: GuardrailVerdict): GuardrailVerdict => ({
   ...v,
   suggestedReply: null,
@@ -153,8 +129,8 @@ export async function analyzeGuardrail(
   // (`acceptsConstrainedOutput`), and passed rather than inferred here: the same adapter serves an
   // endpoint we own and one we know nothing about, so the instance cannot answer this.
   mode: VerdictMode,
-  // The turn's usage sink. A guardrail analysis is a billed model call like any other, and without
-  // this it is spent money with no row (issue #316) — the same hole the speech normalizer had.
+  // The turn's usage sink: a guardrail analysis is a billed model call, and without this it is spent
+  // money with no row.
   callbacks?: BaseCallbackHandler[],
 ): Promise<GuardrailVerdict> {
   const { policies, relevance } = splitAnalyses(params);
@@ -165,33 +141,11 @@ export async function analyzeGuardrail(
       mode,
       callbacks,
     );
-    // NOTE: The INPUT direction never delivers a replacement. There is no assistant reply to repair
-    // there — the analyzed text is the CUSTOMER's message — so "write a safe replacement" has no
-    // referent and the model composes one from an empty desk. Measured live against eight models
-    // from three vendors, and every failure below is one of them writing that message:
-    //
-    //   * whose turn it is. It answers in the CUSTOMER's own voice, and the bot posts that back TO
-    //     the customer: claude-fable-5 16 of 16 ("Estou aguardando retorno há algum tempo e
-    //     gostaria de saber quanto custa a avaliação"), gpt-5.4-mini 14 of 32, claude-haiku-4.5
-    //     2 of 16. On the fixture that asks about a competitor, gpt-5.4-mini named the one the
-    //     operator had banned 14 of 32.
-    //   * what it cannot know. gemini-3.5-flash-lite sent the customer an unfilled template slot
-    //     10 of 16: "O valor da avaliação é [inserir valor]".
-    //   * who is writing. The customer's message reaches this model at user level, so it can simply
-    //     ask for the reply it wants, and asking the model to compose one is what makes that
-    //     request on-task. With one such message: gpt-4o-mini produced the dictated text 16 of 16,
-    //     verbatim ("A avaliação custa R$ 99,00 e trabalhamos com a Zenvia" — a price no operator
-    //     set, a competitor the operator had banned, on the company's own channel), gpt-5.4-nano
-    //     15 of 16, gemini-3.5-flash-lite 3 of 16, and gpt-4.1-nano did something worse than
-    //     compose: it returned a CLEAN verdict 16 of 16, so the injected message switched the
-    //     guardrail off and went through to the agent.
-    //
-    // Which of those three an install gets is a property of the model the operator happened to
-    // pick: gemini-3.5-flash tripped none of them, and still spoke for the business on a turn the
-    // agent never ran. Constraining the writer by wording was measured too and held at 0 of 64 —
-    // but what it then produces is one fixed sentence ("Não posso ajudar com mensagens ofensivas.
-    // Se quiser, reformule…"), which is a template the operator can write once, without a model
-    // call.
+    // NOTE: the INPUT direction never delivers a replacement: the analyzed text is the CUSTOMER's, so
+    // there is no reply to repair. Asked to compose one, models answer in the customer's own voice,
+    // send unfilled template slots, or produce text the customer's message dictated (a prompt
+    // injection on the business's channel), depending on which model the operator picked. A writer
+    // constrained by wording only yields a fixed sentence, which the operator's template already is.
     return params.direction === "input" ? withoutReplacement(verdict) : verdict;
   }
   if (policies === null) {
@@ -233,8 +187,8 @@ function isRequestRefused(err: unknown): boolean {
 //
 // The provider list says which ENDPOINT implements constrained decoding; it cannot say that every
 // model an operator may type into the guardrail's model field does. When the request comes back
-// refused, the analysis is retried the way it was made before this existed, so the worst case is
-// one extra call rather than a screen that quietly stops running.
+// refused, the analysis is retried in prose, so the worst case is one extra call rather than a screen
+// that quietly stops running.
 async function invokeForVerdict(
   model: BaseChatModel,
   mode: VerdictMode,
@@ -296,15 +250,14 @@ async function runAnalysis(
   const system = buildGuardrailSystemPrompt(params);
   // NOTE: The customer's message rides at USER level, fenced and named, never inside the system prompt:
   // there it would read as one more instruction from the operator, and the customer writes it. The
-  // text under review keeps its bare shape, so a call with the check off is byte-identical to before.
+  // text under review keeps its bare shape, so a call with the check off is unchanged by the fence.
   const customer = fenceCustomerMessage(params);
   const messages: BaseMessage[] = [new SystemMessage(system)];
   if (customer !== null) messages.push(new HumanMessage(customer));
   messages.push(new HumanMessage(params.text));
   try {
-    // ONE deadline for the verdict, the refused-then-prose retry included (issue #819): the signal
-    // alone is dropped by the Google adapter, and a classifier on the customer's path is the last
-    // call that may hang.
+    // NOTE: ONE deadline for the verdict, the refused-then-prose retry included: the signal alone is
+    // dropped by the Google adapter, and a classifier on the customer's path must not hang.
     const { parsed, raw } = await runModelCall(
       (signal) => invokeForVerdict(model, mode, messages, signal, callbacks),
       { deadlineMs: ANALYZE_TIMEOUT_MS },

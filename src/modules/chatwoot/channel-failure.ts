@@ -62,6 +62,8 @@ export interface ChannelFailure {
   kind: ChannelFailureClass;
   // The reply as text, when the message carries it. Only meaningful for `media`.
   text: string | null;
+  // The text is the operator's, which keeps Chatwoot's Liquid; a model's is escaped.
+  byOperator: boolean;
 }
 
 // The codes whose failure is known NOT to be answerable by resending as text. Named so the log can
@@ -106,6 +108,7 @@ export function channelFailureOf(
     code,
     kind: classify(code),
     text,
+    byOperator: m.replyByOperator === true,
   };
 }
 
@@ -211,6 +214,7 @@ export async function handleChannelFailure(params: {
           conversationId: f.conversationId,
           messageId: f.messageId,
           agentBotId: params.agentBotId,
+          byOperator: f.byOperator,
         },
         ...(params.base ? { base: params.base } : {}),
       });
@@ -261,6 +265,7 @@ export async function mediaFallbackHandler(
     return { outcome: "done" };
   }
   const text = decryptJson<string>(job.payloadSecret);
+  const literal = p.byOperator === true ? (t: string) => t : literalForChatwoot;
   // STILL ALLOWED TO SPEAK HERE, asked again at send time: the job can sit queued while the operator
   // switches the agent off, flips it to monitoring, disconnects the account or `/reset`s the
   // conversation, and the bot's stored token outlives all four. The bot is found by the id the
@@ -487,15 +492,9 @@ export async function mediaFallbackHandler(
   if (Array.from(signed).length > CHANNEL_TEXT_MAX)
     return stop("the reply is longer than the channel takes in one message");
   // The model's text is escaped for Chatwoot's Liquid and the signature is not.
-  const [wire = literalForChatwoot(text)] = sig
-    ? attachSignature(
-        [text],
-        sig,
-        cfg.signatureConfig,
-        undefined,
-        literalForChatwoot,
-      )
-    : [literalForChatwoot(text)];
+  const [wire = literal(text)] = sig
+    ? attachSignature([text], sig, cfg.signatureConfig, undefined, literal)
+    : [literal(text)];
   await client.sendMessage(conversationId, wire, { sendId });
   return { outcome: "done" };
 }

@@ -42,6 +42,10 @@ export const CHATWOOT_SEND_ID_KEY = "fazer_ai_send_id";
 // nothing they were not already getting.
 export const CHATWOOT_REPLY_TEXT_KEY = "fazer_ai_reply_text";
 
+// Set on a voice note whose words are the operator's (a guardrail's template or hand-over message),
+// so the text sent in its place keeps Chatwoot's Liquid instead of being escaped as a model's.
+export const CHATWOOT_REPLY_BY_OPERATOR_KEY = "fazer_ai_reply_by_operator";
+
 // THE NAME `/reset` PUTS ON ITS OWN ACKNOWLEDGEMENT, so a later reader can tell where the command's
 // cleanup ENDED (issue #642, round 21).
 //

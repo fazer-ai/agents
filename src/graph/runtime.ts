@@ -1685,6 +1685,8 @@ async function runTurnBody(
               // What the channel gets as TEXT if it refuses the audio: the speech has holes where
               // the items were, and the reply does not (issue #792).
               ...(spoken.speech === text ? {} : { replyText: text }),
+              // And whose words they are: the operator's keep Chatwoot's Liquid in that text.
+              ...(modelText ? {} : { byOperator: true }),
             },
           );
           // AND KEEP THE WORDS WHERE OUR OWN READERS LOOK, which on upstream Chatwoot is the only

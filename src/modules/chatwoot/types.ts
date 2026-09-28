@@ -100,6 +100,8 @@ export interface NormalizedChatwootMessage {
   // content_attributes.fazer_ai_reply_text: the whole reply an audio reply of ours was cut from, when
   // the speech left something out (issue #792). Null everywhere else.
   replyText?: string | null;
+  // content_attributes.fazer_ai_reply_by_operator: that voice note's words are the operator's.
+  replyByOperator?: boolean;
   // Filled by the eager STT pass (NOT from the payload): the audio transcription, used by the direct
   // (no-debounce) path. The debounce flush instead reads it back from the attachment meta on re-fetch.
   transcribedText?: string | null;

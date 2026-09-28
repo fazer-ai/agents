@@ -18,18 +18,10 @@ import {
 } from "@/modules/integrations/service";
 import { getToolpackToolViews } from "@/modules/integrations/toolpacks";
 
-// The error catalog this controller's routes answer with. `bun i18n:extract` materialises
-// src/api/locales/*.json from these lines and prunes anything nothing references, and
-// `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
-// throw site rather than an English sentence on a pt-BR caller's screen.
-//
-// NOTE: `errors.badRequest`, `errors.notFound` and `errors.upstream` were here and are gone on
-// purpose. One generic sentence per HTTP class read as an answer and was not one: the four sites
-// behind `badRequest` said two different things ("not a connected Google account" / "invalid
-// credential reference") and the Drive 403 behind `upstream` carried the ONLY instruction that
-// resolves it, naming which OAuth scope to reconnect with. Registering the generic key made the
-// catalog win over `AppError.message` in `refusalBody`, so those sentences stopped reaching anyone,
-// in English too. Each fact now has its own key, and the ones that vary carry params.
+// The error catalog this controller's routes answer with (`bun i18n:extract` reads these lines).
+// One key per fact, never one generic key per HTTP class: a registered key wins over
+// `AppError.message` in `refusalBody`, so a generic one hides the specific sentence (the Drive 403's
+// is the only one that names the OAuth scope to reconnect with).
 // translate('errors.googleCredentialNotConnected', 'This credential is not a connected Google account.')
 // translate('errors.googleCredentialNotFound', 'The credential this integration needs was not found.')
 // translate('errors.googleDriveScopeDenied', "Google Drive denied the request. Reconnect the credential granting the 'Drive (read-only)' or 'Drive (full access)' scope; 'Drive (app files)' cannot list existing folders.")

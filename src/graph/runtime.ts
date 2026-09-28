@@ -120,6 +120,11 @@ import { undoRefusedTurn } from "./refused-turn";
 import { burstReopenedResolved } from "./reopened-by-burst";
 import { stillInSameEpisode } from "./reset-episode";
 import {
+  applyResolveLabels,
+  type ResolveLabelsResult,
+  resolveLabelsFor,
+} from "./resolve-labels";
+import {
   chosenSilence,
   customerFacingReply,
   silenceWasChosen,
@@ -580,6 +585,33 @@ export async function answersTheReopen(
   }
 }
 
+// Same line the tool's side-effect reporter writes (prepare.ts onSideEffectError), so the Logs page
+// and the alert see the deferred close's label trouble where they see the immediate one's.
+function reportResolveLabels(flow: FlowContext, result: ResolveLabelsResult) {
+  const warn = (phase: string, detail: Record<string, unknown>, msg: string) =>
+    emitFlowEvent(flow, {
+      stage: "tool",
+      level: "warn",
+      status: "error",
+      detail: { ...detail, tool: "resolve_conversation", phase },
+      errorMessage: msg,
+    });
+  if (result.unknown.length > 0)
+    warn(
+      "resolve_labels_unknown",
+      { labels: result.unknown },
+      `resolve labels not in the account: ${result.unknown.join(", ")}`,
+    );
+  if (result.outcome === "failed" || result.heldBy === "unread")
+    warn(
+      "resolve_labels",
+      {},
+      result.error instanceof Error
+        ? result.error.message
+        : String(result.error),
+    );
+}
+
 // Applies a deferred resolve_conversation intent AFTER the reply is delivered. The tool only
 // records the intent (see tools/native.ts TurnState): toggling mid-turn makes the webhook mirror
 // flip Conversation.status before the recheck, which then reads our own resolve as a human
@@ -602,9 +634,14 @@ async function applyDeferredResolve(
     // toggle, because after it the mirror may already carry our own close and a re-read could not
     // tell it from somebody else's.
     observed: ObservedConversation;
+    // The run's ownership-aware fence (a takeover as well as a withdrawal). The label write is a wait
+    // after the caller's last ask, so it is asked inside the label queue and again before the toggle.
+    stillWanted?: () => Promise<boolean>;
   },
 ): Promise<boolean> {
   if (!turnState.resolveRequested) return false;
+  // Read before the intent is cleared: it is what says the labels belong to this close.
+  const labels = resolveLabelsFor(turnState);
   turnState.resolveRequested = false;
   let closed = false;
   try {
@@ -618,6 +655,30 @@ async function applyDeferredResolve(
       conversationId,
       origin.observed,
     );
+    // The operator's labels, BEFORE the toggle: Chatwoot reads the survey rules when the status
+    // changes, so a label written after it is one the CSAT never saw. A label that
+    // could not be written does not keep the conversation open.
+    reportResolveLabels(
+      flow,
+      await applyResolveLabels({
+        client,
+        tenantId: origin.tenantId,
+        conversationId,
+        // Somebody else's close already landed: the toggle below is a no-op, and a label would claim
+        // their resolution for the agent.
+        labels: observed.status === "resolved" ? [] : labels,
+        caseHold: turnState.resolveCaseHold,
+        stillWanted: origin.stillWanted,
+      }),
+    );
+    // Only a close that had labels to write waited on them; one with none asks nothing new.
+    if (
+      labels.length > 0 &&
+      origin.stillWanted &&
+      !(await origin.stillWanted())
+    ) {
+      return false;
+    }
     await client.toggleStatus(conversationId, "resolved");
     // Closed from here on, whatever the bookkeeping below does: that is what a caller asks.
     closed = true;
@@ -3082,6 +3143,7 @@ async function runTurnBody(
             instanceId,
             base,
             observed: recheck.observed,
+            stillWanted: stillWantedFence,
           },
         );
       }
@@ -3237,6 +3299,7 @@ async function runTurnBody(
       instanceId,
       base,
       observed: recheck.observed,
+      stillWanted: stillWantedFence,
     });
     return "posted";
   } finally {

@@ -187,6 +187,7 @@
     "playgroundTurnFailed": "The turn failed on the server. The cause is in the server log, under the id of this turn.",
     "proEdition": "This feature requires the Pro edition",
     "promptTooLong": "System prompt is too long: {{len}} characters (limit {{max}}).",
+    "protectedResolveLabel": "`Labels on close` cannot hold a label `set_labels` keeps off limits: {{labels}}. Take it out of one of the two lists.",
     "providerListUnexpectedResponse": "{{provider}} answered the list request in an unexpected format.",
     "providerListUnreachable": "Could not reach {{provider}} to list the options",
     "providerModelsFailed": "{{provider}} refused the list request (status {{status}}).",

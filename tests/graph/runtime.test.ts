@@ -228,6 +228,52 @@ function makeResolveClient(
   return async () => client;
 }
 
+// makeResolveClient plus the label endpoints, which replace the whole set like Chatwoot's do. The
+// label calls go in the same ordered log, so a test can say where they fell against the close.
+function makeLabelledResolveClient(
+  calls: Array<[string, number, string]>,
+  opts: {
+    catalog?: string[];
+    current?: string[];
+    // Conversations by number, for a close that looks for the contact's open case.
+    conversations?: Record<number, Record<string, unknown>>;
+  } = {},
+) {
+  let current = [...(opts.current ?? [])];
+  const client = {
+    sendMessage: async (conversationId: number, content: string) => {
+      calls.push(["sendMessage", conversationId, content]);
+      return {};
+    },
+    sendPrivateNote: async (conversationId: number, content: string) => {
+      calls.push(["sendPrivateNote", conversationId, content]);
+      return {};
+    },
+    toggleStatus: async (conversationId: number, status: string) => {
+      calls.push(["toggleStatus", conversationId, status]);
+      return {};
+    },
+    listLabels: async () => opts.catalog ?? [],
+    ...(opts.conversations
+      ? {
+          getConversation: async (id: number) => {
+            const c = opts.conversations?.[id];
+            if (!c) throw new Error(`no conversation ${id}`);
+            return c;
+          },
+          listContactConversations: async () => [],
+        }
+      : {}),
+    getConversationLabels: async () => [...current],
+    setConversationLabels: async (conversationId: number, labels: string[]) => {
+      current = [...labels];
+      calls.push(["setConversationLabels", conversationId, labels.join(",")]);
+      return {};
+    },
+  } as unknown as ChatwootClient;
+  return { make: async () => client, labels: () => current };
+}
+
 // Records the customer-facing posts in order: an attachment and a text send are both "the customer
 // was messaged", which is exactly what a discarded turn must not have done.
 function makeImageClient(
@@ -2110,6 +2156,316 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // one `mirrorOnToggle` wrote. Getting this wrong dates the stamp to the wrong episode, and a
     // delayed webhook for this very close would then be judged to predate it.
     expect(resolvedRow.resolvedByAt).toBe(OBSERVED_AT);
+  });
+
+  // An instruction to label on close is skipped about half of the time, and a CSAT survey keyed on
+  // the label then reaches none of those conversations. The label is written by the close itself,
+  // and BEFORE the toggle, because Chatwoot reads the survey rules when the status changes.
+  describe("resolve labels (issue #919)", () => {
+    const withResolveLabels = async (
+      labels: string[],
+      fn: () => Promise<void>,
+    ) => {
+      const agent = await suDb.agent.findFirstOrThrow({
+        where: { tenantId },
+        select: { id: true },
+      });
+      await suDb.agent.update({
+        where: { id: agent.id },
+        data: {
+          settings: {
+            split: { enabled: false },
+            resolveConversation: { assignLabels: labels },
+          },
+        },
+      });
+      try {
+        await fn();
+      } finally {
+        await suDb.agent.update({
+          where: { id: agent.id },
+          data: { settings: { split: { enabled: false } } },
+        });
+      }
+    };
+
+    test("the configured label lands after the reply and before the close, keeping what was there", async () => {
+      await seedConversation(91901, null);
+      const FINAL = "Fechado! Obrigado pelo contato.";
+      const calls: Array<[string, number, string]> = [];
+      const cw = makeLabelledResolveClient(calls, {
+        catalog: ["resolvido-pela-ia", "vip"],
+        current: ["vip"],
+      });
+      await withResolveLabels(["resolvido-pela-ia"], async () => {
+        const outcome = await runAgentTurn({
+          tenantId,
+          instanceId,
+          agentBotId: 9,
+          event: incoming({ conversationId: 91901 }),
+          base: appDb,
+          deps: {
+            makeModel: () =>
+              new ResolveThenReplyModel(FINAL) as unknown as BaseChatModel,
+            makeClient: cw.make,
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("posted");
+      });
+      expect(calls).toEqual([
+        ["sendMessage", 91901, FINAL],
+        ["setConversationLabels", 91901, "vip,resolvido-pela-ia"],
+        ["toggleStatus", 91901, "resolved"],
+      ]);
+    });
+
+    test("with no label configured the close is exactly what it was", async () => {
+      await seedConversation(91902, null);
+      const FINAL = "Fechado!";
+      const calls: Array<[string, number, string]> = [];
+      const cw = makeLabelledResolveClient(calls, {
+        catalog: ["resolvido-pela-ia"],
+      });
+      await withResolveLabels([], async () => {
+        await runAgentTurn({
+          tenantId,
+          instanceId,
+          agentBotId: 9,
+          event: incoming({ conversationId: 91902 }),
+          base: appDb,
+          deps: {
+            makeModel: () =>
+              new ResolveThenReplyModel(FINAL) as unknown as BaseChatModel,
+            makeClient: cw.make,
+            checkpointer: new MemorySaver(),
+          },
+        });
+      });
+      expect(calls).toEqual([
+        ["sendMessage", 91902, FINAL],
+        ["toggleStatus", 91902, "resolved"],
+      ]);
+    });
+
+    test("a turn taken over before delivery neither closes nor labels", async () => {
+      await seedConversation(91903, "User");
+      const calls: Array<[string, number, string]> = [];
+      const cw = makeLabelledResolveClient(calls, {
+        catalog: ["resolvido-pela-ia"],
+      });
+      await withResolveLabels(["resolvido-pela-ia"], async () => {
+        const outcome = await runAgentTurn({
+          tenantId,
+          instanceId,
+          agentBotId: 9,
+          event: incoming({ conversationId: 91903 }),
+          base: appDb,
+          deps: {
+            makeModel: () =>
+              new ResolveThenReplyModel(
+                "Resolvido!",
+              ) as unknown as BaseChatModel,
+            makeClient: cw.make,
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("taken-over");
+      });
+      expect(calls).toEqual([]);
+      expect(cw.labels()).toEqual([]);
+    });
+
+    // A person taking the conversation while the close reads its labels owns it from then on: the
+    // agent neither labels nor closes it.
+    test("a human takeover while the resolve labels are read neither labels nor closes", async () => {
+      await seedConversation(91907, null);
+      const FINAL = "Fechado!";
+      const calls: Array<[string, number, string]> = [];
+      const cw = makeLabelledResolveClient(calls, {
+        catalog: ["resolvido-pela-ia"],
+      });
+      const make = async () => {
+        const client = (await cw.make()) as unknown as Record<string, unknown>;
+        return {
+          ...client,
+          listLabels: async () => {
+            if (calls.some((c) => c[0] === "sendMessage")) {
+              await suDb.conversation.updateMany({
+                where: { tenantId, chatwootConversationId: 91907 },
+                data: { assigneeType: "User", assigneeId: 42 },
+              });
+            }
+            return ["resolvido-pela-ia"];
+          },
+        } as unknown as ChatwootClient;
+      };
+      await withResolveLabels(["resolvido-pela-ia"], async () => {
+        await runAgentTurn({
+          tenantId,
+          instanceId,
+          agentBotId: 9,
+          event: incoming({ conversationId: 91907 }),
+          base: appDb,
+          deps: {
+            makeModel: () =>
+              new ResolveThenReplyModel(FINAL) as unknown as BaseChatModel,
+            makeClient: make,
+            checkpointer: new MemorySaver(),
+          },
+        });
+      });
+      expect(calls).toEqual([["sendMessage", 91907, FINAL]]);
+    });
+
+    // An operator's close during delivery is theirs: the toggle is a no-op and no label claims it.
+    test("a conversation closed by someone else during delivery gets no resolve label", async () => {
+      await seedConversation(91906, null);
+      const FINAL = "Fechado!";
+      const calls: Array<[string, number, string]> = [];
+      const cw = makeLabelledResolveClient(calls, {
+        catalog: ["resolvido-pela-ia"],
+        conversations: {
+          91906: {
+            id: 91906,
+            status: "resolved",
+            meta: { assignee_type: null, assignee: null },
+            last_activity_at: 1_700_400_000,
+            updated_at: 1_700_400_001,
+          },
+        },
+      });
+      await withResolveLabels(["resolvido-pela-ia"], async () => {
+        await runAgentTurn({
+          tenantId,
+          instanceId,
+          agentBotId: 9,
+          event: incoming({ conversationId: 91906 }),
+          base: appDb,
+          deps: {
+            makeModel: () =>
+              new ResolveThenReplyModel(FINAL) as unknown as BaseChatModel,
+            makeClient: cw.make,
+            checkpointer: new MemorySaver(),
+          },
+        });
+      });
+      expect(calls.map((c) => c[0])).not.toContain("setConversationLabels");
+    });
+
+    // The label write is a wait after the last fence the reply path asked: an operator switching the
+    // agent off inside it withdraws the label AND the close, never restores what a /reset cleared.
+    test("an agent switched off while the resolve labels are read neither labels nor closes", async () => {
+      await seedConversation(91905, null);
+      const FINAL = "Fechado!";
+      const calls: Array<[string, number, string]> = [];
+      const agent = await suDb.agent.findFirstOrThrow({
+        where: { tenantId },
+        select: { id: true },
+      });
+      const cw = makeLabelledResolveClient(calls, {
+        catalog: ["resolvido-pela-ia"],
+      });
+      const make = async () => {
+        const client = (await cw.make()) as unknown as Record<string, unknown>;
+        return {
+          ...client,
+          // The close's own label read: the reply is out by then, and the turn's earlier reads are not.
+          listLabels: async () => {
+            if (calls.some((c) => c[0] === "sendMessage")) {
+              await suDb.agent.update({
+                where: { id: agent.id },
+                data: { enabled: false },
+              });
+            }
+            return ["resolvido-pela-ia"];
+          },
+        } as unknown as ChatwootClient;
+      };
+      await withResolveLabels(["resolvido-pela-ia"], async () => {
+        try {
+          await runAgentTurn({
+            tenantId,
+            instanceId,
+            agentBotId: 9,
+            event: incoming({ conversationId: 91905 }),
+            base: appDb,
+            deps: {
+              makeModel: () =>
+                new ResolveThenReplyModel(FINAL) as unknown as BaseChatModel,
+              makeClient: make,
+              checkpointer: new MemorySaver(),
+            },
+          });
+        } finally {
+          await suDb.agent.update({
+            where: { id: agent.id },
+            data: { enabled: true },
+          });
+        }
+      });
+      expect(calls).toEqual([["sendMessage", 91905, FINAL]]);
+    });
+
+    // The customer came back to the chat to say they will wait for the case: the chat closes, and
+    // the survey keyed on the label does not reach someone whose request is still open.
+    test("a contact waiting on a case gets the close without the label", async () => {
+      await seedConversation(91904, null);
+      const FINAL = "Certo, o time retorna pelo e-mail.";
+      const calls: Array<[string, number, string]> = [];
+      const cw = makeLabelledResolveClient(calls, {
+        catalog: ["resolvido-pela-ia"],
+        conversations: {
+          91904: {
+            id: 91904,
+            inbox_id: 1,
+            status: "pending",
+            meta: { assignee_type: null, assignee: null },
+            custom_attributes: { case_conversation_id: 91990 },
+          },
+          91990: { id: 91990, inbox_id: 9, status: "open" },
+        },
+      });
+      const agent = await suDb.agent.findFirstOrThrow({
+        where: { tenantId },
+        select: { id: true },
+      });
+      await suDb.agent.update({
+        where: { id: agent.id },
+        data: {
+          settings: {
+            split: { enabled: false },
+            resolveConversation: { assignLabels: ["resolvido-pela-ia"] },
+            crossInboxCase: { targetInboxId: 9 },
+          },
+        },
+      });
+      try {
+        const outcome = await runAgentTurn({
+          tenantId,
+          instanceId,
+          agentBotId: 9,
+          event: incoming({ conversationId: 91904 }),
+          base: appDb,
+          deps: {
+            makeModel: () =>
+              new ResolveThenReplyModel(FINAL) as unknown as BaseChatModel,
+            makeClient: cw.make,
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(outcome).toBe("posted");
+      } finally {
+        await suDb.agent.update({
+          where: { id: agent.id },
+          data: { settings: { split: { enabled: false } } },
+        });
+      }
+      expect(calls).toEqual([
+        ["sendMessage", 91904, FINAL],
+        ["toggleStatus", 91904, "resolved"],
+      ]);
+    });
   });
 
   // Review round 14. The deferred resolve fires AFTER delivery, and delivery on this path is not

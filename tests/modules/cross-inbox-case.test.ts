@@ -1779,6 +1779,8 @@ describe("the tool", () => {
       const t = withClose(f, true, { turnState });
       const out = String(await t.invoke({ reason: "x" }));
       expect(turnState.resolveRequested).toBe(true);
+      // The close is the case's, so the operator's resolve labels do not ride it.
+      expect((turnState as { caseClosing?: boolean }).caseClosing).toBe(true);
       expect(out).toContain("marked resolved after your reply");
       expect(t.description).toContain("closed after your reply");
       // The origin's status is left to the runtime, which closes after delivery.

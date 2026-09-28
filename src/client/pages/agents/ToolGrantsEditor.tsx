@@ -57,6 +57,10 @@ import {
   type CrossInboxCaseState,
 } from "./CrossInboxCaseFields";
 import {
+  ResolveConversationFields,
+  type ResolveConversationState,
+} from "./ResolveConversationFields";
+import {
   SendImageFields,
   type SendImageState,
   sendImageHasNoHost,
@@ -113,6 +117,8 @@ const UPDATE_KANBAN_TOOL = "update_kanban_task";
 const OPEN_CASE_TOOL = "open_case_in_inbox";
 // send_image refuses every call until at least one host is allowed (issue #880).
 const SEND_IMAGE_TOOL = "send_image";
+// resolve_conversation can write the operator's labels on close.
+const RESOLVE_TOOL = "resolve_conversation";
 
 interface Props {
   // The agent being edited — scopes the handoff target picker to the accounts it serves.
@@ -153,6 +159,9 @@ interface Props {
   // with an empty list the tool is offered and refuses every call, so the list belongs on its card.
   sendImage: SendImageState;
   setSendImage: (v: SendImageState) => void;
+  // The labels resolve_conversation writes before it closes (agent.settings.resolveConversation).
+  resolveConversation: ResolveConversationState;
+  setResolveConversation: (v: ResolveConversationState) => void;
   // The refused note this editor draws, if the standing refusal is about one -- see ToolRefusals.
   refusals: ToolRefusals;
   setCustomAttributeInstructions: (v: string) => void;
@@ -528,6 +537,8 @@ export function ToolGrantsEditor({
   setCrossInboxCase,
   sendImage,
   setSendImage,
+  resolveConversation,
+  setResolveConversation,
   refusals,
   setCustomAttributeInstructions,
   labelInstructions,
@@ -630,6 +641,8 @@ export function ToolGrantsEditor({
   const sendImageEnabled = selectedNative.has(SEND_IMAGE_TOOL);
   const sendImageEntry = catalog.native.find((n) => n.name === SEND_IMAGE_TOOL);
   const sendImageNoHost = sendImageHasNoHost(sendImage);
+  const resolveEnabled = selectedNative.has(RESOLVE_TOOL);
+  const resolveEntry = catalog.native.find((n) => n.name === RESOLVE_TOOL);
 
   // True when any ENABLED configurable native tool holds non-default config — surfaces a dot on the
   // collapsed section header so the operator knows hidden settings are in play. Mirrors each card's
@@ -647,7 +660,8 @@ export function ToolGrantsEditor({
         allowedLabels.trim() !== "")) ||
     (updateKanbanEnabled && updateKanbanTaskInstructions.trim() !== "") ||
     (openCaseEnabled && crossInboxCase.targetInboxId !== "") ||
-    (sendImageEnabled && !sendImageNoHost);
+    (sendImageEnabled && !sendImageNoHost) ||
+    (resolveEnabled && resolveConversation.assignLabels.length > 0);
 
   // Agents/teams + the accounts the agent serves, for the "pinned" handoff target picker. Scoped to
   // the agent (by its bound inboxes): a pinned target is account-scoped, so it is only offered when the
@@ -1559,7 +1573,8 @@ export function ToolGrantsEditor({
                 n.name !== LABEL_TOOL &&
                 n.name !== UPDATE_KANBAN_TOOL &&
                 n.name !== OPEN_CASE_TOOL &&
-                n.name !== SEND_IMAGE_TOOL,
+                n.name !== SEND_IMAGE_TOOL &&
+                n.name !== RESOLVE_TOOL,
             )
             .map((n) => {
               const meta = nativeToolMeta(n.name, t);
@@ -1860,6 +1875,22 @@ export function ToolGrantsEditor({
               />
             </ConfigurableToolCard>
           )}
+        {resolveEntry && (
+          <ConfigurableToolCard
+            selected={resolveEnabled}
+            onToggle={() => toggleNative(RESOLVE_TOOL)}
+            icon={nativeToolMeta(RESOLVE_TOOL, t).icon}
+            title={nativeToolMeta(RESOLVE_TOOL, t).label}
+            description={nativeToolMeta(RESOLVE_TOOL, t).description}
+            configured={resolveConversation.assignLabels.length > 0}
+          >
+            <ResolveConversationFields
+              agentId={agentId}
+              value={resolveConversation}
+              onChange={setResolveConversation}
+            />
+          </ConfigurableToolCard>
+        )}
         {attrEntry && (
           <ConfigurableToolCard
             selected={attrEnabled}

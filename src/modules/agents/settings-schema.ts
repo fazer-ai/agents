@@ -1,17 +1,18 @@
 import { z } from "zod";
 import { MODEL_PROVIDERS } from "@/graph/model-config";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
+// NOTE: The caps are IMPORTED, never retyped. They go in `.describe()` and never into the schema
+// itself — the rule the file's header states is type and choice, never size, because these are
+// refused by assertSettingsTextSizes on the write rather than clamped by the reader. A caller has to
+// be able to build a valid call from tools/list without failing first (docs/mcp.md), and a number
+// copied here would be a second copy that drifts.
+import { RESOLVE_LABELS_MAX } from "@/modules/agents/resolve-labels";
 import {
   CUSTOM_POLICY_MAX,
   GENERATION_PROMPT_MAX,
   TEMPLATE_MESSAGE_MAX,
   TOOL_INSTRUCTIONS_MAX,
 } from "@/modules/agents/text-caps";
-// NOTE: The caps are IMPORTED, never retyped. They go in `.describe()` and never into the schema
-// itself — the rule the file's header states is type and choice, never size, because these are
-// refused by assertSettingsTextSizes on the write rather than clamped by the reader. A caller has to
-// be able to build a valid call from tools/list without failing first (docs/mcp.md), and a number
-// copied here would be a second copy that drifts.
 import {
   ALLOWED_LABELS_MAX,
   PROTECTED_LABELS_MAX,
@@ -489,6 +490,20 @@ const crossInboxCase = z.looseObject({
     .describe("close the origin after the reply once the case is open"),
 });
 
+// The labels the agent's own close writes, merged into the conversation's set right
+// before resolve_conversation changes the status, so anything keyed on them at resolve time (a CSAT
+// survey rule, a folder) sees them whether or not the model called set_labels.
+const resolveConversation = z
+  .looseObject({
+    assignLabels: z
+      .array(z.string())
+      .optional()
+      .describe(
+        `merged in before the close; one in setLabels.protected is refused. First ${RESOLVE_LABELS_MAX} kept`,
+      ),
+  })
+  .describe("labels resolve_conversation writes itself");
+
 const sendImage = z.looseObject({
   allowedHosts: z
     .array(z.string())
@@ -834,6 +849,7 @@ export const BEHAVIOR_PATCH_SHAPE = {
   channelRedirect: channelRedirect.optional(),
   attributeContext: attributeContext.optional(),
   sendImage: sendImage.optional(),
+  resolveConversation: resolveConversation.optional(),
   crossInboxCase: crossInboxCase.optional(),
   observability: observability.optional(),
   memory: memory.optional(),

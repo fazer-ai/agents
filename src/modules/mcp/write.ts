@@ -34,6 +34,7 @@ import {
 } from "@/modules/agents/credential-paths";
 import {
   assertPromptSize,
+  assertResolveLabelsNotProtected,
   assertSettingsContactAuthRule,
   assertSettingsDebugWindow,
   assertSettingsModelFallback,
@@ -647,6 +648,9 @@ export async function agentSettingsSet(
       (current.settings ?? {}) as Record<string, unknown>,
       patch,
     );
+    // On the MERGED bag, not the patch: fields merge within a block, so a stored fence survives a
+    // patch that touches the same block, and the preview must refuse what the apply would.
+    assertResolveLabelsNotProtected(nextBag);
     // NOTE: PROJECTED, like the read — the same question asked in a third place. A client is expected to
     // reuse the preview's `after` (that is what a dry run is for), so a diff carrying the fields the
     // write refuses hands back a document that the apply rejects.

@@ -299,7 +299,12 @@ const SETTINGS_DESC_CEILING = 2_000;
 // RAISED by `crossInboxCase.subjectTemplate`, the operator's email subject for a case: one string,
 // 124 characters. Trimmed first, by 97: the description names only what `{{resumo}}` is. Re-measured
 // on the tree that ships: 28,691.
-const SETTINGS_SCHEMA_CEILING = 28_706;
+//
+// RAISED for issue #919 by `resolveConversation`, the labels resolve_conversation writes itself
+// before it closes: one new block holding one list of strings, 507 characters. Trimmed first, by
+// 213: the block says what it is and the list only its refusal and its cap. Re-measured on the tree
+// that ships: 28,985.
+const SETTINGS_SCHEMA_CEILING = 29_000;
 
 describe("MCP tool descriptions", () => {
   test("agent_settings_set stays under its ceiling", async () => {
@@ -748,6 +753,8 @@ describe("MCP tool descriptions", () => {
   // ceiling above: this tree measures 64,141, so 64,157 with the same 16. No description changed.
   // SCHEMA RAISED by `crossInboxCase.subjectTemplate`, the same 124 characters as the settings
   // ceiling above: this tree measures 64,265, so 64,281 with the same 16. No description changed.
+  // SCHEMA RAISED by `resolveConversation` (#919), the same 294 characters as the settings ceiling
+  // above: this tree measures 64,559, so 64,575 with the same 16. No description changed.
   test("the whole tools/list payload stays under its ceiling", async () => {
     const all = await listed();
     let desc = 0;
@@ -757,7 +764,7 @@ describe("MCP tool descriptions", () => {
       schema += t.schema.length;
     }
     expect(desc).toBeLessThanOrEqual(31_503);
-    expect(schema).toBeLessThanOrEqual(64_281);
+    expect(schema).toBeLessThanOrEqual(64_575);
   });
 
   // Why the document write tools declare `blocks`/`fields` as loose arrays and put the vocabulary in

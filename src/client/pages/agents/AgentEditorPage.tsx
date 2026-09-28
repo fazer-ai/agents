@@ -88,6 +88,7 @@ import {
 } from "@/modules/agents/config-health";
 import { configIssueMessage } from "@/modules/agents/config-health-message";
 import { type AgentMode, normalizeAgentMode } from "@/modules/agents/mode";
+import { protectedResolveLabels } from "@/modules/agents/resolve-labels";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import {
   ALLOWED_LABELS_MAX,
@@ -152,6 +153,11 @@ import {
 } from "./observationFormState";
 import { PlaygroundFab } from "./PlaygroundFab";
 import { PlaygroundTab } from "./PlaygroundTab";
+import {
+  type ResolveConversationState,
+  readResolveConversationState,
+  serializeResolveConversation,
+} from "./ResolveConversationFields";
 import {
   readSendImageState,
   type SendImageState,
@@ -537,6 +543,7 @@ function readBehaviorState(a: Agent) {
       task: attrKeys(ac.task),
     },
     sendImage: readSendImageState(s.sendImage),
+    resolveConversation: readResolveConversationState(s.resolveConversation),
     crossInboxCase: readCrossInboxCaseState(s.crossInboxCase),
     // NOTE: ON unless the stored bag says otherwise, mirroring readTakeoverConfig. A bag written
     // before this block existed has no key and must read as on, or loading an old agent would show
@@ -924,6 +931,10 @@ function AgentEditor() {
   const [sendImage, setSendImage] = useState<SendImageState>({
     allowedHosts: "",
   });
+  // NOTE: The labels resolve_conversation writes before it closes. Mirrors
+  // agent.settings.resolveConversation (modules/agents/resolve-labels).
+  const [resolveConversation, setResolveConversation] =
+    useState<ResolveConversationState>({ assignLabels: [] });
   // NOTE: Where open_case_in_inbox opens the case. Mirrors agent.settings.crossInboxCase
   // (modules/cross-inbox-case/settings).
   const [crossInboxCase, setCrossInboxCase] = useState<CrossInboxCaseState>({
@@ -1462,6 +1473,7 @@ function AgentEditor() {
     setToolPreconditions(b.toolPreconditions);
     setCrossInboxCase(b.crossInboxCase);
     setSendImage(b.sendImage);
+    setResolveConversation(b.resolveConversation);
   }, []);
 
   // Full reset of the general + behavior form state from a synced agent. Used on load and discard-all
@@ -1907,6 +1919,7 @@ function AgentEditor() {
       toolPreconditions,
       crossInboxCase,
       sendImage,
+      resolveConversation,
     }),
     knowledge: canonicalGrants(grants.filter((g) => g.source === "RAG")),
   };
@@ -2322,6 +2335,16 @@ function AgentEditor() {
       "editor.protectedLabelsTooMany",
       "Labels off limits takes at most {{max}} labels.",
       { max: PROTECTED_LABELS_MAX },
+    );
+  }
+
+  // A close label the guard also fences off: the PATCH refuses it, and it goes out after the grants.
+  function resolveLabelsClashError(clash: string[]): string | null {
+    if (clash.length === 0) return null;
+    return t(
+      "editor.resolveLabelsProtected",
+      "Labels on close cannot hold a label off limits to set_labels: {{labels}}.",
+      { labels: clash.join(", ") },
     );
   }
 
@@ -3091,6 +3114,8 @@ function AgentEditor() {
       const kanbanJson = { instructions: kanbanInstructions.trim() || null };
       const crossInboxCaseJson = serializeCrossInboxCase(crossInboxCase);
       const sendImageJson = serializeSendImage(sendImage);
+      const resolveConversationJson =
+        serializeResolveConversation(resolveConversation);
       // Merge the per-tool guidance map: preserve any entries for other tools, set/clear ours.
       const existingGuidance = (syncedSettings.toolGuidance ?? {}) as Record<
         string,
@@ -3141,6 +3166,7 @@ function AgentEditor() {
         },
         crossInboxCase: crossInboxCaseJson,
         sendImage: sendImageJson,
+        resolveConversation: resolveConversationJson,
       };
       // Before either request: the grants PUT goes out first and the PATCH after it, and both can
       // answer a refusal about this bag.
@@ -3161,6 +3187,7 @@ function AgentEditor() {
         settingsTextError(toolsSettings, storedSettings) ??
         protectedLabelsError(protectedList, storedSettings) ??
         allowedLabelsError(allowedList, storedSettings) ??
+        resolveLabelsClashError(protectedResolveLabels(toolsSettings)) ??
         // Refused by the PATCH, which goes out after the grants PUT: checked here so a bad key does
         // not leave new grants written beside the old settings (review round 10 of #881).
         (invalidCaseAttributeKey(crossInboxCase)
@@ -3226,6 +3253,7 @@ function AgentEditor() {
         },
         crossInboxCase: crossInboxCaseJson,
         sendImage: sendImageJson,
+        resolveConversation: resolveConversationJson,
       }));
       markSynced(String(agentRes.data.agent.updatedAt));
       bumpSync("tools", "knowledge");
@@ -3921,6 +3949,8 @@ function AgentEditor() {
                 setCrossInboxCase={setCrossInboxCase}
                 sendImage={sendImage}
                 setSendImage={setSendImage}
+                resolveConversation={resolveConversation}
+                setResolveConversation={setResolveConversation}
                 labelInstructions={labelInstructions}
                 setLabelInstructions={setLabelInstructions}
                 protectedLabels={protectedLabels}

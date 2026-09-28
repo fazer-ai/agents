@@ -125,6 +125,8 @@ function renderEditor(observing: boolean) {
               setCrossInboxCase={noop}
               sendImage={{ allowedHosts: "" }}
               setSendImage={noop}
+              resolveConversation={{ assignLabels: [] }}
+              setResolveConversation={noop}
               setCustomAttributeInstructions={noop}
               labelInstructions=""
               protectedLabels=""
@@ -271,6 +273,8 @@ function renderToolsTab(
               setCrossInboxCase={noop}
               sendImage={{ allowedHosts: "" }}
               setSendImage={noop}
+              resolveConversation={{ assignLabels: [] }}
+              setResolveConversation={noop}
               refusals={{
                 handoffInstructions: null,
                 kanbanInstructions: null,

@@ -7,6 +7,11 @@ import { decryptJson } from "@/api/lib/crypto";
 import logger from "@/api/lib/logger";
 import config from "@/config";
 import type { ModelOverride } from "@/graph/model-override";
+import {
+  caseHoldOn,
+  type ResolveCaseHold,
+  resolveCaseHoldFor,
+} from "@/graph/resolve-labels";
 import { modelVisibleLabels } from "@/graph/tools/label-view";
 import type { LabelWriteReporter } from "@/graph/tools/label-writes";
 import {
@@ -19,6 +24,7 @@ import { parseDbId } from "@/lib/db-id";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 import { readLimitsConfig } from "@/modules/agents/limits";
 import { isMonitoring } from "@/modules/agents/mode";
+import { readResolveLabels } from "@/modules/agents/resolve-labels";
 import {
   readAllowedLabels,
   readOutsideAllowedLabels,
@@ -57,7 +63,10 @@ import {
   readContactAuthConfig,
 } from "@/modules/contact-auth/settings";
 import type { ObservedConversation } from "@/modules/conversations/record-resolution";
-import type { CustomerTextVerdict } from "@/modules/cross-inbox-case/service";
+import type {
+  CaseInbox,
+  CustomerTextVerdict,
+} from "@/modules/cross-inbox-case/service";
 import {
   type CrossInboxCaseConfig,
   destinationIdentity,
@@ -308,6 +317,11 @@ export interface AgentConfig {
   // sees" — a protected label is shown and refused by name). See readProtectedLabels for why an
   // operator control label is not the classifier's to touch.
   protectedLabels: string[];
+  // The labels resolve_conversation writes before it closes. See readResolveLabels.
+  resolveLabels: string[];
+  // Where a contact waiting on a case holds those labels off, read before any path narrows the
+  // case tool's config. See graph/resolve-labels.ts resolveCaseHoldFor.
+  resolveCaseHold: ResolveCaseHold | null;
   // The labels set_labels may ADD and what a title outside them meets (issue #638). Empty ⇒ any
   // title, the behaviour before the list existed. See readAllowedLabels.
   allowedLabels: string[];
@@ -922,6 +936,8 @@ export async function loadAgentConfig(
     kanbanConfig: readKanbanConfig(effSettings),
     toolGuidance: readToolGuidance(effSettings),
     protectedLabels: readProtectedLabels(effSettings),
+    resolveLabels: readResolveLabels(effSettings),
+    resolveCaseHold: resolveCaseHoldFor(crossInboxCaseConfig),
     allowedLabels: readAllowedLabels(effSettings),
     outsideAllowedLabels: readOutsideAllowedLabels(effSettings),
     toolPreconditions: readToolPreconditions(effSettings),
@@ -1127,6 +1143,8 @@ export interface ToolBuildDeps {
         task?: string[];
       };
       protectedLabels?: string[];
+      resolveLabels?: string[];
+      resolveCaseHold?: CaseInbox | null;
       allowedLabels?: string[];
       outsideAllowedLabels?: "refuse" | "accept";
       expiresOn?: AbortSignal;
@@ -1501,6 +1519,12 @@ export async function buildToolset(
       vocab,
       shownLabels,
       protectedLabels: cfg.protectedLabels,
+      resolveLabels: cfg.resolveLabels,
+      resolveCaseHold: caseHoldOn(
+        cfg.resolveCaseHold,
+        ctx.instanceId,
+        cfg.chatwootContactId,
+      ),
       allowedLabels: cfg.allowedLabels,
       outsideAllowedLabels: cfg.outsideAllowedLabels,
       // The same fence the ack above asks, handed on to set_labels: its write waits for a queue

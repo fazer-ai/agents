@@ -687,6 +687,327 @@ describe("native tools", () => {
     expect(out).toContain("after your final reply");
   });
 
+  // The operator's fixed labels ride the close the agent asked for, whatever the model
+  // did with set_labels.
+  test("resolve_conversation with turnState hands the configured labels to the deferred close", async () => {
+    const { client, calls } = recordingClient();
+    const turnState: {
+      resolveRequested: boolean;
+      resolveLabels?: string[];
+      pendingAttachments: never[];
+      imagesInFlight: number;
+      documentsInFlight: number;
+      attachmentsSeq: number;
+    } = {
+      resolveRequested: false,
+      pendingAttachments: [],
+      imagesInFlight: 0,
+      documentsInFlight: 0,
+      attachmentsSeq: 0,
+    };
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      turnState,
+      resolveLabels: ["resolvido-pela-ia"],
+    });
+    await byName(tools, "resolve_conversation").invoke({});
+    expect(calls).toEqual([]);
+    expect(turnState.resolveRequested).toBe(true);
+    expect(turnState.resolveLabels).toEqual(["resolvido-pela-ia"]);
+  });
+
+  test("resolve_conversation on a proactive turn writes the configured labels, then closes", async () => {
+    const calls: Array<[string, unknown[]]> = [];
+    let current: string[] = ["vip"];
+    const client = {
+      listLabels: async () => {
+        calls.push(["listLabels", []]);
+        return ["vip", "resolvido-pela-ia"];
+      },
+      getConversationLabels: async (id: number) => {
+        calls.push(["getConversationLabels", [id]]);
+        return [...current];
+      },
+      setConversationLabels: async (id: number, labels: string[]) => {
+        calls.push(["setConversationLabels", [id, labels]]);
+        current = [...labels];
+        return {};
+      },
+      toggleStatus: async (...args: unknown[]) => {
+        calls.push(["toggleStatus", args]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      resolveLabels: ["resolvido-pela-ia"],
+    });
+    await byName(tools, "resolve_conversation").invoke({});
+    expect(calls.map((c) => c[0])).toEqual([
+      "listLabels",
+      "getConversationLabels",
+      "setConversationLabels",
+      "toggleStatus",
+    ]);
+    expect([...current].sort()).toEqual(["resolvido-pela-ia", "vip"]);
+  });
+
+  // A contact still waiting on a case in the agent's case inbox gets the close and not the labels a
+  // survey keys on.
+  test("resolve_conversation on a proactive turn closes without the labels while the contact waits on a case", async () => {
+    const calls: string[] = [];
+    const client = {
+      listLabels: async () => ["resolvido-pela-ia"],
+      getConversation: async (id: number) => ({ id, inbox_id: 1 }),
+      listContactConversations: async () => [
+        { id: 80, inboxId: 9, status: "pending", canReply: true },
+      ],
+      getConversationLabels: async () => [],
+      setConversationLabels: async () => {
+        calls.push("setConversationLabels");
+        return {};
+      },
+      toggleStatus: async () => {
+        calls.push("toggleStatus");
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      resolveLabels: ["resolvido-pela-ia"],
+      resolveCaseHold: {
+        targetInboxId: 9,
+        caseAttributeKey: CROSS_INBOX_CASE_DEFAULTS.caseAttributeKey,
+        contactId: 55,
+      },
+    });
+    await byName(tools, "resolve_conversation").invoke({});
+    expect(calls).toEqual(["toggleStatus"]);
+  });
+
+  test("what the close could not do with the labels reaches the operator, not the model", async () => {
+    const reported: Array<{ phase: string; detail?: unknown }> = [];
+    const client = {
+      listLabels: async () => ["resolvido-pela-ia"],
+      getConversation: async () => {
+        throw new Error("503");
+      },
+      listContactConversations: async () => [],
+      getConversationLabels: async () => [],
+      setConversationLabels: async () => ({}),
+      toggleStatus: async () => ({}),
+    } as unknown as ChatwootClient;
+    const build = (cic: boolean, labels: string[]) =>
+      buildNativeTools({
+        client,
+        conversationId: 7,
+        resolveLabels: labels,
+        onSideEffectError: (e) =>
+          reported.push({ phase: e.phase, detail: e.detail }),
+        ...(cic
+          ? {
+              resolveCaseHold: {
+                targetInboxId: 9,
+                caseAttributeKey: CROSS_INBOX_CASE_DEFAULTS.caseAttributeKey,
+                contactId: 55,
+              },
+            }
+          : {}),
+      });
+    await byName(
+      build(false, ["resolvido-pela-ia", "nao-existe"]),
+      "resolve_conversation",
+    ).invoke({});
+    await byName(
+      build(true, ["resolvido-pela-ia"]),
+      "resolve_conversation",
+    ).invoke({});
+    expect(reported).toEqual([
+      { phase: "resolve_labels_unknown", detail: { labels: ["nao-existe"] } },
+      { phase: "resolve_labels", detail: undefined },
+    ]);
+  });
+
+  test("resolve_conversation with turnState hands the case inbox to the deferred close", async () => {
+    const { client } = recordingClient();
+    const turnState: Record<string, unknown> & {
+      resolveRequested: boolean;
+      pendingAttachments: never[];
+      imagesInFlight: number;
+      documentsInFlight: number;
+      attachmentsSeq: number;
+    } = {
+      resolveRequested: false,
+      pendingAttachments: [],
+      imagesInFlight: 0,
+      documentsInFlight: 0,
+      attachmentsSeq: 0,
+    };
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      turnState,
+      resolveLabels: ["resolvido-pela-ia"],
+      resolveCaseHold: {
+        targetInboxId: 9,
+        caseAttributeKey: CROSS_INBOX_CASE_DEFAULTS.caseAttributeKey,
+        contactId: 55,
+      },
+    });
+    await byName(tools, "resolve_conversation").invoke({});
+    expect(turnState.resolveCaseHold).toEqual({
+      targetInboxId: 9,
+      caseAttributeKey: CROSS_INBOX_CASE_DEFAULTS.caseAttributeKey,
+      contactId: 55,
+    });
+  });
+
+  // A conversation someone else already closed is not the agent's close: the toggle is a no-op, and a
+  // label written anyway would mark a human's resolution as the AI's.
+  test("resolve_conversation on a conversation already resolved writes no resolve label", async () => {
+    const calls: string[] = [];
+    const client = {
+      getConversation: async (id: number) => ({
+        id,
+        status: "resolved",
+        updated_at: 1_700_000_000,
+        meta: { assignee_type: null, assignee: null },
+      }),
+      listLabels: async () => ["resolvido-pela-ia"],
+      getConversationLabels: async () => [],
+      setConversationLabels: async () => {
+        calls.push("setConversationLabels");
+        return {};
+      },
+      toggleStatus: async () => {
+        calls.push("toggleStatus");
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      tenantId: 1n,
+      conversationDbId: 1n,
+      resolveLabels: ["resolvido-pela-ia"],
+    } as never);
+    await byName(tools, "resolve_conversation").invoke({});
+    expect(calls).not.toContain("setConversationLabels");
+  });
+
+  // Whatever the labels came to, the close asks the fence again right before it: a withdrawal during
+  // a held label, an all-unknown catalog or the label POST itself must not still close.
+  test.each([
+    ["held by an open case", "held"],
+    ["all unknown", "unknown"],
+    ["written, then withdrawn during the POST", "written"],
+    ["sent, the POST's answer lost, then withdrawn", "lost"],
+  ])(
+    "a run called off while the labels were %s does not close",
+    async (_n, kind) => {
+      const calls: string[] = [];
+      const noEffect: string[] = [];
+      let wanted = true;
+      const client = {
+        listLabels: async () =>
+          kind === "unknown" ? [] : ["resolvido-pela-ia"],
+        getConversation: async (id: number) => ({ id, inbox_id: 1 }),
+        listContactConversations: async () => {
+          wanted = false;
+          return [{ id: 80, inboxId: 9, status: "pending", canReply: true }];
+        },
+        getConversationLabels: async () => [],
+        setConversationLabels: async () => {
+          calls.push("setConversationLabels");
+          wanted = false;
+          if (kind === "lost") throw new Error("timeout");
+          return {};
+        },
+        toggleStatus: async () => {
+          calls.push("toggleStatus");
+          return {};
+        },
+      } as unknown as ChatwootClient;
+      if (kind === "unknown") {
+        (client as unknown as Record<string, unknown>).listLabels =
+          async () => {
+            wanted = false;
+            return [];
+          };
+      }
+      const tools = buildNativeTools({
+        client,
+        conversationId: 7,
+        resolveLabels: ["resolvido-pela-ia"],
+        stillWanted: async () => wanted,
+        onNoEffect: (t: string) => noEffect.push(t),
+        ...(kind === "held"
+          ? {
+              resolveCaseHold: {
+                targetInboxId: 9,
+                caseAttributeKey: CROSS_INBOX_CASE_DEFAULTS.caseAttributeKey,
+                contactId: 55,
+              },
+            }
+          : {}),
+      });
+      const out = await byName(tools, "resolve_conversation").invoke({});
+      expect(calls).not.toContain("toggleStatus");
+      expect(String(out)).toContain("Did not resolve");
+      // A POST that went out may have landed, answer or not: only a close that sent no label
+      // reports no effect.
+      expect(noEffect).toEqual(
+        kind === "written" || kind === "lost" ? [] : ["resolve_conversation"],
+      );
+    },
+  );
+
+  // The label read is one more wait before the close: a /reset landing in it withdraws the close
+  // too, not just the label.
+  test("a run called off while the resolve labels were read does not close", async () => {
+    const calls: string[] = [];
+    let asked = 0;
+    const client = {
+      listLabels: async () => ["resolvido-pela-ia"],
+      getConversationLabels: async () => {
+        calls.push("getConversationLabels");
+        return [];
+      },
+      setConversationLabels: async () => {
+        calls.push("setConversationLabels");
+        return {};
+      },
+      toggleStatus: async () => {
+        calls.push("toggleStatus");
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      resolveLabels: ["resolvido-pela-ia"],
+      stillWanted: async () => ++asked < 2,
+    });
+    const out = await byName(tools, "resolve_conversation").invoke({});
+    expect(calls).toEqual(["getConversationLabels"]);
+    expect(String(out)).toContain("Did not resolve");
+  });
+
+  test("a close this turn's transfer refused writes no resolve label either", async () => {
+    const { client, calls } = recordingClient();
+    const tools = buildNativeTools({
+      client,
+      conversationId: 7,
+      handoffState: { completed: true } as never,
+      resolveLabels: ["resolvido-pela-ia"],
+    });
+    await byName(tools, "resolve_conversation").invoke({});
+    expect(calls).toEqual([]);
+  });
+
   // REWRITTEN, NOT DELETED (issue #695). Every case below is the counterpart of one that proved the
   // replace contract: what each of those proved about a diff against `shown`, its counterpart proves
   // about a delta the model names. Two of them INVERT, and those are the ones worth reading.

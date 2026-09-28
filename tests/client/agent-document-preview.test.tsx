@@ -139,6 +139,8 @@ function renderEditor() {
               setCrossInboxCase={noop}
               sendImage={{ allowedHosts: "" }}
               setSendImage={noop}
+              resolveConversation={{ assignLabels: [] }}
+              setResolveConversation={noop}
               setCustomAttributeInstructions={noop}
               labelInstructions=""
               protectedLabels=""

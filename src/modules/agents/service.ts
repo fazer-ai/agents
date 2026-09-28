@@ -26,11 +26,13 @@ import {
 } from "@/modules/agents/audit-projection";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 import { collectCredentialRefWrites } from "@/modules/agents/credential-paths";
+import { protectedResolveLabels } from "@/modules/agents/resolve-labels";
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { collectOversizedTextChanges } from "@/modules/agents/text-caps";
 import {
   ALLOWED_LABELS_MAX,
   PROTECTED_LABELS_MAX,
+  readProtectedLabels,
 } from "@/modules/agents/tool-guidance";
 import {
   invalidToolPreconditions,
@@ -599,6 +601,27 @@ function labelListOverflows(
   return !(before !== null && JSON.stringify(before) === JSON.stringify(next));
 }
 
+// A LABEL THE AGENT'S CLOSE WRITES CANNOT ALSO BE ONE `set_labels` IS FENCED OFF. The
+// two settings would contradict each other, and which one won would depend on which writer ran
+// last. Refused on save, naming the label, rather than quietly skipped at the close: the operator
+// is the one who has to decide which list it belongs to.
+export class ProtectedResolveLabelError extends AppError {
+  constructor(labels: string[]) {
+    super(
+      `settings.resolveConversation.assignLabels cannot hold a label set_labels protects: ${labels.join(", ")}`,
+      400,
+      "errors.protectedResolveLabel",
+      { labels: labels.join(", ") },
+      "resolveConversation.assignLabels",
+    );
+  }
+}
+
+export function assertResolveLabelsNotProtected(bag: unknown): void {
+  const clash = protectedResolveLabels(bag);
+  if (clash.length > 0) throw new ProtectedResolveLabelError(clash);
+}
+
 export function assertSettingsProtectedLabels(
   settings: unknown,
   stored: unknown,
@@ -966,6 +989,21 @@ export function dropUnusableImportedSettingsInPlace(
   if (contactAuth && invalidContactAuthRule(contactAuth.rule)) {
     delete contactAuth.rule;
     takePath(dropped, "contactAuth.rule");
+  }
+  // A label the close writes that `set_labels` also fences off: create refuses the pair, and the
+  // import takes the label out of the close's list, keeping the fence, which is the stronger claim.
+  // Every entry is judged, not only the reader's window: taking one out moves the next into it.
+  const fenced = new Set(readProtectedLabels(bag).map((l) => l.toLowerCase()));
+  const resolve = plainObject(bag.resolveConversation);
+  if (fenced.size > 0 && resolve && Array.isArray(resolve.assignLabels)) {
+    const list = resolve.assignLabels as unknown[];
+    for (let i = list.length - 1; i >= 0; i--) {
+      const l = list[i];
+      if (typeof l === "string" && fenced.has(l.trim().toLowerCase())) {
+        list.splice(i, 1);
+        takePath(dropped, `resolveConversation.assignLabels.${i}`);
+      }
+    }
   }
   // NOTE: Invariant: what the runtime reads does not change. Each removal is tried on a copy and kept
   // only when `readBehaviorSettings` reads the block the same (a trimmed value or a list window can
@@ -1581,6 +1619,7 @@ export async function updateAgent(
     stripRetiredNoteFlagInPlace(rest.settings);
     stripDerivedFullDetailInPlace(rest.settings);
     assertSettingsProtectedLabels(rest.settings, before?.settings);
+    assertResolveLabelsNotProtected(rest.settings);
     // LAST of the settings rules, after both strips: the dedicated rules above answer their fields
     // with their own sentences, and a retired or derived key is gone before the schema is asked.
     assertSettingsClosedValues(rest.settings, before?.settings);
@@ -1796,6 +1835,7 @@ export function assertAgentCreatable(input: AgentCreate): {
   stripRetiredNoteFlagInPlace(input.settings);
   stripDerivedFullDetailInPlace(input.settings);
   assertSettingsProtectedLabels(input.settings, undefined);
+  assertResolveLabelsNotProtected(input.settings);
   assertSettingsClosedValues(input.settings, undefined);
   const data = parseInput(agentCreateSchema, input);
   validateModelConfigForWrite(data.modelConfig);

@@ -15,28 +15,17 @@ export interface DocumentTotals {
   total: number;
 }
 
-// Rounds the way the RENDERER rounds, which is the only definition that matters here: whatever the
-// document prints has to be what it computed with.
-//
-// `Math.round(value * 100)` is not that. The multiplication happens in binary floating point, so
-// 1.005 becomes 100.49999999999999 and rounds DOWN to R$ 1,00 — while Intl prints R$ 1,01, because
-// it rounds the decimal the double is written as, not the product of a lossy multiplication. That is
-// the same contradiction the quantization was added to remove, one layer further down.
-//
-// Shifting through the string representation is what matches: `${1.005}e2` parses as exactly 100.5.
-// Measured against Intl over 200,000 random values across nine magnitudes, positive and negative:
-// zero mismatches. The sign is taken out first because Math.round breaks ties toward +∞ while the
-// formatter breaks them away from zero.
-// Moves the decimal point by adjusting the EXPONENT rather than by pasting one on. JavaScript
-// stringifies small and large magnitudes in exponent form — `(1e-7).toString()` is "1e-7" — so
-// appending "e2" produced "1e-7e2", which is not a number at all: `cents()` returned NaN and the
-// customer's PDF printed NaN where its total belongs. Splitting the mantissa from the exponent
-// first handles both forms with one rule.
+// Moves the decimal point through the string representation, adjusting the EXPONENT so that
+// exponent-form values like "1e-7" work too. This is how rounding matches the RENDERER (Intl rounds
+// the decimal the double is written as): `Math.round(1.005 * 100)` gives 100, while Intl prints 1,01.
 function shiftDecimal(value: number, by: number): number {
   const [mantissa, exponent] = value.toString().split("e");
   return Number(`${mantissa}e${(exponent ? Number(exponent) : 0) + by}`);
 }
 
+// Rounds the way the RENDERER rounds: whatever the document prints has to be what it computed with.
+// The sign is taken out first because Math.round breaks ties toward +Infinity while the formatter
+// breaks them away from zero.
 export function roundDecimal(value: number, decimals: number): number {
   if (!Number.isFinite(value)) return value;
   const sign = value < 0 ? -1 : 1;
@@ -52,15 +41,9 @@ function cents(value: number): number {
   return shiftDecimal(roundDecimal(value, 2), 2);
 }
 
-// The factors are QUANTIZED to the precision the document prints them at, before they are
-// multiplied. A unit price of 0.105 renders as "R$ 0,11" and multiplied raw gives 3 × 0.105 = 0.315
-// → 32 cents, so the customer reads "3 × R$ 0,11 = R$ 0,32" and cannot make those three numbers
-// agree. Whatever the document shows has to be what it computed with; hidden digits are precisely
-// the kind of discrepancy someone photographs.
-//
-// The precisions are the renderer's own: money at 2 decimals (formatMoney) and quantity at up to 4
-// (formatNumber). They live here as the numbers those two formatters use, and a change on either
-// side has to move both.
+// The factors are QUANTIZED to the precision the document prints them at before multiplying, so
+// "3 x R$ 0,11" never totals R$ 0,32. The precisions are formatMoney's and formatNumber's: a change
+// on either side has to move both.
 const QUANTITY_DECIMALS = 4;
 const MONEY_DECIMALS = 2;
 
@@ -87,10 +70,8 @@ export function computeTotals(
     (acc, item) => acc + cents(lineTotal(item)),
     0,
   );
-  // NOT quantized on the way in, and that is not an oversight: `cents()` IS the money quantization,
-  // so a lone amount needs nothing more — measured, by removing a displayedMoney() here and finding
-  // no test could tell. The factors below are different, because there a PRODUCT is taken before the
-  // rounding, and the digits the document never showed survive into it.
+  // NOTE: NOT quantized on the way in: `cents()` IS the money quantization, so a lone amount needs
+  // nothing more. The factors below differ because there a PRODUCT is taken before the rounding.
   const requestedDiscount = Math.max(0, cents(opts.discount ?? 0));
   // NOTE: clamped to the subtotal, and the CLAMPED value is what comes back, so the rows the
   // renderer prints add up to the total it prints. A discount larger than the subtotal is somebody's

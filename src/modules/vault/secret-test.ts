@@ -24,10 +24,8 @@ export type SecretTestFailCode =
   | "timeout"
   | "blocked_url"
   | "missing_base_url"
-  // Not a connectivity outcome: the value the operator typed would be refused by the write, so the
-  // probe answers with that instead of reporting on a credential nobody can store (#338). Sending it
-  // would report "Connection OK" for a header kind (fetch strips the padding on the way out) and
-  // then the save would refuse the same value.
+  // Not a connectivity outcome: the write would refuse this value, so the probe says so instead of
+  // reporting "Connection OK" for a header kind (fetch strips the padding on the way out).
   | "surrounding_whitespace";
 
 export type SecretTestResult =

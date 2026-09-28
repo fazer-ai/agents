@@ -1,13 +1,7 @@
-// {{token}} resolution for document content. A sibling of the system prompt's placeholder machinery
-// (src/graph/prompt.ts), deliberately NOT the same code, for two reasons that both bite:
-//
-//   1. `PROMPT_PLACEHOLDER_SOURCE` is a shared contract — the prompt editor's highlighter, the cache
-//      warning and the prompt audit all read it. Widening it so a document can say {{empresa_nome}}
-//      changes what the agent's system-prompt editor highlights, which is the wrong blast radius.
-//   2. An unresolved prompt placeholder is left LITERAL, which is right for a prompt (the model can
-//      still read it) and wrong for a document (the customer receives `{{validade}}` in a PDF). Here
-//      an unknown token is refused when the template is written, and renders as empty if one ever
-//      reaches the renderer anyway.
+// {{token}} resolution for document content, deliberately NOT the system prompt's placeholder code
+// (src/graph/prompt.ts): widening `PROMPT_PLACEHOLDER_SOURCE` would change the prompt editor, and an
+// unresolved prompt placeholder stays literal, which a PDF must never print. Here an unknown token
+// is refused when the template is written, and renders as empty if one reaches the renderer anyway.
 
 import { clipText } from "@/lib/text";
 
@@ -111,16 +105,9 @@ export function sanitizeDocumentValue(
 }
 
 // Every token name a piece of text asks for, in order, deduplicated.
-// Anything the resolver would NOT recognise, stated as the complement of what it does: remove every
-// VALID token and see whether a brace pair survives. {{Company_name}} (capital), {{company-name}}
-// (hyphen), {{}}, {{cliente (unclosed) and {{foo {{cliente}} (nested) all do, and all of them slip
-// past `tokensIn`, which only reports what matches. Authoring accepted them and then `resolveTokens`
-// did not match them either, so the braces printed verbatim in a document the customer keeps.
-//
-// Written as a complement rather than as a second pattern on purpose: a pattern for "looks like a
-// token but is not one" has to enumerate the ways of being wrong, and the first version of it
-// enumerated three and missed two. There is only one way to be RIGHT, and it is already written
-// down one line above.
+// Anything the resolver would NOT recognise, as the complement of what it does: remove every VALID
+// token and see whether a brace pair survives ({{Company_name}}, {{}}, {{cliente unclosed, nested).
+// A complement, not a second pattern, because only the valid shape can be listed completely.
 export function malformedTokenIn(text: string): string | null {
   const leftover = text.replace(DOCUMENT_TOKEN_RE, "\u0000");
   const at = Math.max(leftover.indexOf("{{"), leftover.indexOf("}}"));

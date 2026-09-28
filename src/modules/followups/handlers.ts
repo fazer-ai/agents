@@ -66,7 +66,7 @@ const IN_FLIGHT_BACKOFF_MS = 30_000;
 // cancelled. Coarse (1h) because the sweep already filters these out — this only catches a FOLLOWUP
 // that was in flight before the booking.
 const APPOINTMENT_BACKOFF_MS = 3_600_000;
-// How long a follow-up the live gate declined waits before it is offered again (issue #796). The
+// How long a follow-up the live gate declined waits before it is offered again. The
 // decline stamps nothing, so the sweep would select the conversation on its next pass; parked for
 // this long instead, the pass leaves the row alone. An hour rather than never, because the mirror the
 // sweep read may be the stale half and the live gate is the only thing that repairs it.
@@ -117,28 +117,10 @@ async function sweepHandler(
   // same way.
   const now = new Date(sweptAt);
 
-  // Agents the appointment fence does not apply to, asked of `appointmentPauseApplies` — the same
-  // function the handler and the console ask — about `cfg.steps[0]`, the only step this sweep ever
-  // starts a sequence with.
-  //
-  // Asked HERE, in TypeScript, and not mirrored in the query. Two JSON predicates used to live in
-  // the SQL, and three review rounds in a row found a way for them to disagree with the reader: raw
-  // index 0 is not the reader's step 0 (non-object entries are dropped BEFORE numbering), `->>`
-  // renders a JSON string and a JSON boolean identically while the reader does not, and an
-  // unbounded `jsonb_array_elements` expands whatever the opaque REST settings write happened to
-  // store, per conversation, every minute. All three are one defect: a second implementation of a
-  // reader that already exists and had already RUN, right above, to compute the cutoff. What is
-  // left in SQL is the liveness of the appointment, which is rows rather than settings.
-  //
-  // NOTE: read one tick before the query, so a settings change lands on the NEXT pass at worst
-  // (60s). Nothing is sent on this read: the handler re-checks against fresh settings before the
-  // nudge, which is where correctness lives.
-  //
-  // NOTE: `cfg.enabled` first, and it is not redundant. An agent whose follow-up is OFF can still
-  // carry a step-0 exemption from when it was on, and `appointmentPauseApplies` would answer about
-  // it — correctly, since it decides the pause and nothing else. The sweep now selects only agents
-  // whose follow-up is on (below), so an exemption from an OFF agent would reach no row; the filter
-  // stays so this list says what it means on its own.
+  // NOTE: Agents the appointment fence does not apply to, asked of `appointmentPauseApplies` about
+  // `cfg.steps[0]` HERE rather than as JSON predicates in the SQL, which would be a second reader of
+  // the settings. Read one tick before the query; the handler re-checks fresh settings before
+  // sending. `cfg.enabled` first so this list means what it says on its own.
   const unfencedAgentIds = configs
     .filter(
       ({ cfg }) => cfg.enabled && !appointmentPauseApplies(cfg, cfg.steps[0]),
@@ -150,12 +132,9 @@ async function sweepHandler(
   const unfencedIdsSql = Prisma.sql`ARRAY[${Prisma.join(
     unfencedAgentIds.length > 0 ? unfencedAgentIds : [-1n],
   )}]::bigint[]`;
-  // THE AGENTS WHOSE FOLLOW-UP IS ON, and only those are swept (issue #796). The SQL tests
-  // `follow_up_armed_at`, which is stamped on the OFF→ON transition and never cleared going back, so
-  // an agent switched off kept every one of its conversations in the selection: armed each minute,
-  // claimed, and dropped by the handler's first look, forever, each holding a slot of the LIMIT 500.
-  // Read from the same `cfg.enabled` that computes the cutoff above, so the two cannot disagree.
-  // Never empty here: the early return above left when no agent has follow-up on.
+  // NOTE: Only agents whose follow-up is ON are swept: `follow_up_armed_at` is never cleared on the
+  // way OFF, so the SQL alone would keep re-arming dropped jobs into the LIMIT. Same `cfg.enabled`
+  // as the cutoff above; never empty here, thanks to the early return.
   const followUpAgentIds = configs
     .filter(({ cfg }) => cfg.enabled)
     .map(({ id }) => id);
@@ -350,7 +329,7 @@ async function sweepHandler(
     `,
   );
   for (const t of threads) {
-    // NOTE: Never over a CLAIMED row (issue #786). Step 0 stays eligible until it stamps, after its
+    // NOTE: Never over a CLAIMED row. Step 0 stays eligible until it stamps, after its
     // model call, and a pass inside that window superseded the run: its reschedule to the next step
     // was discarded and the ladder never reached the step that labels and resolves. The run in
     // flight IS the episode this arm would start.
@@ -359,37 +338,22 @@ async function sweepHandler(
       kind: "FOLLOWUP",
       dedupeKey: `followup:${t.thread_id}`,
       runAt: new Date(),
-      // NOTE: A CLOCK arms this, not the world: the sweep re-enqueues every eligible thread once a
-      // minute, and a thread stays eligible until its follow-up actually goes out. So a re-arm here
-      // is the same episode being pushed again, and clearing the budget would hand a follow-up that
-      // keeps failing five fresh attempts every minute forever. A follow-up that DID go out
-      // completes, which is what clears the count for the next episode.
-      //
-      // Except over a row of an earlier episode: its budget was spent on that one, and keeping it
-      // would dead-letter this episode on its first transient failure, after which the exclusion
-      // above would keep it out for good (review rounds 6 and 8).
+      // NOTE: A CLOCK arms this: a re-arm of the same episode keeps its retry budget, or a failing
+      // follow-up would get fresh attempts every minute forever. A row of an earlier episode is new
+      // work, or its spent budget would dead-letter this episode on the first transient failure.
       rearm: t.other_episode ? "new-work" : "same-work",
       payload: { threadId: t.thread_id, episode: t.episode },
-      // Nor over a run its handler put off on purpose (issue #796): the retry backoff, business
-      // hours, a step-0 cadence longer than this sweep's cutoff. Pulled back to now, each became a
-      // run every minute, and the retry count the backoff was keeping was replaced with it. Only a
-      // STEP-0 deferral is this episode's: the sweep selects a thread only at the start of a fresh
-      // episode, so a later step still pending is left over from an earlier one (our own reply opens
-      // a new episode without cancelling it), and waiting for it would delay this episode's first
-      // follow-up by that step's cadence. And only while the configuration it was computed from still
-      // holds: a cadence shortened, or a schedule opened, after the deferral must not wait out the
-      // old instant, so a row marked with an older version is re-armed and the handler recomputes.
+      // NOTE: Nor over a run its handler deferred on purpose (backoff, business hours, cadence), or
+      // it would run every minute. Only a STEP-0 deferral of THIS episode, and only while the
+      // configuration version it was computed from still holds; anything else is re-armed.
       leaveLaterRun: (row) =>
         isDeferralOfThisEpisode(
           row,
           t.episode,
           followUpConfigVersion(t.agent_updated_at, t.hours_updated_at),
         ),
-      // This pass read the thread as not yet followed up in its episode, and a batch is read before
-      // any of it is armed (issue #896). Step 0 may have run in between and ended the sequence on
-      // purpose (a noted window, a schedule that never opens, retries spent, the last step) or moved
-      // it on; every one of those stamps. Re-armed, the row went back to step 0 on a stamped episode.
-      // The sweep's own eligibility, asked again at the write.
+      // NOTE: The sweep's own eligibility, asked again at the write: the batch is read before any of
+      // it is armed, and a step 0 that ran meanwhile stamped the episode (ended or moved it on).
       stillWanted: (db) => episodeStillUnstamped(db, tenantId, t.thread_id),
       base,
     });
@@ -417,16 +381,10 @@ async function episodeStillUnstamped(
   return rows.length > 0;
 }
 
-// A STEP 0 THAT FINDS ITS EPISODE ALREADY FOLLOWED UP (issue #896). The row is the ladder, one per
-// conversation, and the sweep no longer re-arms it once the episode is stamped (`stillWanted`) nor
-// pulls back a later step, so a step 0 running after the stamp means something re-armed a ladder
-// under way. If that ladder had steps left, ending here ends it before the step that labels and
-// resolves: the conversation stays
-// pending with nothing scheduled, and the sweep will not select it again. Before this line the exit
-// was an ordinary `done`, the loss had no trace anywhere, and ten conversations of one deployment sat
-// two days before anyone looked. `dead_letter` because that is what it is, work nothing will bring
-// back, and the stage alert channels subscribe to; `warn` because the conversation is still there for
-// the operator to pick up.
+// A STEP 0 THAT FINDS ITS EPISODE ALREADY FOLLOWED UP: something re-armed a ladder under way, and
+// ending here leaves the conversation pending with nothing scheduled and never swept again. Logged
+// as `dead_letter` (work nothing will bring back, which alert channels subscribe to) at `warn`,
+// since the conversation is still there for the operator.
 function announceLostLadder(
   job: ClaimedJob,
   base: PrismaClient,
@@ -466,7 +424,7 @@ function announceLostLadder(
   );
 }
 
-// WHICH CONFIGURATION A DEFERRAL WAS COMPUTED FROM (issue #796, review round 4). The cadence and the
+// WHICH CONFIGURATION A DEFERRAL WAS COMPUTED FROM. The cadence and the
 // business-hours deferrals are functions of the agent's settings and of its schedule, and a change to
 // either makes the stored instant wrong. Both rows stamp `updated_at` on every write, so the pair is
 // a version that moves whenever the inputs can have moved; an unrelated edit to the agent also moves
@@ -485,9 +443,8 @@ const BACKOFF_DEFERRAL = "backoff";
 const APPOINTMENT_HOLD = "appointment";
 
 // The sweep enqueues step 0 without a stepIndex; the handler's reschedules carry one. A deferral is
-// kept only when it says why it is safe to keep: a backoff, or a version that is still current. One
-// that says nothing (written before deferrals were marked, review round 5) is re-armed once, and the
-// handler recomputes it under the current configuration and marks it.
+// kept only when it says why it is safe to keep: a backoff, or a version that is still current. An
+// unmarked one is re-armed once, and the handler recomputes it under the current configuration.
 function isDeferralOfThisEpisode(
   {
     payload,
@@ -504,7 +461,7 @@ function isDeferralOfThisEpisode(
     deferredUnder,
     episode: deferredEpisode,
   } = payload as Record<string, unknown>;
-  // Armed for another episode (review round 7): our own reply opens a new one without cancelling
+  // NOTE: Armed for another episode: our own reply opens a new one without cancelling
   // the old deferral, and the new episode must not inherit its backoff or its retry count.
   if (deferredEpisode !== episode) return false;
   if (stepIndex !== undefined && stepIndex !== 0) return false;
@@ -524,19 +481,10 @@ export function inactivityNudge(params: {
   instructions: string | null | undefined;
   // 1-based, the rung of the ladder that fired.
   step: number;
-  // WHICH EPISODE OF SILENCE this step belongs to. `source`, `kind` and `step` describe the RUNG and
-  // not the climb: a conversation that goes quiet, is followed up at step 1, replies, and goes quiet
-  // again starts a SECOND episode whose step 1 describes itself identically. Inside the two-hour
-  // window the ceiling's occasion key spans, the second refusal would then lose its `error` row and
-  // its alert to the first — two customers unreached, one on the record.
-  //
-  // WHEN THE SILENCE BEGAN is what an episode IS here, and since issue #750 that is the LATER of the
-  // customer's last message and our own last reply — the same expression `isNewFollowUpEpisode`
-  // judges freshness by, which is the whole reason this field exists. Reading the customer's column
-  // alone would hand two genuinely distinct episodes one key the moment the second is opened by our
-  // reply with no new inbound behind it: a re-engagement on a conversation the customer never
-  // answered again. Stable across the steps of one episode by construction (either side speaking is
-  // what ends it). Null means neither side ever spoke, which is one episode and not two.
+  // WHICH EPISODE OF SILENCE this step belongs to, since `source`, `kind` and `step` repeat across
+  // episodes and two refusals would share one occasion key. When the silence began: the LATER of the
+  // customer's last message and our last reply, as `isNewFollowUpEpisode` judges it. Null means
+  // neither side ever spoke, which is one episode.
   episodeStartedAt: Date | null;
 }): AgentNudge {
   return {
@@ -553,7 +501,7 @@ export async function followUpHandler(
   job: ClaimedJob,
   base: PrismaClient,
   deps?: RuntimeDeps,
-  // The run's context (issue #811): its signal goes to the nudge, and a stamp that lands commits it.
+  // The run's context: its signal goes to the nudge, and a stamp that lands commits it.
   run?: JobContext,
 ): Promise<JobResult> {
   const threadId =
@@ -583,7 +531,7 @@ export async function followUpHandler(
         inboxId: true,
         testActivatedAt: true,
         lastRepliedMessageId: true,
-        // The fence's own axis (issue #750); see the note beside it below.
+        // NOTE: The fence's own axis; see the note beside it below.
         lastRepliedAt: true,
         chatwootFirstReplyAt: true,
         lastProactiveAt: true,
@@ -608,15 +556,9 @@ export async function followUpHandler(
       },
     });
     if (!agent) return null;
-    // Everything that can have changed since the job was armed: the agent disabled, follow-up switched
-    // off, the conversation taken by a human or resolved, a test agent's conversation never activated,
-    // or a channelRedirect taking over re-engagement (its WIDGET inbox gets the dedicated
-    // REDIRECT_FOLLOWUP job and its ENTRY inbox is owned by the redirect's own stage, so the generic
-    // follow-up stays out of both). The sweep's SQL already filters most of these; this catches a job
-    // enqueued BEFORE the config changed underneath it.
-    //
-    // Shared with the console's follow-up indicator, which must promise a countdown only for a job
-    // that would survive this check — see the predicate's header and issue #72.
+    // NOTE: Everything that can have changed since the job was armed (agent or follow-up off, human
+    // or resolved, test not activated, a channelRedirect owning re-engagement on either inbox). The
+    // predicate is shared with the console's follow-up indicator (see its header).
     const redirectCfg = readChannelRedirectConfig(agent.settings);
     const followUpCfg = readFollowUpConfig(agent.settings);
     if (
@@ -631,14 +573,11 @@ export async function followUpHandler(
         testActivatedAt: conv.testActivatedAt,
         status: conv.status,
         assigneeType: conv.assigneeType,
-        // This path never decides WHICH bot holds the conversation from the mirror: `agentNudge`
-        // runs with `requireLiveBotOwnership`, which GETs the real conversation, reconciles the
-        // stale assignee and refuses to send before any model spend. Answering from the mirror here
-        // would drop a follow-up the probe was about to allow (issue #214).
+        // NOTE: Never decided from the mirror here: `agentNudge` runs with `requireLiveBotOwnership`,
+        // which GETs the real conversation before any model spend.
         mirrorHolder: "not-asked",
-        // Alcançável pelo motivo que este bloco inteiro existe: um FOLLOWUP armado pela varredura
-        // ANTIGA, numa conversa nunca respondida, já está PENDING no banco no instante do deploy, e
-        // a cláusula nova não o apaga — só deixa de re-enfileirá-lo. Quem o descarta é este arm.
+        // NOTE: The sweep never arms a conversation our side has not spoken in, but a row armed
+        // before can still be PENDING; this is what drops it.
         ourSideHasSpoken: ourSideHasSpoken(conv),
       })
     ) {
@@ -683,16 +622,9 @@ export async function followUpHandler(
   if (!step) return { outcome: "done" };
   const isLast = stepIndex === steps.length - 1;
 
-  // Appointment suppression: hold the follow-up while this conversation has a LIVE appointment —
-  // queued reminder OR already-fired one with the start still ahead (issue #39). Re-check later
-  // instead of nudging OR ending the sequence, so it resumes once the appointment passes / is
-  // cancelled. Defense in depth — the inbound that booked the appointment already cancels any prior
-  // FOLLOWUP, and the sweep won't enqueue a new one meanwhile.
-  //
-  // NOTE: BELOW the step resolution, and that order is the feature: the pair that decides is
-  // (agent, step), and the step is not known any earlier (issue #103). Moving it down costs nothing
-  // the gate used to catch — the only thing between the two positions is the out-of-range check,
-  // which ends the sequence outright, and a sequence that is over has nothing left to suppress.
+  // NOTE: Hold the follow-up while this conversation has a LIVE appointment, re-checking later
+  // instead of nudging or ending the sequence, so it resumes once the appointment passes. BELOW the
+  // step resolution, because the pair that decides is (agent, step).
   if (appointmentPauseApplies(ctx.followUpCfg, step)) {
     const blockedByAppointment = await hasLiveAppointment(
       tenantId,
@@ -703,10 +635,9 @@ export async function followUpHandler(
       return {
         outcome: "reschedule",
         runAt: new Date(Date.now() + APPOINTMENT_BACKOFF_MS),
-        // Never kept by the sweep: it selects a conversation only when no live appointment holds it
-        // (or the agent is exempt), so a selected conversation is one whose hold has lifted, by the
-        // appointment ending or by the pause setting changing, and the hold must not be waited out
-        // (review rounds 6 and 8). While the appointment is live the sweep does not reach it.
+        // NOTE: Never kept by the sweep: it selects a conversation only when no live appointment
+        // holds it (or the agent is exempt), so a selected one's hold has lifted and must not be
+        // waited out. While the appointment is live the sweep does not reach it.
         payload: { ...job.payload, deferredUnder: APPOINTMENT_HOLD },
       };
     }
@@ -739,8 +670,8 @@ export async function followUpHandler(
     // after follow-up was armed. Catches a step-0 job enqueued before a re-arm (disable → re-enable)
     // and any agent never armed (NULL → fail-safe). Later steps are exempt: an in-flight sequence
     // legitimately outlives a re-arm.
-    // Same axis as the sweep's SQL, and it has to be the same or the two disagree on the conversation
-    // that motivated it: our reply when we have one, the client's message when we do not (issue #750).
+    // Same axis as the sweep's SQL, and it has to be: our reply when we have one, the client's
+    // message when we do not.
     const fenceAt = silenceStartedAt(lastInboundAt, ctx.conv.lastRepliedAt);
     if (ctx.armedAt == null || fenceAt == null || fenceAt < ctx.armedAt) {
       return { outcome: "done" };
@@ -773,27 +704,10 @@ export async function followUpHandler(
     }
   }
 
-  // The tombstone question, asked in this handler and not only inside runAgentNudge. Three writes
-  // below touch the CONVERSATION directly — the never-opening schedule, the retry exhaustion, and the
-  // watermark after the nudge — and `lastFollowUpAt` is exactly the column /reset clears. A stamp
-  // landing after the command puts the sweep's anchor back on a conversation the operator was told
-  // was cleared, and the third one also arms the next step, reviving the sequence the command ended.
-  //
-  // Read immediately before each write rather than once at the top: the command arrives whenever it
-  // arrives, and the interesting moment is precisely while the nudge's model call runs. Returns
-  // whether the stamp landed, so a caller that would continue the sequence can stop instead.
-  //
-  // ONE statement, not a read then a write. Everywhere else the two marks are read to decide whether
-  // to keep going, and the gap between deciding and acting is covered by there being no I/O in it.
-  // Here the gap cannot be closed that way, because the command does two things in ORDER: it retires
-  // the job first and clears `last_follow_up_at` later, so a stamp that reads between them finds the
-  // job live, and writes after the clear. The condition therefore has to be evaluated by the same
-  // statement that writes — then the stamp lands strictly before the retirement or not at all.
-  //
-  // The condition is `jobNotRetiredSql`, the scheduler's own predicate, and not a copy of it written
-  // here: the JS reader and this one are one rule, and they are kept side by side there so a change
-  // to either is a change in front of the other. NOT-retired rather than live, so an absent row
-  // still stamps — an unknown is not a retirement.
+  // NOTE: Stamps `lastFollowUpAt` (the column /reset clears) unless the job was retired, returning
+  // whether it landed so a caller can stop the sequence. ONE statement, since /reset retires the job
+  // BEFORE clearing the column, so a separate read could find the job live and write after the clear.
+  // The condition is the scheduler's own `jobNotRetiredSql`; an absent row still stamps.
   const stampUnlessRetired = async (): Promise<boolean> => {
     const stamped = await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.$executeRaw(Prisma.sql`
@@ -804,7 +718,7 @@ export async function followUpHandler(
     );
     // NOTE: the stamp is the step being spent: the sweep and the next step anchor on it, and a step-0
     // retry reads it as the episode already handled. A run past its deadline has to write the
-    // outcome that follows it, or the sequence ends here (issue #811).
+    // outcome that follows it, or the sequence ends here.
     if (stamped > 0) run?.commit();
     return stamped > 0;
   };
@@ -888,13 +802,9 @@ export async function followUpHandler(
     deps,
   });
 
-  // NOTE: Live gate: the conversation is no longer bot-owned in Chatwoot (resolved / human took over /
-  // another bot holds it), or the run was retired. No watermark, no next step. A retired run ends here.
-  // The reconciled mirror keeps the sweep away from a resolved or human-held conversation, so those
-  // end here. Not from one another bot holds, which is pending and bot-assigned in both readings: a
-  // bare `done` put it back in the selection every minute, forever (issue #796). That one is parked
-  // for LIVE_DECLINE_BACKOFF_MS, which the sweep's re-arm leaves alone, and asked again then: a
-  // conversation the other bot handed back is followed up, one that moved on ends at the first look.
+  // NOTE: Live gate: no longer bot-owned in Chatwoot, or the run was retired: no watermark, no next
+  // step. A resolved or human-held conversation ends here; one another bot holds still looks
+  // eligible to the sweep, so it is parked for LIVE_DECLINE_BACKOFF_MS and asked again then.
   if (nudgeOutcome === "stale") {
     if (await jobRetired(job, base)) return { outcome: "done" };
     // Asked of the mirror AFTER the gate reconciled it, the same two columns the sweep selects on:
@@ -1001,7 +911,7 @@ export async function ensureTenantSweep(
     dedupeKey: "sweep",
     // NOTE: One perpetual row per tenant: this call bootstraps or self-heals it, and every pass
     // reschedules itself, so there is only ever one unit of work. Its budget is cleared by each
-    // completed pass (issue #287); clearing it HERE would mean a restart loop, or an operator
+    // completed pass; clearing it HERE would mean a restart loop, or an operator
     // saving an agent, resetting the count of a sweep that is genuinely broken.
     rearm: "same-work",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),

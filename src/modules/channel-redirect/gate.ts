@@ -43,8 +43,8 @@ export interface ResolveRedirectLinkParams {
   // proactive WhatsApp follow-up (nothing new to clone — the lead already saw their first message).
   clonedMessage?: string;
   // The WhatsApp entry conversation the link is being sent on (its chatwootConversationId). Rides in
-  // the token so the fork can stamp it on the widget conversation, which is what turns the episode's
-  // pairing from an inference into a fact (issue #222).
+  // the token so the fork can stamp it on the widget conversation, which makes the episode's pairing
+  // a fact rather than an inference.
   originDisplayId: number;
   openWidget: boolean;
   ttlSeconds: number;
@@ -59,40 +59,10 @@ export function isOurIdentifier(current: string, base: string): boolean {
 }
 
 // Settle which redirect identifier this contact carries, and return it, because the token has to be
-// minted for whatever the answer is.
-//
-// READ FIRST, and keep what is already there. `fzwa:<X>` is unique per Chatwoot account, so when
-// another contact holds it the stamp is refused with a 422 and, with a fixed value, every later
-// redirect for this lead fails the same way, permanently and in silence (#269). The answer to that
-// refusal is to take `fzwa:<X>:<random>` instead. But an identifier this contact ALREADY carries is
-// the one live tokens were minted for, and links outlive the resend cooldown by design (24h), so
-// re-deriving a value on each delivery would detach the link issued minutes ago. That applies both
-// ways: a contact that moved keeps its suffix even if the base has since become free, because a token
-// is out there carrying the suffix.
-//
-// So this writes only when the contact has no identifier of ours yet, which also means the ordinary
-// path costs one call, a read, instead of a pointless re-stamp of a value already in place.
-//
-// WHY IT MOVES INSTEAD OF TAKING THE VALUE BACK. The alternative is to find the holder and clear it,
-// and that is unbuildable on this API: nothing there answers "who holds exactly this identifier".
-// `/contacts/search` matches a substring across name, email, phone and identifier, 15 rows a page.
-// `/contacts/filter` is exact but case-INSENSITIVE while the unique index is not, is paged the same
-// way, and its `resolved_contacts` base narrows to `contact_type: 'lead'` once `crm_v2` is on, which
-// hides the widget visitor it would be looking for. And there is no conditional write, so even a
-// correct answer can go stale between the read and the PUT and clear an identifier nobody meant to
-// touch. Moving needs none of it: the account cannot refuse a value nobody has, the write stays on OUR
-// contact, and no other contact is read, trusted or modified. Squatting stops working too, since an
-// identifier that does not exist until it is minted cannot be claimed in advance.
-//
-// Serialized per contact because the whole thing is read-then-write over the network: two deliveries
-// for one lead arriving together would otherwise both read "nothing yet", mint two different suffixes
-// and leave one of the two links pointing at a value the contact no longer holds. The queue is
-// process-local, which is the same invariant the rest of the gate already runs under.
-//
-// Keyed by INSTANCE and contact, because a Chatwoot contact id is unique inside one account and not
-// beyond it (schema.prisma says so on `Contact`, and `ChatwootClient.targetKey` scopes its own keys the
-// same way). A bare contact id would put two tenants that happen to share the number behind one queue,
-// so a slow round trip on one Chatwoot server would hold up a redirect on another.
+// minted for whatever the answer is. Read first and keep what is there; write only when the contact
+// has none, moving to `fzwa:<X>:<random>` when the base is held (docs/channel-redirect.md says why).
+// Serialized per contact, keyed by INSTANCE and contact: a Chatwoot contact id is unique only inside
+// one account, so a bare id would queue two tenants' redirects behind each other.
 export function identifierQueueKey(
   instanceId: bigint,
   chatwootContactId: number,
@@ -158,8 +128,8 @@ export async function resolveRedirectLink(
     const { token, websiteUrl } = await admin.mintRedirectToken({
       inboxId: p.widgetInboxId,
       identifier,
-      // The contact, alongside the value it carries: the identifier says WHAT to identify as and this
-      // says WHO, which is the half a moved identifier loses (issue #286).
+      // NOTE: The contact, alongside the value it carries: the identifier says WHAT to identify as and
+      // this says WHO, which is the half a moved identifier loses.
       contactId: p.chatwootContactId,
       message: p.clonedMessage,
       ttlSeconds: p.ttlSeconds,
@@ -217,8 +187,8 @@ export function interpolateLink(template: string, url: string): string {
 export interface RunRedirectGateParams {
   tenantId: bigint;
   instanceId: bigint;
-  // Chatwoot display id of the conversation the gate is running on — the WhatsApp ENTRY half of the
-  // episode. Load-bearing since #222: it is what the token carries as the redirect's origin.
+  // Chatwoot display id of the conversation the gate is running on (the WhatsApp ENTRY half of the
+  // episode): it is what the token carries as the redirect's origin.
   conversationId: number;
   conv: {
     id: bigint;

@@ -7,15 +7,9 @@ import { GOOGLE_CALENDAR_PROVIDER } from "@/modules/appointments/provider";
 // The record that a commitment exists in a conversation, and the ONLY thing the four readers of
 // "is this conversation holding an appointment?" consult.
 //
-// It exists as its own unit because a reminder job and an appointment answer different questions. A
-// job is written because something has to be SENT — so it is legitimately absent when the operator
-// switched reminders off, and legitimately absent when the booking is sooner than the smallest
-// configured offset (`computeReminderJobs` drops every offset whose time has passed; measured on
-// main: a booking 30 minutes out with the default `[24, 1]` produced zero rows). While the rows WERE
-// the record, both of those made `followUp.pauseWhileAppointment` inert with no error anywhere, and
-// left the agent's own prompt without the appointment it was being asked about (issue #376).
-//
-// Writing is unconditional; arming reminders is the conditional half, and it lives in reminders.ts.
+// A reminder job is not this record: a job exists only when something has to be SENT, so it is
+// absent when reminders are off or the booking is sooner than every offset. Writing the record is
+// unconditional; arming reminders is the conditional half, in reminders.ts.
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -25,8 +19,7 @@ export interface RecordAppointmentArgs {
   tenantId: bigint;
   // The per-conversation thread (`tenant:instance:convId`).
   threadId: string;
-  // The system that owns the booking. Defaults to Google Calendar, which is what every caller was
-  // before a tool definition could declare one of its own (issue #352).
+  // The system that owns the booking. Defaults to Google Calendar.
   provider?: string;
   // The booking's identity WITHIN that provider (a Google Calendar event id, a row id in the
   // operator's own system).
@@ -41,14 +34,14 @@ export interface RecordAppointmentArgs {
 
 // "unreadable-start" rather than a throw: the caller is a tool that already booked a real
 // appointment, and the booking must not be undone because we could not judge its start. The caller
-// reports it (prepare.ts binds a flowlog warn), and the appointment simply has no record — the same
-// place the reader lands anyway, since nothing can decide liveness from a start it cannot parse.
+// reports it (prepare.ts binds a flowlog warn), and the appointment simply has no record: nothing
+// can decide liveness from a start it cannot parse anyway.
 export type RecordAppointmentResult = "recorded" | "unreadable-start";
 
 // Upsert by (tenant, provider, externalId): a reschedule of the same booking MOVES the record rather
 // than leaving a second one behind, and it CLEARS the tombstone, because the same appointment being
-// re-booked is the appointment standing again. The provider is part of the key and not a note beside
-// it — without it two operator systems that both count from 1 overwrite each other's bookings.
+// re-booked is the appointment standing again. The provider is part of the key: two operator
+// systems that both count from 1 must not overwrite each other's bookings.
 export async function recordAppointment(
   args: RecordAppointmentArgs,
 ): Promise<RecordAppointmentResult> {
@@ -90,7 +83,7 @@ export async function recordAppointment(
 // THE START THIS APPOINTMENT IS CURRENTLY RECORDED AT, or null when nothing is recorded. Read by
 // the record-only path: preserving the reminders already armed is right for a re-statement of the
 // SAME booking and wrong for one that moved, because a reminder carries the time it was armed for
-// and would announce the obsolete one (issue #568, review round 19).
+// and would announce the obsolete one.
 export async function storedAppointmentStart(
   tenantId: bigint,
   externalId: string,
@@ -105,13 +98,13 @@ export async function storedAppointmentStart(
       select: { startAt: true, cancelledAt: true },
     }),
   );
-  // A cancelled record has no reminders left to protect, so it reads as nothing recorded.
+  // NOTE: A cancelled record has no reminders left to protect, so it reads as nothing recorded.
   return row && !row.cancelledAt ? row.startAt : null;
 }
 
 // The appointment stopped standing. Never a delete: a cancelled appointment has to stay
 // distinguishable from one that never existed, and the reminder handler still has rows pointing at
-// it. Silent when there is no record — the caller cancels reminders whether or not one was written.
+// it. Silent when there is no record: the caller cancels reminders whether or not one was written.
 export async function cancelAppointmentRecord(
   tenantId: bigint,
   externalId: string,
@@ -126,11 +119,9 @@ export async function cancelAppointmentRecord(
   );
 }
 
-// Every appointment THIS conversation holds stops standing. /reset is the caller, and the scope is
-// the thread for the reason reminders.ts gives at length: a command that knows only the thread must
-// not reach an appointment a later conversation now owns.
-//
-// Returns how many records it reached.
+// Every appointment THIS conversation holds stops standing; returns how many records it reached.
+// /reset is the caller, and the scope is the thread: a command that knows only the thread must not
+// reach an appointment a later conversation now owns.
 export async function cancelThreadAppointmentRecords(
   tenantId: bigint,
   threadId: string,

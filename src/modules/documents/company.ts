@@ -43,15 +43,9 @@ const LOGO_SIGNATURES: Record<"png" | "jpg", number[]> = {
   jpg: [0xff, 0xd8, 0xff],
 };
 
-// The END of the file as well as its start. A signature check alone accepts a TRUNCATED upload —
-// the first bytes are genuine, the rest never arrived — and the renderer then fails on every preview
-// and every issuance of a template showing the logo, until somebody thinks to remove it. Both
-// formats end in a fixed marker, so the cheap test for "the whole file is here" is that the marker
-// is.
-//
-// This is a structural check, not a decode: it catches a file that was cut short, which is the
-// failure that actually happens on an upload. A file that is complete and still undecodable
-// (corrupt pixel data) reaches the renderer, and the render is where it is caught.
+// The END of the file as well as its start: a signature check alone accepts a TRUNCATED upload,
+// which then fails every render showing the logo. Both formats end in a fixed marker. Structural,
+// not a decode: corrupt pixel data in a complete file is caught by the render.
 const LOGO_TERMINATORS: Record<"png" | "jpg", number[]> = {
   png: [0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82], // IEND + its CRC
   jpg: [0xff, 0xd9], // EOI
@@ -134,9 +128,8 @@ export function logoBytesLookLike(
   bytes: Uint8Array,
   ext: "png" | "jpg",
 ): boolean {
-  // No length guard on the signature: `every` walks the SIGNATURE, so a file shorter than it
-  // compares a byte against `undefined` and fails. Measured — the guard survived removal against the
-  // whole table, which is the definition of a clause that decides nothing.
+  // NOTE: No length guard on the signature: `every` walks the SIGNATURE, so a file shorter than it
+  // compares a byte against `undefined` and fails.
   if (!LOGO_SIGNATURES[ext].every((byte, i) => bytes[i] === byte)) return false;
   const end = LOGO_TERMINATORS[ext];
   const at = bytes.length - end.length;
@@ -202,15 +195,9 @@ export async function setCompanyLogo(
       { allowed: LOGO_ALLOWED_FORMATS },
     );
   }
-  // Dimensions decide, not bytes. A file well under the size cap can declare enough pixels to
-  // exhaust the process when the renderer decodes it, and the renderer runs on every preview and
-  // every issuance of a template that shows the logo — for every tenant on the instance.
-  //
-  // TWO REFUSALS, not one: an image we cannot measure is refused for the same reason (unbounded is
-  // unbounded), and it is a different thing to be told. The file passed the signature and the
-  // terminator, so what is wrong is the header between them — re-exporting fixes it, and shrinking
-  // the image does not. One sentence covering both said "at most 4000000 pixels" about a file whose
-  // pixel count nobody could read (issue #292 review).
+  // NOTE: Dimensions decide, not bytes: a small file can declare enough pixels to exhaust the
+  // process on every render, for every tenant. An image we cannot measure is refused too, with its
+  // own message, since the fix there is re-exporting, not shrinking.
   const pixels = logoPixels(bytes, ext);
   if (pixels === null || pixels <= 0) {
     throw new AppError(
@@ -227,22 +214,9 @@ export async function setCompanyLogo(
       { max: LOGO_MAX_PIXELS, dimensions: `${LOGO_MAX_SIDE}×${LOGO_MAX_SIDE}` },
     );
   }
-  // ONE NAME PER UPLOAD, which is what makes everything below short. The configured file is never
-  // written to, moved or copied: these bytes land under a name nothing references yet, and the row
-  // write is what starts referencing it.
-  //
-  // Three things follow, and each was a mechanism here before. A reader mid-render cannot be handed
-  // a half-written file, because nothing overwrites one. Two overlapping uploads cannot interleave
-  // into a row that describes the other one's image, because they never share a path. And a failure
-  // needs no compensation at all: the bytes it wrote are bytes nobody can be pointing at, so they
-  // are dropped by the same question that drops a superseded letterhead — is this key referenced?
-  //
-  // What that replaced: a copy-aside of the live file, a rename over it, and a rollback that had to
-  // decide between putting the copy back, removing what it wrote, and doing nothing, from outside
-  // the lock it published under. Three review rounds went into that decision and the third found a
-  // state it could not answer: two uploads whose row writes both failed, whose compensations ran in
-  // the wrong order, left an uncommitted image as the live letterhead while the settings still
-  // described the old one.
+  // NOTE: ONE NAME PER UPLOAD: the configured file is never overwritten, and the row write is what
+  // starts referencing the new one. So no reader sees a half-written file, overlapping uploads never
+  // share a path, and a failure needs no compensation beyond "is this key referenced?".
   const key = logoKeyFor(ctx.tenantId, ext);
   await Bun.write(logoPath(key), bytes);
   // The block as it stood UNDER the lock — the only reading of it that is not already stale, and
@@ -268,18 +242,9 @@ export async function setCompanyLogo(
     await dropUnreferencedLogo(ctx, base, superseded.key);
     return saved;
   } catch (e) {
-    // Whether these bytes can be referenced at all is decided by how far the write got, and the two
-    // answers want different things.
-    //
-    // The write never reached the lock (it failed taking it, or reading the block): the transaction
-    // cannot have written our key, so nothing can point at it and it goes — no question to ask, and
-    // nothing to ask it of, since whatever broke is the same database.
-    //
-    // It did reach it: then the commit is genuinely ambiguous — a connection lost at COMMIT reports
-    // a failure for a transaction the server kept — so the committed row is asked, under the lock,
-    // exactly as a superseded key is. And if that question cannot be answered either, the file
-    // STAYS: unreferenced bytes cost disk, while deleting a letterhead the settings do name leaves
-    // every document rendering without one and nothing saying why.
+    // NOTE: Never reached the lock: nothing can reference our key, so it goes. Reached it: the commit
+    // is ambiguous (a connection lost at COMMIT), so the committed row is asked under the lock, and
+    // if that fails too the file STAYS, since unreferenced bytes only cost disk.
     if (superseded.reached) await dropUnreferencedLogo(ctx, base, key);
     else await removeLogoFile(key);
     throw e;
@@ -308,17 +273,9 @@ export async function clearCompanyLogo(
   return cleared;
 }
 
-// Delete the file a key names, once nothing refers to it any more.
-//
-// Both callers reach here AFTER their own transaction committed, so the lock they held is gone and
-// the key they are about to delete may have been re-published by someone else in between: two
-// cross-format uploads racing (A commits png→jpg, B commits jpg→png, A then deletes B's live png),
-// or a clear followed immediately by an upload. The committed state is the only authority on what
-// is still referenced, and reading it under the lock is what stops a delete from landing between
-// the read and the write that re-adopts the key.
-//
-// Best-effort past that point: the row no longer refers to the file, so a failure here costs disk
-// and nothing else — refusing the operation over it would be worse.
+// Delete the file a key names, once nothing refers to it any more. Callers arrive after their own
+// commit, when someone else may have re-published the key (two cross-format uploads racing), so the
+// committed row is read under the lock. Best-effort past that: a failure only costs disk.
 async function dropUnreferencedLogo(
   ctx: TenantContext,
   base: PrismaClient,
@@ -352,16 +309,9 @@ export async function readCompanyLogo(
   if (!company.logoKey) return null;
   const format = logoExtOf(company.logoKey);
   if (!format) return null;
-  // The read itself can fail, and an `exists()` check does not cover it: a clear or a cross-format
-  // replacement unlinks this very file, and landing between the check and the read turns a MISSING
-  // logo — the case this function exists to absorb — into a rejected promise that aborts the whole
-  // preview or issuance. Every reason the bytes are unavailable has to come out as the same null.
-  //
-  // NOT COVERED BY A TEST: reaching it needs the unlink to land between two statements here, which
-  // no single-process test can schedule. The stand-ins that ARE reachable (a missing file, a
-  // directory at this path) answer null with or without the catch, so a test on one of them would
-  // pass for the wrong reason. The property is structural instead: there is one exit, and it is
-  // null.
+  // NOTE: The read itself can fail (a concurrent clear unlinks the file), and every reason the bytes
+  // are unavailable must come out as the same null, never a rejection that aborts the render. No
+  // test can schedule that unlink; the property is structural: one exit, and it is null.
   const bytes = await Bun.file(logoPath(company.logoKey))
     .arrayBuffer()
     .catch(() => null);

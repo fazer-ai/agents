@@ -25,16 +25,10 @@ import {
   parseTemplateContent,
 } from "./validate";
 
-// Issuing a document: one core, two callers (the REST route and the agent's own tool), as the API
-// contract requires.
-//
-// Two-phase and idempotent, transplanted from the quote generator it replaces because that part of
-// it was right: a burst, a retry or a resumed turn carrying the same idempotencyKey produces ONE
-// document and ONE PDF, never N numbered documents in front of one customer.
-//   Phase A (scoped): create the PENDING row race-safely on the [tenantId, idempotencyKey] unique
-//     and re-read. An already-READY row comes back untouched.
-//   Phase B (no tx): render the STORED snapshot — not the caller's argument — outside any
-//     transaction (this is CPU-bound), write it to a path derived from the row id, then CAS to READY.
+// Issuing a document: one core, two callers (the REST route and the agent's own tool). Two-phase and
+// idempotent, so a burst, retry or resumed turn with one idempotencyKey yields ONE numbered document.
+// Phase A (scoped) creates the PENDING row race-safely on [tenantId, idempotencyKey]; phase B renders
+// the STORED snapshot outside any transaction, writes it, then CASes to READY. See docs/documents.md.
 
 export interface DocumentSnapshot {
   blocks: DocumentBlock[];
@@ -99,24 +93,14 @@ export function calendarDay(at: Date, timezone: string): string {
 // The context for a tenant id this process read from a row, for the callers that HAVE one and no
 // request context: the agent's own document tool, whose tenant came off the thread it is answering.
 // `issueDocument` takes a TenantContext precisely so the id's provenance survives the call, and
-// TENANT_ADMIN is the honest answer for an id that never left the process (issue #280).
+// TENANT_ADMIN is the honest answer for an id that never left the process.
 export function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// Where an issued document's bytes live, under the storage root.
-//
-// The `documents/` segment is the load-bearing part. An install upgraded from the quotes subsystem
-// keeps writing into the directory its QUOTES_STORAGE_DIR names (Coolify freezes that value, which
-// is why the fallback exists at all), and that directory already holds `<tenantId>/<quoteId>.pdf`
-// from before. `issued_documents` is a NEW table with a new sequence, so its ids start over and
-// collide with those file names — and a collision is not a lost file, it is the wrong customer's
-// document: `link` fails with EEXIST, the publish path reads that as "another renderer got here
-// first", adopts the file, and marks the row READY over a stranger's quote, which is then what the
-// download serves and what the agent attaches to the conversation.
-//
-// A segment no numeric id can produce keeps the two sets of files apart for good. Nothing has to be
-// migrated: the documents feature is new, so no install has a file under this scheme yet.
+// Where an issued document's bytes live, under the storage root. The `documents/` segment is
+// load-bearing: an upgraded install may share a directory with old `<tenantId>/<quoteId>.pdf`
+// files, and a colliding id would publish a stranger's quote (docs/documents.md, storage).
 export function storageKey(tenantId: bigint, documentId: bigint): string {
   return `${tenantId}/documents/${documentId}.pdf`;
 }
@@ -267,15 +251,9 @@ export async function issueDocument(
     );
   }
 
-  // `create` rather than `createMany({ skipDuplicates })` because the ROW is needed: what follows
-  // renders and publishes against this document's own id, and createMany returns a count, not rows.
-  // (The count is enough where only the fact of insertion matters — the bundle import uses exactly
-  // that, because a P2002 there would abort the transaction the whole import runs in.)
-  //
-  // Three scoped calls, not one: a P2002 ABORTS the PostgreSQL transaction it was raised in, so
-  // recovering the winner cannot happen inside the transaction that lost. Catching the conflict and
-  // re-reading in the same one turns a benign race — which the idempotency key exists to make benign
-  // — into "current transaction is aborted" and a 500 for the caller that merely arrived second.
+  // NOTE: `create`, not `createMany({ skipDuplicates })`, because the ROW is needed. Three scoped
+  // calls, not one: a P2002 ABORTS the PostgreSQL transaction it was raised in, so the winner must
+  // be re-read outside the transaction that lost, or the second caller gets a 500.
   const created = await runScopedOn(base, ctx, (db) =>
     db.issuedDocument.create({
       data: {
@@ -386,15 +364,9 @@ async function finish(
   },
 ): Promise<IssuedDocumentResult> {
   const { base, ctx, dir, tenantId } = deps;
-  // Revocation ends the document, and the idempotency key leads straight back to it: the key is
-  // derived from the VALUES, so an agent asked to send the same quote again lands on this exact row.
-  // Without this the retry would hand back the stored bytes and attach a voided document to a
-  // customer's reply, while the operator's own download link answered 404.
-  //
-  // NOT documentVerdict, which the download route uses: that one also refuses a row with no PDF, and
-  // here a row with no PDF is the ordinary case — it is the one this function is about to render.
-  // A 409, not a 400: nothing about the caller's arguments is wrong, and there is nothing to correct
-  // that would not lead back to the same voided row.
+  // NOTE: The key is derived from the VALUES, so re-sending the same quote lands on a revoked row,
+  // which must not be handed back. NOT documentVerdict: a row with no PDF is the ordinary case here.
+  // A 409, since no correction to the arguments leads anywhere but this voided row.
   if (loaded.revoked) {
     throw new AppError(
       "this document was revoked",
@@ -449,15 +421,9 @@ async function finish(
     title: row.title,
   };
 
-  // Asked again, HERE, because the answer expires. The gate before the insert used the logo that
-  // was on disk then, and this is a different moment: a PENDING row can be adopted by a retry long
-  // afterwards. Everything else the render uses is frozen in the snapshot, so the letterhead is the
-  // one input that can have changed — and for a template whose only content IS the letterhead,
-  // changed means there is nothing left to draw.
-  //
-  // Refused instead of published, even though the number is already spent: the row stays PENDING,
-  // so nothing was delivered and restoring the logo is all a retry needs. Publishing would freeze a
-  // numbered blank page, and an issued document is immutable.
+  // NOTE: Asked again HERE: a retry can adopt a PENDING row long afterwards, and the live logo is the
+  // one render input outside the snapshot. Refused rather than published even with the number spent:
+  // the row stays PENDING, and publishing would freeze a numbered blank page.
   if (
     !documentDraws({
       blocks: stored.blocks,
@@ -489,37 +455,17 @@ async function finish(
     meta,
   });
   const key = storageKey(tenantId, row.id);
-  // Written to a temporary name first. Two callers holding the same idempotency key can both find
-  // the row PENDING and both render it, and a plain write to the final path lets the second truncate
-  // a file the first already published — so a download in that window serves a half-written PDF.
-  //
-  // Bun.write creates parent directories, which is why the temporary lives beside the target rather
-  // than in a system temp dir — and why the link below cannot cross a filesystem. The suffix keeps
-  // two concurrent renders from sharing the temporary as well.
-  //
-  // WHAT IS COVERED: that a second publisher adopts the first one's file instead of replacing it,
-  // and that no `.part` survives a successful issuance. What is NOT is the truncation itself — that
-  // needs two renders of one key overlapping AND a reader landing inside the window, which no
-  // single-process test reaches with any reliability (the last attempt at a race like it passed
-  // three times out of three with the fix removed, and was deleted rather than kept).
+  // NOTE: Written to a unique temporary name beside the target first (so the link below never
+  // crosses a filesystem): two renders of one key must not truncate a file already published. Tests
+  // cover adoption and `.part` cleanup, not the truncation window itself.
   const finalPath = `${dir}/${key}`;
   const tempPath = `${finalPath}.${process.pid}-${Math.random().toString(36).slice(2, 10)}.part`;
   await Bun.write(tempPath, buffer);
 
-  // PUBLISHED BEFORE the row says READY, and published with `link` rather than `rename`.
-  //
-  // Both orders on their own leave a window, and each was tried. Renaming first lets a caller that
-  // then loses the claim replace a file the winner already published — the renders share a frozen
-  // snapshot, but the LOGO is read live, so the published document can visibly change after it was
-  // declared final. Claiming first is worse: a reader who sees READY can arrive before the file
-  // exists and get a 404, and a process killed in that window leaves a row that says READY forever
-  // with nothing behind it, which nothing re-renders.
-  //
-  // `link` closes both instead of choosing. It creates the final name from a fully-written temporary
-  // and FAILS with EEXIST if that name already exists, so the first publisher wins the file and a
-  // later one adopts it rather than replacing it; and because it happens before the CAS, a row is
-  // never READY without its bytes. A crash anywhere here leaves a PENDING row and at worst an
-  // unreferenced temporary — both recoverable, since the next call re-renders and re-adopts.
+  // NOTE: PUBLISHED BEFORE the row says READY, with `link` rather than `rename`: link FAILS with
+  // EEXIST, so the first publisher wins the file and a later one adopts it (the live logo could
+  // differ), and a row is never READY without its bytes. A crash leaves a recoverable PENDING row
+  // (docs/documents.md, Issuing).
   try {
     await link(tempPath, finalPath);
   } catch (e) {
@@ -617,14 +563,8 @@ async function assignNumber(
   await db.$queryRaw`
     SELECT 1 FROM "document_templates" WHERE "id" = ${templateId} FOR UPDATE
   `;
-  // The DOCUMENT row is claimed next, and that claim is the whole point of this function. A row
-  // exists unnumbered for a moment by design — the counter is bumped after the insert, so a lost
-  // idempotency race consumes no number — and in that window a second caller re-reads it, sees no
-  // number, and heals it at the same time as the first. Without the lock both take a number from
-  // the counter, one update is discarded, and the caller whose update lost goes on to render a
-  // document with NO number and write it over the winner's PDF: the customer's link then serves a
-  // quote with a blank where its identity should be.
-  //
+  // NOTE: The DOCUMENT row is claimed first (docs/documents.md, Issuing): a row is unnumbered for a
+  // moment by design, and two callers healing it at once would render one PDF with no number.
   // Scoped by RLS like every other statement in this transaction, and the id is one we inserted.
   const claimed = await db.$queryRaw<{ number: number | null }[]>`
     SELECT "number" FROM "issued_documents" WHERE "id" = ${documentId} FOR UPDATE

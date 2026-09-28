@@ -19,26 +19,13 @@ import {
   processInboundDelivery,
 } from "./service";
 
-// Brings back inbound deliveries stranded between the ack and the dispatch (issue #817).
-//
-// The receptor acks the sender first and dispatches afterwards, detached, so a process that dies in
-// between, or a dispatch whose transaction rolls back, leaves the row PENDING or PROCESSING with the
-// sender holding a 2xx and no reason to send it again. Before this, only a redelivery from the
-// sender ever called `processInboundDelivery` a second time.
-//
-// Two kinds, the same split as DELIVERY_SWEEP and DELIVERY_RECOVERY and for the same reason
-// (../../scheduler/lanes.ts): the sweep is one indexed query per tenant, and the work it finds can
-// run an agent turn. So the sweep only ARMS one INBOUND_REDISPATCH per stranded row, and that job
-// calls the very processor the route calls. Nothing is re-implemented here: the claim is the
-// processor's own compare-and-set, so a re-dispatch racing the route, a redelivery, or another
-// re-dispatch takes the row at most once, and the attempt cap and the dead-letter announcement for a
-// row that exhausted it are the processor's too.
+// Brings back inbound deliveries stranded between the ack and the dispatch: the sender holds a 2xx
+// and will not resend. The sweep only ARMS one INBOUND_REDISPATCH per stranded row (the work can run
+// an agent turn, ../../scheduler/lanes.ts), and that job calls the same processor the route calls,
+// whose compare-and-set claim takes the row at most once. Full contract in docs/integrations.md.
 
-// Cadence of the sweep, and it is the half of the delay that is ours to choose: a row is only
-// stranded once PROCESSING_STALE_MS has passed, and then waits up to one interval more. Two minutes
-// because a pass reads a partial index that holds only the unfinished rows (a handful), so a shorter
-// wait costs next to nothing, and what waits is a payment or an operator's event the sender will not
-// resend.
+// Cadence of the sweep: a row waits PROCESSING_STALE_MS plus up to one interval. A pass reads a
+// partial index over the unfinished rows only, so a short interval costs next to nothing.
 const SWEEP_INTERVAL_MS = 2 * 60_000;
 // One pass's ceiling, against a pathological backlog (a long outage of the database under steady
 // traffic). The rest waits one interval; rows already armed are not counted against it.
@@ -69,16 +56,10 @@ export async function sweepStrandedInbound(params: {
   const now = params.now ?? Date.now();
   const cutoff = new Date(now - PROCESSING_STALE_MS);
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
-    // ONE STATEMENT, and the exclusion of what is already armed is INSIDE it (review rounds 1 and 2).
-    // A row whose re-dispatch died is still stranded and keeps its attempt count, so it stays in any
-    // query that selects by status alone; filtered or paged afterwards, enough of them take every
-    // pass and no newer delivery is ever reached. Excluded before the LIMIT, they cost nothing.
-    //
-    // The stranded rule is the processor's (`staleClaim` in ./service.ts), restated in SQL because
-    // the exclusion is a join Prisma cannot express. PENDING is measured from receipt with the same
-    // window: the route dispatches within milliseconds of the ack, so a PENDING row that old was
-    // never claimed. The key is `redispatchKey`, spelled the same way; tests/modules/
-    // inbound-sweep.test.ts pins both, since a drift in either direction changes what is armed.
+    // NOTE: ONE STATEMENT, with the already-armed exclusion before the LIMIT: a row whose
+    // re-dispatch died stays stranded, and filtered afterwards enough of them would fill every pass.
+    // The stranded rule is `staleClaim` (./service.ts) and the key is `redispatchKey`, both restated
+    // in SQL; tests/modules/inbound-sweep.test.ts pins them.
     const rows = await db.$queryRaw<{ id: bigint; attempts: number }[]>`
       SELECT d.id, d.attempts
         FROM inbound_deliveries d
@@ -149,12 +130,10 @@ export async function redispatchInbound(
   if (deliveryId === null) {
     return { outcome: "fail", error: "inbound redispatch: no delivery id" };
   }
-  // A throw propagates on purpose: the scheduler's retry ladder is what outlasts the outage that made
-  // the dispatch throw, and its dead-letter line is what says the event was lost when it does not.
-  //
-  // The run's signal goes down to the nudge turn (review round 2). Without it a turn past the
-  // deadline keeps going after the scheduler has failed the run, and once the claim goes stale the
-  // sweep arms the next attempt beside it: a second message to the customer.
+  // NOTE: A throw propagates on purpose: the scheduler's retry ladder is what outlasts the outage
+  // that made the dispatch throw, and its dead-letter line is what says the event was lost when it
+  // does not. The run's signal goes down to the nudge turn: a turn past the deadline would
+  // otherwise keep going beside the next attempt the sweep arms once the claim goes stale.
   await processInboundDelivery({
     deliveryId,
     tenantId: job.tenantId,

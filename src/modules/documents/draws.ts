@@ -5,28 +5,11 @@ import { computeTotals } from "./totals";
 import type { DocumentValues, LineItemValue } from "./validate";
 import { buildDocumentVars, type DocumentMeta } from "./vars";
 
-// Does this document put ANYTHING on the page?
-//
-// The invariant is narrow and worth stating plainly: a customer never receives a blank PDF, and a
-// blank PDF never consumes a number from a template's sequence. Once issued, a document is
-// immutable — nothing repairs one afterwards.
-//
-// Asked HERE, with the values resolved, rather than at authoring time. Four review rounds tried to
-// answer it from the template alone and each found another conditional the one before had missed:
-// a text block that is only `{{notes}}` for an optional field, a header showing a logo the tenant
-// has not uploaded, a totals block asking for a discount row the renderer drops when the discount
-// is zero, a hidden table backed by a field the agent omitted. They are all the same shape — the
-// template does not know, because the answer depends on values that arrive at the turn. A static
-// check either guesses (and refuses templates that are perfectly fine for the tenant that wrote
-// them) or misses. With the values in hand there is nothing to guess.
-//
-// What DOES stay at authoring is the half that is unconditional: a layout with no blocks, or one
-// made of dividers and empty text, can never draw for any values. An error at the keyboard beats a
-// surprise at the turn, and that check costs one pass over the blocks.
-//
-// MIRRORS THE RENDERER, and that is the risk: these conditions are the renderer's, restated. They
-// are held to it by tests/modules/document-draws.test.ts, which renders each case and compares this
-// answer against what the PDF actually drew — in both directions.
+// Does this document put ANYTHING on the page? A customer never receives a blank PDF, and a blank
+// PDF never consumes a sequence number. Asked HERE, with the values resolved, because optional
+// fields, a missing logo or a zero discount decide it; authoring checks only the unconditional half
+// (blockCanDraw). These conditions restate the renderer's, and tests/modules/document-draws.test.ts
+// holds them to what the PDF actually draws, in both directions.
 export interface DrawsInput {
   blocks: DocumentBlock[];
   fields: DocumentField[];

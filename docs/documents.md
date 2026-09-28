@@ -131,6 +131,8 @@ and idempotent:
 3. Render the STORED snapshot outside any transaction, write it to a path derived from numeric ids,
    CAS to READY.
 
+The rendered PDF is written to a unique temporary name beside its final path and published with `link`, before the row is CAS'd to READY. `link` fails with EEXIST when the final name exists, so the first publisher wins the file and any later render of the same idempotency key adopts it instead of replacing it (renders share a frozen snapshot, but the logo is read live, so a second render could differ from the one already declared final). Publishing before the CAS means a row is never READY without its bytes, and a crash anywhere in between leaves a PENDING row and at most an unreferenced temporary, both recovered by the next call. Writing straight to the final path would let a second render truncate a file a download is already serving.
+
 Steps 2 and 3 are separate scoped calls rather than one transaction, and the insert is on its own:
 a `P2002` **aborts the PostgreSQL transaction it was raised in**, so the re-read that recovers the
 winner of an idempotency race cannot happen inside the transaction that lost it. Catching the

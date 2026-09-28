@@ -21,15 +21,10 @@ import { DATA_FENCE } from "@/graph/nudge";
 import { providerFailure } from "@/lib/provider-failure";
 import { clipText, clipTextEnd } from "@/lib/text";
 
-// Condenses the raw turns of a closed attendance into the memory the agent keeps of it.
-//
-// Shaped after src/modules/guardrails/analyze.ts, and for the same reason: this is a model call that
-// happens outside a turn, so it needs its own timeout and an explicit "could not be produced" state.
-// A summary that came back empty and a summary that never ran are the same value without it, and
-// they call for opposite actions — the first means the attendance had nothing worth remembering, the
-// second means the thread must be left exactly as it is and retried.
-//
-// It is not on any customer's critical path: the job runs after the reply was posted.
+// Condenses the raw turns of a closed attendance into the memory the agent keeps of it. A model call
+// outside a turn, so it has its own timeout and an explicit "could not be produced" state: an empty
+// summary means nothing worth remembering, a failed one means leave the thread as is and retry.
+// Shaped after src/modules/guardrails/analyze.ts. Runs after the reply was posted.
 
 const SUMMARIZE_TIMEOUT_MS = 60_000;
 
@@ -38,17 +33,10 @@ const SUMMARIZE_TIMEOUT_MS = 60_000;
 // become the context problem they were built to solve.
 export const ATTENDANCE_SUMMARY_MAX = 1200;
 
-// How much raw transcript is handed to the summarizer. A thread that accumulated many attendances
-// (compaction newly enabled, or a run that kept failing) can be larger than the model's own window,
-// and a call that fails on size would never recover on retry. Clipped from the FRONT, keeping the
-// most recent turns, because that is the half a later attendance is most likely to refer back to.
-//
-// The char cap is the floor, and it is deliberately not derived from the model: this repo has no
-// table of context windows and would not keep one honest. What the operator DID declare is
-// `agent.settings.limits.maxHistoryTokens`, and when it is set it applies here too — the same
-// budget, on the same model, measured by the same estimator the ceiling uses. Conservative in the
-// right direction: this call carries no tool definitions, so the overhead the ceiling sits under
-// (15.8k tokens on the install that motivated it) is absent here.
+// How much raw transcript is handed to the summarizer, clipped from the FRONT (recent turns matter
+// most): a thread with many raw attendances can exceed the model's window, and a size failure never
+// recovers on retry. Not derived from the model (no table of context windows here); when the agent
+// declares `limits.maxHistoryTokens`, that budget applies too, measured by the ceiling's estimator.
 const TRANSCRIPT_MAX_CHARS = 60_000;
 
 // The estimator runs low (see src/graph/token-count.ts), so convergence is by measurement rather
@@ -77,45 +65,13 @@ const TRANSCRIPT_CLOSE = "</transcricao>";
 
 // Anything in the transcript that reads as the fence's own tag, in every spelling it could take. The
 // text inside is written by the customer, who would otherwise be able to close the fence and address
-// the summarizer directly — and what the summarizer writes is what the agent believes forever after.
+// the summarizer directly, and what the summarizer writes is what the agent believes forever after.
 const FENCE_TAG = /<\s*\/?\s*transcricao[^>]*>/gi;
 
-// Escolhido por medição, não por gosto: bateria A/B com n=32 por célula em gpt-5.4-mini, sobre dois
-// diálogos (o cenário 1 simples; o 2 com o valor mudando no meio, uma restrição dita uma única vez
-// logo no começo e nenhum fechamento). Números re-derivados contra este HEAD; o harness lê o prompt
-// deste arquivo, então dá para repetir a conta:
-//
-//                        fatos completos      nome (cen. 2)   escrita vazada    mediana de tamanho
-//   este prompt          32/32 e 31/32            31/32           3/64            310 e 340
-//   variante A           32/32 e 31/32            32/32           3/64            370 e 451
-//   variante C           32/32 e 26/32            27/32           0/64            261 e 339
-//
-// Invenção: 0/32 em todas as seis células. Nenhuma variante inventou nada, que é o eixo em que
-// nenhuma delas podia falhar.
-//
-//   variante A  os mesmos quatro bullets enumerando o que preservar. Mesma retenção, mesma ausência
-//               de invenção, e resumo 19% (cenário 1) a 33% (cenário 2) mais longo. É só isso que
-//               separa os dois, e é o suficiente: texto a mais sem fato a mais é contexto pago em
-//               todo turno seguinte, para sempre.
-//   variante C  este mais "usando o mesmo alfabeto dela do começo ao fim", mirando o vazamento.
-//               ZEROU o vazamento — e derrubou a retenção do nome do cliente para 27/32 no diálogo
-//               difícil. Rejeitada por isso: esquecer quem é o cliente é dano de memória, o
-//               vazamento é cosmético.
-//
-// CORREÇÃO de uma medição anterior, registrada porque o número estava publicado aqui e neste repo
-// público: a rodada que escolheu este prompt afirmava vazamento de 8/64 na variante A contra 4/128
-// aqui, com p≈0,01, e afirmava que C não mexia no vazamento. Nenhuma das duas se reproduziu. O
-// vazamento não distingue A deste prompt (3/64 nos dois), e C na verdade o elimina. O fenômeno gira
-// em torno de 3-5%, e nenhuma das duas rodadas tem n para separar variantes nessa faixa — tratar
-// aquele p≈0,01 como resultado foi erro meu. O que decide A contra este é o comprimento, e o que
-// rejeita C é a retenção do nome; as duas coisas se repetem e são grandes o bastante para enxergar.
-//
-// "Escrita vazada" é um pedaço em cirílico/persa/bengali no meio de uma frase em português ("com
-// обещa de retorno", "com মূল্য de R$ 250,00"): artefato do modelo e não do texto acima. O sentido
-// sobrevive, mas aquilo fica gravado e reaparece em todo turno seguinte, então está registrado aqui
-// como conhecido e medido em vez de descoberto por um operador. Não há pós-processamento tirando
-// caractere não-latino: a regra do idioma é deliberada, e um cliente que fala russo tem que receber
-// memória em cirílico.
+// Chosen by an A/B battery that reads this prompt (scripts/measure-summary-battery.ts). Enumerating
+// what to preserve made summaries longer with no more facts; demanding one alphabet removed leaked
+// non-Latin fragments but lost the customer's name more often. Leaked script is a known cosmetic
+// model artifact and is not stripped: a customer who writes Russian gets memory in Cyrillic.
 const SYSTEM_PROMPT = `Você registra a memória de um atendimento que acabou, para o atendente que vai falar com este mesmo cliente da próxima vez.
 
 Escreva um resumo curto do atendimento entre as tags de transcrição, guardando o que um próximo atendimento precisaria saber.
@@ -135,11 +91,9 @@ export interface AttendanceSummaryResult {
   error?: string;
 }
 
-// One line per message, in order. Tool CALLS travel as the tool's name and tool RESULTS do not
-// travel at all: their payloads are the heaviest part of a tool-driven thread and the least
-// summarizable, and whatever the agent actually did with a result it said out loud in the reply that
-// follows. Sending them would spend the summarizer's window on ids and ISO timestamps, and would
-// hand a second model call customer data that never reached the customer.
+// One line per message, in order. Tool CALLS travel as the tool's name and tool RESULTS not at all:
+// they are the heaviest and least summarizable part, the reply that follows restates what mattered,
+// and sending them would hand a second model call customer data that never reached the customer.
 export function renderTranscript(
   messages: BaseMessage[],
   maxHistoryTokens: number | null = null,
@@ -148,33 +102,19 @@ export function renderTranscript(
   for (const m of messages) {
     const type = m.getType();
     if (type === "tool") continue;
-    // The head is rendered FROM the rows, so feeding it back would summarize a summary.
+    // NOTE: the head is rendered FROM the rows, so feeding it back would summarize a summary.
     if (isMemoryHead(m)) continue;
     let text = contentToText(m.content).trim();
-    // A proactive nudge rides as a HUMAN turn (src/graph/nudge.ts), so left in it is quoted to the
-    // summarizer as the CUSTOMER asking for whatever the operator's follow-up guidance says — and
-    // that lands in the permanent memory, which is what the agent believes from then on. The nudge's
-    // own directive is not part of the attendance; the agent's REPLY to it is, and stays.
-    //
-    // The marker covers every nudge written from here on. The DATA_FENCE fallback covers the ones
-    // already sitting in threads written before it: the fence is embedded by renderNudge in every
-    // nudge and stripped out of the external payload by sanitizeFreeText, so it cannot arrive from
-    // the event data. A customer CAN type it, and typing it costs them that one message in the
-    // summary — the trade runs the safe way, unlike leaving operator instructions in.
+    // NOTE: a proactive nudge rides as a HUMAN turn and would be remembered as the customer asking for
+    // the operator's guidance; the agent's reply to it stays. DATA_FENCE catches nudges written before
+    // the marker: renderNudge embeds it and sanitizeFreeText strips it from event data, so only a
+    // customer typing it loses that one message from the summary.
     if (isNudgeTurn(m) || (type === "human" && text.includes(DATA_FENCE)))
       continue;
-    // A HUMAN AGENT's reply, folded in by continuous ingestion. It rides as a HumanMessage as well
-    // (src/graph/markers.ts), so without this branch it renders as `cliente:` and the attendance is
-    // remembered with the operator's own words attributed to the contact — issue #187, and the one
-    // outcome that issue calls worse than the message being missing altogether.
-    //
-    // The note is trimmed by exact match but the BRANCH is marker-gated, which is the safe way round
-    // here: a customer who types that exact sentence still renders as `cliente:` and keeps every word
-    // of it, because what decides attribution is metadata a chat cannot carry.
-    // THE HAND-BACK NOTE IS NOT DIALOGUE, so it is dropped rather than attributed (issue #457).
-    // Unmarked it would render as `cliente:` — the #187 failure again, with the system's own words
-    // remembered as the contact's. Nothing is lost: it says the human attendance ended, which the
-    // summary of that attendance already shows by what is in it.
+    // NOTE: the hand-back note is not dialogue, so it is dropped: unmarked it would render as
+    // `cliente:`, the system's words remembered as the contact's. A human agent's reply also rides as
+    // a HumanMessage, so its branch is marker-gated (a chat cannot carry metadata) and only trims the
+    // note by exact match.
     if (isHumanHandback(m)) continue;
     if (isHumanAgentTurn(m)) {
       if (text.startsWith(HUMAN_AGENT_NOTE)) {
@@ -183,26 +123,10 @@ export function renderTranscript(
       if (text) lines.push(`atendente: ${text}`);
       continue;
     }
-    // System markers ride as HumanMessages (src/graph/markers.ts), and the ingestion path folds the
-    // divider into the customer's own turn — so this strips the marker and keeps the words around it,
-    // rather than dropping the message. Left in, the system's directive would be quoted back to the
-    // summarizer as something the CUSTOMER said; dropped whole, a real customer message would go
-    // missing from the memory of that attendance. An attendance whose only stored message IS the bare
-    // divider (an input guardrail answered the first turn before the model ran) renders nothing at
-    // all, and costs no generation.
-    //
-    // Keyed on the TEXT, not on the marker, which is the one place in this codebase where that is the
-    // right way round. What happens here is not a decision about the message, it is trimming a known
-    // prefix off it — and trimming is only safe when the prefix is actually there. A marker-keyed
-    // trim would cut CONVERSATION_DIVIDER.length characters off whatever the message happens to hold,
-    // which is the customer's words the moment the two disagree. It also covers, for free, the
-    // threads written before the marker existed: on the first compaction after an upgrade those
-    // dividers are plain text, and left in they are quoted to the summarizer as things the CONTACT
-    // said. A customer can open a message with this exact text and lose that prefix from the summary;
-    // they never lose the rest of the message, which is what keeps the trade safe in this direction.
-    //
-    // The CUT still decides from the stamp and only from the stamp (src/graph/markers.ts). The worst
-    // case here is a clipped prefix; there it is a boundary in the wrong place.
+    // NOTE: ingestion folds the divider into the customer's own turn, so the marker is stripped and
+    // the words kept. Keyed on the TEXT, not the marker: trimming is only safe when the prefix is
+    // there, and this also covers dividers written before the marker. The CUT still decides from the
+    // stamp only (src/graph/markers.ts).
     if (type === "human" && text.startsWith(CONVERSATION_DIVIDER)) {
       text = text.slice(CONVERSATION_DIVIDER.length).trim();
     }
@@ -223,18 +147,10 @@ export function renderTranscript(
   return clipTranscript(joined, maxHistoryTokens);
 }
 
-// The rule this file used to own now lives in `@/lib/provider-failure`, because five other provider
-// boundaries needed the same one and a rule written once per call site is a rule the next call site
-// is born without. What stays here is the reading only this caller has: `runModelCall` has already
-// reduced whatever the provider wrote, but it cannot know that OUR signal is what stopped the wait,
-// so the abort is asserted from the signal rather than inferred from the error.
-
 export async function summarizeAttendance(
   model: BaseChatModel,
   messages: BaseMessage[],
-  // Usage + trace handlers. This is a BILLED generation like any other, and one that runs without a
-  // customer waiting on it, which is exactly how a model call ends up invisible in the cost report:
-  // nobody notices a missing row on a call nobody is watching.
+  // Usage + trace handlers: a billed generation nobody waits on is how cost goes missing.
   callbacks?: BaseCallbackHandler[],
   // The agent's declared history ceiling (null = none). See TRANSCRIPT_MAX_CHARS.
   maxHistoryTokens: number | null = null,
@@ -244,18 +160,10 @@ export async function summarizeAttendance(
   // remember. That is a legitimate empty summary, not a failure, so it must not carry `error`.
   if (!transcript.trim()) return { summary: "" };
 
-  // Ours, and held so that `signal.aborted` can be read afterwards: it is the only reading of "it
-  // timed out" that does not come from the response. Every other tell — the error's name, its
-  // message — is written by someone else.
-  //
-  // Made INSIDE the callback, which is not a detail, and now by `runModelCall` itself (issue #819),
-  // which also cuts an adapter deaf to it by a race. `runModelCall` waits on the process-wide model
-  // semaphore BEFORE it calls this, and calls it a SECOND time when the provider returns an empty
-  // completion. A signal created outside would spend its budget queueing behind other turns and hand
-  // the retry whatever was left — so on a fleet busy enough for the wait to approach the ceiling,
-  // every compaction would abort before its call began and dead-letter for a reason that has nothing
-  // to do with the provider. The variable therefore holds the LAST attempt's signal, which is the
-  // one the error came from.
+  // NOTE: held so `signal.aborted` can be read afterwards, the only reading of "it timed out" that
+  // does not come from someone else's error. `runModelCall` makes a signal per attempt after waiting
+  // on the model semaphore (a signal made outside would spend its budget queueing), so this holds the
+  // LAST attempt's signal, the one the error came from.
   let attemptSignal: AbortSignal | undefined;
   try {
     const res = await runModelCall(

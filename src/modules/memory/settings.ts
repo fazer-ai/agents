@@ -1,21 +1,10 @@
 // Per-agent memory compaction, read from `agent.settings.memory` (Json, additive). Mirrors
 // readObservabilityConfig / readLimitsConfig.
 //
-// ON BY DEFAULT, which is the opposite of how every other block in this bag defaults, so the reason
-// is worth writing down. The thread is keyed per contact-inbox and nothing ever pruned it, so a
-// returning customer drags every past attendance into every turn (measured: 79,862 tokens of context
-// against a 15,806-token floor of prompt + tool definitions). The token ceiling that shipped first
-// bounds that by DISCARDING, so it defaults off — an instance that upgrades must not silently start
-// forgetting. Compaction does not discard: it replaces the raw turns of an attendance that already
-// ended with a summary of it, which is what the product intended by "the agent remembers this
-// contact" in the first place. Defaulting it off would mean nobody's instance improves until an
-// operator goes looking for a switch.
-//
-// What it costs: one extra generation per closed attendance, on the agent's own model, off the hot
-// path (a scheduler job, after the reply is posted). What it loses: fine-grained detail. High-level
-// facts survive a summary; the exact wording of a message three attendances ago does not. That is
-// the documented trade of every compaction design, and it is stated on the editor field rather than
-// left for an operator to discover.
+// ON BY DEFAULT, unlike every other block in this bag: the thread is keyed per contact-inbox and never
+// pruned, and compaction does not discard (it replaces an ended attendance's raw turns with a summary).
+// It costs one generation per closed attendance, off the hot path, and loses fine-grained detail.
+// See docs/graph.md, Memory compaction.
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.trim() ? v.trim() : null;
@@ -25,42 +14,17 @@ export interface MemoryConfig {
   compaction: {
     enabled: boolean;
     // The summarizer's OWN model, as an override of the agent's. All four null means "inherit the
-    // agent's model", which is what every bag written before this existed means and what it has to
-    // keep meaning: compaction is on by default, so a reader that demanded a provider here would
-    // stop compacting on every install that never configured one.
-    //
-    // MEASURED before recommending anything, because the obvious use of this knob — point it at the
-    // cheapest model on the same account — turned out to be a bad trade. `bun
-    // scripts/measure-summary-battery.ts` drives the real summarizer with a real key and scores it
-    // on the axes ./summarize.ts already publishes. On the hard dialogue (the value changes
-    // mid-conversation, one constraint stated once at the start, nothing closed), n=128 per cell:
-    //
-    //                     name kept      leaked script    median
-    //   gpt-5.4-mini       128/128          10/128          308
-    //   gpt-5.4-nano       102/128           0/128          322
-    //
-    // The cheaper model loses the customer's NAME on one attendance in five, and writes slightly
-    // more while doing it (on the simple dialogue, n=32: 239 chars against 138, for no extra fact).
-    // Every incomplete summary it produced was incomplete for that one reason.
-    //
-    // That is the same trade ./summarize.ts recorded when it rejected prompt variant C: cleaner
-    // script, worse memory. The criterion carries over unchanged — forgetting who the customer is is
-    // memory damage, and this summary is read on every later turn with that contact and is never
-    // rewritten, while leaked script is cosmetic. So the knob exists, and pointing it at a weaker
-    // model on this vendor is NOT the recommendation.
+    // agent's model", which every bag without this block means: compaction is on by default, so
+    // demanding a provider here would stop it on every install. Pointing it at a cheaper model is not
+    // recommended: it drops the customer's name about once in five (docs/graph.md, Memory compaction).
     provider: string | null;
     model: string | null;
     credentialRef: string | null;
     baseURL: string | null;
   };
-  // WHEN EACH MESSAGE WAS SENT, in front of it, in what the model reads (issue #755). The history is
-  // plain text otherwise, so a customer who vanishes for a week and comes back with "segue" is
-  // answered as if the whole thread were happening now: a deadline that already passed is taken up
-  // again, a fact that aged is repeated. On by default for the same reason compaction is — an
-  // install that never looks for the switch is exactly the one that has the problem.
-  //
-  // The date is ABSOLUTE and rendered at call time from the instant stored on the message, so it is
-  // byte-identical on every later turn and the prompt cache keeps the history prefix it already had.
+  // When each message was sent, in front of it, in what the model reads; on by default like
+  // compaction. The date is ABSOLUTE and rendered at call time from the instant stored on the message,
+  // so it is byte-identical on every later turn and the prompt cache keeps the history prefix.
   historyDates: {
     enabled: boolean;
   };
@@ -79,9 +43,7 @@ function defaults(): MemoryConfig {
   };
 }
 
-// NOTE: Only an explicit false turns a default-ON switch off. Absent, malformed, or anything truthy
-// reads as the default — a bag written by an older build has no key at all, and that has to mean
-// "the default", not "off".
+// Only an explicit false turns a default-ON switch off: an absent or malformed key means the default.
 function explicitlyOff(raw: unknown): boolean {
   return raw === false || raw === "false";
 }

@@ -1,14 +1,6 @@
-// Whether an issued document may be handed to anyone, as one pure decision.
-//
-// It is a VERDICT rather than a boolean predicate, and that is the whole point: the caller needs the
-// storage key when the answer is yes, so a predicate leaves every caller re-reading the same field
-// afterwards, in a branch nothing can reach. Carrying the key in the `ok` arm removes the branch.
-//
-// NOTE: the row's `status` is deliberately NOT consulted. It reads like a third clause and is not
-// one: the CAS that flips a row to READY writes the storage key in the same statement, so the two
-// always agree and `status !== "READY"` decides nothing `!pdfStorageKey` has not already decided.
-// Measured — mutating that clause away broke no test, which is what a clause that does nothing looks
-// like. Two questions, two clauses.
+// Whether an issued document may be handed to anyone, as one pure VERDICT that carries the storage
+// key in its `ok` arm. `status` is deliberately NOT consulted: the CAS that flips a row to READY
+// writes the storage key in the same statement, so `!pdfStorageKey` already decides it.
 
 export type DocumentBlock = "not_rendered" | "revoked";
 

@@ -70,9 +70,8 @@ export async function resolveVisionConfig(
   chatwootInboxId: number,
   base: PrismaClient = basePrisma,
   // The agent whose settings answer, when the caller already knows it: a delivery on an OBSERVER's
-  // route (issue #476) is read by the observer's runtime, not by whoever `Inbox.agentId` names —
-  // nobody, on an inbox a human team answers — so the inbox read below would answer for the wrong
-  // agent, or for none. Absent, the inbox's responder answers, as before.
+  // route is read by the observer's runtime, not by whoever `Inbox.agentId` names (possibly nobody).
+  // Absent, the inbox's responder answers.
   opts: { agentId?: bigint | null } = {},
 ): Promise<VisionConfig | null> {
   const cfg = await runScopedOn(base, sysCtx(tenantId), async (db) => {
@@ -105,14 +104,10 @@ export async function resolveVisionConfig(
 const realSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-// One extraction, asked as many times as the policy in ./retry allows. A transient provider failure
-// used to end the attachment for good — `extract` was called once and the caller degraded to the
-// "couldn't extract" marker, which is what enters the conversation history (issue #319).
-//
-// The flow span is INSIDE the loop, so each attempt is its own `vision` line carrying its own
-// `attempt` and duration. That is what makes a retried failure readable on the Logs page: three
-// lines saying 503 name an endpoint that is down, while one line summarising them reads like one
-// bad call. A first-attempt success is unchanged — a single line, now with `attempt: 1`.
+// One extraction, asked as many times as the policy in ./retry allows.
+// The flow span is INSIDE the loop, so each attempt is its own `vision` line with its own `attempt`
+// and duration: three lines saying 503 name an endpoint that is down, one summary reads like one
+// bad call.
 export async function extractWithRetry(args: {
   provider: VisionProvider;
   req: Omit<VisionRequest, "timeoutMs">;
@@ -199,7 +194,7 @@ export interface ExtractInboundParams {
   instanceId: bigint;
   conversationId: number;
   messageId: number;
-  // Null for an image kept inside an email body (#864): there is no attachment to write back to.
+  // Null for an image kept inside an email body: there is no attachment to write back to.
   attachmentId: number | null;
   dataUrl: string;
   cfg: VisionConfig;
@@ -213,11 +208,9 @@ export interface ExtractInboundParams {
   // Optional execution-flow context: when present, the extraction is logged as a `vision` stage
   // (mirrors STT), so a skip/failure is visible on the Logs page instead of vanishing.
   flow?: FlowContext;
-  // Whether to write this extraction into the in-process annotation store. Default true, which is
-  // the single-attachment contract. The webhook passes FALSE because it analyses every attachment
-  // and stashes ONE aggregate after the loop: the store is keyed by MESSAGE, so an intermediate
-  // write is a singleton wearing the aggregate's clothes, and a debounce flush landing mid-flight
-  // would overlay it over the complete meta (PR #692 review, round 3).
+  // Whether to write this extraction into the in-process annotation store. Default true. The
+  // webhook passes FALSE and stashes ONE aggregate after the loop: the store is keyed by MESSAGE, so
+  // a per-file write mid-flight would overlay a partial result over the complete meta.
   stashAnnotation?: boolean;
 }
 
@@ -232,28 +225,11 @@ function metaKeyFor(kind: VisionKind): "image_description" | "extracted_text" {
   return kind === "image" ? "image_description" : "extracted_text";
 }
 
-// Downloads, extracts, and writes the content back to Chatwoot. Returns the extraction (also
-// persisted in the attachment meta) or null when vision is not runnable, the file is unsupported
-// (non-image/PDF, or a PDF on an image-only provider), or it yields nothing. Best-effort: the
-// webhook never strands delivery on it.
-// THE CONVERSION, in the one place both entry points share. The question it answers is not "can
-// this be read at all" — `visionKindForMime` asked that, about the file — but "can THIS PROVIDER
-// read it", which is ./media-conversion's table. When the answer is no and a converter applies, what
-// goes to the provider is the converted bytes and the converted mime.
-//
-// A FAILED CONVERSION SKIPS, with one exception that a measurement carved out. The reason a
-// conversion is attempted at all is that the provider does not read what the customer sent, so
-// sending the original anyway would buy a 400 whose answer is already known — but that reasoning
-// rests on the declared type being true, and Chatwoot serves whatever content type the uploader's
-// server declared. Measured on 2026-09-18: a PNG announced as `image/heic` is read by the vendor at
-// 200, because the vendors sniff bytes and ignore the data URI's label. Skipping there would take an
-// attachment that WAS read before this feature existed and stop reading it, which is why
-// `MediaSourceMismatchError` — the declared type lied — falls back to the original instead of
-// skipping, while every other failure still skips (issue #697, holdout scenario s8).
-//
-// The line it writes is the only record of where half a second of the turn went (~450ms of the 560ms
-// total is the HEVC decode), and it is written ONLY when a conversion happened, so the 98.6% of
-// attachments that need none add nothing to the Logs page.
+// THE CONVERSION, shared by both entry points: "can THIS PROVIDER read it" (./media-conversion),
+// after `visionKindForMime` asked whether the file is readable at all.
+// A FAILED CONVERSION SKIPS, except `MediaSourceMismatchError` (the declared type lied): vendors sniff
+// the bytes, so the original goes as-is and is still read. The flow line is written ONLY when a
+// conversion happened, so attachments that need none add nothing to the Logs page.
 async function convertForProvider(args: {
   bytes: ArrayBuffer;
   mimeType: string | null;
@@ -291,16 +267,9 @@ async function convertForProvider(args: {
     return { ok: true, bytes, mimeType: plan.to };
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
-    // TWO LINES, because the two outcomes are not the same event and one sentence for both said the
-    // wrong thing about the commoner one. A mismatch stopped NOTHING: the bytes go to the provider
-    // untouched and the attachment is read, so "conversion failed" at `warn` reports a failure that
-    // did not happen, on the population that produces it most (Chatwoot serves whatever content type
-    // the uploader's server declared). What it is worth saying is that the declared type was wrong,
-    // because an operator seeing a run of them is looking at a mislabelling upstream of us.
-    //
-    // Neither sentence reaches `execution_logs`: the Logs page gets `convert_failed` as the reason
-    // code from the caller, and a mismatch leaves no line there at all because nothing was skipped.
-    // These are the application log, which is what someone debugging one attachment reads.
+    // NOTE: A mismatch stopped NOTHING (the bytes go untouched and are read), so it logs that the
+    // declared type was wrong, at info, not a conversion failure at warn. These are application log
+    // lines only: the Logs page gets the caller's `convert_failed`, and nothing for a mismatch.
     if (err instanceof MediaSourceMismatchError) {
       logger.info(
         "vision: %s — sent as received, the provider sniffs the bytes (provider=%s)",
@@ -329,10 +298,13 @@ async function convertForProvider(args: {
 
 // What an email body image comes back as when it is an ornament (a signature icon, the logo of a
 // quoted email). Not a failure, so it is neither extracted nor counted among the files the model is
-// told were not read (#864). A URL that is not this Chatwoot's never gets here: the caller drops it
+// told were not read. A URL that is not this Chatwoot's never gets here: the caller drops it
 // before the per-message cap is applied.
 export const BODY_IMAGE_IGNORED = "ignored" as const;
 
+// Downloads, extracts, and writes the content back to Chatwoot. Returns the extraction (also
+// persisted in the attachment meta) or null when vision is not runnable, the file is unsupported,
+// or it yields nothing. Best-effort: the webhook never strands delivery on it.
 export async function extractInboundFile(
   params: ExtractInboundParams,
 ): Promise<ExtractResult | null> {
@@ -350,7 +322,7 @@ export async function readInboundFile(
     : r;
 }
 
-// An image Chatwoot's mailbox kept inside the email body instead of making it an attachment (#864).
+// An image Chatwoot's mailbox kept inside the email body instead of making it an attachment.
 export function extractBodyImage(
   params: Omit<ExtractInboundParams, "attachmentId">,
 ): Promise<ExtractResult | Unread | typeof BODY_IMAGE_IGNORED> {
@@ -448,8 +420,8 @@ async function extractInboundOnce(
     tryResolveApiKeyEntry(db, cfg.credentialRef as string),
   );
   if (entry.state !== "ok") {
-    // Gone/unfilled and wrong-KIND are separate lines because the operator's move differs: re-pick or
-    // fill one, move the other to the field it belongs on (issue #471).
+    // NOTE: Gone/unfilled and wrong-KIND are separate lines because the operator's move differs:
+    // re-pick or fill one, move the other to the field it belongs on.
     if (entry.state === "unusable") {
       logger.warn(
         "vision: credential %s is a %s credential, which cannot be used as an API key — skipping",
@@ -507,56 +479,10 @@ async function extractInboundOnce(
   )
     return skip("document_not_supported");
 
-  // THE SPEND CEILING, asked here and not by the caller. Vision runs on the incoming attachment
-  // BEFORE the webhook's gates decide anything, so the turn ceiling upstream has not run yet and
-  // an image sent into a spent month would be billed with nothing to stop it.
-  //
-  // ASKED ONCE THE CALL IS KNOWN TO BE POSSIBLE, immediately before it, and not at the top of this
-  // function. A refusal says that spend was what stood in the way, and everything above — an unknown
-  // provider, a missing credential, a type this endpoint cannot read — is a reason the provider was
-  // never going to be called at all, so a `vision` line saying the attachment was skipped for budget
-  // would name a cause that was not operative. The download above is a Chatwoot fetch, not a billed
-  // one, and it is what tells this function the attachment's type in the first place.
-  //
-  // It is the REFUSAL half that this ordering is for. The warning is a statement about the MONTH,
-  // true whether or not this particular call runs, so a window it claims early costs at most a
-  // staler percentage in the line the operator reads — see the waiver in `.codex-review-waived`,
-  // which is where that adjudication lives.
-  //
-  // IT ANNOUNCES THE WARNING AND NOT THE REFUSAL, which is the one thing this gate does differently
-  // from the other four, and the asymmetry is what the two halves leave behind.
-  //
-  // `spend_ceiling` `over` is written per refused MESSAGE, and this runs on the same message the
-  // webhook gate refuses moments later: writing it here would put two refusal rows and two alert
-  // bumps on the Logs page for one customer message, and the count of refusals is the number an
-  // operator reads off that page. Nothing is lost by staying quiet, because the `vision` line below
-  // says `skipped` with `spend_ceiling` as its reason, which is the stage the reader filters by when
-  // they are asking why an attachment was never read.
-  //
-  // The WARNING leaves no such trace: the call proceeds, the attachment is read, and no line
-  // anywhere says the month crossed its fraction. And the gate that would have said it may never
-  // run — vision is upstream of every one of them, so a human-owned conversation, a silenced agent,
-  // a redirect or an hour outside the schedule consumes the delivery first, and this billed call is
-  // the only thing that happened. It cannot double-write: the warning's window is claimed once, so
-  // a gate that follows and asks the same question writes nothing.
-  //
-  // The playground's own file path asks in the same place, for the same reason, and differs only in
-  // what it does with the answer: it goes through `assertPlaygroundSpendCeiling`, where no webhook
-  // gate follows it and both halves are its own to announce.
-  // BEFORE THE CEILING, and this is the same rule the `visionKindForMime` check above follows: a
-  // refusal says SPEND was what stood in the way, so it is asked after everything that would have
-  // stopped the call anyway (docs/spend-ceiling.md, "Where the gate is asked"). A HEIC that is
-  // truncated or over the pixel cap is refused in a month with budget to spare, so answering
-  // `spend_ceiling` in a spent one reports a refusal that never happened and sends the operator to
-  // change a budget that cannot make the file readable.
-  //
-  // It costs a decode this turn may not spend anything on — the earlier ordering was written to
-  // avoid exactly that, and it bought the wrong thing. The cost is bounded (one conversion at a
-  // time, 50 Mpx cap) and it is the same trade this path already makes for the download, which sits
-  // below the ceiling because it is what tells us the file's type in the first place.
-  //
-  // A mismatch is NOT one of these: it falls back to the original bytes and the call still happens,
-  // so it is the ceiling's business like any other readable file.
+  // NOTE: THE SPEND CEILING, asked here because vision runs BEFORE the webhook's gates, and only
+  // once the call is known to be possible: a refusal must mean spend was what stood in the way, so
+  // the conversion (which can refuse on its own) runs first. It announces the warning and not the
+  // refusal; why is in docs/spend-ceiling.md ("Vision asks for itself").
   const converted = await convertForProvider({
     bytes,
     mimeType: contentType,
@@ -619,9 +545,8 @@ async function extractInboundOnce(
     return { unread: "failed" };
   }
   const text = extracted.text.trim();
-  // The row is written whether or not the extraction yielded text: a call that came back empty was
-  // billed exactly like one that came back full, and the early return below used to end the
-  // function before anything could record it.
+  // NOTE: The row is written whether or not the extraction yielded text: a call that came back empty
+  // was billed like one that came back full, so the usage is recorded before the early return.
   if (params.flow && extracted.usage) {
     await recordDirectUsage(params.flow, {
       provider: cfg.provider,
@@ -633,8 +558,8 @@ async function extractInboundOnce(
   }
   if (!text) return { unread: "failed" };
 
-  // NOTE: Stash BEFORE the write-back — same contract as the STT pass: on upstream Chatwoot (no
-  // fork meta route) the in-process overlay is the only reader of this extraction (issue #49).
+  // NOTE: Stash BEFORE the write-back, same contract as the STT pass: on upstream Chatwoot (no
+  // fork meta route) the in-process overlay is the only reader of this extraction.
   if (params.stashAnnotation !== false)
     stashMediaAnnotation(
       {
@@ -677,10 +602,9 @@ async function extractInboundOnce(
 }
 
 export interface PlaygroundExtractParams {
-  // The REQUEST's context, unlike the inbound path above, whose tenant id this process read from a
-  // row. Rebuilding one here would tell the unknown-tenant check at `runScopedOn` that a caller's
-  // stale selector was internal, and the operator would get "agent not found" for a tenant that is
-  // gone rather than a refusal naming the selection they are carrying (issue #268).
+  // The REQUEST's context, unlike the inbound path, whose tenant id was read from a row. Rebuilding
+  // one here would make the unknown-tenant check at `runScopedOn` treat a stale selector as internal
+  // and answer "agent not found" instead of refusing the selection.
   ctx: TenantContext;
   agentId: bigint;
   file: ArrayBuffer;

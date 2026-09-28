@@ -9,16 +9,8 @@ import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 // (the same arrangement `graph/tools/catalog.ts` uses for the tool-name catalogs).
 
 // The slug becomes the agent's tool name, so it lives in the same character set a tool name does.
-//
-// It is DERIVED from the name, and stays derived while the operator is typing one: renaming a
-// template renames its tool. The operator can then type a slug of their own, and the next edit to
-// the name overwrites it — the name is the source, and a slug that survived it would be a second
-// name to keep in sync by hand.
-//
-// So every derivation that cannot pass `slugProblem` is a wall in front of an ordinary name, about
-// something the operator did not choose. A leading digit was one — "2026 Orçamento" derives
-// "2026_orcamento", which a tool name may not start with — and it is prefixed rather than stripped,
-// because dropping the digits makes "2026" and "2027" the same slug.
+// It is DERIVED from the name (renaming a template renames its tool), so every derivation must pass
+// `slugProblem`: a leading digit is prefixed rather than stripped, or "2026" and "2027" would collide.
 export function slugifyTemplateName(name: string): string {
   const slug = name
     .normalize("NFD")

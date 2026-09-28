@@ -1,16 +1,7 @@
-// IS THIS BODY IMAGE AN ORNAMENT? (issue #864)
-//
-// An email body carries the customer's photo next to signature icons and the logos of the emails it
-// quotes. Measured on one production mailbox, 4,663 body images in 14 days: one store logo quoted
-// 1,490 times (908x140), icons at 144x144 about 900 times, a 720x150 banner, a 24x24 glyph. The
-// rule below drops 2,437 of them and, of the 1,429 images that appear exactly once (where the
-// photos are), only 15, all icons and banners.
-//
-// Small in both sides, or small in one and at least three times as long in the other. An iPhone
-// photo sent at the small size (148x320) stays; a banner (720x150) goes.
-//
-// Only the header is read, PNG, GIF, WebP and JPEG. An image whose size it cannot read (HEIC, the
-// iPhone camera default) is KEPT: dropping it would drop photos.
+// Is this email body image an ornament (signature icon, quoted logo, banner) rather than the
+// customer's photo? Small in both sides, or small in one and at least three times as long in the
+// other: a small iPhone photo (148x320) stays, a banner (720x150) goes. Only the header is read (PNG,
+// GIF, WebP, JPEG); an image whose size it cannot read (HEIC) is KEPT, since dropping it drops photos.
 
 const SMALL_SIDE = 160;
 const BANNER_RATIO = 3;

@@ -5,17 +5,9 @@ import {
   type DocumentStyle,
 } from "./blocks";
 
-// Ready-made templates, offered as "start from a model" in the console.
-//
-// They are not a nicety. Blocks are created through the API and MCP only — the console edits the
-// text of a `text` block and nothing else — so without these, an operator opening the tab on day one
-// meets an empty state with no way out of it, and the whole feature is unreachable from the product
-// it ships in. The scope cut ("only text is editable") is only honest because the text is already
-// there to edit.
-//
-// The structure is written ONCE and the strings come from a per-locale table: three templates in two
-// languages authored separately would drift, and a starter whose English version has a block its
-// Portuguese version lacks is a bug nobody would look for.
+// Ready-made templates, offered as "start from a model" in the console. The console edits only the
+// text of `text` blocks, so these are the console's only way into the feature. The structure is
+// written ONCE and the strings come from a per-locale table, so the languages cannot drift apart.
 
 export interface DocumentStarter {
   key: string;

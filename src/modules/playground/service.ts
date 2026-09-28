@@ -148,11 +148,9 @@ export interface PlaygroundDeps {
 }
 
 export interface PlaygroundTurnParams {
-  // The REQUEST's context, not an id lifted out of it, and every playground entry point takes the
-  // same. `runScopedOn` verifies an unknown tenant only for a SUPER_ADMIN caller, because the role
-  // is what separates an id that came from outside the process from one it read from a row: this
-  // module used to rebuild a TENANT_ADMIN context here, which told that check the id was internal
-  // and turned a dead console selection into an empty playground instead of a refusal (issue #268).
+  // The REQUEST's context, never one rebuilt from its ids: `runScopedOn` verifies an unknown tenant
+  // only for a caller whose role says the id came from outside, so a rebuilt TENANT_ADMIN context
+  // would turn a dead console selection into an empty playground instead of a refusal.
   ctx: TenantContext;
   agentId: bigint;
   message: string;
@@ -200,7 +198,7 @@ export interface PlaygroundTurnResult {
   ttsMediaId?: string;
   // What the turn spent, as the provider reported it, over every model call it made (the agent and
   // any guardrail, speech normalization or file read on the way): the same numbers its ledger rows
-  // carry (issue #839).
+  // carry.
   usage: TurnUsage;
   // How long the turn took, and how much of it was spent waiting on a model.
   timing: TurnTiming;
@@ -219,17 +217,12 @@ function resolvePlaygroundThread(
     : newPlaygroundThreadId(tenantId, agentId);
 }
 
-// WHAT A FAILED PLAYGROUND TURN TELLS THE OPERATOR (issue #841). A refusal the code raised on purpose
-// (an AppError) already says why, and only gains the turn id, so the console can link the turn's lines
-// on the Logs page. Anything else used to reach the app's catch-all, which answers a bare 500 in plain
-// text, and the console threw the text away and blamed the model. Here it becomes a refusal of its
-// own, under the same rule as the catch-all (`api/lib/unhandled-error.ts`): the error's text reaches
-// the client in development only. In production the operator is told where the cause is instead,
-// which is the server log, where it is written with the turn id so a search for that id finds it, and
-// the Logs page gets a line for the turn saying it failed, in our words, never the error's.
-//
-// The id is READ at failure time, not taken up front, because a file turn only knows its id after it
-// has checked the read id the console sent (`claimReadTurnId`).
+// What a failed playground turn tells the operator. An AppError already says why and only gains the
+// turn id, for the Logs page link. Anything else becomes a refusal under the catch-all's rule
+// (`api/lib/unhandled-error.ts`): the error's text reaches the client in development only; in
+// production the operator is pointed at the server log (written with the turn id) and the Logs page
+// line, in our words. The id is read at failure time: a file turn only knows it after
+// `claimReadTurnId`.
 async function asPlaygroundTurn<T>(
   at: {
     ctx: TenantContext;
@@ -319,19 +312,10 @@ export function applyToolMocks(
   protocol: ReadonlySet<string> = new Set(),
 ): StructuredToolInterface[] {
   const names = new Set(Object.keys(mocks ?? {}));
-  // NOTE: THE PROTOCOL TOOL IS NOT THE OPERATOR'S TO MOCK, the same exemption and the same reason
-  // `buildSimulatedNativeTools` already makes for it: its RETURN is the whole tool. The runtime
-  // recognises silence by that acknowledgement (`skipReplyRan`), so a canned result under this name
-  // is not read as a decision to stay quiet — the graph asks the model again and the simulation
-  // writes a follow-up production would have stayed silent on, which is the one decision the
-  // playground exists to show (round 12).
-  //
-  // BY IDENTITY, NEVER BY NAME (round 14). The exemption is for OUR tool, asked of `inertToolsFor`,
-  // because a mock is refused only where the return IS the tool. Round 14 gave a second reason — that
-  // with natives revoked the tool under this name is the operator's own, so refusing their mock would
-  // have the playground hit the live endpoint — and #715 retired it: #457 reserves a native name
-  // against every other source even when the native is not built, so no tool of theirs is ever bound
-  // under it. Asking by identity is what kept this right through both readings.
+  // NOTE: the protocol tool is not the operator's to mock: its RETURN is the whole tool (the runtime
+  // recognises silence by `skipReplyRan`), so a canned result would make the simulation write a reply
+  // production stays silent on. By identity, never by name: a native name is reserved against every
+  // other source, so no operator tool is ever bound under it.
   for (const n of protocol) names.delete(n);
   if (names.size === 0) return tools;
   return tools.map((tl) =>
@@ -367,10 +351,8 @@ async function loadPlaygroundConfig(params: {
         conversationId: 0,
         agentId,
         threadId,
-        // The operator just typed it, so the age is "now" (issue #749). Stated rather than left
-        // out: omitted, the variable renders EMPTY here, and the playground is exactly where an
-        // operator goes to find out whether a placeholder they wrote works at all. The literal
-        // rather than a `Date` so the time simulation moves it too — see `prepare.ts`.
+        // NOTE: the operator just typed it, so the age is "now"; omitted, the variable renders
+        // EMPTY. The literal rather than a `Date` so the time simulation moves it too (`prepare.ts`).
         lastIncomingAt: "now" as const,
       },
       { ignoreDisabled: true, overrides: params.overrides },
@@ -407,7 +389,7 @@ function buildPlaygroundToolset(
     // operator goes to find out what their agent does — a refused call never reaches the inner tool,
     // so ToolFlowLogger sees no run either and there is nothing else to read.
     flow: FlowContext | undefined;
-    // Where `reply_as_text` records its choice (issue #859). The turn passes the one its delivery
+    // Where `reply_as_text` records its choice. The turn passes the one its delivery
     // reads; the listing passes a throwaway, so the panel shows the tool the model is offered. Absent
     // on the simulated follow-up, which, like production's nudge, is never offered the tool.
     replyChoice: ReplyChoice | undefined;
@@ -490,8 +472,8 @@ async function buildPlaygroundGraph(params: {
   // reactive turn an agent granted `skip_reply` and nothing else is the operator's own choice, and
   // it is how their agent answers "ok" with silence.
   silenceProtocol?: boolean;
-  // The spoken-reply notice and the choice holder of issue #859, from the turn that will deliver the
-  // reply. Absent on the simulated follow-up, which never answers in audio and, like production's
+  // The spoken-reply notice and the `reply_as_text` choice holder, from the turn that will deliver
+  // the reply. Absent on the simulated follow-up, which never answers in audio and, like production's
   // nudge, is not offered reply_as_text.
   spokenNotice?: () => string | null;
   replyChoice?: ReplyChoice;
@@ -519,11 +501,9 @@ async function buildPlaygroundGraph(params: {
   // Which names are OURS in this turn's toolset rather than the operator's — the question every rule
   // below asks, and the one a name alone cannot answer.
   const protocol = inertToolsFor(loaded);
-  // AND WRAPPED AGAIN AFTER THE SWAP, because `applyToolMocks` replaces a mocked tool with a fresh
-  // `tool()` built from the original schema: the schema goes on refusing bad arguments and the
-  // wrapper that records the refusal went with the tool it replaced (review round 1). Wrapping is
-  // idempotent, so the tools the operator did not mock keep the single wrapper `buildToolset` gave
-  // them and no refusal is logged twice.
+  // NOTE: wrapped again after the swap: `applyToolMocks` replaces a mocked tool with a fresh `tool()`,
+  // losing the wrapper that records schema refusals. Wrapping is idempotent, so unmocked tools keep
+  // the single wrapper `buildToolset` gave them.
   const mocked = logSchemaRefusals(
     applyToolMocks(rawTools, toolMocks, protocol),
     params.flow,
@@ -716,8 +696,8 @@ async function runPlaygroundTurnOnce(
       ? params.threadId
       : newPlaygroundThreadId(tenantId, agentId);
 
-  // One id correlates the ExecutionLog turn, the tool-call logs, the Langfuse trace (item 10) and
-  // the ledger rows (issue #839).
+  // NOTE: one id correlates the ExecutionLog turn, the tool-call logs, the Langfuse trace and the
+  // ledger rows.
   const turnId = params.turnId ?? crypto.randomUUID();
   // Execution-flow telemetry, tagged source=playground so it never pages an alert channel and stays
   // out of the dashboard's real view (the Logs page can still filter to it). Built before the graph
@@ -730,12 +710,8 @@ async function runPlaygroundTurnOnce(
     threadId,
     base,
   };
-  // WHO IS BEING RUN, resolved before the ceiling is asked. A refusal says that spend was what stood
-  // in the way, and for an agent that does not exist — or has no runnable model — there was never a
-  // provider call to refuse: the same request in a month with budget to spare answers 404 or 400, so
-  // answering 429 in a spent one reports a refusal that did not happen and sends the operator to
-  // look at their budget over a selector that was simply wrong. The read is handed to the graph
-  // below, so asking in this order costs nothing.
+  // NOTE: the agent is resolved before the spend ceiling is asked: a missing agent or unrunnable
+  // model is a 404/400, never a 429 for a call that could not happen. The read is reused below.
   const loadedConfig = await loadPlaygroundConfig({
     ctx,
     agentId,
@@ -748,7 +724,7 @@ async function runPlaygroundTurnOnce(
   // silence the agent for customers, and the two ledgers are already told apart by `source`.
   await assertPlaygroundSpendCeiling({ tenantId, base, flow });
 
-  // The reply's modality, decided once and by production's function (issue #859), with the
+  // NOTE: the reply's modality, decided once and by production's function, with the
   // operator's "answer in audio" switch standing in for the customer's voice note. No channel: the
   // playground plays the audio itself, in the default container.
   const plannedAudio = plannedReplyIsAudio(loadedConfig.ttsConfig, {
@@ -832,27 +808,14 @@ async function runPlaygroundTurnOnce(
           },
         }),
     });
-  // Assigned rather than passed at construction: the debug mode is an agent SETTING, and the agent's
-  // settings are what `buildPlaygroundGraph` just read. Every callback above only fires during
-  // `graph.invoke` below, so none of them can emit before this line runs. Playground rows are on the
-  // Logs page like any other, so an operator who turned the mode on for this agent gets the same
-  // answer here as on real traffic (#58).
+  // NOTE: assigned rather than passed at construction: the debug mode is an agent setting, read by
+  // `buildPlaygroundGraph` just now, and every callback above only fires during `graph.invoke`.
   flow.fullDetail = loaded.fullDetail;
 
-  // The SAME gate the inbox path runs (issue #136). Without it the operator read the agent's raw
-  // reply while the customer would have received the template, or nothing at all — the one setting
-  // the playground exists to let them test. Announcements land in the trace instead of a private
-  // note, because there is no conversation here to put a note on.
-  //
-  // The human message id is minted BEFORE the screening, because a blocked turn needs it too: the
-  // media is linked to it, and the input direction returns before the graph produces any message.
-  // Minted for EVERY turn, not only the ones carrying media: it is also the id a transcript note
-  // points at, and the reload places the note next to the message it judged. Left to the reducer,
-  // the id exists but nothing here knows it, and the note ends up with nowhere to go.
-  //
-  // It IS the turn id (issue #839): the ledger rows of this turn carry that id, and the human message
-  // is the one thing every turn leaves in the thread, blocked or not, so a reopened session finds
-  // each turn's usage through it.
+  // NOTE: the SAME guardrail gate the inbox path runs; announcements land in the trace, since there
+  // is no conversation to put a note on. The human message id is minted before the screening (a
+  // blocked turn links media to it), for every turn (a transcript note points at it), and it IS the
+  // turn id: every turn leaves it in the thread, so a reopened session finds each turn's usage by it.
   const humanId = turnId;
   const saveInboundMedia = async (): Promise<string | undefined> =>
     params.userMedia
@@ -928,7 +891,7 @@ async function runPlaygroundTurnOnce(
   // Everything screened before the graph belongs ahead of the graph's own entries in the trace.
   const beforeGraph = gTrace.length;
 
-  // Dated with the instant the playground says it was written, simulation included (issue #755), so
+  // NOTE: dated with the instant the playground says it was written, simulation included, so
   // an operator testing "the customer comes back a week later" sees the history the way a real turn
   // would send it.
   const human = new HumanMessage({
@@ -965,24 +928,14 @@ async function runPlaygroundTurnOnce(
     if (e instanceof AppError) throw e;
     throw toPlaygroundInvokeError(e);
   }
-  // OUTPUT direction: screen the reply BEFORE anything renders it, so the TTS below synthesizes the
-  // text that would actually be delivered rather than the one the guardrail took away.
-  // Same rule as the inbox's reactive path (issue #454), and for the same reason: the playground
-  // runs the production toolset over a thread of its own, and a model that reproduces the follow-up's
-  // silence token would otherwise have it rendered as the reply the operator is testing.
+  // NOTE: screen the reply BEFORE anything renders it, so the TTS synthesizes what would be delivered.
+  // Same sentinel rule as the inbox's reactive path, so a reproduced silence token is not rendered.
   const draftedTurn = customerFacingReply(lastAssistantText(result.messages));
   const raw = draftedTurn.text;
-  // NOTE: ...and the token must not stay in the THREAD, which emptying the reply does not do. `graph.invoke`
-  // checkpointed the raw message before this line, the playground session is multi-turn on one
-  // thread, and the next turn would read one more sentinel answer — the same compounding the inbox
-  // path rolls back (runtime.ts), on the surface whose whole claim is production fidelity
-  // (`docs/playground.md`). Inline rather than armed for later, unlike the inbox: no claim is held
-  // on this thread (the playground marks none), so the rollback is free to read it now.
-  //
-  // The turn TRACE is built from `result.messages` and keeps the raw token, deliberately: it exists
-  // to show what the model actually produced, and the operator testing an agent that emits the
-  // sentinel needs to see it. What must not survive is the message in the THREAD, which is the copy
-  // the next turn reads back as an example.
+  // NOTE: the token must not stay in the THREAD either: the session is multi-turn on one thread and
+  // the next turn would imitate it (runtime.ts rolls back the same way). Inline, since the playground
+  // holds no claim on the thread. The TRACE keeps the raw token deliberately: it shows what the model
+  // produced.
   if (draftedTurn.bySentinel) {
     emitFlowEvent(flow, {
       stage: "generate",
@@ -1030,18 +983,10 @@ async function runPlaygroundTurnOnce(
     params.titleHint ?? text,
   );
 
-  // The checkpointer holds the model's OWN reply, as production's thread does, so a reload would
-  // show the text the guardrail took away and no sign that it acted. Every turn the guardrail RAN
-  // on gets a note, a clean verdict included: the toggle is per turn, so without the clean mark a
-  // reopened session cannot tell an approved reply from one nothing ever screened, which is the
-  // ambiguity the issue is about. `gTrace` empty means it never ran, and writes nothing.
-  //
-  // NOTE: The two stores are not written atomically, and cannot be: `graph.invoke` has already
-  // committed the model's own reply to the checkpointer by the time the screening (a model call)
-  // returns. A second mount reopening this same session in that window rebuilds from the
-  // checkpointer alone and reads the raw reply. Left open deliberately — see `.codex-review-waived`
-  // for what each way of closing it costs, all of them more than a seconds-long window on a
-  // surface one operator drives.
+  // NOTE: the checkpointer holds the model's OWN reply, so every turn the guardrail RAN on gets a
+  // note, clean verdicts included (see turn-notes.ts); empty `gTrace` means it never ran. The two
+  // stores are not written atomically and cannot be: a second mount reopening the session in that
+  // seconds-long window reads the raw reply, left open deliberately (`.codex-review-waived`).
   if (gTrace.length > 0) {
     await savePlaygroundTurnNote(base, {
       ctx,
@@ -1065,7 +1010,7 @@ async function runPlaygroundTurnOnce(
   // TTS reply: the agent's mode decides (mirror/preference), or the manual toggle forces it. Audio
   // is best-effort — synthesis failure falls back to the text reply.
   let ttsMediaId: string | undefined;
-  // The same plan production delivers by (issues #787, #856): the operator hears no URL or e-mail,
+  // NOTE: the same plan production delivers by: the operator hears no URL or e-mail,
   // and a reply that is only the introduction of its link, or one built to be read (too long, a
   // list, a run of prices), gets no audio. The items stay in `reply`.
   const spoken = planAudioReply(reply ?? "", loaded.ttsConfig);
@@ -1077,8 +1022,8 @@ async function runPlaygroundTurnOnce(
         params.userSentAudio ?? false,
         loaded.contactVoiceReply,
       ));
-  // The model chose text for this reply (issue #859): the same line production writes, and no
-  // synthesis. Checked before the #856 gate, which only measures a reply still going as audio.
+  // NOTE: the model chose text: the same line production writes, and no synthesis. Checked before
+  // the too-long-for-audio gate, which only measures a reply still going as audio.
   const chosenText = asked && replyChoice.textChosen;
   if (chosenText) {
     emitFlowEvent(flow, {
@@ -1140,14 +1085,9 @@ async function runPlaygroundTurnOnce(
     }
   }
 
-  // SIGNED ONLY HERE, on the way to the operator's screen (issue #599). Not in the thread above,
-  // because production's checkpointer holds the model's own reply and the signature is attached at
-  // delivery; and NOT in the TTS text, for the reason production's audio branch is unsigned — the
-  // operator would hear a spoken "Alex, Minha Empresa" that no customer ever hears, which is the one
-  // divergence the playground exists to avoid.
-  //
-  // Same function production calls, because the question is the same one: the signature is a single
-  // channel-agnostic text, and the playground is where the operator checks what it will look like.
+  // NOTE: signed only here, on the way to the operator's screen, by production's own function: not
+  // in the thread (production signs at delivery) and not in the TTS text (production's audio branch
+  // is unsigned). See docs/signature.md.
   const previewSig = signatureFor(
     loaded.signatureConfig,
     loaded.promptVars,
@@ -1236,11 +1176,9 @@ async function runPlaygroundFollowupOnce(
       ? params.threadId
       : newPlaygroundThreadId(tenantId, agentId);
 
-  // One id correlates the tool-call logs and the Langfuse trace for this simulated follow-up; the
-  // entry point minted it, so a failure is reported under the same one (issue #841).
-  // Flow telemetry tagged source=playground (never pages an alert channel, stays out of the
-  // dashboard) so the simulated follow-up's tool calls show up in the Logs page (item 3). Built
-  // before the graph because the graph's retry callback writes to it.
+  // NOTE: the entry point minted the turn id, so a failure is reported under the same one. Tagged
+  // source=playground (never pages an alert channel, stays out of the dashboard); built before the
+  // graph because the graph's retry callback writes to it.
   const flow: FlowContext = {
     tenantId,
     turnId,
@@ -1249,16 +1187,10 @@ async function runPlaygroundFollowupOnce(
     threadId,
     base,
   };
-  // WHO IS BEING RUN, resolved before the ceiling is asked. A refusal says that spend was what stood
-  // in the way, and for an agent that does not exist — or has no runnable model — there was never a
-  // provider call to refuse: the same request in a month with budget to spare answers 404 or 400, so
-  // answering 429 in a spent one reports a refusal that did not happen and sends the operator to
-  // look at their budget over a selector that was simply wrong. The read is handed to the graph
-  // below, so asking in this order costs nothing.
-  // The SAME widening production applies, because this path renders the SAME directive: it asks the
-  // model to call `skip_reply`, which is operator-revocable, so a simulation without it shows the
-  // operator a follow-up that production would have stayed silent on. One function and not two
-  // copies precisely because there are two renderers of that directive (issue #454, round 3).
+  // NOTE: the agent is resolved before the spend ceiling is asked: a missing agent or unrunnable
+  // model is a 404/400, never a 429 for a call that could not happen. The read is reused below.
+  // The SAME widening production applies: the directive asks for `skip_reply`, which is
+  // operator-revocable, and without it the simulation replies where production stays silent.
   const loadedConfig = withFollowupSilenceChannel(
     await loadPlaygroundConfig({
       ctx,
@@ -1383,8 +1315,8 @@ async function runPlaygroundFollowupOnce(
               // stays silent.
               followupSilenceChannel(loadedConfig, tools),
             ),
-            // The turn's id, as on a user turn: a reopened session finds the follow-up's usage
-            // through it (issue #839).
+            // NOTE: the turn's id, as on a user turn: a reopened session finds the follow-up's
+            // usage through it.
             id: turnId,
           }),
         ],
@@ -1413,22 +1345,10 @@ async function runPlaygroundFollowupOnce(
   // "stayed silent", and a stray sentinel is stripped so it never shows in the simulated reply.
   const draftedNudge = proactiveReply(lastAssistantText(result.messages));
   const drafted = draftedNudge.text;
-  // NOTE: ...and the same rule production applies one line later (`takeBackUndeliveredSilence`): a silent
-  // follow-up that WROTE something left it in the thread, and this playground session is multi-turn
-  // on one thread, so the next simulated turn reads the token back as a sentence the customer was
-  // told. It reaches here only for the agents that cannot bind a tool — everyone else says nothing by
-  // calling `skip_reply`, which leaves no imitable text. Inline rather than armed for later, unlike
-  // the inbox: no claim is held on this thread, so the rollback is free to read it now.
-  //
-  // THE REACTIVE PLAN, and the difference from production is not a choice about what should go. The
-  // proactive plan finds its slice by the nudge MARKER, and this path builds its directive with a
-  // plain `HumanMessage` — `nudgeMessage` stamps a conversation id, and there is no conversation
-  // here. So the proactive plan answers `no-turn-found` and removes nothing. The reactive plan names
-  // the removable part directly: the trailing run of assistant messages, which is exactly the
-  // sentinel answer. The directive stays, as it already does after every simulated follow-up; it is
-  // a human-role instruction, not an assistant turn for the model to imitate. Marking it would be a
-  // fidelity change with its own readers (the trace, `isNudgeTurn`), on a path this issue is not
-  // about.
+  // NOTE: production's `takeBackUndeliveredSilence`, inline: a silent follow-up that WROTE something
+  // left it in this multi-turn thread. The REACTIVE plan, because the proactive one finds its slice by
+  // the nudge marker, which this conversation-less directive lacks; the reactive plan removes the
+  // trailing assistant run, which is exactly the sentinel answer, and the directive stays.
   if (draftedNudge.silent && draftedNudge.wroteText) {
     try {
       const plan = await undoRefusedTurn({
@@ -1451,7 +1371,7 @@ async function runPlaygroundFollowupOnce(
       );
     }
   }
-  // OUTPUT direction only, exactly as the inbox's proactive path (issue #160): a follow-up answers
+  // NOTE: OUTPUT direction only, exactly as the inbox's proactive path: a follow-up answers
   // no question, so there is no customer message for the relevance check to judge, and the gate
   // drops that check structurally when none is passed. A `silent` verdict reads as silence here for
   // the same reason it does in production — the customer gets nothing either way.
@@ -1504,11 +1424,8 @@ async function runPlaygroundFollowupOnce(
   }
   // Bump the session (or create one titled by the first message if the follow-up is the first turn).
   await upsertPlaygroundSession(base, ctx, agentId, threadId, "");
-  // SIGNED LIKE THE REACTIVE TURN ABOVE, because production signs BOTH (issue #599, found in
-  // review). `runAgentNudge` signs the proactive message, so a playground follow-up that came back
-  // bare would be the one surface showing the operator something the customer never receives, which
-  // is the whole reason this surface exists. `attachSignature` is what declines the empty case, so
-  // a silent or suppressed follow-up is left exactly as it was.
+  // NOTE: signed like the reactive turn, since `runAgentNudge` signs the proactive message too.
+  // `attachSignature` declines the empty case, so a silent or suppressed follow-up stays as it was.
   const followUpSig = signatureFor(
     loaded.signatureConfig,
     loaded.promptVars,
@@ -1618,8 +1535,8 @@ export async function runPlaygroundAudioTurn(
   params: PlaygroundAudioParams,
 ): Promise<PlaygroundAudioResult> {
   const { ctx, agentId, file } = params;
-  // The voice note's transcription runs before the turn, so the turn's id and thread are settled
-  // here, and a failure in either step is reported as the same turn (issue #841).
+  // NOTE: the voice note's transcription runs before the turn, so the turn's id and thread are
+  // settled here, and a failure in either step is reported as the same turn.
   const threadId = resolvePlaygroundThread(
     params.threadId,
     ctx.tenantId as bigint,
@@ -1697,7 +1614,7 @@ export interface PlaygroundExtractOnlyParams {
   ctx: TenantContext;
   agentId: bigint;
   file: File;
-  // The session the file is being sent into, so the read is billed to it (issue #839). Absent or
+  // The session the file is being sent into, so the read is billed to it. Absent or
   // foreign, a fresh thread is minted and returned, and the turn that follows runs on it.
   threadId?: string;
   // Live draft (live-edit popup): its vision config overrides the saved one (test an unsaved key).
@@ -1717,7 +1634,7 @@ export async function runPlaygroundExtract(
   extracted: string;
   threadId: string;
   // The id the read was billed under. The file turn that follows is handed it back, so the read and
-  // the reply are one turn in the ledger as they are on screen (issue #839).
+  // the reply are one turn in the ledger as they are on screen.
   turnId: string;
   usage: TurnUsage;
   timing: TurnTiming;
@@ -1814,7 +1731,7 @@ async function resolveVisionLabel(
 }
 
 // The read's id, when the console hands one back with the file turn, only if it is still a read
-// waiting for its turn (issue #839). The id becomes the turn's human message id, and a message id
+// waiting for its turn. The id becomes the turn's human message id, and a message id
 // the thread already holds would REPLACE that message (the messages reducer merges by id), so an id
 // replayed from an earlier turn is refused, not trusted. What proves it is a pending read: ledger
 // rows on this thread under it, all of them the read's own, and nothing else in the thread under it

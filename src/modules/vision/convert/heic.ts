@@ -1,17 +1,8 @@
-// OWNERSHIP OF THE DECODER, ours rather than the library's, and the reason is licensing before it is
-// anything else. libheif is LGPL-3.0 and this product is proprietary, so §4(d)(1) of that licence
-// asks for "a suitable shared library mechanism" — one that "will operate properly with a modified
-// version of the Library that is interface-compatible". The `heic-decode` wrapper reaches libheif
-// through `libheif-js/wasm-bundle`, which base64's the binary INSIDE a 1.9 MB JavaScript file:
-// nothing an operator can replace without rebuilding. Here the binary is the 1.4 MB `libheif.wasm`
-// on disk, loaded by path, and the path is overridable — so swapping libheif is copying a file.
-//
-// The same change happens to answer two engineering findings from the review of #697: we now release
-// the decoder on the failure paths the library never returned a handle for, and the WASM is loaded
-// lazily instead of at import time.
-//
-// Byte-identity with the previous path was measured before the swap: the same fixture through
-// `heic-decode` and through this module returns 15,360,000 bytes of RGBA with zero differences.
+// We own the libheif decoder rather than going through `heic-decode`, for licensing first: libheif
+// is LGPL-3.0, and §4(d)(1) asks for a mechanism that works with a modified, interface-compatible
+// library. The wrapper embeds the binary base64'd in a JS file; here it is `libheif.wasm` on disk,
+// loaded lazily by an overridable path, so swapping libheif is copying a file. Owning it also lets
+// us release the decoder on every failure path.
 
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -102,33 +93,12 @@ export function __resetLibheifForTest(): void {
   loading = null;
 }
 
-// EVERYTHING IS RELEASED, on every path out, because all of it is ours from the moment it is built.
-// This is what `heic-decode` could not offer: it constructs the decoder and only then decides whether
-// to hand the caller anything to release, so a file that parses to zero images strands the context
-// with no handle left to free it (measured at 6.5 KB per malformed file; PR #707 review round 2).
-//
-// TWO RELEASES, and neither covers the other. Measured against libheif's own allocator (the boundary
-// a `malloc(1)` probe returns) and against the wasm heap's size:
-//
-//   the context, `decoder.delete()`   the embind destructor bound to `heif_context_free`. Calling it
-//                                     AND `heif_context_free` throws "Cannot pass deleted object as
-//                                     a pointer". Over 500 malformed files, no release drifts the
-//                                     heap 400 KB and this one holds it flat at 440 bytes, which is
-//                                     one allocator step and not per-file.
-//   each image, `image.free()`        `heif_image_handle_release`. Freeing the context does NOT do
-//                                     it: a single extra conversion of the 2400x1600 fixture grows
-//                                     the wasm heap 4.5 MB without it, and 0 with it, measured at
-//                                     every count from 1 to 100 (PR #707 review round 5).
-//
-// The parse-only path hides the second one completely — 100 parse-and-delete cycles drift nothing,
-// with or without the free — because what the handle retains is the DECODED image. So is RSS, in
-// both directions: the 15 MB RGBA buffer each conversion hands back dominates it, and a run that
-// releases everything can report MORE resident memory than one that leaks, purely on GC timing.
-//
-// The `lib` parameter is for the battery, and it is the only way to ask the question that matters
-// here: a release is invisible from outside, and the symptom it prevents (the heap growing in 4 MB
-// steps every ~70 conversions) needs a minute of decoding to show. Standing in for the library turns
-// "is every handle released on every path out" into an assertion instead of a measurement.
+// Everything is released on every path out, including a file that parses to zero images. Two
+// releases, and neither covers the other: the context via `decoder.delete()` (the embind destructor
+// for `heif_context_free`; calling both throws), and each image via `image.free()`
+// (`heif_image_handle_release`), which freeing the context does NOT do and which holds the DECODED
+// image. The leak is invisible from outside (RSS is dominated by the returned RGBA and GC timing), so
+// `lib` lets a test stand in for the library and assert every handle is released.
 export async function withHeicFrames<T>(
   bytes: ArrayBuffer,
   use: (frames: readonly HeicFrame[]) => Promise<T>,

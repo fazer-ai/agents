@@ -21,10 +21,9 @@ export interface VisionRequest {
   timeoutMs: number;
 }
 
-// What a vision call cost, in the provider's own numbers. Every one of the three endpoints below
-// returns this alongside the text; the contract used to be `Promise<string>`, which made it
-// unrepresentable, so it was parsed away and the spend reached no ledger (issue #316). Optional
-// because an endpoint may omit the block, and an absent count must not be recorded as zero spend.
+// What a vision call cost, in the provider's own numbers, returned alongside the text by every
+// endpoint below. Optional because an endpoint may omit the block, and an absent count must not be
+// recorded as zero spend.
 export interface VisionUsage {
   promptTokens: number;
   completionTokens: number;
@@ -33,7 +32,7 @@ export interface VisionUsage {
   // summing both must not have to know which one wrote the row.
   cachedReadTokens: number;
   cacheCreationTokens: number;
-  // What the provider said the call cost, when it did (OpenRouter's `usage.cost`, issue #866).
+  // What the provider said the call cost, when it did (OpenRouter's `usage.cost`).
   reportedCostUsd?: number | null;
 }
 
@@ -100,11 +99,9 @@ function base64(bytes: ArrayBuffer): string {
 }
 
 // The file a chat-completions request carries, as the endpoint spells it. An image goes in an
-// `image_url` part and a PDF in a `file` part, and the endpoint refuses each in the other's place —
-// measured live against gpt-4o (2026-08-26): a PDF sent as `image_url` answers 400 "Invalid MIME
-// type. Only image types are supported.", and an image sent as a `file` part answers 400
-// "unsupported MIME type 'image/png'". So this is decided per REQUEST, the way anthropicExtract
-// already decides between its document and image blocks.
+// `image_url` part and a PDF in a `file` part, and the endpoint answers 400 to each in the other's
+// place. So this is decided per REQUEST, the way anthropicExtract decides between its document and
+// image blocks.
 function chatContentPart(req: VisionRequest): Record<string, unknown> {
   if (req.kind !== "document")
     return {
@@ -372,12 +369,9 @@ const UNSUPPORTED_IMAGE_SUBTYPES = new Set(["svg+xml", "svg"]);
 
 // Classifies a downloaded file's mime into the extraction kind, or null when unextractable.
 //
-// Normalised through `./media-conversion` rather than parsed here, so there is ONE parser: two of
-// them drift, and they drift on the exotic spellings, which is the whole population these functions
-// exist to classify. Deduping also fixed a case the copy here got wrong — a PDF whose content type
-// carried a parameter (`application/pdf; charset=binary`; Chatwoot serves whatever the uploader's
-// server declared) matched neither the equality nor the `/pdf` suffix, so it was classified
-// unextractable and the document was never read.
+// Normalised through `./media-conversion`, the ONE parser: Chatwoot serves whatever content type the
+// uploader's server declared, so a parameter (`application/pdf; charset=binary`) must not make a
+// document unextractable.
 export function visionKindForMime(mimeType: string | null): VisionKind | null {
   const m = normalizeMediaType(mimeType);
   if (m.startsWith("image/")) {

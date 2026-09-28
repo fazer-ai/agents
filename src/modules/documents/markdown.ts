@@ -1,14 +1,7 @@
 // The tiny markdown a `text` block understands, and nothing more: **bold**, *italic* / _italic_,
-// line breaks, and `- ` bullets. Deliberately not a markdown library.
-//
-// The output of this parser is laid out by @react-pdf/renderer, which has no HTML and no CSS
-// cascade: everything a real markdown dialect adds (tables, images, links, raw HTML, block quotes,
-// nested lists) would need a layout decision per construct, and a construct with no layout silently
-// renders as its own source text in a document the customer keeps. A closed set that maps 1:1 onto
-// primitives the renderer already draws is the whole design.
-//
-// Pure and total: every input produces spans, none throws, and an unmatched marker stays literal
-// rather than swallowing the rest of the line.
+// line breaks, and `- ` bullets. Deliberately not a markdown library: @react-pdf/renderer has no
+// HTML, and a construct with no layout would print as its own source text, so the set maps 1:1 onto
+// primitives the renderer draws. Pure and total: nothing throws, and an unmatched marker stays literal.
 
 export interface InlineSpan {
   text: string;
@@ -38,15 +31,9 @@ export function parseInline(text: string): InlineSpan[] {
   const spans: InlineSpan[] = [];
   let buffer = "";
   let bold = false;
-  // The TOKEN that opened the current italic, not a boolean, because two tokens mean it. Sharing one
-  // flag let either of them close what the other opened: in `_3 * 4_` the asterisk read as a closer,
-  // and the line rendered as an italic "3 " followed by a literal " 4_" — a stray marker in a text
-  // block silently rewriting a sentence in the customer's document.
-  //
-  // While an italic is open, the OTHER token is literal. Nesting one emphasis inside another has no
-  // representation here (a span is bold, italic, or both), so the alternative to printing the inner
-  // markers is guessing which of the two the operator meant to close — and guessing wrong changes
-  // the text rather than the styling.
+  // NOTE: The TOKEN that opened the current italic, not a boolean: in `_3 * 4_` the asterisk must
+  // not close the underscore. While an italic is open the OTHER token is literal, since nested
+  // emphasis has no representation and guessing wrong would change the text itself.
   let italicToken: string | null = null;
 
   const flush = () => {

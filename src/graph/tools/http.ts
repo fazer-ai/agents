@@ -862,9 +862,8 @@ export function buildHttpTool(
           }
           body = JSON.stringify(payload);
         } else {
-          // Legacy "fields": assemble JSON from the non-path input fields (AI input keeps its type; a
-          // fixed field contributes its interpolated value).
-          // NOTE: null-prototype, same "__proto__" silent-drop reason as the kv branch above.
+          // NOTE: Legacy "fields": assemble JSON from the non-path input fields (AI input keeps its
+          // type; a fixed field contributes its interpolated value). Null-prototype, same "__proto__" silent-drop reason as the kv branch above.
           const payload: Record<string, unknown> = Object.create(null);
           for (const f of fields) {
             if (pathFields.has(f.name)) continue;
@@ -885,7 +884,7 @@ export function buildHttpTool(
         }
       }
 
-      // 3b. Auto-inject the credential per its predefined secret type, so a typed
+      // NOTE: 3b. Auto-inject the credential per its predefined secret type, so a typed
       // credential needs no hand-written header. Skips if the operator already set the target header/
       // param manually (their explicit value wins, including a {{secret}} they wrote themselves).
       if (secret && def.credentialKind) {

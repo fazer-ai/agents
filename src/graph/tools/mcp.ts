@@ -103,10 +103,10 @@ export async function buildConnConfig(
   if (!effectiveUrl)
     throw new Error(`mcp ${sel.name}: ${transport} requires a url`);
   await assertSafeOutboundUrl(effectiveUrl, { allowHttp: opts.allowHttp });
-  // Apply the credential per its catalogued injection (Bearer / Basic / custom header / query),
+  // NOTE: Apply the credential per its catalogued injection (Bearer / Basic / custom header / query),
   // reusing the shared resolver so MCP authenticates the same way HTTP tools and secret-test do.
   // For managed OAuth (mcp_oauth/google_oauth) sel.secret is the resolved access token → Bearer.
-  // NOTE: An uncatalogued kind (legacy string secret / generic) falls back to Bearer.
+  // An uncatalogued kind (legacy string secret / generic) falls back to Bearer.
   let url = effectiveUrl;
   let headers: Record<string, string> | undefined;
   if (sel.secret) {

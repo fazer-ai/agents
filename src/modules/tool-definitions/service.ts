@@ -41,17 +41,13 @@ import { normalizeToolShapes, renderedVariableNames } from "./normalize";
 // allowlist apply at invoke time. Granting a definition to an agent is a separate concern
 // (AgentToolSelection, source=HTTP).
 
-// The methods a tool definition may carry, and EXPORTED because three writers reach that column:
-// this module's zod schema (REST + MCP), the agent import, and the editor's one-shot test run. Only
-// the first had the list, so the other two could store or issue a method no console can produce.
+// The methods a tool definition may carry. Exported because three writers reach that column: this
+// module's zod schema (REST + MCP), the agent import, and the editor's one-shot test run.
 export const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 export type HttpToolMethod = (typeof HTTP_METHODS)[number];
 
-// The method a definition takes when its author named none. EXPORTED for the same reason the
-// list is: the create path defaulted here and the editor's test run defaulted to GET, so a
-// definition with no method was TESTED as a GET and SAVED as a POST — two different requests
-// from one screen, which is exactly what an endpoint justified by "it does what saving does"
-// cannot do.
+// The method a definition takes when its author named none. Shared with the editor's test run so
+// a definition with no method is tested with the same request it is saved as.
 export const DEFAULT_HTTP_METHOD: HttpToolMethod = "POST";
 
 // The label's authoring limit, shared with the import's rename: a label it moves must still be
@@ -86,9 +82,9 @@ export interface ToolDefinitionDto {
   expectedStatuses: number[];
   ackEnabled: boolean;
   ackMessage: string | null;
-  // What this tool's response declares about an appointment, or null (issue #352).
+  // What this tool's response declares about an appointment, or null.
   appointment: Record<string, unknown> | null;
-  // The GENERIC integration instance this tool hands `{{conversation_ref}}` for, or null (#818).
+  // The GENERIC integration instance this tool hands `{{conversation_ref}}` for, or null.
   conversationRefIntegrationId: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -151,19 +147,14 @@ function toDto(r: {
     allowedHosts: r.allowedHosts,
     headers: (r.headers ?? {}) as Record<string, unknown>,
     inputSchema: (r.inputSchema ?? {}) as Record<string, unknown>,
-    // Verbatim, and DELIBERATELY not re-read through `readResponseTemplateResult` the way
-    // `appointment` below is. That normalization exists so the editor never shows a rule the runtime
-    // ignores; here it would instead ERASE from the read surface a legacy JSON Schema that some
-    // caller wrote and may still be reading back. The write already stores the reader's own shape,
-    // so a declared template arrives here normalized anyway.
+    // NOTE: verbatim, deliberately not re-read through `readResponseTemplateResult` like `appointment`:
+    // that would erase a legacy JSON Schema a caller may still read back. The write already stores
+    // a declared template normalized.
     outputSchema: (r.outputSchema ?? {}) as Record<string, unknown>,
     query: (r.query ?? {}) as Record<string, unknown>,
     body: (r.body ?? {}) as Record<string, unknown>,
-    // The stored value only where it NAMES an entry. `requireVaultRef` has guarded both writers
-    // since #126 (dc6c467a), and this module predates that by two months: a row written before it
-    // holds whatever the caller sent, most plausibly a secret VALUE from someone who read the field
-    // name as "the secret". This DTO goes out over REST and over `mcp:read`, a scope narrower than
-    // the console's, so the read is seen by more people than the write ever was (issue #438).
+    // NOTE: the stored value only where it NAMES an entry: a legacy row, written before `requireVaultRef`
+    // guarded the writers, may hold a secret VALUE, and this DTO goes out over REST and `mcp:read`.
     credentialRef: readableVaultRef(r.credentialRef),
     enabled: r.enabled,
     expectedStatuses: r.expectedStatuses,
@@ -184,28 +175,11 @@ function toDto(r: {
   };
 }
 
-// What the audit row carries.
-//
-// Every mutable column of the row is in one of two halves, and the split is the point rather than
-// the contents of either. What is PROJECTED is identity, policy and shape — safe to keep in a row
-// that is append-only and outlives the definition. Everything else is listed in `UNDISCLOSED`
-// below, compared but never carried, so that a change to it still writes the row: a column left out
-// of BOTH halves changes without the row noticing, `projectionMoved` sees nothing, and the edit
-// writes nothing at all. Review found five such columns on the first pass of this PR.
-//
-// `urlTemplate` is REDACTED to its origin even though the column holds it whole and every read
-// surface returns it whole. The schema accepts any template, and a token in the path or the query
-// is how these are actually written — where a value is stored says nothing about whether it is a
-// secret, which is the reasoning `redactEndpoint` carries from #397. A relative template has no
-// origin to keep, so it masks to nothing; the comparison is what still reports that it moved.
-//
-// The RAW `credentialRef` is compared as well as projected, and that is not belt-and-braces: two
-// different opaque values both project as `{ref: null, opaque: true}`, so swapping one for the
-// other would move nothing. `requireVaultRef` has refused that spelling on the way in since #126,
-// which makes it a legacy row rather than a reachable write — but the fence answers for columns and
-// not for what today's writer happens to allow, and listing it costs one line.
-// `tests/modules/audit-config-families.test.ts` holds the fence: it reads the columns of this model
-// out of `prisma/schema.prisma` and fails while one is in neither half.
+// What the audit row carries: identity, policy and shape. Every other mutable column is listed in
+// `UNDISCLOSED` (compared, never carried); a column in neither half changes without writing a row,
+// which `tests/modules/audit-config-families.test.ts` fences. `urlTemplate` is redacted to its
+// origin because a token in the path or query is how these templates are actually written. The raw
+// `credentialRef` is compared as well, since two different opaque refs project the same.
 function auditProjection(r: {
   name: string;
   label: string;
@@ -232,13 +206,8 @@ function auditProjection(r: {
     label: r.label,
     method: r.method,
     urlMasked: redactEndpoint(r.urlTemplate),
-    // The COUNT, and not the entries. Every entry is `z.string().min(1).max(255)` and nothing more,
-    // and no test on the string can tell a hostname an operator meant from a secret they pasted:
-    // `ghp_0123`, `xoxb-1-2` and a dotted JWT are all things `URL` will happily call a host. So the
-    // same standard `redactEndpoint` applies to a URL applies here — where a value is STORED says
-    // nothing about whether it is a secret, and this row outlives every correction. What a reader
-    // needs from the trail is that the allowlist WIDENED, which the count says; which hosts it
-    // names is on the live read surface, and that one is deletable.
+    // NOTE: the COUNT, not the entries: nothing tells a hostname from a pasted secret (`URL` accepts a
+    // token as a host), and this row outlives every correction. The count still shows a widening.
     allowedHostCount: r.allowedHosts.length,
     credentialRef: cred.ref,
     credentialRefOpaque: cred.opaque,
@@ -274,9 +243,8 @@ const UNDISCLOSED = [
 
 export const toolDefinitionCreateSchema = z
   .object({
-    // Canonicalized on the way in, for the reason code-tools/service.ts gives: `buildHttpTool`
-    // offers the model `sanitizeToolName(name)`, so any other spelling is a row whose name is not
-    // the name that reaches the model — and two spellings of one name collide there, not here.
+    // Canonicalized on the way in: `buildHttpTool` offers the model `sanitizeToolName(name)`, so
+    // any other spelling stores a name the model never sees, and two spellings collide only there.
     name: z
       .string()
       .regex(/^[a-zA-Z0-9_-]{1,64}$/)
@@ -290,13 +258,9 @@ export const toolDefinitionCreateSchema = z
     allowedHosts: z.array(z.string().min(1).max(255)).max(50),
     headers: z.record(z.string(), z.unknown()).optional(),
     inputSchema: z.record(z.string(), z.unknown()).optional(),
-    // What this tool's RESPONSE should look like by the time it reaches the model (issue #456).
-    // Only `mode: "template"` opts in, and only that shape is judged: this column has been writable
-    // through the MCP tool since it existed, unvalidated and read nowhere, so a row may hold a real
-    // JSON Schema. Refusing those now would break a published surface for rows that never asked for
-    // this feature. A DECLARED template that the reader would not honour is refused rather than
-    // stored, for the reason the appointment field below carries: a declaration that looks saved and
-    // does nothing is the silence the feature exists to remove.
+    // What this tool's RESPONSE should look like by the time it reaches the model. Only a declared
+    // `mode: "template"` is judged (refused when the reader would not honour it); any other object,
+    // such as a legacy JSON Schema written through MCP, is accepted as is.
     outputSchema: z
       .record(z.string(), z.unknown())
       .optional()
@@ -310,9 +274,8 @@ export const toolDefinitionCreateSchema = z
     // Query-string params (Record<string,string> templates), applied for any method.
     query: z.record(z.string(), z.unknown()).optional(),
     // Body shape: { mode: "kv", rows } | { mode: "raw", raw } | legacy { mode: "fields" }, checked
-    // by assertSupportedBody below rather than narrowed at runtime (issue #150). The check is not a
-    // zod refinement because its whole job is to tell the author what to write instead, and only an
-    // AppError reaches them as a message — a zod issue lands in the generic branch.
+    // by assertSupportedBody rather than a zod refinement: only an AppError reaches the author as a
+    // message telling them what to write instead.
     body: z.record(z.string(), z.unknown()).optional(),
     credentialRef: z.string().min(1).max(128).nullish(),
     enabled: z.boolean().optional(),
@@ -320,13 +283,11 @@ export const toolDefinitionCreateSchema = z
     // graph/tools/http-status. Accepts numeric strings, which a JSON body from REST/MCP often carries.
     expectedStatuses: z.array(z.union([z.number(), z.string()])).optional(),
     // Optional "I'll look into that for you…" ack posted to the customer (with a typing indicator)
-    // BEFORE this — typically slow — tool runs. Opt-in per tool.
+    // BEFORE this (typically slow) tool runs. Opt-in per tool.
     ackEnabled: z.boolean().optional(),
     ackMessage: z.string().max(2000).nullish(),
-    // What this tool's RESPONSE declares about an appointment (issue #352). Validated by the same
-    // reader the runtime uses — a shape it refuses is REJECTED here rather than stored and silently
-    // ignored later, because a declaration that looks saved and does nothing is exactly the silence
-    // this feature exists to remove. Null clears it.
+    // What this tool's RESPONSE declares about an appointment. Validated by the reader the runtime
+    // uses, so a shape it would silently ignore is rejected instead of stored. Null clears it.
     appointment: z
       .record(z.string(), z.unknown())
       .nullish()
@@ -334,8 +295,8 @@ export const toolDefinitionCreateSchema = z
         message:
           'appointment must be { action: "book"|"cancel", idPath, startPath (book only), summaryPath?, reminderOffsetsHours?, askConfirmationOnLast? }; a path is dot-separated keys with numeric array indexes, e.g. data.items.0.id',
       }),
-    // The GENERIC integration instance this tool hands `{{conversation_ref}}` for (issue #818). An
-    // id, as a string or a number (REST and MCP both carry either). Checked against the tenant's own
+    // The GENERIC integration instance this tool hands `{{conversation_ref}}` for. An id, as a
+    // string or a number (REST and MCP both carry either). Checked against the tenant's own
     // instances in the service; null clears it.
     conversationRefIntegrationId: z
       .union([z.string().regex(/^[1-9]\d{0,18}$/), z.number().int().positive()])
@@ -381,27 +342,19 @@ async function assertNameFree(
   name: string,
   exceptId?: bigint,
   // The name the row carries now. A save that does not MOVE the name is not asking the namespace
-  // question, and the console sends the whole row on every save — so the rules added later must not
-  // refuse an unrelated edit to a tool that was legal when it was created (code-tools/service.ts
-  // carries the same note).
+  // question, and the console sends the whole row on every save, so an unrelated edit to a tool
+  // that was legal when created must not be refused.
   currentName?: string,
 ): Promise<void> {
-  // Compared through the DERIVATION, not as text. The row may predate canonicalization on write
-  // (`Search_Knowledge`), the console submits `normalizeToolName(label)` on every save, and the two
-  // spellings are ONE identity to the model. Read as text, that save reads as a rename and meets
-  // the namespace rules added later, which refuse an edit that moved nothing (round 29).
-  // `undefined` is a CREATE, which always asks the namespace question. Not folded into the
-  // comparison: `normalizeToolName("")` answers `"tool"`, so an absent current name would read as
-  // unchanged for a tool actually named `tool`.
+  // NOTE: compared through the DERIVATION, not as text: a legacy `Search_Knowledge` and the
+  // console's `normalizeToolName(label)` are one identity to the model. `undefined` is a CREATE and
+  // stays separate, because `normalizeToolName("")` answers `"tool"`.
   const moving =
     currentName === undefined ||
     normalizeToolName(name) !== normalizeToolName(currentName);
   await lockToolNames(db);
-  // A native's name is reserved at assembly (#457): a tool written under one would exist in the
-  // console, be granted, and never reach the model, with a flow-log line as the only trace. Refused
-  // where it is typed, the way a document slug is (documents/slug.ts). The import path does not
-  // come through here and renames instead (agents/transfer.ts), as the migration did for rows
-  // written before the name was native.
+  // NOTE: a native's name is reserved at assembly, so a tool under one would never reach the
+  // model. Refused where it is typed; the import renames instead (agents/transfer.ts).
   if (isNativeToolName(name)) {
     throw new ConflictError(
       "tool name belongs to a built-in tool",
@@ -436,9 +389,8 @@ async function assertNameFree(
   }
 }
 
-// `{{conversation_ref}}` (issue #818). A tool that renders it has to name the GENERIC instance it
-// hands the handle for, and the instance has to be one: refused here rather than accepted and then
-// refusing every call, which is the silent kind of broken this module keeps turning into a 400.
+// A tool that renders `{{conversation_ref}}` has to name the GENERIC instance it hands the handle
+// for, and the instance has to be one: refused here rather than accepted and then failing every call.
 async function resolveConversationRefIntegration(
   db: ScopedDb,
   raw: string | number | null | undefined,
@@ -514,20 +466,9 @@ function assertSupportedBody(body: unknown): void {
   if (reason) throw new AppError(reason, 400);
 }
 
-// The same regex `graph/tools/http.ts` interpolates with, because the question here is that file's
-// question asked earlier. A template is not a URL — it carries `{{placeholders}}` the runtime fills
-// per call — so the runtime neutralizes them before parsing (`replace(PLACEHOLDER, "_")`) and
-// requires the result to be a URL whose origin the interpolation cannot then move. Anything the
-// runtime cannot parse is a tool that builds, gets granted, is offered to the model, and THROWS on
-// the first call with `tool <name>: invalid urlTemplate` — a raw AppError rather than a failure the
-// model can read. Nothing before this refused it, so the row was stored either way (issue #501).
-// BOTH spellings, and the second is not decoration (review round 6). `normalizeToolShapes` rewrites
-// an OpenAPI-style `{name}` into `{{name}}` when it matches a declared field or a context variable,
-// and it does that AFTER this check runs — so a raw `https://api.{contact_id}.example.com/x` parses
-// here with the braces left alone, is stored normalized, and the runtime then refuses it on every
-// call with `interpolation altered the origin`. Measured. Neutralizing the single-brace form too
-// costs no false positive: in a PATH it does not move the origin, and in a HOST a literal brace is
-// not a name anything resolves, so the tool could never have called out either way.
+// The placeholders `graph/tools/http.ts` neutralizes before parsing a template, so this asks the
+// runtime's question at write time. The single-brace form is here too because `normalizeToolShapes`
+// rewrites `{name}` into `{{name}}` AFTER this check, so a host placeholder must be caught in both.
 const URL_TEMPLATE_PLACEHOLDER =
   /\{\{\s*[a-zA-Z0-9_]+\s*\}\}|\{\s*[a-zA-Z0-9_]+\s*\}/g;
 
@@ -556,30 +497,20 @@ export function urlTemplateProblem(
   } catch {
     return "not-a-url";
   }
-  // The scheme the outbound guard allows, asked here so a `ftp:`/`mailto:` template is refused where
-  // it is typed instead of at the call. The guard's other half — private ranges, DNS — is read-backed
-  // and time-varying, so it stays where it is and is NOT mirrored here.
+  // NOTE: the scheme the outbound guard allows, refused where it is typed. The guard's other half
+  // (private ranges, DNS) is read-backed and time-varying, so it is NOT mirrored here.
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
     return { protocol: parsed.protocol };
   }
-  // The origin is never interpolatable, which the runtime enforces by probing with a neutral filler
-  // and comparing the real interpolation's origin against it — so a placeholder ANYWHERE in the
-  // origin is a tool that parses here and is refused on every call it will ever make. Two fillers
-  // rather than one: what tells a host placeholder apart from a path one is that the origin moves.
+  // NOTE: the runtime refuses any interpolation that moves the origin, so a placeholder in the
+  // origin fails every call. Two fillers tell a host placeholder from a path one: the origin moves.
   if (originWith("aa") !== originWith("bb")) return "origin-interpolated";
   return null;
 }
 
-// The fourth site of the same sentence, and it is read-backed. A template that starts with `/` is
-// RELATIVE: `buildHttpTool` prepends the credential's own base URL and, with no base to prepend,
-// refuses to build the tool at all — `relative urlTemplate requires a credential with a base URL`,
-// thrown before there is a request. The console's form already blocks that pair on save
-// (`relativeWithoutBase` in `ToolEditModal`), and the runtime already refuses it, so the row written
-// through REST or MCP is the one nothing asks about: it stores, gets granted, is offered to the
-// model, and throws on the first call.
-//
-// `dialableBaseUrl` and not the raw column, because that is the reader the runtime itself uses when
-// it assembles the tool: a credential kind whose base URL it ignores supplies no host either.
+// A relative template (`/path`) needs a credential whose base URL `buildHttpTool` can prepend, or
+// the tool throws on its first call. Read through `dialableBaseUrl`, the runtime's own reader: a
+// credential kind whose base URL it ignores supplies no host either.
 export async function relativeTemplateHasBase(
   db: ScopedDb,
   urlTemplate: string | null | undefined,
@@ -609,9 +540,8 @@ export async function assertRelativeTemplateHasBase(
   );
 }
 
-// The preview's half of the rule above. ADVISORY, like every read-backed rule since #490: the check
-// inside the write's transaction is the authority, and this one only stops a dry run from approving
-// a row the apply refuses.
+// The preview's half of the rule above. ADVISORY: the check inside the write's transaction is the
+// authority, and this one only stops a dry run from approving a row the apply refuses.
 export async function assertToolRelativeTemplateResolvable(
   ctx: TenantContext,
   urlTemplate: string | null | undefined,
@@ -654,9 +584,8 @@ function assertUsableUrlTemplate(urlTemplate: string | undefined): void {
   );
 }
 
-// Everything `createToolDefinition` decides about its INPUT — the schema (the name pattern, the
-// URL template, the declared response template) and the body shape — before any database is
-// involved. Split out so the MCP preview can ask the same question the apply asks (#490).
+// Everything `createToolDefinition` decides about its INPUT (schema, URL template, body shape)
+// before any database is involved, so the MCP preview asks the same question the apply asks.
 export function assertToolDefinitionCreatable(input: ToolDefinitionCreate) {
   const data = parseInput(toolDefinitionCreateSchema, input);
   assertSupportedBody(data.body);
@@ -664,15 +593,9 @@ export function assertToolDefinitionCreatable(input: ToolDefinitionCreate) {
   return data;
 }
 
-// The half of `createToolDefinition`'s verdict that has to READ, so the preview can give it too.
-// It is ADVISORY, and that word is load-bearing: `assertToolDefinitionCreatable` above judges the
-// input and cannot change its mind, while this runs its own scoped read outside the write's
-// transaction and can be overtaken. `assertNameFree` INSIDE the tx, and the unique index under it,
-// are what actually keep one name to one tool. This only moves the refusal an operator will hit
-// almost every time — a name they already used — to where they asked the question (#490).
-// `exceptId` for the update path: a tool keeping its own name is not a collision, and omitting it
-// would make every rename-to-itself preview refuse a write that succeeds — the inverse divergence,
-// which is just as wrong.
+// The half of `createToolDefinition`'s verdict that has to READ, for the preview. ADVISORY: it
+// reads outside the write's transaction and can be overtaken; `assertNameFree` inside the tx and
+// the unique index are what keep one name to one tool.
 export async function assertToolNameAvailable(
   ctx: TenantContext,
   name: string,
@@ -688,15 +611,9 @@ export async function assertToolNameAvailable(
   );
 }
 
-// The patch an update would apply, judged before any database is involved — the twin of
-// `assertToolDefinitionCreatable`, and the reason the MCP preview can show the name the apply will
-// store rather than the spelling the caller typed.
-//
-// It carries the body shape and the url template as well as the schema, because `updateToolDefinition`
-// asks all three and the preview has to ask what the apply asks (#490, #501). An undefined field is
-// NOT judged, and that is the half a patch makes load-bearing: the console re-sends the whole record
-// but an MCP patch that only moves the description names neither, and refusing it would put the
-// divergence back inverted — the dry run saying no to a write the apply performs.
+// The patch an update would apply, judged before any database is involved (the twin of
+// `assertToolDefinitionCreatable`), so the MCP preview asks what the apply asks. An undefined field
+// is NOT judged: an MCP patch may name only the description.
 export function assertToolDefinitionPatchValid(
   patch: ToolDefinitionUpdate,
 ): ToolDefinitionUpdate {
@@ -788,19 +705,11 @@ export async function updateToolDefinition(
 ): Promise<ToolDefinitionDto> {
   const data = assertToolDefinitionPatchValid(patch);
   return runScopedOn(base, ctx, async (db) => {
-    // LOCKED before the snapshot the trail compares against, which is the rule the audited families
-    // already follow (`agents`, `tenants`, `tenant_settings`, branding, the delivery requeue, and
-    // the two the #397 round wrote). At READ COMMITTED two concurrent PATCHes both read state A;
-    // the first commits B; the second's `update` blocks, wakes and writes C — and files a row
-    // saying A became C, attributing B's change to whoever wrote C.
-    // The NAMESPACE lock first, and it is an ordering rule rather than a need of this statement.
-    // An agent import takes it once, before it touches any tool row (agents/transfer.ts), and reads
-    // and writes rows under it. Taking the row lock first here inverts that order and the two
-    // deadlock: this transaction holds the row and waits for the namespace, the import holds the
-    // namespace and waits for the row (round 29). Unconditional, because a patch that carries no
-    // name still locks the row and an order that depends on the payload is not an order.
-    // Re-acquiring it inside the name check below costs nothing: `pg_advisory_xact_lock` is
-    // re-entrant within a transaction, and every copy is released at commit.
+    // NOTE: the row is locked before the snapshot the audit trail compares against, or two
+    // concurrent PATCHes at READ COMMITTED file a row attributing one's change to the other.
+    // The NAMESPACE lock comes first, unconditionally: an agent import takes it before any tool row
+    // (agents/transfer.ts), so the reverse order deadlocks. Re-taking it in `assertNameFree` is
+    // free (`pg_advisory_xact_lock` is re-entrant within a transaction).
     await lockToolNames(db);
     await db.$queryRaw`SELECT 1 FROM "tool_definitions" WHERE "id" = ${id} FOR UPDATE`;
     const current = await db.toolDefinition.findUnique({
@@ -859,10 +768,8 @@ export async function updateToolDefinition(
       patchData.credentialRef = data.credentialRef
         ? await requireVaultRef(db, data.credentialRef, "credentialRef")
         : null;
-    // The EFFECTIVE pair, patch over stored, and only when the patch NAMES one of the two: a save
-    // that moves neither the template nor the credential is not a statement about their pairing, so
-    // a row written before this rule stays editable through everything else. Same shape as the
-    // chunking bound in #524, and the same reason.
+    // NOTE: the EFFECTIVE pair, patch over stored, judged only when the patch NAMES one of the two,
+    // so a legacy row stays editable through everything else.
     if (data.urlTemplate !== undefined || data.credentialRef !== undefined) {
       await assertRelativeTemplateHasBase(
         db,

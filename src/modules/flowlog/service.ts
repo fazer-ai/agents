@@ -19,50 +19,19 @@ import type { FlowLevel, FlowSource, FlowStage, FlowStatus } from "./stages";
 // write (or alert dispatch) never escapes into the turn. NEVER log message text / PII: `detail`
 // carries only ids/counts/enums and is passed through redactSecretsDeep as defense-in-depth.
 
-// The ceiling a `detail` string is written under while the agent's debug mode is on (#58).
-//
-// Derived, not chosen. The largest operator-authored string the API accepts is `AGENT_PROMPT_MAX_CHARS`
-// (100k by default, `src/api/v1/agents.controller.ts`), and the field the mode exists for is that
-// prompt's AUDIT, which is the same text with its context placeholders rewritten as
-// `{{canal: string(1234)}}`. Measured, that rewrite expands the template by 1.08x on ordinary prose
-// and at most 2.56x in the worst case the closed context-variable set allows — `{{canal}}` is the
-// shortest placeholder there is, at 9 characters, and its audited form is at most 23
-// (`tests/modules/flowlog-debug-mode.test.ts` pins both numbers). Three times the prompt ceiling
-// therefore covers any prompt this API would have accepted, with margin.
-//
-// It is still a BOUND, and that is the point of not simply removing the cap: `detail` also carries
-// tool arguments and results, which no configuration limits, so an unbounded write would let one
-// runaway tool response into a row.
-//
-// `Math.max` because the prompt ceiling is an operator's env var and nothing stops it being small:
-// under 667 the derivation falls below the ordinary 2,000, and arming the debug mode would then
-// SHRINK what a line stores. A mode that records less than the default is not a weaker version of
-// itself, it is the opposite of what it says.
-//
-// The `+` term is the SCHEDULE allowance, and it is there because the audit does not only mask: it
-// keeps the agent's own configured hours resolved, since those are often the whole answer to "why
-// did it say we were closed". A rendered schedule is not small — at `MAX_SCHEDULE_WINDOWS` it turns
-// a 23-character placeholder into ~2.6k — so the audit collapses repeats and keeps ONE full
-// rendering per schedule variable name (`prompt-audit.ts`). Six names, and 4k each is generous for
-// a 200-window summary (measured: 2,639 characters, ~13 per window), so this reserves what that
-// rule can still add on top of the template.
-//
-// A bound, and only since issue #346. `MAX_SCHEDULE_WINDOWS` is asked at the READER (`parseWindows`),
-// so no stored row surfaces more than it however it was written, and the reserve above therefore
-// covers every schedule this runtime can render. It was a MARGIN while the number bounded only the
-// business-hours API: the agent import wrote `windows` unvalidated, and one past the cap rendered
-// past what is reserved here. That fallback is still here and still right — the audit is cut and the
-// row stays bounded, because the ceiling is also a budget — but reaching it no longer takes a
-// schedule. Reserving for an unbounded input is not possible, and that is why the input is bounded.
+// The ceiling a `detail` string is written under while the agent's debug mode is on. Three times
+// `AGENT_PROMPT_MAX_CHARS` covers the audited prompt (placeholders expand it at most 2.56x, pinned
+// in tests/modules/flowlog-debug-mode.test.ts); the allowance reserves one rendered schedule per
+// variable name (six names, bounded by `MAX_SCHEDULE_WINDOWS` at the reader). Still a bound,
+// because `detail` also carries tool arguments and results, which nothing limits.
 const SCHEDULE_AUDIT_ALLOWANCE = 6 * 4_000;
 
 // The derivation as a FUNCTION, so it can be measured at a prompt ceiling other than this
 // deployment's: the schedule allowance only carries weight when `promptMaxChars` is small, and a
 // test that could only ask about the default would never see it do anything.
 export function debugCeilingFor(promptMaxChars: number): number {
-  // No floor at `MAX_STRING`: the schedule allowance alone is more than ten times it, so the sum
-  // cannot come out below the ordinary cap however small the prompt ceiling is set. A `Math.max`
-  // here was a condition no input could reach, which is how the mutation battery found it.
+  // NOTE: No floor at `MAX_STRING`: the schedule allowance alone is more than ten times it, so the
+  // sum cannot come out below the ordinary cap however small the prompt ceiling is set.
   return promptMaxChars * 3 + SCHEDULE_AUDIT_ALLOWANCE;
 }
 
@@ -106,17 +75,9 @@ export function emitFlowEvent(ctx: FlowContext, ev: FlowEvent): void {
   trackFlowWrite(writeFlowEvent(ctx, ev));
 }
 
-// THE SAME WRITE, AWAITED, and it exists for a caller whose line is the only record there will be.
-//
-// Every turn-time caller wants the fire-and-forget form: the line describes work that already
-// happened, and making a customer wait on a log write would be the wrong trade. The stranded-delivery
-// sweep is the opposite case — it retires the ledger row that is the line's only other trace, so a
-// swallowed failure loses the report permanently and no later pass can find the row again. Awaiting
-// lets that caller write the line FIRST and retire the row only if it landed.
-//
-// Failures are still swallowed here, for the same reason they are swallowed above: a caller asking
-// for the line is not asking to fail if it cannot be written. What awaiting buys is ORDERING, not an
-// exception — the caller learns the outcome from `delivered`.
+// The same write, awaited, for a caller whose line is the only record left: the stranded-delivery
+// sweep writes the line FIRST and retires its ledger row only if it landed. Failures are still
+// swallowed; what awaiting buys is ORDERING, and the outcome comes back in `delivered`.
 export async function writeFlowEvent(
   ctx: FlowContext,
   ev: FlowEvent,
@@ -157,7 +118,7 @@ export async function writeFlowEvent(
           // the size policy `detail` is under — it is standing in for a scrub that does not
           // exist: a provider's error text is not allowlisted the way `detail` is, and it can
           // echo the customer's own message back (a content-filter refusal quoting the input).
-          // Lifting it would widen PII exposure to buy nothing this issue asked for.
+          // Lifting it would widen PII exposure for no gain.
           errorMessage: ev.errorMessage
             ? sanitizeErrorMessage(ev.errorMessage)
             : undefined,

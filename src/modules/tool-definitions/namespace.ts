@@ -3,24 +3,11 @@ import { normalizeToolName } from "@/graph/tools/toolName";
 import type { ScopedDb } from "@/lib/tenancy";
 import { documentToolName } from "@/modules/documents/slug";
 
-// One tool name, one owner — across the two tables that hold tool rows (issue #363). An HTTP tool
-// and a code tool cannot share a name, and the checks that say so (`assertNameFree` in each
-// service, and the import's own pre-check, which writes past both) read the OTHER table. Two tables
-// means two unique indexes and no shared one, so under READ COMMITTED two writes claiming the same
-// name can each read a table without the other's uncommitted row and both insert.
-// `dropDuplicateToolNames` is the backstop at assembly, and a backstop that decides which tool the
-// agent gets with a flow-log line as the only trace is exactly what the namespace exists to avoid.
-//
-// So every writer queues behind one lock. It is a TRANSACTION lock (`_xact_`), taken inside the
-// scoped transaction the writers already open and released on commit or rollback, so a failed write
-// never leaks it. `current_setting('app.tenant_id')` is the GUC `runScopedOn` sets for RLS, so the
-// key cannot disagree with the rows the transaction can see.
-//
-// The key is the TENANT's namespace, not the name: an import claims many names in one transaction,
-// and per-name locks taken in bundle order are two imports away from a deadlock (Postgres would
-// abort one of them, and an import aborts whole — issue #221). One lock per transaction has no
-// order to get wrong. It costs the serialization of tool writes within a tenant, which are rare and
-// operator-driven.
+// One tool name, one owner, across the two tables that hold tool rows (HTTP and code tools). Two
+// tables means no shared unique index, so under READ COMMITTED two writes of the same name could
+// both insert; every writer queues behind this lock instead. A TRANSACTION lock (`_xact_`), released
+// on commit or rollback; keyed on `app.tenant_id`, the GUC `runScopedOn` sets for RLS. One lock per
+// TENANT, not per name: an import claims many names, and per-name locks could deadlock two imports.
 export async function lockToolNames(db: ScopedDb): Promise<void> {
   await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id') || ':tool-names', 0))`;
 }
@@ -71,21 +58,12 @@ export async function toolHoldingName(
   return holder ? { name: holder.label } : null;
 }
 
-// A row written before names were canonicalized (or by a path that wrote past the service) can hold
-// a spelling the model never sees: `Foo` reaches it as `foo`. So the namespace is compared on the
-// MODEL-FACING name, which means reading the tenant's names and normalizing them here rather than
-// asking the index for an exact match. A tenant has tens of tools, and this runs on a write.
-// WHICH row a name resolves to, when the answer has to be one row and not a set.
-//
-// `toolsUnderModelName` answers "is this name taken", where every match counts. This answers "which
-// tool does this name mean", and the two are different questions the moment a destination holds
-// legacy rows the old case-sensitive unique index allowed: `Foo` and `foo` both derive `foo`, and
-// picking `[0]` off an unordered read hands the agent whichever the database listed first, which is
-// a different endpoint and a different credential from the one the bundle named (round 29).
-//
-// The exact stored spelling wins, because it is the one thing that is not a guess. Failing that, a
-// single derived match is unambiguous and is the case the canonicalization exists to serve. More
-// than one is ambiguous and is answered as such: a caller that cannot say WHICH must not pick.
+// Compared on the MODEL-FACING name, not the stored spelling: a legacy row can hold `Foo`, which the
+// model sees as `foo`. A tenant has tens of tools and this runs on a write, so reading them is cheap.
+// WHICH row a name resolves to, when the answer must be one row: legacy rows can hold both `Foo` and
+// `foo`, and picking the first of an unordered read would bind a different endpoint and credential.
+// The exact stored spelling wins; failing that, a single derived match; more than one is ambiguous,
+// and a caller that cannot say WHICH must not pick.
 export type NameMatch =
   | { kind: "none" }
   | { kind: "one"; id: bigint }

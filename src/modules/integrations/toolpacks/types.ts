@@ -49,11 +49,10 @@ export interface ToolpackCtx {
   // helpers is four places to forget, and a fifth added later would start out uncovered. Same shape
   // as the Chatwoot client's `mutedFetch`. Absent ⇒ no deadline, which is every reactive turn.
   expiresOn?: AbortSignal;
-  // THE CALLER'S WITHDRAWAL FENCE, enforced the same way the deadline is: by wrapping `fetchImpl` at
-  // the build seam, so every pack's own request helper asks it without any of them knowing. A
-  // deadline answers "is there still time"; this answers "is anyone still waiting" — a `/reset` or a
-  // detach landing while a pack resolves a credential leaves the budget alive and the run withdrawn
-  // (issue #568, review round 28). Absent ⇒ no fence, which is every reactive turn's toolpack today.
+  // The caller's withdrawal fence, enforced like the deadline: by wrapping `fetchImpl` at the build
+  // seam, so every pack's request helper asks it unknowingly. The deadline answers "is there still
+  // time"; this answers "is anyone still waiting" (a `/reset` or a detach while a pack resolves a
+  // credential). Absent means no fence, which is every reactive turn's toolpack.
   stillWanted?: () => Promise<boolean>;
   // Called when a call refuses without sending anything, with the TOOL's name: nothing left the
   // process, and the counter on the other end applies to the report the same test it applied at
@@ -71,23 +70,17 @@ export interface ToolpackCtx {
   // bound bookable slots to the service hours; null when unset/deleted/other-tenant ⇒ "always on".
   // Injected in prepare.ts; stubbed in tests.
   resolveBusinessHours?: (id: string) => Promise<Schedule | null>;
-  // An appointment was booked in this conversation. A closure bound to the tenant + this
-  // conversation's thread; it is a pure MECHANISM (write the record, arm the scheduler jobs). The
-  // POLICY lives in the integration's config and is read + passed by the toolpack, as `reminders`.
-  // The credentialRef is the integration's, never the secret. Undefined on the playground / when no
-  // contact is in scope, so the toolpack treats it as best-effort. NEVER a model arg. Injected in
-  // prepare.ts; stubbed in tests.
-  //
-  // `reminders: null` means "arm nothing", and it is the ordinary answer for an integration with
-  // reminders switched off. It does NOT mean "do not record": the record is what the follow-up
-  // pause, the console indicator and the agent's own prompt read, and it is written either way. The
-  // two used to be one call, which is how an operator could turn reminders off and silently lose the
-  // pause as well (issue #376).
+  // An appointment was booked in this conversation: a closure bound to the tenant + this
+  // conversation's thread, a pure MECHANISM (write the record, arm the jobs). The POLICY is the
+  // integration's config, passed by the toolpack as `reminders`. Undefined on the playground or
+  // with no contact in scope, so best-effort; NEVER a model arg. Injected in prepare.ts.
+  // `reminders: null` means "arm nothing", NOT "do not record": the follow-up pause, the console
+  // indicator and the prompt read the record.
   appointmentBooked?: (args: {
     eventId: string;
     // The booking system and the calling tool's name. A toolpack passes neither: it IS Google
     // Calendar, which is what both default to. They exist for the HTTP tool whose DEFINITION
-    // declares an appointment (issue #352) — see graph/tools/http.ts.
+    // declares an appointment (see graph/tools/http.ts).
     provider?: string;
     tool?: string;
     calendarId?: string | null;
@@ -139,11 +132,10 @@ export interface ToolArgSpec {
 export interface ToolSpec {
   name: string;
   schema: z.ZodObject<z.ZodRawShape>;
-  // WHETHER THIS TOOL'S WHOLE POINT IS TO PUT SOMETHING IN FRONT OF THE CUSTOMER. A muted turn (the
-  // observer's, issue #568) is not offered one: the send is refused at that client's transport, and
-  // the tool would have done its expensive half — Drive downloads the file first — before finding
-  // out. Declared on the SPEC rather than guessed from the name, so a pack added later states it
-  // where its tools are already listed.
+  // Whether this tool's whole point is to put something in front of the customer. A muted turn (the
+  // observer's) is not offered one: the send is refused at that client's transport, after the tool
+  // already did its expensive half (Drive downloads the file first). Declared on the SPEC, not
+  // guessed from the name.
   deliversToCustomer?: boolean;
 }
 
@@ -177,7 +169,7 @@ export interface ToolView {
   name: string;
   args: ToolArgSpec[];
   // Mirrored from the spec so the editor can answer the same question the muted assembly answers,
-  // off one declaration (review round 30).
+  // off one declaration.
   deliversToCustomer?: boolean;
 }
 
@@ -225,18 +217,11 @@ export class ToolpackCalledOffError extends Error {
   }
 }
 
-// WHICH DISPATCH A REFUSAL BELONGS TO. The two halves of that answer live in different places and
-// neither can reach the other on its own: `fencedFetch` is shared by every pack of the turn, so the
-// throw it raises knows no tool name, and the build seam that knows the name never sees the throw,
-// because every pack answers a transport error with a tool failure (`asaas.ts`, `google-drive.ts`
-// and `google-calendar.ts` each wrap their request helper in exactly that catch) and the exception
-// dies inside the handler. Reporting from the seam, as round 37 did, was therefore dead code for
-// every real pack — the observer's counter never heard that nothing left the process and read the
-// dispatch as a write (review round 38).
-//
-// So the seam opens a frame per dispatch and the throw reads it. The flag keeps a pack that makes
-// two requests in one call from reporting twice for one dispatch, which is the reason the report
-// left `fencedFetch` in the first place.
+// Which dispatch a refusal belongs to. `fencedFetch` is shared by every pack of the turn, so its
+// throw knows no tool name, and the build seam never sees the throw, because every pack turns a
+// transport error into a tool failure inside its handler. So the seam opens a frame per dispatch
+// and the throw reads it; the flag keeps a pack that makes two requests in one call from reporting
+// twice.
 type CalledOffFrame = { tool: string; reported: boolean; spent: boolean };
 const calledOffFrame = new AsyncLocalStorage<CalledOffFrame>();
 
@@ -248,12 +233,10 @@ export function fencedFetch(
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     // Only an explicit `false` stops it: a fence that could not answer is not a withdrawal.
     if (!(await stillWanted().catch(() => true))) {
-      // ...AND ONLY WHILE THE DISPATCH IS STILL EMPTY (review round 41). A pack tool is not one
-      // request: `asaas_create_pix_charge` POSTs the charge and then GETs its QR code, so a fence
-      // that turns false between the two is a refusal AFTER the charge exists. Reporting there
-      // subtracts the whole dispatch, the tick reads nothing as committed, and the scheduler's
-      // retry charges the customer twice — the exact trade docs/chatwoot.md settles the other way:
-      // at-most-once for the effects beats at-least-once for a classification.
+      // NOTE: ...and only while the dispatch is still EMPTY. A pack tool can be several requests
+      // (`asaas_create_pix_charge` POSTs the charge, then GETs its QR code), and reporting a
+      // refusal after the charge exists would let the scheduler retry and charge twice:
+      // at-most-once for the effects beats at-least-once for a classification (docs/chatwoot.md).
       const frame = calledOffFrame.getStore();
       if (frame && !frame.reported && !frame.spent) {
         frame.reported = true;

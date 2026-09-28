@@ -103,8 +103,8 @@ export async function listCredentialDriveFolders(
   const assertSafe = deps.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(GDRIVE_FOLDER_LIST_URL);
   const doFetch = deps.fetchImpl ?? fetch;
-  // The cap is on what is READ, not a slice of what was already read: `.text()` buffers the whole
-  // body before any limit applies (#464).
+  // NOTE: The cap is on what is READ, not a slice of what was already read: `.text()` buffers the
+  // whole body before any limit applies.
   const { res, body } = await fetchBounded(
     GDRIVE_FOLDER_LIST_URL,
     {

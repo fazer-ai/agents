@@ -1,16 +1,7 @@
-// What a monitoring agent DOES with what it reads (issue #477), configured under
-// `agent.settings.monitoring`. Read leniently, like every other behavior block: a missing or
-// malformed field takes its default.
-//
-// WHAT USED TO BE HERE and is deliberately gone (issue #568): the label groups. A monitoring agent
-// was a classifier, and this block told it what to classify into — a taxonomy with its own screen,
-// its own schema, its own write-time assertions and its own cross-agent conflict rules. None of
-// that belonged to the MODE. A watcher is the ordinary agent that cannot answer the customer, and
-// what it does with a conversation is what its prompt and its tools say, exactly as for a
-// responder: labelling is `set_labels`, and which labels exclude each other is a sentence in the
-// operator's own prompt, not a structure the product stores.
-//
-// What is left is what is genuinely about OBSERVING: when to look, and how much to read.
+// What a monitoring agent DOES with what it reads, configured under `agent.settings.monitoring`.
+// Read leniently, like every other behavior block: a missing or malformed field takes its default.
+// It holds only what is about OBSERVING (when to look, how much to read): what a watcher does with
+// a conversation is its prompt and tools, as for a responder (labelling is `set_labels`).
 
 export type MonitoringAnalysis = "incremental" | "on_resolve";
 

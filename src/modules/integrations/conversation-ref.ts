@@ -3,23 +3,13 @@ import type { PrismaClient } from "@/../generated/prisma/client";
 import basePrisma from "@/api/lib/prisma";
 import { runScopedOn, type ScopedDb, type TenantContext } from "@/lib/tenancy";
 
-// `{{conversation_ref}}` (issue #818): the handle an operator's HTTP tool gives the operator's own
-// system, so that system can later send an event about THIS conversation to a GENERIC webhook.
-//
-// It is an IntegrationExternalRef, the same correlation the Asaas and Resend toolpacks write after
-// their outbound calls, with two differences that are the point of it:
-//
-// - It is STABLE per (instance, conversation), not per call. A receiver that schedules a periodic
-//   job keeps one handle for the conversation, and every tool call in that conversation hands over
-//   the same one. Two concurrent first uses can each mint one; both stay valid and the older wins
-//   every later read, which is harmless (a turn runs one at a time per conversation anyway).
-// - It correlates ONLY on the GENERIC instance that minted it, and only as this kind. A ref handed
-//   to one system cannot be replayed through another instance's webhook, and an Asaas payment
-//   carrying one as its `externalReference` does not credit or nudge anything.
-//
-// The token is opaque and unguessable (192 bits). It authenticates nothing on its own: a delivery
-// still has to pass the instance's own inbound authentication, which a GENERIC instance cannot
-// turn off.
+// `{{conversation_ref}}`: the handle an operator's HTTP tool gives the operator's own system, so
+// that system can later send an event about THIS conversation to a GENERIC webhook. An
+// IntegrationExternalRef like the Asaas and Resend ones, but STABLE per (instance, conversation),
+// not per call (two concurrent first uses may each mint one; both stay valid and the older wins
+// every later read), and it correlates ONLY on the GENERIC instance that minted it, as this kind.
+// The token is opaque (192 bits) and authenticates nothing: a delivery still passes the instance's
+// own inbound authentication.
 export const CONVERSATION_REF_KIND = "conversation_ref";
 
 function sysCtx(tenantId: bigint): TenantContext {

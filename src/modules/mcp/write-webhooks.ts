@@ -85,10 +85,8 @@ export async function webhookCreate(
   }
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
-      // branch rather than above it because the apply reaches the core, which asks it again —
-      // and several of these read a row or resolve DNS, so above the branch is a second lookup
-      // that can even disagree with the first (#490).
+      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // which asks it again; above the branch it would be a second lookup that can disagree.
       await assertWebhookSubscriptionCreatable({
         url: args.url,
         events: args.events,
@@ -181,10 +179,8 @@ export async function webhookUpdate(
       afterProj[k] = patch[k];
     }
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
-      // branch rather than above it because the apply reaches the core, which asks it again —
-      // and several of these read a row or resolve DNS, so above the branch is a second lookup
-      // that can even disagree with the first (#490).
+      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // which asks it again; above the branch it would be a second lookup that can disagree.
       await assertWebhookSubscriptionUpdatable(patch);
       return ok({
         dryRun: true,
@@ -234,13 +230,9 @@ export async function webhookDelete(
   }
 }
 
-// Put a DEAD outbound delivery back in the worker's queue (issue #305). The state change is the
-// service's; what this adds is the MCP contract around it.
-//
-// The dry run READS THE ROW instead of echoing the argument back, and that is the whole point of
-// it here: the only way this call fails is the row not being DEAD, so a preview built from the id
-// alone would approve exactly the requests the apply refuses. It answers with the same refusal, on
-// the same read, one step earlier.
+// Put a DEAD outbound delivery back in the worker's queue. The dry run READS THE ROW: the only way
+// the call fails is the row not being DEAD, so a preview from the id alone would approve exactly
+// what the apply refuses.
 export async function webhookDeliveryRequeue(
   principal: VerifiedToken,
   args: { delivery_id: string; dry_run?: boolean },
@@ -347,11 +339,9 @@ export async function alertChannelCreate(
     secretRef = resolved.ref;
   }
   if (args.dry_run !== false) {
-    // NOTE: the core's own two questions, asked before the preview answers it. The URL is RESOLVED
-    // here — the same read the apply does two lines below — because the destination this channel
-    // would post to is not in the arguments, it is the value behind `url_ref`, and vetting the ref
-    // instead of the value is what let a preview approve `not-a-url` and a loopback address (#510).
-    // The value is never returned: only its verdict is.
+    // NOTE: the core's own two questions. The URL is RESOLVED here, as the apply does, because the
+    // destination is the value behind `url_ref`, and vetting the ref instead would approve
+    // `not-a-url` or a loopback address. Only the verdict is returned, never the value.
     const urlValue = await resolveSecretValue(ctx, args.url_ref, base);
     if ("fail" in urlValue) return urlValue.fail;
     try {
@@ -477,9 +467,8 @@ export async function alertChannelUpdate(
       afterProj[k] = nonSecret[k];
     }
     if (args.dry_run !== false) {
-      // Same pair as on create, on the patch: the stage list, and the VALUE behind a rotated
-      // `url_ref` rather than the ref (#510). Resolved only when the patch rotates it, so an
-      // unrelated rename does not read a secret it has no question about.
+      // NOTE: same pair as on create, on the patch: the stage list, and the VALUE behind a rotated
+      // `url_ref`. Resolved only when the patch rotates it, so a rename reads no secret.
       let urlValue: string | undefined;
       if (urlRotated && args.url_ref !== undefined) {
         const resolved = await resolveSecretValue(ctx, args.url_ref, base);
@@ -612,9 +601,8 @@ export async function integrationCreate(
     inboundSecretRef = resolved.ref;
   }
   try {
-    // Before the preview, not only before the write: `dry_run` defaults to true, so the preview is
-    // the operator's FIRST answer, and one that approves what the apply refuses is worse than no
-    // preview at all (issue #248).
+    // NOTE: before the preview, not only before the write: `dry_run` defaults to true, so the
+    // preview is the operator's FIRST answer and must refuse what the apply refuses.
     assertIntegrationWritable(args.catalog_type, {
       config: args.config,
       inboundAuthStrategy: args.inbound_auth_strategy as

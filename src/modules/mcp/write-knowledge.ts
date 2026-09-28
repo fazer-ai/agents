@@ -49,11 +49,9 @@ import {
 // stays UI-only), and the suggestion-approval queue. Spine: gate (mcp:write + tenant) → dry-run
 // preview by default → apply + audit. No secrets here, so no credential resolution.
 
-// The storability rule, asked HERE and not left to the core, because a dry run never reaches the
-// core: it answers "this would work" off the arguments alone. A text the column cannot hold would
-// preview clean and then fail on apply, which is the one thing a dry run exists to prevent. The
-// pure form is used rather than the core's throwing wrapper, because what a refusal looks like is
-// the transport's question and here it is a WriteResult, not an exception (issue #247).
+// The storability rule, asked HERE because a dry run never reaches the core, and a text the column
+// cannot hold would preview clean and fail on apply. The pure form, since here a refusal is a
+// WriteResult rather than an exception.
 function unstorable(
   fields: readonly (readonly [string, string | null | undefined])[],
 ): WriteResult | null {
@@ -68,10 +66,9 @@ function failOf(e: unknown): WriteResult {
   throw e;
 }
 
-// What an MCP caller is told to do about each embedding block, one entry per reason. A Record rather
-// than a chain of comparisons: the key type is the block's own vocabulary, so a reason added to the
-// core is a compile error here instead of quietly collapsing into whichever branch came last — which
-// is how `credential_empty` came to be announced as "never filled in" (review finding, round 6).
+// What an MCP caller is told to do about each embedding block, one entry per reason. A Record keyed
+// by the block's own vocabulary, so a reason added to the core is a compile error here instead of
+// falling into the wrong branch.
 const EMBEDDING_BLOCK_NOTES: Record<EmbeddingBlock["reason"], string> = {
   embedding_not_configured:
     "Embedding is not configured for this tenant. Set tenant embedding settings (provider/model/credential) via tenant_settings_update, then re-run.",
@@ -105,8 +102,8 @@ export async function knowledgeCreate(
   if (bad) return bad;
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it, and INSIDE the branch
-      // because the apply reaches the core, which asks it again (#490). Pure: it reads no row.
+      // NOTE: the core's own question, INSIDE the branch because the apply asks it again. Pure: it
+      // reads no row.
       assertKnowledgeBaseNameUsable(args.name);
       return ok({
         dryRun: true,
@@ -188,11 +185,9 @@ export async function knowledgeUpdate(
     };
     if (args.dry_run !== false) {
       assertKnowledgeBaseNameUsable(patch.name);
-      // NOTE: ADVISORY, and deliberately so: the bound is a fact about the row, and this read is outside
-      // the transaction the apply validates in, so a concurrent update can move the pair between the
-      // two halves. What it buys is that the ordinary case — an operator sending one of the two
-      // numbers — gets the same answer here as it will get there, instead of an approved preview of
-      // a write that cannot happen (#490, #524).
+      // NOTE: ADVISORY: the bound is a fact about the row, read outside the apply's transaction, so
+      // a concurrent update can move it. It gives the ordinary case the same answer the apply
+      // gives.
       assertChunkingUpdatable(current, patch);
       const previewAfter = {
         name: patch.name ?? current.name,
@@ -271,10 +266,8 @@ export async function knowledgeDocumentCreate(
   if (bad) return bad;
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked before the preview answers it. It sits INSIDE the
-      // branch rather than above it because the apply reaches the core, which asks it again —
-      // and several of these read a row or resolve DNS, so above the branch is a second lookup
-      // that can even disagree with the first (#490).
+      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // which asks it again; above the branch it would be a second lookup that can disagree.
       await getKnowledgeBase({ ctx, id: kbId, base });
       return ok({
         dryRun: true,
@@ -338,10 +331,9 @@ export async function knowledgeDocumentDelete(
   }
 }
 
-// Edit a document in place (issue #708), the twin of `PATCH /v1/knowledge/documents/:id`. Without it
-// an MCP client concluded that editing meant delete and recreate, which loses the id (and with it any
-// sync that reconciles by id) and leaves the document out of search while it re-embeds. A changed
-// text or title re-ingests (the title is part of every chunk's vector, issue #857).
+// Edit a document in place, the twin of `PATCH /v1/knowledge/documents/:id`. Delete and recreate
+// would lose the id (and any sync that reconciles by id) and drop the document from search while it
+// re-embeds. A changed text or title re-ingests (the title is part of every chunk's vector).
 export async function knowledgeDocumentUpdate(
   principal: VerifiedToken,
   args: {
@@ -360,8 +352,8 @@ export async function knowledgeDocumentUpdate(
   if (args.title === undefined && args.text === undefined) {
     return err("nothing to update: pass title and/or text");
   }
-  // The REST twin's `minLength: 1` on both fields, asked here because the service does not: an empty
-  // text would replace the content and the next ingest would drop every chunk (review round 3).
+  // NOTE: the REST twin's `minLength: 1` on both fields, asked here because the service does not:
+  // an empty text would replace the content and the next ingest would drop every chunk.
   if (args.title === "" || args.text === "") {
     return err("title and text, when given, must not be empty");
   }
@@ -388,9 +380,9 @@ export async function knowledgeDocumentUpdate(
           title: args.title ?? current.title,
           contentChars: (args.text ?? current.content).length,
         },
-        // The same question the service asks, on what it already has: an unchanged body and an
-        // unchanged title are not re-embedded, so the preview does not promise a re-index the apply
-        // will not do. A title is part of every chunk's vector (issue #857), so it counts as a change.
+        // NOTE: the same question the service asks: an unchanged body and title are not
+        // re-embedded, so the preview does not promise a re-index. A title is part of every chunk's
+        // vector, so it counts.
         reindexes:
           (args.text !== undefined && args.text !== current.content) ||
           (args.title !== undefined && args.title !== current.title),
@@ -427,9 +419,8 @@ export async function knowledgeDocumentRetry(
     const current = await getDocument(ctx, id, base);
     const target = `knowledge_document:${id}`;
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, on the status this preview already had in hand. Reporting it
-      // in the note below is not asking it: a document that is INDEXED read back "would re-queue"
-      // and the apply answered 409 (#510).
+      // NOTE: the core's own question, on the status this preview already has: an INDEXED document
+      // is refused by the apply, so the preview refuses it too.
       assertDocumentRetryable(current.status);
       return ok({
         dryRun: true,
@@ -448,9 +439,9 @@ export async function knowledgeDocumentRetry(
 
 // Bulk re-index a whole base in one call (the "index all" for an imported base). If the tenant's
 // embedding credential is unconfigured or its secret is not filled yet, nothing is queued and the
-// result is `blocked` (with a fillAt deeplink for a pending credential) — a missing prerequisite, not
-// an error. include_failed also recovers genuine FAILED docs (a batched per-document retry), and
-// include_indexed re-embeds the READY ones (issue #857: a base indexed before titles entered the vectors).
+// result is `blocked` (with a fillAt deeplink for a pending credential), a missing prerequisite,
+// not an error. include_failed also recovers genuine FAILED docs (a batched per-document retry),
+// and include_indexed re-embeds the READY ones.
 export async function knowledgeReindex(
   principal: VerifiedToken,
   args: {
@@ -633,9 +624,9 @@ export async function knowledgeEdit(
   }
 }
 
-// The base's help center source (issue #794): the twins of PUT/DELETE /v1/knowledge/bases/:id/source
-// and POST .../source/sync. Same spine: the preview asks the questions the apply asks (the input is
-// parsed, the SSRF check included, and the base must exist) and changes nothing.
+// The base's help center source: the twins of PUT/DELETE /v1/knowledge/bases/:id/source and POST
+// .../source/sync. The preview asks the questions the apply asks (the input is parsed, the SSRF
+// check included, and the base must exist) and changes nothing.
 export async function knowledgeSourceSet(
   principal: VerifiedToken,
   args: {

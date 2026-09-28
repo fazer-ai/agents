@@ -31,7 +31,7 @@ export interface SearchParams {
   limit?: number;
   efSearch?: number;
   base?: PrismaClient;
-  // Told each time the query embedding is asked again (issue #844), so a slow search can say why.
+  // Told each time the query embedding is asked again, so a slow search can say why.
   onEmbeddingRetry?: () => void;
 }
 
@@ -158,20 +158,11 @@ const KB_AUDIT_SELECT = {
 
 export const KB_NAME_MAX = 200;
 
-// A knowledge base's name is not decoration: `buildRagTools` filters the tenant's bases on
-// `name.trim()` and builds the `knowledge_base` enum from what survives, so a blank name is a base
-// the agent cannot scope a search to — and, with only one other base left named, the parameter
-// disappears for THAT base too. At the other end the name goes whole into the search tool's
-// description, which keeps a 1000-character budget so "a verbose KB never bloats the prompt": the
-// description is clipped to 140 characters and the name was never bounded at all, so one long name
-// spends the budget and the remaining bases are dropped to `<more count="N"/>`.
-//
-// The rule lived on the REST body (`minLength: 1`) and nowhere else, so the MCP road walked past it.
-// Here instead, where all of REST, the MCP tools and their previews reach it. Undefined is NOT
-// judged: a patch that never names the name is not a statement about it, the same way an absent body
-// is not judged in tool-definitions (issue #501).
-// The rule, without the throw, because the agent import needs the answer rather than the refusal: a
-// bundle carrying an unusable name is one component to leave out and name, not a bundle to reject.
+// A knowledge base's name is not decoration: `buildRagTools` drops bases with a blank name from the
+// `knowledge_base` enum, and the name goes whole into the search tool's description, whose 1000
+// character budget a long name would spend. Asserted here, where REST, the MCP tools and their
+// previews all reach it; undefined is not judged, since a patch that omits the name says nothing
+// about it. The agent import asks the boolean form: an unusable name is a component to leave out.
 export function knowledgeBaseNameUsable(name: string): boolean {
   return name.trim().length > 0 && name.length <= KB_NAME_MAX;
 }
@@ -189,10 +180,9 @@ export function assertKnowledgeBaseNameUsable(name: string | undefined): void {
   }
 }
 
-// Every text this module stores is held to what its column can hold, at the core rather than at a
-// transport, because three roads reach these writes: REST, the MCP write tools, and the agent's own
-// suggestion tool. Refused rather than repaired: the writer here reads the answer and can send the
-// value again without the character. See rag/documents.ts for the full reasoning (issue #247).
+// Every text this module stores is held to what its column can hold, at the core, because REST, the
+// MCP write tools and the agent's suggestion tool all reach these writes. Refused rather than
+// repaired: the writer reads the answer and can resend without the character (see rag/documents.ts).
 export async function createKnowledgeBase(params: {
   ctx: TenantContext;
   name: string;
@@ -248,18 +238,14 @@ export interface SuggestParams {
   base?: PrismaClient;
 }
 
-// The same rule the document write applies (issue #247), asked one table earlier and of a different
-// writer: `proposedContent` and its siblings are `text` columns, and the agent's own suggestion tool
-// is what fills them, so the characters are a model's rather than a person's. A model reads a tool
-// failure and can write the fact again without them, so the answer is still a refusal.
+// The same storable-text rule as the document write. Here the writer is the agent's suggestion tool,
+// a model, which reads a tool failure and can write the fact again, so the answer is still a refusal.
 export async function createSuggestion(
   params: SuggestParams,
 ): Promise<{ id: bigint }> {
   const base = params.base ?? basePrisma;
-  // Labelled by the names the CALLER sends, not by the columns they land in: both roads here (the
-  // REST body and the agent's suggestion tool) spell these `title` / `content` / `rationale`, so a
-  // refusal naming `proposedContent` would tell a caller to fix a field they never sent (review
-  // round 3).
+  // NOTE: Labelled by the names the CALLER sends (`title` / `content` / `rationale` on both the REST
+  // body and the suggestion tool), not by the columns they land in.
   refuseUnstorable([
     ["title", params.proposedTitle],
     ["content", params.proposedContent],
@@ -308,10 +294,9 @@ export function parseThreadOrigin(
   | null {
   if (!threadId) return null;
   const parts = threadId.split(":");
-  // NOTE: `parseDbId`, and the `try` it replaces is why. This thread id was written from a REQUEST
-  // BODY and read back out of the approval row, so an id past 2^63-1 was stored once and then made
-  // every later read of the pending list answer 500 — a `catch` around `BigInt` never saw it,
-  // because that value converts. A thread id that carries no usable id has no origin. Issue #407.
+  // NOTE: `parseDbId`, not `BigInt` in a `try`: this id came from a request body, and an id past
+  // 2^63-1 converts fine yet breaks every later read of the pending list. A thread id with no usable
+  // id has no origin.
   if (parts.length === 4 && parts[1] === "playground") {
     const agentId = parseDbId(parts[2]);
     return agentId === null ? null : { kind: "playground", agentId };
@@ -607,8 +592,8 @@ export async function approveApprovalItem(params: {
   // NOTE: The content used to come from the phase-1 snapshot, which is a lost update as soon as a
   // second reviewer can edit: A starts approving and reads the hedged text, B saves a revision (the
   // row becomes EDITED, which the claim still accepts), A claims and stores its stale snapshot. Both
-  // are told it worked and the un-revised text is what got embedded — precisely the outcome this
-  // issue is about. `RETURNING` makes the claim and the read one operation, so whatever the row
+  // are told it worked and the un-revised text is what got embedded — precisely the outcome the
+  // review exists to prevent. `RETURNING` makes the claim and the read one operation, so whatever the row
   // holds at claim time is what is approved.
   const claimed = await claimApprovalForStorage(ctx, params.id, base);
   if (!claimed) return { outcome: "not-pending" };
@@ -694,9 +679,8 @@ export async function getKnowledgeBase(params: {
         name: true,
         description: true,
         embeddingModel: true,
-        // NOTE: the pair `listKnowledgeBases` has always returned. Reading one base was the only
-        // knowledge read that omitted it, which is why the MCP preview had nothing to measure a chunking patch
-        // against (#524).
+        // NOTE: the pair `listKnowledgeBases` returns; the MCP preview measures a chunking patch
+        // against it.
         chunkSize: true,
         chunkOverlap: true,
         stripContactFooters: true,

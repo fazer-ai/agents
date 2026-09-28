@@ -4,17 +4,14 @@ import {
   type Schedule,
 } from "@/modules/business-hours/hours";
 
-// Pure appointment-slot generator (n8n secretária v3 parity). Turns a time range + the professional's
-// business hours + the calendar's busy intervals into a list of BOOKABLE start times, server-side and
-// deterministic — the model never does the date arithmetic (which it does badly). The v3 recipe:
-//   1. step from the range start by `granularityMinutes` (the overlap grain: 15min ⇒ 09:00 and 09:15
-//      are both valid starts), each candidate `slotMinutes` long, dropping any that overrun the range;
-//   2. keep only candidates that fit ENTIRELY inside a business-hours window (same day, no midnight
-//      crossing) — when no windows are configured the schedule is "always on" and this is skipped;
-//   3. drop candidates overlapping any busy interval (freeBusy), and any already in the past.
-// Returns EVERY bookable slot in the range, in chronological order (no sampling) — the caller bounds the
-// range to <= 24h so the list stays small. No I/O, no Date.now() — `now` is injected, so it is
-// unit-testable with fixed instants (incl. DST).
+// Pure appointment-slot generator: a time range + business hours + the calendar's busy intervals
+// become the BOOKABLE start times, server-side, so the model never does date arithmetic.
+//   1. step from the range start by `granularityMinutes`, each candidate `slotMinutes` long,
+//      dropping any that overrun the range;
+//   2. keep only candidates ENTIRELY inside a business-hours window (none configured: always on);
+//   3. drop candidates overlapping a busy interval, and any already in the past.
+// Returns every slot in chronological order (the caller bounds the range to <= 24h). `now` is
+// injected, so it is testable with fixed instants (incl. DST).
 
 export interface SlotInput {
   timeMin: string;
@@ -129,34 +126,14 @@ export interface AggregateResult {
   coveredUntil?: string;
 }
 
-// Availability across several calendars at once (issue #100): a clinic with one calendar per
-// professional, asked "who can see me first?".
-//
-// Each calendar is computed SEPARATELY and the results are merged. Pooling the busy intervals into a
-// single computeAvailableSlots call would answer a different question, when EVERY professional is
-// free simultaneously, which is the intersection and is what you want for a meeting room, not for
-// interchangeable providers. That distinction is the whole point of the issue, so it is pinned by a
-// decision table rather than left to the reader.
-//
-// Ordering is chronological because the question is "first available"; ties (two professionals free
-// at 09:00) keep the operator's configured calendar order, so the same query answers the same way
-// twice and the operator can predict who gets offered first.
-//
-// TRUNCATION, and why it is shaped this way. One entry per (time, calendar) multiplies with the
-// calendar count, and the raw product is large enough to matter: 50 calendars over a 24h range at
-// the 5-minute floor is 14,400 entries, which does not belong in a tool result. Two earlier attempts
-// were wrong in instructive ways. Returning everything blows the model's context. Keeping each
-// calendar's first N starts holds the size down but collapses the RANGE, so an afternoon request
-// answers "unavailable" while the afternoon is free.
-//
-// So the ceiling is on the total, it drops WHOLE start times rather than trimming the calendars
-// offered at a time (a half-listed time would tell the customer a professional is busy when they are
-// free), and where it stopped is REPORTED, so the caller can continue instead of silently believing
-// it saw the whole day. The first time is always kept: an empty list because one instant had many
-// free calendars would be a worse answer than a slightly oversized one, and that exemption is only
-// safe because the CALLER bounds how many sources it passes (google-calendar.ts refuses an
-// aggregate query above MAX_AGGREGATE_CALENDARS). Without such a bound the first group alone
-// could exceed the ceiling by any amount, which is the very thing the ceiling exists to prevent.
+// Availability across several calendars (one per professional: "who can see me first?"). Each is
+// computed SEPARATELY and merged; pooling busy intervals would answer when EVERY professional is
+// free. Chronological, ties in the operator's calendar order. The ceiling is on the total, not per
+// calendar: keeping each calendar's first N starts shrinks the searched RANGE, so an afternoon request
+// would answer "unavailable" with the afternoon free. It drops WHOLE start times (a half-listed time
+// would call a free professional busy), and where it stopped is REPORTED so the caller can continue.
+// The first time is always kept, safe only because the caller bounds the source count
+// (MAX_AGGREGATE_CALENDARS in google-calendar.ts).
 export function computeAggregatedSlots(input: AggregateInput): AggregateResult {
   const { sources, maxSlots, ...slotInput } = input;
   const decorated: Array<{ order: number; at: number; slot: AggregatedSlot }> =
@@ -223,14 +200,9 @@ function tzOffsetMs(at: number, tz: string): number {
 }
 
 // The UTC instant a LOCAL wall clock names in an IANA timezone, and whether that wall clock EXISTS.
-// One refinement pass covers an offset shift between the UTC guess and the target instant, which is
-// DST-correct everywhere except the hour a spring-forward SKIPS: 02:30 on a day whose clocks jump
-// 02:00 → 03:00 is not a time, and `ms` is then the instant the shift landed on.
-//
-// The two callers want opposite things with that, which is why it is reported instead of decided
-// here. A day boundary still exists on a day that starts at 01:00, so midnight takes the instant.
-// An appointment does not: guessing which instant Google will pick for a time that does not exist
-// is the divergence between judge and store that this whole path exists to remove.
+// One refinement pass is DST-correct except in the hour a spring-forward skips, where `ms` is the
+// instant the shift landed on. Reported rather than decided here: a day boundary takes that
+// instant, while an appointment at a time that does not exist must be refused.
 export function zonedWallClock(
   local: string,
   tz: string,
@@ -296,17 +268,10 @@ export function bookingWindow(
   };
 }
 
-// THE RULE the write path enforces (issue #345), in one sentence: an appointment may only be written
-// on a (start, end) pair that `calendar_check_availability` would have returned for that day.
-//
-// It is expressed as membership in the generated list, not as a second copy of the four conditions
-// (service hours, slot grid, minimum lead, existing bookings). A re-implementation is how the two
-// paths drift: the write would keep honouring a rule the availability path had already changed, and
-// nothing would be red. Here there is one generator, and the write asks it a question.
-//
-// The same list is the refusal's content. A bare "not available" makes the agent apologise and stop;
-// the times it CAN offer are what lets the turn recover, and they cost nothing extra because the
-// availability read that answers the question already covers the whole day.
+// The rule the write path enforces: an appointment may only be written on a (start, end) pair that
+// `calendar_check_availability` would have returned for that day. Expressed as membership in the
+// generated list, never a second copy of the conditions, so the two paths cannot drift; the same
+// list is the refusal's content, so the agent can offer times that work.
 export function judgeBooking(input: BookingInput): BookingVerdict {
   const { startMs, endMs, ...slotInput } = input;
   const window = bookingWindow(
@@ -328,21 +293,12 @@ export function judgeBooking(input: BookingInput): BookingVerdict {
   return { bookable: false, alternatives };
 }
 
-// Removes one interval from a busy list, splitting any interval that strictly contains it.
-//
-// It exists for the reschedule: the appointment being moved is itself busy, so judging the new time
-// against a raw freeBusy answer refuses every move as a collision with itself. Dropping the interval
-// that matches the event's hour exactly is NOT enough, because freeBusy MERGES adjacent busy blocks:
-// an appointment at 14:00-15:00 followed by another at 15:00-16:00 comes back as one 14:00-16:00
-// block, and an equality test would leave the whole fused block standing.
-//
-// Apply it to the calendar's OWN bookings only. Applied to the assembled busy list it would punch
-// the same hole through an operator closure that happens to cover the appointment's hour, which is
-// not the appointment and does not move with it. One residual is unavoidable at this resolution:
-// freeBusy carries no event identity, so an event that genuinely OVERLAPS the one being moved loses
-// coverage over the overlap. That is bounded to the span being vacated, on a calendar that was
-// already double-booked there; separating them would mean reading the events themselves, which
-// would put other customers' appointments in reach of a path that today only ever sees busy/free.
+// Removes one interval from a busy list, splitting any interval that strictly contains it. For the
+// reschedule: the appointment being moved is itself busy, and freeBusy MERGES adjacent blocks, so
+// an equality test would leave a fused block standing. Apply it to the calendar's OWN bookings
+// only, or it punches a hole through an operator closure. freeBusy carries no event identity, so an
+// event that genuinely overlaps the moved one loses coverage over the overlap; reading events
+// instead would put other customers' appointments in reach.
 export function subtractWindow(
   busy: { start: string; end: string }[],
   cut: { start: string; end: string } | null,

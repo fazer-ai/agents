@@ -79,16 +79,11 @@ const CLIENT_SELECT = {
   updatedAt: true,
 } as const;
 
-// Every row this module writes is FLEET-level (`tenant_id NULL`), and that is a property of the
-// tables and not a default. An OAuth client is registered once for the whole deployment, a consent
-// approval belongs to a person rather than to a tenant, and an access token names the tenant it was
-// minted FOR — filing the revocation under that one would say a tenant admin can read who revoked
-// their colleague's token, which is a fleet decision made by a SUPER_ADMIN. `asSuperAdminOn` is also
-// the only mode that can write `tenant_id NULL` at all.
-//
-// These functions take the actor as their FIRST argument for the same reason the seam does: the row
-// names how the request authenticated, and a caller that could pass its own actor could attribute a
-// revocation to somebody else.
+// Every row this module writes is FLEET-level (`tenant_id NULL`) by nature: an OAuth client is
+// deployment-wide, a consent belongs to a person, and a revocation is a SUPER_ADMIN's fleet
+// decision, not something the token's tenant admin should read. `asSuperAdminOn` is the only mode
+// that can write `tenant_id NULL`. The actor comes FIRST and from the seam, so a caller cannot
+// attribute a revocation to somebody else.
 async function fleetAudit(
   db: ScopedDb,
   ctx: TenantContext,

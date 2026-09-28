@@ -5,18 +5,10 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { cancelPendingJob, enqueueJob } from "@/modules/scheduler/service";
 import { readSpendCeilingConfig } from "./settings";
 
-// WHO KEEPS THE POLL ALIVE (issue #426). The month's cost is read from Langfuse by one
-// `SPEND_CEILING_POLL` scheduler job per tenant, self-re-arming like the heartbeat, and this is the
-// side that arms it: on every save of the ceiling block, and once at boot for every tenant whose
-// ceiling is on, so a row lost to a reset is not a ceiling that quietly stops refreshing.
-//
-// Armed only while the ceiling is ON, because a poll is one Langfuse query per tenant per period
-// preceded by a vault decryption, and a tenant that bounds nothing has no figure to keep fresh.
-// A tenant with the ceiling on and no Langfuse IS armed: its poll writes the reason on the row,
-// which is what the console shows, and the day Langfuse is configured the loop is already there.
-//
-// Kept apart from ./poll.ts so the settings service can import it without pulling the Langfuse
-// side (and its own settings reader) into a cycle.
+// Arms the per-tenant `SPEND_CEILING_POLL` job: on every save of the ceiling block, and at boot for
+// every tenant whose ceiling is on, so a lost row does not leave a ceiling that stops refreshing.
+// Armed only while the ceiling is ON; a tenant with no Langfuse IS armed, and its poll writes the
+// reason on the row. Kept apart from ./poll.ts so the settings service imports it without a cycle.
 
 export const SPEND_POLL_DEDUPE_KEY = "spend-ceiling";
 

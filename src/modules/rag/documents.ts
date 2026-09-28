@@ -107,11 +107,9 @@ export async function resolveEmbeddingStatus(
   };
 }
 
-// NOTE: The English message carries the reason, and is not allowed to collapse into one generic
-// sentence. The three keys DO have server-side entries now (EMBEDDING_BLOCK_KEY, issue #256), but
-// only the console reads them: MCP hands `AppError.message` to the caller verbatim, on a surface
-// with no locale and no structured error channel, so outside the console this message is still the
-// only thing that says which of the three happened.
+// The English message carries the reason and must not collapse into one generic sentence. Only the
+// console reads the i18n keys: MCP hands `AppError.message` to the caller verbatim, with no locale
+// and no structured error channel, so outside the console this message is what names the reason.
 function embeddingBlockMessage(
   status: Exclude<EmbeddingStatus, { ok: true }>,
 ): string {
@@ -136,16 +134,9 @@ export async function resolveEmbeddingConfig(
   );
 }
 
-// The same rule asked of the ROW a patch will produce, rather than of the arguments it carries.
-//
-// A knowledge base holds both numbers, and `chunkOverlap <= floor(chunkSize/2)` relates them, so a
-// patch that names one of them is still a statement about the pair. `updateKnowledgeBase` used to
-// validate only when both arrived and, when one did, compared it against a constant — which meant
-// either single-field update landed a state the two-field update refuses by name, and the refusal it
-// did print named a bound it had not checked (issue #524).
-//
-// Merging here rather than at each caller is what keeps the rule single: the preview and the apply
-// both hand it the row they read, and neither restates the arithmetic.
+// The chunking rule asked of the ROW a patch will produce, not of the arguments it carries:
+// `chunkOverlap <= floor(chunkSize/2)` relates the pair, so a patch naming one field still states the
+// pair. The preview and the apply both hand it the row they read, so the arithmetic lives only here.
 export function assertChunkingUpdatable(
   stored: { chunkSize: number; chunkOverlap: number },
   patch: { chunkSize?: number; chunkOverlap?: number },
@@ -198,30 +189,24 @@ export function refuseUnstorable(
       400,
       "errors.unstorableText",
       { field: bad.what, codePoints: bad.codePoints.join(" ") },
-      // On the WIRE as well, and not only interpolated into the sentence. The params are what the
-      // locale template reads; `field` is what a console keys on to put the sentence under the box
-      // holding the character (#231). Without it every one of these answered `{ error }` alone and
-      // the four titles/texts this helper guards could not be placed anywhere.
+      // NOTE: `field` goes on the wire too, not only into the sentence: a console keys on it to put the
+      // sentence under the box holding the character.
       bad.what,
     );
   }
 }
 
-// What a chunk's vector is computed from (issue #857): the document's title, a blank line, the chunk.
-// A help center article's title is the question the customer asks, and its body often never restates
-// it, so a vector of the body alone misses the article whose name is the question. Only the VECTOR
-// sees the title: the chunk stored, returned by search and read by the agent is the chunk alone, and
-// its size is still the base's `chunkSize`. The title is capped so a long one cannot crowd the chunk
-// out of the embedding input, and a blank one adds nothing.
+// What a chunk's vector is computed from: the document's title, a blank line, the chunk. A help
+// article's body often never restates its title, which is the customer's question. Only the VECTOR
+// sees the title: the stored chunk is the chunk alone. The title is capped so it cannot crowd it out.
 export const EMBED_TITLE_MAX_CHARS = 300;
 export function embeddingInput(title: string, chunk: string): string {
   const head = clipText(title.trim(), EMBED_TITLE_MAX_CHARS).trim();
   return head ? `${head}\n\n${chunk}` : chunk;
 }
 
-// A title of spaces is one the vector would drop (issue #857). Asked in the core, not only through
-// `minLength: 1` on the REST body, because the MCP tool and the sync reach `updateDocument` too; and
-// ONE function, because the MCP preview asks it as well and must refuse what the apply refuses.
+// A blank title is one the vector would drop. Asked in the core because MCP and the sync reach
+// `updateDocument` too, and in ONE function so the MCP preview refuses what the apply refuses.
 export function assertDocumentTitleUsable(title: string | undefined): void {
   if (title !== undefined && title.trim() === "") {
     throw new AppError(
@@ -242,17 +227,17 @@ export interface CreateDocumentParams {
   sourceType: "text" | "file" | "approval" | "chatwoot_portal";
   fileName?: string;
   mimeType?: string;
-  // Set only by a knowledge source's sync (issue #794): the upstream item this document mirrors, and
-  // its public URL. Unique per base, so a second writer of the same item gets P2002, not a copy.
+  // Set only by a knowledge source's sync: the upstream item this document mirrors, and its public
+  // URL. Unique per base, so a second writer of the same item gets P2002, not a copy.
   externalId?: string;
   sourceUrl?: string;
-  // The sync's own write (issue #794), fenced against the source it read: see holdSource.
+  // The sync's own write, fenced against the source it read: see holdSource.
   bySource?: SourceFence;
   base?: PrismaClient;
 }
 
-// The same question for a caller that previews before writing (the MCP tools): a preview that said
-// "ok" for a write the apply then refuses is the #510 shape.
+// The same question for a caller that previews before writing (the MCP tools): the preview must not
+// say "ok" for a write the apply then refuses.
 export async function assertDocumentNotSynced(
   ctx: TenantContext,
   id: bigint,
@@ -286,10 +271,9 @@ async function holdSource(db: ScopedDb, fence: SourceFence): Promise<void> {
   }
 }
 
-// A synced document is the source's to change (issue #794): an edit through the document API or an
-// MCP tool would be overwritten on the next sync, silently or not depending on timing, so it is
-// refused while the base still has a source. With the source removed the documents keep their
-// external ids (so a source put back readopts them) and become ordinary documents again.
+// A synced document is the source's to change: an edit through the document API or MCP would be
+// overwritten on the next sync, so it is refused while the base has a source. With the source removed
+// the documents keep their external ids (a source put back readopts them) and become ordinary.
 async function refuseSyncedWrite(db: ScopedDb, id: bigint): Promise<void> {
   const doc = await db.knowledgeDocument.findUnique({
     where: { id },
@@ -336,8 +320,8 @@ function docAuditProjection(r: DocAuditRow) {
     mimeType: r.mimeType,
     status: r.status,
     chars: r.chars,
-    // A synced document's article (issue #794): the id as is, the URL as its origin, like every URL
-    // on the trail. A move the origin hides is marked by the update (`undisclosedMoved`).
+    // A synced document's article: the id as is, the URL as its origin, like every URL on the trail.
+    // A move the origin hides is marked by the update (`undisclosedMoved`).
     externalId: r.externalId,
     sourceUrl: r.sourceUrl === null ? null : redactEndpoint(r.sourceUrl),
   };
@@ -396,17 +380,10 @@ async function readDocForAudit(
   };
 }
 
-// The whole write is held to what the columns can store, before anything is read or enqueued. It is
-// not a hypothetical shape: `extractText` decodes an uploaded .txt with `TextDecoder("utf-8")`, so a
-// file carrying a 0x00 byte hands a NUL straight to `content`, and Postgres refuses one in a `text`
-// column (22021). Nothing caught it between the write and the transport, so an operator uploading a
-// file got a 500 naming neither the file nor the reason (issue #247).
-//
-// REFUSED, not repaired, which is the opposite of what #218 and #243 do with the same characters.
-// The rule is who can act on the answer: there the writer is a third party's webhook or an exception
-// message and nobody reads a rejection, so repairing keeps the event. Here it is a person who chose
-// this file, or a client calling an API that answers them, and silently deleting bytes out of a
-// document an agent is about to answer from is worse than saying it cannot be stored.
+// The whole write is held to what the columns can store, before anything is read or enqueued: an
+// uploaded .txt with a 0x00 byte decodes to a NUL, which Postgres refuses in a `text` column (22021).
+// REFUSED, not repaired: the writer is a person or an API client who can act on the answer, and
+// silently deleting bytes from a document the agent answers from is worse than saying so.
 export async function createDocument(
   params: CreateDocumentParams,
 ): Promise<{ id: bigint; status: string }> {
@@ -491,15 +468,10 @@ interface DocumentListRow {
   contentChars: number;
 }
 
-// A page of the list (issue #708). `limit` was accepted by the REST route and ignored, so a client
-// paginating by it believed it had paged and was handed the whole base. Keyset on the list's own
-// order (newest first, id breaking ties). Without `limit` the whole base comes back as it always did.
-//
-// THE CURSOR CARRIES ITS OWN POSITION, `<createdAt ms>_<id>`, rather than naming a row to look up.
-// The client this was measured against is a sync, and a sync edits the base while it reads it: a
-// cursor that named the last row of a page stopped working the moment that row was deleted, which
-// ends the read halfway with nothing to resume from. The column is TIMESTAMP(3), so the milliseconds
-// are the whole value and the comparison is exact.
+// A keyset page of the list, on its own order (newest first, id breaking ties). Without `limit` the
+// whole base comes back. The cursor carries its own position, `<createdAt ms>_<id>`, rather than
+// naming a row, so a sync that deletes rows while paging can still resume. The column is
+// TIMESTAMP(3), so the milliseconds are the whole value and the comparison is exact.
 export interface DocumentPage {
   limit?: number;
   cursor?: string;
@@ -626,16 +598,15 @@ export async function deleteDocument(
 export interface UpdateDocumentParams {
   title?: string;
   text?: string;
-  // Sync-only (issue #794): the item's public URL moved (a renamed slug). A write that carries the
-  // source's fence is the source's own, so it is fenced against the source instead of refused.
+  // Sync-only: the item's public URL moved (a renamed slug). A write carrying the source's fence is
+  // the source's own, so it is fenced against the source instead of refused.
   sourceUrl?: string | null;
   bySource?: SourceFence;
 }
 
-// Edit a document's title and/or text. Changing either RE-INGESTS it (status → PENDING → the
-// RAG_INGEST job re-chunks + re-embeds, replacing the old chunks — same path as retry/create): the
-// text because it is what the chunks are, the title because every chunk's vector is computed with it
-// (`embeddingInput`, issue #857). A value equal to the stored one is not a change and embeds nothing.
+// Edit a document's title and/or text. Changing either RE-INGESTS it (status PENDING, then RAG_INGEST
+// re-chunks and re-embeds): the text is what the chunks are, and every chunk's vector is computed with
+// the title (`embeddingInput`). A value equal to the stored one is not a change and embeds nothing.
 export async function updateDocument(
   ctx: TenantContext,
   id: bigint,
@@ -696,7 +667,7 @@ export async function updateDocument(
     const mark = <T extends object>(p: T) => (hidden ? markUndisclosed(p) : p);
     const beforeProj = mark(docAuditProjection(existing.row));
     const afterProj = mark(docAuditProjection(updated));
-    // NOTE: The action this issue invents: `PATCH /v1/knowledge/documents/:id` has no MCP twin, so
+    // NOTE: This action exists because `PATCH /v1/knowledge/documents/:id` has no MCP twin, so
     // an edit to a document reached the trail through nothing at all. Recorded only when it moved,
     // which for a body means its LENGTH moved or the title did: the text itself is neither carried
     // nor compared here (`reingest` above compares it, and that is the ingest's business).
@@ -734,13 +705,9 @@ export async function updateDocument(
   return { id: doc.id, status: doc.status };
 }
 
-// FAILED = errored ingestion (retry); UNINDEXED = imported-but-never-indexed (first index). Both
-// re-run through the same PENDING → ingest path; anything else is already on it or already done.
-//
-// Split out so the MCP preview can ask the same question the apply asks (#490). Its row passes a
-// document id that names no row, so it proved the ownership check and never this — and the preview
-// was already READING the status, to report it in a note saying "Re-queues a FAILED document",
-// while answering ok for a document that is not one (#510).
+// FAILED = errored ingestion (retry); UNINDEXED = imported but never indexed (first index). Both
+// re-run through the same PENDING, then ingest path; anything else is already on it or done. Split out
+// so the MCP preview asks the same question the apply asks.
 export function assertDocumentRetryable(status: string): void {
   if (status !== "FAILED" && status !== "UNINDEXED") {
     throw new AppError(
@@ -861,14 +828,10 @@ export async function readEmbeddingBlock(
   return status.ok ? null : embeddingBlock(status);
 }
 
-// Queues ingestion for every UNINDEXED document in a knowledge base — the bulk "index all" after an
-// agent import that bundled the source text. Pass `includeFailed` to also re-queue FAILED docs (bulk
-// recovery of genuine ingestion errors — the same PENDING → ingest path as the per-document retry),
-// and `includeIndexed` to re-embed the READY ones too: the step that brings a base indexed before
-// issue #857 onto vectors that carry the title. It is the operator's step and not a boot migration on
-// purpose: re-embedding every document of every tenant on upgrade spends the tenants' embedding
-// credits without asking, and a base answers searches the whole time either way. If the embedding
-// prerequisite is missing, nothing is queued and `blocked` explains why (docs stay put).
+// Queues ingestion for every UNINDEXED document in a knowledge base. `includeFailed` also re-queues
+// FAILED docs; `includeIndexed` re-embeds READY ones too, which brings a base onto vectors that carry
+// the title. It is an operator step, not a boot migration, because re-embedding every tenant spends
+// their embedding credits unasked. If embedding is blocked, nothing is queued and `blocked` says why.
 export async function reindexKnowledgeBase(
   ctx: TenantContext,
   knowledgeBaseId: bigint,
@@ -1010,11 +973,9 @@ async function runIngestJobForTenant(
     resolveEmbeddingStatus(db, tenantId, kb.embeddingModel),
   );
   if (!emb.ok) {
-    // NOTE: The reason is NOT written onto the document. The block is a property of the tenant's
-    // embedding configuration at a point in time — one credential serves every base — so a token
-    // stamped here would still be claiming "fill the credential" after the operator filled it, with
-    // nothing to recompute it (issue #80). `readEmbeddingBlock` answers the same question live, at
-    // the moment the console asks. The row stays what it is: not indexed, no failure of its own.
+    // NOTE: The reason is NOT written onto the document. The block belongs to the tenant's embedding
+    // configuration (one credential serves every base), so a stamped reason would go stale once the
+    // operator fixes it. `readEmbeddingBlock` answers the same question live.
     await runScopedOn(base, sysCtx(tenantId), (db) =>
       db.knowledgeDocument.updateMany({
         where: { id: documentId, status: "PENDING" },
@@ -1060,8 +1021,8 @@ async function runIngestJobForTenant(
       chunkSize: kb.chunkSize,
       chunkOverlap: kb.chunkOverlap,
     });
-    // The title rides in the vector and never in the chunk (issue #857): read under the claim with
-    // the content, so a title edited mid-run re-arms the job exactly as a text edit does.
+    // NOTE: The title rides in the vector, never in the chunk. It is read under the claim with the
+    // content, so a title edited mid-run re-arms the job exactly as a text edit does.
     const vectors = chunks.length
       ? await embedTexts(
           chunks.map((c) => embeddingInput(claimed.title, c)),
@@ -1071,12 +1032,10 @@ async function runIngestJobForTenant(
 
     // NOTE: step 4, publish — release the mark, then replace the chunks (one scoped transaction).
     const published = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-      // NOTE: only the run still holding the mark may publish (issue #163). An edit landing during
-      // the embed above sets the row back to PENDING to ask for a re-index, and an unconditional
-      // `READY` erased that marker, leaving the new text in the row and the old text in the index.
-      // Releasing BEFORE the chunk writes is the rest of it: a stale run returns having written
-      // nothing, so the previous index survives until the re-armed job replaces it, and a live run
-      // holds this row lock for the rest of the transaction, so no edit lands mid-write.
+      // NOTE: only the run still holding the mark may publish. An edit during the embed sets the row
+      // back to PENDING, and an unconditional READY would erase that and index stale text. Releasing
+      // BEFORE the chunk writes means a stale run writes nothing, and a live run holds the row lock
+      // for the rest of the transaction, so no edit lands mid-write.
       const released = await db.knowledgeDocument.updateMany({
         where: { id: documentId, status: "PROCESSING" },
         data: { status: "READY", chunkCount: chunks.length, error: null },
@@ -1104,12 +1063,9 @@ async function runIngestJobForTenant(
 
     return { outcome: "done" };
   } catch (err) {
-    // Store the i18n key (a stable token) when the failure is a known AppError, so the UI can localize
-    // the reason (e.g. embedding credential missing); otherwise the message itself (diagnostic).
-    //
-    // `sanitizeErrorMessage` rather than a cut: the diagnostic branch carries what the embedding
-    // provider answered, and `error` is a `text` column that refuses a NUL outright. It also bounds
-    // the non-Error branch, which `String(err)` left unbounded (issue #243).
+    // NOTE: A known AppError stores its i18n key so the UI can localize the reason; anything else
+    // stores the message. `sanitizeErrorMessage` because `error` is a `text` column that refuses a NUL,
+    // and the provider's answer is arbitrary.
     const message =
       err instanceof AppError && err.translationKey
         ? err.translationKey
@@ -1132,15 +1088,9 @@ async function runIngestJobForTenant(
         status: "FAILED",
         error: message,
       });
-      // NOTE: TERMINAL, which is not obvious from here — the row is now FAILED, the re-armed job re-reads
-      // it, finds it is no longer PENDING and returns `done`, so this document is never indexed
-      // again without somebody asking. The broadcast above reaches a console that is OPEN right now
-      // and nothing else; the trail is what is left for the operator who was not watching, and the
-      // only thing an alert channel can subscribe to (issue #356).
-      //
-      // `warn`, and it is the one site of the four that is: the document list shows FAILED with the
-      // stored reason and offers a re-index, so the operator has their own way back to it. The
-      // others lost work with no surface at all.
+      // NOTE: TERMINAL: the row is now FAILED, the re-armed job finds it no longer PENDING, so nothing
+      // re-indexes it unless asked. The broadcast only reaches an open console; this trail is what an
+      // alert channel sees. `warn` because the document list shows FAILED and offers a re-index.
       emitDeadLetter({
         tenantId,
         unit: "knowledge_document",

@@ -1,9 +1,8 @@
 import type { UsageSource } from "@/graph/usage";
 import type { SpendCeilingConfig } from "./settings";
 
-// THE RULE, on its own, so it can be proved by a decision table instead of by a database (issue
-// #146). Everything that reads the snapshot, posts the copy or hands the conversation off is wiring
-// around this function.
+// THE RULE, on its own, so it can be proved by a decision table instead of by a database. Everything
+// that reads the snapshot, posts the copy or hands the conversation off is wiring around it.
 
 export type SpendVerdict =
   // Under the ceiling, or no ceiling applies to this source.

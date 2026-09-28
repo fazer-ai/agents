@@ -61,8 +61,8 @@ export interface ChunkHit {
   // open the exact document that grounded the answer; never sent to the customer.
   documentId: bigint;
   documentTitle: string;
-  // The public URL of the item a synced document mirrors (issue #794); null on every other document.
-  // Shown to the model next to the passage, so the agent can send the link instead of paraphrasing.
+  // The public URL of the item a synced document mirrors; null on every other document. Shown to the
+  // model next to the passage, so the agent can send the link instead of paraphrasing.
   documentUrl: string | null;
   content: string;
   // Free-form chunk metadata (title/sourceUrl/… when the ingest supplied them). Used to build the
@@ -71,9 +71,8 @@ export interface ChunkHit {
   distance: number;
 }
 
-// What the query reads to decide the contact footer (issue #747), stripped before a hit leaves the
-// service: the base's switch, and whether this passage is the tail of its document, the only place a
-// footer lives.
+// What the query reads to decide the contact footer, stripped before a hit leaves the service: the
+// base's switch, and whether this passage is the tail of its document, the only place a footer lives.
 export interface ChunkRow extends ChunkHit {
   stripContactFooters: boolean;
   atDocumentEnd: boolean;

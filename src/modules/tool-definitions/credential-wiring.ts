@@ -1,35 +1,11 @@
-// Whether an HTTP tool's request will actually carry the credential attached to it. Issue #504: a
-// tool can reference a `generic` credential while nothing in its templates interpolates `{{secret}}`.
-// Nothing refuses that, and nothing should — a tool may legitimately hold a reference it does not
-// wire yet — but the failure it produces is unreadable: the request goes out UNAUTHENTICATED and the
-// upstream answers 401/403, which reads as a bad credential rather than as one that was never sent.
+// Whether an HTTP tool's request will actually carry the credential attached to it. Not wiring it is
+// allowed, but the result is an unauthenticated request whose 401 reads as a bad credential.
 //
-// THIS FILE IS A COPY OF `buildHttpTool`'s ASSEMBLY, AND THAT IS THE ONE THING TO KNOW ABOUT IT.
-// A warning cannot run the request it is warning about — the executor resolves DNS and SSRF-guards
-// the final URL before it would reach a stubbed fetch — so what the credential does has to be read
-// off the row instead. Four review rounds found nine places where the copy was thinner than the
-// original, every one of them confirmed by executing the real tool, and the fence in
-// tests/modules/tool-credential-wiring.test.ts is that same execution: one table, read as a tool
-// definition the executor runs and as the shapes a write would store, asserting the two agree.
-//
-// Where the copy cannot be sure, it is written to err QUIET — the legacy-fields body counts every
-// fixed field as emitted, a query value that may interpolate empty counts as not shadowing, a kv row
-// the model may not overwrite keeps what came before it. The intent is that a gap costs a warning
-// that does not appear rather than a warning about a tool that works.
-//
-// THAT IS AN INTENT, NOT A PROPERTY, and it has been violated twice — both times by a fix for a gap
-// in the other direction. Collapsing kv rows by key (round 4) erased a value the model's silence
-// leaves in the payload; substituting a fixed query key raw (round 5) read `token&x` as two
-// parameters and called the credential's own shadowed. Each new rule here is a chance to warn about
-// a working tool, so a rule that CANNOT be stated in the safe direction does not belong.
-//
-// THE QUESTION IS NOT "does a template mention {{secret}}". It is "does the credential reach the
-// request", and the two come apart in four ways the runtime decides and a text scan does not see: a
-// body is only assembled for POST/PUT/PATCH, a fixed field's value only leaves if something emitted
-// references it, a typed credential's auto-injection is skipped when the operator already wrote its
-// target header or query param, and a stored single-brace `{secret}` is normalized at BUILD time and
-// does reach. Each of those was a wrong answer in the first draft of this file, and each is fenced by
-// executing the real tool rather than by a list written here.
+// THIS FILE IS A COPY OF `buildHttpTool`'s ASSEMBLY: a warning cannot run the request (the executor
+// resolves DNS and SSRF-guards first), so it reads the row. The fence in
+// tests/modules/tool-credential-wiring.test.ts executes the real tool against the same table. Where
+// the copy cannot be sure it errs QUIET (a missed warning, never one about a working tool), so a
+// rule that cannot be stated in that direction does not belong here.
 
 import { isIP } from "node:net";
 import config, { type InternalTarget } from "@/config";
@@ -48,37 +24,23 @@ import {
 import { DEFAULT_HTTP_METHOD } from "./service";
 
 // Every name the runtime resolves itself rather than taking from the model: the context variables,
-// and `{{conversation_ref}}` (issue #818), which `buildHttpTool` mints on the call. Neither is an
-// orphan placeholder.
+// and `{{conversation_ref}}`, which `buildHttpTool` mints on the call. Neither is an orphan placeholder.
 const RUNTIME_VAR_NAMES = new Set<string>([
   ...CONTEXT_VAR_NAMES,
   ...HTTP_TOOL_ONLY_VAR_NAMES,
 ]);
 
-// The SAME grammar the runtime interpolates with (`PLACEHOLDER` in graph/tools/http.ts): the braces
-// take surrounding whitespace, so a reader matching only the tight spelling would call a working
-// `{{ secret }}` unused and warn about a tool that is wired correctly.
-//
-// Read as TOKENS rather than by compiling a regex around each name, and that is not a style choice:
-// an input-schema key is not held to this grammar, so `new RegExp(\`…${name}…\`)` on a field called
-// `a[b` throws — out of `tool_create`, before its try block, as an unhandled error rather than a
-// write result. Extracting the names a template actually carries has no such edge, and it answers
-// the same question the runtime asks: a name outside `[a-zA-Z0-9_]` can never be a placeholder.
+// The SAME grammar the runtime interpolates with (`PLACEHOLDER` in graph/tools/http.ts), whitespace
+// inside the braces included. Read as TOKENS, never by compiling a regex around a name: an input
+// schema key like `a[b` would throw out of `tool_create` as an unhandled error.
 const PLACEHOLDER = /\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g;
 // A value that is EXACTLY one placeholder, which the kv body treats specially (`LONE_PLACEHOLDER` in
 // graph/tools/http.ts): a lone AI field the model OMITS makes the runtime skip that row entirely.
 const LONE_PLACEHOLDER = /^\{\{\s*([a-zA-Z0-9_]+)\s*\}\}$/;
 
-// TWO sentinels for an unresolved placeholder, and the pair is the mechanism. A query KEY may be a
-// placeholder, and the key it becomes at runtime is unknowable here; a single sentinel puts a made-up
-// key into a space where a real one could equal it, and then answers "that parameter is taken" for a
-// tool where it is not. Both spellings have already cost a round: `_` collided with a legal param
-// name, `((unresolved))` with a legal query-map key.
-//
-// Parsing the same template under both and INTERSECTING the key sets needs no such assumption. A
-// literal key parses identically twice and survives; a placeholder-derived one differs and drops out
-// — including a literal key that happens to equal one of the sentinels, which still parses the same
-// both times.
+// TWO sentinels for an unresolved placeholder: the key a placeholder becomes at runtime is unknowable,
+// and any single sentinel could equal a real key. Parsing the template under both and INTERSECTING
+// the key sets keeps literal keys (they parse the same twice) and drops placeholder-derived ones.
 const UNRESOLVED_A = "((unresolved-a))";
 const UNRESOLVED_B = "((unresolved-b))";
 
@@ -91,28 +53,12 @@ function namesIn(template: string): Set<string> {
 const mentions = (templates: string[], name: string): boolean =>
   templates.some((t) => namesIn(t).has(name));
 
-// Whether interpolating this template can NEVER produce the empty string — the difference between a
-// query value the runtime is sure to set and one it may skip, and therefore between a credential
-// whose auto-injection is blocked and one whose is not.
-//
-// Two ways to be sure, and only two. What is left once every placeholder is gone is the first, and a
-// placeholder naming a FIXED field that is itself sure is the second: the runtime resolves fixed
-// values before it applies the query map, so `{{configured_token}}` over a fixed `abc` always
-// arrives as `abc`. Everything else — AI input the model may omit, a context variable that may be
-// absent — is unknowable here and answers "may be empty", which keeps this file quiet rather than
-// warning about a tool that works.
-//
-// One level, because that is the runtime's: a fixed value interpolates from context and the secret,
-// never from another fixed field.
-// The declared types whose value can never stringify to the empty string: zod gives a number, an
-// integer or a boolean, and `String()` of any of them is at least one character. A `string` field
-// can be `""`, and an enum is only sure when every one of its values is non-empty.
-//
-// A required `string` is the case this cannot answer, and it is deliberately on the quiet side:
-// `zodFor` builds a bare `z.string()` with no `.min(1)`, so the model may send `""` and the runtime
-// then SKIPS that query entry and injects the credential after all. Whether the credential is sent
-// depends on what the model typed, so no executed row can assert it either way — the same shape as
-// the multi-value enum above.
+// Whether this template can NEVER interpolate to "" (so a query value is sure to be set and blocks
+// the credential's auto-injection): either nothing is left once placeholders are gone, or a
+// placeholder names a FIXED field that is itself sure. One level, like the runtime.
+// The declared types that can never stringify to "": number, integer, boolean, and an enum whose
+// values are all non-empty. A required `string` stays on the quiet side: `zodFor` has no `.min(1)`,
+// so the model may send "" and the runtime then injects the credential after all.
 function neverEmptyByType(spec: Record<string, unknown>): boolean {
   if (spec.type === "integer" || spec.type === "number") return true;
   if (spec.type === "boolean") return true;
@@ -173,15 +119,9 @@ function fixedValuesByName(schema: unknown): Map<string, string> {
   return new Map(fixedFields(schema).map((f) => [f.name, f.value]));
 }
 
-// The values that are KNOWN whatever the model does: the operator's fixed fields, plus a required ai
-// field whose enum holds exactly one value — zod accepts nothing else, so every executable call
-// carries it. Used where the substituted text is what matters (which query key the URL ends up with),
-// never where the question is only whether something is non-empty.
-//
-// EXACTLY ONE, and the mutation that widens it to any enum is one the fence cannot judge: with two
-// or more values the key depends on what the model picked, so the executor's answer differs between
-// invocations and no single row can assert it. Unknowable falls to the quiet side, like every other
-// unknown here.
+// The values KNOWN whatever the model does: fixed fields, plus a required ai field whose enum holds
+// exactly one value. Used where the substituted text matters (which query key the URL gets). EXACTLY
+// ONE: with more values the answer depends on the model's pick, which falls to the quiet side.
 function knownValuesByName(
   schema: unknown,
   ackArg = false,
@@ -369,15 +309,9 @@ function bodyTemplates(body: unknown, ai: AiFields): string[] {
   if (!isPlainObject(body)) return [];
   if (body.mode === "raw" && typeof body.raw === "string") return [body.raw];
   if (body.mode === "kv" && Array.isArray(body.rows)) {
-    // Collapsed by TRIMMED key, last one winning, because that is what `payload[k] = …` does row by
-    // row: a `{{secret}}` written into a row a later row overwrites is assembled and thrown away.
-    // An empty key is skipped there too, and its row emits nothing at all.
-    //
-    // Except when the later row is a LONE placeholder naming an AI field, which the runtime skips
-    // when the model omits it — leaving the earlier row's value in the payload. That row does not
-    // erase what came before it, it only MAY, so both survive here. Collapsing it unconditionally
-    // warned about a tool that sends the credential on every call where the model stays quiet, which
-    // is the one direction this file must not get wrong.
+    // NOTE: Collapsed by TRIMMED key, last one winning, as `payload[k] = …` does; an empty key emits
+    // nothing. Except a later LONE placeholder naming an AI field: the runtime skips it when the model
+    // omits it, leaving the earlier value, so both survive here.
     const byKey = new Map<string, string[]>();
     for (const r of body.rows) {
       if (!isPlainObject(r)) continue;
@@ -386,16 +320,9 @@ function bodyTemplates(body: unknown, ai: AiFields): string[] {
       // COERCED, not skipped: `parseBody` turns a non-string value into `""`, and that row still
       // overwrites the one before it. Skipping it kept a `{{secret}}` the request no longer carries.
       const rowValue = typeof r.value === "string" ? r.value : "";
-      // Two independent questions about one row, and conflating them is how the last two rounds went
-      // wrong in both directions.
-      //
-      // WHAT IT SENDS: a lone placeholder naming a declared AI field is filled by the MODEL, never
-      // from the vault — `buildHttpTool` takes that branch before any credential interpolation. So a
-      // row of `{{secret}}` on a tool that DECLARES an ai field called `secret` carries the model's
-      // argument, not the credential, and counting it as usage would suppress the warning.
-      //
-      // WHETHER IT OVERWRITES: only an OPTIONAL one may be omitted, and only then does the earlier
-      // row's value survive. A required field is on every executed call, so its row always wins.
+      // NOTE: Two independent questions. WHAT IT SENDS: a lone placeholder naming a declared AI field
+      // is filled by the model, never the vault, so it does not count as using the credential. WHETHER
+      // IT OVERWRITES: only an OPTIONAL one may be omitted and leave the earlier row's value.
       const lone = rowValue.match(LONE_PLACEHOLDER)?.[1];
       const loneAi = lone !== undefined && ai.names.has(lone);
       const mayBeOmitted = lone !== undefined && ai.optional.has(lone);
@@ -482,28 +409,23 @@ function buildsARequest(
   // testable: where private targets are allowed the guard lifts BOTH of its decidable refusals, and
   // the suite runs with them on.
   privateAllowed: boolean,
-  // The instance's internal targets (issue #615), which the guard lifts both refusals for when the
-  // tool's own allowedHosts names the host. Same rule as `buildHttpTool`, read from the same config.
+  // The instance's internal targets, for which the guard lifts both refusals when the tool's own
+  // allowedHosts names the host. Same rule as `buildHttpTool`, read from the same config.
   internalTargets: readonly InternalTarget[],
 ): boolean {
   if (typeof urlTemplate !== "string") return false;
-  // The ORIGIN is pinned: `buildHttpTool` takes it from the neutralized template and throws
-  // "interpolation altered the origin" when the real one differs, so a placeholder anywhere in the
-  // scheme, host or port is a tool that never fetches. The two sentinels answer where it sits — the
-  // origins differ only if a placeholder is inside one.
-  // The SSRF guard, which runs on the FINAL URL immediately before the fetch. Two of its refusals are
-  // decidable here: a protocol that is not https (http only where the deployment allows it, which is
-  // also a per-call flag this boundary cannot see), and a literal address in a blocked range. Both
-  // are lifted wholesale when the deployment allows private targets, and THAT is readable — it is
-  // the same `config.ssrf.allowPrivateTargets` the guard itself reads.
+  // NOTE: The ORIGIN is pinned: `buildHttpTool` throws when interpolation alters it, so a placeholder
+  // in the scheme, host or port is a tool that never fetches (the two sentinels show where it sits).
+  // Of the SSRF guard's refusals, two are decidable here: a non-https protocol, and a literal address
+  // in a blocked range; both lift when `config.ssrf.allowPrivateTargets` does, as the guard reads it.
   const probe = parseUrlTemplate(urlTemplate, new Map(), UNRESOLVED_A);
   const internal =
     !privateAllowed && probe && allowedHosts?.includes(probe.hostname)
       ? matchInternalTarget(probe, internalTargets)
       : null;
   if (internal === "port") return false;
-  // The entry opens a service, not a scheme: the guard refuses anything but http(s) even for a
-  // declared target, so neither may this (review round 2 of #615).
+  // NOTE: The entry opens a service, not a scheme: the guard refuses anything but http(s) even for a
+  // declared target, so neither may this.
   if (
     internal === "match" &&
     probe?.protocol !== "http:" &&
@@ -590,19 +512,11 @@ export function reachableTemplates(
   const legacy = isLegacyFieldsBody(shapes.body);
   const fixedByName = fixedValuesByName(shapes.inputSchema);
   for (const { name, value } of fixedFields(shapes.inputSchema)) {
-    // A fixed value resolves from CONTEXT and the secret only, never from another fixed field, so
-    // one level is the whole reach: it leaves if something emitted names it, or if the legacy body
-    // assembles it without being asked.
-    //
-    // The legacy arm OVER-counts on purpose. `buildHttpTool` derives the query from those fields
-    // only when there is no explicit query, and reproducing that condition would be a third copy of
-    // the runtime's assembly rules for a case that costs a MISSED warning either way. Over-counting
-    // here can only make this file too quiet; under-counting would make it warn about a tool that
-    // works.
-    // `fixedSubstitution` and not `value`, for the reason it gives: an emitted `{{toString}}`
-    // resolves off `input`'s prototype, never off this field, so the `{{secret}}` an operator wrote
-    // into a field of that name never leaves. The legacy body is the exception — it reads
-    // `fixedValues[f.name]` directly, with no `in` check, so there the value does arrive.
+    // NOTE: A fixed value resolves from context and the secret only, so it leaves if something
+    // emitted names it, or if the legacy body assembles it. The legacy arm OVER-counts on purpose
+    // (it would take a third copy of the runtime's rules), which can only make this file quieter.
+    // `fixedSubstitution`, not `value`: an emitted `{{toString}}` resolves off `input`'s prototype,
+    // except in the legacy body, which reads `fixedValues[f.name]` directly.
     if (legacy) {
       out.push(value);
     } else if (mentions(emitted, name)) {
@@ -640,11 +554,8 @@ type InjectionVerdict =
       by: "tool" | "runtime";
     };
 
-// A header name that CANNOT be set on the request, however it is written. `buildHttpTool` builds its
-// header map as a plain `{}`, so `headers["__proto__"] = v` reaches the inherited setter: the
-// assignment succeeds, no own property is created, and the header is silently absent. Exactly the
-// loss issue #150 fixed for the body payload with `Object.create(null)` — the headers map was not
-// given the same treatment, and mirroring that here is what agrees with the runtime as it is.
+// A header name that CANNOT be set on the request: `buildHttpTool` builds headers as a plain `{}`, so
+// `headers["__proto__"] = v` hits the inherited setter and the header is silently absent.
 const SWALLOWED_HEADER = "__proto__";
 
 // The argument `buildHttpTool` adds for itself when the tool has an ack: required, and rejected by
@@ -749,20 +660,10 @@ export function credentialReachesRequest(
   );
 }
 
-// The warning, or null when the wiring is fine. `kind` is the ATTACHED credential's kind, read off
-// the vault entry; null (or a kind this build does not know) is the legacy `generic` and answers the
-// same way, because that is how every other reader treats it.
-//
-// Scoped to kinds that CAN be sent: a `neverOutbound` credential on an HTTP tool is a worse problem
-// with a different answer (it must not be sent at all, and the write boundary does not yet refuse
-// it), and telling its operator to "write {{secret}} where the API expects it" would be advice to
-// mail their stdio token to a third party.
-//
-// `shapes` is NORMALIZED here rather than by the caller, and that is the difference between reading
-// the row and reading what the runtime reads: `buildHttpTool` runs the same normalization at BUILD
-// time, so a legacy single-brace `{secret}` in a stored header is sent — and a caller that scanned
-// the raw row would report a working tool as unwired on any update that did not happen to touch that
-// template.
+// The warning, or null when the wiring is fine. `kind` is the attached credential's kind; null or an
+// unknown kind is the legacy `generic`. Scoped to kinds that CAN be sent: advising `{{secret}}` for a
+// `neverOutbound` credential would leak it. `shapes` is NORMALIZED here, as `buildHttpTool` does at
+// build time, so a stored single-brace `{secret}` counts as wired.
 export function unusedCredentialWarning(
   facts: {
     kind: string | null;

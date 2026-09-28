@@ -5,12 +5,10 @@ import {
 } from "@/modules/contact-auth/state";
 import type { SpendCeilingConfig } from "./settings";
 
-// WHAT A CONVERSATION IS TOLD WHEN THE MONTH'S BUDGET IS SPENT, in one place because it is told by
-// two callers. The webhook gate refuses the delivery that arms a turn; the debounce flush refuses
-// the turn itself, minutes later, when the tenant crossed the ceiling inside the debounce window.
-// Both owe the same three things in the same order, and the second copy of a contract is the copy
-// that forgets one of them (issue #146 already paid for that once, with a handoff that was written
-// twice and fenced once).
+// WHAT A CONVERSATION IS TOLD WHEN THE MONTH'S BUDGET IS SPENT, in one place because two callers
+// tell it: the webhook gate refuses the delivery that arms a turn, and the debounce flush refuses the
+// turn itself when the tenant crossed the ceiling inside the debounce window. Both owe the same
+// three things in the same order.
 
 // Operator-facing note for a conversation the spend ceiling silenced (pt-BR, the same register as
 // the contact-auth and out-of-hours notices). The numbers are the point: an operator who reads only
@@ -53,29 +51,11 @@ export interface SpendCeilingAnnounceParams {
   handoff: () => Promise<boolean>;
 }
 
-// COPY, THEN HANDOFF, THEN NOTE, and the order is load-bearing in both directions. The copy goes
-// first because the handoff is what ends the bot's attribution, and after it the ownership fence
-// would rightly withhold anything the bot tried to say. The note goes last because it is the only
-// one of the three that can report whether the handoff happened.
-//
-// The COPY AND THE NOTE sit behind a cooldown, the verdict never does: ten people writing in after
-// the month is spent are each evaluated, and told once per window. The claim mechanism is
-// contact-auth's, under a key of this feature's own — it is a per-conversation notice cooldown and
-// nothing about it is specific to that gate.
-// TWO DIFFERENT QUESTIONS, AND THEY HAVE DIFFERENT SUBJECTS.
-//
-// The claims inside make each of the three writes happen once per window; they say nothing about
-// ORDER. Two callers running at the same moment therefore interleave: the second finds the copy's
-// window held, skips straight to the handoff, and opens the conversation while the first is still
-// awaiting its send — at which point the ownership fence correctly withholds a sentence nobody else
-// is going to say. So the sequences have to be SERIALISED, and that is per CONVERSATION, because the
-// conversation is what the ordering is about.
-//
-// Coalescing is the other question and its subject is the REFUSAL. Chatwoot dispatches one incoming
-// message to the conversation's assigned agent bot and to the inbox's, which is two deliveries of
-// one refusal: the second must inherit the first's answer rather than perform the sequence again.
-// Two DIFFERENT messages are two refusals, and collapsing them here would silence the second even
-// with `noticeCooldownSeconds` at 0, which is the operator saying every refusal is to be voiced.
+// COPY, THEN HANDOFF, THEN NOTE: the copy first because after the handoff the ownership fence would
+// withhold it; the note last because only it can report whether the handoff happened. Copy and note
+// sit behind a per-conversation cooldown, the verdict never does. The claims do not order the
+// writes, so concurrent sequences are SERIALISED per conversation, and two deliveries of the SAME
+// message (Chatwoot sends one per bot) coalesce into one refusal. See docs/spend-ceiling.md.
 const inFlight = new Map<string, Promise<{ handedOff: boolean }>>();
 
 export async function announceSpendCeilingOnConversation(

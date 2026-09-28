@@ -31,7 +31,7 @@ export interface EmbeddingDeps {
   fetchImpl?: typeof fetch;
   assertSafe?: typeof assertSafeOutboundUrl;
   // Told each time a query embedding is about to be asked again, so the search that paid for it can
-  // say so on its tool line (issue #844). The ingest does not report retries anywhere.
+  // say so on its tool line. The ingest does not report retries anywhere.
   onRetry?: (err: unknown) => void;
   // The query's two deadlines, for a test that cannot wait seconds for a stalled request.
   queryBudget?: QueryBudget;
@@ -41,17 +41,11 @@ export interface EmbeddingDeps {
 // document lands in FAILED), so a slow endpoint is given its time.
 const EMBEDDING_TIMEOUT_MS = 60_000;
 
-// A QUERY IS A CUSTOMER WAITING (issue #844). `embedQuery` runs inside a live turn's
-// `search_knowledge`, the console's test search and the MCP search, and it used to wait as the
-// ingest does: 60 s per attempt on the compatible path, three attempts, and on the SDK path the
-// OpenAI client's own 10 minutes per attempt under LangChain's six retries. Measured in production:
-// searches of 139 s and 158 s that returned normally, in minutes where every other call ran under a
-// second. A query embedding answers in well under a second, so an attempt still open after a few
-// seconds is a stalled connection, not a slow answer, and asking again beats waiting on it.
-//
-// `attemptMs` bounds one request; `deadlineMs` bounds the whole search, retries and their pauses
-// included, and sits well under the turn's own deadline (`PRIMARY_TIMEOUT_MS`, 45 s), so a search
-// that gives up leaves the turn time to answer without it.
+// A QUERY IS A CUSTOMER WAITING. `embedQuery` runs inside a live turn's `search_knowledge` (and the
+// console and MCP searches). A query embedding answers in well under a second, so an attempt still
+// open after a few seconds is a stalled connection, and asking again beats waiting on it.
+// `attemptMs` bounds one request; `deadlineMs` bounds the whole search, retries included, and sits
+// well under the turn's own deadline (`PRIMARY_TIMEOUT_MS`), so the turn can still answer without it.
 export interface QueryBudget {
   attemptMs: number;
   deadlineMs: number;
@@ -68,36 +62,16 @@ export const QUERY_BUDGET: QueryBudget = {
 // a single-GPU endpoint is not helped by twenty simultaneous requests.
 const COMPATIBLE_BATCH_SIZE = 512;
 
-// WHAT THE SDK PATH WAS ALREADY DOING, AND WHY DROPPING IT COSTS MORE HERE THAN ELSEWHERE.
-//
-// `@langchain/openai` sets the OpenAI client's own `maxRetries` to 0 and wraps every call in
-// `AsyncCaller`, whose default is SIX retries — so this path started out with none where the one it
-// replaces had six. And an ingest failure is terminal: the document lands in FAILED and only a
-// manual reindex moves it, which is a worse outcome than any single 503 deserves.
-//
-// Three attempts rather than six, because the same function serves `embedQuery` inside a live turn,
-// where every extra attempt is a customer waiting; three with these delays is still strictly more
-// patient than the zero this path shipped with, and strictly less than the six a 600s-default SDK
-// timeout could stretch out on main today.
+// `@langchain/openai` retries six times by default; this path does its own retrying instead. An ingest
+// failure is terminal (the document lands in FAILED until a manual reindex), so a single 503 must not
+// cost it. Three attempts, not six, because `embedQuery` shares this path inside a live turn.
 const COMPATIBLE_RETRY_DELAYS_MS = [500, 2000];
 
-// WHAT COUNTS AS WORTH ASKING AGAIN, and it is not one answer for both callers — the same split
-// `provider-failure` describes, where the set of transient STATUSES is shared and the policy over it
-// belongs to the call site.
-//
-// A failure with no status at all is the case that divides them. `AsyncCaller` retried it (its
-// `STATUS_NO_RETRY` list is statuses, so a connection reset falls through to a retry), and it is
-// just as often a base URL that will never resolve. `modules/vision/retry` excludes it deliberately,
-// because a customer is waiting on that turn and the operator needs a bad endpoint to fail on the
-// first attempt. Both readings are right, for different callers:
-//
-//   embedTexts — the INGEST. Nobody is waiting, and the failure is terminal: the document lands in
-//   FAILED and only a manual reindex moves it. A reset costs the document, so it is asked again.
-//   embedQuery — a live TURN, where the retry is time a customer spends waiting for a search that
-//   the turn can proceed without.
-//
-// A response we could not use (wrong count, unusable indexes, a vector that is not numbers) is never
-// retried on either: the endpoint answered, and it will answer the same way again.
+// What is worth asking again differs per caller; the transient STATUSES are shared (see
+// `provider-failure`). A failure with no status (a reset, or a base URL that never resolves) divides
+// them: `embedTexts` is the INGEST, nobody waits and the failure is terminal, so it is asked again;
+// `embedQuery` is a live TURN that can proceed without the search, so it is not. A response we could
+// not use (wrong count, bad indexes, non-numeric vector) is never retried: it will answer the same.
 function isTransient(err: unknown, retryStatusless: boolean): boolean {
   if (err instanceof UnusableResponseError) return false;
   // NO clause for the guard's own refusal, which now runs on every attempt and so lands in here.
@@ -153,18 +127,11 @@ function client(
   });
 }
 
-// The error a non-2xx compatible response becomes, shaped so that BOTH halves of the boundary keep
-// working. `providerFailure` takes the status from a numeric `status`/`statusCode` property and
-// never parses the message, so a status baked into the text alone is thrown away and every 401, 404
-// and 429 reaches the operator as the opaque "provider error". And `asProviderFailure` keeps this
-// error as `cause` for the process log, which is where the vendor's own words are RELOCATED to
-// rather than deleted (`provider-failure.ts`, `docs/logs.md`) — so the body has to be in here, or a
-// wrong model id and a malformed request are undiagnosable anywhere. The SDK path builds its
-// message out of the response body for exactly this reason; this one has to do it by hand.
-//
-// The body may quote what was embedded, which is the customer's question or their document. That is
-// precisely why it lives on this error and never on the one that replaces it: the message the four
-// operator-facing stores read is "HTTP <status>", authored here.
+// A non-2xx compatible response as an error with a numeric `status`, because `providerFailure` reads
+// the status only from that property, never from the message. The body goes in the message because
+// `asProviderFailure` keeps this error as `cause` for the process log, the only place the vendor's
+// words survive (`docs/logs.md`). The body may quote customer text, so the operator-facing stores
+// read only "HTTP <status>", from the error that replaces this one.
 async function providerResponseError(res: Response): Promise<Error> {
   let body = "";
   try {
@@ -187,18 +154,13 @@ async function embedCompatibleBatch(
   deps: EmbeddingDeps,
   signal: AbortSignal,
 ): Promise<number[][]> {
-  // BEFORE EVERY FETCH, not once per document. `assertSafeOutboundUrl` resolves the hostname, and a
-  // tenant-controlled name can answer publicly for the check and privately a moment later; a
-  // document is many batches and a batch may be retried twice, so a URL vetted once and reused hands
-  // the key and the chunks to whatever the name resolves to by then. Same rule as the custom HTTP
-  // tool, which re-asserts on the FINAL url immediately before its own fetch (`graph/tools/http.ts`).
-  //
-  // It narrows the window rather than closing it: `fetch` resolves the name again, so the check and
-  // the connection are still two lookups. Pinning the vetted address is the only thing that closes
-  // it, and it is not what any other outbound path here does.
+  // NOTE: Checked BEFORE EVERY FETCH, not once per document: a tenant-controlled hostname can resolve
+  // publicly for the check and privately later, and a document is many batches with retries. This
+  // narrows the DNS-rebinding window rather than closing it (`fetch` resolves again), like the custom
+  // HTTP tool (`graph/tools/http.ts`).
   const url = await compatibleTarget(cfg.baseURL, deps);
-  // An attempt given up on while the host was being resolved sends nothing (issue #844, review round
-  // 2): the search has already moved on, and a request now would be billed for an answer nobody reads.
+  // NOTE: An attempt given up on while the host was being resolved sends nothing: the search has
+  // moved on, and a request now would be billed for an answer nobody reads.
   signal.throwIfAborted();
   const fetchImpl = deps.fetchImpl ?? fetch;
   const res = await fetchImpl(url, {
@@ -254,20 +216,10 @@ async function embedCompatibleBatch(
       "embedding provider returned the wrong vector count",
     );
   }
-  // Two acceptable shapes and nothing between them: NO item carries an index, or every one does and
-  // they form exactly 0..n-1.
-  //
-  // The empty case is the SDK path's own assumption — it reads the array positionally — so response
-  // order is the fallback that has always been in use here. A PARTIAL set is not that: one item
-  // saying `index: 1` is the provider stating that position is not the order, and reading the array
-  // positionally anyway publishes `[b, a]` for `[{index:1,b},{a}]`. And a full set that is not a
-  // permutation (a duplicate, a 1.5, a 9 among two inputs) sorts into SOMETHING and sails past the
-  // count check above. Neither leaves an order to recover, so both are refused rather than guessed —
-  // the cost of guessing is a document published with every vector against the wrong chunk.
-  // ABSENT is the only thing that licenses positional order, and `"1"` or `null` is not absent — it
-  // is the provider stating an order in a spelling we cannot read. Testing `typeof === "number"`
-  // conflated the two and fell back to position, which publishes the vectors swapped whenever such a
-  // response is also out of order.
+  // NOTE: Two acceptable shapes: NO item carries an index (positional order, as the SDK path reads
+  // it), or every one does and they form exactly 0..n-1. A partial set or a non-permutation leaves
+  // no order to recover, so it is refused rather than guessed: a guess publishes vectors against the
+  // wrong chunks. Only an ABSENT index licenses positional order; `"1"` or `null` is not absent.
   const present = items.filter((i) => i?.index !== undefined);
   if (present.length > 0) {
     const indexes = present.map((i) => i?.index);
@@ -347,13 +299,10 @@ function compatibleEndpoint(baseURL: string): string {
   }
 }
 
-// The attempt's deadline over EVERYTHING the attempt awaits, and its end (issue #844, review rounds
-// 1 and 2). A timeout on the request alone left two waits unbounded: the compatible path resolves the
-// host for the SSRF check before its fetch, and the OpenAI SDK clears its own timer once the headers
-// arrive and then reads an error body with no bound at all. So the attempt is raced against its
-// deadline, and at the deadline its signal is aborted: the request and any body still being read are
-// closed, and a host check that answers late sends nothing. The rejection of the work left behind is
-// swallowed, so an abandoned attempt cannot surface as an unhandled one.
+// The attempt's deadline over EVERYTHING the attempt awaits: the SSRF host check before the fetch,
+// and the error body the OpenAI SDK reads after clearing its own timer. At the deadline the signal is
+// aborted, closing the request and any body read, and a host check that answers late sends nothing.
+// The abandoned work's rejection is swallowed so it cannot surface as an unhandled one.
 async function withinDeadline<T>(
   call: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
@@ -411,22 +360,11 @@ async function withTransientRetry<T>(
   }
 }
 
-// WHY THIS IS CHECKED HERE AND NOT ONLY AT INSERT TIME.
-//
-// `updateEmbeddingSettings` pins provider, model and baseURL to EMBEDDING_DEFAULTS and honors only
-// the credential, because the column is `vector(1536)` and nothing records which model produced a
-// stored vector. Carrying the vault entry's `baseUrl` moves the endpoint choice into the one field
-// that survives that lock, and the endpoint is what decides which model actually answers. So the
-// width stops being guaranteed by construction and has to be asserted.
-//
-// Outside `throughProvider` on purpose: this is OUR reading of the response, not something the
-// server wrote, so it is not reduced to the closed vocabulary. `toVectorLiteral` catches the same
-// thing, but only once ingestion is already inside the publish transaction, and it cannot say that
-// an endpoint is the reason.
-//
-// It does NOT close the case of a different model at the SAME width (text-embedding-ada-002 is also
-// 1536): nothing in the response identifies the model reliably — llama.cpp answers with the loaded
-// file's path — so a same-width swap silently degrades retrieval until flexible embeddings ships.
+// The column is `vector(1536)` and nothing records which model produced a stored vector, yet the
+// vault entry's `baseUrl` decides which model answers, so the width has to be asserted here, where an
+// endpoint can be named as the reason (`toVectorLiteral` only catches it inside the publish). Outside
+// `throughProvider` because this is our reading, not the server's words. A different model at the
+// SAME width (ada-002) still passes: nothing in the response identifies the model reliably.
 function assertWidth(vec: number[], cfg: EmbeddingConfig): number[] {
   if (vec.length !== EMBEDDING_DIM) {
     throw new Error(

@@ -2404,6 +2404,23 @@ function openCaseInInboxTool(ctx: ToolCtx) {
             err: new Error(`writes did not land: ${result.partial.join(", ")}`),
           });
         }
+        if (
+          (result.kind === "opened" ||
+            result.kind === "continued" ||
+            result.kind === "already_open") &&
+          result.caseOwnerUnread
+        ) {
+          ctx.onSideEffectError?.({
+            tool: OPEN_CASE_TOOL_NAME,
+            phase: "case_owner_unread",
+            detail: { caseId: result.caseId, at: result.caseOwnerUnread },
+            err: new Error(
+              result.caseOwnerUnread === "before_clear"
+                ? "the case could not be read to settle its owner; nothing was written, so an agent bot on it stays and no team was set"
+                : "the case could not be read again before its team write; the bot was cleared and no team was written",
+            ),
+          });
+        }
         const caseOpen =
           result.kind === "opened" ||
           result.kind === "continued" ||

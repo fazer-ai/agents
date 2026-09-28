@@ -96,7 +96,7 @@ export type OpenCaseResult =
       // How the address that reached the destination was settled, when one had to be.
       identity: "held" | "written" | "merged" | "other_contact" | null;
       // Writes after the case existed that did not land. The case is open either way. On an
-      // already-open case, only the owner writes below (`case_assignee`, `case_team`) can appear.
+      // already-open case, only the owner writes (`case_assignee`, `case_team`) can appear.
       partial: string[];
       // The opening message the output guardrail refused, so it was not sent.
       openingBlocked?: boolean;
@@ -105,6 +105,9 @@ export type OpenCaseResult =
       openingOutsideWindow?: boolean;
       // Operator case labels the account does not have, left off the case (issue #901).
       unknownCaseLabels?: string[];
+      // The case could not be read to settle its owner, so nothing past that point was written:
+      // `before_clear` wrote nothing, `before_team` cleared the bot and wrote no team.
+      caseOwnerUnread?: CaseOwnerUnread;
     }
   | { kind: "not_configured" }
   | { kind: "unsupported_channel"; channelType: string | null }
@@ -197,6 +200,8 @@ export function destinationReasonNote(reason: string): string {
 
 // WHO HOLDS THE CASE, read from the conversation Chatwoot answers with. `human` is a person assigned
 // (`meta.assignee_type` "User"); an agent bot is NOT read from here on purpose, see `settleCaseOwner`.
+type CaseOwnerUnread = "before_clear" | "before_team";
+
 function caseOwner(conv: unknown): { human: boolean; teamId: number | null } {
   const meta = field(conv, "meta");
   const team = field(meta, "team");
@@ -221,40 +226,39 @@ function caseOwner(conv: unknown): { human: boolean; teamId: number | null } {
 // case is read again before the team is written, so an owner set during the clear is kept.
 
 // Owner writes skip the withdrawal fence: a reset or takeover on the ORIGIN does not make an open case
-// anyone's. Failures go to `partial`, which reaches the flow log as a warning.
+// anyone's. A refused write goes to `partial`; a case that could not be read is returned instead,
+// since nothing was attempted, and each reaches the flow log as its own warning.
 async function settleCaseOwner(
   client: CaseClient,
   caseId: number,
   teamId: number | null,
   partial: string[],
-): Promise<void> {
+): Promise<CaseOwnerUnread | null> {
   let owner: { human: boolean; teamId: number | null };
   try {
     owner = caseOwner(await client.getConversation(caseId));
   } catch {
-    partial.push("case_assignee");
-    if (teamId !== null) partial.push("case_team");
-    return;
+    return "before_clear";
   }
-  if (owner.human) return;
+  if (owner.human) return null;
   try {
     await client.unassignConversation(caseId, { asAdmin: true });
   } catch {
     partial.push("case_assignee");
   }
-  if (teamId === null || owner.teamId !== null) return;
+  if (teamId === null || owner.teamId !== null) return null;
   try {
     owner = caseOwner(await client.getConversation(caseId));
   } catch {
-    partial.push("case_team");
-    return;
+    return "before_team";
   }
-  if (owner.human || owner.teamId !== null) return;
+  if (owner.human || owner.teamId !== null) return null;
   try {
     await client.assignTeam(caseId, teamId, { asAdmin: true });
   } catch {
     partial.push("case_team");
   }
+  return null;
 }
 
 export function openCaseInInbox(
@@ -325,13 +329,19 @@ async function run(
           await client.toggleStatus(known, "open", { asAdmin: true });
         }
         const partial: string[] = [];
-        await settleCaseOwner(client, known, input.caseTeamId ?? null, partial);
+        const caseOwnerUnread = await settleCaseOwner(
+          client,
+          known,
+          input.caseTeamId ?? null,
+          partial,
+        );
         return {
           kind: "already_open",
           caseId: known,
           caseUrl: client.conversationUrl(known),
           identity: null,
           partial,
+          ...(caseOwnerUnread ? { caseOwnerUnread } : {}),
         };
       }
     }
@@ -518,7 +528,12 @@ async function run(
           { stillWanted: input.stillWanted },
         ),
       );
-      await settleCaseOwner(client, caseId, input.caseTeamId ?? null, partial);
+      const caseOwnerUnread = await settleCaseOwner(
+        client,
+        caseId,
+        input.caseTeamId ?? null,
+        partial,
+      );
       // A continued case already has its opening: repeating it would send the customer a second
       // "we opened your case" email for the same case.
       // A channel with a reply window (official WhatsApp, Twilio on WhatsApp, an API inbox with one
@@ -624,6 +639,7 @@ async function run(
         ...(openingBlocked ? { openingBlocked } : {}),
         ...(openingOutsideWindow ? { openingOutsideWindow } : {}),
         ...(unknownCaseLabels.length > 0 ? { unknownCaseLabels } : {}),
+        ...(caseOwnerUnread ? { caseOwnerUnread } : {}),
       };
     });
   } catch (error) {

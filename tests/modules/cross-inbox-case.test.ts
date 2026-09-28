@@ -2543,7 +2543,7 @@ describe("who holds the case (issue #908)", () => {
     expect(f.convs.find((x) => x.id === 55)?.human).toBe(21);
   });
 
-  test("the read before the team fails: the team is reported, not written blind", async () => {
+  test("the read before the team fails: told apart from a refused write, and no team written blind", async () => {
     const f = fakeChatwoot({
       continueOpen: true,
       convs: [originConv(), emailAgentsCase()],
@@ -2561,12 +2561,16 @@ describe("who holds the case (issue #908)", () => {
       },
     } as CaseClient;
     const r = await openCaseInInbox(client, input({ caseTeamId: 3 }));
-    expect(r).toMatchObject({ kind: "continued", partial: ["case_team"] });
+    expect(r).toMatchObject({
+      kind: "continued",
+      partial: [],
+      caseOwnerUnread: "before_team",
+    });
     expect(f.calls.some((x) => x.fn === "assignTeam")).toBe(false);
     expect(f.convs.find((x) => x.id === 55)?.bot).toBeNull();
   });
 
-  test("an unreadable case: both owner writes reported, nothing guessed", async () => {
+  test("an unreadable case: reported as unread, not as writes that failed, and nothing guessed", async () => {
     const f = fakeChatwoot({
       convs: [
         { ...originConv(), attrs: { case_conversation_id: 55 } },
@@ -2586,7 +2590,8 @@ describe("who holds the case (issue #908)", () => {
     const r = await openCaseInInbox(client, input({ caseTeamId: 3 }));
     expect(r).toMatchObject({
       kind: "already_open",
-      partial: ["case_assignee", "case_team"],
+      partial: [],
+      caseOwnerUnread: "before_clear",
     });
     expect(writesOf(f.calls)).toEqual([]);
   });
@@ -2669,6 +2674,60 @@ describe("who holds the case (issue #908)", () => {
           detail: { caseId: 55, failed: ["case_assignee"] },
         },
       ]);
+    });
+
+    // A write Chatwoot refused and a case that could not be read are different things to whoever
+    // reads the log: the second wrote nothing, so it names no write as failed.
+    test("an unreadable case reaches the flow log as its own warning, naming no failed write", async () => {
+      const reported: Array<{ phase: string; detail: unknown }> = [];
+      const messages: string[] = [];
+      const f = fakeChatwoot({
+        convs: [
+          { ...originConv(), attrs: { case_conversation_id: 55 } },
+          emailAgentsCase({ status: "open" }),
+        ],
+      });
+      let reads = 0;
+      const client = {
+        ...f.client,
+        muted: false,
+        getConversation: async (id: number) => {
+          reads++;
+          if (reads > 2) throw new ChatwootApiError(500, "GET");
+          return f.client.getConversation(id);
+        },
+      } as unknown as ChatwootClient;
+      const [t] = buildNativeTools(
+        {
+          client,
+          conversationId: 7,
+          crossInboxCase: {
+            config: { ...CROSS_INBOX_CASE_DEFAULTS, targetInboxId: 40 },
+            contactId: 5,
+          },
+          handoff: pinned({ targetTeamId: 3 }),
+          onSideEffectError: (e: {
+            phase: string;
+            detail: unknown;
+            err: Error;
+          }) => {
+            reported.push({ phase: e.phase, detail: e.detail });
+            messages.push(e.err.message);
+          },
+        } as never,
+        ["open_case_in_inbox"],
+      );
+      if (!t) throw new Error("tool not built");
+      await t.invoke({ reason: "x" });
+      expect(reported).toEqual([
+        {
+          phase: "case_owner_unread",
+          detail: { caseId: 55, at: "before_clear" },
+        },
+      ]);
+      expect(messages[0]).toContain("could not be read");
+      expect(messages[0]).toContain("nothing was written");
+      expect(writesOf(f.calls)).toEqual([]);
     });
   });
 });

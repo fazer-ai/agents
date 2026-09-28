@@ -107,8 +107,9 @@ function makeOpenAIChat(
           // NOTE: efforts travel via `modelKwargs`, not the typed fields, because @langchain/openai
           // sends those only for ids it recognises by NAME, which drops a routed or fine-tuned
           // reasoning model's effort in silence. modelKwargs is always sent and the typed path
-          // writes the same value, so they never disagree; it also carries "max", which the live
-          // API accepts on gpt-5.6 and the installed SDK type omits.
+          // writes the same value, so they never disagree. A model with no reasoning to constrain
+          // answers 400 naming the parameter, which is the outcome the operator can act on. It also
+          // carries "max", which the live API accepts on gpt-5.6 and the installed SDK type omits.
           modelKwargs: {
             ...fields?.modelKwargs,
             reasoning: { effort: plan.effort },

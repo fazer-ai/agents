@@ -2365,6 +2365,14 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         tenantId: ctx.tenantId,
         screenCustomerMessage: ctx.screenCustomerText,
         signCustomerMessage: cic.sign,
+        // The team this agent hands conversations to, when the operator pinned one: the case goes to
+        // the same people. `ctx.handoff` is already the effective config, so a pin picked in another
+        // account arrives here as `agent_choice` and no team is written. A pinned PERSON is not
+        // assigned to the case: whose case it is inside the team stays the team's call.
+        caseTeamId:
+          ctx.handoff?.mode === "pinned" && !ctx.handoff.targetAgentId
+            ? (ctx.handoff.targetTeamId ?? null)
+            : null,
       });
       if (result.kind === "called_off") ctx.onNoEffect?.(OPEN_CASE_TOOL_NAME);
       if (result.kind !== "failed") {
@@ -2384,7 +2392,9 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           });
         }
         if (
-          (result.kind === "opened" || result.kind === "continued") &&
+          (result.kind === "opened" ||
+            result.kind === "continued" ||
+            result.kind === "already_open") &&
           result.partial.length > 0
         ) {
           ctx.onSideEffectError?.({

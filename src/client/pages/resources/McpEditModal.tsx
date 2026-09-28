@@ -194,9 +194,9 @@ export function McpEditModal({
     setFormError(null);
     const body = bodyOf(form);
     setSaving(true);
-    // Measured live, and it is why this modal is wired: a second connection under a name already
-    // taken answers 409 "mcp connection name already in use", and the banner said "check the
-    // URL/command" — the wrong input, named confidently (#329).
+    // NOTE: A second connection under a taken name answers 409 "mcp connection name already in use";
+    // the refusal is placed on the field the server names, so a generic banner cannot blame the
+    // URL/command instead.
     const fallback = t("mcp.saveError", "Could not save.");
     const held = (e: unknown) =>
       refusal.capture(e, fallback, body, bodyOf(formRef.current));
@@ -415,9 +415,9 @@ export function McpEditModal({
               defaultCreateType={isStdio ? "mcp_env" : "mcp_oauth"}
               defaultCreateBaseUrl={mcpCredBaseUrl ?? form.url}
               onEntryChange={(entry: VaultEntry | null) => {
-                // NOTE: the DIALABLE base (#504). This value LOCKS the connection URL field and
-                // fills it, so a stray base on a kind that carries none would show the operator an
-                // endpoint the runtime ignores — and let Save pass with `form.url` empty.
+                // NOTE: The DIALABLE base. This value LOCKS the connection URL field and fills it, so a
+                // stray base on a kind that carries none would show an endpoint the runtime ignores, and
+                // let Save pass with `form.url` empty.
                 const credUrl = dialableBaseUrl(entry?.kind, entry?.baseUrl);
                 setMcpCredBaseUrl(credUrl);
                 if (credUrl) {

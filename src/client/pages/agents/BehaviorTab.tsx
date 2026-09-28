@@ -209,31 +209,10 @@ interface SplitState {
   maxDelayMs: string;
 }
 
-// The operator's closing line (issue #599), mirroring modules/signature. One text, on every channel
-// the agent answers on, and an empty text is the off switch.
-//
-// The bytes the customer receives, built by the SAME rule the runtime applies (modules/signature:
-// blank is two newlines, `--` is two newlines around a `--` line). An operator who has to guess what
-// "separator" means reads it here instead.
-//
-// RENDERED, not shown raw, and that is the point of having it. The field is a plain textarea rather
-// than a rich editor, so `**Gi**` is what the operator types; the preview is the only place that
-// answers whether it lands as bold or as four asterisks. It renders through the same <Markdown> the
-// conversation view and the playground use, which is what a channel that understands Markdown does
-// with it — on one that does not, the characters go out as typed (#603, and the field's own hint).
-// THROUGH `buildPromptVars`, not a hand-written map, so the example context cannot fall behind the
-// chips: it was written by hand first and omitted `{{email_contato}}`, `{{telefone_contato}}` and
-// `{{canal}}`, which the chips offer — so the preview rendered three supported variables as literal
-// text and taught the operator they do not work. Review of #599. The names come from the same
-// function production builds them with, so a variable added there appears here without anyone
-// remembering to.
-//
-// The CONTACT is an example, and the preview says so; the agent and the company are the operator's
-// OWN, the way the prompt editor already renders them. A signature is mostly those two names, so a
-// preview that shows somebody else's is a preview of a message the operator will never send — the
-// acceptance run put it plainly: "o operador que olha a prévia vê um nome de exemplo, não o dele".
-// The generic stand-ins survive for what the editor cannot know yet: an agent still being named,
-// and a tenant with no company name set.
+// The example context for the signature preview, built through `buildPromptVars` (the function
+// production uses), so every variable the chips offer resolves here too. The CONTACT is an example;
+// the agent and the company are the operator's OWN, since a signature is mostly those two names.
+// The stand-ins cover an agent still being named and a tenant with no company name set.
 export function signaturePreviewVars(
   agentName?: string | null,
   companyName?: string | null,
@@ -245,24 +224,11 @@ export function signaturePreviewVars(
   });
 }
 
-// THE OPTIONS, not only the variables, because `interpolatePromptVars` answers a schedule name from
-// `opts.availability` and a time name from `opts.now`/`opts.timezone`. Passing the map alone left
-// `{{horario_atendimento}}` literal in the preview while production rendered the real hours — the
-// third finding in this family, after the map itself was completed and after the live path got its
-// options. `tests/client/signature-preview-vars.test.ts` now fences the whole set rather than the
-// name that happened to be reported.
-//
-// The schedule is the operator's OWN, looked up from the Availability the agent is on, so the
-// preview shows the hours they configured instead of a plausible fake. No Availability means
-// `schedule: null`, which is what production passes and what the gate reads as always on.
-// ONE ARRAY PER MESSAGE, since #616, because repetition is the thing being previewed and a preview
-// of one balloon cannot show it. It also makes `once` legible for the first time: the operator sees
-// WHICH of the two messages carries the signature, which is the half of the old rule nobody could
-// read off a single bubble.
-//
-// The message count follows the SPLIT, not the frequency: with the split off the agent sends one
-// message and the two frequencies are the same thing, so showing two balloons there would preview
-// a delivery that never happens.
+// The signature preview, one array per message: repetition is what is being previewed, and under
+// `once` it shows WHICH message carries the signature. The message count follows the SPLIT, not the
+// frequency: with the split off the agent sends one message. `opts` carries the operator's own
+// availability and clock, since `interpolatePromptVars` resolves schedule and time names from it
+// (fenced by tests/client/signature-preview-vars.test.ts).
 export function signaturePreviewParts(
   sig: SignatureState,
   t: (k: string, d: string) => string,
@@ -316,18 +282,15 @@ export interface LimitsState {
   // Empty string = no ceiling. Kept as text so an operator can clear the field to disable it; the
   // reader turns anything non-positive into null.
   maxHistoryTokens: string;
-  // No control on the tab: carried so the save does not delete it (issue #885, ./limitsFormState).
+  // No control on the tab: carried so the save does not delete it (see ./limitsFormState).
   retrySilence: boolean;
 }
 
-// NOTE: The allowed-host list is edited as raw textarea text (one per line) and only turns into an
-// array on save — the runtime reader normalizes and drops what does not resolve to a hostname, so
-// the operator's half-typed line survives editing instead of vanishing under them.
 // The summarizer's block. The four model fields are an OVERRIDE of the agent's model: all blank is
-// "run on the agent's model", which is what every agent that never touched this means.
+// "run on the agent's model", the default for every agent.
 export interface MemoryState {
   compactionEnabled: boolean;
-  // Each message reaches the model behind the date it was sent (issue #755). On by default.
+  // Each message reaches the model behind the date it was sent. On by default.
   historyDatesEnabled: boolean;
   provider: string;
   model: string;
@@ -388,10 +351,9 @@ interface BehaviorTabProps {
   // The name being edited on General, live, so the signature preview signs with the operator's own
   // agent instead of a stand-in. Empty while a new agent is still unnamed.
   agentName: string;
-  // The active tenant's display name, RESOLVED BY THE PAGE rather than by a hook in here. Reaching
-  // for `useActiveTenantName()` from this tab made it unrenderable without an AuthProvider, which
-  // the full suite hid (an earlier file leaves the context standing) and a sharded CI run would not.
-  // Null while it is still resolving, or when a fleet session has nothing selected.
+  // The active tenant's display name, resolved by the page rather than by a hook here, so this tab
+  // renders without an AuthProvider. Null while it is still resolving, or when a fleet session has
+  // nothing selected.
   companyName: string | null;
   // The refused input this tab draws, if the standing refusal is about one of them. Read in
   // AgentEditorPage and passed as answers -- see the note on the type.
@@ -432,8 +394,8 @@ interface BehaviorTabProps {
   limits: LimitsState;
   memory: MemoryState;
   setMemory: React.Dispatch<React.SetStateAction<MemoryState>>;
-  // The agent's mode decides which sections are drawn (issue #494): a watcher never answers, so
-  // the sections that configure how it answers are hidden, and the Observation block appears.
+  // The agent's mode decides which sections are drawn: a watcher never answers, so the sections that
+  // configure how it answers are hidden, and the Observation block appears.
   mode: AgentMode;
   observation: ObservationState;
   setObservation: React.Dispatch<React.SetStateAction<ObservationState>>;
@@ -475,8 +437,8 @@ interface BehaviorTabProps {
   saving: boolean;
   onSave: () => void;
   onDiscard: () => void;
-  // Absent for a watcher (issue #494): the bar then shows no playground entry, the way the tab
-  // itself is not drawn for one.
+  // Absent for a watcher: the bar then shows no playground entry, the way the tab itself is not drawn
+  // for one.
   onOpenPlayground?: () => void;
 }
 
@@ -599,10 +561,10 @@ function ServiceWindowTemplateField({
   );
 }
 
-// TTS voice/model picker backed by the live listing endpoint (item 10): OpenAI returns a curated set,
+// TTS voice/model picker backed by the live listing endpoint: OpenAI returns a curated set,
 // ElevenLabs is fetched with the vault credential so the operator picks a real per-account voice by
 // name. Eager-loads (when it won't error for lack of a credential) so the trigger shows the human
-// label; typing a custom value still works (parity with the old free input).
+// label; typing a custom value still works.
 function TtsOptionPicker({
   kind,
   provider,
@@ -834,13 +796,10 @@ function ContactAuthTeamSelect({
   // offers teams in.
   const instanceId =
     accounts.length === 1 ? (accounts[0]?.instanceId ?? "") : "";
-  // A Chatwoot team id means something inside ONE account, so what makes a stored target usable is
-  // the ACCOUNT RECORDED NEXT TO IT — the same rule the runtime applies per conversation
-  // (`teamTargetUsable` in modules/chatwoot/webhook.ts): the recorded account decides, and counting
-  // accounts is only the fallback for a value stored before that field existed. Judging by the count
-  // alone, as this did, threw away a target the runtime would have used: an agent bound to one inbox
-  // per account (a test inbox beside the live one) had its team wiped just by opening this tab, and
-  // the write marked the tab unsaved on top of it.
+  // NOTE: A Chatwoot team id means something inside ONE account, so the ACCOUNT RECORDED NEXT TO IT
+  // decides whether a stored target is usable, the same rule as `teamTargetUsable` in
+  // modules/chatwoot/webhook.ts. Counting accounts is only the fallback for a value stored without
+  // one; judged by the count alone, an agent with one inbox per account would lose its team here.
   const storedAccount = accounts.find((a) => a.instanceId === storedInstanceId);
   const storedUsable = storedInstanceId
     ? !!storedAccount
@@ -1115,22 +1074,11 @@ function FollowUpStepsEditor({
   );
 }
 
-// What a WATCHER's Behavior tab shows. It used to be a short list, because a monitoring agent ran
-// one model call and wrote labels: everything about ANSWERING was hidden, and so was everything a
-// classifier had no use for. A watcher now runs the ordinary graph (issue #568), so the rule is a
-// different one — hide what is about SPEAKING TO THE CUSTOMER, show everything else, because
-// everything else runs.
-//
-// Hidden, therefore: availability and the away message (when it answers), grouping (the responder's
-// debounce; a watcher has its own burst window on Observation), audio, splitting, images,
-// contact authorization, takeover and the proactive ladder. Each of those either decides how a reply
-// goes out or gates one, and a watcher has no reply.
-//
-// Shown, and new here: DATA IN CONTEXT, which builds a prompt block on every turn including this
-// one, and EXECUTION LIMITS, which bound the tool calls a watcher now actually makes.
-//
-// Hidden, not unmounted (`Section.hidden`): the form keeps its state, and flipping the mode back
-// shows it again untouched.
+// What a WATCHER's Behavior tab shows. A watcher runs the ordinary graph, so the rule is: hide what
+// is about SPEAKING TO THE CUSTOMER (availability and away message, grouping, audio, splitting,
+// images, contact authorization, takeover, the proactive ladder), show everything else, because
+// everything else runs. Hidden, not unmounted (`Section.hidden`): the form keeps its state, and
+// flipping the mode back shows it again untouched.
 export const MONITORING_SECTIONS: ReadonlySet<string> = new Set([
   "observation",
   "memory",
@@ -1138,13 +1086,9 @@ export const MONITORING_SECTIONS: ReadonlySet<string> = new Set([
   "modelFallback",
   "attributeContext",
   "limits",
-  // NOTE: STT AND VISION RUN FOR A WATCHER (issue #494 review, round 2), so their controls have to
-  // be reachable. The receiver's `watcherReads` path runs `runEagerMedia` under the OBSERVER's own
-  // settings whenever that route is the one that will remember the message — an observer on an inbox
-  // with no responder is exactly that — and a watcher that remembers an audio as an attachment
-  // marker instead of its transcription remembers nothing of it. Hidden here, together with their
-  // configuration warnings, the operator could neither switch them on nor repair a broken
-  // credential, and audio, images and documents reached observation with nothing extracted.
+  // NOTE: STT and vision run for a watcher: the receiver's `watcherReads` path runs `runEagerMedia`
+  // under the observer's own settings when that route remembers the message, so their controls and
+  // configuration warnings have to be reachable.
   "stt",
   "vision",
 ]);
@@ -1216,7 +1160,7 @@ export function BehaviorTab({
   onOpenPlayground,
 }: BehaviorTabProps) {
   const { t, i18n } = useTranslation();
-  // Whether this install runs the audio detector, and its default mode (issue #802).
+  // NOTE: Whether this install runs the audio detector, and its default mode.
   const ttsCheck = useTtsCheckInfo();
   const checkModeLabel = (m: TtsCheckMode) =>
     m === "enforce"
@@ -1225,15 +1169,10 @@ export function BehaviorTab({
         ? t("editor.ttsCheckShadow", "Record only")
         : t("editor.ttsCheckOff", "Off");
 
-  // The signature's "insert variable" helper, the same affordance the prompt editor has and for the
-  // same reason: `{{nome_agente}}` is only useful to someone who knows it exists, and a chip that
-  // writes it at the caret is how they find out. `HighlightedPromptEditor` forwards its ref to the
-  // inner <textarea> precisely so this works.
-  //
-  // CONTEXT VARS ONLY, not the prompt's whole list. The time and schedule names interpolate here too
-  // (it is the same function), but a closing line that announces the current minute is not a
-  // signature, and offering it invites a signature that changes on every message — which is the one
-  // property this feature exists to remove.
+  // NOTE: The signature's "insert variable" helper, the same affordance as the prompt editor's
+  // (`HighlightedPromptEditor` forwards its ref to the inner <textarea> for it). Context vars only:
+  // a time or schedule name would make the signature change on every message, the one property the
+  // feature exists to remove.
   const signatureRef = useRef<HTMLTextAreaElement>(null);
   // How much a SELECTION would free, since an insert REPLACES it. Tracked in state because the
   // chips' disabled state is decided at render and a selection change does not otherwise cause one:
@@ -1246,10 +1185,9 @@ export function BehaviorTab({
       Math.max(0, (el.selectionEnd ?? 0) - (el.selectionStart ?? 0)),
     );
   }, []);
-  // What is left before the cap. A chip whose token does not fit is DISABLED rather than clipped:
-  // clipping an insert cuts the TAIL of what the operator already wrote, which is the one thing a
-  // helper button must never do — the caret is at the front, the loss is at the back, and nothing
-  // on screen connects the two. Found in review of #599.
+  // NOTE: What is left before the cap. A chip whose token does not fit is DISABLED rather than
+  // clipped: clipping cuts the TAIL of what the operator already wrote, far from the caret, with
+  // nothing on screen connecting the two.
   const signatureRoom =
     SIGNATURE_MAX - signature.text.length + signatureSelected;
   // The agent's own Availability, so a `{{horario_atendimento}}` in the signature previews the hours
@@ -1317,19 +1255,8 @@ export function BehaviorTab({
     !sttCredBaseUrl &&
     !isValidHttpUrl(stt.baseURL);
 
-  // Required while the gate is on: an enabled gate with no reachable URL fails closed on every
-  // message, which is the whole agent going silent with nothing on screen to explain it. A URL
-  // carrying `user:pass@` is refused here for the same reason the reader refuses it (credentials
-  // belong in the vault); without this check the save would succeed and the runtime would read the
-  // field as unconfigured.
-  // The shared warning of #58. It reads all three switches that widen what is recorded, INCLUDING
-  // the tenant-level one that lives on another page, because an operator does not remember which of
-  // three unrelated screens they touched last week. Empty (falsy) when nothing is on, so the block
-  // renders only when there is something to say.
-  // The saved config was read at load or at save, and one of its fields STOPS BEING TRUE ON ITS OWN:
-  // the size switch expires. An editor left open past the deadline would otherwise keep saying full
-  // detail is being recorded while the runtime already stopped, which is the same lie as the one
-  // this warning was just fixed for, arriving by the clock instead of by a click. So the state is
+  // NOTE: The saved config's size switch expires on its own, so an editor left open past the
+  // deadline would keep saying full detail is recorded after the runtime stopped. The state is
   // re-derived once, exactly when the window closes.
   const [judgedAt, setJudgedAt] = useState(() => serverNowDate());
   const savedUntilMs = savedObservability.fullDetailUntil?.getTime() ?? null;
@@ -1395,7 +1322,7 @@ export function BehaviorTab({
       return false;
     }
   })();
-  // With a local rule the endpoint is never asked (issue #646), so an empty URL is not an error.
+  // NOTE: With a local rule the endpoint is never asked, so an empty URL is not an error.
   const contactAuthUsesRule = contactAuth.ruleKind !== "";
   const contactAuthRuleBad =
     contactAuth.enabled && contactAuthRuleInvalid(contactAuth);
@@ -1472,12 +1399,9 @@ export function BehaviorTab({
     credentialRef: modelFallback.credentialRef,
     baseURL: modelFallback.baseURL,
   };
-  // A fallback is CONFIGURED once a destination is named, and that is the flag every check below
-  // reads — including the endpoint ones, which is why it has to agree with the backend rather than
-  // approximate it. Written as "both halves are named", it answered NO for a model-less
-  // `openai-compatible` fallback, which the backend calls configured: the base-URL checks switched
-  // themselves off, Save went through on a missing or malformed endpoint, the server stored it, and
-  // the runtime could not build it. Same rule, same predicate, one place.
+  // NOTE: A fallback is CONFIGURED once a destination is named, and every check below reads this
+  // flag, including the endpoint ones, so it has to be the backend's own predicate: a model-less
+  // `openai-compatible` fallback is configured, and its base URL must still be checked.
   const fallbackConfigured = fallbackIsConfigured(modelFallback);
   // Named, and on the save gate, because the round trip does not survive it: `modelFallbackToStored`
   // persists `{provider: "openai", model: null}`, `hasModelFallback` answers false, and the form
@@ -1537,8 +1461,8 @@ export function BehaviorTab({
     return name && name !== code ? `${name} (${code})` : code;
   };
 
-  // Section index (item 9): the left-rail nav + scroll-spy track these in order. Labels reuse the
-  // section titles; icons are thematic.
+  // NOTE: Section index: the left-rail nav + scroll-spy track these in order. Labels reuse the section
+  // titles; icons are thematic.
   const sections = [
     {
       id: "availability",
@@ -1942,8 +1866,8 @@ export function BehaviorTab({
                 <div className="grid gap-4 sm:grid-cols-2">
                   <FormField
                     label={t("editor.visionProvider", "Provider")}
-                    // Said here, and not only in the docs, because the alternative way to learn it
-                    // is a PDF that comes back unextracted mid-attendance (issue #324).
+                    // NOTE: Said here, and not only in the docs, because the alternative way to learn it is a PDF
+                    // that comes back unextracted mid-attendance.
                     hint={
                       visionAcceptsDocuments(
                         vision.provider,
@@ -1991,10 +1915,8 @@ export function BehaviorTab({
                 <FormField
                   label={t("editor.visionModel", "Model")}
                   group
-                  // The per-provider sentence used to live here, as a static list naming which
-                  // providers read PDFs. It went stale the moment one of them changed (issue #324),
-                  // and it was in the wrong field anyway: what a provider reads is a property of the
-                  // provider, so it is said above, next to the provider.
+                  // NOTE: What a provider reads is a property of the provider, so it is said on the provider
+                  // field above, not listed here.
                   description={t(
                     "editor.visionModelHint",
                     "Leave blank for the provider default.",
@@ -2553,7 +2475,7 @@ export function BehaviorTab({
                     ))}
                   </Select>
                 </FormField>
-                {/* Issue #856: a reply built to be read goes as text even when audio is on. */}
+                {/* A reply built to be read goes as text even when audio is on. */}
                 <div className="flex flex-col gap-3">
                   <SwitchField
                     checked={tts.textInstead}
@@ -2638,7 +2560,7 @@ export function BehaviorTab({
                     </div>
                   )}
                 </div>
-                {/* Issue #859: the model is told its reply will be spoken, and may choose text. */}
+                {/* The model is told its reply will be spoken, and may choose text. */}
                 <div className="flex flex-col gap-3">
                   <SwitchField
                     checked={tts.spokenNotice}
@@ -2958,12 +2880,9 @@ export function BehaviorTab({
                 </div>
                 <FormField
                   label={t("editor.signaturePreview", "Preview")}
-                  // THE SECOND SENTENCE ONLY WHEN THERE IS A SECOND BALLOON, and it names the
-                  // setting that put it there. Two stacked boxes under a label reading "an example
-                  // reply", singular, look like the same preview rendered twice, and were reported
-                  // as exactly that: a duplicated section. The split section's own label is
-                  // interpolated rather than retyped, so renaming that section cannot leave this
-                  // sentence pointing at a control nobody can find.
+                  // NOTE: The second sentence only when there is a second balloon, naming the setting that put
+                  // it there: two stacked boxes under "an example reply" otherwise read as a duplicated preview.
+                  // The split section's label is interpolated, so renaming it keeps this sentence accurate.
                   description={[
                     t(
                       "editor.signaturePreviewHint",
@@ -3002,10 +2921,8 @@ export function BehaviorTab({
                         key={parts.join("\u0000")}
                         className="flex flex-col gap-1"
                       >
-                        {/* Numbered only when there is more than one, because "message 1 of 1" is
-                        noise on a delivery with no repetition to show. Under `once` the number is
-                        also the answer to WHICH balloon carries the signature, the half of that
-                        rule the per-message preview exists to make readable (#616). */}
+                        {/* Numbered only when there is more than one, since "message 1 of 1" is noise. Under
+                            `once` the number also answers WHICH balloon carries the signature. */}
                         {msgs.length > 1 && (
                           <span className="text-text-muted text-xs">
                             {t(
@@ -3519,14 +3436,9 @@ export function BehaviorTab({
                   "editor.limitsMaxHistoryTokensHint",
                   "Empty means no ceiling. Between 2,000 and 1,000,000.",
                 )}
-                // WHAT IT DOES IS NOT THE SAME FOR A WATCHER (review round 40). An observation does
-                // not travel with the contact's history at all: the tick rebuilds the conversation
-                // from Chatwoot into a single message and keeps its own thread, and the window
-                // always keeps the current turn, so nothing is ever trimmed off a tick. The setting
-                // is NOT inert for it, though, which is why it stays on screen: `runCompaction`
-                // loads a watcher's config with `ignoreMode` and hands this same ceiling to the
-                // summariser, so it bounds the transcript the watcher's memory reads when an
-                // attendance closes. The help says which of the two the operator is buying.
+                // NOTE: Not the same for a watcher: an observation rebuilds the conversation from Chatwoot
+                // each tick, so the ceiling never trims one, but `runCompaction` hands this same ceiling to
+                // the summariser, bounding the transcript the watcher's memory reads. The help says which applies.
                 help={
                   watcher
                     ? t(
@@ -3957,15 +3869,10 @@ export function BehaviorTab({
                 setObservability((o) => ({
                   ...o,
                   fullDetail: v,
-                  // The stored value IS the end of the window, so turning the switch on is choosing
-                  // an instant. It cannot be armed for longer than the schema accepts, and it stops
-                  // on its own, which is the point: an operator who forgets loses at most one day of
-                  // full-size rows instead of the whole retention window.
-                  //
-                  // Chosen on the SERVER's clock, because the server is what enforces it. Off the
-                  // browser's, a wrong machine arms a window of a different length than the one the
-                  // screen names, and a machine wrong by more than the arming gap arms one that was
-                  // already over.
+                  // NOTE: The stored value IS the end of the window, so turning the switch on picks an
+                  // instant, capped by the schema, and the window stops on its own: a forgotten switch
+                  // costs at most one day of full-size rows. Chosen on the SERVER's clock, which enforces
+                  // it, so a wrong browser clock cannot arm a window of another length or one already over.
                   fullDetailUntil: v
                     ? new Date(serverNow() + FULL_DETAIL_ARM_HOURS * 3_600_000)
                     : null,
@@ -3981,16 +3888,13 @@ export function BehaviorTab({
                 hours: FULL_DETAIL_ARM_HOURS,
               })}
             />
-            {/* State, not help: the sentence exists only while the window is open, which is
-                exactly when the operator needs to know when it closes. What the switch DOES moved
-                to the `?` on its label. A permanent explanation under a switch is the shape this
-                page had too much of (docs/ui.md → Where help goes). */}
+            {/* State, not help: the sentence exists only while the window is open, which is exactly
+                when the operator needs to know when it closes. What the switch DOES is behind the `?`
+                on its label (docs/ui.md, Where help goes). */}
             <p className="text-text-secondary text-xs">
-              {/* Which of the two sentences depends on whether this deadline is the SAVED one.
-                  Both are "the window is open until X", and only the unsaved one is waiting on a
-                  click: an armed-and-saved window that kept saying "Save to apply" contradicted the
-                  warning above it, which speaks for the server, and left an operator no way to tell
-                  a mode that is running from one that is merely typed. */}
+              {/* Which sentence depends on whether this deadline is the SAVED one: only the unsaved
+                  one waits on a click. A saved window saying "Save to apply" would contradict the
+                  warning above, which speaks for the server. */}
               {isFullDetailWindowOpen(observability.fullDetailUntil, judgedAt)
                 ? formUntilMs === savedUntilMs
                   ? t("editor.observabilityFullDetailUntil", {
@@ -4228,18 +4132,14 @@ export function BehaviorTab({
         onSave={onSave}
         onDiscard={onDiscard}
         saveDisabled={
-          // NOTE: Only what a DRAWN section can explain and fix (issue #494 review, round 3). These
-          // read the STORED bag as well as the form, so a watcher carrying a legacy bad TTS
-          // normalizer or authorization URL — an import, an API write, a mode flipped on a
-          // configured agent — had Save dead on a tab whose only editable block is Observation, with
-          // no field on screen saying why. The sections a watcher draws keep their validators; the
-          // answer-only ones are asked only where their fields are.
+          // NOTE: Only what a DRAWN section can explain and fix. These read the STORED bag as well as
+          // the form, so a watcher's leftover bad TTS normalizer or authorization URL would kill Save
+          // on a tab where no field says why. Answer-only validators are asked only where their fields are.
           sttBaseUrlInvalid ||
           visionBaseUrlInvalid ||
           memoryBaseUrlInvalid ||
           memoryBaseUrlUnsupported ||
-          // The fallback's three moved back OUT of the watcher exemption with the section (issue
-          // #567): they are asked wherever their fields are, and the fields are on screen again.
+          // NOTE: The fallback's three are asked wherever their fields are, watcher included.
           fallbackBaseUrlInvalid ||
           fallbackBaseUrlUnsupported ||
           fallbackModelMissing ||

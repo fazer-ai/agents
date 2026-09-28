@@ -80,13 +80,10 @@ function backoffDelay(attempt: number, baseMs: number, maxMs: number): number {
   return exponential * (0.5 + Math.random() * 0.5);
 }
 
-// NOTE: React hook around Eden Treaty's `subscribe()` factory with
-// reconnection, status reporting, and Page Visibility-aware backoff.
-// The `subscribe` argument is a thunk that returns a fresh socket each
-// time it is invoked. It must be stable across renders (define outside
-// the component or wrap in `useCallback`); the hook does not re-subscribe
-// when the factory identity changes — call `reconnect()` to apply new
-// args. Typical usage:
+// React hook around Eden Treaty's `subscribe()` factory with reconnection, status reporting and
+// Page Visibility-aware backoff. `subscribe` returns a fresh socket per call and must be stable
+// across renders (module scope or `useCallback`): the hook does not re-subscribe when its identity
+// changes, and `reconnect()` applies new args. Typical usage:
 //   const subscribe = useCallback(() => api.api.realtime.echo.subscribe(), []);
 //   const { status, lastMessage, send } = useWebSocket<TIn, TOut>(subscribe);
 export function useWebSocket<TIn, TOut>(
@@ -146,15 +143,11 @@ export function useWebSocket<TIn, TOut>(
     // differently.
     let opened = false;
 
-    // NOTE: Each socket's listeners capture `socket` in closure and guard
-    // against `socketRef.current` pointing at a *different* socket. This
-    // matters during `reconnect()`: closing the old socket runs its close
-    // handler one tick later, by which time `socketRef.current` is already
-    // the new socket. Without this guard, the old handler would schedule a
-    // duplicate reconnect timer and a third socket would be opened. When
-    // `socketRef.current === null` (manual close / unmount), the handler
-    // does proceed, because the `intentionallyClosedRef` branch below is
-    // what drives the final status transition.
+    // NOTE: each socket's listeners guard against `socketRef.current` pointing at a *different* socket.
+    // During `reconnect()` the old socket's close handler runs a tick later, when the ref already holds
+    // the new one, and would otherwise schedule a duplicate reconnect and open a third socket. With the
+    // ref null (manual close, unmount) the handler proceeds: the `intentionallyClosedRef` branch below
+    // drives the final status.
     const isCurrent = () =>
       socketRef.current === null || socketRef.current === socket;
 

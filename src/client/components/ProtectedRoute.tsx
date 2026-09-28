@@ -37,19 +37,17 @@ export function ProtectedRoute({
     return <Navigate to={loginUrl} replace />;
   }
 
-  // Non-admins (AGENT) have no dashboard; "/" is the dashboard, so bounce them to their
-  // primary surface instead of looping back to "/". The role read here is the one held in the ACTIVE
-  // tenant, so a link to another tenant where the person IS an administrator goes through to the
-  // switch below, and meets this gate again after the reload with the role held there (issue #756,
-  // review round 2).
+  // NOTE: non-admins (AGENT) have no dashboard, and "/" is the dashboard, so bounce them to their
+  // primary surface instead of looping back to "/". The role is the one held in the ACTIVE tenant, so
+  // a link to a tenant where the person IS an administrator goes through to the switch below, and
+  // meets this gate again after the reload with the role held there.
   if (requireAdmin && !isAdminRole(user.role)) {
     const requested = new URLSearchParams(location.search).get(
       SWITCH_TENANT_PARAM,
     );
-    // A fresh login answers with the DEFAULT membership's role and no membership list; `/auth/me`
+    // NOTE: a fresh login answers with the DEFAULT membership's role and no membership list; `/auth/me`
     // brings the role held in the selected tenant, and the list, a moment later. Deciding before it
-    // lands would send an administrator of the selected or linked tenant away and lose the page they
-    // asked for (review rounds 3 and 6).
+    // lands would send an administrator of the selected or linked tenant away from the page they asked for.
     if (user.tenants === undefined) {
       return <SessionPending />;
     }

@@ -13,11 +13,11 @@ export type SpendUsageEntry = Usage["entries"][number];
 
 export const SPEND_NOT_CONFIGURED = "langfuse-not-configured";
 
-// THE BAR AND ITS CAVEATS, SHARED BY THE TWO SCREENS THAT SHOW THEM (issue #427). The ceiling is
-// set in the Advanced panel and watched on the dashboard, and the two would drift the moment one of
-// them learned about a new snapshot state the other did not: the colour thresholds, the "of"
-// phrasing and every warning below the bar live here once. What the state MEANS is the gate's own
-// verdict, sent by the API, so the screen and the runtime cannot disagree either.
+// THE BAR AND ITS CAVEATS, SHARED BY THE TWO SCREENS THAT SHOW THEM. The ceiling is set in the
+// Advanced panel and watched on the dashboard, and the two would drift the moment one of them
+// learned about a new snapshot state the other did not: the colour thresholds, the "of" phrasing
+// and every warning below the bar live here once. What the state MEANS is the gate's own verdict,
+// sent by the API, so the screen and the runtime cannot disagree either.
 export function SpendBar({
   label,
   entry,

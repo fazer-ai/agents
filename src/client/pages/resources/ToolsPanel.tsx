@@ -111,10 +111,9 @@ export function ToolsPanel() {
   async function confirmDelete() {
     const target = deleteModal.payload;
     if (!target) return;
-    // Read BEFORE the request, for the same reason the save reads one: the tenant selector lives in
-    // `localStorage` and another tab can move it while this is in flight, and the clearing has to
-    // land in the scope this delete was sent under rather than in whatever is selected when it
-    // comes back (round 7 of review).
+    // NOTE: read BEFORE the request, as the save does: the tenant selector lives in `localStorage`
+    // and another tab can move it while this is in flight, so the clearing must land in the scope
+    // this delete was sent under.
     const ticket = sampleTicket();
     setDeleting(true);
     try {
@@ -129,8 +128,8 @@ export function ToolsPanel() {
         );
         return;
       }
-      // The response this tab kept for that tool goes with it (issue #566). Left behind it is a
-      // customer's response outliving the row it described, in a tab that has no use for it.
+      // NOTE: the response this tab kept for that tool goes with it, so a customer's response does
+      // not outlive the row it described.
       if (target.kind === "http") forgetToolSample(target.id, ticket);
       showToast(t("tools.deleted", "Tool deleted."), "success");
       deleteModal.close();
@@ -180,9 +179,8 @@ export function ToolsPanel() {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Every sibling panel has ONE short button here and survives `justify-between` on a phone.
-          This one has two, both long, and `shrink-0` on the pair, so the sentence beside them was
-          crushed to two words a line at 390px. Stacked below `sm`, side by side above it. */}
+      {/* Two long buttons with `shrink-0` would crush the sentence beside them on a phone, so
+          stacked below `sm`, side by side above it. */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-sm text-text-muted">
           {t("tools.subtitle", "HTTP and code tools your agents can call.")}
@@ -196,10 +194,9 @@ export function ToolsPanel() {
             <Webhook className="h-4 w-4" aria-hidden="true" />
             {t("tools.addHttp", "New HTTP tool")}
           </Button>
-          {/* Peers, so both are secondary. The kind that was NEW when the pair was introduced (#517)
-              kept the primary variant, which reads as a recommendation the page has no business
-              making: an HTTP tool and a code tool answer different questions, and the page lists
-              them in ONE list precisely because neither leads. */}
+          {/* Peers, so both are secondary: a primary variant would read as a recommendation, and
+              an HTTP tool and a code tool answer different questions, listed together because
+              neither leads. */}
           <Button
             size="sm"
             variant="secondary"
@@ -231,9 +228,8 @@ export function ToolsPanel() {
           {merged.map((tool) => (
             <Card
               key={`${tool.kind}:${tool.id}`}
-              // The three actions are ~230px of the 390px a phone has, and the name had the rest
-              // with `truncate` on top: at that width "Buscar pedido" rendered as nothing at all,
-              // so the row identified the tool by its badge. Stacked below `sm`.
+              // NOTE: stacked below `sm`: the three actions take ~230px of a 390px phone, and a
+              // truncated name beside them would render as nothing.
               className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
             >
               <div className="min-w-0">
@@ -286,7 +282,7 @@ export function ToolsPanel() {
         </div>
       </DataBoundary>
 
-      {/* Native tools come AFTER the custom HTTP tools (item 13): they are built-in and read-only
+      {/* Native tools come AFTER the custom tools: they are built-in and read-only
           here, so the operator's own tools lead. */}
       <section className="flex flex-col gap-3 rounded-lg border border-border bg-bg-secondary p-4">
         <div>

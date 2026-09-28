@@ -43,15 +43,10 @@ export function ChannelsTab({
 }: {
   agentId: string;
   agentName: string;
-  // A monitoring agent is bound as an OBSERVER (issue #476), never as the responder, so the mode
-  // picks which endpoint a NEW binding goes through (issue #494). The SAVED mode, not the one being
-  // edited on General: binding acts immediately and the server judges the stored agent, so a draft
-  // flipped to monitoring would send the call down the observer route and be refused, on a switch
-  // the operator sees no save behind (issue #494 review, round 1).
-  //
-  // What it does NOT decide is what the row SHOWS. An inbox can carry a monitoring agent as its
-  // responder — the state a mode change on a bound agent leaves, and one docs/chatwoot.md keeps —
-  // so which role THIS agent has here is read off the inbox row, never inferred from the mode.
+  // A monitoring agent is bound as an OBSERVER, never as the responder, so the SAVED mode picks the
+  // endpoint a NEW binding goes through: binding acts immediately and the server judges the stored
+  // agent, so a draft mode would be refused. The mode does NOT decide what the row shows: an inbox can
+  // carry a monitoring agent as its responder, so the role is read off the inbox row.
   mode: AgentMode;
   // Binding acts immediately, with no save to piggyback on, and the editor's warning panel asks a
   // question whose answer is per-BOUND-inbox (whether Chatwoot already replies out of hours there).
@@ -72,9 +67,8 @@ export function ChannelsTab({
   const [botStatus, setBotStatus] = useState<
     Record<string, "active" | "missing">
   >({});
-  // Keyed `${inboxId}:${agentId}`, one entry per observer binding — the same shape the Channels page
-  // reads (issue #494 review, round 1). Without it a watcher whose observer bot was deleted out of
-  // band kept a checked switch and a healthy row, and the reconnect offered repaired the RESPONDER.
+  // NOTE: Keyed `${inboxId}:${agentId}`, one entry per observer binding, the same shape the Channels
+  // page reads, so a watcher whose observer bot is gone shows as missing rather than healthy.
   const [observerStatus, setObserverStatus] = useState<
     Record<string, "active" | "missing">
   >({});
@@ -157,18 +151,11 @@ export function ChannelsTab({
     }
   }
 
-  // BOTH ROLES COME BACK FROM AN OBSERVE, AND BOTH ARE APPLIED (issue #494 review, round 10).
-  // `observeInbox` can answer 200 with the observe NOT done: where it races a bind of this same
-  // agent the RESPONDER wins by design (`responderWon` in management.ts — the fork delivers once to
-  // a bot that is both, as the responder), and the DTO it returns names this agent as the inbox's
-  // RESPONDER with no observer row. Reading only `observerAgentIds` off that answer left `agentId`
-  // stale, so this row's combined switch was describing a role the server had already decided
-  // differently — off on an inbox this agent now answers — and the next toggle acted on the wrong
-  // one.
-  //
-  // The status map follows the same answer rather than the request: `active` only where the
-  // response still lists us among the observers, which is also what makes a removal leave no stale
-  // entry and a repair stop asking to be repaired.
+  // NOTE: Applies BOTH roles from an observe's answer. `observeInbox` can answer 200 with the observe NOT
+  // done: racing a bind of this same agent, the responder wins (`responderWon` in management.ts) and
+  // the DTO names this agent as the RESPONDER, so reading only `observerAgentIds` would leave
+  // `agentId` stale. The status map follows the answer too: `active` only where the response still
+  // lists us among the observers.
   function applyInboxRoles(
     inboxId: string,
     dto: { agentId: string | null; observerAgentIds: string[] },
@@ -193,15 +180,9 @@ export function ChannelsTab({
     });
   }
 
-  // The observer binding, the way the Channels page drives it: both calls reach Chatwoot, and the
-  // row's list moves only on success.
-  //
-  // ANSWERS WHETHER IT WORKED (issue #494 review, round 11). It swallows its own failure into a
-  // toast, which is right for the switch that calls it alone and wrong for the combined removal
-  // below: that one awaits this and then unbinds the responder, so a failed observer removal was
-  // followed by a SUCCESSFUL responder unbind, leaving the agent half-removed under one error toast
-  // and one success toast. The caller that chains needs the verdict; the ones that do not can
-  // ignore it.
+  // NOTE: The observer binding, the way the Channels page drives it: both calls reach Chatwoot, and the
+  // row's list moves only on success. Returns whether it worked, because the combined removal below
+  // must not unbind the responder after a failed observer removal.
   async function setObserving(
     inboxId: string,
     next: boolean,
@@ -218,8 +199,8 @@ export function ChannelsTab({
             .delete();
       if (res.error || !res.data) throw res.error;
       applyInboxRoles(inboxId, res.data.inbox);
-      // ...AND THE MESSAGE IS THE ANSWER'S, not the request's. An observe the responder race won
-      // came back 200 and said "Observer added." about an inbox that has no observer.
+      // NOTE: The message is the answer's, not the request's: an observe the responder race won returns
+      // 200 with no observer.
       const observing = res.data.inbox.observerAgentIds.includes(agentId);
       showToast(
         next
@@ -248,11 +229,9 @@ export function ChannelsTab({
     }
   }
 
-  // WHICH ROLE THIS AGENT HAS ON THIS INBOX, off the row rather than off the mode (issue #494
-  // review, round 1). The two are independent: a monitoring agent left as an inbox's responder by a
-  // mode change is a state docs/chatwoot.md keeps, and reading the role from the mode showed that
-  // binding as OFF and gave the operator no way to remove it — while a watcher being promoted hid
-  // the observer binding it still had.
+  // NOTE: Which role this agent has on this inbox, off the row rather than off the mode: a
+  // monitoring agent can be an inbox's responder after a mode change (docs/chatwoot.md), and reading
+  // the role from the mode would hide that binding and leave no way to remove it.
   const rolesOn = (ib: Inbox) => ({
     responds: ib.agentId === agentId,
     observes: ib.observerAgentIds.includes(agentId),
@@ -261,13 +240,11 @@ export function ChannelsTab({
   function onToggle(ib: Inbox, next: boolean) {
     const role = rolesOn(ib);
     if (!next) {
-      // NOTE: Whatever is actually there comes off, both if the inbox carries both: the switch says
-      // "this
+      // NOTE: Whatever is actually there comes off, both if the inbox carries both: the switch says "this
       // agent is on this inbox", so turning it off has to leave nothing behind.
       void (async () => {
-        // The observer first, and the responder only if that worked (issue #494 review, round 11):
-        // going on after a failed removal leaves the agent on the inbox in one role, with an error
-        // toast and a success toast side by side saying so.
+        // NOTE: The observer first, and the responder only if that worked, so a failed removal does not
+        // leave the agent half-removed.
         if (role.observes && !(await setObserving(ib.id, false))) return;
         if (role.responds) await setBinding(ib.id, null);
       })();
@@ -297,9 +274,9 @@ export function ChannelsTab({
     void setBinding(ib.id, agentId);
   }
 
-  // The repair for a MISSING OBSERVER bot is an observe, not the inbox reconnect: that endpoint
-  // repairs the responder's bot and would leave this pair exactly as broken (issue #494 review,
-  // round 1). `observeInbox` provisions the bot again and re-attaches it.
+  // NOTE: The repair for a MISSING OBSERVER bot is an observe, not the inbox reconnect: that endpoint
+  // repairs the responder's bot and would leave this pair broken. `observeInbox` provisions the bot
+  // again and re-attaches it.
   async function reobserve(inboxId: string) {
     setReconnecting(inboxId);
     try {
@@ -307,10 +284,8 @@ export function ChannelsTab({
         .inboxes({ id: inboxId })
         .observers.post({ agentId });
       if (res.error || !res.data) throw res.error;
-      // Through the same pair of writes, and for the same reason: this call is `observeInbox` too,
-      // so it can come back having made this agent the responder instead (issue #494 review, round
-      // 10). Marking the pair `active` off the request alone left a repaired badge on a pair the
-      // answer says is gone.
+      // NOTE: Through `applyInboxRoles` for the same reason as the observe: this call can come back
+      // having made this agent the responder instead.
       applyInboxRoles(inboxId, res.data.inbox);
       showToast(t("channels.reconnected", "Bot reconnected."), "success");
     } catch (e) {
@@ -437,23 +412,18 @@ export function ChannelsTab({
                       const observerBroken =
                         role.observes &&
                         observerStatus[`${ib.id}:${agentId}`] === "missing";
-                      // NOTE: Watching an inbox we do not answer — the row whose health is the
-                      // observer pair's and nobody else's (issue #494 review, round 4).
+                      // NOTE: Watching an inbox we do not answer: the row whose health is the observer pair's and
+                      // nobody else's.
                       const observerOnly = role.observes && !role.responds;
                       const otherOwner =
                         ib.agentId !== null && ib.agentId !== agentId
                           ? (agents.find((a) => a.id === ib.agentId)?.name ??
                             t("editor.channels.otherAgent", "another agent"))
                           : null;
-                      // THE OBSERVER SLOT IS SINGLE, and the write says so (issue #494 review,
-                      // round 8): `observeInbox` refuses a second one with 422
-                      // `errors.inboxAlreadyObserved`, because the memory thread is the
-                      // contact-inbox's rather than the agent's. On an inbox another agent already
-                      // watches, this switch rendered OFF and its transition routed to
-                      // `setObserving` — a click that cannot succeed. The main Channels page has
-                      // never offered it (it builds no candidate list while an observer is bound);
-                      // the editor was the one surface that still did. NAMED as well as blocked: a
-                      // switch that is merely dead reads as a bug rather than as a rule.
+                      // NOTE: The observer slot is single: `observeInbox` refuses a second one with 422
+                      // `errors.inboxAlreadyObserved`, since the memory thread is the contact-inbox's. On an inbox
+                      // another agent watches, the switch is blocked AND names that agent, because a merely dead
+                      // switch reads as a bug rather than as a rule.
                       const otherWatcher =
                         !role.observes && ib.observerAgentIds.length > 0
                           ? (agents.find((a) => a.id === ib.observerAgentIds[0])
@@ -475,20 +445,16 @@ export function ChannelsTab({
                           instanceBaseUrl={baseUrl}
                           instanceAccountId={inst.accountId}
                           status={
-                            // NOTE: A disconnected account says nothing about a bot, EXCEPT that our
-                            // own observer row is still there and still removable (issue #494
-                            // review, round 3) — shown active so the row reads as one this agent is
-                            // on, which is what the removal control beside it acts on.
+                            // NOTE: A disconnected account says nothing about a bot, EXCEPT that our own observer
+                            // row is still there and still removable: shown active so the row reads as one this
+                            // agent is on, which is what the removal control beside it acts on.
                             disconnected
                               ? role.observes
                                 ? "active"
                                 : "none"
-                              : // NOTE: THIS AGENT'S OWN BINDING IS WHAT THE CHIP IS ABOUT (issue
-                                // #494 review, round 4). Where we only OBSERVE, the answer is the
-                                // observer pair's — whatever the inbox's responder is doing, and
-                                // whoever it belongs to. Falling through to the responder's map
-                                // marked a healthy observer as missing because ANOTHER agent's bot
-                                // was gone, and offered a repair for that agent's bot.
+                              : // NOTE: Where we only OBSERVE, the chip is the observer pair's
+                                // health, not the responder's: another agent's missing bot must
+                                // not mark this observer missing or offer to repair that bot.
                                 observerOnly
                                 ? observerBroken
                                   ? "missing"
@@ -511,14 +477,10 @@ export function ChannelsTab({
                           }
                         >
                           {disconnected && role.observes ? (
-                            // NOTE: REMOVAL STAYS REACHABLE WHILE THE ACCOUNT IS DISCONNECTED
-                            // (issue #494 review, round 3). `unobserveInbox` asks no account, so
-                            // this is one of the few actions the disconnect deliberately leaves
-                            // available — and it has to be, because the observer row is what refuses
-                            // to change this agent out of monitoring mode or delete it. Replaced by
-                            // plain text, the operator was locked out of the agent with no way back
-                            // from this tab. Only removal: adding needs the account, which is what
-                            // the plain text below still says for every other row.
+                            // NOTE: Removal stays reachable while the account is disconnected:
+                            // `unobserveInbox` asks no account, and the observer row is what blocks
+                            // switching this agent out of monitoring or deleting it. Only removal:
+                            // adding needs the account.
                             pending === ib.id ? (
                               <Loader2
                                 className="h-5 w-5 animate-spin text-text-muted"

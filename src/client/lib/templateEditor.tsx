@@ -20,17 +20,12 @@ import {
   templateWriteAt,
 } from "@/modules/tool-definitions/response-template";
 
-// THE RESPONSE TEMPLATE, EDITED AS THE LANGUAGE IT IS (issue #563).
-//
-// What goes in that field is markdown plus three spellings of our own, and in a `<textarea>` all of
-// it is one colour: a `{{path}}` aimed at a key the response does not carry looks exactly like the
-// prose around it. Two extensions over the grammar in `response-template.ts`, and NOT a second copy
-// of it — the editor and the renderer answering differently about the same token is the defect this
-// screen exists to remove.
-//
-// No markdown grammar. `@codemirror/lang-markdown` is not in the tree, the template is never
-// RENDERED as markdown by anything (the runtime hands the text to the model), and highlighting a
-// convention nobody enforces is two dependencies for decoration.
+// THE RESPONSE TEMPLATE, EDITED AS THE LANGUAGE IT IS: markdown plus three spellings of our own, so
+// a `{{path}}` aimed at a key the response lacks stands out from the prose. Two extensions over the
+// grammar in `response-template.ts`, NOT a second copy of it: the editor and the renderer answering
+// differently about a token is the defect this screen removes. No markdown grammar: the template is
+// never RENDERED as markdown (the runtime hands the text to the model), and
+// `@codemirror/lang-markdown` would be two dependencies for decoration.
 
 const tokenMark = Decoration.mark({ class: "cm-tplToken" });
 const blockMark = Decoration.mark({ class: "cm-tplBlock" });
@@ -97,10 +92,9 @@ export function templateSource(
         ? offer.lists.map((l) => ({
             label: l.path,
             type: "class",
-            // THE PICKER'S OWN KEY, not a second one saying the same thing. Two keys for one
-            // sentence is two translations to keep in step, and the second was born without a real
-            // singular ("1 items"), which the plural fence in `tests/client/locale-plurals.test.ts`
-            // refuses on sight.
+            // NOTE: THE PICKER'S OWN KEY, not a second one saying the same thing: two keys for one sentence
+            // are two translations to keep in step, and the plural fence in
+            // `tests/client/locale-plurals.test.ts` refuses one without a real singular ("1 items").
             detail: t("tools.outputTemplateListLength", "{{count}} items", {
               count: l.length,
             }),
@@ -113,44 +107,36 @@ export function templateSource(
             apply: applying(leaf.path),
           }));
     if (options.length === 0) return null;
-    // NOTE: `to` is the CARET, never the end of the path being replaced. Measured in the installed
-    // `@codemirror/autocomplete`: the filter pattern is `sliceDoc(active.from, active.to)` with
-    // `to` taken from this result, so a range covering the old path filtered every candidate
-    // against `foo` and hid the ones meant to replace it (round 3 of review). What the answer
-    // REPLACES is decided in the apply, off the document as it stands then.
+    // NOTE: `to` is the CARET, never the end of the path being replaced: `@codemirror/autocomplete`
+    // filters on `sliceDoc(active.from, active.to)` with `to` taken from this result, so a range
+    // covering the old path would filter every candidate against it and hide the replacements. What
+    // the answer REPLACES is decided in the apply, off the document as it stands then.
     return {
       from: write.from,
       to: write.to,
       options,
-      // NOTE: what may change WITHOUT asking this source again, and it is narrower than "not a
-      // brace". `validFor` keeps one result alive while the text still matches, so a pattern that
-      // admitted `#each ` kept the SCALAR options after the operator turned the token into a block:
-      // the list was then filtered against path labels, the popup emptied, and the lists this field
-      // advertises never arrived (round 4 of review). A path carries none of these characters, so
-      // excluding them re-asks at exactly the two moments the answer changes — a `#` that starts a
-      // marker, and the whitespace that moves where the path begins.
+      // NOTE: what may change WITHOUT asking this source again, narrower than "not a brace". `validFor`
+      // keeps one result alive while the text matches, so a pattern admitting `#each ` would keep the
+      // SCALAR options after the token became a block, and the list options would never arrive. A path
+      // carries none of these characters, so excluding them re-asks exactly when the answer changes: a
+      // `#` that starts a marker, and whitespace that moves where the path begins.
       validFor: /^[^\s{}#/]*$/,
     };
   };
 }
 
 // Accepting an answer closes the token when nothing else does, and leaves the caret PAST the close
-// either way. Both halves were measured in the browser rather than reasoned:
-//
-//   - without the close, picking from a list opened by typing `{{` leaves `{{path` on screen, a
-//     stray brace that reaches the model verbatim;
-//   - `closeBrackets` turns a typed `{{` into `{{}}`, so the ordinary case is the one where the
-//     braces already exist, and putting the caret at the end of the inserted path put it INSIDE the
-//     token. Everything typed next landed in there: typing a value and then a block produced
-//     `{{cliente.nome{{#each resultados}}}}` on one line.
+// either way. Without the close, a list opened by typing `{{` leaves `{{path`, a stray brace that
+// reaches the model verbatim. And `closeBrackets` turns a typed `{{` into `{{}}`, so the braces
+// usually exist already: a caret at the end of the inserted path would sit INSIDE the token, and the
+// next typing would land there (`{{cliente.nome{{#each resultados}}}}`).
 function applying(path: string) {
   return (view: EditorView, _c: Completion, from: number, to: number) => {
     // NOTE: asked AGAIN, against the document as it stands at acceptance, rather than closing over
-    // the answer the offer was built from (round 1 of review). `validFor` keeps one result alive
-    // while the operator types the path, so the offer is computed against `{{}}` and applied
-    // against `{{cli}}`: a captured close position is then three characters short, which put the
-    // caret inside the token, and a captured one past a DELETION exceeds the document and makes
-    // the dispatch throw.
+    // the answer the offer was built from. `validFor` keeps one result alive while the operator types,
+    // so an offer computed against `{{}}` is applied against `{{cli}}`: a captured close position would
+    // be short, putting the caret inside the token, and one captured past a DELETION would exceed the
+    // document and make the dispatch throw.
     const write = templateWriteAt(view.state.doc.toString(), to);
     const insert = write?.closeAt == null ? `${path}}}` : path;
     // NOTE: through the end of the path already in the token, which the filter range above is not

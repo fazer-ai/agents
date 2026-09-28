@@ -11,10 +11,9 @@ export type VaultEntry = NonNullable<
 >["entries"][number];
 
 // A page can mount several CredentialPickers at once (the Behavior tab alone has STT + vision + TTS,
-// plus the model key on General), and each used to fire its own GET /vault on mount. This is a tiny
-// shared cache so those collapse into ONE request: a short per-tenant TTL + an in-flight promise that
-// concurrent callers await. Keyed by the SUPER_ADMIN active-tenant selector so a stale value is never
-// served across tenants (a tenant SWITCH does a full page reload anyway, which clears this).
+// plus the model key on General), and this tiny shared cache collapses their GET /vault into ONE: a
+// short per-tenant TTL + an in-flight promise concurrent callers await. Keyed by the active-tenant
+// selector so a value is never served across tenants (a tenant SWITCH reloads the page anyway).
 const TTL_MS = 30_000;
 
 // Bumped by every announced vault change. Clearing the in-flight map does not cancel the request it
@@ -87,11 +86,9 @@ export function loadVault(): Promise<VaultEntry[]> {
 // ago reading as deleted. The notification sends them back to `loadVault`, which either gets the
 // fresh list or fails again and leaves them at "not loaded", and both of those are honest.
 export async function refreshVault(): Promise<VaultEntry[]> {
-  // Announce the drop NOW, through the same call every other mutation uses. The caller has just
-  // changed the vault and usually pointed a field at the result, so the seconds between dropping
-  // the old list and receiving the new one are exactly when a listener still holding the old one
-  // reports the created credential as deleted. Waiting for the GET to announce anything is what
-  // left that window open.
+  // NOTE: announce the drop NOW, through the same call every other mutation uses: between dropping
+  // the old list and receiving the new one, a listener still holding the old one would report the
+  // credential the caller just created as deleted, and waiting for the GET would leave that window open.
   invalidateVault();
   try {
     const entries = await loadVault();
@@ -104,10 +101,9 @@ export async function refreshVault(): Promise<VaultEntry[]> {
 }
 
 // WHICH VAULT THIS TAB IS ON, as a number that moves when the vault is CHANGED and not when a
-// listener is merely told to re-read. `refreshVault` announces twice on purpose — once on the drop
-// and once when the new list lands — so counting notifications counts one mutation as two, and a
-// reader that pins something to "the vault as it was" would see it expire between the two halves of
-// a single refresh (round 15 of review).
+// listener is merely told to re-read. `refreshVault` announces twice on purpose (on the drop and
+// when the new list lands), so counting notifications counts one mutation as two, and a reader that
+// pins something to "the vault as it was" would see it expire between the halves of one refresh.
 export function vaultRevision(): number {
   return generation;
 }
@@ -121,16 +117,11 @@ export function invalidateVault(): void {
   notifyChanged();
 }
 
-// The base URL a stored `vault:<id>` ref carries, resolved from the vault itself.
-//
-// Reading it off a CredentialPicker's `onEntryChange` instead made it a property of what is MOUNTED.
-// The agent editor renders one tab at a time, so an editor opened straight on Behavior never mounted
-// General, never heard about the model credential, and judged the agent as having no endpoint at
-// all: a false "endpoint missing" on the speech rewrite, with Save disabled, for a configuration the
-// runtime resolves without trouble. A page needs this answer whether or not the field that displays
-// it is on screen.
-//
-// Costs no request: loadVault() is the same shared, de-duplicated read the pickers already do.
+// The base URL a stored `vault:<id>` ref carries, resolved from the vault itself, whether or not the
+// field that displays it is mounted. Reading it off a CredentialPicker's `onEntryChange` would tie
+// it to what is MOUNTED: the agent editor renders one tab at a time, so opened on Behavior it would
+// judge the agent as having no endpoint (a false "endpoint missing", Save disabled). Costs no
+// request: loadVault() is the same shared, de-duplicated read the pickers already do.
 export function useVaultBaseUrls(): (ref: string) => string | null {
   const [entries, setEntries] = useState<VaultEntry[]>([]);
   const load = useCallback(async () => {
@@ -152,7 +143,7 @@ export function useVaultBaseUrls(): (ref: string) => string | null {
     (ref: string) => {
       if (!ref) return null;
       // NOTE: the DIALABLE one. The listing reports the row as it is, so a stray base URL stays
-      // visible; what a page DECIDES with has to be what the runtime will use (#504).
+      // visible; what a page DECIDES with has to be what the runtime will use.
       const entry = entries.find(
         (e) => formatVaultRef(e.id) === canonicalVaultRef(ref),
       );
@@ -162,22 +153,19 @@ export function useVaultBaseUrls(): (ref: string) => string | null {
   );
 }
 
-// Which refs the vault holds right now, and which of those are still waiting for their secret. Both
-// answers come off the same list the pickers already load, and a page needs them whether or not the
-// field that displays them is mounted (the agent editor renders one tab at a time but judges the
-// whole configuration on every one of them).
-//
-// `known` is null until the first list lands, and that distinction is the point: an empty set means
-// "the vault holds nothing", which would declare every credential on the page unresolvable for the
-// one paint between mount and response. `pending` has no such state because the safe direction is
-// the opposite — an unfilled credential simply goes unreported until the list arrives.
+// Which refs the vault holds right now, and which are still waiting for their secret, off the list
+// the pickers already load, whether or not the displaying field is mounted (the agent editor judges
+// the whole configuration on every tab). `known` is null until the first list lands: an empty set
+// would declare every credential on the page unresolvable for the paint before the response.
+// `pending` has no such state, since there the safe direction is the opposite: an unfilled
+// credential goes unreported until the list arrives.
 export function useVaultRefs(): {
   known: Set<string> | null;
   pending: Set<string>;
   // What the vault says each ref in `known` IS, keyed the same way, so a field can ask whether the
-  // entry it names can actually serve it — resolving and serving are different questions (issue
-  // #471). The value's shape comes back as a boolean the server computed, never as the value. Null
-  // alongside `known` and for the same reason: an empty map would read as "nothing fits".
+  // entry it names can actually serve it: resolving and serving are different questions. The value's
+  // shape comes back as a boolean the server computed, never as the value. Null alongside `known` and
+  // for the same reason: an empty map would read as "nothing fits".
   facts: Map<string, VaultRefFacts> | null;
   pendingEntries: VaultEntry[];
 } {

@@ -31,27 +31,18 @@ import { cn } from "@/client/lib/utils";
 import { claimEscape } from "./escapeClaim";
 import { mergeDescribedBy, useFormField } from "./FormFieldContext";
 
-// The console's CodeMirror field, with no language of its own (issue #562). Everything here is true
-// of any language: the view built once, the controlled document, the accessibility attributes on the
-// contenteditable, the placeholder, the character cap and the Escape claim. What the editor IS —
-// the grammar, the completion source, the extra key bindings — arrives as `extensions` from the
-// caller, in a compartment, so a rename in the arguments panel above reconfigures the source in
-// place instead of tearing the editor down with the cursor and the undo history inside it.
-//
-// CodeMirror 6 rather than Monaco for one reason that is a property of this deployment and not a
-// preference: the production CSP grants neither `unsafe-eval` nor `wasm-unsafe-eval`
-// (src/api/lib/csp.ts), which Monaco needs and CodeMirror does not. CodeMirror's one requirement
-// under a strict policy is an injected `<style>` element, and `styleSrc` already carries
-// `'unsafe-inline'` in every environment, not only dev.
-//
-// The theme is written against the console's CSS CUSTOM PROPERTIES rather than against colours, so
-// light mode costs nothing: `html[data-theme="light"]` swaps the variables and the editor follows,
-// with no theme prop, no re-render and no second `EditorView.theme` to keep in step.
+// The console's CodeMirror field, with no language of its own: the view built once, the controlled
+// document, the accessibility attributes, the placeholder, the character cap and the Escape claim.
+// What the editor IS arrives as `extensions` from the caller, in a compartment, so a rename in the
+// arguments panel reconfigures in place instead of rebuilding with the cursor and undo history inside.
+// CodeMirror rather than Monaco because the production CSP grants no `unsafe-eval` (src/api/lib/csp.ts),
+// and the theme reads the CSS custom properties, so light mode needs no second theme. See docs/ui.md,
+// "The code tool editor".
 
 // A tiny highlight style, shared by every language this field is given. Deliberately six rules and
 // not a full palette: the thing worth seeing at a glance is which words are STRINGS and which are
-// structure, because an unterminated string is the mistake a textarea hides best — in a code body
-// and in a pasted API response alike.
+// structure, because an unterminated string is the mistake a textarea hides best (in a code body and
+// in a pasted API response alike).
 const highlight = HighlightStyle.define([
   { tag: tags.keyword, color: "var(--color-purple)" },
   {
@@ -197,8 +188,8 @@ export interface CodeMirrorFieldProps {
   invalid?: boolean;
   // The view, for a caller that has to WRITE where the cursor is rather than replace the document:
   // the template field's picker inserts a token at the caret, which is a dispatch and not a string
-  // splice (issue #563). Called with the view once it exists and with `null` when it is destroyed,
-  // because a caller holding a destroyed view dispatches into nothing and CodeMirror throws.
+  // splice. Called with the view once it exists and with `null` when it is destroyed, because a caller
+  // holding a destroyed view dispatches into nothing and CodeMirror throws.
   onView?: (view: EditorView | null) => void;
   "aria-label"?: string;
   className?: string;
@@ -227,20 +218,20 @@ export function CodeMirrorField({
   const onViewRef = useRef(onView);
   onViewRef.current = onView;
   const field = useFormField();
-  // NOTE: a compartment so the caller can change what the editor IS — a renamed argument
-  // reconfiguring a completion source, a language switching under the same document — without the
-  // editor being rebuilt, which would drop the cursor and the undo history with it.
+  // NOTE: a compartment so the caller can change what the editor IS (a renamed argument reconfiguring
+  // a completion source, a language switching under the same document) without the editor being
+  // rebuilt, which would drop the cursor and the undo history with it.
   const extSlot = useMemo(() => new Compartment(), []);
   // NOTE: a second compartment for the same reason: the label, the invalid state and the
   // description all change while the editor stays mounted, and `contentAttributes` is read at
   // construction. Without it the attributes freeze at whatever they were when the body first
   // rendered, which for `aria-invalid` means never.
   const attrsSlot = useMemo(() => new Compartment(), []);
-  // NOTE: and a third, for the same event the completion source reconfigures for. The placeholder
-  // is console text (`starterCode(t)`), so it changes when the operator switches the language with
-  // the modal open, and as a lifecycle dependency that switch rebuilt the whole view: cursor,
-  // selection and undo history gone, mid-body. The cap below is NOT one of these, because it is a
-  // constant of the sandbox and cannot change under a mounted editor.
+  // NOTE: and a third, for the same event the completion source reconfigures for. The placeholder is
+  // console text (`starterCode(t)`), so it changes when the operator switches the language with the
+  // modal open, and as a lifecycle dependency that switch would rebuild the whole view, dropping the
+  // cursor, selection and undo history mid-body. The cap is NOT one of these: it is a constant of the
+  // sandbox and cannot change under a mounted editor.
   const holderSlot = useMemo(() => new Compartment(), []);
   // How far past the cap the last refused change would have gone, and 0 while nothing is refused.
   // The ref is what the filter reads: it runs on every keystroke, and a setState per keystroke to
@@ -251,16 +242,15 @@ export function CodeMirrorField({
   // on the wrapper below. A wrapper `div` has no role, so `aria-label` on it is dropped by the
   // accessibility tree and the field reads as unlabelled.
   const label = rest["aria-label"];
-  // NOTE: the counter `<Textarea>` renders, kept when the body moved off one: the change filter
-  // REFUSES an edit at the cap, so without it the field simply stops accepting characters with
-  // nothing on screen saying why. Same threshold as the textarea's, so warning arrives before the
-  // wall rather than at it, and the same over-limit line for a body that arrived past the cap and
-  // has to be edited down.
+  // NOTE: the same counter `<Textarea>` renders: the change filter REFUSES an edit at the cap, so
+  // without it the field stops accepting characters with nothing on screen saying why. Same threshold
+  // as the textarea's, so the warning arrives before the wall, and the same over-limit line for a body
+  // that arrived past the cap and has to be edited down.
   const count = value.length;
-  // NOTE: the NUMBER, not the object. It is what the change filter needs and what the editor is
-  // built against, so depending on the object would rebuild the whole view — cursor and undo
-  // history included — every time the caller rendered a fresh one. The two sentences are read at
-  // render and never from inside the view.
+  // NOTE: the NUMBER, not the object. It is what the change filter needs and what the editor is built
+  // against, so depending on the object would rebuild the whole view (cursor and undo history
+  // included) every time the caller rendered a fresh one. The two sentences are read at render and
+  // never from inside the view.
   const capMax = cap?.max;
   const over = capMax !== undefined && count > capMax;
   const showCount =
@@ -303,15 +293,11 @@ export function CodeMirrorField({
       ]),
       EditorView.updateListener.of((u) => {
         if (!u.docChanged) return;
-        // NOTE: a write from the PROP is not an edit, and reporting it hands the form a string it
-        // never chose. CodeMirror splits an incoming document on `\r\n?|\n` and re-serializes with
-        // `\n`, so a body stored with CRLF (saved over MCP from a Windows client, or imported) can
-        // never be held as written: the sync effect sees a document that differs from the prop,
-        // writes the prop in again, and the form would take the normalized text as the operator's
-        // work. The tool would then be dirty the moment it opens, with Escape offering to discard
-        // changes nobody made. `every` and not `some` so that a batch carrying a real edit
-        // alongside a controlled write is still reported; the two are indistinguishable today,
-        // because the sync effect dispatches alone, and no test can separate them from out here.
+        // NOTE: a write from the PROP is not an edit. CodeMirror re-serializes line breaks as `\n`, so a
+        // body stored with CRLF (saved over MCP, or imported) never matches the prop, and reporting the
+        // sync write would make the tool dirty on open, with Escape offering to discard changes nobody
+        // made. `every` and not `some`, so a batch carrying a real edit alongside a controlled write is
+        // still reported.
         if (u.transactions.every((tr) => tr.annotation(CONTROLLED))) return;
         onChangeRef.current(u.state.doc.toString());
       }),
@@ -323,15 +309,11 @@ export function CodeMirrorField({
     ];
     base.push(holderSlot.of(placeholder ? placeholderExt(placeholder) : []));
     if (capMax !== undefined) {
-      // NOTE: the change is refused WHOLE rather than trimmed to fit, which is where this parts
-      // from `<textarea maxLength>` on purpose. Measured: the browser truncates a paste into a
-      // textarea, and for prose losing the tail is harmless. A JavaScript body truncated to fit is
-      // a body missing its last lines that saves clean and fails when the agent calls it. So the
-      // paste is refused, and the refusal is SAID below: a refusal nobody sees is a field that
-      // stopped accepting text for no reason, and on a short body there is not even a counter on
-      // screen to hint at a cap. A value already past the cap (imported, or written through the
-      // API before the cap existed) still opens and still edits down, because the filter only asks
-      // about the length the change would PRODUCE.
+      // NOTE: the change is refused WHOLE rather than trimmed to fit, unlike `<textarea maxLength>`: a
+      // JavaScript body truncated to fit saves clean and fails when the agent calls it. The refusal is
+      // SAID below, since on a short body nothing else on screen hints at a cap. A value already past the
+      // cap still opens and edits down, because the filter only asks about the length the change would
+      // PRODUCE.
       base.push(
         EditorState.changeFilter.of((tr) => {
           if (!tr.docChanged) return true;
@@ -377,14 +359,9 @@ export function CodeMirrorField({
     };
   }, [extSlot, attrsSlot, holderSlot, capMax]);
 
-  // NOTE: an external change (the form resetting, a starter body applied) written into the document
-  // without disturbing a cursor that is already where the operator put it, and kept OUT of the undo
-  // history: it is not an edit the operator made, so Ctrl-Z must not resurrect what it replaced.
-  // Measured on the tree as it stands, the reachable openings are already safe by accident — the
-  // dialog unmounts its content on close, so a reopening builds a new view with an empty history,
-  // and an edit's body only arrives before the editor mounts, behind the loading skeleton. This
-  // makes it true by construction instead, for the first caller that writes `value` while the
-  // editor is on screen.
+  // NOTE: an external change (the form resetting, a starter body applied) is written without
+  // disturbing a cursor already where the operator put it, and kept OUT of the undo history: it is not
+  // an edit the operator made, so Ctrl-Z must not resurrect what it replaced.
   useEffect(() => {
     const v = view.current;
     if (!v) return;

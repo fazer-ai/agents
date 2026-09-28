@@ -1,16 +1,11 @@
 import { BRANDING_DEFAULT_FAVICONS_KEY } from "@/lib/branding";
 
-// The page's icon links. Two of them are declared in `public/index.html` (the bundled defaults,
-// scoped by `prefers-color-scheme`); a configured favicon replaces them with a single link whose
-// variant follows the app theme instead. Applying one is a whole-set rebuild, so the declared
-// links have to be remembered somewhere before the first override, or clearing the favicon would
-// have nothing to restore.
-//
-// That "somewhere" is a single window property rather than a module variable, because the first
-// override does not always happen here: the inline <head> script applies the cached favicon before
-// this bundle exists, and it removes the declared links to keep the browser from fetching the
-// default (measured in Chromium: leaving them in place fetches both). Whichever of the two runs
-// first writes the property; the other reads it.
+// The page's icon links. `public/index.html` declares two (the bundled defaults, by
+// `prefers-color-scheme`); a configured favicon replaces them with one link following the app theme.
+// Applying one rebuilds the set, so the declared links are remembered before the first override, or
+// clearing the favicon would have nothing to restore. Remembered on a window property, not a module
+// variable: the inline <head> script may apply the cached favicon first, removing the declared links
+// so the browser does not fetch the default too. Whichever runs first writes it; the other reads it.
 
 export interface IconLink {
   href: string;

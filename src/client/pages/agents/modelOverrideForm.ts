@@ -5,19 +5,11 @@ import {
   resolveModelOverride,
 } from "@/graph/model-override";
 
-// The editor's view of a SECONDARY MODEL OVERRIDE — the four fields a feature carries when it may
-// run on a model other than the agent's (the speech rewrite, the attendance summariser).
-//
-// Every function here PROJECTS `resolveModelOverride`; none re-derives the rule. That is the whole
-// point: the operator has to see, before saving, the same decision the runtime will make, and the
-// two drifting apart is how a configuration that looks fine in the editor turns into a feature that
-// silently never runs.
-//
-// The editor is stricter about exactly one thing: an endpoint has to be a valid http(s) URL here, so
-// a half-typed one is refused before the save rather than at the first call.
-//
-// Shared rather than copied per feature. The rules these functions project were found by review, one
-// incident at a time, and the second copy would rediscover them the same way.
+// The editor's view of a SECONDARY MODEL OVERRIDE: the four fields a feature carries when it may run
+// on a model other than the agent's (the speech rewrite, the attendance summariser). Every function
+// here PROJECTS `resolveModelOverride` rather than re-deriving it, so the operator sees before saving
+// the decision the runtime will make. The one stricter check: an endpoint must be a valid http(s)
+// URL here. Shared rather than copied per feature, so each feature gets every rule.
 
 export interface AgentModelSource {
   provider: string;
@@ -53,15 +45,10 @@ export function overrideProviderChanged<T extends ModelOverride>(
   };
 }
 
-// Picking a model or a key FOR the secondary call pins the vendor it was picked FROM. Left
-// inherited, the pair comes apart the next time the agent's provider changes — on another tab, which
-// does not even save together with this one — and the key follows it to a vendor that never issued
-// it while the model id is asked of one that has never heard of it. The resolver refuses that
-// configuration (`override_without_provider`); this is what keeps the editor from ever producing it,
-// at no cost to the operator, who picked from a list the provider itself answered.
-//
-// Clearing the field does NOT unpin the provider: the operator may be mid-edit, and an explicit
-// provider is never the wrong answer — it is only ever more specific than the blank one.
+// Picking a model or a key FOR the secondary call pins the vendor it was picked FROM. Left inherited,
+// a later change of the agent's provider (on another tab) would send the key and model to a vendor
+// that never issued them; the resolver refuses that (`override_without_provider`). Clearing the
+// field does NOT unpin: the operator may be mid-edit, and an explicit provider is never wrong.
 export function overridePicked<T extends ModelOverride>(
   override: T,
   field: "model" | "credentialRef",
@@ -110,17 +97,10 @@ export function overridePickerSource(
   };
 }
 
-// Whether the endpoint in play is one this provider will never send. The operator can reach it in
-// two clicks — pick a credential that carries a base URL while the call sits on a keyed vendor — and
-// the field that would explain it does not even render for that provider.
-//
-// `sectionOn` is REQUIRED, and it is the whole reason these two are not plain projections like the
-// rest of this file: both block the tab's Save, and each of these overrides lives inside a section
-// the operator can switch OFF, which HIDES its fields. Answering "yes" for a section that is off
-// freezes the Behavior tab with nothing on screen to explain it — including the save that turns the
-// section off, so the operator cannot even undo their way out. Asking for it rather than reading it
-// from the override is deliberate: the switch is not part of the model configuration, and the
-// compiler is the only thing that will put the question to the next feature that adds an override.
+// Whether the endpoint in play is one this provider will never send (a credential with a base URL
+// on a keyed vendor, whose field does not render). `sectionOn` is REQUIRED: both checks block Save,
+// and a switched-off section hides its fields, so answering "yes" there would freeze the tab with
+// no way out. It is an argument, not read off the override, so every new override must answer it.
 export function overrideBaseUrlUnsupported(
   override: ModelOverride,
   agent: AgentModelSource,

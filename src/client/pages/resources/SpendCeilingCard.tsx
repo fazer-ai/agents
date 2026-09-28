@@ -29,26 +29,17 @@ type Settings = NonNullable<
 type SpendCeiling = Settings["spendCeiling"];
 
 // How often a card whose first read failed asks again, until a read has said how often the poll
-// runs (review round 16). Once the usage is in hand its own `pollIntervalMs` is the period.
+// runs. Once the usage is in hand its own `pollIntervalMs` is the period.
 const USAGE_RETRY_MS = 60_000;
 
-// THE NUMBER THE OPERATOR CAME FOR, above the fields that set it. The ceiling is the one setting in
-// this panel whose value is meaningless without the measurement beside it: nobody can pick a
-// monthly budget without seeing what the month has already cost, and a screen that only took the
-// number would send them to the dashboard to find it and back here to type it.
-//
-// Both halves are shown whether or not a ceiling is set, which is why the bar renders a plain figure
-// when there is none. The state the gate would return is what colours it, so the screen and the
-// runtime cannot disagree about what "close to the ceiling" means.
-//
-// The figure is DOLLARS, as Langfuse costed the month (issue #426), and it is a snapshot a job
-// refreshes: so beside each bar sits the snapshot's health (when it was last refreshed, whether the
-// poll is failing) and the reconciliation against the local ledger (how many calls Langfuse priced,
-// which models it priced at zero). A ceiling that undercounts says so here, on the screen that
-// shows the bar, or it says so nowhere.
+// The measurement sits above the fields that set the ceiling: a monthly budget cannot be picked
+// without seeing what the month already cost. Both halves show even with no ceiling set, coloured by
+// the gate's own verdict so the screen and the runtime agree on "close to the ceiling". The figure is
+// DOLLARS from a Langfuse snapshot a job refreshes, so each bar carries the snapshot's health and the
+// reconciliation against the local ledger: an undercounting ceiling says so here or nowhere.
 
 // The bar, the figure and every caveat under them are shared with the dashboard, which shows the
-// same ceiling on the page where spend is watched (issue #427). Only the composition is local.
+// same ceiling on the page where spend is watched. Only the composition is local.
 function BarRow({
   label,
   entry,
@@ -75,9 +66,8 @@ export function SpendCeilingCard({
 }: {
   value: SpendCeiling;
   onSaved: (next: SpendCeiling) => void;
-  // Bumped by the page when the Langfuse card beside this one saves (review round 13): the flag
-  // above the bars is the credential's present, and it has to be re-read the moment that present
-  // changes, not at the next spend-ceiling save or reload.
+  // Bumped by the page when the Langfuse card beside this one saves: the flag above the bars is the
+  // credential's present, and it has to be re-read the moment that present changes.
   reloadKey?: number;
 }) {
   const { t, i18n } = useTranslation();
@@ -106,11 +96,10 @@ export function SpendCeilingCard({
   const [usage, setUsage] = useState<Usage | null>(null);
   const [usageError, setUsageError] = useState(false);
   const [form, setForm] = useState<SpendCeiling>(value);
-  // THE DOLLAR FIELDS ARE EDITED AS TEXT (review round 4). A number parsed on every keystroke and
-  // written back as the field's value turns a cleared field into "0" before the next digit lands
-  // (so 5 typed over it reads "05") and hands a trailing point to the browser's own heuristic.
-  // The text is what the field shows; the number, parsed from it on every change, is what the
-  // save sends. Re-derived from the settings only when they change underneath.
+  // NOTE: The dollar fields are edited as TEXT: a number written back on every keystroke turns a
+  // cleared field into "0" (so 5 typed over it reads "05") and mangles a trailing point. The number
+  // parsed from the text is what the save sends; the text is re-derived only when the settings
+  // change underneath.
   const [usdText, setUsdText] = useState({
     inbox: String(value.monthlyInboxUsd),
     playground: String(value.monthlyPlaygroundUsd),
@@ -125,10 +114,9 @@ export function SpendCeilingCard({
     });
   }, [value]);
 
-  // A READ THAT SETTLES AFTER A NEWER ONE IS DROPPED (review round 16). The mount-time read and
-  // the one the Langfuse save asks for can be in flight together, and the older answer landing
-  // last would put the pre-save flag back over the one the save had just made true. Each read
-  // takes a number, and only the latest number's answer, or failure, reaches the state.
+  // NOTE: A read that settles after a newer one is dropped: the mount-time read and the one the
+  // Langfuse save asks for can overlap, and the older answer landing last would restore the pre-save
+  // flag. Only the latest sequence number's answer, or failure, reaches the state.
   const readSeq = useRef(0);
   const loadUsage = useCallback(async () => {
     const seq = ++readSeq.current;
@@ -150,10 +138,9 @@ export function SpendCeilingCard({
     void loadUsage();
   }, [loadUsage, reloadKey]);
 
-  // THE CARD RE-READS WHILE IT STAYS OPEN (review round 16). The health beside each bar (stale,
-  // failing since, the figure itself) is computed on the server per read, so a card left mounted
-  // across three missed polls would keep saying "refreshed" from its first read. The period is the
-  // poll's own, as the usage reports it, so the card learns of a reading about when there is one.
+  // NOTE: The card re-reads while it stays open: the health beside each bar is computed per read, so
+  // a card left mounted would keep saying "refreshed" from its first read. The period is the poll's
+  // own, as the usage reports it.
   const refreshMs = usage?.pollIntervalMs ?? USAGE_RETRY_MS;
   useEffect(() => {
     const timer = setInterval(() => void loadUsage(), refreshMs);
@@ -162,9 +149,9 @@ export function SpendCeilingCard({
 
   const set = <K extends keyof SpendCeiling>(k: K, v: SpendCeiling[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
-  // Empty is zero (no ceiling on that half); anything else has to be a finite amount at or above
-  // zero. A negative one is REFUSED rather than stored as zero (review round 6): zero means no
-  // ceiling, so rounding "-1" to it would switch the protection off in silence.
+  // NOTE: Empty is zero (no ceiling on that half); anything else has to be a finite amount at or
+  // above zero. A negative one is REFUSED rather than stored as zero: zero means no ceiling, so
+  // rounding "-1" to it would switch the protection off in silence.
   const parseUsd = (text: string): number | null => {
     if (text.trim() === "") return 0;
     const n = Number(text);
@@ -227,20 +214,17 @@ export function SpendCeilingCard({
     : "";
   const entry = (source: string) =>
     usage?.entries.find((e) => e.source === source);
-  // The marker rides both reads; the settings prop is what the page holds after a save, so it wins.
-  // The settings' explicit null wins (review round 5): after a save in dollars, a usage response
-  // read before the save can still carry the marker, and `??` would let it revive the notice.
+  // NOTE: The marker rides both reads; the settings prop is what the page holds after a save, so it
+  // wins, explicit null included: a usage response read before a save in dollars can still carry
+  // the marker, and `??` would let it revive the notice.
   const legacy =
     value.legacyTokens === undefined
       ? (usage?.legacyTokens ?? null)
       : value.legacyTokens;
-  // Two reads can say "no Langfuse": the flag is computed on this request, the sentinel on a row was
-  // written by the last poll. Either is enough, and the sentence is said once, above the bars.
-  // TWO STATES, TWO SENTENCES (review rounds 9 and 10). The flag is the credential's PRESENT (it
-  // resolves it on this request, the way the poll does); a row's sentinel is what the GATE acts
-  // on, because the gate reads the row and learns of a credential only at the next poll. So the
-  // flag says whether the cost can be read, above the bars, and never claims what the gate does;
-  // each bar says, from its own row, whether calls go through.
+  // NOTE: Two reads can say "no Langfuse", as two sentences. The flag is the credential's PRESENT,
+  // resolved on this request, and says whether the cost can be read, above the bars. A row's
+  // sentinel is what the GATE acts on (it learns of a credential only at the next poll), so each bar
+  // says from its own row whether calls go through.
   const langfuseMissing = usage !== null && !usage.langfuseConfigured;
 
   return (

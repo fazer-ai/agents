@@ -72,18 +72,13 @@ export interface BusinessHoursFormProps {
     timezone: string;
     windows: Window[];
     // Required, not optional: the form PATCHes this field unconditionally, so a caller that omits it
-    // initializes to [] and silently deletes every holiday the operator had. Three call sites build
-    // this object; making it required is what stops a fourth from repeating that.
+    // initializes to [] and silently deletes every holiday the operator had.
     exceptions: Exception[];
   };
   onSaved: (id: string, name: string) => void;
   onCancel: () => void;
 }
 
-// Extracted form for creating or editing a business-hours schedule. Used by
-// BusinessHoursPanel (via modal) and SchedulePicker (inline create/edit).
-// When rendered inside a <Modal>, calls useUnsavedChanges so the modal's
-// discard-confirmation guard fires automatically on dirty state.
 // The keys of the body this form writes. The window and exception lists are refused per element
 // (`refused body.windows.0`), which lands on the list they belong to: see placeRefusal.
 const HOURS_FIELDS = ["name", "timezone", "windows", "exceptions"] as const;
@@ -147,9 +142,8 @@ export function BusinessHoursForm({
     );
   }
 
-  // Each field edits independently. A crossed/equal range (start >= end) is left
-  // as the operator typed it and simply flagged invalid (yellow + message), which
-  // blocks the save until they fix it — no surprising counterpart auto-adjust.
+  // NOTE: A crossed or equal range stays as typed and is flagged invalid, which blocks the save.
+  // Auto-adjusting the other end instead would silently change a value the operator did not touch.
   function setStart(i: number, value: string) {
     if (!TIME_RE.test(value)) return; // ignore a cleared/partial time input
     setWindows((prev) =>
@@ -256,8 +250,8 @@ export function BusinessHoursForm({
         onSaved(data.businessHours.id, data.businessHours.name);
       }
     } catch (e) {
-      // The fixed sentence this replaces said "check the timezone" for every refusal this write can
-      // answer, a duplicate name included: the confident wrong pointer #224 is about.
+      // NOTE: The toast names what the server refused (a duplicate name included). A fixed "check the
+      // timezone" sentence would point the operator at the wrong field.
       const toast = held(e);
       if (toast) showToast(toast, "error");
     } finally {

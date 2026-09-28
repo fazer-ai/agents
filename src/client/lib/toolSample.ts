@@ -1,59 +1,29 @@
-// THE SAMPLE RESPONSE, KEPT FOR AS LONG AS THE TAB IS OPEN AND NOWHERE ELSE (issue #566).
-//
-// The Sample response field in the HTTP tool editor used to be cleared on every open, so an operator
-// coming back to adjust a response template, the most common reason to reopen an HTTP tool, found
-// pickers that offered nothing, no preview at all, and no "Insert a field" button. The two ways out
-// were pasting a response again by hand or spending a real call against the customer's API to
-// recover what had been on screen once.
-//
-// So it is remembered, in this tab, keyed by the tenant selector and the tool id. Closing the modal
-// keeps it, and so does navigating to another page and back; a reload, a second tab and a logout do
-// not.
-//
-// WHY NOTHING IS PERSISTED, ANYWHERE, WHICH IS THE WHOLE DESIGN. Two earlier drafts were taken apart
-// in review, one for each place a value can be kept, and the two refusals are what this file is:
-//
-// 1. A REDACTED SHAPE OF THE RESPONSE IN A COLUMN, so the pickers would work on any machine. No
-//    lexical rule establishes that a key is a field name rather than customer data:
-//    `{"users": {"ana@example.com": …}}` is a map keyed by an e-mail, and `{"users": {"Ana": …}}` is
-//    one keyed by a first name that any identifier pattern accepts. Since the keys cannot be
-//    separated from the data, and a path THROUGH a map is worthless to an operator anyway (it
-//    resolves for exactly one customer), there was nothing left worth storing.
-// 2. THE RESPONSE IN `localStorage`. `docs/ui.md` carries a standing product rule that names this
-//    case outright: localStorage is not admissible for product data, and "History, save, remember,
-//    resume" all belong to a backend with `tenant_id` and RLS. A captured response is content data
-//    and not a UI preference, and the copy would outlive every deletion that does not go through
-//    this browser: a tool dropped over REST or MCP, or from another machine, leaves it behind.
-//
-// Both refusals point the same way, and the one place left to keep a value is the one the response
-// already occupies while the modal is open. So it is never written down at all, which is what lets
-// "we never store the customer's response" stand with no qualification: no column, no per-tool
-// opt-in, no backup question, no export rule, no retention policy, and nothing a future reader has
-// to re-derive before trusting it.
-//
-// WHAT THAT COSTS, stated rather than papered over: a reload, a second tab or a second machine gets
-// what it gets today, which is no offer and "Send a test request" as the way back.
+// THE SAMPLE RESPONSE, KEPT FOR AS LONG AS THE TAB IS OPEN AND NOWHERE ELSE: remembered in this
+// tab, keyed by the tenant selector and the tool id, so reopening a tool to adjust its template keeps
+// the pickers and the preview; a reload, a second tab and a logout do not. Nothing is persisted: a
+// redacted shape in a column fails because no lexical rule tells a field name from customer data (a
+// map keyed by e-mail), and `localStorage` fails the standing rule in docs/ui.md (a response is
+// content data, and a copy outlives every deletion made outside this browser). Design and costs:
+// docs/ui.md, "Pointing at a field in a tool's response".
 
 import { VAULT_CHANGED_EVENT, vaultRevision } from "@/client/lib/vaultCache";
 
 export interface ToolSample {
   // The revision of the definition this response came back from, as the row's `updatedAt`. A sample
   // describes ONE version of a tool: change the URL or the response contract, from another tab or
-  // over REST or MCP, and the paths it offers stop describing anything, while the picker keeps
-  // offering them and the preview keeps rendering over them (round 9 of review). The id matching is
-  // not enough, because the id is what survives the change.
+  // over REST or MCP, and its paths stop describing anything while the picker keeps offering them.
+  // The id is not enough, because the id is what survives the change.
   revision: string;
   text: string;
   // The status it came back under, or null when it was pasted by hand. Kept with the text because
   // the preview branches on it: a body captured from a 404 the tool declares a "no result" status
   // is projected differently, and restoring the text without it would read that 404 as a 200.
   status: number | null;
-  // The credential the request carried, by name, or null for a tool that uses none. It is here for
-  // one question only, and it is the question the revision cannot answer: a credential is a ROW OF
-  // ITS OWN, so editing its base URL or its secret in place changes the host the tool reaches and
-  // the authorization it sends while the reference stays the same word and the tool's `updatedAt`
-  // never moves (round 13 of review). A relative `urlTemplate` is resolved against that base URL by
-  // `credential-wiring.ts`, so the sample can end up describing another server entirely.
+  // The credential the request carried, by name, or null for a tool that uses none, for the one
+  // question the revision cannot answer: a credential is a ROW OF ITS OWN, so editing its base URL or
+  // secret in place changes the host and the authorization while the reference and the tool's
+  // `updatedAt` stay the same. A relative `urlTemplate` resolves against that base URL
+  // (`credential-wiring.ts`), so the sample can end up describing another server entirely.
   credentialRef: string | null;
 }
 
@@ -75,40 +45,26 @@ const MAX_CHARS = 512_000;
 
 const samples = new Map<string, ToolSample>();
 
-// A save is in flight for as long as the operator's API takes, and both things that end a sample's
-// life can happen inside that window: the tool is deleted, or the session ends. Without this the
-// response arrives afterwards and writes the sample back in, so a deletion or a logout would be
-// undone by a request that was already on the wire (round 4 of review).
-//
-// The ticket a request carries is THE WORLD AS IT WAS WHEN IT WENT OUT, and that is one value rather
-// than two because three review rounds found the same shape: something the continuation reads at the
-// end that had already changed. It carries the clock and the tenant the request was sent under, and
-// `keyFor` takes the second so the write lands in the scope that was asked about. The selector lives
-// in `localStorage`, which is shared across tabs and can move while a request is in flight
-// (`activeTenant.ts` says so in as many words), so reading it in the continuation keys the answer to
-// a question nobody asked (round 7 of review).
-//
-// What the tenant in the key is NOT is the thing that stops one tenant's response reaching another:
-// `ToolDefinition.id` is a plain autoincrement on one table, so two tenants never share a tool id
-// and a mis-keyed entry is unreachable rather than aliased. It is depth, and a future reader should
-// not over-trust it.
-//
-// The clock is checked per SCOPE rather than globally, because a global check over-rejects: deleting
-// tool B while tool A's save is out would drop A's sample too, and the operator sees a tool they
-// never touched come back with an older response or none (round 6 of review).
+// A save is in flight for as long as the operator's API takes, and the tool can be deleted or the
+// session end inside that window; the late response must not write the sample back. The ticket a
+// request carries is THE WORLD AS IT WAS WHEN IT WENT OUT: the clock, and the tenant it was sent
+// under, which `keyFor` takes so the write lands in the scope asked about (the selector lives in
+// shared `localStorage` and can move mid-flight). The tenant in the key is depth, not isolation:
+// tool ids are one autoincrement, so two tenants never share one. The clock is checked per SCOPE:
+// a global check would drop tool A's sample when tool B is deleted during A's save.
 let clock = 0;
 let clearedAt = 0;
 const forgottenAt = new Map<string, number>();
 // When each key was last written, so a response that was already on the wire cannot land on top of
 // a newer one. Dismiss a slow save, reopen the same tool and save again: the first response arrives
 // last and would put the older opening's sample back, and the revision cannot tell them apart when
-// the second opening loaded the revision the first save committed (round 12 of review).
+// the second opening loaded the revision the first save committed.
 const writtenAt = new Map<string, number>();
 // When the vault last changed, anywhere in this tab. A sample that carried a credential describes a
 // request the vault decided part of, and the client cannot tell whether the edit touched the one it
 // used: the secret never reaches the browser, so there is nothing here to compare. What it CAN tell
-// is that a sample with no credential is untouched by any vault edit, which is what keeps this from
-// being the global clear round 6 refused.
+// is that a sample with no credential is untouched by any vault edit, which keeps this from being a
+// global clear.
 let vaultChangedAt = 0;
 
 // The identity the entries belong to. `undefined` is "nobody has said yet", which is not the same
@@ -122,12 +78,9 @@ export interface SampleTicket {
 }
 
 export function sampleTicket(): SampleTicket {
-  // ISSUING IS WHAT ORDERS THEM, so the clock moves here and not only when something lands. Reading
-  // it without moving it gave two saves of the same tool that started before either finished the
-  // SAME number, and equal numbers cannot be ordered: whichever response arrived first marked the
-  // key and the other was refused as stale, so a save could lose to one the operator made earlier
-  // (round 14 of review). The one this guards against, an OLDER opening's answer landing on a newer
-  // one, is the same comparison with the numbers finally distinct.
+  // NOTE: ISSUING IS WHAT ORDERS THEM, so the clock moves here and not only when something lands: two
+  // saves of the same tool started before either finished would otherwise share a number, and equal
+  // numbers cannot be ordered, so a save could lose to one the operator made earlier.
   clock++;
   return { at: clock, tenant: activeTenant() };
 }
@@ -157,10 +110,9 @@ export function recallToolSample(
   const key = keyFor(toolId, activeTenant());
   const kept = samples.get(key);
   if (kept === undefined) return null;
-  // A READ THAT DROPS, because a mismatch is the moment this entry becomes known-useless and there
-  // is no other moment where anyone would look at it. Left in place it holds a customer's response
-  // that can never be served again, and it occupies one of the slots below: seven stale entries
-  // would evict the one good sample the operator is actually working with (round 10 of review).
+  // NOTE: A READ THAT DROPS, because a mismatch is the moment this entry becomes known-useless and
+  // there is no other moment anyone would look at it. Left in place it holds a customer's response that
+  // can never be served again, and stale entries would evict the one good sample the operator is using.
   if (kept.revision !== revision) {
     samples.delete(key);
     return null;
@@ -169,20 +121,15 @@ export function recallToolSample(
 }
 
 // Called when the tool is SAVED rather than on every keystroke: what comes back is the sample the
-// tool was last saved with, not a draft the operator abandoned.
-//
-// WHAT COUNTS AS NOTHING IS DECIDED HERE and nowhere else. The caller hands over what is on screen,
-// because a caller that pre-judges it is a second copy of this rule, and the copy is what a change
-// to the rule forgets (measured: with the judgement duplicated at the one call site, reverting it
-// there survived the whole battery).
+// tool was last saved with, not a draft the operator abandoned. WHAT COUNTS AS NOTHING IS DECIDED
+// HERE and nowhere else: the caller hands over what is on screen, because a caller that pre-judges
+// it is a second copy of this rule, and the copy is what a change to the rule forgets.
 export function rememberToolSample(
   toolId: string,
   sample: ToolSample | null,
   // REQUIRED, and that is the point: the ticket the caller read BEFORE its request went out, so a
-  // forgetting that happened in the meantime wins. Optional, it is a parameter a caller forgets and
-  // nothing says so; required, `tsc` is the one that notices, which is what a source fence over the
-  // same question could only approximate (measured: with it optional, dropping the argument at the
-  // one call site survived the whole battery).
+  // forgetting that happened in the meantime wins. An optional parameter is one a caller forgets with
+  // nothing saying so; required, `tsc` notices.
   since: SampleTicket,
 ): void {
   const key = keyFor(toolId, since.tenant);
@@ -202,20 +149,16 @@ export function rememberToolSample(
   // order, so deleting before setting is what makes the eviction below drop the least recently
   // saved rather than the first one ever saved.
   samples.delete(key);
-  // AN EMPTY BODY WITH A STATUS IS STILL A SAMPLE, and it is the one the preview most needs: a test
-  // that came back 404 with nothing in it makes the runtime bypass the template, and a template that
-  // reads no field previews fine over an empty body. Dropped for having no text, the status went
-  // with it, and the reopened tool previewed that same template as APPLIED, under a box that says
-  // "exactly what the agent would receive" (round 8 of review). So what is nothing here is neither
-  // text nor status.
+  // NOTE: AN EMPTY BODY WITH A STATUS IS STILL A SAMPLE, the one the preview most needs: a test that
+  // came back 404 with nothing in it makes the runtime bypass the template, and dropping the status
+  // with the empty text would preview that template as APPLIED on the next open. So what is nothing
+  // here is neither text nor status.
   if (sample === null) return;
-  // The vault moved while this save was out, and this sample carried a credential: it was captured
-  // against a resolution that may no longer exist. The stored entries are dropped by
-  // `noteVaultChanged` at the moment of the change; this is the same rule for the one that was still
-  // on the wire and has no entry to drop.
-  // Truthiness rather than a null check, and stored the same way below: the form spells "no
-  // credential" as an empty string and the payload spells it as null, so a rule that only knew one
-  // of them would turn a caller reading the other into round 6's global invalidation.
+  // NOTE: the vault moved while this save was out, and this sample carried a credential: it was
+  // captured against a resolution that may no longer exist (`noteVaultChanged` drops the stored ones;
+  // this is the one still on the wire). Truthiness, not a null check, and stored the same way below:
+  // the form spells "no credential" as "" and the payload as null, and a rule knowing only one would
+  // invalidate samples no vault edit could touch.
   if (sample.credentialRef && vaultChangedAt > since.at) return;
   if (sampleIsNothing(sample.text, sample.status)) return;
   if (sample.text.length > MAX_CHARS) return;
@@ -249,50 +192,23 @@ export function forgetToolSample(toolId: string, since: SampleTicket): void {
   samples.delete(key);
 }
 
-// WHOSE SAMPLES THESE ARE, told to this module at every transition the console makes, and the rule
-// lives here rather than at the caller so it can be exercised without one.
-//
-// The obvious half is the session ending: an explicit logout, a 401 on any request, an auth-loss
-// close on the socket, a `/me` that answers with a null user. All of them leave the tab on the login
-// screen with this map still full, and the next sign-in on that tab would be offered the previous
-// operator's responses.
-//
-// The half that is not obvious is A CHANGE FROM ONE OPERATOR TO ANOTHER with no null in between,
-// which is what a shared cookie does: a tab sitting on A while another tab signs out and back in as
-// B sees `/me` answer B directly. Asking only whether the user went away misses it, and the entries
-// are keyed by tenant and tool, so B would be handed A's captured response on the same tool (round
-// 6 of review). So the question is whether the identity is the SAME, not whether there is one.
-//
-// WHAT THIS CANNOT DO IS NOTICE. Every transition the console MAKES is reported here, and none of
-// them is made by a tab that is merely sitting there: after boot nothing revalidates `/me` on focus
-// or on `visibilitychange`, and no event crosses tabs. Such a tab is already showing A's name, A's
-// tenant selection and A's permissions while writing as B, which is the auth model's gap and not
-// this cache's — recorded in `docs/roadmap.md` with the shape of the fix (rounds 9, 12, 15 and 17
-// of review all raised it here).
+// WHOSE SAMPLES THESE ARE, told at every transition the console makes. The session ending (logout,
+// a 401, the socket's auth-loss close, a `/me` with a null user) must empty the map, or the next
+// sign-in on this tab is offered the previous operator's responses. So must A CHANGE FROM ONE
+// OPERATOR TO ANOTHER with no null in between (a shared cookie after another tab signs in as B), so
+// the question is whether the identity is the SAME. It cannot NOTICE a tab that merely sits there:
+// nothing revalidates `/me` after boot, which is the auth model's gap, recorded in docs/roadmap.md.
 export function noteOperator(id: string | null): void {
   if (id === operator) return;
   operator = id;
   forgetToolSamples();
 }
 
-// A CREDENTIAL CHANGED, so every sample that used one stops describing a request we can vouch for.
-// Scoped to the entries that carry a reference rather than emptying the map, because a tool with no
-// credential cannot be affected by a vault edit and round 6 already paid for a global invalidation:
-// the operator sees a tool they never touched come back with an older response or none.
-//
-// It is not scoped any further than that, and the reason is not laziness: the event announces THAT
-// the vault changed and never which entry, the panel can rename and delete as well as edit, and the
-// secret itself is server-side. Between keeping a sample that may describe another host and asking
-// for one more test request, this asks for the test request.
-// THE VAULT AS THIS TAB LAST SAW IT. Exported because the entries in this map are not the only
-// place a sample lives: one is also on screen, in a form, with the definition it was captured
-// against recorded beside it, and that recording is what a save compares. Dropping the stored entry
-// leaves that copy untouched, so the save would put it straight back (round 14 of review).
-//
-// It is the vault's OWN revision and not a count of notifications, because `refreshVault` announces
-// twice for one change — on the drop and again when the new list lands — so a sample captured
-// between the two halves of a single refresh would be marked stale by the second half of the change
-// it already describes (round 15 of review).
+// THE VAULT AS THIS TAB LAST SAW IT. Exported because a sample also lives on screen, in a form, with
+// the definition it was captured against beside it, and a save compares that: dropping the stored
+// entry leaves that copy, so the save would put it straight back. The vault's OWN revision, not a
+// count of notifications, because `refreshVault` announces twice for one change (on the drop and
+// when the new list lands).
 export function vaultGeneration(): number {
   return vaultRevision();
 }
@@ -301,6 +217,10 @@ export function vaultGeneration(): number {
 // change.
 let vaultSeen = vaultRevision();
 
+// A CREDENTIAL CHANGED, so every sample that used one stops describing a request we can vouch for.
+// Scoped to entries carrying a reference, since a tool with no credential cannot be affected, and no
+// further: the event says THAT the vault changed, never which entry, and the secret is server-side,
+// so this asks for one more test request rather than keep a sample that may describe another host.
 export function noteVaultChanged(): void {
   const now = vaultRevision();
   if (now === vaultSeen) return;
@@ -314,18 +234,10 @@ export function noteVaultChanged(): void {
     }
 }
 
-// Registered here rather than in a component, because a credential is edited from three places (the
-// Vault panel, the agent editor, and the picker inlined in this very modal) and the tool editor is
-// mounted for at most one of them. A listener that lives in a component is a listener that is absent
-// exactly when the edit happens somewhere else.
-//
-// WHAT IT DOES NOT HEAR, so a future reader does not over-trust it: `VAULT_CHANGED_EVENT` is a
-// `window` event dispatched by the window that made the change. A credential edited in a second tab,
-// over REST or over MCP never reaches this one, and editing a credential does not move the tool's
-// `updatedAt` either, so such a change is invisible to everything here. That is a property of
-// `vaultCache` and it costs more than a sample — the same window shows the stale base URL under the
-// URL field and sends test requests against it — so it is recorded in `docs/roadmap.md` with the
-// shape of the fix rather than half-closed here (round 16 of review).
+// Registered here rather than in a component: a credential is edited from three places (the Vault
+// panel, the agent editor, the picker inlined in this modal) and the tool editor is mounted for at
+// most one. It does NOT hear a credential edited in another tab or over REST or MCP
+// (`VAULT_CHANGED_EVENT` is a `window` event), a gap of `vaultCache` recorded in docs/roadmap.md.
 if (typeof window !== "undefined")
   window.addEventListener(VAULT_CHANGED_EVENT, noteVaultChanged);
 

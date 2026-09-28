@@ -57,10 +57,10 @@ function rate(text: string): number | undefined {
   return trimmed === "" ? undefined : Number(trimmed);
 }
 
-// THE TENANT'S OWN PRICES (issue #865). The price table is public list prices; a tenant that pays
-// something else (a negotiated discount, Azure or Bedrock, its own server) writes what it pays here,
-// and every call on that provider and model is priced with it from the next call on. The rows
-// already in the ledger keep the price they were written with.
+// The tenant's own prices. The price table is public list prices; a tenant that pays something else
+// (a negotiated discount, Azure or Bedrock, its own server) writes what it pays here, and every call
+// on that provider and model is priced with it from the next call on. The rows already in the
+// ledger keep the price they were written with.
 export function PriceOverridesCard({
   value,
   onSaved,

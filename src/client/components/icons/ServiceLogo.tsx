@@ -1,15 +1,11 @@
 import { KeyRound } from "lucide-react";
 
-// Official brand marks for credential services, inlined as SVGs (fill currentColor → theme-aware)
-// the same way GithubIcon is inlined. Most are single 24×24 paths from simple-icons (CC0); asaas
-// (absent from simple-icons) is the "a" glyph extracted from the official Asaas wordmark and so
-// carries its own viewBox. Services still without a mark (openai-compatible and the generic
-// mechanisms) fall back to the lucide key glyph. Keyed by the secret type's logical `service` id
-// (see secret-types.ts) or, for integration catalog entries, the per-product service id.
-//
-// A mark can be: a 24×24 single path (string), a single path with a custom viewBox, or a
-// multi-color logo (`paths` with explicit fills) for products whose identity is the color — the
-// Google Calendar/Drive logos render as themselves instead of the generic Google "G".
+// Official brand marks for credential services, inlined as SVGs (fill currentColor, so theme-aware)
+// like GithubIcon. Most are single 24×24 paths from simple-icons (CC0); asaas is the "a" of its
+// official wordmark, with its own viewBox. Services without a mark fall back to the lucide key glyph.
+// Keyed by the secret type's `service` id (secret-types.ts) or an integration's per-product id. A
+// mark is a 24×24 path (string), a path with a custom viewBox, or a multi-color logo (`paths` with
+// explicit fills) for products whose identity is the color, like Google Calendar and Drive.
 type BrandMark =
   | string
   | { path: string; viewBox: string }

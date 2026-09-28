@@ -23,10 +23,10 @@ import {
 } from "@/lib/code-tool-vocabulary";
 import { CodeMirrorField } from "./CodeMirrorField";
 
-// The code tool's editor (issue #538): the JavaScript half of the console's CodeMirror field, which
-// is `CodeMirrorField` (issue #562). Everything below is about the LANGUAGE — the grammar, what
-// `input.` completes to, the scope hover, the key that shows it — and nothing below knows how a view
-// is built or how a document is kept controlled.
+// The code tool's JavaScript editor, the language half of `CodeMirrorField`. Everything below is about
+// the LANGUAGE (the grammar, what `input.` completes to, the scope hover, the key that shows it), and
+// nothing below knows how a view is built or how a document is kept controlled. Design: docs/ui.md,
+// "The code tool editor".
 
 // The context descriptions as they reach the POPUP, which is console text and therefore bilingual.
 // Twelve static `t()` calls rather than one keyed by `v.name`: a computed key is invisible to
@@ -195,14 +195,10 @@ function globalCompletions(t: TFunction): Completion[] {
   }));
 }
 
-// What the pointer is over, answered with the SAME `Completion` the list would have offered for
-// that name (issue #538 follow-up). Hover and completion cannot disagree, because there is one
-// object: the popup renders its `label`, `detail` and `info`, and a name this editor does not know
-// answers nothing rather than answering a guess.
-//
-// The question is asked of the PARSER, not of the characters around the cursor, for the reason the
-// completion's root/member decision gives below: `mycontext.contact_id` ends in one of the names
-// without being it, and a look-back cannot tell the difference without re-implementing the lexer.
+// What the pointer is over, answered with the SAME `Completion` the list would have offered for that
+// name, so hover and completion cannot disagree; a name this editor does not know answers nothing
+// rather than a guess. The PARSER answers, not the characters around the cursor: `mycontext.contact_id`
+// ends in one of the names without being it, and a look-back cannot tell without a lexer of its own.
 export function hoverInfo(
   state: EditorState,
   pos: number,
@@ -233,10 +229,9 @@ export function hoverInfo(
     if (objectNode?.name !== "VariableName") continue;
     const root = state.doc.sliceString(objectNode.from, objectNode.to);
     if (root !== "context" && root !== "input") continue;
-    // A quoted subscript carries its quotes AND its escapes; the label never does. Stripping the
-    // two quote characters is not enough, and the case is one the editor writes itself: an argument
-    // named `sa"id` completes through `bracketApply` as `input["sa\"id"]` (JSON.stringify), and
-    // `sa\"id` matches no declared name, so the pointer went silent over code this editor generated.
+    // NOTE: A quoted subscript carries its quotes AND its escapes; the label never does, so stripping the
+    // quotes is not enough. The editor writes such escapes itself: an argument named `sa"id` completes
+    // through `bracketApply` as `input["sa\"id"]`, which only decoding matches back to the name.
     const name = quoted ? decodeStringLiteral(text) : text;
     if (name === null) continue;
     const found = completionsFor(root, argumentNames, t).find(
@@ -247,17 +242,12 @@ export function hoverInfo(
   return null;
 }
 
-// The text a quoted subscript actually names. `JSON.parse` rather than a table of escapes written
-// out here: the double-quoted form is exactly what this editor writes (`bracketApply` uses
-// `JSON.stringify`), so the parser that produced it is the one that reads it back, including the
-// `\\b`, `\\f`, `\\r` and `\\uXXXX` a control character in an argument name turns into. A hand-rolled
-// table decoded the two escapes its author thought of and turned the rest into literal letters.
-//
-// A single-quoted literal is not JSON, and the operator types that one by hand. It is re-quoted
-// rather than parsed separately: the escape grammar is otherwise the same, so unescaping `\\'` and
-// escaping a bare `"` turns it into the JSON literal for the same string, and one parser still
-// answers for both. Unterminated returns null, because a literal being typed is not a name yet and
-// answering for its prefix would put another argument's sentence under the pointer.
+// The text a quoted subscript names. `JSON.parse` rather than a hand-written escape table, which
+// misses the escapes nobody listed: the double-quoted form is what `bracketApply` writes with
+// `JSON.stringify`, so the same grammar reads it back, `\\uXXXX` included. A single-quoted literal
+// (typed by hand) is re-quoted into the JSON literal for the same string, so one parser answers for
+// both. Unterminated returns null: a literal being typed is not a name yet, and answering for its
+// prefix would put another argument's sentence under the pointer.
 function decodeStringLiteral(literal: string): string | null {
   const quote = literal[0];
   if (quote !== '"' && quote !== "'") return null;
@@ -319,32 +309,10 @@ function scopeHover(argumentNames: string[], t: TFunction): Extension {
   });
 }
 
-// The ONE key the console advertises, and it is ours rather than CodeMirror's, because none of
-// CodeMirror's three reaches a Mac and none of them fails visibly: the list opens by itself while
-// the operator types and cannot be reopened once dismissed, which reads as a broken editor.
-//
-// Measured by logging `keydown` in the browser while a person pressed each chord on a macOS machine
-// with a US International layout, which is the only method that answers this. What the page
-// receives:
-//
-//   ⌃Space      → the Control keydown, and NO Space: macOS keeps the whole ⌃+Space family for the
-//                  input-source switcher. ⌃⇧Space is eaten the same way, which reading the system's
-//                  own hotkey list does NOT show (it names ⌃, ⌃⌥, ⌘ and ⌥⌘).
-//   ⌥I          → `key: "Dead"`, `keyCode: 229`. On that layout ⌥I is the circumflex dead key, so
-//                  the keymap has no name to match and even CodeMirror's keyCode fallback is gone
-//                  (229 is the composition sentinel, not 73).
-//   ⌘I and ⌃I  → `key: "i"`, `keyCode: 73`. Both arrive intact.
-//
-// So the binding is `Mod-i`, which CodeMirror reads as ⌘I on a Mac and Ctrl-I everywhere else: ONE
-// binding, and the key each operator is told about is the one their machine actually delivers
-// (`scopeKeyLabel`). CodeMirror's three stay installed as a silent fallback for whoever knows them.
-// TWO bindings for one chord, and the second is what makes the label's platform guess cosmetic.
-// `Mod-` is resolved by CodeMirror's own idea of the platform (⌘ on a Mac, Ctrl elsewhere), which is
-// not exported and which the label below has to mirror; while the binding depended on that mirror,
-// any disagreement produced the worst possible outcome, a printed key that does nothing. `Ctrl-i` is
-// free on every platform that matters (measured arriving as `key: "i"`, `keyCode: 73` on macOS, and
-// Win+I never reaches a browser at all), so binding both means a wrong label still names a key that
-// WORKS, and the mirror only decides which of the two names is shown.
+// The ONE key the console advertises, ours rather than CodeMirror's: none of CodeMirror's three
+// reaches a Mac, and none of them fails visibly. `Ctrl-i` is bound beside `Mod-i` so that a wrong
+// platform guess in `scopeKeyLabel` still names a key that works; CodeMirror's three stay installed
+// as a silent fallback. Which chords macOS delivers: docs/ui.md, "The code tool editor".
 export const SHOW_SCOPE_KEYS: readonly KeyBinding[] = [
   { key: "Mod-i", run: startCompletion, preventDefault: true },
   { key: "Ctrl-i", run: startCompletion, preventDefault: true },
@@ -360,12 +328,10 @@ export function scopeKeyLabel(mac: boolean = isMacLike()): string {
   return mac ? "\u2318I" : "Ctrl+I";
 }
 
-// A MIRROR of `browser.mac` in @codemirror/view (dist/index.js:16-18), which is not exported. The
-// rule is not "the platform string says Mac": iOS is Mac-like there, and it is detected through the
-// Apple vendor plus a touch or Mobile signal, because iPadOS reports `MacIntel` while an iPhone
-// reports `iPhone`. Testing `platform` alone therefore called an iPhone with a hardware keyboard a
-// PC and printed `Ctrl+I` at a reader whose ⌘I is the one bound. The stakes are only the NAME now,
-// since both chords are bound above.
+// A MIRROR of `browser.mac` in @codemirror/view (dist/index.js:16-18), which is not exported. iOS is
+// Mac-like there, detected through the Apple vendor plus a touch or Mobile signal, because iPadOS
+// reports `MacIntel` and an iPhone reports `iPhone`: testing `platform` alone would print `Ctrl+I` to
+// an iPhone whose bound key is ⌘I. Only the NAME is at stake, since both chords are bound above.
 export function isMacLike(
   nav: Navigator | undefined = globalThis.navigator,
 ): boolean {
@@ -377,11 +343,10 @@ export function isMacLike(
   return ios || /Mac/.test(nav.platform || "");
 }
 
-// The completion extension, in ONE place. It is installed twice, at build and again by the
-// reconfigure effect below, and the effect runs on mount as well, so the copy at build time never
-// serves a completion: a difference between the two sites is invisible to every test, and the last
-// one was real (only the reconfigured site composed the language's own source back in). One
-// function is what makes the two sites the same by construction rather than by review.
+// The completion extension, in ONE place. It is installed at build and again by the reconfigure
+// effect below, which also runs on mount, so the build-time copy never serves a completion and a
+// difference between the two sites is invisible to every test. One function makes them the same by
+// construction.
 function completionExt(names: string[], t: TFunction): Extension {
   return [
     autocompletion({
@@ -426,44 +391,32 @@ function describedGlobals(t: TFunction): Record<string, string> {
 const WORD_CHARS = "\\p{ID_Continue}$";
 const WORD_ONLY = new RegExp(`^[${WORD_CHARS}]*$`, "u");
 
-// Whether the name that starts at `from` is a ROOT variable rather than a member of something
-// else, asked of the PARSER. `matchBefore` matches a suffix, so `mycontext.` and `config.input.`
-// both end in one of the two names without either being the variable in scope, and offering this
-// sandbox's members there writes code about the wrong object.
-//
-// This used to count characters backwards, and five review rounds found five more spellings it got
-// wrong: a non-ASCII letter before the name (`\w` is ASCII, `\u00e9context` is one identifier), a
-// private field's `#`, a member dot on the far side of a space, and a comment sitting between that
-// dot and the name. They are all the same question, and the grammar already answers it: the parser
-// calls a variable reference `VariableName` and a member `PropertyName`, and the node has to START
-// here, which is what separates `context` from the tail of `mycontext`.
+// Whether the name that starts at `from` is a ROOT variable rather than a member of something else,
+// asked of the PARSER. `matchBefore` matches a suffix, so `mycontext.` and `config.input.` end in one
+// of the two names without being the variable in scope. Counting characters backwards is wrong: a
+// non-ASCII letter before the name (`\u00e9context` is one identifier), a private field's `#`, a dot
+// across a space or a comment all fool it. The parser calls a reference `VariableName` and a member
+// `PropertyName`, and the node has to START here, which separates `context` from `mycontext`.
 function isRootWord(ctx: CompletionContext, from: number): boolean {
   const node = syntaxTree(ctx.state).resolveInner(from, 1);
   return node.name === "VariableName" && node.from === from;
 }
 
 // The same question where there is no name yet: an explicit request with nothing typed. A cursor
-// sitting right after a member operator is a property position, however much whitespace or comment
-// precedes it, and the roots are not properties of anything.
-//
-// `\u26a0` is the parser saying it could not place what is here at all, which is what `const context.`
-// and `class A { context.` look like: a member dot the grammar cannot accept there. Measured, the
-// positions where the scope key is worth pressing produce none of it: an empty body and a fresh line
-// are `Script`, and `const x = `, `a + `, `let z=`, `foo(` and `{a: ` all name a node of their own.
+// right after a member operator is a property position, whatever whitespace or comment precedes it.
+// `\u26a0` is the parser failing to place what is here, which is what `const context.` and
+// `class A { context.` look like. The positions where the scope key is worth pressing never produce
+// it: an empty body is `Script`, and `const x = `, `a + `, `foo(` and `{a: ` each name a node.
 function atRootPosition(ctx: CompletionContext): boolean {
   const name = syntaxTree(ctx.state).resolveInner(ctx.pos, -1).name;
   return name !== "." && name !== "\u26a0";
 }
 
-// A string, a comment and a regexp are all places where a dot is a character rather than a member
-// access. Offering there describes the sandbox's vocabulary to prose, and accepting an entry
-// rewrites the quoted words or the pattern. The parse is already in the state for the highlighting,
-// so this costs a lookup, and it is also what tells `a / input` (division, code) from `/input./`
-// (a pattern), which no amount of looking at the characters can.
-//
-// The INNERMOST node and no walk up the ancestors: the hole in a template string resolves to the
-// expression inside it, while its ancestors include the `TemplateString`, so a walk would block
-// `${context.name}`, which is code and is where a body most often reads a variable.
+// A string, a comment and a regexp are places where a dot is a character, not a member access, and
+// accepting an entry there rewrites the quoted words or the pattern. The parse is already in the
+// state for the highlighting, and it tells `a / input` (division) from `/input./` (a pattern), which
+// the characters cannot. The INNERMOST node decides, with no walk up the ancestors: the hole in a
+// template string resolves to the expression inside, and a walk would block `${context.name}`.
 const NOT_CODE = new Set([
   "String",
   "TemplateString",
@@ -552,12 +505,10 @@ export function CodeEditor({
   const { t, i18n } = useTranslation();
   const names = useMemo(() => [...argumentNames], [argumentNames]);
   const namesKey = namesKeyOf(names);
-  // NOTE: `namesKey` and not `names`: a new array holding the same names is not a change worth
-  // reconfiguring for, and the parent rebuilds that array on every render. The language is here for
-  // the other half of what the source closes over: the popup's own text, which has to follow a
-  // language switch without the operator reopening the modal. The memo IS the reconfiguration
-  // trigger — `CodeMirrorField` reconfigures on this value's identity — so a fresh array per render
-  // would reconfigure per render.
+  // NOTE: `namesKey` and not `names`: the parent rebuilds that array on every render, and this memo IS
+  // the reconfiguration trigger (`CodeMirrorField` reconfigures on its identity), so a fresh array
+  // would reconfigure per render. The language is here because the popup's own text has to follow a
+  // language switch without the operator reopening the modal.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `namesKey` and the language are what change
   const extensions = useMemo(
     () => [

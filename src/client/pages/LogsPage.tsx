@@ -168,8 +168,8 @@ function StageRow({ row }: { row: LogItem }) {
           {(() => {
             const detail = row.detail as Record<string, unknown> | null;
             if (!detail || Object.keys(detail).length === 0) return null;
-            // The resolved system prompt (item 15) reads as a wall of escaped JSON in the generic
-            // dump, so surface it as readable text; the remaining keys keep the JSON view.
+            // NOTE: The resolved system prompt reads as a wall of escaped JSON in the generic dump, so surface
+            // it as readable text; the remaining keys keep the JSON view.
             const sysPrompt =
               typeof detail.systemPrompt === "string"
                 ? detail.systemPrompt
@@ -203,9 +203,9 @@ function StageRow({ row }: { row: LogItem }) {
   );
 }
 
-// The group's name, rendered. `logGroupTitle` decides WHICH of the four it is (issue #357); this
-// only turns that answer into text, so a stage that has no `case` in `flowStageLabel` degrades to
-// its slug here exactly as it does on every row.
+// The group's name, rendered. `logGroupTitle` decides WHICH of the four it is; this only turns that
+// answer into text, so a stage with no `case` in `flowStageLabel` degrades to its slug here exactly
+// as it does on every row.
 function groupTitleText(title: LogGroupTitle, t: TFunction): string {
   switch (title.kind) {
     case "conversation":
@@ -222,8 +222,8 @@ function groupTitleText(title: LogGroupTitle, t: TFunction): string {
 }
 
 // One turn group: a controlled disclosure (chevron inline, no native triangle) plus per-group
-// actions when the turn is tied to a conversation — filter the log list to it (C2) or jump to the
-// conversation (C3). Error groups start expanded.
+// actions when the turn is tied to a conversation: filter the log list to it, or jump to the
+// conversation. Error groups start expanded.
 function TurnGroupCard({
   group,
   onFilterConversation,
@@ -400,14 +400,9 @@ export function LogsPage() {
   }, [load]);
 
   const groups = useMemo(() => groupByTurn(items), [items]);
-  // The chip that says what the page is scoped to, when the scope is a `turnId`. It names the group
-  // exactly as the group's own card names it (`logGroupTitle`, issue #357) and adds the id, which is
-  // the thing the chip exists to point at — before issue #374 it said "Turn <id>" whatever the rows
-  // were, so one screen carried two different answers about one group.
-  //
-  // Matched by id rather than taken as the first group: the rows in state still belong to the
-  // PREVIOUS filter for the render between a URL change and its response landing, and naming this id
-  // with that group's answer is the same class of lie in a shorter window. No match is the id alone.
+  // NOTE: The scope chip for a `turnId` names the group exactly as its own card does
+  // (`logGroupTitle`) and adds the id. Matched by id rather than taken as the first group: between a
+  // URL change and its response the rows still belong to the PREVIOUS filter. No match is the id alone.
   const scopedTurnLabel = useMemo(() => {
     const scoped = groups.find((g) => g.turnId === turnId);
     if (!scoped) return turnId;

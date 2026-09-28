@@ -11,9 +11,9 @@ import { apiErrorMessage } from "@/client/lib/apiError";
 
 // Demoting a FLEET administrator, which is not the same act as demoting a tenant's admin. A fleet
 // administrator belongs to no tenant and everybody else belongs to one, so taking the fleet role
-// away has to say where the person lands — the server refuses a demotion that names no tenant, and
-// this dialog is what lets the operator answer it (#534). A tenant admin's demote stays one click:
-// they already have a tenant, and nothing about it changes.
+// away has to say where the person lands: the server refuses a demotion that names no tenant, and
+// this dialog is what lets the operator answer it. A tenant admin's demote stays one click: they
+// already have a tenant, and nothing about it changes.
 export interface DemoteTarget {
   id: string;
   email: string;

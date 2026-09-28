@@ -1,21 +1,12 @@
 import { useEffect, useRef } from "react";
 
-// Browser-level guards for unsaved changes. Two independent mechanisms, both
-// reference-counted at the module level so they survive component unmounts and
-// compose across several simultaneously-dirty forms:
-//
-//   1. `beforeunload` — the NATIVE browser prompt ("Leave site? Changes may not
-//      be saved."). Fires on refresh, tab/window close, and navigation to an
-//      external URL. It is the only place the native prompt is reachable; it
-//      does NOT fire on in-app (SPA) navigation, including the Back button
-//      between two app routes.
-//   2. Back-button trap — a small history sentinel. The native prompt is
-//      impossible for SPA Back navigation (and react-router's `useBlocker`
-//      needs a data router, which this app does not use), so instead we push a
-//      same-URL sentinel entry while a guard is active and, when the user pops
-//      it with Back, re-arm it and notify the top blocker so it can show our
-//      own in-app confirmation. The URL never changes, so react-router's
-//      location is untouched.
+// Browser-level guards for unsaved changes, reference-counted at module level so they survive
+// unmounts and compose across several dirty forms:
+//   1. `beforeunload`, the NATIVE prompt: refresh, tab close, external navigation. It never fires on
+//      in-app (SPA) navigation, the Back button between two app routes included.
+//   2. A Back-button trap: `useBlocker` needs a data router, which this app does not use, so a
+//      same-URL sentinel entry is pushed while a guard is active; popping it with Back re-arms it and
+//      notifies the top blocker, which shows our own confirm. react-router's location is untouched.
 
 const isBrowser = typeof window !== "undefined";
 

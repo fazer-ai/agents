@@ -16,9 +16,9 @@ import { api } from "@/client/lib/api";
 import { apiErrorMessage } from "@/client/lib/apiError";
 import { cn } from "@/client/lib/utils";
 
-// A knowledge base's help center source, in the console (issue #798). #794 built the source over
-// REST and MCP only: an operator could not see that a base mirrors a portal, when it last ran or
-// whether that run failed, and could not set one up. This is that view, over the same three routes.
+// A knowledge base's help center source, in the console: whether a base mirrors a portal, when it
+// last ran and whether that run failed, and setting one up, over the same three routes REST and MCP
+// use.
 
 type BaseDetail = NonNullable<
   Awaited<
@@ -106,7 +106,7 @@ export function KnowledgeSourceSection({
   // one, or for a section already closed, is dropped (docs/modals.md, the modal session).
   const current = useRef<string | null>(baseId);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Generations, as docs/modals.md prescribes for a modal that fetches (review r5). Every read bumps
+  // NOTE: Generations, as docs/modals.md prescribes for a modal that fetches. Every read bumps
   // `readGen` and only the newest one may write, so a polling read still out when a removal re-reads
   // cannot land after it and bring the removed source back. `pollGen` is bumped by every stop, so a
   // tick whose read was out when polling stopped does not schedule another.
@@ -153,8 +153,8 @@ export function KnowledgeSourceSection({
   // the scheduler finishes later reaches the screen without the operator reloading.
   const pollUntilRun = useCallback(
     (since: number | null) => {
-      // Asked for by an action whose request outlived the section (a save or a sync answered after
-      // the modal closed): there is nothing left to show the outcome on (review r2).
+      // NOTE: Asked for by an action whose request outlived the section (a save or a sync answered
+      // after the modal closed): there is nothing left to show the outcome on.
       const asked = current.current;
       if (asked === null) return;
       stopPolling();
@@ -467,7 +467,7 @@ export function KnowledgeSourceSection({
           onClick={() => {
             void save();
           }}
-          // The API requires all three (review r4): a blank slug or locale is refused, and the locale
+          // NOTE: The API requires all three: a blank slug or locale is refused, and the locale
           // placeholder is a hint, not a default.
           disabled={
             busy ||

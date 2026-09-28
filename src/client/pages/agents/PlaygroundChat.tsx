@@ -728,7 +728,7 @@ function TurnBubble({
             <>
               {turn.text ? <Markdown>{turn.text}</Markdown> : null}
               {/* What the turn spent, at the foot of the reply it produced, as on the conversation
-                  screen (issue #858). */}
+                  screen. */}
               {turn.usage && turn.usage.calls > 0 && (
                 <div className="mt-1 flex justify-end">
                   <UsageFigure usage={turn.usage} timing={turn.timing} />
@@ -771,8 +771,8 @@ function TurnBubble({
   );
 }
 
-// Where the cause of a failed turn is when the bubble cannot say it (issue #841): the turn's lines on
-// the Logs page, and the id the server log files the failure under.
+// Where the cause of a failed turn is when the bubble cannot say it: the turn's lines on the Logs
+// page, and the id the server log files the failure under.
 export function ErrorLogsLink({ turnId }: { turnId: string }) {
   const { t } = useTranslation();
   return (
@@ -1112,8 +1112,8 @@ function MovingWaveform({
     const color = canvas
       ? getComputedStyle(canvas).color || "#3b82f6"
       : "#3b82f6";
-    // Fixed spacing between bars (in CSS px) so each bar stays the SAME thickness at any width — a
-    // wider panel shows MORE bars, not fatter ones (the FAB looked right, the wide tab didn't).
+    // NOTE: Fixed spacing between bars (in CSS px) so each bar stays the SAME thickness at any width:
+    // a wider panel shows MORE bars, not fatter ones.
     const PITCH = 7;
     let peaks: number[] = [];
     let raf = 0;
@@ -1346,9 +1346,8 @@ function TracePanel({
 }
 
 // What one guardrail row SAYS. A table rather than a chain of ternaries, because two independent
-// fields decide it and the chain grew a wrong arm for each: one sentence for both directions said
-// the REPLY went out unscreened, on rows where the reply was screened and approved a line below;
-// and every trip said "the configured reply", on text the judge itself had written.
+// fields (direction and action) decide it: a screened-and-approved reply must not read as
+// unscreened, and text the judge wrote must not read as "the configured reply".
 export function guardrailTraceLabel(
   t: (key: string, fallback: string) => string,
   entry: Pick<

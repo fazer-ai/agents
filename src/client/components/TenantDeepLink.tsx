@@ -25,27 +25,13 @@ import { suppressUnloadPrompt } from "@/client/lib/unsavedGuard";
 import { useSessionRetry } from "@/client/lib/useSessionRetry";
 import { SWITCH_TENANT_PARAM } from "@/lib/console-params";
 
-// Applies the `?switchTenant=<id>` a console link carries (`src/modules/mcp/console-links.ts`).
-// Wraps the app shell, so it covers every deeplink and not just the vault's.
-//
-// It reproduces the header switcher's mechanics deliberately: persist the selection, then a FULL
-// reload, which is the single TOCTOU-safe source of truth for a tenant switch (header, AuthContext,
-// branding and every cache are rebuilt, with no in-flight request capturing the old tenant). The
-// decision itself is `tenantDeepLinkAction`, with a decision table of its own.
-//
-// It is a GATE and not a passive effect, which is the part that is easy to get wrong: the page under
-// it would otherwise mount and fetch while the switch is still being decided, so the operator could
-// be looking at tenant A's vault, with its buttons live, on a URL that already names tenant B.
-//
-// What opens the gate is knowing the answer, not liking it. `unavailable` opens it, because the
-// console genuinely cannot go anywhere else and staying put is correct. `unverified` does NOT: there
-// the answer is unknown, the page underneath is the tenant the link says is the wrong one, and
-// showing it with its controls live is the exact failure the gate exists to prevent. It offers a
-// retry instead, which is the only thing that can actually resolve the state.
-//
-// The parameter is left ON the URL through the switch. After the reload the stored selection equals
-// the requested one, the action becomes "none", and only then is it cleaned up. Consuming it before
-// the reload would lose the switch on the way.
+// Applies the `?switchTenant=<id>` a console link carries (`src/modules/mcp/console-links.ts`),
+// around the app shell. Same mechanics as the header switcher: persist, then a FULL reload, the
+// TOCTOU-safe switch; the decision is `tenantDeepLinkAction`. A GATE, not a passive effect: the page
+// under it would otherwise fetch tenant A's data, controls live, on a URL naming tenant B. Knowing
+// the answer opens it: `unavailable` does (there is nowhere else to go), `unverified` does not and
+// offers a retry, the only thing that resolves it. The parameter stays ON the URL through the reload
+// and is cleaned up once the action is "none"; consuming it earlier would lose the switch.
 export function TenantDeepLink({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
   const { user } = useAuth();
@@ -64,10 +50,10 @@ export function TenantDeepLink({ children }: { children: ReactNode }) {
   // Set once the miss has been reported, so a re-render does not repeat the toast.
   const [reported, setReported] = useState(false);
 
-  // A SUPER_ADMIN is fleet-level and carries no tenant of its own (`tenantId` is null for exactly
-  // that role). A person who belongs to several tenants chooses among them the same way, from the
-  // list the session already carries (issue #756); anyone else is pinned to theirs. Falling back to
-  // "loading" while the session itself is still resolving keeps the gate shut rather than guessing.
+  // NOTE: a SUPER_ADMIN is fleet-level and carries no tenant of its own (`tenantId` is null for exactly
+  // that role). A person who belongs to several tenants chooses among them the same way, from the list
+  // the session already carries; anyone else is pinned to theirs. Falling back to "loading" while the
+  // session itself is still resolving keeps the gate shut rather than guessing.
   const memberships = user?.tenants ?? [];
   const scope: TenantScope = !user
     ? { kind: "loading" }
@@ -78,9 +64,9 @@ export function TenantDeepLink({ children }: { children: ReactNode }) {
           ? { kind: "unknown" }
           : { kind: "fleet", accessible }
       : user.tenants === undefined
-        ? // A fresh login answers before `/auth/me` brings the membership list; read as "no other
-          // tenant", a link to one would be refused and the wrong tenant's page mounted (review
-          // round 4). If the list never arrives the gate stays shut, which is the safe side.
+        ? // NOTE: a fresh login answers before `/auth/me` brings the membership list; read as "no
+          // other tenant", a link to one would be refused and the wrong tenant's page mounted. If
+          // the list never arrives the gate stays shut, which is the safe side.
           { kind: "loading" }
         : memberships.length > 1
           ? { kind: "fleet", accessible: memberships.map((m) => m.id) }
@@ -88,8 +74,8 @@ export function TenantDeepLink({ children }: { children: ReactNode }) {
             ? { kind: "unknown" }
             : { kind: "tenant", tenantId: user.tenantId };
 
-  // Waiting on the membership list a fresh login's `/auth/me` brings: ask again rather than hold the
-  // gate for a refresh nobody scheduled (review round 8).
+  // NOTE: waiting on the membership list a fresh login's `/auth/me` brings: ask again rather than hold
+  // the gate for a refresh nobody scheduled.
   useSessionRetry(
     !!requested && !!user && !isSuperAdmin && user.tenants === undefined,
   );

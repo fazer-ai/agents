@@ -51,30 +51,12 @@ import { ACTOR_TYPES } from "@/lib/tenancy/actor";
 import { clipText } from "@/lib/text";
 
 // The audit trail viewer (TENANT_ADMIN). Rows newest first, filters in the URL, keyset pagination
-// over a cursor stack — the same shape the Logs page uses, because it is the same kind of read.
-//
-// What it does that a list of rows does not: it renders `before`/`after` as a FIELD-LEVEL diff. Half
-// the rows on a real tenant carry two full system prompts of ~11k characters each (measured on a
-// self-hosted deployment, issue #401), and two JSON blobs there are not inconvenient, they are
-// unreadable.
-//
-// IT DOES NOT RENDER `latestAt`, and that is a decision rather than an omission. The response still
-// carries the trail-wide newest row for the REST and MCP transports, and this page used to print it
-// above the filters as "Trail recorded up to", with help telling the operator to subtract a record's
-// own `updatedAt` from it: a record newer than the line meant a change the trail had missed.
-//
-// Unfiltered, the line was a duplicate of the first card. Filtered, it was worse than useless for
-// the one job it claimed, and the reason is that it is a MAXIMUM OVER THE WHOLE TRAIL. A row that
-// fails to write is invisible to a global maximum unless it would have been the newest AND nothing
-// has been recorded since — any later row from any other family carries the line past the gap, and
-// the operator's subtraction then reads as "covered". It does not merely miss the case, it answers
-// it wrongly.
-//
-// That case is REAL, and it is why this comment is not the shorter "audit writes are transactional".
-// They are on every path this console can reach, but not on the MCP consent decision: `upsertApproval`
-// commits, and `auditConsentDecision` then writes in its own transaction and swallows a failure with
-// a warn (#528). The detector for that is the log line and the invariant, not a header that would
-// have said "covered".
+// over a cursor stack, the same shape as the Logs page. It renders `before`/`after` as a FIELD-LEVEL
+// diff, since a row can carry two full system prompts of ~11k characters. It does NOT render the
+// response's `latestAt`: a maximum over the whole trail hides a row that failed to write once any
+// later row lands, so a "recorded up to" line would read a gap as covered. That gap is real: the MCP
+// consent decision's `auditConsentDecision` writes in its own transaction after `upsertApproval`
+// commits and swallows a failure with a warn; its detector is that log line, not a header.
 
 type AuditResponse = Awaited<ReturnType<typeof api.api.v1.audit.get>>["data"];
 type AuditItem = NonNullable<AuditResponse>["entries"][number];
@@ -139,24 +121,13 @@ function asText(v: unknown): string {
   return JSON.stringify(v);
 }
 
-// A calendar day the OPERATOR sees, turned into the instants that bound it.
-//
-// The rows are rendered in the browser's own timezone, so the day has to be that browser's day and
-// not UTC's. Suffixing `Z` filters a UTC day, and in São Paulo a row shown as Jan 1 at 22:00 carries
-// a Jan 2 UTC stamp: it disappears from a Jan 1 filter, on the same screen that is displaying it as
-// Jan 1. The upper bound is the next local midnight minus a millisecond, because a `23:59:59` cut
-// drops the last fractional second, and because a day is 24 hours except on the two days a year it
-// is 23 or 25.
-//
-// The boundary is the ENGINE's answer for that date and never arithmetic on an offset: a zone that
-// springs forward AT midnight has no midnight that day (America/Santiago does this), and asking
-// `getTimezoneOffset` for an instant that does not exist gives the offset from the OTHER side of the
-// transition — added to a nominal UTC midnight it lands an hour off, dropping that day's last hour
-// and lending it to the next.
-//
-// It is an ARGUMENT and not ambient state, which is the only reason any of this is testable: the
-// suite runs at UTC (measured), where every local day is a UTC day and a version that got this wrong
-// passes everything.
+// A calendar day the OPERATOR sees, turned into the instants that bound it: the browser's day, not
+// UTC's, since the rows render in the browser's zone (in São Paulo a Jan 1 22:00 row carries a Jan 2
+// UTC stamp). The upper bound is the next local midnight minus a millisecond, since a day can be 23
+// or 25 hours. The boundary is the ENGINE's answer for the date, never offset arithmetic: a zone
+// that springs forward AT midnight (America/Santiago) has no midnight that day, and
+// `getTimezoneOffset` there lands an hour off. An ARGUMENT, not ambient state, because the suite
+// runs at UTC, where a wrong version passes everything.
 export function localMidnight(y: number, m: number, d: number): number {
   return new Date(y, m - 1, d).getTime();
 }
@@ -196,17 +167,12 @@ export interface FieldChange {
   after: unknown;
 }
 
-// The keys the write side puts on a projection when a change moved a value the row does not show:
-// an encrypted secret, a header block, a settings key no canonical reader looks at. They are
-// deliberately identical on the two sides, which means a diff by equality erases them: the one row
-// that says "something you cannot see here changed" would render as "nothing was recorded", the
-// exact opposite. So they leave the field list and come back as their own answer.
-//
-// BOTH of them, from `lib/audit/markers`, and the second is why that list exists. #394's marker
-// (`unreadConfigChanged`) rides on the FIELD's projection rather than on the top level, so a
-// top-level check never sees it, and an edit that moved only unread configuration puts an equal
-// marker object on each side, which this diff then drops as unchanged: the card said "this action
-// recorded no field values" over a change the row was written precisely to report.
+// The keys the write side puts on a projection when a change moved a value the row does not show (an
+// encrypted secret, a header block, an unread settings key). Identical on both sides by design, so a
+// diff by equality would erase them and render "nothing was recorded" for the row saying "something
+// you cannot see changed"; they leave the field list and come back as their own answer. BOTH markers
+// from `lib/audit/markers`: `unreadConfigChanged` rides on the FIELD's projection, not the top
+// level, so a top-level check alone would drop it as unchanged.
 
 export interface ProjectionDiff {
   changes: FieldChange[];
@@ -450,10 +416,10 @@ export function AuditPage() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // THROUGH THE REDIRECT, at the edge where the URL becomes state. A link saved before the two
-  // consent actions were renamed (#555) names a spelling no row carries any more, and taking it
-  // verbatim would render a dead filter over an empty trail. Normalising here rather than at the
-  // request means the control shows the name that works, so the operator is not taught the old one.
+  // NOTE: THROUGH THE REDIRECT, at the edge where the URL becomes state. A saved link can name a
+  // consent action by an old spelling no row carries, and taking it verbatim would render a dead
+  // filter over an empty trail. Normalising here rather than at the request means the control shows
+  // the name that works, so the operator is not taught the old one.
   const action = canonicalAuditAction(searchParams.get("action") ?? "");
   const actorType = searchParams.get("actorType") ?? "";
   // A date, which is what an operator arrives with. Widened to an instant here, because the endpoint
@@ -461,14 +427,11 @@ export function AuditPage() {
   // job, not the caller's.
   const from = searchParams.get("from") ?? "";
   const to = searchParams.get("to") ?? "";
-  // WHICH PRESET IS SELECTED IS NOT DERIVABLE FROM THE DATES, and the first version of this control
-  // tried: picking "Custom" wrote a window, the next render read that window back as "Today", and
-  // the two date inputs never appeared. `custom` is a MODE — "I am choosing the bounds myself" — and
-  // every window it can hold is also some preset's window, so no pair of dates can distinguish it.
-  //
-  // It lives in the URL beside the bounds rather than in component state, so a link carries what the
-  // sender was looking at, which is what the rest of this page's filters already promise. A pasted
-  // link with only dates still resolves: `auditPresetOf` names the preset, or says custom.
+  // NOTE: WHICH PRESET IS SELECTED IS NOT DERIVABLE FROM THE DATES: `custom` is a MODE ("I am choosing
+  // the bounds myself") and every window it can hold is also some preset's, so reading the window back
+  // would turn "Custom" into "Today" and hide the date inputs. It lives in the URL beside the bounds,
+  // so a link carries what the sender was looking at; a link with only dates still resolves through
+  // `auditPresetOf`.
   const periodParam = searchParams.get("period") ?? "";
   // Only a SUPER_ADMIN can read past their own tenant, and the service refuses the wider scopes to
   // anyone else with a 403 rather than narrowing them. So the page must not ASK for one it cannot
@@ -482,14 +445,10 @@ export function AuditPage() {
     isSuperAdmin && isAuditScope(scopeParam) ? scopeParam : "tenant";
   const showTenant = scope !== "tenant";
 
-  // THE DEBOUNCE IS GONE WITH THE TEXT BOX. It existed because every keystroke of a typed action
-  // name was a URL change and therefore another scoped transaction against a table that only grows;
-  // a combo box commits once, when a value is chosen. Its free-text row commits once too — on
-  // confirm rather than per character.
-  // The empty row FIRST, because a single-value ComboBox has no clear affordance of its own — the
-  // chip's `X` belongs to the multi-select. Without it the only way to drop the action was the
-  // page-wide Clear, which also discards the actor and the period: a regression against the text box
-  // this replaced.
+  // NOTE: no debounce: a combo box commits once, when a value is chosen (its free-text row on
+  // confirm), not per keystroke. The empty row comes FIRST because a single-value ComboBox has no
+  // clear affordance of its own; without it the only way to drop the action would be the page-wide
+  // Clear, which also discards the actor and the period.
   const actionItems = useMemo(
     () => [
       { id: "", label: t("audit.anyAction", "Any action") },
@@ -514,14 +473,11 @@ export function AuditPage() {
   // SCOPE IS ON THIS LIST because it chooses the trail, not because it is another filter.
   const filterKey = [action, actorType, from, to, scope].join("\u0000");
 
-  // RESET DURING RENDER, NOT IN AN EFFECT, and that is the whole of issue #532. As an effect this
-  // ran after the same commit as the load, so one render's worth of requests went out pairing the
-  // NEW filter with the PREVIOUS walk's cursor before the reset landed -- measured: changing the
-  // scope on page two sent `?scope=fleet&cursor=42` and only then `?scope=fleet`. `reqRef` discarded
-  // the answer, so the screen was always right, which is exactly why it went unnoticed; what it cost
-  // was a scoped transaction against a table that only grows, run under the fleet role on the wider
-  // scopes. Adjusting state during render is React's own answer for this, and it re-renders before
-  // committing, so `load` is never created holding the mismatched pair.
+  // NOTE: RESET DURING RENDER, NOT IN AN EFFECT. As an effect it runs after the commit that creates
+  // `load`, so one render's requests would pair the NEW filter with the PREVIOUS walk's cursor (a
+  // wasted scoped query under the fleet role, invisible because `reqRef` discards the answer).
+  // Adjusting state during render is React's own answer: it re-renders before committing, so `load`
+  // never holds the mismatched pair.
   const [stackKey, setStackKey] = useState(filterKey);
   if (stackKey !== filterKey) {
     setStackKey(filterKey);
@@ -588,13 +544,11 @@ export function AuditPage() {
   };
 
   const [draft, setDraft] = useState({ from, to });
-  // Resyncs from the URL and never from what we just asked it to be: writing the optimistic value
-  // here made the draft disagree with the params and the next render put the operator's own edit
-  // back. A real URL change is a preset click, a pasted link or the back button.
-  // THE MODE IS PART OF THE COMMITTED STATE, because a preset can leave the bounds untouched: clear
-  // one custom field and then pick a preset whose window is the one already applied, and only
-  // `period` moves. Watching bounds alone kept the half-empty draft alive, so returning to Custom
-  // showed a blank bound while the query was still filtering by the committed pair.
+  // NOTE: resyncs from the URL, never from what we just asked it to be: an optimistic value would
+  // disagree with the params and the next render would put the operator's edit back. The MODE is part
+  // of the committed state, because a preset can leave the bounds untouched (clear one custom field,
+  // then pick a preset whose window is the applied one), and a draft watching bounds alone would keep
+  // a blank bound while the query filters by the committed pair.
   const committed = useRef({ from, to, mode: periodParam });
   if (
     committed.current.from !== from ||
@@ -629,9 +583,9 @@ export function AuditPage() {
       return;
     }
     if (next === "custom") {
-      // NOTE: OPENING THE ROW NARROWS NOTHING. It keeps whatever window is already applied and commits
-      // NOTHING when there is none: seeding today here filtered an unfiltered trail down to today
-      // as a side effect of showing two inputs, which is a query the operator never asked for.
+      // NOTE: OPENING THE ROW NARROWS NOTHING: it keeps the window already applied and commits NOTHING
+      // when there is none, since seeding today would filter the trail as a side effect of showing two
+      // inputs.
       setRange(from, to, "custom");
       return;
     }
@@ -861,13 +815,10 @@ export function AuditPage() {
             </option>
           ))}
         </select>
-        {/* THE TWO INPUTS ONLY EXIST UNDER `custom`, and they hold a DRAFT that commits the PAIR.
-            Both halves were measured on the equivalent control in ~/dev/bi. A `<input type="date">`
-            reports "" while a date is being typed, so validating each keystroke against the
-            committed value snaps the input back and keyboard entry cannot progress. And a pair check
-            applied one field at a time makes some windows unreachable: to move a long window
-            forward, changing `from` first inverts the pair and changing `to` first does too, so both
-            edits are refused and the window cannot be reached at all. */}
+        {/* THE TWO INPUTS ONLY EXIST UNDER `custom`, and they hold a DRAFT that commits the
+            PAIR (see `isCommittableRange` in auditPeriod): a date input reports "" mid-typing, so
+            validating each keystroke snaps it back, and a pair check applied one field at a time
+            makes some windows unreachable. */}
         {preset === "custom" && (
           <>
             <input

@@ -63,24 +63,13 @@ function renderContent(content: ReactNode): ReactNode {
   );
 }
 
-// The counterpart to `Tooltip`, for content the operator has to be able to READ rather than glance
-// at. The two are not interchangeable, and the line between them is not a matter of taste.
-//
-// A Radix tooltip cannot be opened on a touch device. Measured in `@radix-ui/react-tooltip@1.2.16`,
-// where three handlers close every route in: `onPointerMove` returns early for
-// `pointerType === "touch"`, `onPointerDown` raises the flag that `onFocus` then consults before
-// opening, and `onClick` closes. A tap fires pointerdown → focus → click in that order, so the flag
-// is already up when focus arrives. The console has a mobile drawer (`md:hidden` in Sidebar), so
-// that is not a hypothetical viewport.
-//
-// THIS ONE OPENS THREE WAYS, and the three are one behaviour rather than a desktop mode and a touch
-// mode: a click (which every input method produces, touch and Enter/Space included), and, for a
-// fine pointer only, hovering, which is the cheap glance a tooltip was good for. The difference
-// between the two is what happens when the pointer leaves: a hovered box follows the pointer away,
-// a clicked one stays until it is dismissed, so the text can be read slowly, selected and copied.
-//
-// Hover never takes focus. Moving the mouse across a form would otherwise pull focus out of the
-// field being filled, which is the one thing a passing glance must not do.
+// The counterpart to `Tooltip`, for content the operator has to READ rather than glance at. A Radix
+// tooltip cannot be opened on a touch device (@radix-ui/react-tooltip closes every route in for a
+// tap: pointermove ignores touch, pointerdown blocks the focus open, click closes), and the console
+// has a mobile drawer. THIS ONE OPENS on a click (every input method, Enter/Space and touch
+// included) and, for a fine pointer only, on hover. A hovered box follows the pointer away; a clicked
+// one stays until dismissed, so the text can be read, selected and copied. Hover never takes focus,
+// which would pull it out of the field being filled.
 export function Popover({
   content,
   children,
@@ -95,10 +84,9 @@ export function Popover({
   // because the pointer handlers read it from inside timers, where a state value would be the one
   // captured when the timer was armed.
   const pinned = useRef(false);
-  // Whether the close now arriving came from the TRIGGER's own click. Radix reports the trigger
-  // click, Escape and an outside click through the same `onOpenChange(false)`, and only the first
-  // of those may pin: without this flag, Escape on a box the pointer merely hovered open took the
-  // pin branch and left it on screen, which is the opposite of what Escape means.
+  // NOTE: whether the close now arriving came from the TRIGGER's own click. Radix reports the trigger
+  // click, Escape and an outside click through the same `onOpenChange(false)`, and only the first may
+  // pin: without this flag, Escape on a hover-opened box would pin it on screen.
   const fromTrigger = useRef(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -181,18 +169,12 @@ export function Popover({
           aria-label={label}
           onPointerEnter={cancelClose}
           onPointerLeave={closeOnLeave}
-          // FOCUS NEVER ENTERS THE BOX, however it was opened, and this is the opposite of what a
-          // dialog usually wants. Radix hands `FocusScope` a hard-coded `loop: true` even on the
-          // non-modal branch that sets `trapped: false`, and `loop` alone is enough to arm the Tab
-          // handler (`if (!loop && !trapped) return`). Our help is prose, so the scope finds no
-          // tabbable candidate, focuses its own container, and from there every Tab and every
-          // Shift+Tab is `preventDefault`ed: a keyboard user who opened the help with Enter could
-          // not get back to the form except by guessing Escape. Read in
-          // @radix-ui/react-focus-scope's handleKeyDown.
-          //
-          // The trigger keeps focus instead, which is the ordinary non-modal disclosure: Radix
-          // still puts `aria-expanded` and `aria-controls` on it, the box is named (see `label`),
-          // and Escape reaches it from anywhere because DismissableLayer listens on the document.
+          // NOTE: FOCUS NEVER ENTERS THE BOX. Radix hands `FocusScope` a hard-coded `loop: true` even when
+          // non-modal, which arms its Tab handler; with prose inside there is nothing tabbable, so the scope
+          // focuses its container and swallows every Tab and Shift+Tab, stranding a keyboard user
+          // (@radix-ui/react-focus-scope's handleKeyDown). The trigger keeps focus instead, the ordinary
+          // non-modal disclosure: it carries `aria-expanded` and `aria-controls`, and Escape works from
+          // anywhere because DismissableLayer listens on the document.
           onOpenAutoFocus={(e) => e.preventDefault()}
           // And it must not move focus on the way out either. Radix's non-modal close focuses the
           // trigger unless the event is defaulted away, so a box that merely followed the pointer

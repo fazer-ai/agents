@@ -8,16 +8,11 @@ import { nativeToolMeta } from "@/client/lib/nativeTools";
 import { isGuardableToolName } from "@/modules/agents/tool-preconditions";
 import type { ToolPreconditionRow } from "./types";
 
-// The enforceable half of the per-tool guidance: guidance tells the model WHEN to use a tool and is
-// re-decided every turn; a precondition says when the tool MAY be used and the runtime holds it
-// (issue #101). Edited as a LIST rather than as the map it is stored as, because a map keyed by the
-// thing being edited loses the row the moment the operator clears the tool name to pick another.
-//
-// Scoped to NATIVE tools on purpose, and to the SAME set the write boundary accepts —
-// `isGuardableToolName` is the one predicate, imported rather than restated, because a console that
-// offers a name the API refuses and a console that hides a name the API accepts are both this
-// feature failing quietly. The reasoning for where that line sits is on the predicate itself
-// (modules/agents/tool-preconditions.ts); docs/graph.md carries the operator-facing half.
+// The enforceable half of the per-tool guidance: guidance tells the model WHEN to use a tool; a
+// precondition says when the tool MAY be used, and the runtime holds it. Edited as a LIST rather than
+// the stored map, so a row survives the operator clearing its tool name to pick another. Scoped by
+// `isGuardableToolName`, the write boundary's own predicate, so the console never offers a name the
+// API refuses or hides one it accepts (reasoning in modules/agents/tool-preconditions.ts).
 
 interface Props {
   rows: ToolPreconditionRow[];
@@ -158,17 +153,10 @@ export function ToolPreconditionsEditor({
 }
 
 // The stored shape: a map keyed by tool name. Rows with no tool or no attribute key are DROPPED
-// rather than saved half-written — an incomplete rule would be refused by the write boundary, and
-// refusing the whole save because a row was left blank punishes the wrong edit.
-//
-// `stored` is passed so entries this editor could not RENDER are carried through untouched. Without
-// it, a condition on a custom tool, or of a kind added later, would be deleted by the first operator
-// who saves an unrelated change on this tab — silently, from a console that never showed it.
-//
-// THE PROPERTY THIS HOLDS, and the one the review found three separate ways to break: saving without
-// changing a row must not change what the RUNTIME accepts. Anything the runtime refuses has to come
-// back out refused, and anything it accepts has to come back out identical. The matrix in
-// tests/client/tool-preconditions-editor.test.ts asserts exactly that, per class of stored value.
+// rather than saved half-written, since the write boundary would refuse the whole save for them.
+// `stored` carries the entries this editor cannot render through untouched, so an unrelated save
+// never deletes them. Saving without changing a row must not change what the runtime accepts
+// (asserted per class of stored value in tests/client/tool-preconditions-editor.test.ts).
 export function serializeToolPreconditions(
   rows: ToolPreconditionRow[],
   stored?: unknown,
@@ -208,15 +196,11 @@ export function serializeToolPreconditions(
   return out;
 }
 
-// Only entries this editor can render EXACTLY, and only for tools it can OFFER. Everything else stays
-// in the raw passthrough above.
-//
-// - An unknown kind, an unknown scope, a missing key or a non-string/blank `equals` is skipped rather
-//   than coerced: parsing `scope: "moon"` as `conversation`, or dropping a blank `equals`, would let
-//   the next save on this tab turn an entry the runtime IGNORES into a live rule.
-// - A tool this editor has no option for (an HTTP/MCP/integration name, configured over REST) is
-//   skipped too. Rendered, it would be a row with a blank selector, and the operator's only sensible
-//   reaction to a blank row is to delete it — deleting a guard they never asked about.
+// Only entries this editor can render EXACTLY, and only for tools it can OFFER; everything else stays
+// in the raw passthrough. An unknown kind or scope, a missing key or a non-string/blank `equals` is
+// skipped rather than coerced, or a save could turn an entry the runtime IGNORES into a live rule. A
+// tool with no option here (HTTP/MCP/integration, set over REST) is skipped too: a blank-selector
+// row invites deleting a guard the operator never asked about.
 export function parseToolPreconditionRows(
   stored: unknown,
 ): ToolPreconditionRow[] {

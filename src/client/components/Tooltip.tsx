@@ -14,18 +14,11 @@ interface TooltipBaseProps {
   contentClassName?: string;
 }
 
-// NOTE: when `asChild` is true (default), children is passed directly as the
-// trigger via Radix Slot, which requires a single ReactElement. When `asChild`
-// is false, children is wrapped by Radix Trigger, so any ReactNode is fine. The
-// discriminated union below surfaces that constraint at the type level instead
-// of at runtime.
-//
-// CHILDREN IS REQUIRED, and used to be optional: a `<Tooltip content=… />` with
-// nothing inside rendered its own `?` button. That made a tooltip look exactly
-// like the help affordance while being a different thing, and one that no
-// phone can open, since a Radix tooltip has no touch route in (Popover.tsx).
-// Help behind a `?` is `HelpPopover`; a tooltip LABELS something that is already
-// on screen, so it always has a child to label.
+// With `asChild` (the default) children is the trigger through Radix Slot, which needs a single
+// ReactElement; without it Radix Trigger wraps any ReactNode, and the union below says so in the type.
+// CHILDREN IS REQUIRED: a tooltip LABELS something already on screen. A childless tooltip rendering
+// its own `?` would look like the help affordance while no phone can open it (a Radix tooltip has no
+// touch route in, see Popover.tsx); help behind a `?` is `HelpPopover`.
 type TooltipProps =
   | (TooltipBaseProps & { asChild?: true; children: ReactElement })
   | (TooltipBaseProps & { asChild: false; children: ReactNode });

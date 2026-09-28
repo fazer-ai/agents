@@ -18,9 +18,8 @@ import { apiErrorMessage } from "@/client/lib/apiError";
 import { fieldTypeLabels } from "./toolFieldTypes";
 
 // One real request for the definition on screen, so the operator can see what the API answers and
-// what the model would be given (issue #456). The sample field upstairs is filled from the response,
-// which is the whole point: the path picker needs a response, and pasting one by hand is the step
-// this removes.
+// what the model would be given. The editor's sample field is filled from the response, so the path
+// picker has a response without the operator pasting one.
 //
 // Everything about the request itself is decided server-side (`modules/tool-definitions/test-run.ts`),
 // including which context names are honoured. This screen only collects values.
@@ -139,12 +138,9 @@ export function fieldUsesPicker(
   );
 }
 
-// What is wrong with one box, in the order the runtime would find it. A required field left blank is
-// a problem too, and it used to be the silent one: the box was skipped, `args` went out without it,
-// and the DECLARED schema refused the call before the request — with the send button enabled the
-// whole time, so the first thing the operator learned was a failed run.
-//
-// Exported and pure for the same reason `coerceTestArg` is: the table is then a test, not a claim.
+// What is wrong with one box, in the order the runtime would find it. A required field left blank
+// counts too: skipped, the DECLARED schema would refuse the call before the request, so the send
+// button has to know. Exported and pure, like `coerceTestArg`, so the table is a test.
 export type ArgProblem =
   | { kind: "missing" }
   | { kind: "type"; got: Extract<CoercedArg, { ok: false }> };
@@ -153,10 +149,9 @@ export function argProblem(
   field: Pick<ToolTestField, "type" | "itemType" | "required" | "enumValues">,
   raw: string,
 ): ArgProblem | null {
-  // A REQUIRED string field cannot be omitted, so a blank box there is not "nothing" — the empty
-  // string is the only thing it can mean, and the declared schema takes it. Reporting it missing
-  // was a dead end: the field could not be submitted at all, for a value a real tool call can
-  // carry (a PATCH that clears a provider field).
+  // NOTE: a REQUIRED string field cannot be omitted, so a blank box there is the empty string,
+  // which the declared schema takes and a real tool call can carry (a PATCH that clears a field).
+  // Reporting it missing would make the field impossible to submit.
   if (raw === "") {
     if (!field.required) return null;
     return fieldTakesEmptyString(field) ? null : { kind: "missing" };
@@ -316,9 +311,9 @@ export function ToolTestModal({
   // A row's identity is its ORIGIN plus its name, never the name alone. The two halves can collide:
   // a tool may declare an input field called `contact_id`, and the runtime resolves that name with
   // an explicit precedence — AI input, then a fixed value, then context (`valueLookup` in
-  // graph/tools/http.ts). Keyed by the bare name, the two rows shared one React key and one box, so
-  // the case that precedence exists FOR — the model omits the optional argument and context fills
-  // it in — could not be expressed here at all, and the same string went out in both halves.
+  // graph/tools/http.ts). Keyed by the bare name the two rows would share one React key and one box,
+  // and the case the precedence exists FOR (the model omits the argument, context fills it in)
+  // could not be expressed.
   const fields: (ToolTestField & { hint: string; slot: string })[] = target
     ? [
         ...target.aiFields.map((f) => ({

@@ -68,11 +68,9 @@ type ReachableAccount = NonNullable<ReachableData>["accounts"][number];
 const CHANNELS_ACCOUNT_KEYS = ["acct-0", "acct-1"];
 const CHANNELS_INBOX_KEYS = ["inbox-0", "inbox-1", "inbox-2"];
 
-// EVERY agent, not the first page (issue #476 review, round 4). This page does not list agents, it
-// RESOLVES them: an id bound to an inbox or observing one is rendered by looking it up here, so an
-// agent past the first page reads as no agent at all — a responder the picker cannot show, an
-// observer whose chip and remove button vanish. `/agents` answers 20 at a time and caps a page at
-// 100, so the pages are walked to the total the first one reports.
+// EVERY agent, not the first page: this page resolves the ids bound to or observing an inbox, so an
+// agent past the first page would read as no agent at all. `/agents` caps a page at 100, so the pages
+// are walked to the total the first one reports.
 const AGENTS_PAGE_SIZE = 100;
 
 // The reconcile answers `${inboxId}:${agentId}`; the strip asks by agent, for one inbox.
@@ -105,12 +103,9 @@ async function walkAgentsOnce(): Promise<
   const agents: AgentLite[] = [...first.data.agents];
   const seen = new Set(agents.map((a) => a.id));
   const total = first.data.total;
-  // The freshest count the walk saw. Offsets are computed against the roster as it stands at each
-  // request, so a DELETION on an already-read page slides every later row one place forward and the
-  // walk steps straight over one of them (issue #476 review, round 37): after reading 100 of 150,
-  // deleting one of those 100 makes page 2 return the 49 rows from offset 100 of a 149-row roster,
-  // and the row that WAS 101 is never read. The counts still add up — 149 held against a total of
-  // 149 — so the shortfall cannot detect it; the total MOVING is what does.
+  // NOTE: The freshest total the walk saw. A deletion on an already-read page slides every later row
+  // one offset forward, so the walk skips one while the counts still add up; only the total moving
+  // detects it.
   let latestTotal = total;
   for (
     let page = 2;
@@ -155,11 +150,9 @@ async function loadAllAgents(): Promise<AgentLite[] | null> {
 const pickerItemCls =
   "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary outline-none transition-colors data-[highlighted]:bg-bg-hover data-[highlighted]:text-text-primary";
 
-// The inbox's OBSERVERS (issue #476): monitoring agents attached to the inbox on Chatwoot as
-// observers, receiving every event and answering nothing. Chips for the current ones, each with
-// its remove, and a dropdown over the monitoring agents not yet observing. Both calls go to
-// Chatwoot, so the strip shows a spinner while one is in flight and the list is controlled by the
-// row's own `observerAgentIds`, which only moves on success.
+// The inbox's OBSERVERS: monitoring agents attached on Chatwoot that receive every event and answer
+// nothing. Both calls reach Chatwoot, so the list is controlled by the row's `observerAgentIds`,
+// which only moves on success.
 function InboxObserversStrip({
   observerAgentIds,
   responderAgentId,
@@ -513,23 +506,11 @@ export function ChannelsPage() {
   const [reconnecting, setReconnecting] = useState<string | null>(null);
   const [removingInbox, setRemovingInbox] = useState<string | null>(null);
 
-  // WHAT A REPAIR ACTUALLY CONFIRMS, and rounds 41 and 49 pull opposite ways on it.
-  //
-  // One bot serves every role its agent holds, so a call that re-provisions a bot that was gone
-  // repairs every inbox this persona answers and every one it observes — round 41 asked the page to
-  // say so, since sibling bindings otherwise keep offering a Reconnect for a bot the backend already
-  // considers active. But that repair is BEST-EFFORT per inbox: `ensureAgentBotAndReattach` logs a
-  // failed sibling attachment at `error` and lets the requested operation succeed anyway, so marking
-  // them all active clears the Reconnect from an inbox that is receiving nothing (round 49). The
-  // reconcile does not catch it either, because it asks whether the BOT exists.
-  //
-  // Between an extra Reconnect that repairs nothing (a no-op click, the call is idempotent) and a
-  // missing one that hides an inbox getting no deliveries, this module's rule picks the first: wrong
-  // and visible over quiet and wrong. So the page marks ONLY the binding the operation itself
-  // attached, which is the one whose success the call actually reports by not throwing.
-  //
-  // Closing it properly is the reconcile asking the ATTACHMENT per binding rather than the bot —
-  // named in docs/chatwoot.md as the real fix, and out of this PR's scope.
+  // NOTE: Marks ONLY the binding the operation attached. A re-provisioned bot serves every binding of
+  // its agent, but reattaching the siblings is best-effort (a failure is logged and the call still
+  // succeeds), and the reconcile asks whether the bot exists, not the attachment. Marking them all
+  // would hide an inbox receiving nothing; an extra Reconnect is an idempotent no-op click.
+  // TODO: have the reconcile check the attachment per binding rather than the bot.
   const markBindingActive = useCallback(
     (key: string, kind: "responder" | "observer") => {
       const set = kind === "responder" ? setBotStatus : setObserverStatus;
@@ -1050,8 +1031,8 @@ export function ChannelsPage() {
     showToast(t("channels.bound", "Inbox updated."), "success");
   }
 
-  // The observer binding (issue #476): both calls reach Chatwoot, and the row's list moves only on
-  // success, like the responder binding above.
+  // NOTE: The observer binding: both calls reach Chatwoot, and the row's list moves only on success, like
+  // the responder binding above.
   async function observeInbox(inboxId: string, agentId: string) {
     const { data, error: err } = await api.api.v1.chatwoot
       .inboxes({ id: inboxId })
@@ -1070,10 +1051,9 @@ export function ChannelsPage() {
         i.id === inboxId ? { ...i, observerAgentIds: next } : i,
       ),
     );
-    // The call attaches on Chatwoot and re-provisions a bot that was gone, so it is also the
-    // reconnect for an observer the reconcile reported missing: the pair is active again, and the
-    // chip has to stop asking to be reconnected without waiting for the next status read. And the
-    // repair is the PERSONA's, not this binding's — see `markAgentBotActive`.
+    // NOTE: The call also re-provisions a missing bot, so it is the reconnect for an observer the
+    // reconcile reported missing; the chip clears without waiting for the next status read. Only this
+    // binding is marked, see `markBindingActive`.
     setObserverStatus((prev) => ({
       ...prev,
       [`${inboxId}:${agentId}`]: "active",
@@ -1576,13 +1556,9 @@ export function ChannelsPage() {
                             <div className="flex flex-col items-end gap-1.5">
                               <InboxAgentPicker
                                 value={ib.agentId}
-                                // WITHOUT THIS INBOX'S OBSERVERS (issue #476 review, round 48). The
-                                // two bindings are exclusive per (inbox, agent), so `bindInbox`
-                                // refuses an agent that already observes this inbox — offered here,
-                                // the option is one the request is certain to reject, and the
-                                // operator learns that from an error toast. The CURRENT responder
-                                // is never among them (the same exclusivity), so nothing selectable
-                                // is lost.
+                                // NOTE: Without this inbox's observers: the two bindings are exclusive per (inbox, agent), so
+                                // `bindInbox` refuses an agent that already observes it. The current responder is never among
+                                // them, so nothing selectable is lost.
                                 agents={agents.filter(
                                   (a) => !ib.observerAgentIds.includes(a.id),
                                 )}

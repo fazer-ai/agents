@@ -38,16 +38,12 @@ import {
   type CodeToolTestTarget,
 } from "./CodeToolTestModal";
 
-// Create/edit an operator-authored code tool (issue #363): a JavaScript function body the agent
-// calls with typed arguments, the sibling of ToolEditModal for the kind whose "wiring" is code
-// rather than an HTTP request. The model only ever supplies arguments; the operator owns the label,
-// the required description, the typed input schema and the body. The identifier the agent calls is
-// derived from the label by `normalizeToolName`, exactly like an HTTP tool, so it is shown live and
-// never typed.
-//
-// Invalid code is SAVED, not refused: the static check (lib/code-tool-syntax.ts) answers alongside
-// the row as a WARNING, and a body that does not parse fails at call time as the operator's failure.
-// So the syntax warning never disables Save, and a half-typed body can always be saved and reopened.
+// Create/edit an operator-authored code tool: a JavaScript function body the agent calls with typed
+// arguments, the sibling of ToolEditModal for the kind whose "wiring" is code. The model only ever
+// supplies arguments; the operator owns the label, description, input schema and body. The
+// identifier is derived from the label by `normalizeToolName`, like an HTTP tool's, so it is shown
+// live and never typed. Invalid code is SAVED with a WARNING (lib/code-tool-syntax.ts) and fails at
+// call time, so the warning never disables Save and a half-typed body can always be saved.
 
 // The row this modal edits comes from the GET-BY-ID, not from the list: the list does not carry the
 // body (it is up to 20k characters per row and nothing browsing a list reads it), and the body is
@@ -65,17 +61,12 @@ type CodeToolsData = Awaited<
 export type CodeToolListed = NonNullable<CodeToolsData>["tools"][number];
 
 // A starter body that shows the contract at a glance; the operator replaces it. Empty would do (Save
-// gates on non-empty code), but the shape is the thing a first-time author most needs to see.
-//
-// Its comments are the first console text an author of a code tool reads, so they are TRANSLATED
-// like everything else on this screen. The code around them is not: `return` is the language's word,
-// not ours. Shipped in English since #517 and caught in a browser against a pt-BR console.
+// gates on non-empty code), but the shape is the thing a first-time author most needs to see. Its
+// comments are the first text an author reads, so they are TRANSLATED; the code around them is not.
 export function starterCode(t: TFunction): string {
-  // One line, and it is the one thing that cannot be discovered from the editor: the key that opens
-  // the list. Everything the two lines here used to say (what `input` and `context` hold, that the
-  // answer is a `return`, that console output rides along) is in that list, in the `?` beside the
-  // field, and in the completion's own descriptions. Repeating it in the body made the first thing
-  // an author reads a paragraph about the body they are about to delete.
+  // NOTE: One line: the key that opens the completion list, the one thing the editor cannot reveal.
+  // What `input` and `context` hold is in that list, in the `?` beside the field, and in the
+  // completions' descriptions, not in a body the author is about to delete.
   const hint = t(
     "codeTools.starterHint",
     "{{hotkey}} lists the variables available here.",
@@ -246,9 +237,8 @@ export function CodeToolEditModal({
         }
       })();
     } else {
-      // Reset here too: the session token now drops the previous opening's answer, and that answer
-      // is what used to clear this flag on its way out — leaving the create form skeletonized
-      // forever if it never arrived. Every state this handler sets belongs to THIS opening.
+      // NOTE: Reset here too: the session token drops the previous opening's answer, so that answer can
+      // no longer clear this flag. Every state this handler sets belongs to THIS opening.
       setLoadingForm(false);
       const initial = emptyForm(t);
       setForm(initial);
@@ -310,9 +300,7 @@ export function CodeToolEditModal({
         if (sessionRef.current === session) setFormError(held(err));
         return;
       }
-      // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list
-      // that has to hear about it, not the dialog now on screen.
-      // Dismissed and reopened while this was out: the row was written, and it is the CALLER's list
+      // NOTE: Dismissed and reopened while this was out: the row was written, and it is the CALLER's list
       // that has to hear about it, not the dialog now on screen.
       if (sessionRef.current !== session) {
         onSaved?.({ id: data.tool.id, name: data.tool.name }, !editId);

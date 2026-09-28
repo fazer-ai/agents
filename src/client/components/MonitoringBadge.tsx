@@ -2,8 +2,8 @@ import { Eye } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "./Badge";
 
-// The "monitoring" marker (issue #209), next to TestModeBadge: the agent is bound and reads
-// everything, and never answers. One state only — unlike test mode, nothing activates it.
+// The "monitoring" marker, next to TestModeBadge: the agent is bound and reads everything, and never
+// answers. One state only: unlike test mode, nothing activates it.
 export function MonitoringBadge() {
   const { t } = useTranslation();
   return (

@@ -59,8 +59,8 @@ interface GeneralTabProps {
   saving: boolean;
   onSave: () => void;
   onDiscard: () => void;
-  // Absent for a watcher (issue #494): the bar then shows no playground entry, the way the tab
-  // itself is not drawn for one.
+  // Absent for a watcher: the bar then shows no playground entry, the way the tab itself is not drawn
+  // for one.
   onOpenPlayground?: () => void;
   // Opens the strong-confirm delete flow (owned by the editor page). Rendered as a danger zone at
   // the end of this tab instead of a header button.

@@ -101,14 +101,12 @@ export function VaultPanel() {
     void load();
   }, [load]);
 
-  // Deeplink: /resources/vault?fill=<id> opens the fill modal for a pending entry once the list is
-  // loaded, then strips the param so a re-render / back-nav doesn't re-open it.
+  // NOTE: deeplink /resources/vault?fill=<id> opens the fill modal for a pending entry once the
+  // list is loaded, then strips the param so a re-render / back-nav doesn't re-open it.
   //
-  // A MISS keeps the parameter and says so. The id belongs to a tenant, and the console resolves the
-  // tenant from localStorage: a link built for another one finds nothing here (issue #151). Stripping
-  // it on the way, which is what used to happen, spent the link on a page that then looked like an
-  // ordinary navigation, so there was nothing to retry and nothing on screen explaining it. Kept, the
-  // operator switches tenant in the header (a full reload) and the same URL resolves.
+  // A MISS keeps the parameter and says so: the console resolves the tenant from localStorage, so a
+  // link built for another tenant finds nothing here, and keeping it lets the operator switch
+  // tenant in the header (a full reload) and resolve the same URL.
   const [searchParams, setSearchParams] = useSearchParams();
   const fillId = searchParams.get("fill");
   const missReported = useRef<string | null>(null);

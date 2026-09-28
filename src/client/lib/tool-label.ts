@@ -1,18 +1,9 @@
-// The phrase the operator's timeline puts on a tool call, as a rule anything can call.
-//
-// It used to be a `switch` inside a hook inside ConversationDetailPage, which made it unreachable:
-// rendering that page pulls auth, theme, toast, realtime and a live conversation, so the only thing
-// that could be asserted about the labels was their source text. That was survivable while the rule
-// was "one name, one phrase" and stopped being so the moment a phrase started depending on a second
-// fact (issue #726).
-//
-// It answers with a KEY and the English default rather than translated text, because translating is
-// `t()`'s job and the i18n extractor reads static calls. The keys are therefore declared to the
-// extractor by the magic comments below, the same way every other dynamic key in the console is.
-//
-// Two surfaces read it: the persistent trail marker, and the transient live indicator. One rule for
-// both is the point — a fix applied to the timeline alone leaves the bubble saying the agent ignored
-// a customer it had just answered, which is the surface where nobody can check afterwards.
+// The phrase the operator's timeline puts on a tool call, as a rule anything can call (and a test
+// can reach without rendering ConversationDetailPage). It answers with a KEY and the English default,
+// not translated text, because translating is `t()`'s job and the i18n extractor reads static calls;
+// the keys are declared by the magic comments below. Two surfaces read it, the persistent trail
+// marker and the transient live indicator, and one rule for both is the point: a fix on the timeline
+// alone would leave the bubble saying the agent ignored a customer it had just answered.
 
 export interface ToolLabel {
   key: string;
@@ -20,9 +11,8 @@ export interface ToolLabel {
 }
 
 // What the TURN did, as far as the caller knows. `delivered` absent or null means the question was
-// not answered (a row written before this shipped, a path with no turn to ask), and unknown must
-// read as the plain label: inventing either answer is how a true sentence gets replaced by a false
-// one in the other direction.
+// not answered (an older row, a path with no turn to ask), and unknown must read as the plain label:
+// inventing either answer is how a true sentence gets replaced by a false one in the other direction.
 export interface TurnFacts {
   delivered?: boolean | null;
 }
@@ -39,8 +29,8 @@ export interface TurnFacts {
 // t('conversation.activity.suggest', 'Preparing a knowledge suggestion')
 // A Map and not an object literal, because the key comes from the OPERATOR: a custom HTTP tool or
 // an MCP server may be named `constructor` or `toString`, and an object literal answers those with
-// the inherited member, which is truthy. The label would come out as `t(undefined, undefined)` — an
-// empty phrase, and not even the humanized name an unknown tool gets (review round 1).
+// the inherited member, which is truthy. The label would come out as `t(undefined, undefined)`, an
+// empty phrase, not even the humanized name an unknown tool gets.
 const BY_TOOL = new Map<string, ToolLabel>(
   Object.entries({
     handoff_to_human: {

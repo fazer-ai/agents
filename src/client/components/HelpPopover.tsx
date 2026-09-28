@@ -21,18 +21,13 @@ interface HelpPopoverProps {
   contentClassName?: string;
 }
 
-// The `?` that opens long-form help, wherever help lives: next to a form field's label, next to a
-// KPI's caption, next to a section heading. One component and not a prop on each of those, because
-// the affordance is the part an operator learns once and then expects to find everywhere.
-//
-// A SPAN, NOT A BUTTON, and that is load-bearing rather than stylistic. A <label> is associated
-// with the first LABELABLE element in its subtree, and `button` is labelable: as a button, this
-// became the labelled control of any field it sat in: clicking the field's title opened the help
-// instead of focusing the input, and the input lost its accessible name. Measured. `role="button"`
-// plus `tabIndex` makes it interactive content (so a label forwards no click to it) without making
-// it labelable, at the cost of wiring Enter and Space by hand, which a span does not emit as
-// clicks. It is kept uniform outside labels too: one behaviour beats two variants that differ in a
-// way nobody can see until it breaks.
+// The `?` that opens long-form help, wherever help lives (a field's label, a KPI's caption, a
+// section heading): one component, because the affordance is what an operator learns once and then
+// expects everywhere. A SPAN, NOT A BUTTON: a <label> is associated with the first LABELABLE element
+// in its subtree, and a button there becomes the labelled control, so clicking the field's title
+// opens the help and the input loses its name. `role="button"` plus `tabIndex` makes it interactive
+// without making it labelable, at the cost of wiring Enter and Space by hand. It stays a span
+// outside labels too, so there is one behaviour rather than two.
 export function HelpPopover({
   content,
   label,
@@ -42,17 +37,11 @@ export function HelpPopover({
   contentClassName,
 }: HelpPopoverProps) {
   const { t } = useTranslation();
-  // "Show help: History ceiling", and ONE name for both halves of the affordance: the button the
-  // operator activates and the box that opens. Radix names the box nothing on its own, and hearing
-  // the same words on the way in and on the way out is what ties the two together for somebody who
-  // cannot see that one came from the other.
-  //
-  // COMPOSED and not interpolated, which is the unusual choice here and is deliberate. The two
-  // halves are an action and its subject, in that order in both catalogues, and the subject arrives
-  // already translated from whoever rendered the label. Interpolation would make the name of every
-  // trigger depend on a `t` that interpolates, and in this suite one does not: nine client test
-  // files stub `react-i18next` and the stub leaks across files (tests/lib/module-mock-package.test.ts
-  // records exactly that, and predicted it would bite).
+  // NOTE: "Show help: History ceiling", ONE name for both the trigger and the box (Radix names the box
+  // nothing), so hearing the same words in and out ties the two together. COMPOSED rather than
+  // interpolated: the subject arrives already translated, and interpolation would make every trigger's
+  // name depend on a `t` that interpolates, which the leaking `react-i18next` stub of the client suites
+  // does not (tests/lib/module-mock-package.test.ts).
   const name = label
     ? `${t("common.showHelp", "Show help")}: ${label}`
     : t("common.showHelp", "Show help");

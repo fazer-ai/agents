@@ -183,11 +183,10 @@ function MessageBubble({
   m: Message;
   convId: string;
   followUpBadge?: FollowUpBadgeInfo;
-  // What the turn that created this message spent (issue #858), when this is the last of its
-  // messages on screen.
+  // What the turn that created this message spent, when this is the last of its messages on screen.
   turnUsage?: TurnUsageEntry;
-  // The quoted/replied-to message's preview (item 11): a short snippet + who said it. null when this
-  // message is not a reply, or the referenced message isn't in the loaded window.
+  // The quoted/replied-to message's preview: a short snippet + who said it. null when this message is
+  // not a reply, or the referenced message isn't in the loaded window.
   quotedText?: string | null;
   quotedLabel?: string | null;
 }) {
@@ -269,8 +268,8 @@ function MessageBubble({
         )}
         {m.content &&
           (outgoing ? (
-            // Agent/bot (and human-agent) replies carry Markdown; render it (item 6). Incoming customer
-            // text stays literal — a customer typing * or _ must not become emphasis.
+            // NOTE: Agent/bot (and human-agent) replies carry Markdown; render it. Incoming customer text stays
+            // literal: a customer typing * or _ must not become emphasis.
             <Markdown tone="onAccent" className="text-sm">
               {m.content}
             </Markdown>
@@ -382,16 +381,13 @@ const MessageBubbleMemo = memo(
 );
 
 // Safety net: a live indicator that never received its "finished" event (e.g. the socket dropped
-// mid-turn) self-clears after this long. Tool calls no longer need a minimum-display floor — a fast
-// tool now leaves a PERSISTENT marker in the timeline (the trail), so the live bubble can switch
-// immediately to the next step without flashing.
+// mid-turn) self-clears after this long. Tool calls need no minimum-display floor: a fast tool leaves
+// a persistent marker in the timeline, so the live bubble can switch straight to the next step.
 const ACTIVITY_STUCK_MS = 30_000;
 
-// The translated label for a known native tool name; null for an unknown/absent name (caller picks a
-// generic fallback). Static t() keys so the i18n extractor sees them.
 // Humanize a raw tool name as a last resort when no friendly label is mapped (custom HTTP / MCP
-// tools, and native tools without a dedicated phrase): snake_case → "Snake case". Beats the generic
-// "Used a tool" so the operator can tell WHICH tool ran (item 5).
+// tools, and native tools without a dedicated phrase): snake_case to "Snake case", so the operator
+// can tell WHICH tool ran rather than reading a generic "Used a tool".
 function prettyToolName(name: string): string {
   const words = name.replace(/_+/g, " ").trim();
   if (!words) return name;
@@ -420,9 +416,9 @@ type ActivityState = {
   delivered?: boolean | null;
 } | null;
 
-// What one agent turn spent, for a turn with no message of its own on screen (issue #858): a silent
-// turn, one whose messages are not loaded, one from before its messages were recorded. Drawn in the
-// timeline at the time of its last billed call, in the same form the bubbles carry.
+// What one agent turn spent, for a turn with no message of its own on screen (a silent turn, one
+// whose messages are not loaded or were never recorded). Drawn in the timeline at the time of its
+// last billed call, in the same form the bubbles carry.
 function TurnUsageMarker({ turn }: { turn: TurnUsageEntry }) {
   return (
     <div
@@ -677,8 +673,8 @@ function formatHoursWindows(
   return lines;
 }
 
-// The "follow-up sequence complete" marker (item 19). Anchored right after the last follow-up bubble in
-// the timeline (not pinned at the foot), so it reads as the closing beat of the sequence it belongs to.
+// The "follow-up sequence complete" marker. Anchored right after the last follow-up bubble in the
+// timeline (not pinned at the foot), so it reads as the closing beat of the sequence it belongs to.
 function FollowUpComplete() {
   const { t } = useTranslation();
   return (
@@ -694,11 +690,10 @@ function FollowUpComplete() {
   );
 }
 
-// The proactive follow-up journey, drawn at the foot of the timeline (item 12/13): the next pending
-// step + its estimated time + the absolute clock time, the "complete" state, or "none yet". Times are
-// estimates (background job). A tooltip draws the FULL configured sequence (per-step cadence, labels,
-// the resolving step). When the estimate is past due, the line is highlighted and the tooltip explains
-// the send is imminent. Re-renders on a light timer so the relative ETA stays fresh between refetches.
+// The proactive follow-up journey, drawn at the foot of the timeline: the next pending step + its
+// estimated time + the absolute clock time. Times are estimates (background job). A tooltip draws the
+// FULL configured sequence; when the estimate is past due, the line is highlighted and the tooltip
+// says the send is imminent. Re-renders on a light timer so the relative ETA stays fresh.
 function FollowUpLine({
   followUp,
   lang,
@@ -747,8 +742,8 @@ function FollowUpLine({
       { step: followUp.nextStep, total: followUp.totalSteps, when, at },
     );
   } else {
-    // Only the forward-looking estimate lives at the foot now. "Complete" is anchored right after the
-    // last follow-up bubble (FollowUpComplete, item 19); "none yet" is hidden (item 7).
+    // NOTE: Only the forward-looking estimate lives at the foot. "Complete" is anchored right after the
+    // last follow-up bubble (FollowUpComplete); "none yet" is hidden.
     return null;
   }
 
@@ -1081,11 +1076,9 @@ export function ConversationDetailPage() {
   // After returning a conversation to the AI we reveal a "Respond now" action (it can answer the
   // pending tail immediately instead of waiting for the next inbound message). Reset once used.
   const [offerReengage, setOfferReengage] = useState(false);
-  // QUEM PODE FAZER O AGENTE FALAR COM O CLIENTE (issue #753). Esta tela é a única do console que não
-  // é admin-gated, de propósito: o atendente opera a conversa aqui (transferir, devolver à IA, mudar
-  // status). Re-engajar não é operar, é disparar um turno proativo para o cliente, e a rota passou a
-  // pedir `TENANT_ADMIN`. Oferecer o botão a quem a rota vai recusar é um 403 por aperto de botão,
-  // que lê como defeito do produto e convida a apertar de novo.
+  // NOTE: Re-engaging fires a proactive turn at the customer, so its route asks `TENANT_ADMIN`, while
+  // this page is deliberately open to attendants for operating the conversation. Offering the button
+  // to someone the route refuses is a 403 per click.
   const { user } = useAuth();
   const mayReengage = isAdminRole(user?.role);
   const [activity, setActivity] = useState<ActivityState>(null);
@@ -1384,8 +1377,8 @@ export function ConversationDetailPage() {
       canLoadOlder,
     ],
   );
-  // Resolve a reply's quoted message (item 11): map id → message, so a bubble that quotes another can
-  // show a WhatsApp-style preview when the referenced message is in the loaded window.
+  // NOTE: Resolve a reply's quoted message: map id to message, so a bubble that quotes another can show a
+  // WhatsApp-style preview when the referenced message is in the loaded window.
   const messagesById = useMemo(() => {
     const map = new Map<number, Message>();
     for (const m of messages) if (m.id != null) map.set(m.id, m);
@@ -1471,9 +1464,9 @@ export function ConversationDetailPage() {
     }
   }
 
-  // Re-engage (item 6): re-fire the agent turn over the unanswered tail, without waiting for a new
-  // customer message. Toast reflects the outcome (posted / gate held by a human / contact not
-  // authorized / nothing to answer).
+  // NOTE: Re-engage: re-fire the agent turn over the unanswered tail, without waiting for a new customer
+  // message. Toast reflects the outcome (posted / gate held by a human / contact not authorized /
+  // nothing to answer).
   async function reengage() {
     setOfferReengage(false);
     setBusy(true);
@@ -1488,10 +1481,9 @@ export function ConversationDetailPage() {
           "success",
         );
       } else if (data.outcome === "posted-partial") {
-        // NOT the `noReply` fallback it used to land in (issue #429). Part of the answer IS with the
-        // customer, and telling the operator nothing was sent invites them to re-engage again — which
-        // re-runs the turn and sends that part a second time. Warning, not success: the reply came
-        // out short and the conversation carries the badge saying so.
+        // NOTE: Not the `noReply` fallback: part of the answer IS with the customer, and saying nothing was
+        // sent invites a re-engage that sends that part a second time. Warning, not success, because the
+        // conversation carries the short-reply badge.
         showToast(
           t(
             "conversation.reengage.postedPartial",
@@ -1564,47 +1556,23 @@ export function ConversationDetailPage() {
   // places that genuinely mean a person (the header's assignee line).
   const heldByOther = conv?.heldByAnotherParty === true;
   const isHuman = conv?.assigneeType === "User";
-  // Whether anything ANSWERS this inbox (issue #495): a responder bound, switched on, and not in
-  // monitoring mode. The three actions that hand the conversation to the AI — return, reopen (the
-  // same operation on a resolved one) and respond now — are offered only then. Without one, the
-  // server refuses the return (409) and the reengage (`no-agent`); offering the button first just
-  // parked the conversation pending with nobody on it, on an inbox an observer only watches.
-  // ...AND A BOT TO ANSWER WITH (issue #495 review, round 2). A binding is not an identity: with the
-  // `ChatwootAgentBot` row gone — an instance reconnected, the bot deleted upstream, the reconcile
-  // not run — the server refuses the return with a 409 and the re-engage cannot load the agent, so
-  // offering either just hands the operator a button that fails.
+  // NOTE: Whether anything ANSWERS this inbox: a responder bound, switched on, with a bot, and not in
+  // monitoring mode. Return, reopen and respond now are offered only then, because without one the
+  // server refuses them (409, `no-agent`) and the button only fails.
   const responderAnswers =
     conv?.agentId != null &&
     conv.agentEnabled === true &&
     conv.agentHasBot === true &&
     conv.agentMode !== "monitoring" &&
-    // NOTE: ...and a `test` agent answers only where `/teste` activated it (issue #495 review,
-    // round 11). The server refuses the hand-back for an unactivated one with
-    // `errors.returnAgentTestSilent`, so offering the button is offering a 409. `testActivatedAt`
-    // here is already the EPISODE's answer (issue #261) rather than this row's stamp, which is the
-    // same question the server asks, so a conversation activated through its redirect sibling keeps
-    // the button.
+    // NOTE: A `test` agent answers only where `/teste` activated it; the server refuses the hand-back
+    // otherwise (`errors.returnAgentTestSilent`). `testActivatedAt` is already the episode's answer, the
+    // same question the server asks, so activation through a redirect sibling keeps the button.
     (conv.agentMode !== "test" || conv.testActivatedAt != null);
-  // WHY the actions are missing, in the operator's words (issue #495 review, round 13). Hiding them
-  // on its own is the half that leaves somebody looking for a button that is not there, with no way
-  // to tell a deliberate rule from a bug — and this predicate reads the MIRROR, so on the one
-  // conversation where it is wrong the operator had nothing at all to go on. Derived from fields the
-  // detail already carries, so it costs no call; a null here is either "everything is fine" or "no
-  // agent is bound", which the panel above already says on its own.
-  // TWO STRINGS, NOT ONE (issue #494 manual test): a `label` short enough to sit in the action row
-  // beside the buttons it replaces, and the sentence that says what to DO about it, behind the row's
-  // `?`. One sentence inline was the first shape and it broke the layout — the row is a flex line of
-  // buttons, and a hundred-and-twenty-character sentence dropped into it wraps and pushes the
-  // navigation around. docs/ui.md is right that a detected misconfiguration belongs on screen rather
-  // than behind an affordance; what belongs there is the CONDITION, which is three words, and not
-  // the remediation, which is a sentence.
-  //
-  // NO RESPONDER AT ALL is the FIRST case, not the excluded one (issue #495 review, round 16).
-  // Round 13 left it out saying the panel above already says it, and the panel does not: with no
-  // assignee it prints the generic "AI" label, which claims an answerer this inbox does not have,
-  // and with a person on it it prints their name and the inbox. Either way the three actions vanish
-  // with nothing on screen naming the cause, which is the very state the server refuses by name
-  // (`errors.returnNoResponder`).
+  // NOTE: WHY the actions are missing, derived from fields the detail already carries (no call), so the
+  // operator can tell a deliberate rule from a bug. Two strings: a `label` short enough for the action
+  // row (a full sentence wraps the flex row of buttons) and the remediation behind the row's `?`.
+  // No responder at all is covered too: the panel above prints a generic "AI" or a person's name there,
+  // which names no cause.
   const noResponder: { label: string; detail: string } | null =
     conv == null || responderAnswers
       ? null
@@ -1721,9 +1689,8 @@ export function ConversationDetailPage() {
                     <span className="inline-flex items-center gap-1 rounded bg-bg-tertiary px-1.5 py-0.5 text-[11px] text-text-secondary">
                       <Eye className="h-3 w-3" aria-hidden="true" />
                       {t("conversations.observedByLabel", "Observed by")}
-                      {/* Each observer is a link to its own page (issue #494): the badge was the
-                          only place the watcher acting on this conversation was named, and it
-                          led nowhere. */}
+                      {/* Each observer is a link to its own page: the badge is the only place the watcher
+                          acting on this conversation is named. */}
                       {conv.observers.map((o, i) => (
                         <span key={o.id}>
                           {i > 0 ? ", " : null}
@@ -1800,21 +1767,16 @@ export function ConversationDetailPage() {
                   />
                 </div>
               </div>
-              {/* Actions + navigation. Below lg: one wrapping row (item 12) — below sm they stack
-                  full-width; at sm+ they flow right-aligned and wrap as the width shrinks. The two
-                  inner groups are `contents` here, so they vanish from layout and the buttons flow
-                  flat exactly as before. At lg+ the outer turns into a right-aligned column and each
-                  group becomes its own row: line 1 = status actions, line 2 = the links (item 4).
-                  Status IS the AI on/off signal (pending = AI handling, open/snoozed = a human owns
-                  it, resolved = closed). "Configure agent" stays last so it sits at the right edge. */}
+              {/* Actions + navigation. Below lg: one wrapping row, stacked full-width below sm and
+                  right-aligned from sm; the two inner groups are `contents` so the buttons flow flat. At lg+
+                  the outer is a right-aligned column and each group its own row (status actions, then links).
+                  Status IS the AI on/off signal (pending = AI handling, open/snoozed = a human owns it,
+                  resolved = closed). "Configure agent" stays last so it sits at the right edge. */}
               <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-end lg:flex-col lg:flex-nowrap lg:items-end lg:gap-2">
                 <div className="contents lg:flex lg:flex-row lg:flex-wrap lg:items-center lg:justify-end lg:gap-2">
-                  {/* Who HOLDS it, not what the status says. `pending` is the AI's state and also
-                      the state a takeover leaves behind — the hand-back sets it and then finds a
-                      person there — so keying these two buttons on status alone offered "handoff to
-                      human" on a conversation a human already had, and hid "Return to AI" on the one
-                      conversation that needed it. That is the shape of the bug this whole change is
-                      about, reappearing in the console. */}
+                  {/* Who HOLDS it, not what the status says: `pending` is also the state a takeover leaves
+                      behind, so keying on status alone would offer "handoff to human" to a conversation a human
+                      already has and hide "Return to AI" where it is needed. */}
                   {conv.status === "pending" && !heldByOther && (
                     <Button
                       variant="secondary"
@@ -1856,10 +1818,8 @@ export function ConversationDetailPage() {
                       {t("conversation.reopen", "Reopen")}
                     </Button>
                   )}
-                  {/* `resolved` is excluded on BOTH sides: "Reopen" above already runs this exact
-                      operation, so letting the holder clause add "Return to AI" there rendered two
-                      differently labelled buttons for one action. Reopen is the right label for a
-                      closed conversation whoever holds it, so it keeps that state alone. */}
+                  {/* `resolved` is excluded on BOTH sides: "Reopen" above runs this same operation, so the
+                      holder clause adding "Return to AI" would render two labels for one action. */}
                   {conv.status !== "resolved" &&
                     responderAnswers &&
                     (heldByOther || conv.status !== "pending") && (
@@ -1940,8 +1900,8 @@ export function ConversationDetailPage() {
                       {t("conversation.configureAgent", "Configure agent")}
                     </Link>
                   )}
-                  {/* With no responder, the observer is the only agent acting on this conversation,
-                      and the page offered no way to reach it (issue #494). */}
+                  {/* With no responder, the observer is the only agent acting on this conversation, so
+                      the page links to it. */}
                   {!conv.agentId &&
                     conv.observers.map((o) => (
                       <Link
@@ -1982,12 +1942,9 @@ export function ConversationDetailPage() {
                     </p>
                   </div>
                 </div>
-                {/* Gated like the other two (issue #495 review, round 1): this button calls the
-                    same endpoint, which answers `no-agent` on an inbox nothing answers, and a
-                    conversation keeps its `lastError` long after its responder was unbound.
-                    E PELO RANK também (issue #753), que é a mesma razão em outra dimensão: este
-                    botão chama a mesma rota, que agora pede `TENANT_ADMIN`, e um `lastError` antigo
-                    faz este card aparecer para um atendente muito depois de o turno ter falhado. */}
+                {/* Gated like the other two: the same endpoint answers `no-agent` on an inbox nothing
+                    answers and asks `TENANT_ADMIN`, while `lastError` outlives both the unbinding of the
+                    responder and the failed turn. */}
                 {mayReengage && responderAnswers && (
                   <Button
                     variant="secondary"

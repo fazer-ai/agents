@@ -15,14 +15,14 @@ export type TokenUsage = {
   completionTokens: number;
   // Calls by the step that made them, keyed by the ledger's node.
   byNode: Record<string, number>;
-  // USD over the calls the price table could price, and how many it could not (issue #863).
+  // USD over the calls the price table could price, and how many it could not.
   costUsd: number;
   unpricedCalls: number;
   // Of the priced calls, how many a table older than the one in the tree priced.
   olderTablePricedCalls: number;
-  // Of the priced calls, how many the tenant's own prices priced (issue #865).
+  // Of the priced calls, how many the tenant's own prices priced.
   tenantPricedCalls: number;
-  // And how many carry the cost OpenRouter reported (issue #866).
+  // And how many carry the cost OpenRouter reported.
   reportedPricedCalls: number;
 };
 
@@ -74,14 +74,11 @@ export function usageFigureText(
 }
 
 // Everything else, for the popover, as data: the card below lays it out, and the tests read the
-// numbers without a DOM. The cached share is a part OF the input and never subtracted from it:
-// `cachedReadTokens` is a discounted subset, and it is the number a prompt change can zero without
-// anything else moving. A cache write (Anthropic's premium) only shows when there was one. Time only
-// shows when it was measured.
-//
-// There is no tokens-per-second figure on purpose: the calls are not streamed, so a call's time is
-// prompt processing plus generation with no first-token mark between them, and a turn with a
-// guardrail blends two models. The quotient would read as a speed and compare two turns wrongly.
+// numbers without a DOM. The cached share is a part OF the input, never subtracted: it is a
+// discounted subset, the number a prompt change can zero without anything else moving. No
+// tokens-per-second figure on purpose: the calls are not streamed, so a call's time has no
+// first-token mark, and a turn with a guardrail blends two models; the quotient would read as a
+// speed and compare turns wrongly.
 export interface UsageDetail {
   input: string;
   cached: string;

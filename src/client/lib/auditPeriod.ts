@@ -1,18 +1,10 @@
-// The windows the audit page's period control offers, and the arithmetic behind them.
-//
-// EVERYTHING HERE IS PURE, and `today` is an ARGUMENT rather than a clock read inside. That is what
-// makes the presets testable at all: the suite runs at UTC (measured, see `localMidnight` in
-// AuditPage), where a version that resolved "yesterday" against the wrong zone passes every test.
-// The page reads the clock once, in one place, and hands the day down.
-//
-// A DATE KEY IS `YYYY-MM-DD` IN THE OPERATOR'S OWN CALENDAR, which is the same shape
-// `<input type="date">` emits and `localDayBounds` turns into instants. The arithmetic below runs in
-// UTC on that string — never by constructing a local `Date` and adding days — because a local
-// construction crosses a DST boundary by an hour and lands on the wrong day twice a year.
-//
-// The preset list is a LOG's, not a dashboard's. `~/dev/bi` offers trailing months because it reads
-// trends; a trail is read to answer "what happened today" and "what changed last month", so the
-// calendar family is the long one here and the only trailing window is the 30 days everyone asks for.
+// The windows the audit page's period control offers, and the arithmetic behind them. EVERYTHING
+// HERE IS PURE, with `today` an ARGUMENT: the suite runs at UTC, where a wrong-zone "yesterday"
+// passes every test, so the page reads the clock once and hands the day down. A DATE KEY IS
+// `YYYY-MM-DD` IN THE OPERATOR'S CALENDAR (what `<input type="date">` emits), and the arithmetic
+// runs in UTC on that string, never on a local `Date` plus days, which crosses DST by an hour and
+// lands on the wrong day twice a year. The presets are a LOG's, not a dashboard's: the calendar
+// family is the long one, and the only trailing window is 30 days.
 
 export type DateKey = string;
 
@@ -146,14 +138,10 @@ export function auditPresetOf(
 }
 
 /**
- * Whether a `from`/`to` pair is a window worth committing.
- *
- * PURE, AND SEPARATE FROM THE CONTROL, because the rule it encodes is the one that is easy to get
- * wrong in place. `<input type="date">` reports "" while a date is being typed or cleared, so a
- * control that refuses to hold anything unusable snaps back and keyboard entry cannot progress. The
- * answer is a draft that holds anything and commits only a usable PAIR — and the pair is checked
- * together, never one field at a time: applied per field, moving a window forward is refused in both
- * orders (changing `from` first inverts it, changing `to` first inverts it too), so some windows
+ * Whether a `from`/`to` pair is a window worth committing. PURE AND SEPARATE FROM THE CONTROL:
+ * `<input type="date">` reports "" mid-typing, so a control refusing anything unusable snaps back
+ * and blocks keyboard entry. A draft holds anything and commits only a usable PAIR, checked
+ * together: checked per field, moving a window forward is refused in both orders, so some windows
  * cannot be reached at all.
  */
 export function isUsableRange(from: string, to: string): boolean {
@@ -163,21 +151,11 @@ export function isUsableRange(from: string, to: string): boolean {
 }
 
 /**
- * Whether a draft window is ready to be applied, GIVEN the one already applied.
- *
- * The pair rule and the one-sided rule are both here because neither is right on its own, and which
- * applies is decided by the committed window rather than by the draft.
- *
- * A `<input type="date">` reports "" while a date is being typed or cleared. So while a PAIR is
- * applied, only a usable pair commits: anything looser fires a request off a half-erased window in
- * the middle of an edit, and validating field by field makes some windows unreachable outright (to
- * move a long window forward, changing `from` first inverts the pair and changing `to` first inverts
- * it too, so both edits are refused).
- *
- * But a ONE-SIDED window — "since the 1st", with no end — is a filter this page recognises and a URL
- * can carry, and there the pair rule refuses every edit forever: the missing opposite bound makes
- * every candidate unusable, so the input showed the new date while the query kept the old one, with
- * no way out. When the applied window is not a pair, a single valid bound commits, and emptying the
+ * Whether a draft window is ready to be applied, GIVEN the one already applied. While a PAIR is
+ * applied, only a usable pair commits (see `isUsableRange`): anything looser fires a request off a
+ * half-erased window. A ONE-SIDED window ("since the 1st") is a filter a URL can carry, and there the
+ * pair rule would refuse every edit forever, the input showing a new date while the query keeps the
+ * old one. So when the applied window is not a pair, a single valid bound commits, and emptying the
  * last one removes the filter.
  */
 export function isCommittableRange(
@@ -191,21 +169,12 @@ export function isCommittableRange(
 }
 
 /**
- * How long until the local calendar day changes.
- *
- * A CONSOLE PAGE IS LEFT OPEN, and nothing on this one re-renders by itself: filtered to Today and
- * abandoned overnight, it goes on saying "Today" while its fixed bounds query yesterday. Every piece
- * of the correction already exists — the day is read per render, and `selectedPreset` drops a named
- * mode the moment its arithmetic stops yielding the bounds in hand — so what is missing is only a
- * render, and one timer is the whole of it.
- *
- * It takes THE DAY THE PAGE IS SHOWING rather than reading one, so the timer aims at the end of that
- * day and not at the end of whatever day the clock happens to be on — which is also what makes the
- * day a real dependency of the effect that arms it, instead of a re-arm trigger the linter is right
- * to call redundant. Built from LOCAL components, like everything else answering "what day is it"
- * here, so the boundary is the operator's midnight and not UTC's. The second of slack lands the
- * timer after the boundary rather than exactly on it, where a clock a millisecond behind reads the
- * old day and re-arms for nothing; the floor keeps a day already past from arming a zero.
+ * How long until the local calendar day changes. A page filtered to Today and left open overnight
+ * would keep saying "Today" while querying yesterday; the day is read per render and `selectedPreset`
+ * drops a stale mode, so one timer is the whole correction. It takes THE DAY THE PAGE SHOWS, so it
+ * aims at that day's end and the day is a real dependency of the effect. Local components, so the
+ * boundary is the operator's midnight; a second of slack lands past it (a clock a millisecond behind
+ * would re-arm for nothing), and the floor keeps a past day from arming a zero.
  */
 export function msUntilNextLocalMidnight(
   day: DateKey,
@@ -245,21 +214,11 @@ export function isNamedPeriodPreset(
 }
 
 /**
- * Which row the period control shows as selected.
- *
- * TWO PRESETS CAN NAME THE SAME WINDOW, so the bounds alone do not answer this. On a Monday
- * `this-week` is the same two dates as `today`; so is `this-month` on the 1st, and `this-year` on
- * January 1. Deriving the selection therefore snapped "This week" back to "Today" the instant it was
- * picked. And `custom` is not a window at all, it is a MODE — "I am choosing the bounds myself" —
- * whose every possible window belongs to some preset: measured, the first version of the control
- * derived the selection, so picking Custom wrote a window, the next render read that window back as
- * "Today", and the two date inputs never appeared.
- *
- * So the mode travels beside the bounds, in the URL, and a link carries the choice that was actually
- * made. IT IS A HINT AND NOT AN ANSWER: a named mode is honoured only while its own arithmetic still
- * produces the bounds in hand, and that is what keeps it from going stale — `period=today` pasted
- * tomorrow no longer resolves to those dates, falls through to the derivation, and reads
- * "Yesterday", which is what the dates say.
+ * Which row the period control shows as selected. TWO PRESETS CAN NAME THE SAME WINDOW (on a Monday
+ * `this-week` equals `today`, as does `this-month` on the 1st), and `custom` is a MODE whose every
+ * window belongs to some preset, so deriving from the bounds alone would snap a pick back to "Today".
+ * The mode travels beside the bounds, in the URL. IT IS A HINT: a named mode is honoured only while
+ * its arithmetic still yields the bounds in hand, so `period=today` pasted tomorrow reads "Yesterday".
  */
 export function selectedPreset(
   mode: string,

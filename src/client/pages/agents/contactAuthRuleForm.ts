@@ -1,9 +1,9 @@
 import { parseContactAuthRule } from "@/modules/contact-auth/settings";
 
-// The editor's half of the contact gate's local rule (issue #646). The lists are ONE TEXT BOX each,
-// one entry per line, because that is how an operator pastes a pilot list; the save turns them into
-// the arrays the runtime reads, and validity is the runtime's own parse, so the editor can never
-// accept a rule the server refuses or the reader drops.
+// The editor's half of the contact gate's local rule. The lists are ONE TEXT BOX each, one entry per
+// line, because that is how an operator pastes a pilot list; the save turns them into the arrays the
+// runtime reads, and validity is the runtime's own parse, so the editor can never accept a rule the
+// server refuses or the reader drops.
 export interface ContactAuthRuleForm {
   // "" = no rule (the endpoint answers); "allowlist" | "attribute" otherwise.
   ruleKind: string;

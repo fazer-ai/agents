@@ -1,15 +1,8 @@
-// WHAT ONE LOGS GROUP CALLS ITSELF, AND WHY THE ANSWER IS NOT ALWAYS "TURN".
-//
-// The page groups rows by `turnId`, which is a CORRELATION id and not a claim that a turn happened:
-// `route`, `command` and `webhook` each synthesize one precisely because they have no turn to belong
-// to. Until issue #357 the name fell through conversation → thread → the literal word "Turn", so a
-// group that is not a turn announced itself as one — and the stage that always landed there is the
-// one that can never be a turn: a dead or requeued outbound delivery happens on a worker tick long
-// after whatever produced the event, with no conversation, no contact and no thread.
-//
-// Measured before the fix (development database, read-only, `conversation_id IS NULL`): 5 groups, 3
-// carrying a thread and 2 carrying neither, which is the branch that reaches the word. No `webhook`
-// row was among them only because no delivery had died there yet; by construction every one would.
+// WHAT ONE LOGS GROUP CALLS ITSELF, AND WHY THE ANSWER IS NOT ALWAYS "TURN". The page groups rows
+// by `turnId`, a CORRELATION id rather than a claim that a turn happened: `route`, `command` and
+// `webhook` each synthesize one because they have no turn to belong to. A dead or requeued outbound
+// delivery happens on a worker tick long after its event, with no conversation, contact or thread,
+// so falling through to the word "Turn" would name a group that can never be one.
 export type LogGroupTitle =
   | { kind: "conversation"; conversationId: string }
   | { kind: "thread"; threadId: string }

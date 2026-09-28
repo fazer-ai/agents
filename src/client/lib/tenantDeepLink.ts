@@ -1,33 +1,11 @@
-// What to do about a `?switchTenant=<id>` on the URL the operator just followed.
-//
-// Console links handed out by MCP name the tenant they belong to (`src/modules/mcp/console-links.ts`),
-// because the console resolves the tenant from `localStorage` and never from the URL: without it, a
-// link built for tenant B resolves against whatever the recipient's browser has selected, and a
-// fleet-level session picks its tenant per call, so the two diverge as a matter of course.
-//
-// Switching is a FULL reload, exactly as the header switcher does, so the decision has to be made
-// once and never re-made: after the switch the stored selection equals the requested one, which is
-// what stops the reload from repeating.
-//
-// The whole rule is one question — "is this console on the tenant the link names?" — and the thing
-// that makes it hard is that there are THREE answers, not two. Collapsing "I cannot tell" into
-// either "yes" or "no" is the same mistake in every place it has been made here, and it has been
-// made in three of them:
-//
-//   - the tenant list has not arrived yet   → `pending`: hold, decide when it does
-//   - the tenant list could not be READ     → `unverified`: say so; never claim the link is bad,
-//                                             and never let the page through, because the page is
-//                                             the wrong tenant's
-//   - the session is scoped to one tenant   → compare against THAT tenant, not against the browser's
-//                                             stored selection, which such a session never sets
-//
-// The last one is why a tenant-scoped session is not simply "the parameter is inert". It is inert as
-// far as switching goes — the backend ignores `X-Tenant-Id` for anyone but a SUPER_ADMIN — but a link
-// built for another tenant is still a link that will not do what it says here. `fillAt` survives that
-// on its own, because the id it carries is not in this tenant and the vault panel reports the miss.
-// `createAt` and `configureAt` name a ROUTE and nothing else: there is no lookup to miss, so silence
-// puts the operator on their own tenant's page believing they followed the link, and whatever they
-// create there is created in the wrong tenant.
+// What to do about a `?switchTenant=<id>` on the URL the operator just followed. MCP console links
+// name their tenant (`src/modules/mcp/console-links.ts`) because the console resolves the tenant from
+// `localStorage`, never the URL. Switching is a FULL reload, like the header switcher, and afterwards
+// the stored selection equals the requested one, which stops it repeating. "Is this console on the
+// tenant the link names?" has THREE answers, and "I cannot tell" must never collapse into yes or no:
+// list not arrived → `pending`; list unreadable → `unverified` (never "the link is bad", never the
+// page through); tenant-scoped session → compare against THAT tenant, since `X-Tenant-Id` is inert
+// for it but a `createAt`/`configureAt` link for another tenant would silently create there.
 
 // What this session can open. The three fleet-level states are separate on purpose: an empty list
 // and an unreadable one are opposite claims, and only one of them is authoritative.

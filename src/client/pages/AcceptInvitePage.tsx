@@ -13,8 +13,7 @@ type ValidationState = "validating" | "valid" | "invalid";
 // An invitation waiting in this tab while its invitee signs in (the token never goes back on a URL,
 // for the same history / Referer hygiene the page strips it for). It stays parked until the
 // invitation is accepted or turns out to be invalid: signing in can end in a full reload (the
-// selector recovery after /auth/me), and a token cleared on the first read would be gone by then
-// (review round 7).
+// selector recovery after /auth/me), and a token cleared on the first read would be gone by then.
 const PARKED_INVITE_KEY = "@app:parked-invite";
 
 function parkInviteToken(token: string): void {
@@ -43,7 +42,7 @@ function clearParkedInvite(): void {
 
 // Public invite-acceptance page. Modeled on SetupPage: capture ?token, strip it from the URL, validate
 // it to pre-fill the (read-only) email, then join + auto-login. tenant + role are bound server-side to
-// the invite. Three shapes, because one person is one account across tenants (issue #756):
+// the invite. Three shapes, because one person is one account across tenants:
 //   - the email has no account yet: set a name and a password, and the account is created;
 //   - the email has an account and this browser is signed in as it: one click joins the tenant;
 //   - the email has an account and this browser is not signed in as it: its CURRENT password proves
@@ -157,8 +156,8 @@ export function AcceptInvitePage() {
   // the same way, with the invitation parked in this tab until the invitee comes back.
   const switchToSignIn = async () => {
     parkInviteToken(token);
-    // Signed in as somebody else, the login page would bounce straight back here: that
-    // session ends first, and only once the server says it ended (review round 5).
+    // NOTE: signed in as somebody else, the login page would bounce straight back here: that session
+    // ends first, and only once the server says it ended.
     if (user && !(await logout())) {
       setError(
         t("auth.genericError", "Something went wrong. Please try again."),

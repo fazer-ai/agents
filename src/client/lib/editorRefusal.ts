@@ -1,29 +1,16 @@
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { SETTINGS_CREDENTIAL_PATHS } from "@/modules/agents/credential-paths";
 
-// WHERE THE AGENT EDITOR DRAWS A VALUE THE SERVER CAN NAME, as one map.
-//
-// Two things ask this question and they used to answer it apart. A config-health warning holds a
-// dotted path for a value already over its cap and wants a "Go to"; a refusal holds a dotted path for
-// the value this save just carried and wants somewhere to put the sentence. Same question — which
-// tab, which section — and keeping two lists is exactly how `availability.awayMessage` and
-// `contactAuth.denyMessage` ended up in neither: both have a textarea on the Behavior tab, and a
-// warning about either said "this note has no field in the console, so it can only be shortened
-// through the API", which is false about a control two clicks away.
-//
-// The credential half is not restated here at all. `SETTINGS_CREDENTIAL_PATHS` already carries the
-// editor location beside each path, for the import warning's deep link, and its own comment records
-// why: deriving the location as "the behavior tab, section = block" was right for four entries and
-// wrong for the fifth. Restating it would be a fourth copy of a list that has already been wrong
-// three times.
+// WHERE THE AGENT EDITOR DRAWS A VALUE THE SERVER CAN NAME, as one map. A config-health warning
+// wants a "Go to" for a value over its cap, and a refusal wants somewhere to put the sentence; one
+// map answers both, because two lists drift and then say "no field in the console" about a control
+// two clicks away. The credential half is not restated: `SETTINGS_CREDENTIAL_PATHS` already carries
+// the editor location beside each path, and a copy here would drift from it.
 
 // The native-tool notes the console draws no control for. `toolGuidance` takes one for all thirteen
-// tools in NATIVE_TOOL_NAMES and the editor renders three, so this set is closed and derivable --
+// tools in NATIVE_TOOL_NAMES and the editor renders three, so this set is closed and derivable,
 // which is what makes it safe to TELL the operator a value can only be changed through the API.
-//
-// That claim used to be read off the absence of a target, and absence proves nothing about the
-// console: the map was missing `settings.modelFallback.model` and `observability.fullDetailUntil`,
-// both of which have a visible control, so the banner said the opposite of the truth about them.
+// Absence from the target map proves nothing about the console, so that claim is never read off it.
 export const UNDRAWN_TOOL_NOTES: readonly string[] = NATIVE_TOOL_NAMES.filter(
   (n) =>
     !["set_custom_attribute", "set_labels", "update_kanban_task"].includes(n),
@@ -49,16 +36,11 @@ export interface EditorTarget {
   sectionId?: string;
 }
 
-// TWO SPELLINGS reach this map, because the two producers root their path differently and neither is
-// wrong on its own:
-//
+// TWO SPELLINGS reach this map, because the two producers root their path differently:
 //   `SettingsTextTooLongError`      -> `guardrails.customPolicy`        (root = the settings bag)
 //   `assertCredentialRefsResolve`   -> `settings.tts.credentialRef`     (root = the agent row)
-//
-// Both are the server's own name for the same wire field. Normalising them is a contract change that
-// reaches REST and MCP, so this map accepts both and the divergence is written down rather than
-// papered over: fazer-ai/agents#349 measured it, and a reader who trusts one spelling silently loses
-// half the fields.
+// Both are the server's own name for the same wire field, and normalising them is a contract change
+// that reaches REST and MCP, so this map accepts both: a reader trusting one spelling loses half.
 const SETTINGS_PREFIX = "settings.";
 
 // Matched by pattern, because three of these families are open-ended: a guardrails direction holds
@@ -99,10 +81,9 @@ const TEXT_TARGETS: ReadonlyArray<{ match: RegExp } & EditorTarget> = [
     sectionId: "tts",
   },
   { match: /^followUp\.steps\[/, tab: "behavior", sectionId: "proactive" },
-  // Not text caps: the other refusals an agent write names by a settings path. They are here for the
-  // same reason the caps are -- so a refusal about one can take the operator to it -- and their
-  // absence used to do worse than nothing, because the banner read "no entry" as "no control in the
-  // console" and said so about a picker that is on screen.
+  // Not text caps: the other refusals an agent write names by a settings path, here so a refusal
+  // about one can take the operator to it. Without an entry the banner would say "no control in the
+  // console" about a picker that is on screen.
   {
     match: /^modelFallback\.model$/,
     tab: "behavior",
@@ -172,16 +153,11 @@ export function editorTargetFor(
   return target;
 }
 
-// WHICH SWITCH HAS TO BE ON for a control to be in the DOM.
-//
-// The first version of this file declared per TAB and argued that the switches could not matter: both
-// producers refuse only what a write introduces or changes, so a value behind an off switch cannot be
-// refused, because changing it needs the control. The argument is sound about the moment the refusal
-// ARRIVES and says nothing about afterwards -- the operator can turn Vision off while its credential
-// refusal is standing, and then the mark is held on a control that is no longer drawn, with no banner
-// because the field's tab is still the open one. Silence, which is the one outcome barred here.
-//
-// So the question is asked per control, and the answer is a name the caller reads off its own state.
+// WHICH SWITCH HAS TO BE ON for a control to be in the DOM, asked per control rather than per tab.
+// A refusal can only arrive for a control that is drawn, but the operator can then turn its switch
+// off (Vision, with its credential refusal standing), leaving the mark on an undrawn control with no
+// banner because the tab is still open: silence, the one outcome barred here. The answer is a name
+// the caller reads off its own state.
 export interface EditorControlsShown {
   // Any of the editor's tabs, not only the five that write an agent: the page also draws Channels,
   // Knowledge, Playground and Experiments, and each of those answers with an empty list.
@@ -191,8 +167,8 @@ export interface EditorControlsShown {
   // TTS has no boolean: any mode other than "never" means audio replies are on.
   ttsOn: boolean;
   ttsNormalize: boolean;
-  // Each of the two texts of issue #859 sits behind audio being on AND its own switch, which is one
-  // name here because a field can only need one.
+  // Each of the two TTS texts (the spoken notice, the text choice) sits behind audio being on AND its
+  // own switch, which is one name here because a field can only need one.
   ttsSpokenNoticeShown: boolean;
   ttsTextChoiceShown: boolean;
   visionEnabled: boolean;
@@ -209,14 +185,11 @@ export interface EditorControlsShown {
 
 type SwitchName = Exclude<keyof EditorControlsShown, "tab" | "followUpSteps">;
 
-// The switch each credential picker sits behind, by the path the server refuses it under.
-//
-// Keyed by path and looked up rather than listed alongside, so a credential added to
-// `SETTINGS_CREDENTIAL_PATHS` next week is OWNED by construction -- that is the half that cannot be
-// allowed to drift, and it already did: `settings.modelFallback.credentialRef` reached that list
-// without reaching this file, so the server could refuse a field the editor neither marked nor
-// announced. A path with no entry here is treated as NOT drawn, which costs a banner beside a
-// visible control at worst; the reverse default costs silence.
+// The switch each credential picker sits behind, by the path the server refuses it under. Keyed by
+// path and looked up rather than listed alongside, so a credential added to
+// `SETTINGS_CREDENTIAL_PATHS` is OWNED by construction and the server cannot refuse a field the
+// editor neither marks nor announces. A path with no entry here is treated as NOT drawn, which costs
+// a banner beside a visible control at worst; the reverse default costs silence.
 const CREDENTIAL_SWITCH: Readonly<Record<string, SwitchName>> = {
   "stt.credentialRef": "sttEnabled",
   "tts.credentialRef": "ttsOn",
@@ -338,19 +311,12 @@ export function editorRefusalFields(view: EditorControlsShown): {
   return { drawn, owned };
 }
 
-// WHAT A WRITE CARRIED, by the server's names, read from the patch it is about to send.
-//
-// Not from what the editor is DRAWING, which is what the first version of this did and what
-// conflated two different questions. `drawn` is about whether a MARK CAN BE READ; `sent` is about
-// what the REQUEST PUT ON THE WIRE, and the two disagree by construction: `buildSettings()`
-// serializes the whole settings bag, including the blocks whose controls are switched off, and
-// `saveGuardrails` sends `{...syncedSettings, guardrails}` whether or not the switch is on.
-//
-// A field the patch carries and this map omits gets no staleness check at all -- `placeRefusal` reads
-// `Object.hasOwn(sent, field)` and, finding nothing, marks the box without comparing, which puts the
-// server's sentence under a value the operator changed while the request was out. And the same
-// omission makes a later successful save fail to clear that mark, because the clear asks this map
-// too. One reading, taken from the thing that was actually sent.
+// WHAT A WRITE CARRIED, by the server's names, read from the patch about to be sent and NOT from
+// what the editor draws: `drawn` is whether a MARK CAN BE READ, `sent` is what the REQUEST PUT ON
+// THE WIRE, and they disagree by construction (`buildSettings()` serializes the whole bag, blocks
+// switched off included). A carried field this omits gets no staleness check (`placeRefusal` marks
+// the box without comparing, under a value the operator may have changed), and a later successful
+// save would fail to clear that mark, because the clear asks this map too.
 export function sentFromPatch(
   patch: Record<string, unknown>,
   owned: readonly string[],

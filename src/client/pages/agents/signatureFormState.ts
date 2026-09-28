@@ -2,11 +2,9 @@ import { readSignatureConfig } from "@/modules/signature/service";
 import type { SignatureState } from "./BehaviorTab";
 
 // The agent editor's Signature block, as a pair of pure functions: stored settings → form state →
-// stored settings. Outside the page for the reason the Memory and TTS pairs are, and for one more
-// that is specific to this block: since #612 the block has an `enabled` flag whose whole purpose is
-// that turning the signature OFF must not lose the text. Both directions of that promise are
-// decisions, not plumbing — what an old bag without the flag means, and what the save writes back —
-// and a decision that lives inline in a page is a decision no test can reach.
+// stored settings. Outside the page like the Memory and TTS pairs, and because the `enabled` flag
+// must never lose the text when the signature is turned OFF: what an old bag without the flag means
+// and what the save writes back are decisions a test has to reach.
 
 // THROUGH THE RUNTIME'S OWN READER, so the screen and the customer cannot disagree about whether an
 // agent is signing. `readSignatureConfig` is what `deliverText` asks at delivery time; asking it
@@ -19,20 +17,15 @@ export function signatureToForm(settings: unknown): SignatureState {
   const storedText = typeof bag?.text === "string" ? bag.text : "";
   return {
     enabled: c.enabled,
-    // THE RAW STORED TEXT, not the reader's copy, and this is the one place the pair must NOT
-    // defer to it. `readSignatureConfig` clamps to `SIGNATURE_MAX` because that is what the
-    // customer receives; an editor that clamps too shows a truncated copy of a signature stored
-    // before the cap existed, and the next save of any unrelated field on the page writes that
-    // copy over the original. Silent, permanent, and the same loss this feature is about.
-    // The boundary already assumes the form gives back what was stored:
-    // `collectOversizedTextChanges` lets an oversized value through exactly when it is UNCHANGED.
-    // Found in review of #613.
+    // NOTE: The raw stored text, not the reader's copy: `readSignatureConfig` clamps to
+    // `SIGNATURE_MAX` for the customer, and an editor that clamps too would write the truncated
+    // copy over an older, longer signature on any unrelated save. The boundary relies on this:
+    // `collectOversizedTextChanges` lets an oversized value through only when it is UNCHANGED.
     text: storedText,
     position: c.position,
-    // Through the reader again, which is where the migration lives: a bag written before #616 has
-    // no frequency, and what its absence means is read off the position. The form must not answer
-    // that question a second time, or the screen and the customer disagree about an agent nobody
-    // has opened yet.
+    // NOTE: Through the reader again, which is where the migration lives: a bag with no frequency
+    // reads it off the position. The form must not answer that a second time, or the screen and
+    // the customer disagree about an agent nobody has opened yet.
     frequency: c.frequency,
     separator: c.separator,
   };
@@ -62,9 +55,8 @@ export function signatureToStored(form: SignatureState): {
 }
 
 // What the field starts with the first time the switch goes on over an EMPTY box, and nothing at
-// all otherwise. The guard is the point, not the seed: turning the switch off keeps what the
-// operator wrote, and seeding over a kept text would hand it back with the other hand, which is the
-// exact loss #612 exists to prevent, committed by the convenience meant to celebrate it.
+// all otherwise. The guard is the point: turning the switch off keeps what the operator wrote, and
+// seeding over a kept text would lose it.
 export const SIGNATURE_SEED = "**{{nome_agente}}**";
 
 export function signatureOnToggle(

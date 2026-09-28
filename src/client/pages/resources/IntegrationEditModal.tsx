@@ -481,16 +481,9 @@ function emptyForm(): Form {
   };
 }
 
-// Per-toolpack create/edit modal for an integration instance. Shared by the Components → Integrations
-// panel and the agent editor's Tools tab. It fetches the catalog (with each toolpack's tool specs),
-// renders a SERVICE-specific form (Asaas charges + webhook, Calendar allowlist, Drive folder), lists
-// the tools the integration exposes (label/description/args, never internal names), and reveals the
-// inbound webhook URL once after creating an Asaas instance. `onSaved` lets the caller refetch.
 // The keys of the body this modal writes. Two of them are vault refs, and `requireVaultRef` names
-// which one it refused — the reason a sentence alone cannot answer here.
-//
-// `config` is not here: it is a per-toolpack section of many controls, and a refusal about the bag
-// as a whole has no single box to sit under, so it belongs in the toast.
+// which one it refused, which a sentence alone cannot say. `config` is not here: it is a
+// per-toolpack section of many controls with no single box to mark, so its refusal goes in the toast.
 const INTEGRATION_FIELDS = ["name", "credentialRef"] as const;
 
 // The inbound secret's picker is drawn only for a strategy that HAS one. The ref survives a switch
@@ -501,7 +494,7 @@ const INTEGRATION_INBOUND_FIELDS = [
   "inboundSecretRef",
 ] as const;
 
-// A GENERIC webhook draws no outward credential (#818), so its refusal has nothing to sit under.
+// A GENERIC webhook draws no outward credential, so its refusal has nothing to sit under.
 const withoutCredential = (fields: readonly string[]) =>
   fields.filter((f) => f !== "credentialRef");
 
@@ -517,6 +510,11 @@ function currentOf(form: Form) {
   };
 }
 
+// Per-toolpack create/edit modal for an integration instance. Shared by the Components → Integrations
+// panel and the agent editor's Tools tab. It fetches the catalog (with each toolpack's tool specs),
+// renders a SERVICE-specific form (Asaas charges + webhook, Calendar allowlist, Drive folder), lists
+// the tools the integration exposes (label/description/args, never internal names), and reveals the
+// inbound webhook URL once after creating an Asaas instance. `onSaved` lets the caller refetch.
 export function IntegrationEditModal({
   modal,
   onSaved,
@@ -1147,7 +1145,7 @@ export function IntegrationEditModal({
             </FormField>
 
             {/* A GENERIC webhook calls nothing outward, so it has no credential of its own: its only
-                secret is the inbound one below (#818). */}
+                secret is the inbound one below. */}
             {!isGeneric && (
               <FormField
                 label={t("integrations.credential", "Credential")}
@@ -1837,7 +1835,7 @@ export function IntegrationEditModal({
               </div>
             )}
 
-            {/* ── Inbound webhook: Asaas payments, or the operator's own system (GENERIC, #818) ── */}
+            {/* ── Inbound webhook: Asaas payments, or the operator's own system (GENERIC) ── */}
             {selectedCatalog?.supportsInbound && (
               <div className="flex flex-col gap-3 rounded-lg border border-border bg-bg-secondary p-3">
                 <div className="flex items-center gap-2">

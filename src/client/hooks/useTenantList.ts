@@ -7,15 +7,11 @@ import {
 import { api } from "@/client/lib/api";
 import { reloadOntoSafeRoute } from "@/client/lib/tenantSwitch";
 
-// The SUPER_ADMIN's tenant list, plus the selection that survives it.
-//
-// One hook rather than a fetch per consumer because the two are the same question asked twice: both
-// the header switcher and the active-tenant name look the stored id up in this list, and before this
-// each of them answered "not in the list" with its own silent fallback. Reconciling in one place is
-// what keeps the next reader of the list from inheriting that.
-//
-// `enabled` is false for a tenant-scoped user, who has no selector to reconcile and may not read the
-// fleet list at all.
+// The SUPER_ADMIN's tenant list, plus the selection that survives it. One hook rather than a fetch
+// per consumer: the header switcher and the active-tenant name both look the stored id up in this
+// list, and reconciling in one place keeps each from answering "not in the list" with its own silent
+// fallback. `enabled` is false for a tenant-scoped user, who has no selector to reconcile and may
+// not read the fleet list at all.
 
 type TenantsData = Awaited<ReturnType<typeof api.api.v1.tenants.get>>["data"];
 export type TenantListEntry = NonNullable<TenantsData>["tenants"][number];

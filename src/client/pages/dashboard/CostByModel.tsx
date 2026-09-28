@@ -25,13 +25,13 @@ function usd(locale: string, v: number): string {
   }).format(v);
 }
 
-// The marker beside a model whose two figures part (issue #868), with both figures and what to do in
-// a popover rather than a tooltip: it is read, and read on a phone as much as at a desk (Popover.tsx).
+// The marker beside a model whose two figures part, with both figures and what to do in a popover
+// rather than a tooltip: it is read, and read on a phone as much as at a desk (Popover.tsx).
 function DivergenceMarker({ c }: { c: Comparison }) {
   const { t, i18n } = useTranslation();
   const pct = Math.round(COST_DIVERGENCE_RELATIVE * 100);
   const floor = usd(i18n.language, COST_DIVERGENCE_FLOOR_USD);
-  // NOTE: a group (issue #868 review) is several ledger models Langfuse cannot tell apart, compared as one.
+  // NOTE: A group is several ledger models Langfuse cannot tell apart, compared as one.
   const model = c.ledgerModels.join(", ");
   const grouped = c.ledgerModels.length > 1;
   const renamed = c.langfuseModels.some((n) => !c.ledgerModels.includes(n));

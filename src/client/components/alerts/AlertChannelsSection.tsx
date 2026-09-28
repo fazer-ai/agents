@@ -78,19 +78,18 @@ function AlertChannelModal({
   const [url, setUrl] = useState("");
   const [minLevel, setMinLevel] = useState<"warn" | "error">("error");
   const [stages, setStages] = useState<Set<string>>(new Set());
-  // Agents whose lines never alert here (issue #843). Sent whole on every save: the server accepts
-  // an id the channel already held even when its agent is gone, so an untouched list always saves.
+  // NOTE: agents whose lines never alert here. Sent whole on every save: the server accepts an id the
+  // channel already held even when its agent is gone, so an untouched list always saves.
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [agentOptions, setAgentOptions] = useState<AgentOption[] | null>(null);
   const [agentsFailed, setAgentsFailed] = useState(false);
   const [secretRef, setSecretRef] = useState("");
-  // Whether the operator touched the picker at all. The wire needs to tell "left this alone" apart
-  // from "chose this", because an untouched field is OMITTED and a sent one is obeyed — and the
-  // difference cannot be read off the VALUE. A channel whose stored ref names no vault entry arrives
-  // as `hasSecret` with no ref to show (`readableVaultRef` hides it rather than publish whatever text
-  // the column held before #126), so its picker opens empty and choosing "None" moves nothing.
-  // Comparing values would call that unchanged and leave the operator unable to clear a secret the
-  // list is calling Signed.
+  // NOTE: whether the operator touched the picker at all. The wire tells "left this alone" from "chose
+  // this" (an untouched field is OMITTED, a sent one is obeyed), and the VALUE cannot: a channel whose
+  // stored ref names no vault entry arrives as `hasSecret` with no ref to show (`readableVaultRef` hides
+  // it rather than publish whatever the column holds), so its picker opens empty and choosing "None"
+  // moves nothing. Comparing values would leave the operator unable to clear a secret the list calls
+  // Signed.
   const [secretTouched, setSecretTouched] = useState(false);
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState("");
@@ -544,16 +543,12 @@ function AlertChannelModal({
   );
 }
 
-// What the channel DOES, never what the column holds. This used to rebuild the worker's rule out of
-// `type` + `hasSecret` + `secretRef`, and got three of the four cases right; the server now answers
-// the whole question in one field (issue #724), because the fourth needs the VAULT and no per-row
-// projection can grow that. A well-formed ref whose entry was deleted, or created and never filled,
-// resolves to nothing in `alert-send.ts` and the alert goes out unsigned — and this line said
-// "Signed" for it, which is worse than saying nothing: it is the screen an operator checks precisely
-// when they suspect the receiver is dropping deliveries.
-//
-// The last three read the same on the wire and differ only in the errand, so they get three
-// sentences rather than one: a vault page to visit, a credential to recreate, a value to fill in.
+// What the channel DOES, never what the column holds. The server answers it whole (`signingState`),
+// because a ref whose entry was deleted, or created and never filled, needs the VAULT to tell: it
+// resolves to nothing in `alert-send.ts` and the alert goes out unsigned, so calling it "Signed"
+// would mislead the operator checking why a receiver drops deliveries. The last three read the same
+// on the wire and differ only in the errand (a vault page to visit, a credential to recreate, a
+// value to fill in), so they get three sentences.
 function signingLabel(
   ch: { signingState: string },
   t: (k: string, d: string) => string,
@@ -591,13 +586,11 @@ export function AlertChannelsSection() {
   const [error, setError] = useState(false);
   const modal = useModalController<ChannelModalPayload>();
   const confirm = useModalController<ConfirmPayload>();
-  // A SET, not the one id the webhooks list next door holds, and the reason is this feature's own
-  // subject (review round 1 of #605). With a single id, testing channel B while A is still in flight
-  // re-enables A's button, and whichever request finishes FIRST clears the spinner on the other while
-  // it is still running. Both halves cost a real external send: an enabled button invites a second
-  // POST to a destination that has not answered the first, and a button that says idle while it is
-  // working is a console lying about a delivery — which is the exact failure this PR exists to stop,
-  // one screen up.
+  // NOTE: a SET, not the one id the webhooks list next door holds. With a single id, testing channel B
+  // while A is in flight re-enables A's button, and whichever request finishes first clears the
+  // other's spinner while it still runs. Both cost a real external send: an enabled button invites a
+  // second POST to a destination that has not answered the first, and an idle-looking button
+  // misreports a delivery.
   const [testing, setTesting] = useState<ReadonlySet<string>>(new Set());
   const startTesting = (id: string) =>
     setTesting((prev) => new Set(prev).add(id));
@@ -649,8 +642,8 @@ export function AlertChannelsSection() {
     }
   };
 
-  // The button the issue is named after (#605): before it, the only way to learn whether a channel
-  // was wired correctly was to wait for an incident and watch it not arrive.
+  // NOTE: short of this test send, the only way to learn whether a channel is wired correctly is to
+  // wait for an incident and watch it not arrive.
   const runTest = async (ch: AlertChannel) => {
     startTesting(ch.id);
     try {
@@ -666,9 +659,9 @@ export function AlertChannelsSection() {
         return;
       }
       if (!result.ok) {
-        // A 200 carrying the DESTINATION's refusal, not a refusal of ours: `err` is null by the
-        // guard above, and `result.error` is the reason. Saying only "failed" here would reproduce
-        // the issue one level up, with the operator unable to tell a bad URL from a dead endpoint.
+        // NOTE: a 200 carrying the DESTINATION's refusal, not a refusal of ours: `err` is null by the guard
+        // above, and `result.error` is the reason. Saying only "failed" here would leave the operator unable
+        // to tell a bad URL from a dead endpoint.
         showToast(
           t("alerts.testFailedReason", "Test failed: {{reason}}", {
             reason: result.error ?? String(result.status ?? "unknown"),

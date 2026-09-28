@@ -40,19 +40,15 @@ export const PROCESSING_STALE_MS = 5 * 60_000;
 const MAX_PROCESS_ATTEMPTS = 5;
 // How long one dispatch may run before its nudge turn is told to stop, when the caller brings no
 // deadline of its own (the route, which runs it detached after the ack). SHORTER than the window
-// above, and that ordering is the whole point (issue #817, review round 3): once the inbound sweep
-// exists, a claim older than PROCESSING_STALE_MS is taken back and dispatched again, so a turn still
-// running past it would deliver beside its own retry. The thread wait before generation can alone
-// take about five minutes. Stopping at four leaves a minute for the abort to land and the row to be
-// marked, and matches the scheduler's own deadline under the same window (jobDeadlineMs).
+// above: the inbound sweep re-dispatches a claim older than PROCESSING_STALE_MS, so a turn still
+// running past it would deliver beside its own retry. The spare minute lets the abort land and the
+// row be marked, as the scheduler's jobDeadlineMs does under the same window.
 export const DISPATCH_DEADLINE_MS = 4 * 60_000;
 
 // WHAT "NO LONGER RUNNING" MEANS for a PROCESSING row. Two readers ask it and must not disagree: the
 // claim below, which may take such a row, and the inbound sweep (./sweep.ts), which arms a re-dispatch
-// for it (issue #817) and restates this rule in SQL because its query is a join Prisma cannot write.
-// A sweep with a looser measure would arm jobs the claim then refuses; a stricter one would leave rows
-// the claim would take. Change one, change both: tests/modules/inbound-sweep.test.ts drives the sweep
-// through both halves (a stale claim and an unstamped one) and a fresh claim it must leave alone.
+// for it and restates this rule in SQL because its query is a join Prisma cannot write. Change one,
+// change both (tests/modules/inbound-sweep.test.ts drives both halves).
 export function staleClaim(now: number = Date.now()) {
   const staleCutoff = new Date(now - PROCESSING_STALE_MS);
   return [
@@ -61,13 +57,10 @@ export function staleClaim(now: number = Date.now()) {
   ] as const;
 }
 
-// What an identity field is allowed to be, and it is a REFUSAL rather than a truncation: cutting an
-// identity is the same lossy-identity defect as repairing one. Measured against this database, a
-// `dedupeKey` that does not compress fails its own unique index at ~2704 bytes ("index row size
-// 6432 exceeds btree version 4 maximum 2704"), which is the same 500-with-no-record as an
-// unstorable character, reached by a different road. 512 characters is far above any provider id
-// (Asaas sends ~20, and the mapper already caps `externalReference` at 128) and far below the index
-// limit even if every character were 4 bytes.
+// What an identity field is allowed to be, and a REFUSAL rather than a truncation: cutting an
+// identity is as lossy as repairing one. Postgres's btree index refuses a row over ~2704 bytes (a
+// 500 with no record); 512 characters is far above any provider id and below that limit even at 4
+// bytes per character.
 const MAX_IDENTITY_CHARS = 512;
 
 // The two things an identity field must be for the row to exist: storable, and short enough for the
@@ -91,13 +84,13 @@ function asString(v: unknown): string | undefined {
 type InboundLogger = Pick<typeof logger, "warn">;
 
 // Everything that answers 401, route resolution included: an operator debugging a webhook asks "is
-// my URL even right?" before "is my token right?", and both used to be the same silent throw.
+// my URL even right?" before "is my token right?", and the server log must tell them apart.
 type InboundRejection = "route_unknown" | "route_disabled" | InboundAuthFailure;
 
 // The refusal, recorded where the operator can find it. The RESPONSE stays uniform on purpose (no
 // oracle for which route tokens are live), and that argument covers the response, not the server's
 // own record: without this line an unresolvable ref, an unfilled secret and a genuinely wrong token
-// are the same event in every log we keep, which is issue #124. Carries ids and the vault REF
+// are the same event in every log we keep. Carries ids and the vault REF
 // (`vault:<id>` is an address, not a secret), never the header value, never the body.
 function logRejection(
   log: InboundLogger,
@@ -153,7 +146,7 @@ export interface ReceiveResult {
     | "ignored"
     | "no-mapper"
     | "invalid"
-    // A GENERIC event whose `conversation_ref` does not correlate on this instance (issue #818). Said
+    // A GENERIC event whose `conversation_ref` does not correlate on this instance. Said
     // to the sender NOW, because nothing will ever act on it and the sender is the only party that
     // can stop: a periodic job keeps firing at a dead handle otherwise. Nothing is persisted.
     | "uncorrelated";
@@ -255,15 +248,10 @@ export async function receiveInbound(
     };
   }
 
-  // An identity field the row cannot carry is NOT repaired or cut: both are lossy,
-  // and lossy on an identity is how a payment lands in the wrong conversation. `ref\u0000` repaired
-  // to `ref` MATCHES the ref an unrelated conversation registered, and `dispatchConversion` would
-  // credit the conversion there and nudge that customer, the one outcome this module says it never
-  // produces. Two distinct provider ids that differ only by such a character would likewise collapse
-  // into one `dedupeKey` and silently drop a real delivery. So a malformed identity takes the
-  // fail-closed path that already exists for a payload we cannot process: a durable FAILED record
-  // and a 2xx, which is what stops the sender's retry loop. The payload itself is display and
-  // diagnostics, and IS repaired (below).
+  // NOTE: An identity field the row cannot carry is NOT repaired or cut: `ref\u0000` repaired to
+  // `ref` could match an unrelated conversation's ref and credit a payment there, and two ids could
+  // collapse into one `dedupeKey`. It takes the fail-closed path instead (a durable FAILED record and
+  // a 2xx, which stops the sender's retries). The payload, display only, IS repaired (below).
   const badIdentity =
     identityProblem(result.event.dedupeKey, "dedupeKey") ??
     identityProblem(result.event.externalId, "externalId");
@@ -286,7 +274,7 @@ export async function receiveInbound(
     };
   }
 
-  // A GENERIC delivery is correlated BEFORE the ack (issue #818), so the sender learns a dead handle
+  // NOTE: A GENERIC delivery is correlated BEFORE the ack, so the sender learns a dead handle
   // from the response instead of from silence. Only the ref's existence is decided here; dispatch
   // re-correlates under its own claim, since the ref can go (instance deleted) in between.
   if (route.catalogType === "GENERIC") {
@@ -339,13 +327,10 @@ async function persistFailed(
         select: { id: true },
       }),
     );
-  // NOTE: announced only on a REAL insert (issue #356). A provider that retries an unprocessable
-  // body lands on the dedupe key below and gets back the row it already has; announcing there would
-  // report one dropped event as many, at whatever rate the provider retries.
-  //
-  // The emit is OUTSIDE the try, not merely after the create: `emitFlowEvent` is fire-and-forget
-  // and cannot reject, but a throw from inside that try is read as "not a unique violation" and
-  // rethrown, which would turn a delivery that WAS persisted into a 500 for the provider.
+  // NOTE: announced only on a REAL insert: a provider retrying an unprocessable body lands on the
+  // dedupe key and gets its row back, and announcing there would report one dropped event as many.
+  // The emit is OUTSIDE the try: a throw inside it reads as "not a unique violation" and would turn a
+  // persisted delivery into a 500 for the provider.
   let inserted: bigint | null = null;
   try {
     inserted = (await create()).id;
@@ -383,15 +368,9 @@ async function persistFailed(
 
 // create-then-catch across two transactions (a unique violation aborts its own transaction,
 // so the existence re-read must run in a fresh one). Handles concurrent identical deliveries.
-//
-// The mapper is pure and knows nothing about columns; this is where its output becomes a row, so it
-// is where a third party's characters have to survive the write. Measured against Postgres, the
-// `jsonb` payload refuses a lone surrogate (`invalid input syntax for type json`) and a NUL (22P05),
-// and the refusal escapes `receiveInbound`, which nothing above catches: a 500 with no delivery row
-// and no FAILED record either, and a sender retrying a body that can never succeed. The payload is
-// display and diagnostics, so it is REPAIRED. The identity fields, which the `text` columns refuse
-// just as flatly (22021), are not repairable without changing what they identify, and the caller has
-// already turned those away.
+// The payload is REPAIRED before the write: Postgres `jsonb` refuses a lone surrogate and a NUL, and
+// that refusal would be a 500 with no record while the sender retries forever. Identity fields are
+// not repairable, and the caller has already turned those away.
 async function persistInbound(
   base: PrismaClient,
   route: ResolvedInboundRoute,
@@ -437,8 +416,8 @@ export interface ProcessParams {
   tenantId: bigint;
   base?: PrismaClient;
   deps?: ProcessDeps;
-  // The deadline of the scheduler job running this, when one is (the inbound sweep's re-dispatch,
-  // issue #817). Handed to the nudge turn so a run past its deadline stops instead of finishing
+  // The deadline of the scheduler job running this, when one is (the inbound sweep's re-dispatch).
+  // Handed to the nudge turn so a run past its deadline stops instead of finishing
   // beside the retry the sweep may arm once the claim goes stale. The route passes none.
   signal?: AbortSignal;
 }
@@ -453,7 +432,7 @@ function buildNudge(
   // distinct deliveries would otherwise describe themselves identically and the second, refused by
   // the spend ceiling inside the first's window, would lose its flow line and its alert.
   deliveryId: bigint,
-  // Which instance spoke, so the conversation can name it (issue #846).
+  // Which instance spoke, so the conversation can name it.
   integrationInstanceId: bigint,
 ): AgentNudge {
   return {
@@ -465,7 +444,7 @@ function buildNudge(
     value: typeof payload.value === "number" ? payload.value : null,
     currency: asString(payload.currency) ?? null,
     summary: asString(payload.summary) ?? null,
-    // GENERIC (issue #818): the sender's own text, relayed rather than followed up on, with the
+    // GENERIC: the sender's own text, relayed rather than followed up on, with the
     // operator's guidance for this instance. The guidance is TRUSTED operator text and travels in
     // the instructions lane; the text stays fenced.
     ...(source === "GENERIC"
@@ -487,7 +466,7 @@ type ProcessPlan =
       kind: "nudge";
       threadId: string;
       nudge: AgentNudge;
-      // GENERIC events reach a conversation the bot itself resolved (issue #818).
+      // GENERIC events reach a conversation the bot itself resolved.
       deliverToResolved: boolean;
     };
 
@@ -506,27 +485,11 @@ export async function processInboundDelivery(
     base,
     sysCtx(params.tenantId),
     async (db) => {
-      // CAS: claim PENDING, OR reclaim a PROCESSING row stranded by a crash (its effect never
-      // committed — only agent_nudge leaves a window between Phase A and Phase B; DB-only kinds
-      // commit effect+PROCESSED atomically). `attempts` bounds poison redeliveries: past the cap
-      // the row is marked FAILED instead of looping. Besides a redelivery from the sender, the
-      // inbound sweep (./sweep.ts) is what brings a stranded row back here (issue #817).
-      // NOTE: staleness is measured from the CURRENT claim, not from the delivery's receipt. That
-      // distinction is the whole of it: `receivedAt` is stamped once and a claim never refreshes
-      // it, so five minutes after a webhook arrives the row is permanently "stale" by that measure
-      // and a duplicate delivery could take a row whose attempt was still running (issue #356).
-      //
-      // AN UNSTAMPED ROW FALLS BACK TO THE OLD RULE rather than reading as stale, and that is a
-      // compatibility mechanism with a definite end, not a hedge. `docs/deploy.md` supports a
-      // rolling pre-deploy over a scaled web tier, which is where inbound webhooks are served, so
-      // the previous version keeps CLAIMING rows after the migration has run — a snapshot backfill
-      // fences the rows that were PROCESSING at that instant and cannot fence the ones claimed a
-      // second later. Reading those as stale would take a live claim.
-      //
-      // The fallback is exactly what shipped before this column, so a row the old code claimed is
-      // judged no worse than it is today, and a row the new code claimed is judged correctly. It
-      // stops being reachable once every replica stamps, and it is what makes this one release
-      // instead of the two an expand/contract would need.
+      // NOTE: CAS: claim PENDING, OR reclaim a PROCESSING row whose claim went stale (only
+      // agent_nudge leaves a window between Phase A and Phase B). `attempts` bounds poison
+      // redeliveries. Staleness is measured from the CURRENT claim (`claimedAt`), since `receivedAt`
+      // is never refreshed; an unstamped row, claimed by a replica that does not stamp during a
+      // rolling deploy, falls back to `receivedAt` rather than reading as stale.
       const stale = staleClaim();
       const claimed = await db.inboundDelivery.updateMany({
         where: {
@@ -541,17 +504,10 @@ export async function processInboundDelivery(
         },
       });
       if (claimed.count === 0) {
-        // Either not reclaimable (done / freshly PROCESSING) or the attempt cap is exhausted —
-        // in the latter case move it to a terminal FAILED so it stops being retried.
-        //
-        // NOTE: the PROCESSING half carries the SAME staleness rule the claim above does, and it
-        // has to: the claim says a PROCESSING row is only takeable once its claim went stale, so
-        // any other measure here would let this disagree with it about the same row. The last
-        // attempt running RIGHT NOW is `attempts = MAX` and `PROCESSING`, and a duplicate webhook
-        // arriving mid-flight would otherwise mark the delivery terminally FAILED under the
-        // invocation still working on it — which then marks it PROCESSED over the top. Silent
-        // before issue #356; announcing it is what made the disagreement visible, and a dead-letter
-        // line about work still in flight is the one thing this announcement must never say.
+        // NOTE: Either not reclaimable (done / freshly PROCESSING) or the attempt cap is exhausted,
+        // which moves it to a terminal FAILED. The PROCESSING half carries the SAME staleness rule
+        // as the claim: the last attempt, running RIGHT NOW, is `attempts = MAX`, and a duplicate
+        // webhook must not dead-letter work still in flight.
         const killed = await db.inboundDelivery.updateMany({
           where: {
             id: params.deliveryId,
@@ -635,7 +591,7 @@ export async function processInboundDelivery(
         // uncorrelated nudge has nothing to act on — mark processed and stop.
         //
         // A GENERIC ref correlates only on the instance that minted it; every other source keeps
-        // its toolpack's refs and never reads a `conversation_ref` (issue #818).
+        // its toolpack's refs and never reads a `conversation_ref`.
         const generic = source === "GENERIC";
         const threadId = !delivery.externalId
           ? null
@@ -685,8 +641,8 @@ export async function processInboundDelivery(
     },
   );
 
-  // NOTE: the row exhausted its processing budget and is terminally FAILED — the provider's event
-  // was accepted with a 2xx and will never be acted on (issue #356).
+  // NOTE: the row exhausted its processing budget and is terminally FAILED: the provider's event
+  // was accepted with a 2xx and will never be acted on.
   if (exhausted !== undefined) {
     emitDeadLetter({
       tenantId: params.tenantId,
@@ -707,19 +663,10 @@ export async function processInboundDelivery(
   if (plan.kind === "skip") return "skipped";
   if (plan.kind === "done") return "processed";
 
-  // Phase B: agent_nudge network turn outside the tx (best-effort), then mark PROCESSED.
-  //
-  // BEST-EFFORT MEANS THE OUTCOME IS NOT CONSULTED, and that is the contract rather than an
-  // oversight: the durable barrier is the ConversionEvent recorded in Phase A, and everything past
-  // it is one attempt at telling the customer. A Chatwoot outage, a model failure and a spend
-  // ceiling all end the same way — the notification does not go out, the row is PROCESSED, and the
-  // catch above says so in the log. The ceiling additionally writes an `error` flow line, which
-  // pages the alert channels, so a refusal here is the most visible of the three.
-  //
-  // Making a refused nudge RECOVERABLE is a real gap and a separate change. The inbound sweep
-  // (./sweep.ts, issue #817) re-runs a delivery that never FINISHED, but this one did: the row is
-  // PROCESSED below whatever the nudge did, so nothing re-reads it, and the conversion barrier means
-  // a redelivery that did arrive would take the `done` path instead of re-running the nudge.
+  // Phase B: agent_nudge network turn outside the tx, then mark PROCESSED. BEST-EFFORT: the outcome
+  // is not consulted, since the durable barrier is the ConversionEvent from Phase A. A failed or
+  // refused nudge still ends PROCESSED, so neither the sweep nor a redelivery re-runs it (the gap
+  // is recorded in docs/integrations.md).
   const runNudge = params.deps?.runNudge ?? runAgentNudge;
   // Armed from here, right after the claim committed, which is the instant the stale window started.
   const signal = params.signal ?? AbortSignal.timeout(DISPATCH_DEADLINE_MS);
@@ -801,9 +748,9 @@ async function dispatchConversion(
 }
 
 // The thread a toolpack's own correlation id points at (an Asaas payment's `externalReference`, a
-// Resend email id). A `conversation_ref` is NOT one of them (issue #818): it is a handle to a
-// conversation, minted for one GENERIC instance, and a payment carrying it as its reference would
-// otherwise credit a conversion — and nudge the customer — through a door it was never handed to.
+// Resend email id). A `conversation_ref` is NOT one of them: it is a handle minted for one GENERIC
+// instance, and a payment carrying it as its reference must not credit a conversion (and nudge the
+// customer) through a door it was never handed to.
 async function toolpackRefThread(
   db: ScopedDb,
   tenantId: bigint,

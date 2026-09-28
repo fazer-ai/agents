@@ -9,7 +9,7 @@ import type { ChannelRedirectConfig } from "./service";
 // After the WhatsApp→chat redirect merges a lead onto the widget conversation, this links the two
 // conversations of that one contact (see service.ts's header for the whole feature). Runs ONCE, on the
 // widget conversation's first inbound after the merge (guarded by the redirectLinkedAt watermark):
-//   1. Propagate test-mode activation from the WhatsApp sibling — a /teste given on WhatsApp carries
+//   1. Propagate test-mode activation from the WhatsApp sibling: a /teste given on WhatsApp carries
 //      over, so the operator does not have to re-activate in the chat (only in test mode).
 //   2. Post cross-link private notes on BOTH conversations (operator-only) pointing at each other, so
 //      whoever picks up either side sees the continuous history across channels.
@@ -63,9 +63,8 @@ export interface LinkRedirectParams {
     displayId: number;
     testActivatedAt: Date | null;
     contactId: bigint | null;
-    // The episode's stored origin, when the fork wrote one (#222). Null falls back to the old
-    // most-recently-active predicate, which is all a pre-#222 episode has — unless the mark below
-    // says the fork spoke and the answer was "none", in which case there is no sibling at all.
+    // The episode's stored origin, when the fork wrote one. Null falls back to the most-recently-
+    // active predicate, unless the mark below says the fork stated "none": then there is no sibling.
     redirectOriginDisplayId: number | null;
     chatwootRedirectOriginAt: number | null;
   };
@@ -90,7 +89,7 @@ export async function linkRedirectConversations(
   const now = p.now ?? new Date();
   const entryInboxId = p.cfg.entryInboxId;
 
-  // The WhatsApp entry half of this episode: the stored pairing when there is one, the old
+  // NOTE: The WhatsApp entry half of this episode: the stored pairing when there is one, the
   // most-recently-active predicate when there is not (episodeOriginQuery's header says why).
   const originQuery =
     entryInboxId === null
@@ -121,34 +120,11 @@ export async function linkRedirectConversations(
     p.widgetConv.testActivatedAt,
   );
 
-  // CLAIM the cross-link for the episode this call read, rather than stamp it. Two conditions, one
-  // question — is this still the episode whose sibling I just looked up?
-  //
-  // `redirectOriginDisplayId` is the half that #222 made askable. The origin above comes from the
-  // delivery's own snapshot, and the stamp below lands after two database round trips and a Chatwoot
-  // POST; a pairing accepted in that window moves the episode, and stamping anyway spends the NEXT
-  // episode's only shot on the previous one's notes — the inbound that belongs to the new origin
-  // finds the watermark set and links nothing, ever. Losing the claim is not a failure: it means
-  // another episode owns this conversation now, and its own first inbound will link it.
-  //
-  // `chatwootRedirectOriginAt` is the third, and it applies ONLY where the origin cannot answer,
-  // which is when the origin is null. Since the stated clear became an answer of its own,
-  // `(origin=null, mark=null)` and `(origin=null, mark=set)` are different states — never told,
-  // versus told there is none — and a claim comparing only the origin reads them as one. A call that
-  // resolved its sibling through the recency fallback did so on the licence of the first state; a
-  // clear landing under it revokes that licence, and the notes would go to a conversation the source
-  // just disowned.
-  //
-  // Its NULLNESS, never its value: the mark is a version and advances on every payload that states
-  // the pairing, the same pairing included, so comparing it for equality would read an ordinary
-  // webhook as an episode change and spend this inbound's only attempt on nothing.
-  //
-  // `redirectLinkedAt: null` is the caller's fence, moved into the same statement. It was read a
-  // dozen awaits ago, so two inbounds arriving together both passed it and both posted a pair of
-  // private notes. Asked here it costs nothing and the one-shot is one for real.
-  //
-  // The propagation rides along deliberately: a `/teste` copied from a sibling this conversation is
-  // no longer paired with would silence the wrong agent on the wrong episode.
+  // NOTE: CLAIM the cross-link for the episode this call read: is it still the one whose sibling was
+  // looked up? A pairing accepted meanwhile moves the episode, and losing the claim just means its
+  // own first inbound will link it. With a null origin, the mark's NULLNESS (never its value, which
+  // advances on every payload) separates "never told" from "told there is none". `redirectLinkedAt:
+  // null` makes the one-shot real under concurrent inbounds, and the `/teste` propagation rides along.
   const claimed = await runScopedOn(base, sysCtx(p.tenantId), async (db) => {
     const res = await db.conversation.updateMany({
       where: {
@@ -179,7 +155,7 @@ export async function linkRedirectConversations(
     return { testActivatedAt: p.widgetConv.testActivatedAt };
   }
 
-  // Cross-link private notes (best-effort). Needs the deployment baseUrl + accountId + the bot client.
+  // NOTE: Cross-link private notes (best-effort). Needs the deployment baseUrl + accountId + the bot client.
   if (sibling) {
     try {
       const inst = await runScopedOn(base, sysCtx(p.tenantId), (db) =>

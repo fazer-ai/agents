@@ -89,6 +89,14 @@ gate, it:
   whoever picks up either channel sees the continuous history. Best-effort; the watermark is set
   regardless, so a transient failure never re-spams.
 
+### Which conversation is the episode's WhatsApp half
+
+The WhatsApp entry half of a widget conversation's episode is read, never inferred. The fork's token resolve writes the origin (`redirectOriginDisplayId`) onto the widget conversation at the one moment both halves are known together, and it reaches us on the webhook payload. Every inference about that event is wrong in some case: recent activity is not the funnel (writing into an old entry conversation makes it the latest), the most recent `redirectSentAt` can name a link that was never clicked, `/reset` clears that anchor without revoking the link already sent, and uniqueness on the inbox proves uniqueness, not origin. The consumers act on the answer destructively (the closing RESOLVES the conversation it names), so the most-recently-active predicate survives only as a fallback for episodes and Chatwoot instances that never stored an origin. A null origin means two different things, told apart by the pairing's version mark (`chatwootRedirectOriginAt`): with no mark, nobody ever told us and the fallback applies; with a mark, the fork stated the episode has no WhatsApp half, and there is no sibling at all. Only the mark's nullness is ever compared, never its value, because it advances on every payload that states a pairing, including the same one. A Chatwoot too old to send `updated_at` stamps no mark, so its stated clear degrades to the fallback.
+
+### The closing, at most once
+
+The closing (message on both conversations, both resolved) is delivered at most once per episode through a CAS on `Conversation.redirectClosedAt`. Two callers reach it: the ladder's last stage, which holds a job whose claim token it can re-ask, and the resolve trigger, which comes straight from a webhook with no job. `/reset` clears `redirectClosedAt` so the funnel can be tested again, which means a null watermark cannot tell "never closed" from "just reset". The resolve trigger therefore compares `lastInboundAt` (cleared by the same reset) between its read and its claim, and does not claim at all when it is null. The claim also requires the origin read at the top to still be the stored one, so a re-entry accepted mid-run stands the run down instead of sending the goodbye to a thread no longer paired. After the claim, the job (when there is one) is asked last before the sends, and the claim itself is re-read before each of the two sends; a stand-down releases the claim (CAS'd on the instant it wrote), while a claim lost to another run is never released. Once the first goodbye has left, nothing stops the second: a half-closed episode is worse than a rare duplicate.
+
 ## Manual setup (once per instance)
 
 ### 1. Chatwoot — create the website-chat (web widget) inbox

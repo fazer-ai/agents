@@ -13,15 +13,12 @@ import {
 } from "./oauth-core";
 import { persistRefreshedOAuthSecret, vaultRefWhere } from "./service";
 
-// Generic OAuth 2.1 client mechanics for the `mcp_oauth` vault kind: discovery (RFC 8414 / 9728) +
-// Dynamic Client Registration (RFC 7591) + Authorization Code + PKCE (RFC 7636) + RFC 8707
-// `resource` binding + refresh-token rotation. The operator stores ONLY the MCP server URL
-// (VaultEntry.baseUrl); the consent flow (oauth-mcp.controller.ts) discovers + registers + MERGES
-// the issued tokens into the encrypted blob. At consumption the runtime calls
-// ensureFreshMcpAccessToken (auto-refresh + single-flight) and injects the access token as a bearer
-// header. Every outbound URL is operator-derived, so each fetch passes the SSRF guard (unlike the
-// google_oauth path, whose endpoints are fixed Google constants). All network happens OUTSIDE any
-// Prisma transaction.
+// Generic OAuth 2.1 client mechanics for the `mcp_oauth` vault kind: discovery (RFC 8414 / 9728),
+// Dynamic Client Registration (RFC 7591), Authorization Code + PKCE (RFC 7636), RFC 8707 `resource`
+// binding and refresh-token rotation. The operator stores ONLY the MCP server URL; the consent flow
+// (oauth-mcp.controller.ts) MERGES the issued tokens into the encrypted blob, and the runtime calls
+// ensureFreshMcpAccessToken (auto-refresh + single-flight). Every outbound URL is operator-derived,
+// so each fetch passes the SSRF guard. All network happens OUTSIDE any Prisma transaction.
 
 const TOKEN_TIMEOUT_MS = 10_000;
 // Refresh when the access token would expire within this window so it never goes stale mid-request.
@@ -83,9 +80,8 @@ export function defaultNetOpts(): OAuthNetOpts {
 
 // ── low-level fetch helpers (SSRF-guarded, timed out) ──
 
-// Returns the body as TEXT rather than the `Response`, and that is the point: a `Response` handed
-// back with its body unread is a body read outside the bound, which is the defect #464 measured in
-// the HTTP tool. `fetchBounded` covers the whole exchange and caps what it retains.
+// Returns the body as TEXT rather than the `Response`: a body left unread would be read outside the
+// bound. `fetchBounded` covers the whole exchange and caps what it retains.
 interface TimedResponse {
   ok: boolean;
   status: number;

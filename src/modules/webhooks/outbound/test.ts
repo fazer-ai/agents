@@ -28,8 +28,8 @@ export interface WebhookTestResult {
   // Whether the payload was HMAC-signed (true only when the subscription has a resolvable secretRef).
   signed: boolean;
   // Set when the sample went out UNSIGNED although a secret is configured: the sentence naming which
-  // of the two credential problems it is (issue #724). Null on the two quiet cases — it signed, or
-  // no secret is configured — so a subscription that never wanted signing gets no warning.
+  // of the two credential problems it is. Null on the two quiet cases (it signed, or no secret is
+  // configured), so a subscription that never wanted signing gets no warning.
   warning: string | null;
 }
 
@@ -88,16 +88,9 @@ export async function sendWebhookTest(
     };
   }
 
-  // THE PROBE USED TO REFUSE WHERE ITS WORKER SENDS (issue #724).
-  //
-  // A configured-but-unresolvable secret used to end this function with `ok: false` and nothing on
-  // the wire. The worker next door does the opposite — it POSTs unsigned and moves the row to
-  // DELIVERED — so the button told the operator the endpoint was unreachable while the endpoint was
-  // being reached all day, unsigned, by the code the button exists to stand in for. A probe that
-  // exercises a different path from the real send condemns what works and approves what does not.
-  //
-  // It now mirrors the worker: send, report `signed: false`, and carry the sentence that says which
-  // credential problem it is. The refusal is not the thing worth keeping here; being told is.
+  // NOTE: THE PROBE MIRRORS THE WORKER. A configured-but-unresolvable secret still sends, unsigned,
+  // as the worker does, and reports `signed: false` with the sentence naming the credential problem:
+  // a probe that takes a different path from the real send misreports the endpoint.
   let secret: string | null = null;
   let warning: string | null = null;
   try {

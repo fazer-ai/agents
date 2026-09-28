@@ -59,14 +59,10 @@ export interface SecretType {
   // Optional connectivity test (test-on-save). Absent ⇒ the type is not testable.
   test?: SecretTestSpec;
   // Whether this kind carries a persistent base URL (VaultEntry.baseUrl), and whether it can be
-  // created without one. ONE declaration rather than a supports/requires pair, because "required
-  // but not supported" is not a state any kind can be in and a pair lets it be written: the
-  // console's own mirror kept the two as separate booleans and the server declared only half of
-  // them, which is how every kind ended up storing a base URL nine of them never show (#504).
-  // Absent ⇒ the kind has no use for one, and a non-empty baseUrl on it is REFUSED at the write
-  // boundary — the field is read straight off the entry by the model, vision, STT, TTS and MCP
-  // paths (`credentialBaseUrl ?? cfg.baseURL`), so a value stored on a kind whose form never shows
-  // it silently redirects where the credential is sent.
+  // created without one. One declaration, not a supports/requires pair, so "required but not
+  // supported" cannot be written. Absent means a non-empty baseUrl is REFUSED at the write: model,
+  // vision, STT, TTS and MCP read it straight off the entry, so a value on a kind whose form never
+  // shows it silently redirects where the credential is sent.
   baseUrl?: "required" | "optional";
   // When true, the VALUE is a server-managed JSON blob (created empty, populated by a connect flow
   // like OAuth DCR + consent). Exempt from validateVaultValue's field/string shape check — only
@@ -276,15 +272,10 @@ export const PARAM_NAME_KIND_IDS: string[] = SECRET_TYPES.filter(
 ).map((s) => s.id);
 
 // Whether a non-empty `paramName` on this kind must be REFUSED at the write boundary. Not the
-// negation of `secretTypeNeedsParamName`, and the difference is the whole reason this is a function:
-// that one answers false for a kind the catalog does not know, and refusing those would strand every
-// row an older build wrote with a kind this one has since dropped — the same carve-out
-// `secretTypeFits` makes, for the same reason.
-//
-// The field is only ever read through `resolveSecretInjection`, which takes the name from a
-// `needsParamName` entry and from nowhere else. Storing it on any other kind is storing something
-// the runtime discards: the write answered 200, the console read the name back, and the outbound
-// request carried no credential at all (issue #488).
+// negation of `secretTypeNeedsParamName`: that answers false for a kind the catalog does not know,
+// and refusing those would strand rows an older build wrote (the carve-out `secretTypeFits` makes).
+// Only `resolveSecretInjection` reads the field, and only for a `needsParamName` kind; on any other
+// it is discarded and the request goes out with no credential.
 export function secretTypeRefusesParamName(
   id: string | null | undefined,
 ): boolean {
@@ -329,16 +320,10 @@ export const BASE_URL_KIND_IDS: string[] = SECRET_TYPES.filter(
 ).map((s) => s.id);
 
 // Whether a non-empty `baseUrl` on this kind must be REFUSED at the write boundary. Not the negation
-// of `secretTypeSupportsBaseUrl`, and the difference is the same carve-out `secretTypeRefusesParamName`
-// makes: a kind this build does not know answers false, so an entry written by a build whose catalog
-// had a kind this one dropped stays editable.
-//
-// The field is read straight off the resolved entry by the model path (`credentialBaseUrl ?? mc.baseURL`
-// in prepare.ts), vision, STT, TTS, the HTTP-tool base and the MCP connection URL — none of them
-// asking the kind. So a base URL stored on a kind whose console form never renders the input is a
-// redirect nobody can see: the operator's provider key goes to that host on the next turn, and the
-// only surface that already asks the question is the embedding path, which honours the entry's
-// baseUrl for `openai_compatible` and nothing else (rag/documents.ts, and it says why).
+// of `secretTypeSupportsBaseUrl`: an unknown kind answers false, like `secretTypeRefusesParamName`.
+// The model path (`credentialBaseUrl ?? mc.baseURL`), vision, STT, TTS, HTTP tools and MCP read it
+// without asking the kind, so a base URL a form never renders sends the provider key to that host.
+// Only the embedding path asks (rag/documents.ts, `openai_compatible` only).
 export function secretTypeRefusesBaseUrl(
   id: string | null | undefined,
 ): boolean {
@@ -364,39 +349,20 @@ export function isManagedOAuthKind(kind: string | null | undefined): boolean {
   return kind != null && MANAGED_OAUTH_KINDS.has(kind);
 }
 
-// What a field that names a credential DOES with it, and therefore what it needs the entry to be
-// able to give. The catalog knows the shapes; only the reading field knows which one it can use, and
-// until this existed nobody asked: every write boundary stopped at "does this ref resolve".
-//
-//   apiKey       The stored value IS the credential the request carries — an API key handed to a
-//                provider SDK (the agent's model and its four model overrides, STT, TTS, vision) or
-//                to a REST client. It needs the plain string itself.
-//   injectable   The value is resolved through `resolveInjectableCredentialEntry`, which hands back
-//                a FRESH access token for the managed-OAuth kinds and the stored string for the
-//                rest. It can therefore use a JSON blob it never sees (HTTP tools, MCP connections,
-//                the contact authorization gate).
-//   embeddingKey The tenant's embedding key, and the one field whose reader takes a SECOND value
-//                form the catalog does not declare: `resolveEmbeddingStatus` accepts the plain
-//                string or `{ apiKey, baseURL }`, destructuring the object and using its `baseURL`
-//                as the last fallback. Same KIND rule as `apiKey` — a `google_oauth` or `mcp_env`
-//                entry is refused there exactly the same way — and exempt from the VALUE rule,
-//                because enforcing "a generic kind holds a string" would refuse a form that reader
-//                has always supported. The debt is the undeclared form, not this exemption:
-//                declaring it in the catalog is what would remove the third value, and that is a
-//                change to how embedding credentials are stored, not to this one.
-//
-// Both send the result to somebody else's endpoint, which is why `neverOutbound` fails for both:
-// mcp_env holds a perfectly good string that the stdio loader reads, and putting it in an API-key
-// field mails the operator's stdio token to a model vendor.
+// What a field that names a credential DOES with it, and so what the entry must be able to give:
+//   apiKey        the plain string the request carries (model and its overrides, STT, TTS, vision).
+//   injectable    via `resolveInjectableCredentialEntry`, which mints a FRESH token for managed
+//                 OAuth kinds (HTTP tools, MCP connections, the contact authorization gate).
+//   embeddingKey  `resolveEmbeddingStatus` also accepts an undeclared `{ apiKey, baseURL }` form, so
+//                 it follows the `apiKey` KIND rule but is exempt from the VALUE rule.
+// `neverOutbound` fails for all: an mcp_env string in an API-key field would mail the operator's stdio
+// token to a model vendor.
 export type CredentialUse = "apiKey" | "injectable" | "embeddingKey";
 
-// Whether an entry of this KIND can supply what a field of this USE reads. The one question the
-// three surfaces ask — the write boundary refusing a pairing, config-health reporting a stored one,
-// the runtime declining to use it — so that they cannot answer it differently. Issue #471.
-//
-// A kind this build does not know (and a null kind, which is every entry created before the catalog)
-// is the legacy `generic` escape hatch: a plain string with no injection rule. Refusing those would
-// invalidate working installs over a catalog entry we removed.
+// Whether an entry of this KIND can supply what a field of this USE reads: the one question the
+// write boundary, config-health and the runtime all ask, so they cannot answer it differently.
+// An unknown or null kind is the legacy `generic` escape hatch (a plain string, no injection rule):
+// refusing those would break working installs over a catalog entry we removed.
 export function secretTypeFits(
   kind: string | null | undefined,
   use: CredentialUse,
@@ -431,15 +397,10 @@ export function valueRuleApplies(use: CredentialUse): boolean {
   return use !== "embeddingKey";
 }
 
-// CAN THIS ENTRY SERVE THIS FIELD — the whole question, in one place, because it is the question the
-// write boundary, the import warning and config-health all ask and the defect this change exists to
-// fix was those three answering it differently. Three call sites spelling out `secretTypeFits(...) &&
-// (!valueRuleApplies(...) || ...)` is three chances to drift, and it drifted twice inside one review
-// round: config-health applied the value rule to a use that is exempt from it, and the import did the
-// same in a place no test could reach yet.
-//
-// `facts` is what the vault answers about one entry beyond its existence — read through
-// `readVaultRefFacts`, or off `listVaultInfos` for the console — never the secret itself.
+// Can this entry serve this field: the whole question in one place, asked by the write boundary, the
+// import warning and config-health, which must not drift apart. `facts` is what the vault answers
+// about one entry beyond its existence (`readVaultRefFacts`, or `listVaultInfos` for the console),
+// never the secret itself.
 export function credentialServes(
   facts: { kind: string | null; valueFitsKind: boolean },
   use: CredentialUse,
@@ -450,16 +411,11 @@ export function credentialServes(
   );
 }
 
-// Whether the stored VALUE is the shape its own KIND declares. The predicate above reads the catalog;
-// this one reads what is actually in the row, and the two can disagree — an entry created before its
-// kind existed, or one written by a path that does not go through `validateVaultValue`.
-//
-// Deliberately asymmetric, and the asymmetry is the whole content. A string-valued kind is checked
-// strictly, because that is the case a reader breaks on. A multi-field or managed-blob kind is only
-// checked for being an object, NOT for its declared field list: the OAuth consent flows MERGE tokens
-// into `google_oauth` and `mcp_oauth` values outside `validateVaultValue` (the catalog says so at both
-// entries), so demanding exactly `{ clientId, clientSecret }` would report every CONNECTED Google
-// account as malformed.
+// Whether the stored VALUE is the shape its own KIND declares; the row can disagree with the catalog
+// (an entry older than its kind, a write outside `validateVaultValue`). Deliberately asymmetric: a
+// string-valued kind is checked strictly; a multi-field or managed-blob kind only for being an object,
+// since the OAuth consent flows MERGE tokens into `google_oauth` and `mcp_oauth` values, and an exact
+// field list would report every connected account as malformed.
 export function secretValueFitsKind(
   kind: string | null | undefined,
   value: unknown,

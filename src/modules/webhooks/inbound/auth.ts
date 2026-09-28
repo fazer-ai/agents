@@ -18,23 +18,16 @@ export interface InboundAuthConfig {
 
 // Which header carries the credential for this instance. Precedence, most specific first: the
 // operator's per-instance override, then the provider's own convention from the catalog, then our
-// generic default. The middle layer is the one issue #107 was missing — a provider that fixes its
-// header name (Asaas: `asaas-access-token`) leaves the operator nothing to change on their side, so
-// the generic default rejected every delivery and the failure was visible only in the provider's
-// own queue.
+// generic default. The middle layer matters because a provider that fixes its header name (Asaas:
+// `asaas-access-token`) leaves the operator nothing to change on their side.
 export function resolveInboundAuthConfig(
   catalogType: string,
   config: Record<string, unknown>,
 ): Required<InboundAuthConfig> {
   const entry = getCatalogEntry(catalogType);
-  // A string is the operator's answer, whatever it says — `""` included. Dropping the empty one here
-  // sent the gate the DEFAULT name, which is the single thing the refusal below exists to prevent:
-  // comparing the secret against `x-webhook-token` on an instance whose operator asked for something
-  // else. Judging usability is the gate's job, not this one's; here the question is only whether an
-  // override was GIVEN.
-  //
-  // A non-string still falls through, and deliberately: it is not an answer to this question at all,
-  // rows already carry it, and `verifyInboundAuth` would have nothing to compare it against.
+  // NOTE: A string is the operator's answer, `""` included: dropping it would send the gate the
+  // DEFAULT name, the one thing its refusal exists to prevent. Usability is the gate's call. A
+  // non-string falls through: it is not an answer, and the gate would have nothing to compare.
   const override = (v: unknown): string | undefined =>
     typeof v === "string" ? v : undefined;
   return {
@@ -47,15 +40,10 @@ export function resolveInboundAuthConfig(
   };
 }
 
-// A header NAME, by RFC 7230's `token`: the alphabet `Headers.get` accepts and nothing wider. The
-// name reaching here is operator text — `config.authHeader` is a free-form JSON field with no
-// allowlist on either writer — and `request.headers.get` THROWS on anything outside this, so before
-// issue #362 a trailing space answered the delivery 500 while every other refusal answered 401. The
-// status was then the oracle the uniform 401 exists to deny: 500 said "this token resolves to a live
-// instance", where an unknown token still said 401.
-//
-// The write refuses this too (integrations/service.ts), and that does not make this redundant: rows
-// already carry whatever they carry, and no write-side fix reaches a row already written.
+// A header NAME, by RFC 7230's `token`: the alphabet `Headers.get` accepts. The name is operator
+// text, and `request.headers.get` THROWS outside this alphabet: a 500 there would be an oracle that
+// the route token is live, where every other refusal answers 401. The write refuses it too
+// (integrations/service.ts), but rows already written carry whatever they carry.
 const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 export function isUsableHeaderName(name: string): boolean {
@@ -70,9 +58,8 @@ function timingEqual(a: string, b: string): boolean {
 }
 
 // How the instance's secret arrived, straight from the vault's own three-state answer, plus `null`
-// for an instance that names no secret at all. It is the whole input to the gate below, and the
-// reason it is a state rather than a `string | null` is issue #124: every one of these used to
-// collapse into the same null, and therefore into the same 401.
+// for an instance that names no secret at all. It is the whole input to the gate below; a state and
+// not a `string | null`, so the server can tell these cases apart behind the same 401.
 export type InboundSecretResolution = VaultRefResolution<unknown> | null;
 
 // Why a delivery was refused. The response never carries this (see the caller: every failure is the

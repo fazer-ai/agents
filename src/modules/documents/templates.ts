@@ -60,18 +60,9 @@ export {
   slugProblem,
 } from "./slug";
 
-// Names are UNIQUE per tenant, enforced through the slug they derive to, and the uniqueness is not
-// bookkeeping: the name is what the model reads to pick between document tools. Two templates called
-// "Orçamento" produce two tools with the same description and nothing to choose between them, so the
-// agent picks one at random and sends the customer the wrong document. Numbering the second one
-// (`send_orcamento_2`) would hide exactly that, which is why the write refuses instead.
-//
-// The refusal is written in terms of the NAME, because that is what the operator typed. Naming the
-// slug tells them about an identifier they never chose and cannot edit.
-// Both halves of the answer: the English text (the log line, the MCP client's answer, and the
-// fallback) and the key the HTTP layer localises. They are built together because they have to say
-// the same thing — a key without its pre-interpolated message is what turns a careful refusal into
-// "A document template with this identifier already exists" on the way out.
+// Names are UNIQUE per tenant, through the slug they derive to: the name is what the model reads to
+// pick between document tools, so a duplicate is refused rather than numbered, in terms of the NAME
+// the operator typed. The English text and the i18n key are built together so they say the same thing.
 interface Refusal {
   message: string;
   // Typed, not `string`: this struct is the ONLY thing `refuse` passes to `AppError`, so an
@@ -118,11 +109,8 @@ async function existingClash(
   return { byName: byName ?? undefined, bySlug: bySlug ?? undefined };
 }
 
-// The one way a Refusal becomes a thrown error. It exists because the field was the FOURTH thing a
-// throw site had to remember to carry, and the round that added it found a hand-written copy of
-// `slugRefusal`'s explicit branch on the patch path (same message, same key, no field), which had
-// made the wire contract depend on the HTTP method. One converter, and the producer is the only
-// place that decides.
+// The one way a Refusal becomes a thrown error, so message, key and field travel together and the
+// wire contract never depends on the HTTP method. The producer is the only place that decides.
 function refuse(refusal: Refusal, statusCode: number): never {
   throw new AppError(
     refusal.message,
@@ -168,9 +156,8 @@ function nameTaken(
   // that would otherwise read as a false refusal, so its message names both templates.
   if (existingName === name) return nameAlreadyUsed(name);
   return {
-    // NOTE: the SENTENCE stays the tool-name explanation in both cases, because the tool name is what is
-    // actually in the way and #208 chose that wording for an authoring client on purpose. Only the
-    // input it is attached to depends on who chose the slug.
+    // NOTE: the SENTENCE stays the tool-name explanation in both cases, because the tool name is what
+    // is actually in the way. Only the input it is attached to depends on who chose the slug.
     message: `"${name}" collides with the template "${existingName}": both produce the tool name ${tool}`,
     key: "errors.documentTemplateNameCollides",
     params: { name, existing: existingName, tool },
@@ -309,9 +296,8 @@ export async function documentTemplateWriteProblem(
   // (a patch that touches only the description, say).
   if (slug === undefined && name === undefined) return null;
   if (slug !== undefined) {
-    // Only when the slug MOVES, which is what the apply does: a template whose `send_<slug>` already
-    // collides was legal before this rule, and a full-state client sends the unchanged slug on every
-    // patch — a preview refusing what the apply performs is the divergence #490 is about, backwards.
+    // NOTE: Only when the slug MOVES, as in the apply: an existing collision predates this rule and a
+    // full-state client sends the unchanged slug on every patch, so the preview must not refuse it.
     const storedSlug =
       opts.excludeId === undefined
         ? null
@@ -375,25 +361,10 @@ const SELECT = {
 
 type Row = Prisma.DocumentTemplateGetPayload<{ select: typeof SELECT }>;
 
-// What the audit row carries.
-//
-// Same two halves as the other four families: identity, policy and shape are PROJECTED, everything
-// else is listed in `UNDISCLOSED` below and compared without being carried. A column in neither
-// half changes without the row noticing, and `projectionMoved` then suppresses the write entirely.
-//
-// A template is a mould rather than an issued document, so what is in it is `{{token}}` prose the
-// operator wrote — but it is also the largest field here, and the trail is append-only and readable
-// by every tenant admin. The structure (`{id, type}` per block, `{key, type}` per field) answers
-// what a reader asks: a block appeared, one was removed, the order moved, a field changed type. The
-// comparison over blocks+fields+style is what makes an edit INSIDE a block visible at all —
-// replacing the text of an existing block moves nothing in the structure, and that is the commonest
-// edit a template gets.
-//
-// `lastNumber` is in NEITHER half, deliberately: it is the issuer's counter, advanced by issuing a
-// document and not by editing the template, so folding it in would file every issuance as a change
-// the next save reported.
-//
-// `tests/modules/audit-config-families.test.ts` holds the fence over this model's columns.
+// What the audit row carries: identity, policy and shape PROJECTED (blocks and fields as structure
+// only), the rest in `UNDISCLOSED`, compared without being carried, so an edit inside a block still
+// registers. `lastNumber` is in NEITHER half: issuing is not editing. The fence over this model's
+// columns is `tests/modules/audit-config-families.test.ts`.
 function auditProjection(r: Row) {
   const blocks = Array.isArray(r.blocks) ? r.blocks : [];
   const fields = Array.isArray(r.fields) ? r.fields : [];
@@ -471,8 +442,7 @@ export const templateNameSchema = z.string().trim().min(1).max(120);
 // run's preview, its diff, the title rendered into the previewed PDF. The schema trims, so a padded
 // name is accepted and kept in a shorter form than it arrived — and a caller shown the raw one was
 // told the apply would keep something it will not. It lives beside the schema because that is the
-// only thing that decides it; two rounds of review found two different surfaces reporting the
-// unnormalized value, and both had copied the check without the transform.
+// only thing that decides it, so callers never copy the check without the transform.
 export function normalizeTemplateName(value: string): string {
   return templateNameSchema.safeParse(value).success ? value.trim() : value;
 }
@@ -677,10 +647,8 @@ export async function createDocumentTemplate(
   base: PrismaClient = basePrisma,
 ): Promise<DocumentTemplateDto> {
   const name = parseTemplateName(input.name);
-  // Derived only when the slug is genuinely ABSENT. An explicit "" is a malformed identifier the
-  // caller wrote, and a truthiness fallback silently replaced it with one derived from the name —
-  // while the dry run, which uses `?? `, refused exactly that input. A preview that says no to what
-  // the apply says yes to is the same contract break as the reverse.
+  // NOTE: Derived only when the slug is genuinely ABSENT: an explicit "" is a malformed identifier
+  // the caller wrote, refused here as the dry run (`??`) refuses it.
   const derived = input.slug === undefined;
   if (input.blockText !== undefined) {
     // Accepted by the shared body schema because the PATCH needs it, and meaningless here: there is
@@ -751,21 +719,9 @@ export async function updateDocumentTemplate(
   patch: Partial<DocumentTemplateInput>,
   base: PrismaClient = basePrisma,
 ): Promise<DocumentTemplateDto> {
-  // Read, validate and write under ONE lock on the template row.
-  //
-  // A patch that touches any of blocks/fields/style is validated against the OTHER two as they stand
-  // — that is the rule below — and then writes all of them back. Two clients patching different
-  // parts therefore each merge into the snapshot they read, and the later write silently replaces
-  // the earlier one: a text edit acknowledged with a 200 and then overwritten by a style edit
-  // carrying the pre-edit blocks. The lock is what makes the second request read the first's result
-  // instead of a snapshot from before it.
-  //
-  // NO LOCAL FAILURE MEASURED: a test issuing both patches under Promise.all could not reach the
-  // interleaving on this stack — the two transactions serialised, and the test passed with the lock
-  // removed, three runs out of three. It was deleted rather than kept as a proof of nothing. The
-  // interleaving that this guards is between API REPLICAS, which is the deployed topology and which
-  // no single-process test reaches; the same guard on the settings blob (patchBlock) IS covered,
-  // because a test there does fail without it.
+  // NOTE: Read, validate and write under ONE lock on the template row: a patch writes blocks, fields
+  // and style back together, so two clients patching different parts would otherwise overwrite each
+  // other. The race is between API replicas, which no single-process test reaches.
   return runScopedOn(base, ctx, async (db) => {
     // The namespace lock before the row lock, for the ordering reason `updateToolDefinition` in
     // modules/tool-definitions/service.ts spells out: a slug change asks the tool namespace
@@ -829,15 +785,9 @@ function applyBlockText(
   });
 }
 
-// What this patch would make the template's content BE, validated exactly once.
-//
-// Shared by the apply and by the preview that promises what the apply will do, because they were
-// answering the same question from different sources and disagreeing: the preview read the parsed
-// DTO, where a block a NEWER build wrote has already been dropped, so a style-only dry run rendered
-// happily and the apply then refused the very same patch as unreadable. A dry run that approves a
-// write which cannot be performed is worse than no dry run.
-//
-// `stored` is null when there is nothing saved yet — a create, or a preview of one.
+// What this patch would make the template's content BE, validated exactly once, shared by the apply
+// and its preview so a dry run never approves a write that cannot be performed (a parsed DTO would
+// already have dropped a block a newer build wrote). `stored` is null for a create or its preview.
 export function patchedContent(
   stored: {
     blocks?: unknown;
@@ -917,15 +867,9 @@ export function patchedContent(
       authored,
     });
   } catch (e) {
-    // A stored block this version cannot read at all (an unknown TYPE, not just an unknown
-    // property) fails the shared parse, and there is no safe way to save around it: writing what
-    // parsed would drop it. Refusing keeps it, and says why — the generic "invalid discriminator"
-    // reads like the operator's own edit is at fault when they only changed a word.
-    //
-    // Conditioned on the STORED content actually being unreadable: without that test, any failure
-    // on a wording-only or style-only patch — including one caused by what the caller just sent —
-    // was reported as a newer version's doing, pointing them at the wrong remedy while the dry run
-    // answered correctly.
+    // NOTE: A stored block of an unknown TYPE fails the parse, and saving what parsed would drop it,
+    // so the patch is refused with its own reason. Only when the STORED content is unreadable, so a
+    // failure caused by the caller's own input is not blamed on a newer version.
     const storedUnreadable =
       stored !== null &&
       !parseTemplateContent(
@@ -969,15 +913,9 @@ async function patched(
       // it rather than restating it is what keeps POST and PATCH answering the same refusal.
       refuse(slugRefusal(problem, undefined, true, patch.slug), 400);
     }
-    // The tool-name half of the namespace, asked on the way in and inside this transaction: a
-    // rename onto a slug whose `send_<slug>` a tool already holds is the same collision a create is
-    // refused for, and the update reached the row through a different door.
-    // The tool-name half of the namespace, asked on the way in and inside this transaction: a
-    // rename onto a slug whose `send_<slug>` a tool already holds is the same collision a create is
-    // refused for, and the update reached the row through a different door.
-    // Only when the slug MOVES: rows that already collide were legal before this rule and nothing
-    // migrates them, and a PATCH carries the unchanged slug — refusing it would lock an operator
-    // out of editing the template (the tool services carry the same note).
+    // NOTE: The tool-name half of the namespace: a rename onto a slug whose `send_<slug>` a tool
+    // already holds is the collision a create is refused for. Only when the slug MOVES, since a PATCH
+    // carries the unchanged slug and existing collisions must stay editable.
     if (patch.slug !== current.slug) {
       await assertToolNameFreeForSlug(db, patch.slug, undefined, true);
     }
@@ -1163,15 +1101,9 @@ export async function readRenderContext(
     readCompanySettings(db, tenantId),
   );
   const logo = await readCompanyLogo(company);
-  // A logo the settings NAME and the disk does not have is a cross-format replacement landing
-  // between these two reads: the upload commits the new key and deletes the file the old one named,
-  // which is exactly the file this read is reaching for. Answering null there freezes a document
-  // without a letterhead forever, even though both the profile before and the profile after had
-  // one — and the document is immutable, so nothing ever fixes it.
-  //
-  // Re-read once instead of holding the company lock across a render: the lock is taken by every
-  // profile save, and an issuance is not something a save should have to wait behind. One retry is
-  // enough because the replacement has already committed by the time the file is gone.
+  // NOTE: A logo the settings NAME but the disk lacks is a cross-format replacement landing between
+  // the two reads, and null would freeze an immutable document without its letterhead. Re-read once
+  // (the replacement has committed by then) rather than hold the company lock across a render.
   if (!logo && company.logoKey) {
     const latest = await runScopedOn(base, ctx, (db) =>
       readCompanySettings(db, tenantId),
@@ -1250,28 +1182,12 @@ export async function previewDocumentTemplate(
   const meta = {
     // A believable number, not a real one: the preview must not consume the template's counter.
     number: formatDocumentNumber(42, prefix ?? null),
-    // The same day calculation an issuance freezes, so the preview and the document it previews
-    // cannot disagree on a date the customer reads. A template has no agent of its own — it can be
-    // granted to several — so this is the fleet default zone, which is also what the REST issue path
-    // falls back to.
-    //
-    // NOT COVERED BY A TEST, deliberately and measured: a rendered PDF exposes neither greppable
-    // text (react-pdf subsets its fonts, so the content stream carries glyph ids) nor a
-    // deterministic byte stream (two renders of identical input differ), so nothing here can observe
-    // the date that came out. The equivalent decision on the ISSUE path is covered, and this line
-    // calls the same helper — that is the whole of the assurance, and it is written down rather
-    // than implied.
+    // NOTE: The same day calculation an issuance freezes, in the fleet default zone (a template has
+    // no agent of its own, and the REST issue path falls back to the same). A rendered PDF exposes no
+    // readable date, so only the issue path's use of this helper is tested.
     date: formatDate(previewDay, style.locale),
-    // NORMALIZED, like the write does, and `normalizeTemplateName`'s own comment lists this exact
-    // surface among the ones it serves.
-    //
-    // NO OBSERVABLE DIFFERENCE MEASURED, and that is written here so nobody restores the raw value
-    // believing they are removing dead weight, nor cites this line as a bug that was fixed. A review
-    // round reported it as the preview drawing padding the write would trim; measured against the
-    // renderer, "  Orcamento  " and "Orcamento" produce a byte-identical page — as a header title,
-    // where layout collapses the run, and inside body text as `[{{doc_title}}]`, where the value has
-    // already been through `sanitizeDocumentValue`. There is no `/Title` in the output at all. What
-    // remains is consistency with the sibling surfaces, which is worth one call and no more.
+    // NOTE: NORMALIZED like the write, for consistency with the sibling surfaces only: the renderer
+    // already draws padded and trimmed names identically.
     title:
       (input.name !== undefined
         ? normalizeTemplateName(input.name)

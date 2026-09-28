@@ -1,18 +1,8 @@
-// Whether a PDF can be sent to a provider AT A GIVEN ENDPOINT. That is a different question from
-// which provider the operator picked: the base URL comes from the credential or from the editor's
-// own field, it survives a provider change, and it is what the adapter actually posts to. So
-// "openai" does not by itself mean api.openai.com.
-//
-// The split below is structural rather than a preference:
-//
-//   - Gemini and Anthropic carry a document in the SAME content part as an image (`inline_data`,
-//     `source`), with only the mime type differing. An endpoint that serves one serves the other,
-//     so its address cannot change the answer.
-//   - The chat-completions shape carries them in DIFFERENT parts (`image_url` vs `file`), so a
-//     server can implement one and not the other — and the one that ignores an unknown part answers
-//     200 with a plausible extraction of nothing, which is worse for the operator than the skip.
-//     The `file` part was measured against api.openai.com (2026-08-26), and that is exactly as far
-//     as the answer reaches.
+// Whether a PDF can be sent to a provider AT A GIVEN ENDPOINT: the base URL outlives a provider
+// change, so "openai" does not by itself mean api.openai.com. Gemini and Anthropic carry a document in
+// the SAME content part as an image, so any endpoint serving one serves the other. Chat-completions
+// uses DIFFERENT parts (`image_url` vs `file`), and a server ignoring `file` answers 200 with an
+// extraction of nothing; the `file` part is only verified against api.openai.com.
 
 // Providers whose document support rides on the same content part as their images.
 const ENDPOINT_AGNOSTIC = new Set(["gemini", "anthropic"]);

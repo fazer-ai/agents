@@ -1,23 +1,10 @@
 import type { BaseCheckpointSaver } from "@langchain/langgraph-checkpoint";
 
-// Clearing a contact-inbox's memory, in the one order that fails safely.
-//
-// Three things hold that memory: the summary rows, the AgentThread marker, and the checkpointer
-// thread. The first two live on the caller's connection, inside its transaction and under the
-// `ingest:<threadId>` advisory lock a compaction also takes; the third lives on the LangGraph pool,
-// which is a DIFFERENT connection. Two connections cannot commit atomically, so this does not get to
-// be all-or-nothing — what it gets to choose is which partial state a failure leaves behind.
-//
-// ROWS FIRST, CHECKPOINT LAST. Deleting the checkpoint first meant a slow or exhausted LangGraph pool
-// could time out the surrounding transaction AFTER the checkpoint was already gone: the row deletions
-// roll back and survive, and the next compaction renders the memory head again from summaries the
-// operator had just cleared — with the operator having been told the reset succeeded. Reversed, that
-// same timeout rolls the rows back with the checkpoint still intact: nothing was deleted, the step
-// reports the failure, and re-running /reset is a clean retry. What remains is the commit itself,
-// which is orders of magnitude shorter than a pool wait.
-//
-// A unit, and not three statements inline, because the ORDER is the whole content of the decision
-// and an order nothing asserts is an order that comes back.
+// Clearing a contact-inbox's memory, in the one order that fails safely. The summary rows and the
+// AgentThread marker live in the caller's transaction; the checkpoint lives on the LangGraph pool, a
+// different connection, so this cannot be atomic. Rows first, checkpoint last: a pool timeout then
+// rolls the rows back with the checkpoint intact and /reset is a clean retry. Checkpoint first would
+// leave summaries the operator was told were cleared, and the next compaction would render them.
 
 export interface MemoryRowStore {
   attendanceSummary: {

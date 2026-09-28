@@ -40,19 +40,11 @@ import {
 import { ensureFreshGoogleAccessToken } from "@/modules/vault/google-oauth";
 import { readVaultRefId } from "@/modules/vault/service";
 
-// Deterministic appointment reminders (n8n v3 parity, no Google polling). When the agent books an
-// appointment, the Calendar toolpack calls enqueueAppointmentReminders → one APPOINTMENT_REMINDER
-// scheduler job per configured offset, runAt = start − offset. The single-leader worker drains them:
-// the handler verifies the event is still alive + in the future, then runAgentNudge injects a system
-// turn so the agent sends a (service-window-gated) reminder — and, on the LAST reminder, may ask the
-// customer to confirm attendance (the agent marks the event via calendar_confirm_appointment).
-// Cancel / reschedule the appointment ⇒ cancelAppointment drops the pending jobs (re-armed on
-// reschedule). Reminders live ONLY as scheduler rows; nothing is polled.
-//
-// These rows are jobs and nothing more. Whether an appointment EXISTS is `appointments` (record.ts),
-// written by appointmentBooked below whether or not a single reminder is ever armed. The two were
-// one object until issue #376, and every reason a job is legitimately not written was then also a
-// reason the platform forgot the appointment.
+// Deterministic appointment reminders, with no Google polling: one APPOINTMENT_REMINDER job per
+// configured offset (runAt = start minus offset). The handler checks the event is still alive and
+// ahead, then runAgentNudge injects a system turn so the agent sends a service-window-gated reminder;
+// the LAST one may ask the customer to confirm attendance. Cancelling drops the pending jobs.
+// These rows are jobs and nothing more: whether an appointment EXISTS is `appointments` (record.ts).
 
 const GCAL_ORIGIN = "https://www.googleapis.com/calendar/v3";
 const FETCH_TIMEOUT_MS = 10_000;
@@ -61,9 +53,8 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// The dedupeKey prefix for ALL of an appointment's reminders — cancelAppointment drops them by it.
-// Keyed by the PROVIDER-scoped id, so two operator systems that both count from 1 do not share a
-// dedupe key (and a Google appointment keeps the bare event id it has always been keyed by).
+// The dedupeKey prefix for ALL of an appointment's reminders; cancelAppointment drops them by it.
+// Keyed by the provider-scoped id (see reminderScopeId).
 function reminderPrefix(provider: string, eventId: string): string {
   return `reminder:${reminderScopeId(provider, eventId)}:`;
 }
@@ -71,21 +62,20 @@ function reminderPrefix(provider: string, eventId: string): string {
 export interface ReminderJob {
   offsetHours: number;
   runAt: Date;
-  // The closest (smallest-offset) reminder — the one that may ask for confirmation.
+  // The closest (smallest-offset) reminder: the one that may ask for confirmation.
   isLast: boolean;
 }
 
 // Pure: turn a start time + offsets into the reminder jobs to enqueue. Offsets are de-duped, sorted
-// DESCENDING (far → near), and any whose reminder time is already in the past (≤ now) is skipped. The
-// SMALLEST surviving offset is flagged isLast. No I/O, no Date.now() — `now` is injected (testable).
+// DESCENDING (far to near), and any whose reminder time is already in the past (<= now) is skipped.
+// The SMALLEST surviving offset is flagged isLast. No I/O: `now` is injected.
 export function computeReminderJobs(
   startISO: string,
   offsetsHours: number[],
   now: Date,
 ): ReminderJob[] {
-  // parseStartMs, never a bare Date.parse: the arming and the liveness of the SAME appointment have
-  // to read one parser. Date.parse rolls "2026-02-30" forward to March 2, so a start the record
-  // refuses would still have armed reminders judged against a day that does not exist.
+  // NOTE: parseStartMs, never a bare Date.parse: arming and liveness of the SAME appointment have
+  // to read one parser, or a start the record refuses ("2026-02-30") would still arm reminders.
   const startMs = parseStartMs(startISO);
   if (!Number.isFinite(startMs)) return [];
   const offsets = [
@@ -111,16 +101,15 @@ export interface ScheduleAppointmentRemindersArgs {
   // rides beside it.
   provider?: string;
   eventId: string;
-  // Null when no Google calendar is behind the booking. It travels into the payload as null and
-  // reaches the nudge as an absent ref: "primary" is a real Google identifier, and writing it for a
-  // booking that lives in the operator's own system hands the model an id nobody issued (issue #352).
+  // Null when no Google calendar is behind the booking, and it reaches the nudge as an absent ref:
+  // "primary" for a foreign booking would hand the model a Google id nobody issued.
   calendarId: string | null;
   credentialRef: string | null;
   startISO: string;
   offsetsHours: number[];
   askConfirmationOnLast: boolean;
   // Carried into the job payload so the per-turn appointment context (and the reminder turn itself)
-  // can describe the event without a Google call. Snapshotted at (re)arm time — a rename made
+  // can describe the event without a Google call. Snapshotted at (re)arm time: a rename made
   // directly in Google Calendar goes stale until the next reschedule re-arms.
   summary?: string | null;
   calendarLabel?: string | null;
@@ -172,8 +161,7 @@ export async function enqueueAppointmentReminders(
 export interface AppointmentBookedArgs {
   tenantId: bigint;
   threadId: string;
-  // The system that owns the booking. Absent means Google Calendar, which is what every caller was
-  // until a tool definition could declare one of its own (issue #352).
+  // The system that owns the booking. Absent means Google Calendar.
   provider?: string;
   eventId: string;
   startISO: string;
@@ -187,13 +175,9 @@ export interface AppointmentBookedArgs {
     offsetsHours: number[];
     askConfirmationOnLast: boolean;
   } | null;
-  // RECORD ONLY: keep the appointment, and touch NO reminder — neither retire nor arm. A third
-  // answer, because `reminders: null` already means something else here: it is a RE-STATEMENT with
-  // the policy switched off, so it retires what was armed before (see the retire below). An
-  // OBSERVER restating an appointment the responder booked must not cancel the responder's
-  // reminders, and it must not arm its own either, because a reminder outlives the muted turn that
-  // armed it (issue #568, review rounds 16 and 17 — round 16 reached for `reminders: null` and got
-  // the cancelling half by accident).
+  // RECORD ONLY: keep the appointment and touch NO reminder, neither retire nor arm. Distinct from
+  // `reminders: null`, which is a re-statement with the policy off and so retires what was armed.
+  // An OBSERVER restating the responder's booking must neither cancel its reminders nor arm its own.
   recordOnly?: boolean;
   base?: PrismaClient;
   now?: Date;
@@ -204,37 +188,8 @@ export interface AppointmentBookedResult {
   remindersArmed: number;
 }
 
-// An appointment was booked in this conversation: write the RECORD, then arm whatever reminders the
-// policy asks for.
-//
-// ONE entry point rather than two, and that is the whole correction. While the caller chose between
-// "arm reminders" and "do nothing", every reason not to arm was also a reason to forget the
-// appointment: reminders switched off for the integration, and a booking sooner than the smallest
-// offset (`computeReminderJobs` drops offsets whose time has passed). Both left
-// `followUp.pauseWhileAppointment` inert, with no error anywhere, and both were reachable from an
-// ordinary configuration (issue #376). Two members on the context would let the next caller
-// reintroduce exactly that.
-//
-// ARM FIRST, RECORD LAST, and the record is written on the error path too.
-//
-// THE REASON IS THE ERROR PATH. If arming throws, the appointment still has to be known: forgetting
-// it is the entire defect this unit exists for, so the record cannot be the thing that gets skipped
-// when the scheduler write fails. Recording first would satisfy that; recording last and writing it
-// anyway satisfies it as well, and also gets the ordering below right.
-//
-// The order additionally decides which side of a `/reset` the two writes land on, and that matters
-// much less than it did when this was written. `/reset` now REFUSES while the thread is claimed
-// (webhook.ts asks `threadBusyForResetOn`, issue #203), and a turn holds that claim across its whole
-// invoke — tool calls included — so on a thread keyed by contact inbox the command cannot land
-// between these two writes at all. What is left is the keys with no row to claim, where the fence is
-// still the in-process Map. There, recording FIRST would leave the one pair that is worse than the
-// code this replaces: the record cancelled while reminders that arm a moment later are not, so the
-// follow-up pause is off while a reminder still reaches the customer. Recording LAST cannot produce
-// it, because the record's upsert clears the tombstone exactly as `enqueueJob`'s upsert revives a
-// retired row, so both halves come back live together — which is what the base already did with the
-// reminder rows alone.
 // Whether the stored booking stands at a DIFFERENT time from the one being re-stated. Absent record
-// ⇒ false: there is nothing armed to go stale.
+// means false: there is nothing armed to go stale.
 async function startMoved(
   args: AppointmentBookedArgs,
   startReadable: boolean,
@@ -250,35 +205,29 @@ async function startMoved(
   return previous.getTime() !== parseStartMs(args.startISO);
 }
 
+// An appointment was booked in this conversation: write the RECORD and arm whatever reminders the
+// policy asks for, through ONE entry point so no reason not to arm becomes a reason to forget it.
+// ARM FIRST, RECORD LAST, and record on the error path too: the appointment must be known even when
+// the scheduler write fails, and a `/reset` racing a key with no claim row can then only find both
+// halves live together (the record's upsert clears the tombstone as `enqueueJob` revives a row).
 export async function appointmentBooked(
   args: AppointmentBookedArgs,
-  // Injectable for the same reason enqueueAppointmentReminders takes it: a hermetic test of what
-  // happens when arming fails cannot make a real enqueue fail without breaking the record write too.
+  // Injectable so a test can make arming fail without breaking the record write too.
   enqueue: typeof enqueueJob = enqueueJob,
 ): Promise<AppointmentBookedResult> {
   let remindersArmed = 0;
   let armError: unknown;
-  // Set inside the try, read after it: the record below is skipped when a record-only RESCHEDULE
-  // failed to clean up, and "we never got far enough to know" has to read the same as "it moved".
+  // NOTE: Set inside the try, read after it: the record below is skipped when a record-only
+  // RESCHEDULE failed to clean up, and "never got far enough to know" must read as "it moved".
   let movedUnderRecordOnly = args.recordOnly === true;
-  // The start is judged ONCE, before either half, because both answer to it. An unreadable start is
-  // not a re-statement of the appointment: recordAppointment refuses to move the record on it (it
-  // returns "unreadable-start" and writes nothing), so retiring here would strand the PREVIOUS
-  // booking, still standing at its old start, with every reminder it had gone and nothing armed in
-  // their place. Nothing is read, so nothing changes, on either side.
+  // NOTE: Judged ONCE, before either half. An unreadable start is not a re-statement: the record
+  // refuses it, so retiring here would strand the previous booking with its reminders gone.
   const startReadable = Number.isFinite(parseStartMs(args.startISO));
   try {
-    // RETIRE FIRST, and unconditionally. Arming only writes the offsets whose time is still ahead,
-    // so re-stating a booking at an EARLIER time silently keeps the offsets it outran — see
-    // retireReminderJobs. Unconditional because `reminders: null` is also a re-statement: an
-    // integration whose reminders were switched off between two bookings of the same appointment
-    // must not leave the first booking's reminders firing.
-    // `recordOnly` normally skips BOTH halves: the retire below is what makes `reminders: null` a
-    // cancel, and an observation has no business cancelling what the responder armed. The exception
-    // is a booking that MOVED. A reminder carries the time it was armed for, and for a non-Google
-    // provider the handler reads that payload rather than the record — so a preserved reminder for a
-    // rescheduled appointment announces the obsolete time, or fires after it already happened.
-    // Retired, never re-armed: the observation still arms nothing (round 19).
+    // NOTE: RETIRE FIRST, and unconditionally (`reminders: null` is a re-statement too): arming only
+    // writes offsets still ahead, so a booking moved EARLIER would keep the ones it outran.
+    // `recordOnly` skips both halves, except for a booking that MOVED: a reminder carries the time it
+    // was armed for, so a preserved one would announce the obsolete time. Retired, never re-armed.
     movedUnderRecordOnly =
       args.recordOnly === true &&
       startReadable &&
@@ -289,7 +238,7 @@ export async function appointmentBooked(
         args.provider ?? GOOGLE_CALENDAR_PROVIDER,
         args.eventId,
         args.base ?? basePrisma,
-        // No arm follows, so the tombstone stands alone — the same shape `cancelAppointment` uses.
+        // NOTE: No arm follows, so the tombstone stands alone, as in `cancelAppointment`.
         false,
       );
     }
@@ -299,7 +248,7 @@ export async function appointmentBooked(
         args.provider ?? GOOGLE_CALENDAR_PROVIDER,
         args.eventId,
         args.base ?? basePrisma,
-        // A re-statement: the arm right below replaces the payload of every offset that survives,
+        // NOTE: A re-statement: the arm right below replaces the payload of every offset that survives,
         // taking the tombstone with it, so the token is the only mark that outlives it.
         true,
       );
@@ -310,8 +259,7 @@ export async function appointmentBooked(
             threadId: args.threadId,
             provider: args.provider,
             eventId: args.eventId,
-            // "primary" is Google's own default calendar, so it is the right fill-in there and only
-            // there. A booking from the operator's system has no calendar at all — see the field.
+            // NOTE: "primary" only for Google: a foreign booking has no calendar at all.
             calendarId:
               args.calendarId ??
               ((args.provider ?? GOOGLE_CALENDAR_PROVIDER) ===
@@ -334,16 +282,9 @@ export async function appointmentBooked(
   } catch (e) {
     armError = e;
   }
-  // THE RECORD IS SKIPPED ON EXACTLY ONE FAILURE, and it is the one where writing it destroys the
-  // evidence a retry needs. A record-only reschedule whose cleanup threw would otherwise persist the
-  // NEW start, and the next attempt would compare equal starts, decide nothing moved and skip the
-  // retirement for good — leaving reminders that announce a time the appointment no longer has.
-  //
-  // Safe to skip precisely here, and only here: this path exists because the appointment is ALREADY
-  // recorded (that is how `startMoved` answered true), so nothing is forgotten — the record simply
-  // stays at the start it had, which is also the start the surviving reminders still name. Every
-  // other path keeps the rule this file is built on: record anyway, even when arming failed, because
-  // forgetting the appointment is the defect this unit exists for.
+  // NOTE: The record is skipped on exactly one failure: a record-only reschedule whose cleanup threw.
+  // Writing the NEW start would make the retry see equal starts and never retire the stale reminders,
+  // and the appointment is already recorded there (that is how `startMoved` answered true).
   if (armError !== undefined && movedUnderRecordOnly) throw armError;
   const record = await recordAppointment({
     tenantId: args.tenantId,
@@ -356,18 +297,15 @@ export async function appointmentBooked(
     calendarLabel: args.calendarLabel,
     base: args.base,
   });
-  // Rethrown AFTER the record lands, so the caller still reports the failed arming (prepare.ts binds
+  // NOTE: Rethrown AFTER the record lands, so the caller still reports the failed arming (prepare.ts binds
   // it to a flowlog warn) while the appointment itself is known.
   if (armError !== undefined) throw armError;
   return { record, remindersArmed };
 }
 
 // The appointment stopped standing (cancelled, or about to be re-armed by a reschedule): retire the
-// RECORD first, then the pending reminder jobs.
-//
-// Record first, because it is the one every reader consults. If the job cleanup throws halfway, an
-// appointment that no longer stands is already unknown to the follow-up pause and to the prompt, and
-// what is left behind is a reminder that the handler's own tombstone check will drop.
+// RECORD first, because every reader consults it: if the job cleanup throws halfway, what is left is
+// a reminder that the handler's own tombstone check will drop.
 export async function cancelAppointment(
   tenantId: bigint,
   eventId: string,
@@ -375,28 +313,21 @@ export async function cancelAppointment(
   provider: string = GOOGLE_CALENDAR_PROVIDER,
 ): Promise<void> {
   await cancelAppointmentRecord(tenantId, eventId, base, provider);
-  // No arm follows a cancel, so the tombstone stands alone and the in-flight run keeps its token.
+  // NOTE: No arm follows a cancel, so the tombstone stands alone and the in-flight run keeps its token.
   await retireReminderJobs(tenantId, provider, eventId, base, false);
 }
 
 // The JOBS half of the cancel above, on its own because re-arming needs it without the record half.
-// Every reminder of this appointment stops: pending rows called off, every row tombstoned.
-//
-// The tombstone is what makes a RE-ARM complete rather than partial. `enqueueAppointmentReminders`
-// writes only the offsets whose time is still ahead, so an appointment moved EARLIER leaves the
-// offsets it outran untouched — same dedupe key, old run time, old start in the payload. Measured:
-// a booking 30h out with `[24, 1]`, re-stated 2h out, left `reminder:<id>:24` PENDING to fire FOUR
-// HOURS AFTER the appointment had already happened, describing the wrong day. Nothing downstream
-// catches it: `reminderAlreadyStarted` reads the payload's own stale start, and a booking with no
-// Google credential has no live event to be corrected against.
+// Every reminder of this appointment stops: pending rows called off, every row tombstoned. This is
+// what makes a RE-ARM complete: arming writes only offsets still ahead, so a booking moved EARLIER
+// would keep the offsets it outran, firing with the old start after the appointment happened.
 async function retireReminderJobs(
   tenantId: bigint,
   provider: string,
   eventId: string,
   base: PrismaClient,
   // Whether an arm follows and may REPLACE the payload of the offsets that survive. Required rather
-  // than defaulted: the two callers want opposite answers, and a default is how the next caller gets
-  // the wrong one silently. See the note on the token bump below.
+  // than defaulted: the two callers want opposite answers (see the token bump below).
   armFollows: boolean,
 ): Promise<void> {
   await cancelPendingJobsByPrefix(
@@ -405,30 +336,14 @@ async function retireReminderJobs(
     reminderPrefix(provider, eventId),
     base,
   );
-  // NOTE: Tombstone EVERY row of this event (fired DONE rows included). Cancelling marks jobs DONE,
-  // which is indistinguishable from "fired" — without the stamp, the per-turn appointment context
-  // would keep presenting a cancelled appointment as live until its start passed. A reschedule
-  // re-arm replaces the payload wholesale (enqueueJob's upsert is authoritative), clearing the stamp
-  // on the offsets that survive. One atomic jsonb merge, never read-modify-write: a concurrent
-  // re-arm's payload is stamped or replaced whole, so a stale snapshot can never clobber it.
-  //
-  // THE CLAIM TOKEN MOVES ONLY WHEN AN ARM FOLLOWS, and the asymmetry is the point.
-  //
-  // `isRetired` asks two questions: is there a tombstone, and did the claim token move. A re-arm
-  // ANSWERS THE FIRST ONE AWAY — enqueueJob's upsert replaces the payload, so a row already CLAIMED
-  // by a running handler comes back with no stamp and its original token, and that handler goes on to
-  // send a reminder built from its claim-time payload, announcing the start the re-statement just
-  // replaced. Only the token survives that rewrite, which is the same reasoning cancelJobsByKey
-  // spells out for /reset ("two marks, because neither survives alone").
-  //
-  // On a CANCEL nothing follows, so the tombstone stands on its own and moving the token would only
-  // fence the in-flight run's own bookkeeping: `rescheduleJob` CASes on the token the claim handed
-  // out, and issue #281 chose to let a run that could not author carry its retry counter forward, by
-  // MERGING it rather than replacing the payload. That choice is still right where no arm can erase
-  // the mark it merges into, and this parameter is what keeps the two callers from having to share
-  // one answer.
+  // NOTE: Tombstone EVERY row of this event, fired DONE rows included: a cancelled job is DONE like a
+  // fired one. One atomic jsonb merge, so a concurrent re-arm's payload is stamped or replaced whole.
+  // The claim token moves ONLY when an arm follows: the re-arm's upsert wipes the stamp off a row a
+  // running handler already claimed, and only the moved token still stops that stale send. On a
+  // cancel the stamp stands alone, and an unmoved token lets the in-flight run's `rescheduleJob` CAS
+  // merge its retry counter forward.
   await runScopedOn(base, sysCtx(tenantId), async (db) => {
-    // LIKE needs its own escaping (Google recurrence ids carry `_`).
+    // NOTE: LIKE needs its own escaping (Google recurrence ids carry `_`).
     const likePrefix = `${reminderPrefix(provider, eventId).replace(
       /[\\%_]/g,
       "\\$&",
@@ -445,49 +360,12 @@ async function retireReminderJobs(
   });
 }
 
-// Retire every appointment reminder THIS conversation armed: pending rows cancelled, every row
-// tombstoned. /reset is the caller.
-//
-// Scoped by the thread the rows carry in their payload, and never by the event: the reminders are
-// keyed `reminder:<eventId>:<offset>`, so a command that only knows the thread cannot reach them by
-// dedupe key — but the event is the wrong widening. A reschedule re-arms the surviving offsets with
-// the payload of whatever conversation asked for it (enqueueJob's upsert is authoritative), while
-// already-fired rows keep the OLD thread; going from a fired row's event id back to the whole
-// `reminder:<eventId>:` prefix would cancel and tombstone the LIVE reminders of the conversation that
-// now owns the appointment. The thread predicate is the same lookup `loadAppointmentContext` uses per
-// turn, and it cannot reach outside the conversation that typed the command.
-//
-// ALL rows, not just PENDING ones: `loadAppointmentContext` re-reads fired rows too, and a fired
-// reminder whose start is still ahead is exactly what keeps the appointment block in the prompt after
-// the operator was told the conversation was cleared. The tombstone is what tells the two apart —
-// cancelling marks a job DONE, which is indistinguishable from "fired". One atomic statement, never
-// read-modify-write, so a concurrent re-arm's payload is stamped or replaced whole.
-//
-// The calendar event itself is deliberately NOT touched. Deleting a real booking is not what the
-// operator asked for by typing /reset, and it is not undoable.
-//
-// UNCONDITIONAL, and that is why the caller runs it BEFORE its slow work rather than after. /reset is
-// not atomic with the conversation: a turn arriving during the cleanup can book or reschedule, and
-// retiring what that turn armed loses reminders for real appointments (the command also clears
-// `lastInboundAt`, so nothing re-arms them). Sparing them by age does not work — enqueueJob upserts on
-// `reminder:<eventId>:<offset>`, so a reschedule keeps the row's `created_at` and a claim moves its
-// `updated_at`; both columns answer a question about the ROW, not about the arm. Ordering answers it
-// instead: retire first, and an arm that lands afterwards revives its own row, because that same
-// upsert writes `status: PENDING` with a fresh payload and run time. What is left is the window
-// between reading the command and this statement committing, where "before or after the command" has
-// no answer to get right.
-//
-// TWO scopes in one statement, over different row sets. The `cancelledAt` stamp is the APPOINTMENT's
-// cancel marker, not a note about a run: projectAppointmentEvents and the follow-up sweep both read
-// it, and to both a row whose start is still ahead is a LIVE appointment until the stamp lands. So it
-// goes on every row of the thread, DEAD ones included — fencing it on status would leave a
-// dead-lettered reminder in the prompt, and follow-ups paused on it, after the operator was told the
-// conversation had been cleared. The STATUS transition is the narrower scope: only a queued or
-// in-flight row has a run to call off, and moving a DEAD row to DONE would erase the dead-letter an
-// operator may still need to read (the same reason retireJobsByDedupeKey fences the whole statement —
-// there the stamp has no reader but jobRetired, so it can).
-//
-// Returns the number of rows the command reached — retired or merely tombstoned.
+// Retire every appointment reminder THIS conversation armed; /reset is the caller. Returns the rows
+// reached. Scoped by the payload's thread, never widened to the event: a reschedule re-arms the
+// event's rows under the conversation that now owns it. The calendar event is NOT touched. The
+// caller runs this BEFORE its slow work, so an arm landing afterwards revives its own row. The
+// stamp goes on EVERY row (DEAD included, since the follow-up sweep reads it); the status moves only
+// on PENDING/CLAIMED rows, so a dead-letter an operator may need stays readable.
 export async function cancelThreadAppointments(
   tenantId: bigint,
   threadId: string,
@@ -534,59 +412,36 @@ export interface ReminderNudgeArgs {
   summary: string;
   startISO: string;
   eventId: string;
-  // The system that owns the booking, named to the model for a foreign one. Two operator systems may
-  // both answer with `42` (that is why they key the record separately), and without this the reminder
-  // turn holds an id and no way to say which system it belongs to. Omitted for Google, whose
-  // appointments are identified by the calendar_id ref instead — the same split the per-turn
-  // appointment block makes, and the two have to keep agreeing (issue #352).
+  // The system that owns the booking, named to the model for a foreign one (two systems may both
+  // answer `42`). Omitted for Google, identified by calendar_id instead, as in the context block.
   provider: string;
-  // Null for a booking with no Google calendar behind it: the ref is then omitted from the fenced
-  // data entirely, rather than carrying "primary", which names a real Google calendar the operator's
-  // system never wrote to. The context block already answers the same question by emitting no
-  // calendar_id for those appointments; this is the same rule on the reminder path (issue #352).
+  // Null for a booking with no Google calendar behind it: the ref is then omitted rather than
+  // carrying "primary", the same rule the context block follows.
   calendarId: string | null;
-  // The clock at SEND time, injected — the same discipline `computeReminderJobs` and
-  // `minutesFromNow` keep, and required rather than optional for the reason `nudgeMessage` gives
-  // about its own conversation id: a field a future writer may forget is the field that silently
-  // takes the temporal grounding below back out of the reminder (issue #685).
+  // The clock at SEND time, injected. Required so a caller cannot silently drop the temporal
+  // grounding from the reminder.
   now: Date;
-  // Whether the calendar tools can actually act on THIS appointment. False for a booking that lives
-  // in the operator's own system and reached the platform through a tool's declaration (issue #352):
-  // there is no Google event behind it, so naming calendar_update_event at the model is pointing it
-  // at a tool that cannot touch this booking — the same reason buildAppointmentContextSection gates
-  // its own tool pointer. The discriminator is the credential: a Calendar booking cannot exist
-  // without one, since the create call needs the token it resolves.
+  // Whether the calendar tools can act on THIS appointment. False for a declared booking with no
+  // Google event behind it; the discriminator is the credential, which every Calendar booking has.
   canOperate: boolean;
 }
 
 const DAY_MS = 86_400_000;
 
-// The LOCAL offset the start states, in minutes, or null when it states none — an all-day date
-// (`2026-09-18`, which is how Google answers a booking with no time), a wall clock written without
-// one, or a value in `Z`.
-//
-// Null is not a fallback to UTC, and that distinction is the whole of round 2 of the review. This
-// offset is the only thing in the record that names the CUSTOMER'S calendar, and it is what places
-// `now` in the same frame as the start, so that "today" means their today. `parseStartMs` pins an
-// offset-less value to UTC to have ONE instant everybody agrees on, which is the right answer for
-// ordering and liveness and is not an answer about anybody's calendar day: measured, an all-day
-// booking on the 18th announced itself as "tomorrow" to a customer for whom it was the day after
-// tomorrow (21:00 on the 16th in São Paulo is already the 17th in UTC), and an offset-less
-// `2026-09-18T09:00` announced itself as "today" on their 17th. `Z` is the same mistake with a
-// stated zone: it says where the instant is, never where the person reading it is.
 // An all-day date (`2026-09-18`) or a wall clock written without an offset: the two shapes whose
 // instant `parseStartMs` invents in UTC.
 const ALL_DAY_OR_LOCAL =
   /^\d{4}-\d{2}-\d{2}(?:[Tt ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?)?$/;
 
+// The LOCAL offset the start states, in minutes, or null when it states none (all-day, offset-less
+// wall clock, `Z`). Null is NOT a fallback to UTC: this offset is the only thing that names the
+// CUSTOMER'S calendar day, and UTC says where the instant is, never where the reader is.
 function statedLocalOffsetMinutes(startISO: string): number | null {
   const m = /([+-])(\d{2}):?(\d{2})$/.exec(startISO);
   if (!m) return null;
   const minutes = (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
-  // A ZERO offset is `Z` under another spelling, and round 6 of the review found it reaching the
-  // opposite answer: `+00:00` was read as the customer's own calendar and announced an appointment
-  // two days out as "tomorrow". ISO 8601 even makes `-00:00` mean "offset unknown" outright. A
-  // booking API that serializes UTC this way is stating an instant, not a local calendar.
+  // NOTE: A ZERO offset is `Z` under another spelling (ISO 8601 makes `-00:00` mean "unknown"): a
+  // booking API serializing UTC this way states an instant, not a local calendar.
   return minutes === 0 ? null : minutes;
 }
 
@@ -601,32 +456,14 @@ function distancePhrase(ms: number): string {
   return `${Math.round(ms / DAY_MS)} days`;
 }
 
-// WHICH CALENDAR DAY, and empty when that answer would depend on an hour we do not hold. The offset
-// the start states is the zone's offset AT THE APPOINTMENT'S instant, and `now` may sit on the other
-// side of a daylight-saving transition, where the same zone is an hour away from it. The payload
-// carries an offset and not an IANA zone, so there is nothing here to ask — and round 3 of the
-// review found the case that makes the difference customer-facing: in America/New_York, a start of
-// `2026-11-01T02:30:00-05:00` with now at `00:30:00-04:00` is THREE hours away on the SAME local
-// day — the wall clock reads 00:30 then 02:30, and the hour between 01:00 and 02:00 happens twice,
-// which is the same reason the distance is taken from instants and not from the clock face — and
-// the stated offset alone puts now on the previous date and calls it "tomorrow" while the distance
-// in the same sentence says hours.
-//
-// So the day is claimed only when it does NOT depend on that hour: the difference is taken with the
-// stated offset and with an hour either side of it, and a disagreement means we say nothing about
-// the day and let the distance carry the sentence. It costs the relative word within an hour of
-// local midnight, which is a slice of the day when almost nothing is reminded, and it never states
-// a day that is wrong.
-// How far the zone's offset at `now` may sit from the offset the START states, which is the whole
-// uncertainty `relativeDay` refuses to guess through. An hour is the usual daylight-saving step and
-// was all this covered until round 10 of the review, which found the zones that move TWO: in
-// Antarctica/Troll (+00 in winter, +02 in summer), now at `2026-03-28T23:30Z` against an appointment
-// at `2026-03-29T10:00+02:00` was confidently called "today" while the local sending date was still
-// the 28th. Lord Howe moves by thirty minutes, so the half hour is in here too. The cost of each
-// value is a slightly wider band around midnight where the day goes unclaimed and the sentence
-// carries the distance alone, which is the trade this function is built on.
+// How far the zone's offset at `now` may sit from the offset the START states: daylight-saving steps
+// of an hour, two (Antarctica/Troll) and thirty minutes (Lord Howe).
 const DST_SKEWS_MINUTES = [-120, -60, -30, 0, 30, 60, 120] as const;
 
+// WHICH CALENDAR DAY, or null when the answer would depend on an hour we do not hold. The stated
+// offset is the zone's offset at the APPOINTMENT, and `now` may sit across a DST transition (the
+// payload has no IANA zone). The day is claimed only when every skew agrees; otherwise the distance
+// carries the sentence alone, near local midnight, and a wrong day is never stated.
 function relativeDay(
   startMs: number,
   nowMs: number,
@@ -645,60 +482,27 @@ function relativeDay(
   return `${days} calendar days after it (in ${days} days)`;
 }
 
-// (#685) WHAT THE MODEL CANNOT WORK OUT FOR ITSELF, and the whole of this issue. The reminder turn
-// states the appointment's start TWICE (this nudge's summary and the prompt's appointment block) and
-// the current instant ZERO times: `{{data_atual}}` and its siblings only reach the prompt when the
-// operator happened to type one. With no anchor the model takes the relative word from the last
-// message that used one — which, on the 24h reminder, said "amanhã" and was right when it said it.
-// Measured against the real API before this existed: 2 of 5 replies called an appointment starting
-// in one hour "amanhã".
-//
-// THE DAY IS A FACT HERE, NEVER A WORD THERE. The issue proposed deriving "hoje" from the configured
-// `offsetHours` and instructing the model to use that word. Two things are wrong with it, and both
-// were measured: the offset describes when the reminder was ARMED, not how far the appointment is
-// when the message actually goes out (a retry lands hours later, the queue can be behind, and a
-// moved event replaces the start while the offset still says 1) — with the event moved to the next
-// day, 5 of 5 replies built that way announced it as "hoje" — and the word itself belongs to the
-// conversation, not to us: the same agent serves a tenant writing in English.
-//
-// It rides in the INSTRUCTIONS lane, not in `refs`, and that is deliberate: `nudgeOccasionKey` hashes
-// every non-null ref, so a value that moves with the clock would make each retry of one reminder a
-// different occasion, and the refusal ledger's one-line-per-occasion would become one line per
-// attempt. It is also our own derived text rather than external data, which is the boundary the two
-// lanes draw.
-//
-// TWO FACTS, EACH SAID ONLY WHEN IT IS KNOWN. The distance needs a real instant; the calendar day
-// needs a local frame to place `now` in, and that is strictly more than the instant. So a start in
-// `Z` gets the distance and no day (UTC says where the instant is, never where the person reading it
-// is), an all-day date and a wall clock written without an offset get neither (their instant is a
-// placeholder `parseStartMs` invents for ordering), and a start already begun or unreadable gets
-// nothing at all — the handler ends that job before it reaches here, and a day asserted about it
-// would add a second wrong statement instead of removing one. The reminder still goes out in every
-// one of those cases, saying the date, which is correct. The tool boundary is what keeps new rows
-// out of the offset-less case: `tool-definitions/appointment.ts` resolves a bare wall clock into the
-// agent's own zone before it is ever stored, for this same reason.
+// How far off the appointment is at SEND time, as facts the model cannot work out: the reminder turn
+// states the start but not NOW, so the model would reuse the last relative word in the thread. The
+// day is computed here, never derived from `offsetHours` (retries and moves make that stale), and
+// the word is left to the model in the conversation's language. It rides in the instructions, not
+// `refs`, since `nudgeOccasionKey` hashes refs. The distance needs a real instant, the day also a
+// stated local offset; an all-day or offset-less start gets neither, and a past one gets nothing.
 export function reminderTemporalGrounding(startISO: string, now: Date): string {
   const startMs = parseStartMs(startISO);
   const nowMs = now.getTime();
   if (!Number.isFinite(startMs) || startMs <= nowMs) return "";
   const offset = statedLocalOffsetMinutes(startISO);
-  // The distance is knowable whenever the start names a real INSTANT — a stated offset, `Z`
-  // included. It is not knowable for an all-day date or a wall clock written without one, where the
-  // instant `parseStartMs` produces is a placeholder for ordering: "starts in about 9 hours" there
-  // would be that placeholder talking, not the appointment.
+  // NOTE: For an all-day or offset-less start the instant is a placeholder for ordering, so a
+  // distance there would be the placeholder talking, not the appointment.
   const distance = ALL_DAY_OR_LOCAL.test(startISO)
     ? null
     : distancePhrase(startMs - nowMs);
   const day = offset === null ? null : relativeDay(startMs, nowMs, offset);
-  // `offset !== null` is redundant with `day` (a day exists only when an offset did) and the
-  // narrowing is not: `sentOn` below needs the number, not the inference.
+  // NOTE: `offset !== null` is redundant with `day`, but the narrowing is not: `sentOn` needs it.
   if (day && distance && offset !== null) {
-    // DATADO, e isto foi medido. Este turno é PERSISTIDO no thread, então uma frase que diz "hoje"
-    // hoje continua ali amanhã, e o turno reativo do dia seguinte não tem relógio nenhum para
-    // contradizê-la: com a redação relativa a "now", 9 de 10 respostas no dia seguinte repetiam a
-    // palavra velha mesmo com o instante corrente no bloco de agendamentos; nomeando a data do
-    // envio, 1 de 10. A data é a LOCAL do compromisso (o mesmo offset que decidiu o dia), porque é
-    // a única que concorda com o que a mensagem diz em voz alta.
+    // NOTE: DATED, because this turn is persisted in the thread and a "today" in it is still there
+    // tomorrow. The date is the appointment's LOCAL one (the offset that decided the day).
     const sentOn = new Date(nowMs + offset * 60_000).toISOString().slice(0, 10);
     return ` This reminder is being sent on ${sentOn} in the appointment's own time zone, and the appointment falls ${day}, starting in about ${distance}; word the day and time in the conversation's language, from these values and never from what was said earlier in the conversation.`;
   }
@@ -709,15 +513,9 @@ export function reminderTemporalGrounding(startISO: string, now: Date): string {
 }
 
 // Pure: the system nudge for a reminder. The event's identity travels as fenced-data refs (the ids
-// the calendar tools take as arguments — issue #22: without them the agent that answers the reply
-// cannot tell WHICH appointment the reminder was about), and the instructions point at the refs by
-// key. On the last reminder with confirmation enabled, instruct the agent to ask for confirmation
-// and to mark the event via calendar_confirm_appointment.
-//
-// Without the calendar tools behind it, the SAME reminder goes out and only the tool sentence
-// changes: the customer still hears the date and time, and the agent is told to handle a reschedule
-// the way it handles anything else it has no tool for, instead of being handed the name of one that
-// cannot reach this booking.
+// the calendar tools take), so the agent answering the reply knows WHICH appointment it was about.
+// On the last reminder with confirmation enabled, the agent asks for confirmation. Without the
+// calendar tools behind it, the same reminder goes out and only the tool sentence changes.
 export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
   const wantsConfirmation = a.isLast && a.askConfirmation;
   const base = wantsConfirmation
@@ -726,12 +524,8 @@ export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
   const tools = wantsConfirmation
     ? " If they confirm, call calendar_confirm_appointment with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value)."
     : " If they ask to reschedule or cancel, use calendar_update_event / calendar_cancel_event with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value).";
-  // Names no tool, and asserts the absence of none either. Which Calendar tool cannot reach this
-  // booking is knowable here; which tool CAN is not: the operator may have granted this booking
-  // system's own HTTP cancel or reschedule tool this very turn, and buildAppointmentContextSection,
-  // which reaches the same model in the same prompt, points it at exactly that. A flat "you have no
-  // tool" would be false whenever such a grant exists and would contradict the block above it, so
-  // the sentence defers to a tool it cannot enumerate and falls back to passing the request on.
+  // NOTE: Names no tool and asserts no absence: the operator may have granted this booking system's
+  // own tool this turn, so a flat "you have no tool" could be false.
   const noTools = wantsConfirmation
     ? " Record what they answer in your reply, and mark the appointment as confirmed with this booking system's own tool if you have one."
     : " If they ask to reschedule or cancel, use this booking system's own tool if you have one, and otherwise say you will pass the request on.";
@@ -742,11 +536,8 @@ export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
     refs: {
       event_id: a.eventId,
       calendar_id: a.calendarId,
-      // `booking_system`, not `source`: the nudge renderer already emits the nudge's OWN kind as
-      // `source=appointment_reminder` on this very line, and two different meanings under one name is
-      // worse than the missing ref was. The per-turn appointment block calls it `source` because it
-      // sits inside that appointment's own element, where nothing else claims the name.
-      // Falsy refs are dropped by the renderer, so Google's own name never reaches the model here.
+      // NOTE: `booking_system`, not `source`: the renderer already emits `source=appointment_reminder`
+      // on this line. Falsy refs are dropped, so Google's own name never reaches the model here.
       booking_system:
         a.provider === GOOGLE_CALENDAR_PROVIDER ? null : a.provider,
     },
@@ -767,7 +558,7 @@ interface EventStatus {
 }
 
 // Best-effort GET of the event (status/summary/start) to decide whether a reminder is still warranted.
-// Returns undefined when the token/event cannot be resolved (a transient error) — the caller then
+// Returns undefined when the token/event cannot be resolved (a transient error); the caller then
 // nudges anyway (a redundant reminder beats a missed one). Anti-SSRF on the fixed Google origin.
 async function fetchEventStatus(
   tenantId: bigint,
@@ -825,11 +616,8 @@ async function fetchEventStatus(
 // The start this reminder is judged AND worded by, and it has to be one value: the check that lets a
 // retry through and the sentence the customer reads must not come from different clocks, or a
 // reminder allowed because the calendar now says 3pm goes out announcing the 10am it replaced.
-//
-// The live answer wins whenever the lookup gave one, because the payload's start is a snapshot from
-// the moment the row was armed and an event edited directly in Google (never through the agent, which
-// re-arms the reminders) can have moved in either direction. When the lookup could not be made or
-// carried no readable start, the snapshot is the only thing left that knows, and it decides.
+// The live answer wins whenever the lookup gave one (an event edited directly in Google moves
+// without a re-arm); otherwise the armed snapshot decides.
 export function authoritativeReminderStart(
   live: { startISO: string | null } | undefined,
   snapshotStartISO: string,
@@ -838,21 +626,9 @@ export function authoritativeReminderStart(
 }
 
 // Has the appointment this reminder announces already begun? A reminder that arrives after the start
-// is worse than none: it tells someone already in the appointment that it is coming up.
-//
-// This only became reachable when the handler learned to retry: a job used to run exactly once, at
-// `start - offset`, so the start was ahead by construction. A retry can land hours later, and a
-// Google GET failing at that moment used to leave nothing between it and the customer.
-//
-// An absent or unreadable start is NOT "started", and that falls out of the comparison rather than
-// needing a guard: the parser answers NaN, and every comparison with NaN is false. Refusing to remind
-// on a date nobody can read would drop a customer-facing message over a field the agent wrote.
-//
-// `parseStartMs`, never a bare `Date.parse`: this repo already learned that one (issue #39's
-// neighbours). A start can reach a payload from the model's own tool input, and `Date.parse` rolls an
-// impossible date forward instead of refusing it, so `2026-02-31` becomes March and a reminder is
-// judged against a day that does not exist. The same parser reads the sweep's side, and the two
-// answering differently is how a reminder gets dropped by one and kept by the other.
+// is worse than none: it tells someone already in the appointment that it is coming up. A retry can
+// land hours after `start - offset`. An unreadable start is NOT "started": the parser answers NaN and
+// every comparison with NaN is false. `parseStartMs`, never `Date.parse`, so this and the sweep agree.
 export function reminderAlreadyStarted(
   live: { startISO: string | null } | undefined,
   snapshotStartISO: string,
@@ -867,8 +643,8 @@ export async function appointmentReminderHandler(
   job: ClaimedJob,
   base: PrismaClient,
   deps?: RuntimeDeps,
-  // The run's context (issue #811): its signal goes to the nudge, and a reminder that reached the
-  // conversation commits it.
+  // The run's context: its signal goes to the nudge, and a reminder that reached the conversation
+  // commits it.
   ctx?: JobContext,
 ): Promise<JobResult> {
   const p = job.payload;
@@ -877,13 +653,11 @@ export async function appointmentReminderHandler(
   if (!threadId || !eventId) return { outcome: "done" };
   const parsed = parseThreadId(threadId);
   if (!parsed || parsed.tenantId !== job.tenantId) return { outcome: "done" };
-  // Null survives all the way to the nudge's refs (see ReminderNudgeArgs.calendarId). The Google
-  // lookup below is the one place that needs a concrete calendar, and it is only reached with a
-  // credential, which is exactly when the payload carries a real one.
+  // NOTE: Null survives all the way to the nudge's refs (see ReminderNudgeArgs.calendarId).
   const calendarId = typeof p.calendarId === "string" ? p.calendarId : null;
   const credentialRef =
     typeof p.credentialRef === "string" ? p.credentialRef : null;
-  // Absent on every row armed before this shipped, and Google is what every one of those was.
+  // NOTE: Absent on rows armed before providers existed, all of them Google.
   const provider =
     typeof p.provider === "string" && p.provider
       ? p.provider
@@ -893,45 +667,27 @@ export async function appointmentReminderHandler(
   const askConfirmation = p.askConfirmation === true;
   const tenantId = job.tenantId;
 
-  // Was this reminder retired while it sat claimed? `cancelPendingJob` and its prefix sibling reach
-  // PENDING rows only, so a row the worker had already picked up survives every cancellation — and
-  // the reminder then fires at the customer about an appointment the operator was told had been
-  // cleared. The tombstone is the fence: `cancelThreadAppointments` (and the per-event
-  // cancel) stamp `cancelledAt` on EVERY row of the match, claimed ones included, precisely so an
-  // in-flight handler has something to see. The handler is the half that was missing.
-  //
-  // Re-read rather than trusted from `job.payload`: that snapshot is from claim time, which is
-  // exactly the moment before the stamp lands. A read that fails does NOT suppress the reminder —
-  // an unknown answer must not silently drop a customer-facing message that was legitimately armed.
-  // Opens its own short scope. It used to take the caller's connection, because the nudge's thread
-  // claim ran inside an advisory-lock transaction and a second connection there would stall the lock
-  // under DB_POOL_MAX=1. That claim holds no transaction any more (issue #225), so there is nothing
-  // to borrow and nothing to stall.
-  // ONE CLOCK PER RUN, read through the deps seam and read FRESH on every call: production passes
-  // none and gets `new Date()` each time, which the appointment ceiling below depends on (it has to
-  // be re-evaluated across a model call that can last a minute). A test passes a fixed one and gets
-  // a deterministic day, which is the only way to assert a CALENDAR day without leaning on the hour
-  // the suite happens to run at (rounds 1 and 4 of the review, issue #685).
+  // NOTE: Retired while it sat claimed? Cancels reach PENDING rows only, so the fence is the
+  // `cancelledAt` stamp every cancel puts on claimed rows too, re-read here rather than trusted from
+  // the claim-time payload. A read that fails does NOT suppress a legitimately armed reminder.
+  // The clock is read FRESH on every call (the appointment ceiling is re-judged across a long model
+  // call); a test passes a fixed one through deps to assert a calendar day deterministically.
   const nowMs = (): number => (deps?.now?.() ?? new Date()).getTime();
   const retired = (): Promise<boolean> => jobRetired(job, base);
-  // Strict at the thread claim, where guessing wrong recreates state /reset cleared (see
+  // NOTE: Strict at the thread claim, where guessing wrong recreates state /reset cleared (see
   // jobRetiredStrict). The two asks above it can afford the lenient answer.
   const retiredStrict = (): Promise<boolean> => jobRetiredStrict(job, base);
 
-  // NOTE: Asked TWICE, and the two calls buy different things. Here it saves the Google round trip, which
-  // holds this handler for up to ten seconds. After it — see below — is where the window actually
-  // closes, because a /reset arriving during that call would otherwise find the answer already read.
+  // NOTE: Asked TWICE. Here it saves the Google round trip (up to ten seconds); the second ask, after
+  // it, is where the window closes on a /reset that lands during that call.
   if (await retired()) return { outcome: "done" };
 
-  // Verify the event before nudging: skip if it was cancelled / deleted / already started (e.g. edited
-  // directly in Google). A transient lookup failure (undefined) falls through to nudging anyway.
-  // Summary preference: live Google value > the snapshot enriched into the payload > generic.
+  // NOTE: Skip an event cancelled, deleted or already started (e.g. edited directly in Google); a
+  // transient lookup failure still nudges. Summary: live Google value, then snapshot, then generic.
   let summary =
     typeof p.summary === "string" && p.summary ? p.summary : "your appointment";
   let live: EventStatus | undefined;
-  // Both, not just the credential: a Google lookup asks for an event ON a calendar, so a payload
-  // that names none has nothing to ask. Today only a declared booking is in that shape and it never
-  // carries a credential either, which is why this reads as the type narrowing it also is.
+  // NOTE: Both, not just the credential: a Google lookup asks for an event ON a calendar.
   if (credentialRef && calendarId) {
     live = await fetchEventStatus(
       tenantId,
@@ -958,31 +714,21 @@ export async function appointmentReminderHandler(
     signal: ctx?.signal,
     tenantId,
     threadId,
-    // And once more inside, where the nudge re-asks its own questions across the model call. Three
-    // reads is not belt-and-braces: each covers a different slow step (the Google fetch, the nudge's
-    // setup, the judge's call), and the stamp can land in any of them.
-    // Two questions, asked at every point the nudge re-asks anything, because a model turn is long
-    // enough for either answer to change inside it. The appointment ceiling is the new one: a retry
-    // scheduled minutes before the start would otherwise pass the check above and still be composing
-    // when the start arrives, which is precisely the message this handler must never send.
+    // NOTE: Re-asked inside the nudge across the model call, which is long enough for either answer
+    // to change: the stamp can land, and a retry minutes before the start can still be composing
+    // when the start arrives.
     stillWanted: async ({ strict }) =>
       !(await (strict ? retiredStrict() : retired())) &&
       !reminderAlreadyStarted(live, startISO, nowMs()),
     nudge: reminderNudge({
       isLast,
       askConfirmation,
-      // See ReminderNudgeArgs.canOperate: the credential is what says a Google event is behind this.
       canOperate: credentialRef !== null,
       provider,
       summary,
-      // The same value the start check just used, for the reason its header gives.
+      // NOTE: The same value the start check just used, for the reason its header gives.
       startISO: authoritativeReminderStart(live, startISO),
-      // The clock HERE, not the offset the row was armed with: this is the last moment before the
-      // message is composed, and it is the only one that knows how far the appointment actually is
-      // (issue #685). Through the deps seam that already exists for exactly this reason — the one
-      // `runAgentNudge` reads for the 24h window — because a test that leans on real time to place
-      // a calendar day passes for the wrong reason at the hours where the day is the question
-      // (round 4 of the review: the assertion went silent for the two hours around local midnight).
+      // NOTE: The clock HERE, not the armed offset: only the send time knows how far it actually is.
       now: new Date(nowMs()),
       eventId,
       calendarId,
@@ -991,21 +737,15 @@ export async function appointmentReminderHandler(
     deps,
   });
   // NOTE: sent is spent: a run past its deadline that got this far has its `done` written, or its
-  // retry sends the reminder a second time (issue #811).
+  // retry sends the reminder a second time.
   if (nudgeReachedConversation(outcome)) ctx?.commit();
-  // NOTE: A reminder offset is an occasion, and it is spent exactly once. When the nudge posted nothing
-  // for a reason that may be repaired, retrying the SAME row is what keeps the customer's reminder
-  // from disappearing because a credential was broken for ten minutes.
-  //
-  // Only the LAST offset is retried, and that is the whole answer to the duplicate: offsets are whole
-  // hours and the backoff ladder spans two, so a retried 2h reminder would come due alongside the 1h
-  // one and a credential that recovered in between would send both, back to back. An earlier offset
-  // has a later one behind it to carry the message, so it yields instead of waiting. The last one has
-  // nothing behind it, and its ceiling is the appointment itself (the start check above).
+  // NOTE: A repairable refusal retries the SAME row, but only for the LAST offset: the backoff ladder
+  // spans hours, so a retried earlier offset would land beside the next one and send both. An
+  // earlier offset has a later one to carry the message; the last one's ceiling is the start itself.
   if (isRepairableNudgeRefusal(outcome) && isLast) {
     const retry = nextNudgeRetry(job.payload);
     if (retry.retry) {
-      // Patched, never replaced: the per-event cancel merges its tombstone onto this row without
+      // NOTE: Patched, never replaced: the per-event cancel merges its tombstone onto this row without
       // bumping the claim token, so writing back the claim-time snapshot would pass the compare-and-set
       // and un-cancel an appointment the operator already cancelled.
       return {

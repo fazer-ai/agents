@@ -5,21 +5,18 @@ import { clipText } from "@/lib/text";
 import { xmlAttr } from "@/lib/xml";
 import { GOOGLE_CALENDAR_PROVIDER } from "@/modules/appointments/provider";
 
-// Per-turn appointment context (issue #22). The `appointments` rows are the durable record linking a
+// Per-turn appointment context. The `appointments` rows are the durable record linking a
 // conversation to the commitments made in it; this module projects the LIVE ones into the identity
-// block appended to the system prompt every turn, so the agent that answers a customer's reply to a
-// reminder knows exactly WHICH appointment it was about, with zero Google calls.
-//
-// Liveness is one predicate over one row: `cancelled_at IS NULL AND start_at > now`. It used to be a
-// projection of the reminder JOBS (not tombstoned, and still queued OR with a future start), which
-// is why an appointment could exist and be invisible: no job, no record (issue #376).
+// block appended to the system prompt every turn, so the agent answering a reply to a reminder knows
+// WHICH appointment it was about, with zero Google calls. Liveness is one predicate over one row:
+// `cancelled_at IS NULL AND start_at > now`, never a projection of the reminder jobs.
 
 export interface AppointmentContextEvent {
   eventId: string;
   // The system that owns the booking. It is what decides whether the Calendar tools can reach this
   // appointment, so it is carried per EVENT and never inferred once for the block.
   provider: string;
-  // Google's calendar id, and null for every other provider — there is no calendar to name.
+  // Google's calendar id, and null for every other provider (there is no calendar to name).
   calendarId: string | null;
   calendarLabel: string | null;
   startISO: string;
@@ -58,11 +55,8 @@ function hasImpossibleDateParts(startISO: string): boolean {
 // The time-zone rule for startISO values WITHOUT an offset: all-day dates and offset-less datetimes
 // are pinned to UTC. Date.parse already reads a bare date as UTC midnight but reads an offset-less
 // DATETIME in the HOST zone, which would make the instant depend on the machine that happened to
-// write it. UTC is arbitrary there; agreement is not.
-//
-// This runs ONCE, at write time, and its answer is stored as `start_at`. It used to run on every
-// read, mirrored by a hand-written CASE in the follow-up sweep's SQL: two parsers that had to keep
-// agreeing, where disagreeing meant an appointment one of them called live and the other did not.
+// write it. UTC is arbitrary there; agreement is not. This runs ONCE, at write time, and its answer
+// is stored as `start_at`, so every reader (including the follow-up sweep's SQL) agrees on liveness.
 export function parseStartMs(startISO: string): number {
   if (hasImpossibleDateParts(startISO)) return Number.NaN;
   if (/^\d{4}-\d{2}-\d{2}$/.test(startISO)) {
@@ -101,9 +95,8 @@ export async function loadAppointmentContext(
   return rows.map((r) => ({
     eventId: r.externalId,
     provider: r.provider,
-    // "primary" is Google's own default calendar id, and it is what the write path omitted — but
-    // only a Google booking has a calendar at all, and naming one for a booking that lives in the
-    // operator's own system is exactly how the model ends up calling Google with a foreign id.
+    // NOTE: "primary" is Google's default calendar id, which the write path omits. Only a Google
+    // booking has a calendar: naming one for a foreign booking makes the model call Google with it.
     calendarId:
       r.provider === GOOGLE_CALENDAR_PROVIDER
         ? r.calendarId || "primary"
@@ -114,33 +107,14 @@ export async function loadAppointmentContext(
   }));
 }
 
-// NOTE: The identity block appended to the system prompt (sibling of the Chatwoot attribute
-// section). Values are snapshots of operator/customer-authored data, so the block is framed as DATA;
-// the tool pointer is emitted only when the calendar write tools are actually granted: pointing the
-// model at a tool it cannot call only invites a hallucinated call.
+// The identity block appended to the system prompt, framed as DATA since its values are
+// operator/customer-authored. Calendar tool guidance needs both `canOperate` (the write tools are
+// granted this turn) and a Google provider on the appointment: one block can mix Google and foreign
+// bookings, and a foreign one must never be pointed at calendar_update_event.
 //
-// `canOperate` answers for the TOOLSET (are the Calendar write tools granted this turn?) and the
-// provider answers for the APPOINTMENT (is there a Google event behind it?). Both have to be true
-// before the model is told to reach for calendar_update_event, and one block can now hold
-// appointments that disagree: an operator whose own booking tool declares its appointments (issue
-// #352) and who also grants the Calendar toolpack would otherwise have every foreign booking
-// described with a Google instruction and a calendar id nobody wrote.
-// (#685) WHY THE BLOCK CARRIES A CLOCK. Every `start` below is an absolute instant, and the turn that
-// reads them has no idea what NOW is: the current instant reaches a prompt only when the operator
-// typed `{{data_atual}}` or a sibling into their own text. So the model answers "que dia é mesmo?"
-// from whatever relative word the conversation used last, which was correct when it was written and
-// is wrong the next day. Measured against the real API, on a thread whose previous message said
-// "amanhã" for an appointment that had become today: 6 of 10 replies repeated "amanhã", and with
-// this line in the block, 0 of 10 did (all ten said "hoje").
-//
-// It is also what keeps the reminder's own grounding from becoming the next day's wrong answer. The
-// reminder turn is persisted in the thread, so the sentence that says "today" in it is still there
-// tomorrow: without this clock, 7 of 10 replies on the following day repeated the stale word, and
-// with it, 1 of 10.
-//
-// The instant and the zone are the SAME pair the prompt variables render (`prepare.ts` passes what
-// `{{data_hora_atual}}` uses), and the rounding is the same half hour, for the reason TIME_VARS
-// gives: a value that changes every minute defeats the prompt cache on every turn.
+// The block carries a clock because the turn otherwise has no idea what NOW is, and answers "which
+// day?" from the last relative word in the thread ("amanhã" said yesterday). The instant, zone and
+// half-hour rounding match `{{data_hora_atual}}`, so the prompt cache survives from turn to turn.
 export function buildAppointmentContextSection(
   events: AppointmentContextEvent[],
   canOperate: boolean,
@@ -177,7 +151,7 @@ export function buildAppointmentContextSection(
   const foreign = hasForeign
     ? " Os agendamentos que trazem source foram criados por outro sistema e as ferramentas do Google Calendar NÃO os alcançam: para alterar um deles use a ferramenta específica daquele sistema, se você tiver uma, e nunca calendar_update_event ou calendar_cancel_event."
     : "";
-  // Português como o resto deste bloco, que é prosa nossa no prompt de sistema e não texto que o
+  // NOTE: Português como o resto deste bloco, que é prosa nossa no prompt de sistema e não texto que o
   // agente copia para o cliente: a palavra que ele escreve continua sendo a do idioma da conversa.
   const agora = `Momento atual deste atendimento: ${formatParts(
     flooredLocalParts(now, timezone, TIME_ROUND_MINUTES),

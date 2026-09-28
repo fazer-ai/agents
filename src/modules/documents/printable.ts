@@ -1,23 +1,8 @@
-// Which characters a document can actually PRINT.
-//
-// The renderer uses the standard 14 PDF fonts (see render.tsx for why no TTF is bundled), which are
-// embedded with WinAnsiEncoding. pdfkit encodes a string one UTF-16 code unit at a time: a unit
-// above 255 that its WinAnsi table does not map is written as its own hex — TWO bytes, which the PDF
-// reader then draws as two unrelated Latin-1 glyphs.
-//
-// MEASURED, on this version of @react-pdf/renderer: "A中A" draws as `41 2d 41`, so 中 prints as a
-// HYPHEN; "A😀A" draws as `41 3d00 41`, so an emoji prints as "=". Nothing throws and nothing warns.
-// That is the whole reason this exists: the failure is not a missing glyph box an operator would
-// notice, it is a plausible-looking character in a document the customer keeps — a name spelled
-// wrong in a receipt, silently.
-//
-// So the answer is to REFUSE, at the keyboard and at the turn, rather than print something else.
-// Stripping would be the same lie with fewer characters, and bundling a Unicode font is the trade
-// render.tsx already declined with its own measurements.
-//
-// The rule is pdfkit's, not ours, and a copy of someone else's predicate goes stale silently — so
-// tests/modules/document-printable.test.ts asserts it against the RENDERER in both directions:
-// everything this accepts survives the round trip, and everything it refuses is mangled.
+// Which characters a document can actually PRINT. The standard 14 PDF fonts use WinAnsiEncoding,
+// and pdfkit writes an unmapped UTF-16 unit above 255 as two bytes the reader draws as unrelated
+// Latin-1 glyphs (中 prints as "-"), silently. So such text is REFUSED, at the keyboard and at the
+// turn, never stripped. The rule is pdfkit's: tests/modules/document-printable.test.ts holds this
+// copy to the renderer in both directions.
 const WIN_ANSI_ABOVE_LATIN1 = new Set([
   338, 339, 352, 353, 376, 381, 382, 402, 710, 732, 8211, 8212, 8216, 8217,
   8218, 8220, 8221, 8222, 8224, 8225, 8226, 8230, 8240, 8249, 8250, 8364, 8482,

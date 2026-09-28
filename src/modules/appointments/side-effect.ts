@@ -9,29 +9,14 @@ import type { SideEffectErrorReporter } from "@/modules/integrations/toolpacks/t
 
 // The two closures a TOOL calls to tell the platform that a booking now stands, or no longer does.
 // Bound to one tenant and one conversation, handed to the Calendar toolpack and to any HTTP tool
-// whose definition declares an appointment (issue #352).
-//
-// They exist as a unit for one reason: they are the boundary where a failure stops being an
-// exception and becomes a LINE SOMEONE READS. The tool they were called from has already succeeded
-// for the model — the booking is real, made in a system this platform does not own — so nothing here
-// may throw back into the turn and nothing may change what the model was told. What is left to get
-// right is the report, and the report has to name the right things:
-//
-//   - the TOOL, because the operator's fix lives in whatever definition made the call. Defaulting
-//     every report to `google_calendar` (the toolpack FAMILY name, which is all the Calendar
-//     toolpack can offer) pointed the operator of a broken HTTP declaration at an integration they
-//     may not even have configured.
-//   - the PHASE, because "the record was not written" and "the start was unreadable" have different
-//     fixes and the Logs page and the alert channels key on it.
-//
-// The consequence of a swallowed failure, in both directions: the appointment exists and the
-// platform does not know it, so the follow-up pause is off, the reminders never fire, the console
-// indicator is blank and the agent's own prompt is missing the booking the customer is asking about.
+// whose definition declares an appointment. This is where a failure becomes a REPORT: the tool call
+// already succeeded for the model, so nothing here throws back into the turn. The report names the
+// TOOL (the operator's fix lives in the definition that made the call) and the PHASE (record not
+// written and start unreadable have different fixes, and the Logs page and alerts key on it).
 
 export interface AppointmentBookedNotice {
   eventId: string;
-  // WHO owns the booking, and WHICH tool is reporting it. Both absent means the Calendar toolpack,
-  // which was the only caller before a tool definition could declare an appointment of its own.
+  // WHO owns the booking, and WHICH tool is reporting it. Both absent means the Calendar toolpack.
   provider?: string;
   tool?: string;
   calendarId?: string | null;
@@ -48,20 +33,14 @@ export interface AppointmentSideEffectDeps {
   // per-contact-inbox memory thread.
   threadId: string;
   base?: PrismaClient;
-  // Absent (playground, tests) ⇒ the failure stays a stdout log.
+  // Absent (playground, tests): the failure stays a stdout log.
   report?: SideEffectErrorReporter;
-  // Injectable for the same reason the reminder enqueue is: a test of what the REPORT says when the
-  // write fails cannot make a real write fail without a broken database.
+  // Injectable so a test can make the write fail and check what the REPORT says.
   book?: typeof appointmentBooked;
   cancel?: typeof cancelAppointment;
-  // WHETHER A BOOKING MADE ON THIS TURN MAY TOUCH CUSTOMER REMINDERS. Default true, which is every
-  // reactive turn. False for an OBSERVATION: its transport is muted, but a reminder is not sent by
-  // this turn — it is a job that runs later, resolves the inbox's responder and builds a client of
-  // its own, so the mute never reaches it and the observation would have spoken to the customer
-  // after all (issue #568, review round 16). The record is kept either way; only the alarm is left
-  // alone, because the record is not the reminder — and LEFT ALONE, not cleared: the observation
-  // arms nothing AND cancels nothing, which is what `recordOnly` says and what `reminders: null`
-  // would not have (round 17).
+  // WHETHER A BOOKING MADE ON THIS TURN MAY TOUCH CUSTOMER REMINDERS. Default true (every reactive
+  // turn). False for an OBSERVATION: a reminder is a later job with its own client, so the turn's
+  // mute never reaches it. The record is kept; reminders are left alone, neither armed nor cancelled.
   armReminders?: boolean;
 }
 
@@ -74,7 +53,7 @@ export interface AppointmentSideEffects {
 }
 
 // The tool a report is filed against. `google_calendar` is the toolpack family name and the
-// historical default; anything that can name itself does.
+// default; anything that can name itself does.
 function reporter(tool: string | undefined): string {
   return tool ?? "google_calendar";
 }
@@ -99,8 +78,8 @@ export function appointmentSideEffects(
           calendarLabel: a.calendarLabel,
           credentialRef: a.credentialRef,
           reminders: a.reminders,
-          // NOT `reminders: null`, which means "the policy was switched off, retire what is armed"
-          // and would have an observation cancelling the responder's reminders (round 17).
+          // NOTE: NOT `reminders: null`, which means "the policy was switched off, retire what is
+          // armed" and would have an observation cancelling the responder's reminders.
           ...(deps.armReminders === false ? { recordOnly: true } : {}),
           base: deps.base,
         });

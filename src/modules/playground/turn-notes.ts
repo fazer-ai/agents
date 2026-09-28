@@ -4,17 +4,10 @@ import type { TraceGuardrail } from "@/graph/trace";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 
 // What the OPERATOR saw for one playground turn, when that differs from what the agent remembers.
-//
-// The playground rebuilds its transcript from the checkpointer, which works only while the two are
-// the same thing. Moderation is the first feature where they legitimately differ, and production
-// already treats them as two stores: an output trip posts the template to Chatwoot and leaves the
-// model's own words in the graph thread, and an input trip never lets the message reach the thread
-// at all. Copying the screened text into the checkpointer would make the playground diverge from
-// the production it exists to reproduce, so the transcript gets its own row instead (issue #136).
-//
-// Written for every turn the guardrail RAN on, the clean verdicts included, because the toggle is
-// per turn and a reload with no clean mark cannot tell an approved reply from an unscreened one.
-// Turns it never ran on still come from the checkpointer alone, and a note that fails to write
+// Production keeps them apart under moderation (an output trip posts the template and leaves the
+// model's words in the thread; an input trip never reaches it), so the screened text gets its own row
+// rather than going into the checkpointer. Written for every turn the guardrail RAN on, clean verdicts
+// included, so a reload can tell an approved reply from an unscreened one. A note that fails to write
 // costs the reload its annotation, never the turn.
 
 // NOTE: There is deliberately no per-tenant cap here, unlike the media store. Bytes are what the

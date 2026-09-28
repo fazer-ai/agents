@@ -21,17 +21,9 @@ export interface FollowUpStep {
   // Deterministic, system-applied actions when this step fires (even if the agent stays silent):
   assignLabels?: string[]; // Chatwoot labels to add (merged, never replacing the set)
   resolve?: boolean; // resolve the conversation — honored ONLY on the last step
-  // Let THIS step fire even while the conversation has a live appointment, with
-  // `pauseWhileAppointment` left on for every other step (issue #103).
-  //
-  // The agent-wide flag conflates two opposite things. A re-engagement nudge wants to be suppressed
-  // while a booking stands; a payment-deadline step wants exactly the reverse — it only means
-  // anything WHILE the booking is unconfirmed, and it is the step that later frees the slot. Without
-  // this, an operator who needs both in one sequence has to turn the pause off for the whole agent,
-  // which drops it where it was right.
-  //
-  // Deliberately NOT a notion of "paid" or "confirmed": the platform does not know what those mean
-  // for any given operator, and the step that does is the one they wrote.
+  // Let THIS step fire while the conversation has a live appointment, with `pauseWhileAppointment`
+  // left on for every other step: a payment-deadline step only means anything WHILE the booking is
+  // unconfirmed. Deliberately not a notion of "paid": the platform cannot know what that means.
   ignoreAppointmentPause?: boolean;
 }
 
@@ -58,29 +50,17 @@ function cloneDefaults(): FollowUpConfig {
 
 export const FOLLOW_UP_DEFAULTS: FollowUpConfig = cloneDefaults();
 
-// A conversation is at the START of a fresh follow-up episode when there is a genuine customer message
-// to follow up on (lastInboundAt set — a control command like /teste|/reset does NOT count, the mirror
-// excludes it) AND either no follow-up has fired yet, or the customer has spoken since the last one
-// fired (a reply restarts the sequence at step 0). Shared by the sweep's eligibility (its raw SQL
-// mirrors this), the handler's episode gate, and the conversation-detail estimate — keeping all three
-// in lockstep so the operator-facing indicator never disagrees with what the worker will actually do.
-// WHEN THE CURRENT SILENCE BEGAN: the later of the two things that can end a silence, which is the
-// customer speaking or us speaking. NULL when neither has ever happened here.
-//
-// One expression, three readers (the sweep's SQL, this handler's re-check, the console's estimate),
-// and it has to be one or they disagree about the same conversation. Postgres GREATEST ignores
-// NULLs, and so does this.
-//
-// It used to be `lastInboundAt` alone, and that reads the conversation the agent just answered as
-// if nothing had happened in it (issue #750): a row the mirror created from an event that is not a
-// message carries no inbound instant at all, so "when did the silence start" answered NULL for a
-// conversation whose silence had started minutes ago, with our own question in it.
+// Postgres GREATEST ignores NULLs, and so does this.
 function laterOf(a: Date | null, b: Date | null): Date | null {
   if (a === null) return b;
   if (b === null) return a;
   return b > a ? b : a;
 }
 
+// When the current silence began: the later of the customer speaking and us speaking, NULL when
+// neither happened. The sweep's SQL, the handler's re-check and the console's estimate compute the
+// same expression, or they disagree about one conversation. Not `lastInboundAt` alone: a row the
+// mirror created from a non-message event has no inbound instant, even right after our reply.
 export function silenceStartedAt(
   lastInboundAt: Date | null,
   lastRepliedAt: Date | null,
@@ -88,29 +68,19 @@ export function silenceStartedAt(
   return laterOf(lastInboundAt, lastRepliedAt);
 }
 
-// THE EPISODE A FOLLOW-UP JOB BELONGS TO, written on the job by the sweep that arms it and carried by
-// every reschedule (issue #796, review round 7). The silence start in epoch milliseconds, as text so
-// the sweep's SQL builds the same string (`floor(extract(epoch from …) * 1000)::bigint::text`, the
-// columns being millisecond timestamps). Dating a job by when it was deferred or when it died is not
-// the same thing: a claim from the previous episode can die after the new silence began, and our own
-// reply opens a new episode without cancelling the old deferral.
+// The episode a follow-up job belongs to, written by the sweep that arms it and carried by every
+// reschedule: the silence start in epoch ms, as text so the sweep's SQL builds the same string
+// (`floor(extract(epoch from …) * 1000)::bigint::text`). Not the time the job was deferred or died: a
+// claim from the previous episode can die after the new silence began.
 export function followUpEpisodeKey(silenceStart: Date): string {
   return String(silenceStart.getTime());
 }
 
-// WHEN THE CONVERSATION LAST MOVED, our own reply included. `lastEventAt` is mirrored from Chatwoot
-// and only advances when the webhook for the message we just sent comes back; between the send and
-// that return it still describes the OLD activity. A reader of the cadence in that gap concludes the
-// conversation has been idle for days and fires the first step at once, minutes after the customer
-// received the answer — and the conversation recovered from the backlog, which is the one issue #750
-// admits, is exactly the one whose `lastEventAt` is old. We know firsthand that we spoke: that is the
-// floor. Identical in SQL: GREATEST(c.last_event_at, c.last_replied_at, c.last_proactive_at).
-//
-// A PROACTIVE send is movement too (issue #816, review round 1), for the same reason: a reminder or
-// an inbound `agent_nudge` that just reached a conversation with an old `lastEventAt` would otherwise
-// read as days of idleness and fire step 0 right behind it. It moves the ACTIVITY floor only, never
-// the silence start (`silenceStartedAt`) the episode key is built from, which would restart the
-// ladder at every step.
+// When the conversation last moved, our own sends included. `lastEventAt` only advances when
+// Chatwoot's webhook for our message comes back, so until then it reads as days of idleness and would
+// fire step 0 right behind the answer. A proactive send (reminder, `agent_nudge`) moves this floor
+// but never the silence start, which would restart the ladder at every step.
+// Identical in SQL: GREATEST(c.last_event_at, c.last_replied_at, c.last_proactive_at).
 export function lastActivityAt(
   lastEventAt: Date | null,
   lastRepliedAt: Date | null,
@@ -119,6 +89,9 @@ export function lastActivityAt(
   return laterOf(laterOf(lastEventAt, lastRepliedAt), lastProactiveAt);
 }
 
+// A fresh episode starts when there is a genuine customer message (control commands are not
+// mirrored as inbound) and either no follow-up has fired yet or the silence began after the last one.
+// The sweep's SQL mirrors this so the console's indicator agrees with the worker.
 export function isNewFollowUpEpisode(
   lastFollowUpAt: Date | null,
   lastInboundAt: Date | null,
@@ -180,18 +153,16 @@ function readStep(raw: unknown): FollowUpStep | null {
     FOLLOW_UP_INSTRUCTIONS_MAX,
   );
   const step: FollowUpStep = { delayValue, delayUnit, instructions };
-  // Accept the new `assignLabels` array; fall back to the legacy single `assignLabel` string so an
-  // agent saved before multi-label keeps its label. De-duped, trimmed, bounded.
+  // NOTE: falls back to the legacy single `assignLabel` string so an agent saved before multi-label
+  // keeps its label.
   const rawLabels = Array.isArray(bag.assignLabels)
     ? bag.assignLabels
     : typeof bag.assignLabel === "string"
       ? [bag.assignLabel]
       : [];
   const labels: string[] = [];
-  // Membership by SET, not by a scan of what is already kept: this list has no ceiling, and every read
-  // of the agent runs it — a stored bag with a hundred thousand labels cost about ten seconds per read
-  // this way, on the turn path as much as on the import that has to read a bundle before storing it
-  // (agents#633, review round 6).
+  // NOTE: membership by Set, not a scan of what is kept: the list has no ceiling and every read of the
+  // agent (the turn path, an import) runs this, so a scan is quadratic.
   const seen = new Set<string>();
   for (const l of rawLabels) {
     if (typeof l !== "string") continue;
@@ -216,23 +187,19 @@ export function readFollowUpConfig(settings: unknown): FollowUpConfig {
 
   const enabled = typeof bag.enabled === "boolean" ? bag.enabled : false;
 
-  // An explicit steps array (capped). NO legacy fallback: an agent without a steps array (or with an
-  // empty/invalid one) gets a single default step — its pre-multi-step flat config is not read.
+  // NOTE: no legacy fallback: without a valid steps array the agent gets one default step.
   const parsed = (Array.isArray(bag.steps) ? bag.steps : [])
     .slice(0, FOLLOW_UP_MAX_STEPS)
     .map(readStep)
     .filter((s): s is FollowUpStep => s !== null);
   let steps = parsed.length > 0 ? parsed : cloneDefaults().steps;
 
-  // `resolve` is honored ONLY on the last step — resolving mid-sequence would end the episode early,
-  // so strip it from every earlier step.
+  // NOTE: `resolve` is honored only on the last step; mid-sequence it would end the episode early.
   const lastIdx = steps.length - 1;
   steps = steps.map((s, i) => {
     if (i === lastIdx || !s.resolve) return s;
-    // NOTE: removed with a rest spread, never rebuilt field by field. A rebuild lists what to
-    // keep, so every field added to a step after it was written is dropped here — silently, and
-    // only for a mid-sequence step that happens to carry `resolve`. `ignoreAppointmentPause` would
-    // have been the first.
+    // NOTE: removed with a rest spread, never rebuilt field by field, which would silently drop every
+    // step field the rebuild does not list.
     const { resolve: _dropped, ...kept } = s;
     return kept;
   });
@@ -240,7 +207,6 @@ export function readFollowUpConfig(settings: unknown): FollowUpConfig {
   return {
     enabled,
     steps,
-    // Default ON: only an explicit false disables the pause.
     pauseWhileAppointment: bag.pauseWhileAppointment !== false,
   };
 }

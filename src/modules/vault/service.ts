@@ -54,22 +54,12 @@ export function isVaultIdRef(ref: string): boolean {
   return ref.startsWith(VAULT_REF_PREFIX);
 }
 
-// The id a STORED ref names, by the reader's rule rather than the writer's.
-//
-// The two rules are deliberately different and this is the one place that says why. `requireVaultRef`
-// refuses everything but the canonical spelling on the way IN, so a column holds one form. A reader
-// still has to resolve what is already there: refs predate that rule, and `canonicalVaultRef`
-// (src/client/lib/credentialRef.ts) states the contract every resolver keeps — `vault:0007`,
-// `vault: 7` and `vault:7` are the same entry. Reading strictly would report a working credential as
-// missing and silently switch a model or an integration off after an upgrade.
-//
-// What it does NOT tolerate is a value no `bigint` column can hold. `BigInt` is arbitrary precision,
-// so `vault:<digits past 2^63-1>` converts and reaches Postgres as a bind error — a 500 out of a
-// resolver whose contract is to answer "no such entry". Lenient about SPELLING, bounded by RANGE.
-//
-// One function because it was eight, and none of them agreed: four spelled the prefix as a literal
-// `"vault:"`, three could throw where their caller expected a null, and every one of them was
-// missing the bound. Issue #407.
+// The id a STORED ref names, by the reader's rule rather than the writer's. `requireVaultRef`
+// accepts only the canonical spelling on the way IN, but older rows exist, and `canonicalVaultRef`
+// (src/client/lib/credentialRef.ts) is the contract every resolver keeps: `vault:0007`, `vault: 7`
+// and `vault:7` are the same entry. Lenient about SPELLING, bounded by RANGE: a value past a bigint
+// column's range would reach Postgres as a bind error instead of "no such entry". Every reader of a
+// stored ref goes through this one function.
 export function readVaultRefId(ref: string): bigint | null {
   if (!ref.startsWith(VAULT_REF_PREFIX)) return null;
   const raw = ref.slice(VAULT_REF_PREFIX.length);
@@ -86,33 +76,12 @@ export function readVaultRefId(ref: string): bigint | null {
   return id < 0n || id > MAX_DB_ID ? null : id;
 }
 
-// The one form of a STORED ref that is safe to hand to a reader, or null when the stored value does
-// not name an entry at all.
-//
-// Every ref column was guarded by `requireVaultRef` on all of its writers in one commit (#126, and
-// the two `secretRef` columns are the measured case); before it the schema was
-// `z.string().min(1).max(128)` and the value went in verbatim. So a row can hold arbitrary text — an
-// API caller who read the field name as "the secret" and typed one in put it there — and a projection
-// that echoes the column publishes it to every reader of that projection, which is exactly what the
-// promise "the signing secret never leaves the vault" says cannot happen.
-//
-// What it proves is that the value IS a reference — the prefix plus an in-range integer — and not that
-// the entry exists. That distinction is deliberate, and it is why the guard can stay a pure function.
-// A ref whose entry was DELETED still comes back, so the picker can say "Credential unavailable" and
-// the operator learns what happened; verifying existence would replace that with silence and put a
-// tenant-scoped query inside every projection, including the ones that run in an audit transaction.
-//
-// The bound is what makes that safe rather than merely cheap: the output is never the stored string.
-// It is `vault:` plus the DECIMAL rendering of a parsed BigInt in [0, MAX_DB_ID], so `vault:0x1F4`
-// leaves as `vault:500` and everything an HMAC secret actually looks like — hex, base64, `sha256=…`,
-// any bare name — reads as null. Reaching the remaining sliver takes a stored value of the form
-// `vault:<digits>`, which is reference syntax: someone writing a raw secret writes the secret, not the
-// prefix. (Review round 5 read this as a secret-disclosure path; the table in
-// `tests/modules/alert-channel-secret-roundtrip.test.ts` is the measurement.)
-//
-// Canonical rather than verbatim for the values it DOES read: `vault: 7`, `vault:0007` and `vault:0x7`
-// all name entry 7, and echoing the stored spelling would hand a client back something
-// `requireVaultRef` refuses on the way in — a rename turned into an unsavable form.
+// The one form of a STORED ref that is safe to hand to a reader, or null when it names no entry. A
+// ref column can hold arbitrary text written before `requireVaultRef` guarded it (even a raw secret),
+// and echoing it would publish that. The output is never the stored string: `vault:` plus the
+// decimal of an in-range id, so anything a secret looks like (hex, base64, `sha256=…`) reads as null,
+// and a canonical form `requireVaultRef` accepts is echoed back. It proves the value IS a reference,
+// not that the entry exists: a deleted entry still lets the picker say "Credential unavailable".
 export function readableVaultRef(stored: string | null): string | null {
   if (stored === null) return null;
   const id = readVaultRefId(stored);
@@ -164,15 +133,10 @@ export async function tryResolveVaultSecret<T = unknown>(
   return decryptJson<T>(entry.secret);
 }
 
-// A ref resolved WITH the reason it failed, for callers that turn the failure into operator-facing
-// advice. `tryResolveVaultSecret` collapses "no such row" and "row not filled yet" into the same
-// null, which is right for "can I use this?" and wrong for "what should the operator do?": telling
-// someone to fill a credential that was deleted sends them looking for a row that is not there.
-//
-// One query on purpose. Asking a second time whether the row exists reads a database that may have
-// moved (a pending entry filled in between), and it cannot tell an ACTIVE row holding an empty
-// secret from a row that is gone — both would answer "not filled". The state and the value have to
-// come from the same read.
+// A ref resolved WITH the reason it failed, for callers that turn the failure into operator advice:
+// telling someone to fill a credential that was deleted sends them looking for a missing row. One
+// query on purpose: a second read can see a moved database, and state and value must come from the
+// same read.
 export type VaultRefResolution<T> =
   | { state: "filled"; value: T }
   | { state: "pending" }
@@ -191,20 +155,10 @@ export async function resolveVaultRefState<T = unknown>(
   return { state: "filled", value: decryptJson<T>(entry.secret) };
 }
 
-// Resolved vault entry including metadata needed at the call site (secret, kind, baseUrl, paramName).
-// The state of MANY refs in one query, for a projection that renders a list (issue #724).
-//
-// The per-row resolvers above are the right shape for a delivery, which handles one ref at a time.
-// A screen listing channels is the other shape: without this it either asks the vault once per row
-// or, as it did, does not ask at all and calls a channel "Signed" on the strength of the column
-// alone. Keyed by the CANONICAL ref, because that is what `readableVaultRef` publishes and what the
-// caller has in hand — `vault:0007` and `vault:7` are the same entry, and a map keyed by the stored
-// spelling would miss on the second lookup.
-//
-// ABSENCE IS THE ANSWER for everything else — a ref that does not parse, and one whose entry is gone
-// — and the map holds only the two states an existing entry can be in. A third value spelled
-// `not_found` was written first and deleted: it can only ever be reached where absence would be
-// reached anyway, so it gives one fact two names and no caller could tell them apart.
+// The state of MANY refs in one query, for a projection that renders a list, so a screen does not
+// call a channel "Signed" on the strength of the column alone. Keyed by the CANONICAL ref, which is
+// what `readableVaultRef` publishes. A ref that does not parse or whose entry is gone is ABSENT from
+// the map; it holds only the two states an existing entry can be in.
 export async function vaultRefStates(
   db: ScopedDb,
   refs: readonly (string | null)[],
@@ -229,13 +183,10 @@ export async function vaultRefStates(
   return out;
 }
 
-// WHETHER WHAT THIS REF NAMES CAN ACTUALLY SIGN, for a screen rather than for a delivery.
-//
-// `none` is not a problem: nothing is configured, and marking it would put a warning on every
-// unsigned-by-design subscription. The other three all mean the same thing on the wire — deliveries
-// go out unsigned — and differ only in the errand: `unreadable` is a pre-#126 column holding text
-// that names no entry at all, `missing` is a credential that was deleted, `pending` one that was
-// created and never filled.
+// Whether what this ref names can actually sign, for a screen rather than a delivery. `none` is not
+// a problem (unsigned by design). The other three all mean deliveries go out unsigned and differ only
+// in the errand: `unreadable` is an old column holding text that names no entry, `missing` a deleted
+// credential, `pending` one never filled.
 export type SigningState =
   | "none"
   | "signed"
@@ -244,9 +195,8 @@ export type SigningState =
   | "pending";
 
 // The rule the workers run, read off the row plus a batch of vault states. It lives here, with
-// `resolveSigningSecret`, because it IS that function's question asked without decrypting anything:
-// two projections deriving it separately is how the console came to say "Signed" for a credential
-// the worker could not resolve (issue #724).
+// `resolveSigningSecret`, because it IS that function's question asked without decrypting anything,
+// so the console and the worker cannot disagree.
 export function signingStateFor(
   stored: string | null,
   readable: string | null,
@@ -268,28 +218,10 @@ export interface SigningSecret {
   unsignedReason: string | null;
 }
 
-// WHY A REF THAT STOPPED RESOLVING IS A SENTENCE AND NOT A BOOLEAN (issue #724).
-//
-// A signing secret is a vault REFERENCE, and it can stop resolving after the subscription that names
-// it was saved and verified: the entry is deleted, or it is created and never filled. Both families
-// that sign an outbound request — the alert worker and the outbound webhook worker — then POST
-// UNSIGNED rather than hold the payload back, and that is the right call in both: a receiver that
-// does not verify keeps working, and for an ALERT not arriving is the damage itself.
-//
-// What is not right is doing it silently. `tryResolveVaultSecret` returns null for both states and
-// throws for neither, so the row was written DELIVERED with `lastError` cleared and nothing anywhere
-// separated it from a send that really was signed. On the other side a verifying receiver drops the
-// request, which is a 401 in somebody else's log and nothing at all in ours.
-//
-// So the answer carries the advice, and the advice is different per state — telling someone to fill
-// in a credential that was DELETED sends them looking for a row that is not there.
-// `resolveVaultRefState` has separated the two since it was written and had no caller in the tree
-// until this one.
-//
-// Prose, not a code: the value is read by a person, on a screen, next to the row it explains, and an
-// enum would only move the translation somewhere else, in a family where every new member would have
-// to remember to translate it. The receiver-side symptom is named too, because "unsigned" only
-// alarms someone who already knows the receiver checks.
+// A signing ref that stopped resolving (deleted, or never filled) makes the alert and outbound
+// webhook workers POST UNSIGNED rather than hold the payload, but never silently: the answer carries
+// advice per state, since a deleted credential cannot be filled in. Prose, not a code: a person reads
+// it next to the row, and it names the receiver-side symptom (a verifying receiver rejects it).
 export async function resolveSigningSecret(
   db: ScopedDb,
   ref: string | null | undefined,
@@ -307,6 +239,7 @@ export async function resolveSigningSecret(
   };
 }
 
+// Resolved vault entry including metadata needed at the call site (secret, kind, baseUrl, paramName).
 export interface ResolvedVaultEntry<T = unknown> {
   secret: T;
   kind: string;
@@ -320,16 +253,10 @@ export type VaultEntryResolution<T> =
   | { state: "pending" }
   | { state: "not_found" };
 
-// The base URL a consumer may DIAL, which is not always the one in the row.
-//
-// The write boundary refuses a base URL on a kind that has no use for one (#504), and refusing only
-// there leaves every row an older build wrote still redirecting: the model path, vision, STT, TTS,
-// the HTTP-tool base and the MCP connection URL all read this field off the RESOLVED entry without
-// asking the kind. A rule that only covers new writes is a rule that does not cover the installs it
-// was written for.
-//
-// The row is not touched. `listVaultInfos` still reports the stored value, so the console can show an
-// operator what is sitting in a field its own form never rendered — and nothing dials it.
+// The base URL a consumer may DIAL, which is not always the one in the row. The write boundary
+// refuses a base URL on a kind with no use for one, but rows written before that still carry one,
+// and the model path, vision, STT, TTS, HTTP tools and MCP read it without asking the kind. The row
+// is not touched: `listVaultInfos` still reports it, and nothing dials it.
 export function dialableBaseUrl(
   kind: string | null,
   baseUrl: string | null,
@@ -395,13 +322,9 @@ export async function resolveVaultEntry<T = unknown>(
   };
 }
 
-// The secret comes back as `unknown` and the generic parameter is gone ON PURPOSE. It used to
-// default to `unknown` and be spelled `<string>` at ten call sites, where it was not a check but an
-// assertion: `decryptJson<T>` casts, so a `google_oauth` entry's `{ clientId, clientSecret }` was
-// typed `string` all the way into `createChatModel` (issue #471). Callers that need a string now say
-// so through `tryResolveApiKeyEntry`, or narrow it themselves; the six that already narrowed keep
-// compiling unchanged, and the ten that did not could not be missed, because the compiler is what
-// found them.
+// The secret comes back as `unknown`, with no generic parameter, ON PURPOSE: `decryptJson<T>` casts,
+// so a `<string>` at the call site was an assertion, not a check. Callers that need a string go
+// through `tryResolveApiKeyEntry` or narrow it themselves.
 export async function tryResolveVaultEntry(
   db: ScopedDb,
   ref: string,
@@ -427,15 +350,11 @@ export async function tryResolveVaultEntry(
   };
 }
 
-// The same resolution for a field that reads a PLAIN API KEY and hands it to somebody else's SDK —
-// the agent's model and its four model overrides, STT, TTS and vision. Three outcomes rather than
-// two, because the operator's move differs and the log line that names it is the only trace any of
-// these leave: a ref that no longer resolves is a credential to re-pick or fill, and one that
-// resolves to the wrong KIND is a credential that belongs on another field.
-//
-// The shape check is belt AND braces on the kind check, and neither is redundant. The kind is the
-// catalog's declaration; the value is what is actually stored, and the two can disagree — a legacy
-// entry created before the kind existed, or a managed blob whose connect flow never ran.
+// The same resolution for a field that reads a PLAIN API KEY and hands it to somebody else's SDK (the
+// agent's model and its overrides, STT, TTS, vision). Three outcomes, because the operator's move
+// differs: re-pick or fill a ref that no longer resolves, move one of the wrong KIND to another
+// field. The shape check backs the kind check: a legacy entry or an unconnected managed blob can
+// disagree with its kind.
 export type ApiKeyResolution =
   | { state: "ok"; secret: string; baseUrl: string | null }
   // Deleted, never resolvable, or referenced with its secret not filled in yet.
@@ -526,41 +445,19 @@ export async function resolveVaultRefByNameOn(
   }
 }
 
-// A ref on its way INTO a column, checked against the tenant's vault and returned in the one
-// spelling every resolver agrees on. Two values are refused here rather than stored:
-//
-//   * anything that is not `vault:<id>`. A bare NAME is the one that happens (the REST schemas
-//     asked for one in so many words), and `vaultRefWhere` turns it into a filter that matches
-//     nothing, so the column holds a value no resolver can ever answer and the feature behaves as
-//     if nothing were configured (issue #124: an inbound webhook 401s with the token correct on
-//     both ends). MCP never hits this because it resolves names to refs before it gets here.
-//   * a well-formed ref whose row is not in this tenant.
-//
-// A PENDING entry passes on purpose: wiring config to a reference whose secret is not filled yet is
-// the point of credential_create, and the picker is where that gets surfaced.
-//
-// Canonicalizing is not cosmetic. `vault:007` resolves server-side (BigInt tolerates padding) but
-// compares unequal against a list built from ids, so the picker reports a working credential as
-// unavailable. See canonicalVaultRef in src/client/lib/credentialRef.ts.
-//
-// Deleting an entry still strands every ref that named it. That is a different cause for the same
-// state, answered by the vault list and the picker, not here.
-
+// A ref on its way INTO a column, checked against the tenant's vault and returned canonical. Refused:
+// anything not `vault:<id>` (a bare NAME makes a filter that matches nothing, so the feature behaves
+// as unconfigured; MCP resolves names first), and a ref whose row is not in this tenant. PENDING
+// passes on purpose (the point of credential_create). Canonical because `vault:007` resolves but
+// compares unequal in the picker's id list (canonicalVaultRef in src/client/lib/credentialRef.ts).
+// Deleting an entry still strands its refs; the vault list and the picker answer that.
 export async function requireVaultRef(
   db: ScopedDb,
   ref: string,
-  // The server's own name for the input this ref arrived in — a column (`credentialRef`) or a dotted
+  // The server's own name for the input this ref arrived in: a column (`credentialRef`) or a dotted
   // path into a bag it owns (`settings.tts.normalizeCredentialRef`). See src/api/lib/refusal.ts.
-  //
-  // REQUIRED, and that is the whole guard: every caller here already holds the name, and eleven of
-  // the thirteen were still omitting it. The argument for optional was that most callers "refuse a
-  // column the client already named in the patch it sent" — but what the client SENT and what the
-  // server REFUSED are different questions, which is the premise of #231. An integrations write
-  // carries `credentialRef` and `inboundSecretRef` in one body; a tool write carries `credentialRef`
-  // among sixteen keys. A refusal with no field is unplaceable by any form, however well wired.
-  //
-  // A required parameter and not a sweep: the omission is invisible at every call site, so the type
-  // is the only reader that sees the next one. Issue #320.
+  // REQUIRED: what the client SENT and what the server REFUSED differ (one body can carry several
+  // refs), a refusal with no field is unplaceable by any form, and only the type sees an omission.
   field: string,
 ): Promise<string> {
   const malformed = () =>
@@ -596,34 +493,10 @@ export async function requireVaultRef(
   return formatVaultRef(entry.id);
 }
 
-// `requireVaultRef` plus the question it never asked: can an entry of THIS KIND supply what the
-// field reads? The two are separate functions rather than one parameter because the ref rule reaches
-// thirteen call sites and this one does not: four of them (langfuse, the two integration credentials,
-// and the webhook/alert signing secrets) answer a THIRD question — a fixed kind, or a string consumed
-// locally and never sent anywhere — and folding those into the two-value `CredentialUse` would have
-// meant inventing a use for each just to satisfy a required parameter. What this covers is the fields
-// whose use is already declared: the agent's nine (SETTINGS_CREDENTIAL_PATHS + modelConfig) and the
-// tenant's embedding key. Issue #471.
-//
-// The field is in the English sentence as well as in `AppError.field`, which is a duplication the
-// other vault refusals do not carry. MCP hands `message` to the caller verbatim on a surface with no
-// structured error channel, and `agent_settings_set` patches several credentialled blocks in one
-// call: without the path, "credential vault:32 cannot serve this field" names no field to fix.
-//
-// Refused rather than reported, and that is the split `credential-paths.ts` already documents: the
-// operator is at the keyboard and the reference is the thing they just picked. What is ALREADY stored
-// is left alone and reported by config-health, so one unusable pairing cannot freeze every other
-// edit of the agent that holds it.
-// Decrypts a stored blob far enough to answer "is this the shape its kind declares?", and never
-// further: the value is judged and dropped, never returned or logged.
-//
-// THREE answers, not two, and the third is the one that matters. A blob that cannot be decrypted at
-// all — a rotated `ENCRYPTION_KEY`, a truncated row — is not a malformed value, it is a value nobody
-// can read, and collapsing it into "unfit" would make a key rotation refuse every agent write in the
-// workspace while blaming the credential's TYPE for it. That is a real problem with a different
-// cause, a different fix and no verdict here today; this change is about shape, and inventing an
-// answer for it would be inventing a diagnosis. So `unreadable` never refuses and never warns, and
-// the runtime keeps failing on it exactly as it did before.
+// Decrypts a stored blob far enough to answer "is this the shape its kind declares?", and no further:
+// the value is judged and dropped, never returned or logged. THREE answers: a blob nobody can decrypt
+// (rotated `ENCRYPTION_KEY`, truncated row) is `unreadable`, never `unfit`, or a key rotation would
+// refuse every agent write while blaming the credential's type. `unreadable` never refuses or warns.
 type ValueVerdict = "fits" | "unfit" | "unreadable";
 
 function vaultValueVerdict(
@@ -653,9 +526,8 @@ export interface VaultEntryFacts {
   kind: string;
   valueFitsKind: boolean;
   // The operator-supplied header/query name, for the two kinds that read one, and the base URL a
-  // relative tool template is resolved against. Part of the facts and not a second lookup because
-  // WHERE the credential lands is as much a property of the entry as whether it fits, and the base
-  // is part of the URL the tool actually requests — placeholders in it included (#504).
+  // relative tool template is resolved against (placeholders included): WHERE the credential lands
+  // is as much a property of the entry as whether it fits.
   paramName: string | null;
   baseUrl: string | null;
 }
@@ -684,6 +556,11 @@ export async function readVaultRefFacts(
   };
 }
 
+// `requireVaultRef` plus: can an entry of THIS KIND supply what the field reads? Separate because it
+// covers only fields with a declared `CredentialUse` (the agent's nine and the embedding key); the
+// fixed-kind or local-only refs (langfuse, integration credentials, signing secrets) do not have one.
+// The field is in the sentence too: MCP hands `message` over verbatim. Refused rather than reported:
+// what is ALREADY stored is left to config-health, so one bad pairing cannot freeze other edits.
 export async function requireVaultRefFor(
   db: ScopedDb,
   ref: string,
@@ -698,17 +575,10 @@ export async function requireVaultRefFor(
   // Gone between the two reads: `requireVaultRef` has already answered for existence, and inventing
   // a second refusal here would report a race as a shape problem.
   if (!entry) return canonical;
-  // TWO questions, because the runtime asks two and a boundary that asks fewer accepts a
-  // configuration the turn then refuses — with config-health calling it healthy in between, which is
-  // the exact asymmetry this change exists to remove. The kind is the catalog's declaration; the
-  // value is what is in the row, and `validateVaultValue` is not the only way one gets written.
-  //
-  // A PENDING entry is exempt from the value half and only from that half: it has no secret yet by
-  // design (`credential_create` writes exactly that), and refusing it would break the reference-first
-  // flow the write boundary admits deliberately. Its KIND is already knowable and is still checked.
-  // A PENDING entry has no value yet by design (`credential_create` writes exactly that), so it is
-  // reported as `valueFitsKind` and judged on its KIND alone — the one exemption, and only on the
-  // value half. Refusing it would break the reference-first flow the write boundary admits on purpose.
+  // NOTE: TWO questions (kind and value), because the runtime asks two, and a boundary that asks
+  // fewer accepts what the turn then refuses. A PENDING entry has no value yet by design
+  // (`credential_create`), so it is judged on its KIND alone; refusing it would break the
+  // reference-first flow.
   if (
     credentialServes(
       {
@@ -795,16 +665,10 @@ export function validateBaseUrl(raw: string): string {
   }
 }
 
-// The catalog declares WHICH kinds read a param name (`needsParamName`), and until issue #488 this
-// only enforced half of that: required where declared, and accepted-then-ignored everywhere else.
-// The field is read in exactly one place (`resolveSecretInjection`, off a `needsParamName` entry),
-// so a name stored on any other kind is a name nothing will ever send — the operator configures an
-// `Authorization` header, the write answers 200, the console reads it back, and the request goes
-// out with no credential on it. Refusing is the only half that reaches them: whoever gets this
-// picked the kind, and the fix is to pick one that injects (that is what the sentence names).
-//
-// Empty stays empty: "" has always meant "no param name", and refusing it would break a client that
-// sends the field unconditionally.
+// The catalog declares WHICH kinds read a param name (`needsParamName`), and only
+// `resolveSecretInjection` reads it, so a name on any other kind would be accepted and never sent:
+// the request goes out with no credential. Refused, naming a kind that injects. Empty stays empty:
+// "" means "no param name", and refusing it would break clients that always send the field.
 function validateParamName(raw: string, kind: string): string {
   const trimmed = raw.trim();
   if (secretTypeNeedsParamName(kind) && !trimmed) {
@@ -834,20 +698,11 @@ function validateParamName(raw: string, kind: string): string {
   return trimmed;
 }
 
-// A credential is stored as its exact bytes, so a paste artifact is not a detail: an HTTP field
-// value has its surrounding whitespace stripped before any handler sees it, so a token stored with a
-// trailing newline can never be matched by the one that arrives, and the refusal that follows is
-// byte-identical to a wrong token (issue #338).
-//
-// This REFUSES rather than trimming, and the difference is the whole point. Trimming would repair
-// the header case silently while breaking the one where the bytes are shared rather than sent: an
-// HMAC key never travels, both sides hold it, and `createHmac` uses it verbatim — so rewriting ours
-// would fail every signature at the provider instead of here. Refusing changes no secret, needs no
-// per-kind exception, and hands the operator the one fact they could not see.
-// The sentence names the field when there is one, because that is the only place the name survives:
-// `AppError.field` is dropped by the MCP writer (`failOf` sends `e.message`) and by the console's
-// save-error path, so a padded Langfuse key would otherwise refuse with a sentence that cannot say
-// WHICH of the two is padded — for whitespace, of all things, which the operator cannot see.
+// A credential is stored as its exact bytes, and an HTTP field value arrives with surrounding
+// whitespace stripped, so a padded stored token can never match. REFUSED rather than trimmed: an HMAC
+// key is shared, not sent, and `createHmac` uses it verbatim, so trimming ours would fail every
+// signature at the provider. The sentence names the field, because `AppError.field` is dropped by
+// the MCP writer and the console's save-error path.
 function assertNoSurroundingWhitespace(value: string, field?: string): void {
   if (value === value.trim()) return;
   if (field !== undefined) {
@@ -1035,38 +890,11 @@ export interface CreateVaultEntryInput {
   paramName?: string | null;
 }
 
-// Everything `createVaultEntry` decides about its input, before any database is involved: the name,
-// the kind against the catalog, the VALUE against that kind's declared fields (non-empty, no
-// surrounding whitespace, no unexpected key), the base URL, and the param name. Split out so a
-// caller that will eventually reach this write can ask the same question first (#490).
-//
-// Its RETURN is part of the verdict, not a convenience: `kind` defaults to "generic" and `baseUrl`
-// normalizes, and a caller that re-derives either from the raw input will disagree with what gets
-// stored.
-
 // The base URL a write would STORE, refusing both ways the kind can disagree with it: required and
-// absent, and present on a kind that has no use for one.
-//
-// It exists because the check has to sit after the normalization, and `updateVaultEntry` had it
-// before: it asked `secretTypeRequiresBaseUrl` only on the `null`/`""` branch, while the other
-// branch ran `validateBaseUrl`, which turns "   " into the empty string WITHOUT raising, and stored
-// the `null` that branch had just refused. So a langfuse entry that already existed could be
-// updated to `baseUrl: null` — a state its own create path rejects. Found by the MCP preview
-// answering the question the apply did not (#490), and it is the inverse of every other divergence
-// in that issue: the preview refused and the apply succeeded, leaving invalid configuration behind.
-//
-// The second half is issue #504, and it is the `paramName` story of #488 with a sharper ending. The
-// catalog declares which kinds carry a base URL; the console renders the input for exactly those
-// nine of the eighteen and for no other. The other nine STORED one anyway — every one of them,
-// measured — and the runtime then USED it: `prepare.ts` hands the model client `credentialBaseUrl ?? mc.baseURL`
-// straight off the resolved entry, and vision, STT, TTS, the HTTP-tool base and the MCP connection
-// URL do the same, none of them asking the kind. So an `openai` credential could carry a host the
-// console never shows, never lists and cannot edit, and the provider key went there on the next
-// turn. The kind that legitimately points an OpenAI API somewhere else is `openai_compatible`, and
-// naming it is the difference between a refusal and a dead end.
-//
-// Empty stays empty, for the reason `validateParamName` gives: the console submits the field on
-// every kind whose form has no input, and refusing that would refuse every save it makes.
+// absent, and present on a kind with no use for one (the runtime reads it without asking the kind,
+// so an `openai` credential would send its key to a host the console never shows; the refusal names
+// `openai_compatible`). Checked AFTER normalization, which turns "   " into empty. Empty stays empty
+// on a kind with no input, since the console submits the field on every kind.
 function normalizeBaseUrlForKind(
   raw: string | null | undefined,
   kind: string,
@@ -1096,6 +924,9 @@ function normalizeBaseUrlForKind(
   return normalized;
 }
 
+// Everything `createVaultEntry` decides about its input before any database is involved (name, kind,
+// the VALUE against the kind's fields, base URL, param name), so a caller can ask first. Its RETURN
+// is part of the verdict: `kind` defaults to "generic" and `baseUrl` normalizes.
 export function assertVaultEntryCreatable(input: CreateVaultEntryInput): {
   name: string;
   kind: string;
@@ -1127,18 +958,10 @@ export function assertVaultEntryCreatable(input: CreateVaultEntryInput): {
   return { name, kind, baseUrl, paramName };
 }
 
-// INSERT-only create: 409 if both name and kind already exist in the tenant.
-// What a credential's audit row carries, and what it only compares.
-//
-// This is the family where the metadata and the thing that authenticates are adjacent columns, so
-// the two halves are drawn tightly. PROJECTED: the identity (`id`, `name`), the type, the lifecycle
-// and the two fields that say how the credential is used. `baseUrl` is an operator-typed URL and
-// reaches the row as its ORIGIN, by the same rule every such URL answers to (`redactEndpoint`): a
-// self-hosted API root is exactly the kind of destination that carries a token in its path, and this
-// row is append-only and outlives the entry.
-//
-// UNDISCLOSED, compared and never carried: the `secret` itself, and the whole `baseUrl` so a change
-// living in the path is still recorded as a change.
+// What a credential's audit row carries, and what it only compares. PROJECTED: `id`, `name`, the
+// type, the lifecycle and how it is used; `baseUrl` only as its ORIGIN (`redactEndpoint`), since a
+// self-hosted root can carry a token in its path and this row is append-only. UNDISCLOSED, compared
+// and never carried: the `secret`, and the whole `baseUrl`, so a path change still counts.
 type VaultAuditRow = {
   id: bigint;
   name: string;
@@ -1213,6 +1036,7 @@ function stableJson(v: unknown): string {
   );
 }
 
+// INSERT-only create: 409 if both name and kind already exist in the tenant.
 export async function createVaultEntry(
   ctx: TenantContext,
   nameOrInput: string | CreateVaultEntryInput,
@@ -1307,20 +1131,9 @@ export interface CreatePendingVaultEntryInput {
   paramName?: string | null;
 }
 
-// Everything `createPendingVaultEntry` decides about its INPUT, before any database is involved: the
-// name, the kind against the catalog, the two kinds that can only come from a connect flow, the base
-// URL, and the param name. Split out so the MCP preview can ask the same question the apply asks
-// (#490) — the preview answers without reaching the core, so a rule that lives only inside it is a
-// rule the preview promises away. Returns the normalized fields the caller goes on to store.
-// The database half of `createPendingVaultEntry`'s verdict, ADVISORY like the others: it reads
-// outside the write's transaction, so the `(name, kind)` pair it finds free can be taken before the
-// apply gets there. The pre-read inside the write, and the unique index behind it, stay the
-// authority — this only lets the preview refuse the collision the operator actually causes, which
-// is reusing a name they already used (#490).
-//
-// It takes the NORMALIZED pair, not the raw input, because `kind` defaults to "generic" and the
-// uniqueness is on the stored value: asking with the raw `kind: null` would look up a row that
-// cannot exist and answer "free" for a name that is not.
+// The database half of `createPendingVaultEntry`'s verdict, ADVISORY: it reads outside the write's
+// transaction; the pre-read inside the write and the unique index stay the authority. Takes the
+// NORMALIZED pair, since `kind` defaults to "generic" and uniqueness is on the stored value.
 export async function assertVaultNameAvailable(
   ctx: TenantContext,
   name: string,
@@ -1339,6 +1152,9 @@ export async function assertVaultNameAvailable(
   }
 }
 
+// Everything `createPendingVaultEntry` decides about its INPUT before any database is involved (name,
+// kind, the connect-flow-only kinds, base URL, param name), so the MCP preview asks what the apply
+// asks. Returns the normalized fields the caller goes on to store.
 export function assertPendingVaultEntryCreatable(
   input: CreatePendingVaultEntryInput,
 ): {
@@ -1367,9 +1183,7 @@ export function assertPendingVaultEntryCreatable(
     );
   }
 
-  // NOTE: the SAME helper the create path uses, not a second spelling of it. The two were written
-  // separately and the copy here already lagged once — it is where #490 found the required-baseUrl
-  // check sitting before the normalization instead of after.
+  // NOTE: the SAME helper the create path uses, not a second spelling of it.
   const normalizedBaseUrl = normalizeBaseUrlForKind(
     input.baseUrl,
     normalizedKind,
@@ -1420,19 +1234,11 @@ export async function createPendingVaultEntry(
   });
 }
 
-// The same write, on a transaction the caller already opened, and conflict-free.
-//
-// Two things forced both halves of that sentence, and the agent import is why. It creates one of
-// these per credential the bundle names and the tenant lacks, from INSIDE its own transaction: a
-// call that opened its own committed independently of it, so an import that unwound left the entries
-// and their audit rows behind (measured on the dry run, which is that case every time). And a plain
-// INSERT that hits `(tenantId, name, kind)` raises inside that transaction, which aborts it — so a
-// second import of the same bundle, racing this one, took the whole agent down instead of finding
-// the row. `ON CONFLICT DO NOTHING` plus a read makes a concurrent creation a fact to report rather
-// than an error to survive.
-//
-// What a pre-existing row MEANS is the caller's, which is why this reports rather than decides: the
-// MCP `credential_create` tool answers 409, and the import reuses the row and says nothing.
+// The same write, on a transaction the caller already opened, and conflict-free. The agent import
+// calls it from inside its own transaction, so an unwound import leaves no entries behind, and
+// `ON CONFLICT DO NOTHING` plus a read turns a concurrent import into a fact instead of an aborted
+// transaction. What a pre-existing row MEANS is the caller's: MCP `credential_create` answers 409,
+// the import reuses the row.
 export async function ensurePendingVaultEntryOn(
   db: ScopedDb,
   ctx: TenantContext,
@@ -1588,14 +1394,9 @@ export async function updateVaultEntry(
         ? secretMoved(entry.secret, after.secret)
         : undisclosedMoved(entry, after, [c]),
     );
-    // NOTE: The action with no name on any transport before #444: replacing the value behind a live
-    // reference. Every consumer of that reference starts authenticating with something else on the
-    // next call, and nothing said so.
-    //
-    // The marker rather than the value, on both sides, because what a reader needs is that the
-    // secret moved. `undisclosedMoved` is what the write is gated on, never the marker: two
-    // identical markers move nothing, so gating on `projectionMoved` alone would drop the one row
-    // that matters most here, the save whose ONLY change was the credential itself.
+    // NOTE: replacing the value behind a live reference changes what every consumer authenticates
+    // with, so it is recorded (as the marker, not the value). Gated on `undisclosedMoved`, not only
+    // on `projectionMoved`: identical markers would drop the save whose ONLY change was the secret.
     if (undisclosed || projectionMoved(beforeProj, afterProj)) {
       await auditMutation(db, ctx, {
         action: "credential.update",
@@ -1608,15 +1409,9 @@ export async function updateVaultEntry(
   });
 }
 
-// Replace the secret behind an existing entry, recording it like any other credential edit.
-//
-// The OAuth flows write `vaultEntry.secret` themselves — connecting merges the tokens in,
-// disconnecting strips them back out — and they are operator actions on a credential like any
-// other. Reaching the column directly is what left them off the trail: this is the same write, with
-// the seam around it, so the row says a credential moved without saying what it moved to.
-//
-// The value is never projected. `credential.update` carries the marker and the metadata, exactly as
-// the console's own edit does.
+// Replace the secret behind an existing entry, recording it like any other credential edit. The
+// OAuth connect and disconnect flows write through here so they reach the audit trail; the value is
+// never projected (`credential.update` carries the marker and the metadata).
 export async function replaceVaultSecret(
   ctx: TenantContext,
   id: bigint,
@@ -1644,34 +1439,11 @@ export async function replaceVaultSecret(
   });
 }
 
-// The refresh path's write, with the seam around it and a gate the other secret writes do not have.
-//
-// A token refresh IS a write to `vault_entries.secret`, so `replaceVaultSecret` above would take it
-// unchanged, and that is exactly what must not happen: an access token expires hourly and is renewed
-// by USE, not by a decision, so routing it through there puts a row into an append-only table every
-// hour per connected credential, and the operator's own edits drown in machine bookkeeping. This
-// family already answered that question once in the other direction (#395: the Channels page
-// auto-syncs on load, so an unconditional `instance.sync_inboxes` recorded a row per account per
-// visit, and the fix was to record only what actually moved).
-//
-// What moved is the line. An access token is a DERIVED, short-lived artifact of the credential; the
-// refresh token and the granted scopes ARE the credential. A refresh token rotating replaces the
-// durable secret and revokes the old one, and scopes changing under a refresh means the grant itself
-// changed upstream: both are things an operator would want to find in the trail, and neither is
-// hourly. The access token moving on its own is not, and gets no row.
-//
-// The comparison is against the value read HERE, under the row lock, and NOT against the snapshot
-// the caller decrypted: that snapshot predates a network round trip to the provider, so two
-// overlapping refreshes of the same expired credential would both compare with the same stale value
-// and both record the same rotation. It is the same defect this module's own rule names (a row only
-// when something changed), and the same shape as every other read that decided something a
-// concurrent write could move underneath it. `FOR UPDATE` and not `FOR NO KEY UPDATE`, because that
-// is the mode the rest of this module takes on this table and a mixed mode is a deadlock with no
-// green test to show it (#395).
-//
-// `system` and a null actor, for the same reason /reset's rows are (#398): the refresh is triggered
-// by a clock and a use, and the principal whose request happened to notice the expiry did not rotate
-// anything. Left on `ctx` the row would name a person who did not act.
+// The refresh path's write, audited only when the CREDENTIAL moved: an access token renews hourly by
+// use and would drown the operator's edits, while a rotated refresh token or changed scopes are the
+// credential itself. Compared against the value read HERE under `FOR UPDATE` (the module's lock mode
+// on this table), not the caller's pre-network snapshot, so two overlapping refreshes record one
+// rotation. `system` with a null actor: nobody decided the refresh.
 export async function persistRefreshedOAuthSecret<
   T extends { refreshToken?: string | null; scopes?: string[] | null },
 >(
@@ -1729,13 +1501,9 @@ export async function deleteVaultEntry(
   base: PrismaClient = basePrisma,
 ): Promise<void> {
   await runScopedOn(base, ctx, async (db) => {
-    // NOTE: Read before the delete with the row LOCKED, so the row describes the version actually
-    // removed: an update committing between the read and the delete would otherwise leave the trail
-    // describing the credential as it was two saves ago. And only recorded when this call is the one
-    // that removed it:
-    // `deleteMany` is idempotent by design, and a row per attempt would put the same removal on the
-    // trail as many times as it was retried. Creating a credential was audited and removing one was
-    // not, which is the asymmetry #444 opened with.
+    // NOTE: read before the delete with the row LOCKED, so the audit row describes the version
+    // actually removed, and recorded only when this call removed it (`deleteMany` is idempotent, and
+    // a retry must not repeat the removal on the trail).
     await db.$queryRaw`SELECT id FROM vault_entries WHERE id = ${id} FOR UPDATE`;
     const entry = await db.vaultEntry.findFirst({
       where: { id },

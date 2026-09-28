@@ -30,10 +30,9 @@ export interface WebhookSubscriptionDto {
   id: string;
   url: string;
   secretRef: string | null;
-  // Whether a signing secret is CONFIGURED, which `secretRef` alone can no longer answer: a value
-  // this column held before #126 may name no vault entry, and `readableVaultRef` hides those rather
-  // than publish whatever text is in there. Without this the console cannot tell "unsigned" from
-  // "signed with something I may not show you", and its save would clear the second one.
+  // Whether a signing secret is CONFIGURED, which `secretRef` alone cannot answer: a legacy value
+  // may name no vault entry, and `readableVaultRef` hides it. Without this the console cannot tell
+  // "unsigned" from "signed with something I may not show you", and its save would clear the second.
   hasSecret: boolean;
   events: OutboundEvent[];
   enabled: boolean;
@@ -63,8 +62,8 @@ function toDto(row: {
   return {
     id: row.id.toString(),
     url: row.url,
-    // Through the vault's own reader, never verbatim: this column predates #126 and can hold
-    // arbitrary text. See `readableVaultRef`.
+    // Through the vault's own reader, never verbatim: legacy rows can hold arbitrary text. See
+    // `readableVaultRef`.
     secretRef: readableVaultRef(row.secretRef),
     hasSecret: row.secretRef !== null,
     // The stored set is the closed union by construction (validated on write); cast for the DTO.
@@ -75,25 +74,11 @@ function toDto(row: {
   };
 }
 
-// What the audit row carries: the subscription as the operator sees it, minus the identifiers and
-// timestamps the row already holds in its own columns.
-//
-// The URL is REDACTED to its origin even though the column holds it in the clear and every read
-// surface returns it whole, because those are deletable and this row is not: an operator who pastes
-// a Discord webhook here and corrects it a minute later would otherwise have left its token in an
-// append-only row. Where the value is STORED says nothing about whether it is a secret, and the
-// destinations these are pointed at put the credential in the path — `redactEndpoint` says the rest.
-// Identity is not lost: the row's `target` names this subscription exactly.
-//
-// `secretRef` is on it, and what reaches the row is the DTO's redacted form: this service canonicalizes
-// every value it writes, but the column predates that guard (#126) and holds whatever came in before,
-// and this row is append-only. Recording it is the point — rotating or clearing a signing secret
-// changes what a receiver verifying HMAC sees, and that is exactly the class of change a trail exists
-// to attribute.
-//
-// `secretRefOpaque` is what keeps that true once the redaction exists. Without it a value the read
-// cannot show reads as null on BOTH sides of a clear, `projectionMoved` sees nothing, and the one save
-// that removed a signing secret writes no row at all.
+// What the audit row carries: the subscription as the operator sees it, minus identifiers and
+// timestamps. The URL is REDACTED to its origin because the audit row is append-only and webhook
+// destinations put the credential in the path (see `redactEndpoint`); `target` still names the row.
+// `secretRef` is recorded in the DTO's redacted form, since a signing-secret change is exactly what a
+// trail must attribute; `secretRefOpaque` keeps clearing an unshowable ref visible as a change.
 function auditProjection(dto: WebhookSubscriptionDto) {
   return {
     urlMasked: redactEndpoint(dto.url),
@@ -126,23 +111,14 @@ function assertKnownEvents(events: string[]): OutboundEvent[] {
 
 // allowHttp follows the SSRF guard default (https-only). A blocked URL surfaces as a 400 SsrfError.
 // Exported because the MCP preview has to reach the same verdict the write does: it answers without
-// calling either writer below, so a URL only vetted in here is a URL the preview promises away
-// (#490).
+// calling either writer below.
 export async function assertUrlSafe(url: string): Promise<void> {
   await assertSafeOutboundUrl(url);
 }
 
-// WHY THE LIST HAS ITS OWN TYPE AND `toDto` DOES NOT GROW THE FIELD (issue #724).
-//
-// `signingState` cannot be read off the row: three of its values need the VAULT, and this family had
-// the same hole the alert channels had — the console drew "Signed with: vault:11" for a subscription
-// whose credential had been deleted, the same label the live one gets, on the page that now also
-// shows a delivery row saying that POST went out unsigned.
-//
-// It is NOT on `WebhookSubscriptionDto`, because `toDto` is also what `auditProjection` is built
-// from, and that runs inside the audit transaction. `readableVaultRef` stays a pure function for
-// exactly this reason, and putting a tenant-scoped query behind every projection would undo it. The
-// list is the one caller that needs the answer, so the list is the one that pays for it.
+// WHY THE LIST HAS ITS OWN TYPE: `signingState` needs the VAULT (a deleted credential must not read
+// as signed), and `toDto` also builds `auditProjection` inside the audit transaction, where it must
+// stay pure. The list is the one caller that needs the answer, so it pays for the query.
 export interface WebhookSubscriptionListItem extends WebhookSubscriptionDto {
   signingState: SigningState;
 }
@@ -187,11 +163,7 @@ export type WebhookSubscriptionCreate = z.infer<
 
 // EVERYTHING `createWebhookSubscription` decides about its input: the schema (a url at most 2048
 // characters, at least one event), the events against the catalog, and where the url points. Split
-// out so the MCP preview can ask the same question the apply asks (#490).
-//
-// It replaces a preview that asked only `assertUrlSafe`, which is the failure mode this whole PR
-// is about one level down: a preflight that covers part of its core's judgement reads exactly like
-// one that covers all of it. `events: []` with a safe url previewed ok and applied refused.
+// out so the MCP preview asks the whole question the apply asks, not part of it.
 export async function assertWebhookSubscriptionCreatable(
   input: WebhookSubscriptionCreate,
 ): Promise<{ parsed: WebhookSubscriptionCreate; events: string[] }> {
@@ -290,14 +262,9 @@ export async function updateWebhookSubscription(
     if (typeof data.secretRef === "string") {
       data.secretRef = await requireVaultRef(db, data.secretRef, "secretRef");
     }
-    // LOCKED, then read, and both inside the transaction the write happens in. The MCP tool read
-    // this one layer up and outside any transaction, which is the half of the seam that could not be
-    // fixed from up there — and an unlocked read in here is only better by a margin: at READ
-    // COMMITTED two concurrent PATCHes both read state A, the first commits B, and the second's
-    // `updateMany` then blocks, wakes, writes C and files a row saying A became C. B's change is
-    // attributed to whoever wrote C. Six of the audited families already take this lock before their
-    // snapshot (`agents`, `tenants`, `tenant_settings`, branding by advisory lock, and the delivery
-    // requeue two files away); this is the same statement at a seventh site.
+    // NOTE: LOCKED, then read, inside the write's transaction: at READ COMMITTED two concurrent
+    // PATCHes would both read A, and the second would file "A became C", misattributing B. Same
+    // lock-before-snapshot as the other audited families.
     await db.$queryRaw`SELECT 1 FROM "webhook_subscriptions" WHERE "id" = ${id} FOR UPDATE`;
     const current = await db.webhookSubscription.findFirst({
       where: { id },
@@ -356,12 +323,11 @@ export async function deleteWebhookSubscription(
   // The delivery FK is ON DELETE CASCADE at the database (20260727000000_init), so what keeps this
   // from silently dropping rows the worker is mid-delivery is THIS function, not the constraint:
   // clear the subscription's deliveries first inside the same scoped tx (RLS-fenced), then remove
-  // the subscription. Operator-initiated, so dropping its delivery ledger is acceptable — and it is
-  // now a ledger somebody may be reading (issue #305), which is why the order is written down.
+  // the subscription. Operator-initiated, so dropping its delivery ledger is acceptable.
   const count = await runScopedOn(base, ctx, async (db) => {
     // Locked, then read before the delete: the row is what the audit records, and after
     // `deleteMany` there is nothing left to name what was removed. The lock is the same one the
-    // update takes, and for the same reason — an update committing between this read and the delete
+    // update takes, and for the same reason: an update committing between this read and the delete
     // would leave the row describing a subscription that no longer looked like that.
     await db.$queryRaw`SELECT 1 FROM "webhook_subscriptions" WHERE "id" = ${id} FOR UPDATE`;
     const current = await db.webhookSubscription.findFirst({

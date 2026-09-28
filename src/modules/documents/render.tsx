@@ -48,16 +48,9 @@ const MARGIN: Record<DocumentStyle["margin"], number> = {
   wide: 60,
 };
 
-// The footer is drawn as an absolutely-positioned `fixed` element, so it is outside the flow and the
-// page has to be told where the body must stop. Two things went wrong with one number: the space was
-// reserved when `showPageNumbers` was on, while the footer RENDERS whenever there is footer text or
-// page numbers — so a footer with text and no numbers floated over the last rows of the body, on
-// every page. Asked as one question here, by the same condition that decides whether it renders.
-//
-// And a reserve is only a bound if what it reserves for cannot grow past it. The authored footer is
-// capped at 200 characters, but a `{{token}}` in it resolves at issuance to whatever the field
-// holds, so the DRAWN footer is unbounded — which is why it is clipped to the same number of lines
-// this reserves for.
+// The footer is an absolutely-positioned `fixed` element outside the flow, so the page reserves its
+// space by the same condition that decides whether it renders. A `{{token}}` can make the drawn
+// footer arbitrarily long, so it is clipped to the lines reserved here.
 export const FOOTER_MAX_LINES = 2;
 
 export function footerReserve(style: DocumentStyle): number {

@@ -114,22 +114,11 @@ function textsIn(block: DocumentBlock): string[] {
   }
 }
 
-// ── two questions, deliberately answered differently ──
-//
-// Reading a STORED row is tolerant: a template written by a newer build has to keep rendering, so a
-// property this version does not know is dropped rather than fatal, and an unusable style falls back
-// to defaults instead of taking the console down. That is `parseTemplateContent`.
-//
-// Reading an AUTHORED template is strict: what the operator wrote either takes effect or comes back
-// refused BY NAME. That is `parseAuthoredTemplate`, and it is the one every write goes through — the
-// console, the REST route, the MCP write, and an imported bundle, which is authored content arriving
-// from outside. Anything less makes the transport's permissiveness pointless: the whole reason the
-// route accepts an undeclared shape is so the SERVICE can say what is wrong with it.
-//
-// The style is taken as well as the blocks because the footer is rendered through the same token
-// resolver the block texts are: a typo there resolves to a blank on the last line of every page of a
-// document the customer keeps. It is a required argument, not an optional one — a check worth having
-// is not one each caller can skip by leaving an argument out.
+// Two questions, deliberately answered differently. A STORED row is read tolerantly
+// (`parseTemplateContent`): unknown properties are dropped and an unusable style falls back, so a
+// newer build's template keeps rendering. An AUTHORED template is strict (`parseAuthoredTemplate`,
+// every write including bundles): it takes effect or is refused BY NAME. The style is a required
+// argument because the footer goes through the same token resolver as the block texts.
 
 // Zod strips what it does not know, which is exactly right for a stored row and exactly wrong for a
 // write. Rather than keep a second, strict copy of every schema in blocks.ts — which would have to
@@ -258,13 +247,9 @@ export function parseAuthoredTemplate(
     if (problem) return { ok: false, reason: problem };
   }
 
-  // A layout that draws NOTHING is not a document. `blocks` defaults to [] and templates default to
-  // enabled, so an omitted layout became a granted tool that issued a numbered, blank PDF — burning
-  // a number from the template's sequence and attaching an empty page to a customer's conversation.
-  // A divider on its own is the same thing, and so is a text block with no text: the rule is about
-  // what PRINTS, not about the count. Only the UNCONDITIONAL half is asked here — whether a given
-  // document draws depends on values that arrive at the turn, and that is settled exactly by
-  // documentDraws before a number is assigned.
+  // NOTE: A layout that draws NOTHING is not a document: `blocks` defaults to [] and templates to
+  // enabled, so it would be a granted tool issuing numbered blank PDFs. Only the UNCONDITIONAL half
+  // is asked here (blockCanDraw); documentDraws settles the rest with the values in hand.
   if (authored.blocks) {
     if (!shared.content.blocks.some(blockCanDraw)) {
       return {
@@ -342,19 +327,9 @@ function walkStrings(
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
     const here = path ? `${path}.${key}` : key;
     if (NON_PRINTING_KEYS.has(key)) {
-      // COLLECTED, not skipped. Being unprintable is fine for a key that names something instead of
-      // drawing it; being unstorable is not, and these land in a `jsonb` column like every other
-      // half. Postgres refuses a NUL or a lone surrogate there, so the write that accepted the id
-      // fails at the INSERT with a driver error, and an imported bundle takes its whole transaction
-      // down with it — after the preview rendered happily, because a preview writes nothing.
-      //
-      // Only `id` actually reaches the column unchecked today. Four of these keys take an arbitrary
-      // string at the schema (`id`, `field`, `discountField`, `taxField`; the rest are enums or an
-      // identifier regex), but the three `*Field` ones are then pinned to a DECLARED field name,
-      // which is `[a-z][a-z0-9_]{0,39}` — measured: a NUL in any of them is refused as an undeclared
-      // reference before it gets here. Sweeping the whole deny-list anyway is the same bet the list
-      // itself makes: that check is a different rule and could move, and a structural key added
-      // later is covered without anyone remembering this paragraph.
+      // NOTE: COLLECTED, not skipped: a structural key need not be printable but must be storable,
+      // since Postgres refuses a NUL or lone surrogate in `jsonb` and the INSERT would fail after a
+      // happy preview. The whole deny-list is swept, so a structural key added later is covered too.
       if (typeof child === "string") structural?.push([here, child]);
       continue;
     }
@@ -573,11 +548,8 @@ function isCalendarDate(value: string): boolean {
   if (!m) return false;
   const [year, month, day] = [Number(m[1]), Number(m[2]), Number(m[3])];
   const at = new Date(Date.UTC(year, month - 1, day));
-  // TWO clauses, not three. Over every string the regex above admits (110_000 of them, measured),
-  // comparing the year and the day agrees with also comparing the month on every single input: a day
-  // that overflows lands on another day, and a month outside 1..12 lands in another year. The third
-  // clause decides nothing, and a rule carrying a clause that decides nothing is one nobody can
-  // safely edit later.
+  // NOTE: TWO clauses suffice for every string the regex admits: a day that overflows lands on
+  // another day, and a month outside 1..12 lands in another year.
   return at.getUTCFullYear() === year && at.getUTCDate() === day;
 }
 

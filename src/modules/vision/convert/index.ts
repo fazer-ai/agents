@@ -17,15 +17,10 @@ export class MediaConversionError extends Error {
   }
 }
 
-// THE DECLARED TYPE LIED, which is a different fact from "this file cannot be converted" and earns
-// the opposite answer. Measured against the live API on 2026-09-18: a PNG announced as `image/heic`
-// comes back 200 with the value read off it — the vendors sniff the bytes, they do not trust the
-// data URI's label. And Chatwoot serves whatever content type the uploader's server declared, so a
-// mislabelled attachment is a real population, not a hypothetical.
-//
-// So when the bytes are not of the type the plan was made for, the original goes to the provider
-// untouched and the vendor answers for itself. Skipping there would take an attachment that WAS
-// being read before this feature existed and stop reading it (issue #697, holdout scenario s8).
+// The declared type lied, which earns the opposite answer from "cannot be converted": the vendors
+// sniff the bytes rather than trust the data URI's label, and Chatwoot serves whatever type the
+// uploader declared. So bytes not of the planned type go to the provider untouched; skipping would
+// stop reading an attachment that was readable.
 export class MediaSourceMismatchError extends MediaConversionError {
   constructor(message: string) {
     super(message);
@@ -134,19 +129,11 @@ type HeicHeader =
 
 function heicHeader(bytes: ArrayBuffer): HeicHeader {
   if (bytes.byteLength < 12) return { kind: "too-short" };
-  // THE BOX BEFORE THE BRAND. `ftyp` at offset 4 is what makes offset 8 the major brand rather than
-  // four bytes that happen to spell one: a JPEG whose first marker is a comment can carry "heic" at
-  // offset 8 and decode perfectly as a JPEG. Reading the brand alone would call that file a broken
-  // HEIC and SKIP it, which is the exact regression the brand check exists to prevent — the
-  // attachment was readable and stops being read (PR #707 review round 7; holdout s8 is the same
-  // failure arrived at from the other side).
+  // NOTE: the box before the brand: a JPEG whose first marker is a comment can carry "heic" at
+  // offset 8, and reading the brand alone would call it a broken HEIC and skip a readable file.
   if (ascii(bytes, 4) !== "ftyp") return { kind: "not-ftyp" };
-  // …and offset 8 is only the brand when the header ENDED there. `ftyp` states its size the same
-  // three ways every other BMFF box does, and with `size == 1` the real size occupies the next 64
-  // bits, so the brand sits at 16 and offset 8 holds the high half of a length. Reading it anyway
-  // reported `carries brand "   "` for a file libheif decodes without complaint, which sends the
-  // original HEIC to a provider that refuses it — the attachment stops being read, which is the one
-  // outcome this PR exists to prevent (review round 13).
+  // NOTE: with `size == 1` the real size occupies the next 64 bits, so the brand sits at 16 and
+  // offset 8 holds the high half of a length.
   const header = new DataView(bytes).getUint32(0) === 1 ? 16 : 8;
   if (bytes.byteLength < header + 4) return { kind: "too-short" };
   return { kind: "brand", brand: ascii(bytes, header) };
@@ -164,22 +151,11 @@ function ascii(bytes: ArrayBuffer, offset: number): string {
     .trim();
 }
 
-// THE SIZE THE FILE SAYS IT STORES, read out of the file rather than asked of the decoder, and the
-// reason is that the two can disagree. A HEIC may carry a `clap` (clean aperture) crop, and libheif's
-// `get_width`/`get_height` then report the CROPPED size while the decode still materialises the whole
-// stored image — so a 1x1 crop over a 100 Mpx picture walks past a cap applied to the reported size
-// (PR #707 review round 11).
-//
-// Neither mechanism the review suggested is available here, and both were measured on this build
-// (libheif-js 1.23.2): `heif_image_handle_get_ispe_width` answers 0 even for a plain file whose
-// dimensions it should report, and `heif_context_set_maximum_image_size_limit` refuses nothing, at
-// read time or at decode time, at any value. What is left is the file itself, where `ispe` is
-// mandatory and says exactly this.
-//
-// The walk is deliberately shallow: `meta` → `iprp` → `ipco`, collecting every `ispe`, and the cap
-// uses the LARGEST, because `ipco` holds the properties of every item and a cap is only wrong if it
-// underestimates. Anything unparseable returns 0 and the cap falls back to the decoder's numbers,
-// which is the behaviour this had before.
+// The size the file says it stores, read from the file rather than the decoder: with a `clap` crop,
+// libheif reports the CROPPED size while decoding the whole stored image, so a 1x1 crop over 100 Mpx
+// would pass a cap. On libheif-js 1.23.2 `get_ispe_width` answers 0 and the maximum-size limit refuses
+// nothing, so this reads `ispe` (mandatory) via `meta` > `iprp` > `ipco` and takes the LARGEST. An
+// unparseable file returns 0, and the cap falls back to the decoder's numbers.
 const ISPE_CAP_DEPTH: ReadonlyArray<[string, number]> = [
   ["meta", 12], // FullBox: 4 more bytes of version/flags before the children
   ["iprp", 8],
@@ -194,11 +170,8 @@ export function storedPixels(bytes: ArrayBuffer): number {
     while (i + 8 <= end) {
       const declared = v.getUint32(i);
       const type = ascii(bytes, i + 4);
-      // THE THREE WAYS A BMFF BOX STATES ITS SIZE, and the two unusual ones are not decoration: a
-      // walker that stops at the first `size == 1` reads nothing past it, returns "no ispe found",
-      // and hands the cap back to the cropped dimensions it was written to distrust. Reproduced with
-      // a 16-byte extended-size `free` box spliced after `ftyp` — libheif reads that file fine
-      // (PR #707 review round 12).
+      // NOTE: the three ways a BMFF box states its size; stopping at `size == 1` would find no ispe
+      // and hand the cap back to the cropped dimensions.
       //   0  the box runs to the end of the file
       //   1  the real size is the 64-bit value after the type
       //   n  the size, header included
@@ -249,24 +222,10 @@ async function heicToJpeg(
     );
   const open = opts.withFrames ?? withHeicFrames;
   return await open(bytes, async (frames: readonly HeicFrame[]) => {
-    // THE PRIMARY IMAGE, which is not the same as the first one. A HEIC may hold several top-level
-    // images, and the file says which of them it is OF: the `pitm` box. libheif hands them back in
-    // storage order, and the two disagree — measured on a two-image collection whose `pitm` points
-    // at the second, where the first item is a different picture entirely.
-    //
-    // The animation rule the vendors state ("Animations are unsupported, and only the first frame is
-    // used" — Anthropic) does not transfer, and that was the mistake here: a GIF's frames are one
-    // picture over time, with no frame designated, while a HEIC collection is several pictures with
-    // one designated. Taking the first would send a picture the sender did not send, and the
-    // extraction would come back successful and about the wrong image (PR #707 review round 6).
-    //
-    // FALLING BACK TO THE FIRST when nothing is designated, and the honest note is that no file this
-    // parser accepts reaches it: measured by renaming the `pitm` box to `free` (which the standard
-    // says to ignore, so the box stops existing for a reader), libheif refuses the whole file with
-    // `No 'pitm' box` and returns ZERO images. So the branch is not for the pitm-less file it looks
-    // like it is for; it is for a library that hands back images without designating one, which this
-    // version never does. It stays because without it that case throws "heic carries no image
-    // frame" — a message about a file that plainly has frames — and because a test can kill it.
+    // NOTE: the PRIMARY image (`pitm`), not the first: libheif returns a collection in storage
+    // order, and unlike a GIF's frames these are separate pictures with one designated. The fallback
+    // to the first is unreachable with this libheif (a file without `pitm` yields zero images); it
+    // keeps "carries no image frame" from being thrown about a file that has frames.
     const frame = frames.find((f) => f.primary) ?? frames[0];
     if (frame === undefined)
       throw new MediaConversionError("heic carries no image frame");
@@ -283,13 +242,9 @@ async function heicToJpeg(
       throw new MediaConversionError(
         "heic does not declare the size it stores, so the pixel cap cannot be applied",
       );
-    // BOTH NUMBERS COME FROM `ispe`, and the work a decode costs comes from the HEVC bitstream, so a
-    // file that declares 1x1 and codes 2000x2000 would walk past any cap. libheif closes that one
-    // itself: it compares the coded dimensions against the signalled ones and refuses BEFORE
-    // decoding. Measured on 1.23.2, steady state — the same image at 2000, 4000 and 6000 px square,
-    // made to declare 1x1, costs 2-3 ms and zero wasm-heap growth against 111/91/197 ms and
-    // +27/+130/+216 MB decoded honestly. The lie buys less work than the truth. Pinned by a test,
-    // because it is the dependency's property and not ours (review round 14).
+    // NOTE: both numbers come from `ispe`, while decode cost comes from the HEVC bitstream. libheif
+    // refuses coded dimensions that disagree with the signalled ones BEFORE decoding; that is the
+    // dependency's property, pinned by a test.
     const pixels = Math.max(width * height, stored);
     if (pixels > cap)
       throw new MediaTooLargeError(

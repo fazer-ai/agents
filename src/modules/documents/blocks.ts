@@ -1,15 +1,9 @@
 import { z } from "zod";
 
-// The vocabulary a document is written in, and the ONE place that says which shapes exist.
-//
-// A document is an ordered list of blocks, a list of `fields` the agent fills at issue time, and a
-// `style`. The set is deliberately closed: every block is something the renderer knows how to lay
-// out, so an operator authoring through the API cannot produce a document that renders as a
-// surprise. What the set does not cover goes in a `text` block as prose — that is the escape hatch,
-// and it is why there is no generic "html" or "raw" block.
-//
-// Pure and DB-free on purpose: the client bundle imports the same types, and the MCP write path
-// validates with the same schemas the REST path does.
+// The vocabulary a document is written in, and the ONE place that says which shapes exist: blocks,
+// the `fields` the agent fills at issue time, and a `style`. The set is deliberately closed, with a
+// `text` block as the escape hatch (no "html" or "raw" block). Pure and DB-free: the client bundle
+// imports the same types, and MCP and REST validate with the same schemas.
 
 // Blocks carry their own id rather than being addressed by position. The UI edits the text of a
 // `text` block; the API and MCP reorder freely. Addressing by index means a reorder from one
@@ -133,20 +127,10 @@ export type DocumentFieldType = (typeof FIELD_TYPES)[number];
 // would then refuse to see.
 export const FIELD_NAME_RE = /^[a-z][a-z0-9_]{0,39}$/;
 
-// Names that are already properties of every plain object, plus the one that IS the prototype link.
-//
-// Both halves of this feature use caller-chosen names as keys of ordinary objects: values are keyed
-// by field name, and the console's wording edits are keyed by block id. On such an object,
-// `values.constructor` answers with a function nobody stored — so an optional field called
-// `constructor`, omitted by the agent, arrives at validation as `[Function: Object]` and the write
-// fails on a value the caller never sent. `__proto__` is worse and quieter: assigning to it sets the
-// prototype instead of creating a property, so the console reports a saved edit it did not make.
-//
-// DERIVED, not listed: the set is whatever this runtime puts on Object.prototype, so it cannot go
-// stale against a platform that adds one. `__proto__` is in it already — it is an accessor property
-// declared there, and spelling it out separately was a clause that never ran. Refusing these two
-// dozen names costs nothing real (none is a plausible name for a field or a block in a commercial
-// document) and it means every lookup downstream can stay a plain property read.
+// Names that are already properties of every plain object (`__proto__` included), refused as field
+// names and block ids because both key ordinary objects: `values.constructor` answers with a
+// function nobody stored, and assigning `__proto__` sets the prototype. Derived from this runtime's
+// Object.prototype, so every lookup downstream can stay a plain property read.
 const PROTOTYPE_NAMES = new Set(Object.getOwnPropertyNames(Object.prototype));
 
 export function isPrototypeName(name: string): boolean {
@@ -243,17 +227,9 @@ export function parseDocumentStyle(value: unknown): DocumentStyle {
   };
 }
 
-// Whether a block can EVER put something on the page, from the template alone.
-//
-// Deliberately only the unconditional half. Whether a given document draws depends on the values
-// that arrive at the turn — an optional field, a logo the tenant has not uploaded, a discount of
-// zero — and that question is answered exactly, with those values in hand, by documentDraws in
-// draws.ts. Trying to answer it here means guessing, and a guess either refuses a template that is
-// perfectly fine for the tenant that wrote it or misses the case anyway.
-//
-// What is left is what no value can rescue: a divider draws a rule and nothing else, and a text
-// block with no text has nothing to resolve. An error at the keyboard beats a surprise at the turn,
-// which is the only reason this exists beside the exact check.
+// Whether a block can EVER put something on the page, from the template alone: only the half no
+// value can rescue (a divider, a text block with no text). Whether a given document draws depends on
+// the values at the turn and is answered exactly by documentDraws in draws.ts.
 export function blockCanDraw(block: DocumentBlock): boolean {
   switch (block.type) {
     case "divider":
@@ -261,15 +237,9 @@ export function blockCanDraw(block: DocumentBlock): boolean {
     case "text":
       return block.text.trim() !== "";
     case "header":
-      // A header has five sources of content and two of them are value questions: a logo the tenant
-      // may or may not have uploaded, and a company profile they may or may not have filled in. Both
-      // are left to `documentDraws`, which asks them with the values in hand.
-      //
-      // What is unconditional is switching those two OFF. `showLogo === false` and
-      // `showCompany === false` are read as `!== false` by the renderer, so an explicit false is the
-      // only way to reach "the logo and the profile are not on this page" from the template alone —
-      // and with a title, a subtitle and the meta rows all absent, nothing is left for any value to
-      // rescue. Trimmed, because the renderer draws no glyph for whitespace.
+      // NOTE: Logo and company profile are value questions left to `documentDraws`; only an explicit
+      // `false` switches them off (the renderer reads `!== false`). With both off and no title,
+      // subtitle or meta rows, nothing is left. Trimmed: whitespace draws no glyph.
       if (block.showLogo !== false || block.showCompany !== false) return true;
       return Boolean(
         block.title?.trim() || block.subtitle?.trim() || block.meta?.length,

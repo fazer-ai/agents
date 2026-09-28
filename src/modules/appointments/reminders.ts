@@ -362,10 +362,14 @@ async function retireReminderJobs(
 
 // Retire every appointment reminder THIS conversation armed; /reset is the caller. Returns the rows
 // reached. Scoped by the payload's thread, never widened to the event: a reschedule re-arms the
-// event's rows under the conversation that now owns it. The calendar event is NOT touched. The
-// caller runs this BEFORE its slow work, so an arm landing afterwards revives its own row. The
-// stamp goes on EVERY row (DEAD included, since the follow-up sweep reads it); the status moves only
-// on PENDING/CLAIMED rows, so a dead-letter an operator may need stays readable.
+// event's rows under the conversation that now owns it. The calendar event is NOT touched: deleting
+// a real booking is not what /reset asks for, and it is not undoable.
+
+// The caller runs this BEFORE its slow work, so an arm landing afterwards revives its own row.
+// Sparing rows by age cannot work: the upsert on `reminder:<eventId>:<offset>` keeps `created_at`
+// across a reschedule and a claim moves `updated_at`, so both date the ROW, not the arm. The stamp
+// goes on EVERY row (DEAD included, since the follow-up sweep reads it); the status moves only on
+// PENDING/CLAIMED rows, so a dead-letter an operator may need stays readable.
 export async function cancelThreadAppointments(
   tenantId: bigint,
   threadId: string,
@@ -488,6 +492,8 @@ function relativeDay(
 // the word is left to the model in the conversation's language. It rides in the instructions, not
 // `refs`, since `nudgeOccasionKey` hashes refs. The distance needs a real instant, the day also a
 // stated local offset; an all-day or offset-less start gets neither, and a past one gets nothing.
+// New rows stay out of the offset-less case because `tool-definitions/appointment.ts` resolves a
+// bare wall clock into the agent's time zone before it is stored.
 export function reminderTemporalGrounding(startISO: string, now: Date): string {
   const startMs = parseStartMs(startISO);
   const nowMs = now.getTime();
@@ -625,10 +631,12 @@ export function authoritativeReminderStart(
   return live?.startISO ?? snapshotStartISO;
 }
 
-// Has the appointment this reminder announces already begun? A reminder that arrives after the start
-// is worse than none: it tells someone already in the appointment that it is coming up. A retry can
-// land hours after `start - offset`. An unreadable start is NOT "started": the parser answers NaN and
-// every comparison with NaN is false. `parseStartMs`, never `Date.parse`, so this and the sweep agree.
+// Has the appointment this reminder announces already begun? A reminder that arrives after the
+// start is worse than none: it tells someone already in the appointment that it is coming up. A
+// retry can land hours after `start - offset`. An unreadable start is NOT "started" (the parser
+// answers NaN and every comparison with NaN is false): refusing would drop a customer-facing
+// message over a field the agent wrote. `parseStartMs`, never `Date.parse`, which rolls
+// `2026-02-31` forward into March; the sweep reads with the same parser, so the two agree.
 export function reminderAlreadyStarted(
   live: { startISO: string | null } | undefined,
   snapshotStartISO: string,

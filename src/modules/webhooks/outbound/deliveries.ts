@@ -7,7 +7,8 @@ import { auditMutation } from "@/modules/audit/service";
 import { emitDeliveryRequeued } from "@/modules/flowlog/webhook";
 
 // THE DELIVERY LEDGER AS A SUPPORTED SURFACE: the operator's side of the table whose worker side is
-// `worker.ts`, so nobody has to read `outbound_webhook_deliveries` directly.
+// `worker.ts`, so nobody has to read `outbound_webhook_deliveries` directly: the table is not a
+// supported surface, since `attempts` and `lastError` are the worker's and change with it.
 //
 // The payload never crosses this surface: it does NOT go through the PII scrub `execution_logs` rows
 // get, and the subscriber already has it. A ledger answers whether the event arrived, not what was

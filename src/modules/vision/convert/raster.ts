@@ -122,9 +122,8 @@ export function encodeJpeg(src: Rgba, quality: number): ArrayBuffer {
 // THE WHOLE TAIL OF A RASTER CONVERSION, in one place and in this order. Every decoder that produces
 // RGBA ends here, and the ORDER is the part worth naming: flatten, then fit, then encode. Flattening
 // after the fit averages colour and alpha together and composites the result, which darkens every
-// box that straddles a cutout's edge — 54 levels of red on the measured case, invisible in a green
-// test. Keeping the sequence in a named step is what lets a test assert it; spelled out at each call
-// site, the order was a mutation nothing could kill.
+// box that straddles a cutout's edge, a shift a green test does not see. The sequence lives in this
+// named step so a test can assert it; spelled out at each call site, no test would catch a swap.
 export function rasterToJpeg(
   raw: Rgba,
   opts: { maxEdge: number; quality: number },

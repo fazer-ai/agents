@@ -258,10 +258,10 @@ export async function extractMessageVisuals(params: {
   const descricao = imagens.length > 0 ? imagens.join("\n\n") : null;
   const documento = documentos.length > 0 ? documentos.join("\n\n") : null;
 
-  // UM agregado por mensagem, depois do laço. Cada `extractInboundFile` stasharia o seu sob a MESMA
-  // chave de mensagem e a loja mescla campo a campo, então N extrações em paralelo deixariam só a
-  // que terminou por último; e no Chatwoot upstream, onde a rota de write-back da meta não existe,
-  // essa loja é o ÚNICO leitor do flush do debounce.
+  // NOTE: UM agregado por mensagem, depois do laço. Cada `extractInboundFile` stasharia o seu sob a
+  // MESMA chave de mensagem e a loja mescla campo a campo, então N extrações em paralelo deixariam
+  // só a que terminou por último; e no Chatwoot upstream, onde a rota de write-back da meta não
+  // existe, essa loja é o ÚNICO leitor do flush do debounce.
   const leuCorpo = todos.some((v) => v.id === null);
   if (descricao || documento || naoLidos > 0 || leuCorpo)
     stashMediaAnnotation(

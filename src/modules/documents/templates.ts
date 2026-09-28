@@ -954,14 +954,11 @@ async function patched(
       data.fields = rawFields as unknown as Prisma.InputJsonValue;
     }
     if (patch.style !== undefined) {
-      // Written back over the raw stored style, taking ONLY the properties the patch addressed.
-      //
-      // Spreading the whole parsed style looks equivalent and is not: the parse fills every property
-      // it could not read with a default, so a `font` a newer build wrote was replaced by "sans" on
-      // any style save — an operator changing a colour silently downgrading a setting they cannot
-      // even see. Storage is tolerant on the way out precisely so that value survives; writing the
-      // parsed view back is how that guarantee is lost, and it is the same mistake `toDto` made for
-      // whole blocks.
+      // NOTE: Written back over the raw stored style, taking ONLY the properties the patch
+      // addressed. Spreading the whole parsed style is not equivalent: the parse fills every
+      // property it could not read with a default, so a `font` a newer build wrote would become
+      // "sans" on any style save, downgrading a setting the operator cannot even see. Storage is
+      // tolerant on the way out so that value survives; writing the parsed view back would lose it.
       const written = Object.keys(patch.style as Record<string, unknown>);
       data.style = {
         ...rawStyle,

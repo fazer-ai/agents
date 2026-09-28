@@ -214,7 +214,7 @@ export function rebuildPlaygroundTurns(
     const isFollowup = human ? raw.includes(DATA_FENCE) : true;
     const reply = lastAi(slice, isFollowup);
     if (human) {
-      // A proactive follow-up is now injected as a HUMAN turn (a SystemMessage would make strict
+      // NOTE: A proactive follow-up is injected as a HUMAN turn (a SystemMessage would make strict
       // providers reject the call — see graph.ts). renderNudge always embeds DATA_FENCE, which can't
       // be forged from user input, so it cleanly distinguishes a nudge from a real user message.
       if (isFollowup) {

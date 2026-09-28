@@ -18,7 +18,7 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 // `deletePlaygroundSession` deletes all three.
 
 export interface PlaygroundTurnNote {
-  // The AIMessage this overrides, or null for a turn the thread has no record of. Set but no longer
+  // The AIMessage this overrides, or null for a turn the thread has no record of. Set but not
   // rendered when the agent's reply was empty, which the fold treats as a placement, not a loss.
   messageId: string | null;
   // Where a thread-less turn belongs: the last message the transcript SHOWED at the time, which is

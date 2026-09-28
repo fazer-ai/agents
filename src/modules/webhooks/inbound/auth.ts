@@ -88,11 +88,11 @@ const fail = (reason: InboundAuthFailure): InboundAuthOutcome => ({
 // The secret has to become a non-empty string before any strategy can use it, and each way it fails
 // to is a different thing for the operator to do: point the field somewhere real, fill the entry,
 // or pick a credential of a shape this can use. A multi-field credential (langfuse, google_oauth)
-// decrypts to a Record, which is truthy, so before this narrowed it reached Buffer.from/createHmac
-// and threw, so a mis-wired secret answered 500 while a wrong token answered 401.
+// decrypts to a Record, which is truthy, so without this narrowing it reaches Buffer.from/createHmac
+// and throws, and a mis-wired secret answers 500 where a wrong token answers 401.
 //
-// The empty-string case is not decoration: the shipped guard was `if (!secret)`, which caught "" and
-// null in one breath. Splitting the states splits that guard too, and "" has to stay fail-closed.
+// The empty-string case is not decoration: a plain `if (!secret)` guard catches "" and null in one
+// breath, and splitting the states must keep "" fail-closed.
 function readSecret(
   secret: InboundSecretResolution,
 ): { ok: true; value: string } | { ok: false; reason: InboundAuthFailure } {

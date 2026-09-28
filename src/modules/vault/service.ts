@@ -158,7 +158,8 @@ export async function resolveVaultRefState<T = unknown>(
 // The state of MANY refs in one query, for a projection that renders a list, so a screen does not
 // call a channel "Signed" on the strength of the column alone. Keyed by the CANONICAL ref, which is
 // what `readableVaultRef` publishes. A ref that does not parse or whose entry is gone is ABSENT from
-// the map; it holds only the two states an existing entry can be in.
+// the map; it holds only the two states an existing entry can be in. There is no `not_found` value:
+// it could only be reached where absence already is, so no caller could tell the two apart.
 export async function vaultRefStates(
   db: ScopedDb,
   refs: readonly (string | null)[],
@@ -219,9 +220,11 @@ export interface SigningSecret {
 }
 
 // A signing ref that stopped resolving (deleted, or never filled) makes the alert and outbound
-// webhook workers POST UNSIGNED rather than hold the payload, but never silently: the answer carries
-// advice per state, since a deleted credential cannot be filled in. Prose, not a code: a person reads
-// it next to the row, and it names the receiver-side symptom (a verifying receiver rejects it).
+// webhook workers POST UNSIGNED rather than hold the payload (a receiver that does not verify keeps
+// working, and for an alert not arriving is the damage itself), but never silently: the answer
+// carries advice per state, since a deleted credential cannot be filled in. Prose, not a code: a
+// person reads it next to the row, and it names the receiver-side symptom (a verifying receiver
+// rejects it).
 export async function resolveSigningSecret(
   db: ScopedDb,
   ref: string | null | undefined,
@@ -1279,11 +1282,10 @@ export async function ensurePendingVaultEntryOn(
     // NOTE: The same action as a filled create, because it is the same act: a credential now
     // exists under this name. `status` is what tells the two apart, and it is on the row.
     //
-    // This is also where the agent import starts leaving a trail. It creates one reference-only
-    // entry per credential the bundle names and the tenant does not have, and its own `agent.import`
-    // row projects the AGENT, so six pending credentials used to appear in the vault with nothing
-    // naming where they came from. One row each, under the operator who ran the import. A row that
-    // was already there is not this operator's act and files nothing.
+    // The agent import creates one reference-only entry per credential the bundle names and the
+    // tenant does not have, and its own `agent.import` row projects the AGENT, so this row is the
+    // only thing naming where each pending credential came from. One row each, under the operator
+    // who ran the import. A row that was already there is not this operator's act and files nothing.
     await auditMutation(db, ctx, {
       action: "credential.create",
       target: formatVaultRef(row.id),
@@ -1441,9 +1443,10 @@ export async function replaceVaultSecret(
 
 // The refresh path's write, audited only when the CREDENTIAL moved: an access token renews hourly by
 // use and would drown the operator's edits, while a rotated refresh token or changed scopes are the
-// credential itself. Compared against the value read HERE under `FOR UPDATE` (the module's lock mode
-// on this table), not the caller's pre-network snapshot, so two overlapping refreshes record one
-// rotation. `system` with a null actor: nobody decided the refresh.
+// credential itself. Compared against the value read HERE under `FOR UPDATE`, not the caller's
+// pre-network snapshot, so two overlapping refreshes record one rotation. `FOR UPDATE` and not
+// `FOR NO KEY UPDATE`: it is the mode the rest of this module takes on this table, and a mixed mode
+// deadlocks. `system` with a null actor: nobody decided the refresh.
 export async function persistRefreshedOAuthSecret<
   T extends { refreshToken?: string | null; scopes?: string[] | null },
 >(
@@ -1579,8 +1582,8 @@ export interface VaultReferences {
   mcpConnections: string[];
   integrations: string[];
   webhooks: string[];
-  // Alert channels sign their deliveries with a vault secret too. This one was missing, so the
-  // vault offered to delete a key an alert channel was using without a word about it.
+  // Alert channels sign their deliveries with a vault secret too; without this list the vault would
+  // offer to delete a key an alert channel is using without a word about it.
   alertChannels: string[];
   // Agents carry their id so the UI can deep-link to the editor (/agents/:id); the others have no
   // per-item route and link to their closest panel.

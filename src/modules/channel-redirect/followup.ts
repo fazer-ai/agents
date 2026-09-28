@@ -63,6 +63,11 @@ export function followUpDedupeKey(widgetThreadId: string): string {
 // which messages and resolves both conversations after a /reset said the episode was cleared. DONE
 // keeps a claimed row from wedging, and the bumped token makes the handler's final complete or
 // reschedule write nothing. A re-arm replaces the payload wholesale, clearing the stamp.
+
+// No arming cutoff, unlike the appointment reminders: the ladder lives on ONE permanent row per
+// widget thread, so "created before the command" is true of every ladder that exists. The tombstone
+// stays local to this kind rather than going into `cancelPendingJob`, which has eight callers across
+// four modules that would each need their own handler-side fence.
 export async function retireRedirectFollowUp(
   tenantId: bigint,
   widgetThreadId: string,
@@ -110,8 +115,8 @@ export interface RedirectFollowUpPayload {
   // — not as the row read, which can still be holding the previous pairing back (see the savepoint
   // in chatwoot/mirror.ts). The dedupe key names the conversation and every episode it ever has
   // shares it, so this is the only thing that tells the retirement which ladder is the one it means.
-  // Absent ⇒ armed before this field existed, or by a Chatwoot that does not speak about pairings;
-  // `null` ⇒ the event stated there is no pairing.
+  // Absent ⇒ armed by a build without this field, or by a Chatwoot that does not speak about
+  // pairings; `null` ⇒ the event stated there is no pairing.
   originDisplayId?: number | null;
 }
 
@@ -522,7 +527,8 @@ export async function redirectFollowUpHandler(
   }
   // NOTE: Retirement AND the agent's switch, re-asked from inside the stages in ONE round trip, so no
   // I/O sits between either answer and the write it guards. Fails OPEN on a read that fails; a
-  // DELETED agent is an answer, and it is no. The activation stamp is read only for a test agent.
+  // DELETED agent is an answer, and it is no. The activation stamp is read only for a test agent,
+  // and its two reads share no snapshot: a gap of one statement, with no network in it.
   const fence = async (
     // Which question is being asked, in the sense `runAgentNudge` means it. The default is the one
     // every send-time ask wants: an unreadable answer is "go", because unwinding past a delivered
@@ -531,7 +537,7 @@ export async function redirectFollowUpHandler(
     // the checkpoint — where guessing recreates the memory /reset just cleared and nothing later
     // catches it. Only the RETIREMENT half changes: liveness stays fail-open in both — including the
     // episode read inside it, which falls back to the row's own (null) answer rather than failing
-    // open, because that is the answer this fence gave before that read existed.
+    // open, so a failed read costs the episode's answer and never invents one.
     opts: { strict?: boolean } = {},
   ): Promise<LadderVerdict> => {
     const read = async (db: ScopedDb) => {
@@ -582,9 +588,9 @@ export async function redirectFollowUpHandler(
         return isRedirectFollowUpLive({
           agentEnabled: a.enabled,
           agentMode: a.mode,
-          // The episode's answer, on this same connection. A sibling read that fails returns this
-          // row's own answer — which, to have got here, is null — so the worst a failure can do is
-          // reproduce the behaviour this call replaced. It can lose the fix, never invent a refusal.
+          // NOTE: the episode's answer, on this same connection. A sibling read that fails returns
+          // this row's own answer (null, to have got here), so a failure can lose the episode's
+          // answer, never invent a refusal.
           testActivatedAt: await episodeTestActivatedAt({
             tenantId,
             instanceId: parsed.instanceId,
@@ -674,7 +680,9 @@ export async function redirectFollowUpHandler(
         // NOTE: The composite fence, across the widest window in the ladder (the model turn), so a
         // switch flipped mid-turn does not reach the customer. A stand-down suppresses the send but
         // leaves the checkpointed turn in history, as every post-invoke gate of `runAgentNudge` does.
-        // `rescheduleTo` asks the fence again, so the verdict is not carried to the advance.
+        // `rescheduleTo` asks the fence again, so the verdict is not carried to the advance. What is
+        // left is a switch turned OFF and back ON inside the milliseconds before that ask, and an
+        // agent live again by then has a defensible claim to the next stage.
         stillWanted: async ({ strict }) => (await fence({ strict })) === "go",
         deps,
       });
@@ -961,7 +969,8 @@ export async function deliverRedirectClosing(
   // NOTE: Claim the closing: set the watermark only if still unset AND the episode is the one this
   // run read (the origin, with null a value and not a wildcard), since a re-entry meanwhile would
   // have the goodbye resolve a thread no longer paired. With a null origin, the mark's NULLNESS
-  // (never its value, which advances on every payload) tells "never told" from "told none".
+  // (never its value, which advances on every payload) tells "never told" from "told none". The
+  // whole protocol: docs/channel-redirect.md, "The closing, at most once".
   const won = await runScopedOn(base, sysCtx(p.tenantId), async (db) => {
     const res = await db.conversation.updateMany({
       where: {

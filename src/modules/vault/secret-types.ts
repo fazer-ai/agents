@@ -1,5 +1,5 @@
 // Predefined secret types (item 8). A vault entry can carry a `kind` from this catalog; the kind
-// declares HOW the secret is injected into an outbound request so the operator no longer hand-writes
+// declares HOW the secret is injected into an outbound request so the operator does not hand-write
 // the header (e.g. the Chatwoot `api-access-token` header, or `Authorization: Bearer …`). The catalog
 // is CODE-FIRST (no DB enum): adding a type is one entry here. `generic` (or a null/unknown kind) is
 // the legacy escape hatch — no auto-injection, the operator wires it manually via the `{{secret}}`
@@ -355,8 +355,8 @@ export function isManagedOAuthKind(kind: string | null | undefined): boolean {
 //                 OAuth kinds (HTTP tools, MCP connections, the contact authorization gate).
 //   embeddingKey  `resolveEmbeddingStatus` also accepts an undeclared `{ apiKey, baseURL }` form, so
 //                 it follows the `apiKey` KIND rule but is exempt from the VALUE rule.
-// `neverOutbound` fails for all: an mcp_env string in an API-key field would mail the operator's stdio
-// token to a model vendor.
+// `neverOutbound` fails for all: an mcp_env in an API-key field would send a stdio token out.
+// TODO: declare that form in the catalog, which removes `embeddingKey` (it changes key storage).
 export type CredentialUse = "apiKey" | "injectable" | "embeddingKey";
 
 // Whether an entry of this KIND can supply what a field of this USE reads: the one question the

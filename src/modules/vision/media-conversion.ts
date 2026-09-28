@@ -7,6 +7,9 @@
 // ./document-support is imported by the agent editor). Converters live in ./convert, keyed by the
 // ids below, and the `Record<MediaConverterId, …>` there makes a missing converter a compile error.
 
+// The editor deliberately shows no hint for the conversion plan: a converted type never comes back
+// unextracted, which is what the PDF hint beside the provider field warns about.
+
 // Strips the parameters off a media type and lowercases it: `image/PNG; charset=x` -> `image/png`.
 // One parser, because two of them drift, and the drift lands on the exotic spellings this file
 // exists to classify.

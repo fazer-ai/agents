@@ -62,7 +62,7 @@ function toDto(row: {
   return {
     id: row.id.toString(),
     url: row.url,
-    // Through the vault's own reader, never verbatim: legacy rows can hold arbitrary text. See
+    // NOTE: Through the vault's own reader, never verbatim: legacy rows can hold arbitrary text. See
     // `readableVaultRef`.
     secretRef: readableVaultRef(row.secretRef),
     hasSecret: row.secretRef !== null,
@@ -320,12 +320,13 @@ export async function deleteWebhookSubscription(
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  // The delivery FK is ON DELETE CASCADE at the database (20260727000000_init), so what keeps this
-  // from silently dropping rows the worker is mid-delivery is THIS function, not the constraint:
-  // clear the subscription's deliveries first inside the same scoped tx (RLS-fenced), then remove
-  // the subscription. Operator-initiated, so dropping its delivery ledger is acceptable.
+  // NOTE: The delivery FK is ON DELETE CASCADE at the database (20260727000000_init), so what keeps
+  // this from silently dropping rows the worker is mid-delivery is THIS function, not the
+  // constraint: clear the subscription's deliveries first inside the same scoped tx (RLS-fenced),
+  // then remove the subscription. Operator-initiated, so dropping its delivery ledger is
+  // acceptable.
   const count = await runScopedOn(base, ctx, async (db) => {
-    // Locked, then read before the delete: the row is what the audit records, and after
+    // NOTE: Locked, then read before the delete: the row is what the audit records, and after
     // `deleteMany` there is nothing left to name what was removed. The lock is the same one the
     // update takes, and for the same reason: an update committing between this read and the delete
     // would leave the row describing a subscription that no longer looked like that.

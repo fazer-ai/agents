@@ -464,7 +464,8 @@ async function finish(
 
   // NOTE: PUBLISHED BEFORE the row says READY, with `link` rather than `rename`: link FAILS with
   // EEXIST, so the first publisher wins the file and a later one adopts it (the live logo could
-  // differ), and a row is never READY without its bytes. A crash leaves a recoverable PENDING row.
+  // differ), and a row is never READY without its bytes. A crash leaves a recoverable PENDING row
+  // (docs/documents.md, Issuing).
   try {
     await link(tempPath, finalPath);
   } catch (e) {

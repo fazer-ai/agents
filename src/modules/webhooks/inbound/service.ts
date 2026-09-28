@@ -444,7 +444,7 @@ function buildNudge(
     value: typeof payload.value === "number" ? payload.value : null,
     currency: asString(payload.currency) ?? null,
     summary: asString(payload.summary) ?? null,
-    // GENERIC: the sender's own text, relayed rather than followed up on, with the
+    // NOTE: for GENERIC, the sender's own text is relayed rather than followed up on, with the
     // operator's guidance for this instance. The guidance is TRUSTED operator text and travels in
     // the instructions lane; the text stays fenced.
     ...(source === "GENERIC"
@@ -488,8 +488,12 @@ export async function processInboundDelivery(
       // NOTE: CAS: claim PENDING, OR reclaim a PROCESSING row whose claim went stale (only
       // agent_nudge leaves a window between Phase A and Phase B). `attempts` bounds poison
       // redeliveries. Staleness is measured from the CURRENT claim (`claimedAt`), since `receivedAt`
-      // is never refreshed; an unstamped row, claimed by a replica that does not stamp during a
-      // rolling deploy, falls back to `receivedAt` rather than reading as stale.
+      // is never refreshed.
+
+      // NOTE: a row with no `claimedAt` was claimed by a replica that does not stamp, and reading it
+      // as stale would take a live claim, so it falls back to `receivedAt`. The fallback stops being
+      // reachable once every replica stamps, and it is what lets the column ship in one release
+      // instead of the two an expand/contract would need.
       const stale = staleClaim();
       const claimed = await db.inboundDelivery.updateMany({
         where: {
@@ -587,7 +591,7 @@ export async function processInboundDelivery(
       }
 
       if (kind === "agent_nudge") {
-        // Correlate externalId → thread here (DB); defer the network turn to Phase B. An
+        // NOTE: Correlate externalId → thread here (DB); defer the network turn to Phase B. An
         // uncorrelated nudge has nothing to act on — mark processed and stop.
         //
         // A GENERIC ref correlates only on the instance that minted it; every other source keeps
@@ -663,10 +667,10 @@ export async function processInboundDelivery(
   if (plan.kind === "skip") return "skipped";
   if (plan.kind === "done") return "processed";
 
-  // Phase B: agent_nudge network turn outside the tx, then mark PROCESSED. BEST-EFFORT: the outcome
-  // is not consulted, since the durable barrier is the ConversionEvent from Phase A. A failed or
-  // refused nudge still ends PROCESSED, so neither the sweep nor a redelivery re-runs it (the gap
-  // is recorded in docs/integrations.md).
+  // NOTE: Phase B: agent_nudge network turn outside the tx, then mark PROCESSED. BEST-EFFORT: the
+  // outcome is not consulted, since the durable barrier is the ConversionEvent from Phase A. A
+  // failed or refused nudge still ends PROCESSED, so neither the sweep nor a redelivery re-runs it
+  // (the gap is recorded in docs/integrations.md).
   const runNudge = params.deps?.runNudge ?? runAgentNudge;
   // Armed from here, right after the claim committed, which is the instant the stale window started.
   const signal = params.signal ?? AbortSignal.timeout(DISPATCH_DEADLINE_MS);

@@ -143,6 +143,8 @@ export function hasStoredOrigin(
 // What to look the origin up BY, rather than the row itself: the two callers need different columns
 // off it (the cross-link wants the activation stamp, the ladder wants the 24h-window inputs), so each
 // keeps its own `select` and shares which row to select. `null`: nothing to look up, no sibling.
+// Why the origin is read and never inferred: docs/channel-redirect.md, "Which conversation is the
+// episode's WhatsApp half".
 export function episodeOriginQuery(p: EpisodeOriginParams): {
   where: {
     chatwootInstanceId: bigint;

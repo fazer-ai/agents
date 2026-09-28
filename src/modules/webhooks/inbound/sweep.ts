@@ -130,10 +130,10 @@ export async function redispatchInbound(
   if (deliveryId === null) {
     return { outcome: "fail", error: "inbound redispatch: no delivery id" };
   }
-  // A throw propagates on purpose: the scheduler's retry ladder is what outlasts the outage that made
-  // the dispatch throw, and its dead-letter line is what says the event was lost when it does not.
-  // The run's signal goes down to the nudge turn: a turn past the deadline would otherwise keep going
-  // beside the next attempt the sweep arms once the claim goes stale.
+  // NOTE: A throw propagates on purpose: the scheduler's retry ladder is what outlasts the outage
+  // that made the dispatch throw, and its dead-letter line is what says the event was lost when it
+  // does not. The run's signal goes down to the nudge turn: a turn past the deadline would
+  // otherwise keep going beside the next attempt the sweep arms once the claim goes stale.
   await processInboundDelivery({
     deliveryId,
     tenantId: job.tenantId,

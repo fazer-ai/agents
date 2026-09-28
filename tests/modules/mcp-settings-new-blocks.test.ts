@@ -635,3 +635,72 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     ).toEqual(["agente-off"]);
   });
 });
+
+// The protected clash is judged on the MERGED bag: MCP merges fields within a block, so a patch that
+// touches `setLabels.allowed` keeps the stored `protected`, and the preview has to refuse what the
+// apply would.
+describe.skipIf(!dbUp)(
+  "a resolve label that is also protected, through MCP",
+  () => {
+    let tenantId = 0n;
+    let agentId = 0n;
+    const principal = (): VerifiedToken => ({
+      userId: 1n,
+      tenantId,
+      role: "TENANT_ADMIN",
+      scopes: ["mcp:read", "mcp:write"],
+      clientId: "c",
+      jti: "j",
+    });
+
+    beforeAll(async () => {
+      const t = await suDb.tenant.create({
+        data: { name: "MCP919", slug: `mcp919-${process.pid}` },
+      });
+      tenantId = t.id;
+      const a = await suDb.agent.create({
+        data: {
+          tenantId,
+          name: "Bot",
+          systemPrompt: "p",
+          settings: { setLabels: { protected: ["agente-off"] } },
+        },
+      });
+      agentId = a.id;
+    });
+
+    afterAll(async () => {
+      if (tenantId) {
+        await suDb.tenant.delete({ where: { id: tenantId } }).catch(() => {});
+      }
+    });
+
+    test("the dry run refuses it while the stored protected list survives the merge", async () => {
+      const r = await agentSettingsSet(
+        principal(),
+        {
+          agent_id: String(agentId),
+          setLabels: { allowed: ["vip"] },
+          resolveConversation: { assignLabels: ["agente-off"] },
+        } as never,
+        { base: appDb },
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error).toContain("agente-off");
+    });
+
+    test("a patch that empties the protected list may assign the label", async () => {
+      const r = await agentSettingsSet(
+        principal(),
+        {
+          agent_id: String(agentId),
+          dry_run: false,
+          setLabels: { protected: [] },
+          resolveConversation: { assignLabels: ["agente-off"] },
+        } as never,
+        { base: appDb },
+      );
+      expect(r.ok).toBe(true);
+    });
+  },
+);

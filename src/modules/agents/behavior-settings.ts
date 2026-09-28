@@ -1,5 +1,6 @@
 import { readModelFallbackConfig } from "@/graph/fallback-settings";
 import { readLimitsConfig } from "@/modules/agents/limits";
+import { readResolveConversationConfig } from "@/modules/agents/resolve-labels";
 import {
   readAllowedLabels,
   readOutsideAllowedLabels,
@@ -69,6 +70,8 @@ export interface BehaviorSettings {
   // apart from `handoff` above because the Tools tab REPLACES that one wholesale.
   takeover: ReturnType<typeof readTakeoverConfig>;
   sendImage: ReturnType<typeof readSendImageConfig>;
+  // NOTE: The labels resolve_conversation writes itself, before the close.
+  resolveConversation: ReturnType<typeof readResolveConversationConfig>;
   crossInboxCase: ReturnType<typeof readCrossInboxCaseConfig>;
   limits: ReturnType<typeof readLimitsConfig>;
   availability: ReturnType<typeof readAvailabilityConfig>;
@@ -110,6 +113,7 @@ export const BEHAVIOR_SETTINGS_KEYS = [
   "handoff",
   "takeover",
   "sendImage",
+  "resolveConversation",
   "crossInboxCase",
   "limits",
   "availability",
@@ -148,6 +152,7 @@ export function readBehaviorSettings(
     handoff: readHandoffConfig(settings),
     takeover: readTakeoverConfig(settings),
     sendImage: readSendImageConfig(settings),
+    resolveConversation: readResolveConversationConfig(settings),
     crossInboxCase: readCrossInboxCaseConfig(settings),
     limits: readLimitsConfig(settings),
     availability: readAvailabilityConfig(settings),
@@ -185,6 +190,7 @@ export interface BehaviorSettingsPatch {
   handoff?: Record<string, unknown>;
   takeover?: Record<string, unknown>;
   sendImage?: Record<string, unknown>;
+  resolveConversation?: Record<string, unknown>;
   crossInboxCase?: Record<string, unknown>;
   limits?: Record<string, unknown>;
   availability?: Record<string, unknown>;

@@ -244,6 +244,8 @@ function renderCard(opts: {
     setCrossInboxCase: noop,
     sendImage: { allowedHosts: opts.hosts },
     setSendImage: noop,
+    resolveConversation: { assignLabels: [] },
+    setResolveConversation: noop,
     setCustomAttributeInstructions: noop,
     labelInstructions: "",
     protectedLabels: "",

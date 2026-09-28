@@ -96,6 +96,8 @@ export function makeConfig(
     kanbanConfig: KANBAN_DEFAULTS,
     toolGuidance: {},
     protectedLabels: [],
+    resolveLabels: [],
+    resolveCaseHold: null,
     allowedLabels: [],
     outsideAllowedLabels: "refuse",
     toolPreconditions: {},

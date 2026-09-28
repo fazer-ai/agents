@@ -8,6 +8,10 @@ import { z } from "zod";
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import {
+  applyResolveLabels,
+  type ResolveLabelsResult,
+} from "@/graph/resolve-labels";
+import {
   SKIP_REPLY_ACK,
   SKIP_REPLY_DETAIL_KEY,
   SKIP_REPLY_MARK,
@@ -38,6 +42,7 @@ import {
   recordResolutionOrigin,
 } from "@/modules/conversations/record-resolution";
 import {
+  type CaseInbox,
   type CustomerTextVerdict,
   type OpenCaseResult,
   openCaseInInbox,
@@ -135,6 +140,13 @@ export interface TurnState {
   // captions written for them — in whatever order the hosts happened to answer. The order the model
   // asked for is the one that matches the words around them.
   attachmentsSeq: number;
+  // The operator's labels resolve_conversation asked the deferred close to write, and
+  // whether a case opened this turn is what closes the conversation instead: a case means the team
+  // has it, so the labels do not go. See graph/resolve-labels.ts resolveLabelsFor.
+  resolveLabels?: string[];
+  // The case inbox the deferred close checks before writing them (graph/resolve-labels.ts).
+  resolveCaseHold?: CaseInbox | null;
+  caseClosing?: boolean;
   // A message this turn put in front of the customer from OUTSIDE the reply path, and the one thing
   // here that has already LEFT: the slow-tool acknowledgement ("só um instante"), which `emitAck`
   // (prepare.ts) sends straight through the Chatwoot client. It counts no balloon and queues no
@@ -409,6 +421,12 @@ export interface ToolCtx {
   // meaning "and never sees" in #695: see applyLabelDelta for why the refusal is reported by name.
   // Comes from `settings.setLabels.protected`; empty or absent ⇒ the tool reaches everything.
   protectedLabels?: string[];
+  // THE LABELS resolve_conversation WRITES ITSELF before it closes, from
+  // `settings.resolveConversation.assignLabels`; empty or absent ⇒ the close writes none.
+  resolveLabels?: string[];
+  // Where a contact waiting on a case holds those labels off, on this conversation's account (see
+  // graph/resolve-labels.ts). Absent or null ⇒ nothing is checked.
+  resolveCaseHold?: CaseInbox | null;
   // THE LABELS `set_labels` MAY ADD (issue #638), from `settings.setLabels.allowed`; empty or absent
   // ⇒ any title, and one Chatwoot does not have is created there. `outsideAllowedLabels` says what a
   // title outside the list meets: `refuse` (default) or `accept`. See applyLabelDelta.
@@ -1606,6 +1624,28 @@ function setLabelsTool(ctx: ToolCtx) {
   );
 }
 
+// What the close could not do with the operator's labels goes to the flow log and the alert, never
+// to the model, which can do nothing about a label the account lacks or a write that failed.
+function reportResolveLabels(ctx: ToolCtx, result: ResolveLabelsResult) {
+  if (result.unknown.length > 0) {
+    ctx.onSideEffectError?.({
+      tool: "resolve_conversation",
+      phase: "resolve_labels_unknown",
+      detail: { labels: result.unknown },
+      err: new Error(
+        `resolve labels not in the account: ${result.unknown.join(", ")}`,
+      ),
+    });
+  }
+  if (result.outcome === "failed" || result.heldBy === "unread") {
+    ctx.onSideEffectError?.({
+      tool: "resolve_conversation",
+      phase: "resolve_labels",
+      err: result.error,
+    });
+  }
+}
+
 function resolveConversationTool(ctx: ToolCtx) {
   const deferred = ctx.turnState !== undefined;
   return tool(
@@ -1629,6 +1669,8 @@ function resolveConversationTool(ctx: ToolCtx) {
         // wording stays conditional on purpose — the intent is discarded on takeover/supersede,
         // and a flat "resolved" would be a false claim in the checkpointed thread history.
         ts.resolveRequested = true;
+        ts.resolveLabels = ctx.resolveLabels ?? [];
+        ts.resolveCaseHold = ctx.resolveCaseHold ?? null;
         return "Resolve scheduled: the conversation will be marked resolved after your final reply in this turn is delivered.";
       }
       // The row id and tenant are absent on hand-built contexts (and the playground never reaches a
@@ -1655,6 +1697,33 @@ function resolveConversationTool(ctx: ToolCtx) {
       // answer is not a withdrawal (round 17).
       if (ctx.stillWanted && !(await ctx.stillWanted())) {
         ctx.onNoEffect?.("resolve_conversation");
+        return "Did not resolve the conversation (the run was called off while this read was in flight).";
+      }
+      // Before the toggle, for the reason the deferred path writes them before its own: Chatwoot
+      // reads the survey rules when the status changes.
+      const labelled = await applyResolveLabels({
+        client: ctx.client,
+        tenantId: ctx.tenantId,
+        conversationId: ctx.conversationId,
+        // Already closed by somebody else (read live above): theirs, not the agent's, so no label.
+        labels:
+          recordable && observed.status === "resolved"
+            ? []
+            : (ctx.resolveLabels ?? []),
+        stillWanted: ctx.stillWanted,
+        caseHold: ctx.resolveCaseHold ?? null,
+      });
+      reportResolveLabels(ctx, labelled);
+      // Asked again whatever the labels came to: a held label, an unknown one and the POST are waits
+      // too. A label POST that went out may have landed, so only a close that sent none reports no
+      // effect.
+      if (
+        labelled.outcome === "called_off" ||
+        (ctx.stillWanted && !(await ctx.stillWanted()))
+      ) {
+        if (!labelled.dispatched) {
+          ctx.onNoEffect?.("resolve_conversation");
+        }
         return "Did not resolve the conversation (the run was called off while this read was in flight).";
       }
       await ownStatusChange(ctx, () =>
@@ -2437,6 +2506,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
             !ctx.handoffState?.completed
           ) {
             ctx.turnState.resolveRequested = true;
+            ctx.turnState.caseClosing = true;
             closing = "scheduled";
           } else {
             closing = "not_here";

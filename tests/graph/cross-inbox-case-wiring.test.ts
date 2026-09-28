@@ -6,6 +6,7 @@ import {
   buildToolset,
   type ToolsetCtx,
 } from "@/graph/prepare";
+import { resolveCaseHoldFor } from "@/graph/resolve-labels";
 import { ownTransfer } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { CONTACT_AUTH_DEFAULTS } from "@/modules/contact-auth/settings";
@@ -52,6 +53,7 @@ function config(
     contactAuth: CONTACT_AUTH_DEFAULTS,
     sendImageConfig: SEND_IMAGE_DEFAULTS,
     crossInboxCaseConfig: cic,
+    resolveCaseHold: resolveCaseHoldFor(cic),
     chatwootContactId: 55,
     signatureConfig: signature,
     promptVars: {},
@@ -117,6 +119,42 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
 
   test("on another account the tool gets nothing", async () => {
     expect(await seenFor(picked, 4n)).toBeUndefined();
+  });
+
+  // The close's check for a contact waiting on a case reads the operator's destination, not the tool's
+  // availability: a note-only nudge takes the tool away by clearing its inbox, and resolve_conversation
+  // is still there to close, so the hold must survive that.
+  test("the case hold survives the tool being taken away, and stays on its account", async () => {
+    const seenHold = async (instanceId: bigint) => {
+      let seen: Record<string, unknown> | undefined;
+      await buildToolset(
+        {
+          ...config(picked),
+          crossInboxCaseConfig: { ...picked, targetInboxId: null },
+        },
+        {
+          tenantId: 1n,
+          instanceId,
+          base: app as PrismaClient,
+          client: {} as unknown as ChatwootClient,
+          conversationId: 77,
+          threadId: `t-${process.pid}`,
+        },
+        {
+          buildNativeTools: (native) => {
+            seen = native as unknown as Record<string, unknown>;
+            return [];
+          },
+        },
+      );
+      return seen?.resolveCaseHold;
+    };
+    expect(await seenHold(3n)).toEqual({
+      targetInboxId: 40,
+      caseAttributeKey: picked.caseAttributeKey,
+      contactId: 55,
+    });
+    expect(await seenHold(4n)).toBeNull();
   });
 
   test("the turn's output screening reaches the tool", async () => {

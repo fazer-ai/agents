@@ -187,6 +187,7 @@
     "playgroundTurnFailed": "O turno falhou no servidor. A causa está no log do servidor, sob o id deste turno.",
     "proEdition": "Este recurso requer a edição Pro",
     "promptTooLong": "O prompt do sistema é longo demais: {{len}} caracteres (limite {{max}}).",
+    "protectedResolveLabel": "`Etiquetas ao encerrar` não pode ter uma etiqueta que o `set_labels` mantém fora do alcance: {{labels}}. Tire-a de uma das duas listas.",
     "providerListUnexpectedResponse": "{{provider}} respondeu à requisição da lista em um formato inesperado.",
     "providerListUnreachable": "Não foi possível alcançar {{provider}} para listar as opções",
     "providerModelsFailed": "{{provider}} recusou a requisição da lista (status {{status}}).",

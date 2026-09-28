@@ -342,7 +342,7 @@ type ErrorSite = "flow-event" | "guarded" | "cleared" | "read" | "unrelated";
 const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/graph/nudge.ts": [1, "flow-event"],
   "src/graph/prepare.ts": [2, "flow-event"],
-  "src/graph/runtime.ts": [4, "flow-event"],
+  "src/graph/runtime.ts": [5, "flow-event"],
   "src/graph/tool-flowlog.ts": [2, "flow-event"],
   // #841: a playground turn that failed unhandled. A fixed sentence, never the error's text.
   "src/modules/playground/service.ts": [1, "flow-event"],

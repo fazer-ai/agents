@@ -173,6 +173,42 @@ function field(conv: unknown, key: string): unknown {
     : undefined;
 }
 
+// Where a contact's case lives, for a reader that is not opening one.
+export interface CaseInbox {
+  targetInboxId: number;
+  caseAttributeKey: string;
+  contactId: number | null;
+}
+
+// THE CASE A CONTACT IS WAITING ON, open or pending in the destination inbox, other than the
+// conversation being asked about. Read two ways, because a case can sit on another contact (the
+// address belonged to someone else and nothing was merged): the attribute this conversation got when
+// it opened the case, and the contact's own conversations. Null ⇒ none. Throws when a read fails.
+export async function openCaseFor(
+  client: Pick<CaseClient, "getConversation" | "listContactConversations">,
+  conversationId: number,
+  where: CaseInbox,
+): Promise<number | null> {
+  const waiting = (inboxId: unknown, status: unknown) =>
+    Number(inboxId) === where.targetInboxId &&
+    (status === "open" || status === "pending");
+  const conv = await client.getConversation(conversationId);
+  const known = numberAttr(conv, where.caseAttributeKey);
+  if (known !== null && known !== conversationId) {
+    const c = await client.getConversation(known).catch((err) => {
+      if (err instanceof ChatwootApiError && err.status === 404) return null;
+      throw err;
+    });
+    if (c && waiting(field(c, "inbox_id"), field(c, "status"))) return known;
+  }
+  if (where.contactId === null) return null;
+  const listed = await client.listContactConversations(where.contactId);
+  const open = listed.find(
+    (c) => c.id !== conversationId && waiting(c.inboxId, c.status),
+  );
+  return open ? open.id : null;
+}
+
 // Pure: the private notes. PT-BR, like the webhook's other system notes.
 export function originLinkNote(caseUrl: string, inboxName: string): string {
   return `➡️ Caso aberto na caixa ${inboxName}: ${caseUrl}`;

@@ -243,6 +243,8 @@ function renderContactAuth(
       takeover: { onHumanReply: true },
       setTakeover: noop,
       setSendImage: noop,
+      resolveConversation: { assignLabels: [] },
+      setResolveConversation: noop,
       attributeContext: { conversation: [], contact: [], task: [] },
       setAttributeContext: noop,
       serviceWindow: {
@@ -402,6 +404,8 @@ function renderPinned(targetInstanceId: number | null): {
         setCrossInboxCase={noop}
         sendImage={{ allowedHosts: "" }}
         setSendImage={noop}
+        resolveConversation={{ assignLabels: [] }}
+        setResolveConversation={noop}
         setCustomAttributeInstructions={noop}
         labelInstructions=""
         protectedLabels=""

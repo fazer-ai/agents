@@ -116,6 +116,32 @@ describe.skipIf(!dbUp)("agents service", () => {
     expect(a.systemPrompt).toBe("Be helpful.");
   });
 
+  // Asked through the service rather than of the boundary function: what has to hold is the WIRING
+  // on each door a settings bag comes through.
+  test("create and update refuse a close label that set_labels also fences off", async () => {
+    const clash = {
+      setLabels: { protected: ["agente-off"] },
+      resolveConversation: { assignLabels: ["agente-off"] },
+    };
+    const code = async (p: Promise<unknown>) =>
+      p.then(
+        () => null,
+        (e: AppError) => e.translationKey,
+      );
+    expect(
+      await code(
+        createAgent(ctx(tenantA), { name: "clash", settings: clash }, appDb),
+      ),
+    ).toBe("errors.protectedResolveLabel");
+    expect(
+      await code(
+        updateAgent(ctx(tenantA), agentAId, { settings: clash }, appDb, {
+          settingsMode: "replace",
+        }),
+      ),
+    ).toBe("errors.protectedResolveLabel");
+  });
+
   test("update patches allowlisted fields and returns the new state", async () => {
     const a = await updateAgent(
       ctx(tenantA),

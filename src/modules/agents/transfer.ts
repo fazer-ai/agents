@@ -1354,10 +1354,10 @@ export async function importAgent(
     // the grants (so buildGrantRows finds them by name). Components of the same name are reused, never
     // overwritten. Credentials are re-linked by name where resolved; otherwise left unset.
     //
-    // ...AND BEFORE THE AGENT ROW, which is not where this used to sit. The settings bag carries the
-    // operator's rules keyed by tool NAME, and a bundled tool that had to be stored under another
-    // name takes its rules with it — so the rename map has to exist before the bag is written. The
-    // migration settles the same two moves in the same order, for the same reason (review r6).
+    // ...AND BEFORE THE AGENT ROW. The settings bag carries the operator's rules keyed by tool NAME,
+    // and a bundled tool that had to be stored under another name takes its rules with it, so the
+    // rename map has to exist before the bag is written. The migration settles the same two moves in
+    // the same order, for the same reason.
     let renamed: RenamedComponents = {
       httpTools: new Map(),
       codeTools: new Map(),

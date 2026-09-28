@@ -783,7 +783,8 @@ async function mirrorConsoleWrite(
   // that predates the click from one typed after it. The takeover recovery carries no version, so a
   // mark written only on the unversioned tail would leave versioned deployments unfenced. Its own
   // statement with `GREATEST`, so it never moves backwards when two console writes commit out of
-  // order (a NULL column takes the first value).
+  // order (a NULL column takes the first value). A payload whose version compares EQUAL passes the
+  // strict version check and is refused by the mark: that is the fence working, not a side effect.
   if (markAt !== null) {
     await runScopedOn(
       base,

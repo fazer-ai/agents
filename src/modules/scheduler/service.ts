@@ -19,10 +19,12 @@ import {
 import { runningJobIds } from "./running";
 
 // Durable job store for the scheduler (follow-ups, sweeps, retries).
-//
+
 // A claim carries a token (`claimSeq`) and the three writes that finish a job CAS on it: `enqueueJob`
 // re-arms the same physical row in place, so status alone cannot tell the claiming run from a later
-// arm. The claim is cross-tenant (asSuperAdmin, SKIP LOCKED); each job's effect runs under its own
+// arm. Only the claim bumps the token: a re-arm left PENDING already fails the old CAS, and one that
+// is claimed again bumps past it, so a bump in `enqueueJob` would add a hot-path write for nothing.
+// The claim is cross-tenant (asSuperAdmin, SKIP LOCKED); each job's effect runs under its own
 // tenant scope, so RLS still fences the work. `attempts` is cleared by any completed pass, so
 // MAX_ATTEMPTS bounds consecutive failures; the reaper pushes crash loops to DEAD. See `Rearm`.
 

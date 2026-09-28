@@ -54,7 +54,8 @@ export const JOB_LANE: Record<SchedulerJobKind, SchedulerLane> = {
   // staleness window, and it spends no model (one Chatwoot read and one enqueue). Retrying against
   // a Chatwoot that is down is `JOB_RETRY_BASE_MS`'s question, not the lane's.
   HUMAN_REPLY_RECOVERY: "shared",
-  // A cap of its own, drained by the shared tick. A label one shared tick late is not felt; on the
+  // A cap of its own, drained by the shared tick (a worker of its own would add a flag an install
+  // can leave off). A label one shared tick late is not felt; on the
   // traffic share it waited behind every ingestion row armed before it and could not keep up with a
   // busy inbox. It still runs under the shared lane's provider concurrency, so a busy inbox's
   // observers cannot starve the replies on it.
@@ -206,7 +207,8 @@ export const JOB_DELETE_ON_DONE: Record<SchedulerJobKind, boolean> = {
 // run_at would fill every fixed-size batch with them and never reach an appointment reminder. The
 // shared tick claims them separately, with a share of the batch, so the fixed-rate kinds keep the
 // rest. Ingestion needs no lane of its own: every reader of a memory thread drains it first
-// (../../graph/ingest-drain.ts), so the tick is only a backstop.
+// (../../graph/ingest-drain.ts), so the tick is only a backstop and a lane would only add a worker
+// flag an install can leave off.
 export const JOB_TRAFFIC_PROPORTIONAL: Record<SchedulerJobKind, boolean> = {
   FOLLOWUP: false,
   FOLLOWUP_SWEEP: false,
@@ -344,7 +346,8 @@ export const JOB_DEATH_LEVEL: Record<SchedulerJobKind, FlowLevel> = {
 // job gets four backoffs, each between half and all of `base * 2^attempt`: 37 seconds in all at the
 // 2s base, enough for a blip. The recovery family uses one minute (about 18 minutes in all): each is
 // armed ONCE by the sweep pass that found the stranded delivery and nothing re-arms it
-// (./chatwoot/delivery-sweep.ts), so this ladder is what must outlast a Chatwoot restart. Longer would
+// (./chatwoot/delivery-sweep.ts), so this ladder is what must outlast a Chatwoot restart (more tries
+// at the same spacing would spend a longer outage just as fast). Longer would
 // only delay the dead-letter line: the work is already late, and `MAX_RECOVERY_AGE_MS` discards a
 // delivery recovery at six hours. Exhaustive, so a new kind does not compile until it is placed.
 export const JOB_RETRY_BASE_MS: Record<SchedulerJobKind, number> = {

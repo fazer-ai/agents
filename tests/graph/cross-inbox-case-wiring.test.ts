@@ -220,6 +220,36 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
     expect(off.sign?.("Caso {{foo}}")).toBe("Caso {{ '{{' }}foo}}");
   });
 
+  test("the operator's templates are filled with the prompt's context variables", async () => {
+    let seen: Record<string, unknown> | undefined;
+    await buildToolset(
+      {
+        ...config(picked),
+        promptVars: { primeiro_nome: "Ana" },
+      } as AgentConfig,
+      {
+        tenantId: 1n,
+        instanceId: 3n,
+        base: app as PrismaClient,
+        client: {} as unknown as ChatwootClient,
+        conversationId: 77,
+        threadId: `t-${process.pid}`,
+      },
+      {
+        buildNativeTools: (native) => {
+          seen = native as unknown as Record<string, unknown>;
+          return [];
+        },
+      },
+    );
+    const cic = seen?.crossInboxCase as {
+      interpolate?: (t: string) => string;
+    };
+    expect(cic.interpolate?.("Olá, {{primeiro_nome}} {{mensagem}}")).toBe(
+      "Olá, Ana {{mensagem}}",
+    );
+  });
+
   test("a config written without the account is honored as-is", async () => {
     const legacy = { ...picked, targetInstanceId: null };
     expect(await seenFor(legacy, 4n)).toMatchObject({

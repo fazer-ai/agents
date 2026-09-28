@@ -1,9 +1,17 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { FormField, Input, Select, SwitchField } from "@/client/components";
+import {
+  FormField,
+  Input,
+  Select,
+  SwitchField,
+  Textarea,
+} from "@/client/components";
 import { api } from "@/client/lib/api";
 import {
   CROSS_INBOX_CASE_ATTRIBUTE_KEY_RE,
+  CROSS_INBOX_CASE_NOTE_TEMPLATE_MAX,
+  CROSS_INBOX_CASE_OPENING_TEMPLATE_MAX,
   destinationIdentity,
   normalizeCaseLabels,
 } from "@/modules/cross-inbox-case/settings";
@@ -21,6 +29,8 @@ export interface CrossInboxCaseState {
   mergeContacts: boolean;
   resolveOrigin: boolean;
   subjectTemplate: string;
+  openingTemplate: string;
+  noteTemplate: string;
 }
 
 export function readCrossInboxCaseState(raw: unknown): CrossInboxCaseState {
@@ -40,6 +50,9 @@ export function readCrossInboxCaseState(raw: unknown): CrossInboxCaseState {
     resolveOrigin: o.resolveOrigin === true,
     subjectTemplate:
       typeof o.subjectTemplate === "string" ? o.subjectTemplate : "",
+    openingTemplate:
+      typeof o.openingTemplate === "string" ? o.openingTemplate : "",
+    noteTemplate: typeof o.noteTemplate === "string" ? o.noteTemplate : "",
   };
 }
 
@@ -66,6 +79,8 @@ export function serializeCrossInboxCase(
     mergeContacts: s.mergeContacts,
     resolveOrigin: s.resolveOrigin,
     subjectTemplate: s.subjectTemplate.trim() || null,
+    openingTemplate: s.openingTemplate.trim() || null,
+    noteTemplate: s.noteTemplate.trim() || null,
   };
 }
 
@@ -241,6 +256,42 @@ export function CrossInboxCaseFields({
           />
         </FormField>
       )}
+      <FormField
+        label={t("editor.crossInboxCase.opening", "Opening message")}
+        description={t(
+          "editor.crossInboxCase.openingHint",
+          "First message the customer gets in the case. Takes the prompt's variables, numero_caso and mensagem, the agent's part (without it, the text is fixed). Not signed. Empty: the agent writes it.",
+        )}
+      >
+        <Textarea
+          value={value.openingTemplate}
+          onChange={(e) =>
+            onChange({ ...value, openingTemplate: e.target.value })
+          }
+          rows={5}
+          maxLength={CROSS_INBOX_CASE_OPENING_TEMPLATE_MAX}
+          placeholder={
+            "Olá, {{primeiro_nome}}!\n\nSua solicitação nº {{numero_caso}} foi recebida.\n\n{{mensagem}}"
+          }
+        />
+      </FormField>
+      <FormField
+        label={t("editor.crossInboxCase.note", "Note on the case")}
+        description={t(
+          "editor.crossInboxCase.noteHint",
+          "The team's private note on the case, in markdown. Takes assunto, motivo, link_origem and the prompt's variables. Empty: the subject as title, a link to the origin and the reason.",
+        )}
+      >
+        <Textarea
+          value={value.noteTemplate}
+          onChange={(e) => onChange({ ...value, noteTemplate: e.target.value })}
+          rows={4}
+          maxLength={CROSS_INBOX_CASE_NOTE_TEMPLATE_MAX}
+          placeholder={
+            "### {{assunto}}\n[Conversa de origem]({{link_origem}})\n\n{{motivo}}"
+          }
+        />
+      </FormField>
       <div className="flex flex-col gap-1.5">
         <SwitchField
           checked={value.resolveOrigin}

@@ -135,6 +135,8 @@ function renderEditor() {
                 mergeContacts: false,
                 resolveOrigin: false,
                 subjectTemplate: "",
+                openingTemplate: "",
+                noteTemplate: "",
               }}
               setCrossInboxCase={noop}
               sendImage={{ allowedHosts: "" }}

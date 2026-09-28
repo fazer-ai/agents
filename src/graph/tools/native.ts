@@ -50,6 +50,7 @@ import {
 } from "@/modules/cross-inbox-case/service";
 import {
   type CrossInboxCaseConfig,
+  openingAsksMessage,
   subjectAsksSummary,
 } from "@/modules/cross-inbox-case/settings";
 import type { HandoffConfig } from "@/modules/handoff/settings";
@@ -465,6 +466,8 @@ export interface ToolCtx {
     contactId: number | null;
     // The agent's signature, applied to the opening the customer receives (docs/signature.md).
     sign?: (text: string) => string;
+    // The prompt's context variables, for the operator's opening and note templates.
+    interpolate?: (template: string) => string;
   };
   // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself (the opening message of
   // `open_case_in_inbox`). Bound by the runtime that owns the gate, so this file does not import it,
@@ -2408,8 +2411,16 @@ function openCaseOutcomeText(
 }
 
 function openCaseInInboxTool(ctx: ToolCtx) {
+  const openingTemplate = ctx.crossInboxCase?.config.openingTemplate ?? null;
+  const asksMessage = openingAsksMessage(openingTemplate);
+  const opening =
+    openingTemplate === null
+      ? "`customer_message` is the first message the customer receives THERE (for an email inbox, the opening email), so write it as that message."
+      : asksMessage
+        ? "`customer_message` is your part of the first message the customer receives THERE: it goes inside the team's own opening text, so write only what is specific to this request."
+        : "The customer receives the team's fixed opening message THERE; you do not write it.";
   const description =
-    "Open the customer's case in the team's other inbox (configured by the operator: you choose WHETHER to open it, never where), without asking the customer to switch channels. Use it when the request has to be handled by the team that works in that inbox. `reason` becomes an internal note on the case. `customer_message` is the first message the customer receives THERE (for an email inbox, the opening email), so write it as that message. Call it directly: it reads the contact's email and phone itself, so do not ask the customer for them first. Only when the result says an email is missing, ask for it and call again with exactly the address they typed. Tell the customer here where their case went." +
+    `Open the customer's case in the team's other inbox (configured by the operator: you choose WHETHER to open it, never where), without asking the customer to switch channels. Use it when the request has to be handled by the team that works in that inbox. \`reason\` becomes an internal note on the case. ${opening} Call it directly: it reads the contact's email and phone itself, so do not ask the customer for them first. Only when the result says an email is missing, ask for it and call again with exactly the address they typed. Tell the customer here where their case went.` +
     (ctx.crossInboxCase?.config.resolveOrigin && ctx.turnState
       ? " Once the case is open, this conversation is closed after your reply is delivered."
       : " This tool does NOT close this conversation; close with resolve_conversation if that is the next step.");
@@ -2436,7 +2447,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         originConversationId: ctx.conversationId,
         originContactId: cic.contactId,
         reason: reason.trim(),
-        customerMessage: customer_message?.trim() || null,
+        customerMessage: (asksMessage && customer_message?.trim()) || null,
         email: email?.trim() || null,
         labels: (labels ?? [])
           .map((l) => l.trim().toLowerCase())
@@ -2446,6 +2457,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         tenantId: ctx.tenantId,
         screenCustomerMessage: ctx.screenCustomerText,
         signCustomerMessage: cic.sign,
+        interpolate: cic.interpolate,
         // The team this agent hands conversations to, when the operator pinned one: the case goes to
         // the same people. `ctx.handoff` is already the effective config, so a pin picked in another
         // account arrives here as `agent_choice` and no team is written. A pinned PERSON is not
@@ -2597,12 +2609,18 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           .describe(
             "Why the case is being opened, for the team (internal note on the case).",
           ),
-        customer_message: z
-          .string()
-          .optional()
-          .describe(
-            "The first message the customer receives in the destination inbox. Omit to open the case without one.",
-          ),
+        ...(asksMessage
+          ? {
+              customer_message: z
+                .string()
+                .optional()
+                .describe(
+                  openingTemplate === null
+                    ? "The first message the customer receives in the destination inbox. Omit to open the case without one."
+                    : "Your part of the team's opening message in the destination inbox. Omit to open the case without an opening.",
+                ),
+            }
+          : {}),
         email: z
           .string()
           .optional()

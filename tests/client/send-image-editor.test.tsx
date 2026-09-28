@@ -240,6 +240,8 @@ function renderCard(opts: {
       mergeContacts: false,
       resolveOrigin: false,
       subjectTemplate: "",
+      openingTemplate: "",
+      noteTemplate: "",
     },
     setCrossInboxCase: noop,
     sendImage: { allowedHosts: opts.hosts },

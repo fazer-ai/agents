@@ -1157,6 +1157,7 @@ export interface ToolBuildDeps {
         contactId: number | null;
         sign?: (text: string) => string;
         renderSubject?: (summary: string | null) => string | null;
+        interpolate?: (template: string) => string;
       };
       screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
       fetchImpl?: typeof fetch;
@@ -1567,6 +1568,9 @@ export async function buildToolset(
                   (t) =>
                     interpolatePromptVars(t, cfg.promptVars, cfg.promptOpts),
                 ),
+              // The operator's opening and note templates take the same context variables.
+              interpolate: (t: string) =>
+                interpolatePromptVars(t, cfg.promptVars, cfg.promptOpts),
               // The opening reaches the customer, so it carries the agent's signature like every reply
               // (docs/signature.md); one message, one chunk. The model's text is escaped for Chatwoot's
               // Liquid and the signature is not.

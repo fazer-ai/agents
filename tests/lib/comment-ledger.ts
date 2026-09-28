@@ -20,6 +20,7 @@ export const COMMENT_LEDGER: Record<string, FileCounts> = {
   "src/api/features/auth/auth.service.ts": [2, 0],
   "src/api/features/auth/google.service.ts": [1, 0],
   "src/api/features/auth/setup.service.ts": [0, 1],
+  "src/api/features/branding/branding.admin.service.ts": [0, 2],
   "src/api/features/branding/branding.controller.ts": [0, 1],
   "src/api/features/branding/branding.service.ts": [1, 1],
   "src/api/features/invitations/invitation.service.ts": [4, 1],

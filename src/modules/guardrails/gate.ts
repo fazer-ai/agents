@@ -12,6 +12,7 @@ import {
 } from "@/graph/usage";
 import { clipText } from "@/lib/text";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { analyzeGuardrail } from "./analyze";
 import { loggableCategories } from "./log-categories";
@@ -119,7 +120,11 @@ export function chatwootNoteSink(
       return;
     const head = `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;
     await client
-      .sendPrivateNote(conversationId, handedOffNote(head, r))
+      // The rationale and the refused reply are model text, escaped for Chatwoot's Liquid.
+      .sendPrivateNote(
+        conversationId,
+        literalForChatwoot(handedOffNote(head, r)),
+      )
       .catch(() => {});
   };
 }

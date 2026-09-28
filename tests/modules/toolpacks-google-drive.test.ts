@@ -280,6 +280,20 @@ describe("google drive toolpack — send file", () => {
     });
   });
 
+  // The caption is the model's text, rendered by Chatwoot as Liquid, so it goes escaped.
+  test("the caption reaches the conversation literally", async () => {
+    const { impl } = routerFetch(
+      driveHandler(
+        { name: "manual.pdf", mimeType: "application/pdf", size: "5" },
+        5,
+      ),
+    );
+    const cw = fakeChatwoot(42);
+    const tool = sendTool(baseCtx({ fetchImpl: impl, chatwoot: cw.chatwoot }));
+    await tool?.invoke({ fileId: "f1", caption: "Manual de {{contact.name}}" });
+    expect(cw.sent[0]?.caption).toBe("Manual de {{ '{{' }}contact.name}}");
+  });
+
   test("a file whose declared size is over the cap is refused without reading a byte", async () => {
     // Review round 1 of #464. Capping the READ made the Content-Length check happen after 15 MB had
     // already been pulled, and on a slow link that read can spend the whole 12s budget — turning

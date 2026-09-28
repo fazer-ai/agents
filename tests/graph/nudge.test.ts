@@ -741,6 +741,46 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(spoke.lastRepliedMessageId).toBeNull();
   });
 
+  // Chatwoot renders the message and the note as Liquid, so the model's words go escaped
+  // (the wire shape is pinned in chatwoot-liquid.test.ts), or `{{contact.email}}` reaches the
+  // customer as the contact's email.
+  test("the proactive message and the note carry the model's text literally", async () => {
+    await seedConv(9431, null);
+    const s = stub();
+    const reply = "Seu cadastro: {{contact.email}} fim";
+    const deps = {
+      makeModel: () => new FakeListChatModel({ responses: [reply] }),
+      makeClient: s.makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    };
+    expect(
+      await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9431`,
+        nudge: { source: "ASAAS", status: "paid", value: 100, currency: "BRL" },
+        base: appDb,
+        deps,
+      }),
+    ).toBe("messaged");
+    expect(s.messages).toEqual([
+      [9431, "Seu cadastro: {{ '{{' }}contact.email}} fim"],
+    ]);
+    await seedConv(9432, "User");
+    const held = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9432`,
+      nudge: { source: "ASAAS", status: "paid", value: 100, currency: "BRL" },
+      base: appDb,
+      deps: { ...deps, makeClient: held.makeClient },
+    });
+    expect(held.messages).toEqual([]);
+    expect(held.notes.map(([, t]) => t)).toEqual([
+      "Seu cadastro: {{ '{{' }}contact.email}} fim",
+    ]);
+  });
+
   // NOTE: The line records where the turn came from and the message it sent, so the console neither
   // infers "Follow-up" from the source nor guesses the bubble by time.
   async function originLine(convId: number) {
@@ -6052,6 +6092,55 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     ]);
     expect(s.resolved).toEqual([]);
     expect(s.labelSets).toEqual([["follow-up"]]);
+  });
+
+  // The notes left instead of a message outside the window quote the model's text, which Chatwoot
+  // renders as Liquid like any note, so it goes escaped.
+  test("outside the window, the note quotes the model's text literally", async () => {
+    await seedConv(9433, null, new Date(Date.now() - 48 * 3_600_000));
+    const s = stub();
+    expect(
+      await runAgentNudge({
+        tenantId,
+        threadId: `${tenantId}:${instanceId}:9433`,
+        nudge: { source: "ASAAS", status: "paid" },
+        base: appDb,
+        deps: {
+          makeModel: () =>
+            new FakeListChatModel({ responses: ["Pago {{contact.email}}"] }),
+          makeClient: s.makeClient,
+          checkpointer: new MemorySaver(),
+          persistUsage: async () => {},
+        },
+      }),
+    ).toBe("noted-window");
+    expect(s.notes).toEqual([
+      [9433, `${OUTSIDE_WINDOW_NOTE_PREFIX}Pago {{ '{{' }}contact.email}}`],
+    ]);
+    await seedConv(9434, null, new Date(Date.now() - 48 * 3_600_000));
+    const h = stub();
+    await runAgentNudge({
+      tenantId,
+      threadId: `${tenantId}:${instanceId}:9434`,
+      nudge: { source: "followup", kind: "inactivity", step: 3 },
+      base: appDb,
+      deps: {
+        makeModel: () =>
+          new HandoffThenReplyModel(
+            "Vou te encaminhar!",
+            "Um humano vai te atender {{contact.name}}.",
+          ) as never,
+        makeClient: h.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      },
+    });
+    expect(h.notes).toEqual([
+      [
+        9434,
+        `${OUTSIDE_WINDOW_NOTE_PREFIX}Um humano vai te atender {{ '{{' }}contact.name}}.`,
+      ],
+    ]);
   });
 
   test("human-handling conversation → private note, never a customer message", async () => {

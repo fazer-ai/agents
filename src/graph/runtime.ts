@@ -23,6 +23,7 @@ import {
 } from "@/modules/chatwoot/gate-close";
 import { conversationOwnershipNow } from "@/modules/chatwoot/human-takeover";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
+import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
   buildQuoteResolver,
   parseChatwootMessages,
@@ -860,7 +861,13 @@ async function deliverPendingAttachments(
         file.bytes,
         file.fileName,
         file.mime,
-        { caption: file.caption },
+        // The caption is the model's text, escaped for Chatwoot's Liquid.
+        {
+          caption:
+            file.caption === undefined
+              ? undefined
+              : literalForChatwoot(file.caption),
+        },
       );
       sent = true;
       emitFlowEvent(flow, {

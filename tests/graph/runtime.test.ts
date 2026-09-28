@@ -4517,6 +4517,63 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(await silenceRetryLine(98858)).toBeNull();
   });
 
+  // An image caption is the model's text riding as the message content, which Chatwoot
+  // renders as Liquid like any other, so it goes escaped (the wire shape is pinned in
+  // chatwoot-liquid.test.ts), and so does the reply beside it.
+  test("the caption and the reply reach the customer literally", async () => {
+    await allowImageHost();
+    await seedConversation(98943, null);
+    const sent: Array<[string, string | undefined]> = [];
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        sent.push(["message", content]);
+        return {};
+      },
+      toggleStatus: async () => ({}),
+      toggleTyping: async () => ({}),
+      sendFileAttachment: async (
+        _c: number,
+        _b: ArrayBuffer,
+        _f: string,
+        _m: string,
+        o: { caption?: string } = {},
+      ) => {
+        sent.push(["attachment", o.caption]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const model = new ScriptedSilenceModel([
+      {
+        text: "",
+        calls: [
+          {
+            name: "send_image",
+            args: { url: IMG_URL, caption: "Foto {{contact.email}}" },
+          },
+        ],
+      },
+      { text: "Veja {{foo}}" },
+    ]);
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98943 }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        imageDeps,
+      },
+    });
+    expect(sent).toContainEqual([
+      "attachment",
+      "Foto {{ '{{' }}contact.email}}",
+    ]);
+    expect(sent).toContainEqual(["message", "Veja {{ '{{' }}foo}}"]);
+  });
+
   // NOTE: The reply the model wrote beside a tool call is delivered, so that turn is not a silence.
   test("a recovered reply is not retried", async () => {
     await seedConversation(98857, null);

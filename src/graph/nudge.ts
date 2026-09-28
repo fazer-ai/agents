@@ -17,6 +17,7 @@ import {
 } from "@/modules/chatwoot/gate-close";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
+import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
   parseLiveConversation,
   shouldBotHandle,
@@ -1519,8 +1520,15 @@ async function runAgentNudgeBody(
       cfg.promptVars,
       cfg.promptOpts,
     );
-    if (!sig) return text;
-    const [out = text] = attachSignature([text], sig, cfg.signatureConfig);
+    // The model's text is escaped for Chatwoot's Liquid, the operator's signature is not.
+    if (!sig) return literalForChatwoot(text);
+    const [out = literalForChatwoot(text)] = attachSignature(
+      [text],
+      sig,
+      cfg.signatureConfig,
+      undefined,
+      literalForChatwoot,
+    );
     return out;
   };
 
@@ -1567,7 +1575,7 @@ async function runAgentNudgeBody(
       delivered = true;
       await client.sendPrivateNote(
         conversationId,
-        `${OUTSIDE_WINDOW_NOTE_PREFIX}${line}`,
+        `${OUTSIDE_WINDOW_NOTE_PREFIX}${literalForChatwoot(line)}`,
       );
       return "noted-window" as const;
     };
@@ -2387,7 +2395,7 @@ async function runAgentNudgeBody(
         delivered = true;
         await client.sendPrivateNote(
           conversationId,
-          `${OUTSIDE_WINDOW_NOTE_PREFIX}${screened}`,
+          `${OUTSIDE_WINDOW_NOTE_PREFIX}${literalForChatwoot(screened)}`,
         );
         markFollowUp("noted-window");
         await applyPostActions({
@@ -2453,7 +2461,7 @@ async function runAgentNudgeBody(
     delivered = true;
     await client.sendPrivateNote(
       conversationId,
-      `${OUTSIDE_WINDOW_NOTE_PREFIX}${reply}`,
+      `${OUTSIDE_WINDOW_NOTE_PREFIX}${literalForChatwoot(reply)}`,
     );
     logger.info(
       "agentNudge noted (outside 24h window, no template): conv=%s source=%s",
@@ -2465,7 +2473,7 @@ async function runAgentNudgeBody(
     return "noted-window";
   }
   delivered = true;
-  await client.sendPrivateNote(conversationId, reply);
+  await client.sendPrivateNote(conversationId, literalForChatwoot(reply));
   logger.info(
     "agentNudge noted: conv=%s source=%s",
     String(conversationId),

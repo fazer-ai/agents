@@ -113,6 +113,31 @@ describe("what the gate hands the caller", () => {
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain("RECUSADA");
   });
+
+  // The note quotes the refused reply and the judge's rationale, both model text, and
+  // Chatwoot renders a note as Liquid; quoted as they were, a refused `{{contact.email}}` would fill in.
+  test("the note quotes the model's text literally", async () => {
+    const notes: string[] = [];
+    const sink = chatwootNoteSink(
+      {
+        sendPrivateNote: async (_c: number, t: string) => {
+          notes.push(t);
+          return {};
+        },
+      } as unknown as ChatwootClient,
+      7,
+    );
+    await sink({
+      direction: "output",
+      outcome: "handed-off",
+      action: "handoff",
+      rationale: "citou {{foo}}",
+      refused: "Seu cadastro: {{contact.email}}",
+    });
+    expect(notes[0]).toContain("citou {{ '{{' }}foo}}");
+    expect(notes[0]).toContain("Seu cadastro: {{ '{{' }}contact.email}}");
+    expect(notes[0]).not.toContain("{{contact.email}}");
+  });
 });
 
 function client(opts: { toggleThrows?: boolean; assignThrows?: boolean }) {

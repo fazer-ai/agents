@@ -204,6 +204,22 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
     expect(off.sign?.("Abrimos seu caso.")).toBe("Abrimos seu caso.");
   });
 
+  // The signer owns the whole opening, so it is the one that escapes the model's part;
+  // the operator's signature keeps its Liquid, with or without one configured.
+  test("the signer escapes the model's text and leaves the signature's Liquid alone", async () => {
+    const on = (await seenFor(picked, 3n, 77, {
+      ...SIGNATURE_DEFAULTS,
+      enabled: true,
+      text: "Att {{contact.name}}",
+      position: "bottom",
+    })) as { sign?: (t: string) => string };
+    expect(on.sign?.("Caso {{foo}}")).toBe(
+      "Caso {{ '{{' }}foo}}\n\nAtt {{contact.name}}",
+    );
+    const off = (await seenFor(picked, 3n)) as { sign?: (t: string) => string };
+    expect(off.sign?.("Caso {{foo}}")).toBe("Caso {{ '{{' }}foo}}");
+  });
+
   test("a config written without the account is honored as-is", async () => {
     const legacy = { ...picked, targetInstanceId: null };
     expect(await seenFor(legacy, 4n)).toMatchObject({

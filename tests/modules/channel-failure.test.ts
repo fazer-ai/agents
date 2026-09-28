@@ -634,6 +634,42 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     }
   });
 
+  // The text replacing the voice note is the model's reply, which Chatwoot renders as
+  // Liquid, so it goes escaped; the operator's signature keeps its own Liquid.
+  test("the model's text goes escaped and the signature's Liquid is left alone", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          signature: {
+            enabled: true,
+            text: "Att {{contact.name}}",
+            position: "bottom",
+          },
+        },
+      },
+    });
+    try {
+      const cw = fakeChatwoot({});
+      await mediaFallbackHandler(
+        {
+          ...(await claimed(9001)),
+          payloadSecret: encryptJson("Seu cadastro: {{contact.email}} fim"),
+        },
+        appDb,
+        cw.makeClient,
+      );
+      expect(cw.sent.map((m) => m.text)).toEqual([
+        "Seu cadastro: {{ '{{' }}contact.email}} fim\n\nAtt {{contact.name}}",
+      ]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: {} },
+      });
+    }
+  });
+
   test("an inbox handed to another agent, or a test agent on a conversation never activated, gets nothing", async () => {
     const other = await suDb.agent.create({
       data: { tenantId, name: "Outro", systemPrompt: "x", settings: {} },

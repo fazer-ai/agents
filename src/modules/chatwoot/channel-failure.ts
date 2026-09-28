@@ -20,6 +20,7 @@ import { proactiveSendMode } from "@/modules/service-window/service";
 import { attachSignature, signatureFor } from "@/modules/signature/service";
 import { mediaAnnotationFor } from "./annotations";
 import { type LoadChatwootClientDeps, loadChatwootClient } from "./instance";
+import { literalForChatwoot } from "./liquid";
 import { chatwootMessageListLength, parseChatwootMessages } from "./messages";
 import { parseLiveConversation, shouldBotHandle } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
@@ -481,10 +482,21 @@ export async function mediaFallbackHandler(
   // ONE message, like every single-message send here (the follow-up, the handoff's farewell): the
   // signature rule is applied to it as to any of those. A reply over the channel's ceiling is not
   // sent: the channel would refuse it after Chatwoot took it, and a voice note that long (minutes of
-  // audio) is not a shape this path is for.
+  // audio) is not a shape this path is for. Counted on what the channel receives, before the escape
+  // below, which Chatwoot renders away.
   if (Array.from(signed).length > CHANNEL_TEXT_MAX)
     return stop("the reply is longer than the channel takes in one message");
-  await client.sendMessage(conversationId, signed, { sendId });
+  // The model's text is escaped for Chatwoot's Liquid and the signature is not.
+  const [wire = literalForChatwoot(text)] = sig
+    ? attachSignature(
+        [text],
+        sig,
+        cfg.signatureConfig,
+        undefined,
+        literalForChatwoot,
+      )
+    : [literalForChatwoot(text)];
+  await client.sendMessage(conversationId, wire, { sendId });
   return { outcome: "done" };
 }
 

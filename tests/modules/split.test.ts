@@ -1133,6 +1133,130 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
     );
     expect(out).toEqual({ delivered: 1, failed: false, unproven: false });
   });
+
+  // TEXT THE MODEL WROTE REACHES THE CUSTOMER AS WRITTEN. Chatwoot renders every
+  // outgoing message as Liquid, so `{{contact.email}}` in a reply arrives filled with the
+  // contact's email. Each balloon goes out escaped; the operator's signature, which is theirs to
+  // template, is attached as it is. Wire shapes are pinned in chatwoot-liquid.test.ts.
+  describe("Liquid in the model's text", () => {
+    const EMAIL = "{{ '{{' }}contact.email}}";
+    test("split off: the one message is escaped", async () => {
+      const rec = { sent: [] as string[], typing: [] as boolean[] };
+      await deliverReply(
+        failingStub(rec, () => false),
+        1,
+        "Seu cadastro: {{contact.email}} fim",
+        { ...SPLIT_DEFAULTS, enabled: false },
+        noSleep,
+      );
+      expect(rec.sent).toEqual([`Seu cadastro: ${EMAIL} fim`]);
+    });
+
+    test("split on: every balloon is escaped, and one without Liquid is untouched", async () => {
+      const rec = { sent: [] as string[], typing: [] as boolean[] };
+      await deliverReply(
+        failingStub(rec, () => false),
+        1,
+        "Oi {{contact.email}}\n\nComo vai?\n\nRef {{foo}}",
+        { ...SPLIT_DEFAULTS, enabled: true },
+        noSleep,
+      );
+      expect(rec.sent).toEqual([
+        `Oi ${EMAIL}`,
+        "Como vai?",
+        "Ref {{ '{{' }}foo}}",
+      ]);
+    });
+
+    test("the operator's signature keeps its own Liquid, the model's text does not", async () => {
+      const rec = { sent: [] as string[], typing: [] as boolean[] };
+      await deliverReply(
+        failingStub(rec, () => false),
+        1,
+        "Resposta com {{foo}}",
+        { ...SPLIT_DEFAULTS, enabled: false },
+        noSleep,
+        undefined,
+        undefined,
+        null,
+        {
+          text: "Att {{contact.name}}",
+          position: "bottom",
+          separator: "blank",
+          frequency: "once",
+        },
+      );
+      expect(rec.sent).toEqual([
+        "Resposta com {{ '{{' }}foo}}\n\nAtt {{contact.name}}",
+      ]);
+    });
+
+    test("the consolidated retry is escaped and signed once, like the balloons it replaces", async () => {
+      const rec = { sent: [] as string[], typing: [] as boolean[] };
+      const out = await deliverReply(
+        failingStub(rec, (_c, n) => n === 2),
+        1,
+        "Olá {{a}}\n\nComo {{b}}\n\nFim {{c}}",
+        { ...SPLIT_DEFAULTS, enabled: true },
+        noSleep,
+        undefined,
+        undefined,
+        null,
+        {
+          text: "Att {{contact.name}}",
+          position: "bottom",
+          separator: "blank",
+          frequency: "once",
+        },
+      );
+      expect(out.failed).toBe(false);
+      expect(rec.sent).toEqual([
+        "Olá {{ '{{' }}a}}",
+        "Como {{ '{{' }}b}}\n\nFim {{ '{{' }}c}}\n\nAtt {{contact.name}}",
+      ]);
+    });
+
+    // Whether the retry is signed is read off the balloons it replaces, which now differ from the raw
+    // text by the escape alone: that difference is not a signature.
+    test("a retry after a top signature already delivered is escaped and not signed again", async () => {
+      const rec = { sent: [] as string[], typing: [] as boolean[] };
+      await deliverReply(
+        failingStub(rec, (_c, n) => n === 2),
+        1,
+        "Olá {{a}}\n\nComo {{b}}\n\nFim",
+        { ...SPLIT_DEFAULTS, enabled: true },
+        noSleep,
+        undefined,
+        undefined,
+        null,
+        {
+          text: "Alex",
+          position: "top",
+          separator: "blank",
+          frequency: "once",
+        },
+      );
+      expect(rec.sent).toEqual([
+        "Alex\n\nOlá {{ '{{' }}a}}",
+        "Como {{ '{{' }}b}}\n\nFim",
+      ]);
+    });
+
+    test("an unsigned retry is escaped too", async () => {
+      const rec = { sent: [] as string[], typing: [] as boolean[] };
+      await deliverReply(
+        failingStub(rec, (_c, n) => n === 2),
+        1,
+        "Olá {{a}}\n\nComo {{b}}\n\nFim",
+        { ...SPLIT_DEFAULTS, enabled: true },
+        noSleep,
+      );
+      expect(rec.sent).toEqual([
+        "Olá {{ '{{' }}a}}",
+        "Como {{ '{{' }}b}}\n\nFim",
+      ]);
+    });
+  });
 });
 
 // A DELIVERY PROVES ITSELF BY NAME, NOT BY TEXT (issue #499).

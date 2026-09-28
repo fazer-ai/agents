@@ -4,15 +4,12 @@ import { interpolatePromptVars } from "@/graph/prompt";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { makeConfig } from "../utils/agent-config";
 
-// ISSUE #749, a metade que NÃO passa pelo banco: a recomposição do prompt quando o instante da
-// mensagem só é conhecido depois que a config já foi carregada (o flush do debounce e o religamento
-// manual, que carregam a config e só então buscam a conversa no Chatwoot).
-//
-// O que está sob teste é a forma da recomposição, não a redação: UMA passada sobre o template do
-// operador, com as seções de contexto reanexadas ao texto já pronto. É essa forma que mantém a
-// garantia de que um valor vindo de DADO — um atributo do Chatwoot preenchido pelo cliente — nunca
-// vira placeholder resolvido. Interpolar de novo sobre o prompt pronto passaria em qualquer teste de
-// idade e abriria essa porta em silêncio.
+// A idade da mensagem, a metade que NÃO passa pelo banco: a recomposição do prompt quando o instante
+// só é conhecido depois que a config foi carregada (o flush do debounce e o religamento manual).
+// Sob teste está a forma da recomposição, não a redação: UMA passada sobre o template do operador,
+// com as seções de contexto reanexadas ao texto já pronto. É essa forma que garante que um valor
+// vindo de DADO (um atributo do Chatwoot preenchido pelo cliente) nunca vira placeholder resolvido.
+// Interpolar de novo sobre o prompt pronto passaria em qualquer teste de idade e abriria essa porta.
 
 const AGORA = new Date("2026-09-20T12:00:00-03:00");
 const TRES_DIAS = new Date("2026-09-17T12:00:00-03:00");

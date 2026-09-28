@@ -219,10 +219,9 @@ describe.skipIf(!dbUp)("attribute context in the system prompt", () => {
   });
 
   test("after a burst, what the operator sees and what the agent reads agree", async () => {
-    // The test above proves OUR bag survives a concurrent burst. It stubs the Chatwoot call to a
-    // no-op, so it says nothing about the other side — and the other side was where issue #112
-    // lived: the mirror kept every key while Chatwoot kept one, and nothing ever reconciled them
-    // (agent bots never receive contact_updated). Both views are asserted here, against a Chatwoot
+    // NOTE: The test above stubs the Chatwoot call, so it proves only OUR bag survives a burst.
+    // Chatwoot's side can diverge (every key mirrored, one kept) and nothing reconciles it, since
+    // agent bots never receive contact_updated. Both views are asserted here, against a Chatwoot
     // that replaces the bag exactly as the deployed fork does.
     const convId = CONV_ID + 2;
     const contact = await suDb.contact.findFirstOrThrow({
@@ -263,7 +262,7 @@ describe.skipIf(!dbUp)("attribute context in the system prompt", () => {
     const tool = tools.find((t) => t.name === "set_custom_attribute");
     if (!tool) throw new Error("set_custom_attribute missing");
 
-    // The burst from the report: several keys per scope in ONE turn.
+    // NOTE: Several keys per scope in ONE turn.
     await Promise.all([
       tool.invoke({ key: "produto", value: "cadeira" }),
       tool.invoke({ key: "medida", value: "90cm" }),

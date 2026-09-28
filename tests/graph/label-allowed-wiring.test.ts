@@ -14,7 +14,7 @@ import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
-// Issue #638: the list reaches the tool through the toolset the runtime builds, not only through a
+// The allowed-labels list reaches the tool through the toolset the runtime builds, not only through a
 // ctx a unit test hands to `buildNativeTools` itself. Asked of `buildToolset` with the native
 // builder injected, so what is checked is exactly the object the runtime passes on.
 
@@ -85,8 +85,8 @@ describe.skipIf(!dbUp)("the allowed list reaches set_labels", () => {
     await app?.$disconnect();
   });
 
-  // Review round 2: a responder turn passes no reporter of its own, and a write under `accept` was
-  // counted nowhere. The toolset now writes it as its own `tool` line.
+  // NOTE: A responder turn passes no reporter of its own, so without the toolset's own `tool` line a
+  // write under `accept` would be counted nowhere.
   test("a turn without its own reporter gets the write as a tool line", async () => {
     let seen: Record<string, unknown> | undefined;
     const turnId = `labels-638-${process.pid}`;

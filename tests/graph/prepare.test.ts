@@ -251,13 +251,10 @@ describe("buildSpeechNormalizer", () => {
     expect(getCaptured()).toBeNull();
   });
 
-  // The operator pointed the rewrite at its own credential and that credential is gone. Reaching for
-  // the AGENT's key would be a silent substitution onto a provider that may not even accept it, so
-  // the rewrite is skipped and the audio goes out from the raw text.
-  //
-  // NOTE: the provider is named on purpose. A dedicated credential without one is refused by the
-  // resolution itself, which would make this pass without the vault lookup ever mattering — a green
-  // test proving the wrong guard.
+  // NOTE: The rewrite's own credential is gone. Reaching for the AGENT's key would be a silent
+  // substitution onto a provider that may not accept it, so the rewrite is skipped and the audio
+  // goes out from the raw text. The provider is named on purpose: a dedicated credential without one
+  // is refused by the resolution itself, which would pass without the vault lookup mattering.
   test("skips entirely when its own credential did not resolve", () => {
     const { makeModel, getCaptured } = captureModel();
     const cfg = makeConfig({
@@ -296,13 +293,12 @@ describe("buildSpeechNormalizer", () => {
   });
 });
 
-// The observability block is the ONE block the playground's draft overrides do not reach, and the
-// reason is what the two kinds of setting are. Every other override changes how the agent BEHAVES —
-// prompt, model, tools, guardrails — and the playground exists to try those unsaved. This one
-// changes what the platform STORES about the run, and a draft that widened it would record the
-// customer's tool values, or full-size rows, from a switch the operator never committed and can
-// close the tab on, while the console's own warning reads the saved settings and says "Save to
-// apply" (issue #58).
+// The observability block is the ONE block the playground's draft overrides do not reach. Every
+// other override changes how the agent BEHAVES (prompt, model, tools, guardrails), and the
+// playground exists to try those unsaved. This one changes what the platform STORES about the run:
+// a draft that widened it would record the customer's tool values, or full-size rows, from a switch
+// the operator never committed, while the console's warning reads the saved settings and says
+// "Save to apply".
 describe("prepare — a draft cannot widen what is recorded", () => {
   test("the draft's observability block is ignored, the saved one decides", () => {
     const source = readFileSync(
@@ -314,10 +310,9 @@ describe("prepare — a draft cannot widen what is recorded", () => {
     expect(source).not.toContain("readObservabilityConfig(effSettings)");
   });
 
-  // AND NOWHERE ELSE READS IT ITS OWN WAY. Checking `prepare.ts` alone missed the file beside it:
-  // `runPlaygroundFollowup` had its own `readObservabilityConfig(settings)` on the DRAFT bag, so
-  // turning the tool-values switch on without saving recorded the customer's values on a simulated
-  // follow-up while the console said "Save to apply". Proving one call site is not proving the rule.
+  // NOTE: Nowhere else reads it its own way. A second reader on the DRAFT bag (a playground
+  // follow-up, say) records the customer's tool values from an unsaved switch while the console says
+  // "Save to apply", so proving one call site is not proving the rule.
   test("every reader of the block is one of the four that may have one", async () => {
     const files = new Bun.Glob("src/**/*.{ts,tsx}");
     const found: string[] = [];
@@ -325,14 +320,14 @@ describe("prepare — a draft cannot widen what is recorded", () => {
       new URL("../../", import.meta.url).pathname,
     )) {
       if (f.endsWith("modules/flowlog/settings.ts")) continue; // the definition
-      // Through the scan, so a comment naming the reader is not counted as a call to it (#424).
+      // NOTE: Through the scan, so a comment naming the reader is not counted as a call to it.
       const src = codeOnly(
         await Bun.file(new URL(`../../${f}`, import.meta.url)).text(),
       );
       if (src.includes("readObservabilityConfig(")) found.push(f);
     }
-    // The turn's own read, the settings DTO, the shared derivation, and the console's form pair.
-    // A fifth entry is a fifth answer to the same question, and the last one was a defect.
+    // NOTE: The turn's own read, the settings DTO, the shared derivation, and the console's form
+    // pair. A fifth entry is a fifth answer to the same question.
     expect(found.sort()).toEqual([
       "src/client/pages/agents/observabilityFormState.ts",
       "src/graph/prepare.ts",

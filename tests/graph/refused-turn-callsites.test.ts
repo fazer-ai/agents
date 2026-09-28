@@ -1,22 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { codeOnly, withoutComments } from "@/tests/utils/source-text";
 
-// THE RULE THE ROLLBACK DEPENDS ON, AND THE ONE A PATCH CAN SILENTLY BREAK.
-//
-// `undoRefusedTurn` cannot be reached from inside a turn's refusals unless each of them goes out
-// through `refuse`. There are eight in `runAgentNudge` and nine in `runLoadedTurn`, spread over
-// hundreds of lines, and the next one will be written by someone adding a gate and copying the line
-// above it — which is what a bare `return "stale";` looks like. Nothing fails when they do: the send
-// is still suppressed, the outcome is still right, and the only symptom is the next turn answering
-// about a message nobody received, which is the defect issues #251 and #315 opened for.
-//
-// So the fence is on the SPELLING, at the position where it matters: below the point where a turn has
-// been generated, a refusal is not a `return`, it is a `refuse`.
-//
-// TWO SPELLINGS, and the second is why this predicate does not just look for `return "x";`. A refusal
-// can also ride a ternary — `return attachments.sent ? "posted" : "stale";` — and `runLoadedTurn` has
-// two of those. A sweep written against the first spelling passes over them without a word, which is
-// the shape of every scan that reports zero because it was looking for the wrong thing.
+// `undoRefusedTurn` is reachable from a turn's refusals only if each goes out through `refuse`. A
+// bare `return "stale";` below the point where the turn was generated fails nothing (the send is
+// still suppressed, the outcome is right) and the only symptom is the next turn answering about a
+// message nobody received. So the fence is on the SPELLING: below that point a refusal is a
+// `refuse`, not a `return`. A refusal can also ride a ternary, so the predicate does not just look
+// for `return "x";`, which would pass over `return sent ? "posted" : "stale";`.
 
 // The outcomes that mean "the turn was generated and the customer got none of it". Everything else a
 // turn can return ("posted", "empty", "silent", "messaged", "noted", …) is not a refusal: something
@@ -27,28 +17,23 @@ const TURN_REFUSALS = [
   "superseded",
   "blocked",
   "taken-over",
-  // A rajada que uma PESSOA atendeu (issue #703). Chega ao `refuse` pela mesma VARIÁVEL que o
-  // `superseded` — o `postBlocked` devolve a palavra e o caller escreve `return refuse(blocked)` —
-  // então a isenção da NOTE abaixo cobre as duas. Entra na lista porque é recusa pós-geração como
-  // qualquer outra: o turno rodou, e o que ele produziu tem que ser desfeito.
+  // A burst a PERSON answered. It reaches `refuse` through the same VARIABLE as `superseded`
+  // (`postBlocked` returns the word and the caller writes `return refuse(blocked)`), so the NOTE's
+  // exemption below covers both. It is listed because it is a post-generation refusal like any
+  // other: the turn ran, and what it produced has to be undone.
   "answered-elsewhere",
 ] as const;
 
 // The stretch below the closure, stripped, or `null` when the closure is gone. Everything above it is
-// a refusal BEFORE the invoke, where there is no generated turn to take back and `refuse` would be a
-// checkpointer round trip for nothing.
-//
-// THE ANCHOR IS SOUGHT IN THE STRIPPED TEXT TOO, which is why this is one function and not an offset
-// each caller computes. A comment naming the closure would start the scan above the real one and drag
-// every pre-invoke refusal into range — the exact thing the offset exists to exclude — and the floor
-// below would count a `refuse(` written in prose as a routed one (#424).
+// a refusal BEFORE the invoke, with no generated turn to take back, where `refuse` would be a
+// checkpointer round trip for nothing. One function rather than an offset each caller computes,
+// because the anchor must be sought in the stripped text: a comment naming the closure would drag
+// every pre-invoke refusal into range, and the floor would count a `refuse(` in prose as routed.
 export function refuseSection(source: string): string | null {
-  // TWO VIEWS, AND THE OFFSET CROSSES BETWEEN THEM. The anchor is located in the fully stripped text,
-  // because a string or a comment that spells the closure would otherwise start the section above the
-  // real one and drag every pre-invoke refusal into range. The section itself is the comment-stripped
-  // text, because the pattern downstream READS a string literal. They line up because the scan
-  // replaces removed characters in place. (Comments alone were the first version; review pointed out
-  // a literal does it too.)
+  // NOTE: Two views, and the offset crosses between them. The anchor is found in the fully stripped
+  // text, because a string or a comment spelling the closure would start the section above the real
+  // one. The section is the comment-stripped text, because the pattern downstream READS a string
+  // literal. They line up because the scan replaces removed characters in place.
   const at = codeOnly(source).indexOf("const refuse = async (");
   return at === -1 ? null : withoutComments(source).slice(at);
 }
@@ -60,15 +45,10 @@ export function bareRefusalsAfterTheRollback(
   const code = refuseSection(source);
   if (code === null) return ["the `refuse` closure is gone"];
   const any = outcomes.join("|");
-  // COMMENTS FIRST, and this is not tidiness. Collapsing whitespace below makes a statement one
-  // string, and prose has no `;` in it — so the word "returning" in a NOTE two paragraphs above a
-  // routed refusal pairs with that refusal's literal and reports a site that does not exist. This
-  // file's comments are long and quote the outcomes by name, so that is the normal case, not a corner
-  // one. The two phantom sites it cost here are why the scan is shared now (#424); `withoutComments`
-  // rather than `codeOnly` because the pattern below READS a string literal.
-  //
-  // What is already routed stops being a candidate, so what the match reports is the spelling that
-  // was left behind rather than a count of anything.
+  // NOTE: Comments are stripped first. Collapsing whitespace makes a statement one string and prose
+  // has no `;`, so a "returning" in a NOTE above a routed refusal would pair with its literal and
+  // report a site that does not exist. `withoutComments` rather than `codeOnly` because the pattern
+  // READS a string literal. Routed calls stop being candidates, so a match is a spelling left behind.
   const below = code
     .replace(new RegExp(`refuse\\("(?:${any})"\\)`, "g"), "refuse(ROUTED)")
     // Collapsed so a statement is one string no matter how the formatter broke it: `[^;]` is what
@@ -93,8 +73,8 @@ describe("every post-generation refusal rolls the turn back", () => {
     ]);
   });
 
-  // The second spelling, and the one the first version of this predicate could not see. A refusal
-  // that shares a return with a non-refusal is still a refusal on the branch that takes it.
+  // NOTE: The second spelling. A refusal that shares a return with a non-refusal is still a refusal
+  // on the branch that takes it.
   test("and flags one hiding on the losing side of a ternary", () => {
     const withTernary = `
   const refuse = async (outcome) => outcome;
@@ -123,8 +103,8 @@ describe("every post-generation refusal rolls the turn back", () => {
     expect(bareRefusalsAfterTheRollback(comparing, TURN_REFUSALS)).toEqual([]);
   });
 
-  // The trap the comment stripping exists for, kept as a row because it produced two phantom sites
-  // the first time this ran against runtime.ts.
+  // NOTE: The trap the comment stripping exists for: runtime.ts prose quotes the outcomes by name,
+  // so without the strip runtime.ts yields two phantom sites.
   test("prose above a routed refusal does not invent an offender", () => {
     const prosey = `
   const refuse = async (outcome) => outcome;
@@ -148,11 +128,9 @@ describe("every post-generation refusal rolls the turn back", () => {
     expect(bareRefusalsAfterTheRollback(before, NUDGE_REFUSALS)).toEqual([]);
   });
 
-  // The two things the section itself has to get right, and neither is visible from the predicate's
-  // own cases: prose naming the closure must not move the start, and a `refuse(` written in a comment
-  // must not count toward the floor below.
-  // A LITERAL does it too, which is the half the first version missed: `withoutComments` keeps string
-  // contents, so a stored snippet spelling the closure moved the start. Found by review.
+  // NOTE: What the section itself must get right, invisible from the predicate's cases: prose or a
+  // string literal naming the closure must not move the start (`withoutComments` keeps string
+  // contents), and a `refuse(` written in a comment must not count toward the floor below.
   test("the section starts past a closure spelled inside a string", () => {
     const stored =
       'const doc = "const refuse = async (o) => o;";\n' +
@@ -202,20 +180,13 @@ describe("every post-generation refusal rolls the turn back", () => {
   });
 });
 
-// THE BOUNDARY'S REFUSAL READ BEFORE THE REPLY IS DRAFTED, in both callers (issue #449, review
-// round 5).
-//
-// A turn the tool boundary refused ends on an empty assistant message, which is byte for byte what a
-// turn that chose silence ends on. The caller cannot tell them apart by asking its own fence again,
-// because the fence is the thing that can have changed its mind — the channel-redirect one reads
-// `agent.enabled` on every ask — and read as silence the turn advances a follow-up ladder or a
-// handled watermark over a message nothing answered.
-//
-// A source walk for `runLoadedTurn`, for the reason still-wanted-strictness.test.ts gives about its
-// own: the webhook path builds its fence from the conversation row, so a non-monotonic one is not
-// injectable there. `runAgentNudge` covers the same seam behaviourally in nudge.test.ts, and this
-// covers both files — including the ORDER, which is the whole property: asked after `drafted`, the
-// line would be reading a decision already made.
+// The boundary's refusal is read before the reply is drafted, in both callers. A refused turn ends
+// on an empty assistant message, byte for byte what a turn that chose silence ends on, and asking
+// the fence again cannot tell them apart (the channel-redirect fence reads `agent.enabled` on every
+// ask), so read as silence the turn would advance a follow-up ladder or a handled watermark over a
+// message nothing answered. A source walk because the webhook path builds its fence from the
+// conversation row (see still-wanted-strictness.test.ts), and it pins the ORDER: asked after
+// `drafted`, the line would read a decision already made.
 describe("the called-off result is read before the reply is drafted", () => {
   test.each([["src/graph/runtime.ts"], ["src/graph/nudge.ts"]])(
     "%s asks turnWasCalledOff first",

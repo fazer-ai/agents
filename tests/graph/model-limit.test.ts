@@ -46,8 +46,7 @@ function failing(error: unknown) {
 
 // A provider can answer 200 with no completion at all. LangChain's own retry never sees it (the HTTP
 // call succeeded) and the failure only surfaces afterwards, inside BaseChatModel.invoke, reading
-// `generations[0][0].message`. On a real inbox that ended the turn and the customer got no reply at
-// all (issue #63).
+// `generations[0][0].message`. Unhandled, that ends the turn and the customer gets no reply at all.
 describe("runModelCall recovery from an empty completion", () => {
   test("an intermittent empty completion is retried and the answer comes through", async () => {
     const model = new EmptyThenReplyModel("hi", 1);
@@ -64,7 +63,7 @@ describe("runModelCall recovery from an empty completion", () => {
     expect(retries).toEqual([1]);
   });
 
-  // Two claims per case now, and the second is why this boundary exists: the call is not retried,
+  // NOTE: Two claims per case, and the second is why this boundary exists: the call is not retried,
   // AND what escapes it is a word of ours. The request carried the whole conversation, so the
   // provider's own sentence may be the customer's coming back — see @/lib/provider-failure.
   test("a provider 4xx is NOT retried, and reports its status without its prose", async () => {
@@ -108,9 +107,9 @@ describe("runModelCall recovery from an empty completion", () => {
     expect(err.message).not.toContain("generations[0][0]");
     expect((err.cause as Error).message).toContain("generations[0][0]");
     expect(model.calls).toBe(2);
-    // Same rule as every other replacement this boundary makes: `cause` is not where a reader looks,
-    // so the failing expression has to reach the process log on its own. Asserted here because the
-    // one replacement written by hand is exactly the one that can be forgotten (mutation found it).
+    // NOTE: Same rule as every other replacement this boundary makes: `cause` is not where a reader
+    // looks, so the failing expression has to reach the process log on its own. Asserted here because
+    // the one replacement written by hand is exactly the one that can be forgotten.
     expect(
       warned.map((w) => String(w?.err?.message ?? "")).join(" "),
     ).toContain("generations[0][0]");
@@ -148,9 +147,9 @@ describe("runModelCall recovery from an empty completion", () => {
     expect(logged).toContain(marker);
   });
 
-  // It is renamed now, like everything else crossing this boundary — but NOT into the empty-completion
-  // sentence, which is the confusion this test exists to prevent. The two are told apart by the fault,
-  // not by the error class, and the original survives as `cause` either way.
+  // NOTE: It is renamed, like everything else crossing this boundary, but NOT into the
+  // empty-completion sentence, which is the confusion this test exists to prevent. The two are told
+  // apart by the fault, not by the error class, and the original survives as `cause` either way.
   test("a TypeError that is not an empty completion is not retried, and is not called one", async () => {
     const original = new TypeError("undefined is not a function");
     const rejected = failing(original);

@@ -6,9 +6,9 @@ import {
   rememberIngested,
 } from "@/graph/ingest-dedup";
 
-// Issue #194. The table is the point: this decides whether a customer's words enter the memory the
-// agent reads for the next twenty attendances, and the wrong cell is not recoverable — nothing
-// re-delivers a message ingestion refused.
+// The table is the point: this decides whether a customer's words enter the memory the agent reads
+// for the next twenty attendances, and the wrong cell is not recoverable: nothing re-delivers a
+// message ingestion refused.
 
 const full = (from: number) =>
   Array.from({ length: INGEST_ID_WINDOW }, (_, i) => from + i);
@@ -18,7 +18,7 @@ describe("ingestVerdict", () => {
     ["nothing remembered yet", [], 100, "new"],
     ["a genuine re-delivery", [100, 101], 100, "duplicate"],
     ["a higher id, in order", [100, 101], 102, "new"],
-    // THE #194 CASE. Under the high-water mark this read as handled and the message was lost.
+    // NOTE: A plain high-water mark would read this as handled and lose the message.
     ["a lower id that was never folded in", [200], 100, "new"],
     ["a lower id, window not saturated", [150, 200, 300], 120, "new"],
     // Saturation is what makes a low id ambiguous, and only then is it refused.
@@ -54,10 +54,10 @@ describe("ingestVerdict", () => {
   });
 });
 
-// What the migration writes, and the reason it writes it that way. An upgraded row starts with the
-// old high-water mark repeated to the cap, so the mark keeps acting as a floor: the ids below it were
-// ingested by the build before this one and are simply not remembered. Seeded as a single element the
-// window would read as partial, and every one of them would have come back as `new` on a re-delivery.
+// What the migration writes, and why. An upgraded row starts with its high-water mark repeated to the
+// cap, so the mark keeps acting as a floor: the ids below it were ingested under the mark and are not
+// remembered. Seeded as a single element the window would read as partial, and every one of them
+// would come back as `new` on a re-delivery.
 describe("a window seeded by the migration", () => {
   const migrated = (mark: number) =>
     Array.from({ length: INGEST_ID_WINDOW }, () => mark);
@@ -71,8 +71,8 @@ describe("a window seeded by the migration", () => {
   test("hands over to real history as messages arrive", () => {
     let recent = migrated(500);
     for (const id of [600, 601, 602]) recent = rememberIngested(recent, id);
-    // The filler is still the floor until a cap's worth of real ids has pushed it out, and an
-    // out-of-order id ABOVE the old mark is ingestable throughout — which is the #194 case.
+    // NOTE: The filler is still the floor until a cap's worth of real ids has pushed it out, and an
+    // out-of-order id ABOVE the old mark is ingestable throughout.
     expect(ingestVerdict(recent, 400)).toBe("ancient");
     expect(ingestVerdict(recent, 599)).toBe("new");
   });

@@ -40,8 +40,8 @@ let instanceId = 0n;
 const CONV_BROKEN_CREDENTIAL = 940;
 const CONV_DISABLED = 941;
 const CONV_NO_AGENT_BOUND = 942;
-// A live agent whose operator flips it to monitoring INSIDE the nudge's model call (issue #209
-// review): the config the nudge loaded still says production, and the fence has to ask again.
+// A live agent whose operator flips it to monitoring INSIDE the nudge's model call: the config the
+// nudge loaded still says production, and the fence has to ask again.
 const CONV_FLIPPED = 943;
 let flippedAgentId = 0n;
 // Same flip, and the model answers with a TOOL CALL: the graph's own fence at the tool boundary has
@@ -53,7 +53,7 @@ let flippedToolAgentId = 0n;
 const CONV_SWITCHED_OFF = 945;
 let switchedOffAgentId = 0n;
 // Switched off BEFORE the claim's own strict ask and after the pre-invoke ones: the model factory
-// runs between them. The claim exit carried the literal "stale" (review round 13).
+// runs between them. The claim exit, too, must answer "agent-unavailable" rather than "stale".
 const CONV_SWITCHED_OFF_AT_CLAIM = 946;
 let switchedOffAtClaimAgentId = 0n;
 
@@ -140,7 +140,7 @@ describe.skipIf(!dbUp)("runAgentNudge: an agent that cannot author", () => {
       select: { id: true },
     });
 
-    // The state this issue is about: the agent is live and expected to answer, and its model
+    // NOTE: The state under test: the agent is live and expected to answer, and its model
     // credential does not resolve. A vault id that was never created stands in for the three real
     // ways to reach it (deleted entry, still-pending entry, a bare name where a ref is required).
     const broken = await suDb.agent.create({

@@ -7,14 +7,11 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // A IDADE DA MENSAGEM QUE DISPAROU O TURNO, do instante que o caminho tem em mãos até o prompt que o
-// modelo recebe (issue #749). O agente responde um e-mail de dez dias como se ele tivesse acabado de
-// chegar porque NADA no prompt responde "quando o cliente escreveu": `get_current_time` e
-// `{{hora_atual}}` respondem que dia é hoje, e o histórico é texto puro, sem carimbo por mensagem.
-//
-// O que este arquivo prova é a costura inteira, e não a redação: o valor tem que chegar ao prompt a
-// partir do INSTANTE DA MENSAGEM, nunca da coluna `last_inbound_at` do espelho — que é nula
-// exatamente na conversa que motivou a issue, a religada cujo espelho nasceu de uma troca de status.
-// A tabela de redação (minutos, horas, dias) fica no unitário, em tests/graph/prompt.test.ts.
+// modelo recebe. Sem ela, NADA no prompt responde "quando o cliente escreveu" (`get_current_time` e
+// `{{hora_atual}}` dizem que dia é hoje) e um e-mail de dez dias é respondido como recém-chegado.
+// Este arquivo prova a costura, não a redação: o valor vem do INSTANTE DA MENSAGEM, nunca da coluna
+// `last_inbound_at` do espelho, que é nula na conversa religada cujo espelho nasceu de uma troca de
+// status. A tabela de redação (minutos, horas, dias) fica em tests/graph/prompt.test.ts.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

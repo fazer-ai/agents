@@ -35,11 +35,10 @@ describe("graph thread keys", () => {
     expect(threadBelongsToTenant(chatwootThreadId(3n, 5n, 42), 3n)).toBe(true);
   });
 
-  // The fence and `parseThreadId` read the same prefix, so they have to read it the same way, or a
-  // thread one of them accepts is a thread the other one drops. Both now take the bounded parse:
-  // a prefix `BigInt` would convert to the acting tenant's id by another spelling (`003`, ` 3 `)
-  // no longer passes, and neither does one past what the column holds. Fails closed, which is the
-  // whole job of a fence the checkpointer tables have instead of RLS. Issue #407.
+  // NOTE: The fence and `parseThreadId` read the same prefix, so they must read it the same way, or
+  // a thread one accepts is a thread the other drops. Both take the bounded parse: a prefix that a
+  // bare `BigInt` would convert to the tenant's id by another spelling (` 3 `) does not pass, nor one
+  // past what the column holds. Fails closed: the fence stands in for RLS on the checkpointer tables.
   test("the fence reads the prefix the way parseThreadId does", () => {
     for (const prefix of [" 3 ", "+3", "0x3", "3.0", ""]) {
       expect(threadBelongsToTenant(`${prefix}:5:42`, 3n)).toBe(false);

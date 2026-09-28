@@ -7,8 +7,8 @@ import {
 import { buildPromptAudit } from "@/graph/prompt-audit";
 
 // Decision table for the rule that decides what the Logs page is allowed to keep of a turn's system
-// prompt (issue #141). The rule has exactly two inputs, where a piece of text came from and
-// whether it resolved, so it is written out as a table rather than as prose: the operator's own
+// prompt. The rule has exactly two inputs, where a piece of text came from and whether it
+// resolved, so it is written out as a table rather than as prose: the operator's own
 // words stay, a value that came from a person becomes its name and its length, a clock value stays
 // because no person authored it, and an unresolved placeholder stays exactly as it was typed.
 
@@ -159,12 +159,9 @@ describe("buildPromptAudit", () => {
 
 // The audited prompt and the prompt the model was actually given are two renderings of ONE template,
 // so they have to answer the same placeholders; only a context variable's VALUE may differ between
-// them. This is the test that fails when a rendering option is threaded into the turn and not into
-// the audit, which is how the schedule variables came to resolve for the model and stay literal in
-// the row — a log reporting an unresolved placeholder the model had been handed a value for.
-//
-// It reads the names from `PROMPT_ALL_VARS` rather than listing them, so a variable kind added later
-// is inside this test without anyone remembering to add it.
+// them. This fails when a rendering option is threaded into the turn and not into the audit, which
+// leaves a log reporting an unresolved placeholder the model was handed a value for. It reads the
+// names from `PROMPT_ALL_VARS` rather than listing them, so a variable kind added later is covered.
 describe("the audit answers the same placeholders the model's prompt did", () => {
   const names = [...PROMPT_ALL_VARS].sort();
   // Bracketed so a name is matched whole: the audit rewrites a resolved context var as

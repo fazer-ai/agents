@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { isNudgeOrigin, nudgeOrigin } from "@/graph/nudge-origin";
 
-// Issue #846: where a proactive turn came from, as the flow line records it and the console reads it.
+// Where a proactive turn came from, as the flow line records it and the console reads it.
 describe("nudgeOrigin", () => {
   test("each caller's source maps to its own origin", () => {
     expect(nudgeOrigin({ source: "followup" })).toBe("followup");

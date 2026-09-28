@@ -20,12 +20,10 @@ import {
 import { runClaimed } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #194, hazard 1, and the reason continuous ingestion became a job at all.
-//
-// A LangGraph invoke is a read-modify-write of the WHOLE message channel, so a message appended
-// beside a running turn is undone when that turn saves. On the inline path the append happened
-// anyway and the thread's own record advanced with it, which is what made the loss permanent: the
-// message was gone AND marked handled. What the job buys is a third answer — put it down, come back.
+// Continuous ingestion is a job because a LangGraph invoke is a read-modify-write of the WHOLE
+// message channel: a message appended beside a running turn is undone when that turn saves. Appended
+// inline, the thread's own record would advance anyway, leaving the message gone AND marked handled.
+// The job adds a third answer: put it down, come back.
 
 let appDb: PrismaClient;
 let suDb: PrismaClient;
@@ -88,9 +86,9 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
   });
 
   // A REAL row, claimed the way the tick claims it, rather than a hand-built `ClaimedJob`. The
-  // handler now re-reads its own row under the lock to see whether it was revoked while it waited
-  // (a /reset does exactly that), so a synthetic job with no row behind it is a job that has already
-  // been cancelled — and every test built that way would pass for the wrong reason.
+  // handler re-reads its own row under the lock to see whether it was revoked while it waited (a
+  // /reset does exactly that), so a synthetic job with no row behind it is a job already cancelled,
+  // and every test built that way would pass for the wrong reason.
   async function armAndClaim(
     contactInboxId: number,
     conversationId: number,
@@ -159,8 +157,9 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     // would dead-letter a contact's own message in a long conversation.
     expect(deferred.outcome).toBe("reschedule");
 
-    // The observable half. Nothing was appended, and — the part that made the inline loss permanent
-    // — the thread has no record claiming this message was handled, so the retry still ingests it.
+    // NOTE: The observable half. Nothing was appended, and the thread has no record claiming this
+    // message was handled (the record whose advance would make the loss permanent), so the retry
+    // still ingests it.
     expect(await contents()).toEqual([]);
     const owed = await suDb.agentThread.findUnique({
       where: {
@@ -182,12 +181,11 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     ]);
   });
 
-  // Round-11 review finding (P2). `encryptJson` returns a base64 blob and this repository's rule is
-  // that such a blob lives in a plain String column, never in a Prisma `Json` one: a Json payload is
-  // what gets logged or serialized whole, and it would carry a contact's own words with it. The
-  // ciphertext therefore has its own column, and what stays in the JSON must be metadata only.
-  // Issue #755: the instant Chatwoot recorded crosses the queue with the message, so a message folded
-  // in while nobody answered is still shown to the model with the date it was sent.
+  // `encryptJson` returns a base64 blob, which lives in a plain String column, never a Prisma `Json`
+  // one: a Json payload is what gets logged or serialized whole, and it would carry a contact's own
+  // words with it. The ciphertext has its own column, and the JSON holds metadata only. The instant
+  // Chatwoot recorded crosses the queue with the message, so a message folded in while nobody
+  // answered is still shown to the model with the date it was sent.
   test("the message's instant crosses the queue and lands on the message", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12555;
@@ -269,15 +267,12 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     ).rejects.toThrow(/no message body/);
   });
 
-  // Round-9 review finding (P1). /reset clears this thread's summaries, its AgentThread row and its
-  // checkpoint, all under the `ingest:<thread>` lock — and it cancels the pending COMPACTION job,
-  // because that is the only queued writer of this memory it knew about. Continuous ingestion is one
-  // now, and the worst shape of it is a job already CLAIMED and blocked on that very lock: it lands
-  // the instant the reset releases and rebuilds the thread from text the operator was told had been
-  // cleared, with the reset reported as successful.
-  //
-  // Staged the way it actually happens: the job is claimed FIRST (it is in memory, past every check
-  // a cancellation could reach), and the revocation runs while it waits.
+  // /reset clears this thread's summaries, AgentThread row and checkpoint under the `ingest:<thread>`
+  // lock, and revokes queued ingestion with them. The worst shape is a job already CLAIMED and blocked
+  // on that lock: it would land the instant the reset releases and rebuild the thread from text the
+  // operator was told had been cleared, with the reset reported as successful. Staged the way it
+  // happens: the job is claimed FIRST (past every check a cancellation could reach), and the
+  // revocation runs while it waits.
   test("a job revoked by a reset while it waited writes nothing", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12508;
@@ -320,11 +315,11 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     ).toBe(0);
   });
 
-  // THE REVOKE ORDERS ROWS AGAINST THE COMMAND (issue #736). `/reset` is not instantaneous: it waits
-  // for `withKeyedQueue('ingest:<thread>')` behind whatever ingestion is in flight, and `armIngest`
-  // does not take that queue, so a customer message landing in that stretch arms its own ingestion
-  // and is above the command by id. Unqualified, the revoke deleted it — and deleted, not retired,
-  // because INGEST_MESSAGE is JOB_DELETE_ON_DONE, so nothing afterwards says it ever existed.
+  // THE REVOKE ORDERS ROWS AGAINST THE COMMAND. `/reset` waits for `withKeyedQueue('ingest:<thread>')`
+  // behind whatever ingestion is in flight, and `armIngest` does not take that queue, so a customer
+  // message landing in that stretch arms its own ingestion and is above the command by id. An
+  // unqualified revoke would delete it, and delete rather than retire, because INGEST_MESSAGE is
+  // JOB_DELETE_ON_DONE, so nothing afterwards would say it ever existed.
   test("revoking up to a message spares the rows above it, in every status", async () => {
     const contactInboxId = 12_520;
     const graphThreadId = contactInboxThreadId(
@@ -392,29 +387,23 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
       `ingest:${graphThreadId}:901=CLAIMED`,
       `ingest:${graphThreadId}:902=DEAD`,
     ]);
-    // A FRONTEIRA MUDA QUANTAS MORTES VOLTAM, e é aqui que ela encontra a #739: o revoke devolve
-    // a morte que ele apagou para que o anúncio dela não se perca junto com a linha, e a fronteira
-    // apaga menos linhas, logo menos mortes voltam. A 702 morreu abaixo do comando e volta; a 902
-    // morreu acima, continua DEAD na tabela e continua DEVENDO o anúncio dela pelo caminho normal
-    // do dead-letter — o que seria errado é a fronteira poupar a linha e ainda assim anunciá-la
-    // como apagada, porque o anúncio afirma uma deleção que o Postgres não fez.
+    // NOTE: The boundary changes how many deaths come back: the revoke returns each death it erased,
+    // so its announcement is not lost with the row, and the boundary erases fewer rows. 702 died
+    // below the command and comes back; 902 died above, stays DEAD and still owes its announcement
+    // through the normal dead-letter path. Announcing a spared row as erased would claim a deletion
+    // Postgres never made.
     expect(apagadas.erasedDeaths.map((d) => d.dedupeKey)).toEqual([
       `ingest:${graphThreadId}:702`,
     ]);
   });
 
-  // THE KEY DECIDES, NOT THE PAYLOAD, and the two fabricated rows below are why. `payload` is a
-  // convenience copy that a row could be missing; the key cannot be, because `ingestDedupeKey`
-  // builds it and the prefix is everything up to the message id. Deciding by the payload gets one
-  // of the two sides wrong whichever way it is written: "delete what is at or below" leaves the
-  // undecidable row BELOW the boundary holding text the reset was asked to erase, and "delete what
-  // is not provably above" deletes the undecidable row ABOVE it, which is the customer message this
-  // fence exists to save. The blind scenario set of #736 asked for both clauses in one scenario,
-  // and only the key answers both.
-  //
-  // These rows are fabricated: `armIngest` writes key and payload from the same variable, so no
-  // route produces a disagreement. What is pinned is the direction the code fails in if a second
-  // writer ever appears.
+  // THE KEY DECIDES, NOT THE PAYLOAD. `payload` is a convenience copy a row could be missing; the key
+  // cannot be, because `ingestDedupeKey` builds it and the prefix is everything up to the message id.
+  // A payload-driven fence gets one side wrong either way: "delete what is at or below" leaves the
+  // undecidable row BELOW the boundary holding text the reset must erase, and "delete what is not
+  // provably above" deletes the undecidable row ABOVE it, the customer message this fence saves.
+  // The rows are fabricated (`armIngest` writes key and payload from the same variable): what is
+  // pinned is the direction the code fails in if a second writer ever appears.
   test("the key decides, so a payload that names no message spares nothing and loses nothing", async () => {
     const contactInboxId = 12_522;
     const graphThreadId = contactInboxThreadId(
@@ -507,18 +496,13 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     ]);
   });
 
-  // ONE STATEMENT, AND THAT IS THE ASSERTION (PR review round 1). The first version of this fence
-  // read the ids with `findMany` and deleted by id, which reads correctly and is still wrong: the
-  // caller's transaction runs at READ COMMITTED and `armIngest` takes neither the thread's queue
-  // nor its conversation row, so a delayed pre-reset delivery arming BETWEEN the two statements is
-  // absent from the id list and survives the reset, free to put pre-reset text back into the
-  // cleared thread. One statement sees rows committed up to its own start, which is the window the
-  // unqualified sweep always had rather than a wider one.
-  //
-  // Asserted structurally because the race itself is not reachable from a test: it needs a second
-  // connection committing at a controlled instant inside the reset. What IS checkable is the shape
-  // the review asked for, and the shape is what the fix is. A count alone would not catch a form
-  // that reads once and deletes once under a different name, so the kind is asserted too.
+  // ONE STATEMENT, AND THAT IS THE ASSERTION. Reading the ids with `findMany` and deleting by id
+  // reads correctly and is still wrong: the caller's transaction runs at READ COMMITTED and
+  // `armIngest` takes neither the thread's queue nor its conversation row, so a delayed pre-reset
+  // delivery arming BETWEEN the two statements would survive the reset. One statement sees rows
+  // committed up to its own start. Asserted structurally because the race needs a second connection
+  // committing inside the reset; the kind is asserted with the count, since a count alone would pass
+  // a form that reads once and deletes once under another name.
   test("the bounded revoke is a single DELETE, not a read followed by a delete", async () => {
     const contactInboxId = 12_523;
     const graphThreadId = contactInboxThreadId(
@@ -637,11 +621,10 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     ).toBe(0);
   });
 
-  // The other half of that fence, which a mutation run caught as untested: `claimSeq`, not just the
-  // status. A duplicate delivery re-arms the row back to PENDING without touching claimSeq, so the
-  // status alone covers that — but the tick can then CLAIM it again, which bumps the sequence and
-  // starts a second run while the first is still waiting on the thread lock. Two runs of one key at
-  // once is what the scheduler avoids everywhere else; here the first one stands down and the row
+  // The other half of that fence: `claimSeq`, not just the status. A duplicate delivery re-arms the
+  // row to PENDING without touching claimSeq, and the tick can then CLAIM it again, which bumps the
+  // sequence and starts a second run while the first still waits on the thread lock. Two runs of one
+  // key at once is what the scheduler avoids everywhere else; the first one stands down and the row
   // belongs to the claim that holds it.
   test("a job whose row was claimed again stands down for the newer run", async () => {
     const saver = new MemorySaver();
@@ -700,11 +683,10 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     ).toBe(1);
   });
 
-  // The dedupe key, which a mutation run caught as an untested rule. `enqueueJob` keeps ONE live row
-  // per (tenant, kind, dedupeKey) and a re-enqueue REPLACES the payload, so a key scoped to the
-  // thread would let the second message of a burst overwrite the first before either ran — the same
-  // message loss this job exists to stop, moved one layer out and much harder to see, because the
-  // thread would look healthy and only one of the two messages would ever have existed as work.
+  // The dedupe key. `enqueueJob` keeps ONE live row per (tenant, kind, dedupeKey) and a re-enqueue
+  // REPLACES the payload, so a key scoped to the thread would let the second message of a burst
+  // overwrite the first before either ran: the loss this job exists to stop, one layer out and
+  // harder to see, because the thread would look healthy.
   test("two messages queued on one thread are two jobs, not one", async () => {
     const contactInboxId = 12503;
     const graphThreadId = contactInboxThreadId(
@@ -730,8 +712,8 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     await arm(400, "primeira da rajada");
     await arm(401, "segunda da rajada");
 
-    // Claimed from the traffic-proportional half of the shared lane: ingestion no longer competes
-    // with the fixed-rate kinds for the same batch (src/modules/scheduler/lanes.ts).
+    // NOTE: Claimed from the traffic-proportional half of the shared lane, so ingestion does not
+    // compete with the fixed-rate kinds for the same batch (src/modules/scheduler/lanes.ts).
     const claimed = await claimDueTrafficJobs(50, appDb, new Date(), tenantId);
     // Read from the dedicated column, not from the JSON: the ciphertext of a contact's own words
     // does not live in `payload` (CLAUDE.md, Encryption).
@@ -742,19 +724,13 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     for (const job of claimed) await runClaimed(job, appDb);
   });
 
-  // THE BARRIER (round 2 review). Queuing the append cost synchronous ordering: a turn can start
-  // while a message meant for its context is still a row, and answer without it. The turn drains its
-  // own thread first, and the subtle half is that the drain ignores `run_at` — a job DEFERRED for a
-  // previous turn sits a minute in the future, and those are exactly the messages a starting turn is
-  // missing. A drain that only took due rows would skip them and look correct doing it.
-  // Issue #203, and the failure the in-process registry cannot see. The turn runs on whichever
-  // replica the Chatwoot webhook landed on and this job runs on the leader, so the Map that used to
-  // answer "is a turn reading this thread" is empty here and the append went in anyway, erased by
-  // that turn's save, and recorded as ingested, which is the loss #194 exists to close.
-  //
-  // The other replica is personified by what it actually leaves behind: the row, and nothing else.
-  // Marking through the module instead would mark THIS process's Map and the test would pass on the
-  // registry that is being replaced.
+  // THE BARRIER. A queued append gives up synchronous ordering: a turn can start while a message meant
+  // for its context is still a row. The turn drains its own thread first, and the drain ignores
+  // `run_at`: a job DEFERRED for a previous turn sits a minute in the future, and those are exactly
+  // the messages a due-only drain would skip. The turn runs on whichever replica the webhook landed
+  // on and this job on the leader, so an in-process registry of reading turns is empty here. The
+  // other replica is personified by what it leaves behind, the row; marking through the module would
+  // mark THIS process's registry and pass on a mechanism that cannot see the other replica.
   test("a turn held on another replica defers the append", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12561;
@@ -873,12 +849,11 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect(left).toBe(0);
   });
 
-  // Round-8 review finding (P2). A CLAIMED row counts as OWED, which is what lets compaction refuse
-  // to summarise an attendance whose messages are still coming — and it is also how one crash turns
-  // into a permanent stall. Ingestion has no tick of its own: these readers are its only path, and
-  // the drain claims PENDING rows only, so a row left CLAIMED by a process that died mid-job is
-  // invisible to the drain and owed forever. Every later compaction on that thread would reschedule
-  // and never run again.
+  // A CLAIMED row counts as OWED, which lets compaction refuse to summarise an attendance whose
+  // messages are still coming, and would also turn one crash into a permanent stall. Ingestion has no
+  // tick of its own: these readers are its only path, and the drain claims PENDING rows only, so a
+  // row left CLAIMED by a dead process would be owed forever and every later compaction on that
+  // thread would reschedule and never run.
   test("a claim left behind by a dead process is reaped, not owed forever", async () => {
     const contactInboxId = 12506;
     const graphThreadId = contactInboxThreadId(
@@ -1020,10 +995,10 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect(row.status).toBe("PENDING");
   });
 
-  // What the drain's exclusion list still guards, after the claim itself learned to honour backoff:
-  // the DEFERRAL loop. A job that stands down for a turn keeps `attempts` at zero, so it stays
-  // claimable — and the drain makes five passes. Without the list it would claim and defer the same
-  // row once per pass, five times over, inside a customer's turn.
+  // What the drain's exclusion list guards, with the claim itself honouring backoff: the DEFERRAL
+  // loop. A job that stands down for a turn keeps `attempts` at zero, so it stays claimable, and the
+  // drain makes five passes. Without the list it would claim and defer the same row once per pass,
+  // five times over, inside a customer's turn.
   test("one drain claims a deferring row once, not once per pass", async () => {
     const contactInboxId = 12513;
     const graphThreadId = contactInboxThreadId(
@@ -1066,14 +1041,12 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     expect(row.status).toBe("PENDING");
   });
 
-  // Round-14 review finding (P1), and the same question the test above answers inside ONE drain,
-  // asked across several. Each turn on a thread opens its own drain with an empty exclusion list, so
-  // the run_at waiver that lets the barrier see a DEFERRED job also made a failed row due again
-  // immediately for the next turn: a burst with debounce off, or a turn and a nudge, spends all five
-  // attempts within seconds and dead-letters a customer's message over a database blip.
-  //
-  // The two are told apart by `attempts`, because that is what actually separates them:
-  // `rescheduleJob` leaves it untouched, `failJob` increments it.
+  // The question the test above answers inside ONE drain, asked across several. Each turn opens its
+  // own drain with an empty exclusion list, so the run_at waiver that lets the barrier see a DEFERRED
+  // job would make a failed row due again immediately for the next turn: a burst with debounce off,
+  // or a turn and a nudge, would spend all five attempts within seconds and dead-letter a customer's
+  // message over a database blip. A failed row carries `last_error` and a deferred one does not
+  // (the next test).
   test("a failed row keeps its backoff across drains, and is still owed", async () => {
     const contactInboxId = 12512;
     const graphThreadId = contactInboxThreadId(
@@ -1122,20 +1095,12 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     // owes a message, so compaction will not summarise the attendance without it.
   });
 
-  // Round-16 review finding (P2), and the other half of the one above. The barrier has to tell a row
-  // that is BACKING OFF from one that merely STOOD DOWN, and the first version asked `attempts`,
-  // which answers a different question — a row can carry a spent budget while carrying no error, and
-  // reading the budget made the barrier skip the very message it exists to fold in.
-  //
-  // `last_error` is the state itself, and a reschedule clears it because the row has left it.
-  //
-  // The state is built with the REAPER, and that is a consequence of issue #287 rather than a
-  // preference: a reschedule now clears the budget too, so fail-then-defer (what this test used to
-  // do) leaves `attempts` at zero and no longer constructs the divergence at all. A crashed claim
-  // still does, and more honestly — `reapStaleJobs` increments `attempts` and never writes
-  // `last_error`, because a claim that died has no message to record. Rebuilt rather than deleted:
-  // the guarantee is the barrier's, not the reschedule's, and a test that stopped being able to
-  // build its own offending state would have gone on passing while guarding nothing.
+  // The barrier tells a row that is BACKING OFF from one that merely STOOD DOWN by `last_error`, the
+  // state itself, which a reschedule clears. `attempts` answers a different question: a row can carry
+  // a spent budget with no error, and reading it would skip the very message the barrier folds in.
+  // The state is built with the REAPER because a reschedule clears the budget too, so fail-then-defer
+  // cannot construct the divergence; `reapStaleJobs` increments `attempts` and never writes
+  // `last_error`. A test that could not build its own offending state would pass guarding nothing.
   test("a job whose claim died and then deferred is still drained", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12514;

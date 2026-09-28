@@ -80,8 +80,8 @@ class CapturingModel extends BaseChatModel {
 }
 
 // The pure half: WHO said it times WHETHER the attendance boundary asked for a divider. No database
-// here on purpose — this is the decision, and the cell that used to be missing (a human agent's
-// reply) is one whose wrong answer is a permanent memory with the operator's words in it.
+// here on purpose: this is the decision, and a wrong answer for a human agent's reply is a permanent
+// memory with the operator's words in it.
 describe("ingestedMessages", () => {
   const CONV = 77;
 
@@ -122,8 +122,8 @@ describe("ingestedMessages", () => {
   });
 
   // The split exists because a message carries ONE marker. Folding the attendant's words into the
-  // divider — the shape the customer path uses — would store them in a message that reads as the
-  // CONTACT's, which is the bug this whole change is about, reintroduced by an optimization.
+  // divider (the shape the customer path uses) would store them in a message that reads as the
+  // CONTACT's.
   test("a human agent opening an attendance: the divider is its OWN message and holds no words", () => {
     const msgs = ingestedMessages(
       "human_agent",
@@ -142,9 +142,9 @@ describe("ingestedMessages", () => {
 
   // The stamp is what the compaction cut reads (src/modules/memory/cut.ts). A message written
   // without one is invisible to the boundary, and the attendance it belongs to never closes.
-  // The append and the row that records it are not one atomic write, and since ingestion became a
-  // retried job a failure between them comes back. Ids derived from the Chatwoot message are what
-  // makes that retry a no-op rewrite: the reducer replaces a same-id message in place.
+  // The append and the row that records it are not one atomic write, and ingestion is a retried job,
+  // so a failure between them comes back. Ids derived from the Chatwoot message make that retry a
+  // no-op rewrite: the reducer replaces a same-id message in place.
   test("the same message ingested twice is one message, not two", () => {
     const first = ingestedMessages("customer", "oi", 10, false, 77);
     const again = ingestedMessages("customer", "oi", 10, false, 77);
@@ -197,15 +197,11 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     await appDb.$disconnect();
   });
 
-  // O APPEND QUE A JANELA JÁ NÃO ALCANÇA RELATA DAQUI (issue #728, verificador rodada 4, medido ao
-  // vivo). Passado o piso da janela, este append é recusado — e recusado com SUCESSO, então o job
-  // completa, a linha some no DONE, e até esta linha nada em lugar nenhum dizia que as palavras não
-  // pousaram. O recuperador faz a mesma pergunta antes de armar, mas a leitura dele é minutos mais
-  // velha e não cobre a janela se mexendo no intervalo: segurando o job e saturando a janela na
-  // brecha, a mensagem ficou fora da memória com tudo verde.
-  //
-  // INDECIDÍVEL e não perdida: despejo não é ausência, e uma resposta que pousou 64 mensagens atrás
-  // lê exatamente como uma que nunca pousou.
+  // An append the window no longer reaches is refused with SUCCESS: the job completes and the row
+  // is deleted as DONE, so this report is the only thing saying the words did not land. The
+  // recoverer asks the same question before arming, but its read is minutes older and does not cover
+  // the window moving in between. UNDECIDABLE rather than lost: eviction is not absence, and a reply
+  // that landed 64 messages ago reads exactly like one that never did.
   test("an append the window has moved past is reported from inside the claim", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12441;
@@ -275,13 +271,12 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
       },
     ]);
 
-    // E A DIREÇÃO DO CLIENTE RELATA IGUAL (verificador rodada 5, que refutou a primeira versão disto
-    // pela própria árvore). A população de mensagens do cliente que CHEGA a este append é, por
-    // construção, só a que turno nenhum cobre: silenciada por um portão (fora do horário, o gate de
-    // autorização) ou não tratada pelo bot (um humano detém a conversa, ou ela não está pendente).
-    // Em todas elas "cliente sem resposta" é o estado esperado, então a lista de perdas não mostra
-    // nada, e a entrega liquidou PROCESSED no instante em que o ARME deu certo, então o livro de
-    // entregas também não. O caso é o cliente escrevendo três vezes durante um atendimento humano.
+    // NOTE: The customer direction reports the same way. The customer messages that REACH this append
+    // are, by construction, the ones no turn covers: silenced by a gate (off hours, the authorization
+    // gate) or not handled by the bot (a human holds the conversation, or it is not pending). In all of
+    // them "customer without a reply" is the expected state, so the loss list shows nothing, and the
+    // delivery settled PROCESSED when the ARM succeeded, so the delivery ledger does not either. The
+    // case is the customer writing three times during a human attendance.
     await suDb.agentThread.updateMany({
       where: { tenantId, contactInboxId },
       data: {
@@ -319,16 +314,12 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     });
   });
 
-  // A MENSAGEM ANTERIOR AO `/reset` NÃO VOLTA PARA A MEMÓRIA QUE O COMANDO LIMPOU (issue #728 review,
-  // round 3).
-  //
-  // O comando apaga a thread e, dentro da sua seção crítica, revoga todo `INGEST_MESSAGE` dela,
-  // porque um append com texto de antes reconstrói o que o operador acabou de mandar apagar. O que
-  // ele não revoga é o job armado DEPOIS da revogação, e existem dois: o arme do próprio receptor,
-  // que corre com o comando desde a #194, e a recuperação de uma resposta encalhada, que decide
-  // minutos antes e atravessa uma ida ao Chatwoot. Os dois perguntam a fronteira onde ela envelhece;
-  // aqui dentro ela não envelhece, porque o comando espera pela mesma reivindicação que este append
-  // segura.
+  // A MESSAGE FROM BEFORE `/reset` DOES NOT RETURN TO THE MEMORY THE COMMAND CLEARED. The command
+  // revokes every `INGEST_MESSAGE` of the thread inside its critical section, but not a job armed
+  // AFTER the revocation: the receiver's own arm, which runs alongside the command, and the recovery
+  // of a stranded reply, which decides minutes earlier and crosses a Chatwoot round trip. Both read
+  // the boundary where it goes stale; here it does not, because the command waits on the same claim
+  // this append holds.
   test("a message from before a /reset is not folded back into the cleared thread", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12422;
@@ -388,12 +379,11 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     });
   });
 
-  // O COMANDO QUE NÃO CONSEGUIU LIMPAR NÃO FECHA NADA (review r7/r8). `reset_at_message_id` diz que
-  // o operador DIGITOU `/reset`: ele é commitado por um statement anterior e independente, e o passo
-  // que limpa a memória recusa por desenho quando um turno já está escrevendo a thread — a ack
-  // nomeia o que não limpou e o carimbo fica. Uma cerca apoiada nele descartaria a resposta de um
-  // colega de uma memória que ninguém esvaziou; a coluna que a transação da limpeza escreve é a que
-  // vale.
+  // A COMMAND THAT COULD NOT CLEAR CLOSES NOTHING. `reset_at_message_id` says the operator TYPED
+  // `/reset`: it is committed by an earlier, independent statement, and the step that clears memory
+  // refuses by design when a turn is already writing the thread (the ack names what it did not clear
+  // and the stamp stays). A fence resting on it would drop a colleague's reply from a memory nobody
+  // emptied; the column the clearing transaction writes is the one that counts.
   test("a boundary from a /reset whose memory step failed does not fence the append", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12451;
@@ -437,11 +427,11 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     });
   });
 
-  // O MESMO COMANDO, DIGITADO NA CONVERSA IRMÃ (review r4). `/reset` limpa a memória por
-  // contact-inbox e carimba `reset_at_message_id` na única conversa em que foi digitado, então duas
-  // conversas do mesmo contato dividem uma thread e só uma carrega a fronteira. Perguntando à
-  // conversa da mensagem, esta cerca via null e restaurava texto de antes da limpeza — numa thread
-  // cuja dedup foi apagada junto, de modo que nada rio abaixo pegaria a duplicata.
+  // THE SAME COMMAND, TYPED IN THE SIBLING CONVERSATION. `/reset` clears memory per contact-inbox
+  // and stamps `reset_at_message_id` only on the conversation it was typed in, so two conversations
+  // of one contact share a thread and only one carries the boundary. Asking the message's own
+  // conversation would read null and restore pre-reset text into a thread whose dedup was cleared
+  // with it, so nothing downstream would catch the duplicate.
   test("a message from before a /reset typed in a sibling conversation is refused too", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12431;
@@ -508,12 +498,11 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     });
   });
 
-  // A conversation can be REOPENED after another has already run on this thread — an operator picking
-  // an old one back up, a human agent replying in it. The probe that decides whether to write the
-  // divider used to ask "does this conversation appear ANYWHERE in the thread", and the earlier run
-  // answered yes: no divider, so the first turn of the resumed attendance reached the model as a
-  // continuation of the conversation that ran in between. The stamp is inert to the model; the
-  // divider is the only part of this it reads.
+  // A conversation can be REOPENED after another has already run on this thread: an operator picking
+  // an old one back up, a human agent replying in it. A divider probe asking "does this conversation
+  // appear ANYWHERE in the thread" would answer yes from the earlier run, and the first turn of the
+  // resumed attendance would reach the model as a continuation of the conversation in between. The
+  // stamp is inert to the model; the divider is the only part of this it reads.
   test("a conversation reopened after another one still opens a new attendance", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12377;
@@ -545,7 +534,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     const messages = ((cp?.channel_values as { messages?: BaseMessage[] })
       ?.messages ?? []) as BaseMessage[];
     const dividers = messages.filter((m) => isConversationDivider(m));
-    // One for 881, one for the reopened 880 — the second is the one that used to be missing.
+    // NOTE: One for 881, one for the reopened 880; the second is the one a whole-thread probe skips.
     expect(dividers.length).toBe(2);
     expect(String(dividers.at(-1)?.content)).toContain(
       "voltei naquele assunto",
@@ -596,11 +585,10 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     // 2. While the bot is silent, ingest a customer message.
     expect(await ingest({ messageId: 11, text: "obrigado!" })).toBe("ingested");
 
-    // 3. Idempotency is membership, not a comparison. The same id is a re-delivery and is skipped;
-    //    a LOWER id that was never folded in is ingested, and that reversal is the point of #194 —
-    //    under the old high-water mark it read as handled and the customer's words were lost for
-    //    good. What still refuses a low id is a window that has forgotten that far back, which
-    //    ./ingest-dedup.ts decides and tests as a table.
+    // NOTE: 3. Idempotency is membership, not a comparison. The same id is a re-delivery and is skipped;
+    //    a LOWER id that was never folded in is ingested, where a high-water mark would read it as
+    //    handled and lose the customer's words for good. What still refuses a low id is a window
+    //    that has forgotten that far back, which ../../src/graph/ingest-dedup.ts decides and tests as a table.
     expect(await ingest({ messageId: 11, text: "DUP" })).toBe("skipped");
     expect(await ingest({ messageId: 5, text: "OLD" })).toBe("ingested");
 
@@ -630,12 +618,11 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
   });
 
   // An agent who opens the conversation sends its FIRST message. Detecting the transition only on
-  // customer messages left that message inside the previous attendance, so when the customer finally
-  // replied the boundary landed after it — and the agent's opener was summarized and removed with the
-  // attendance that had already ended.
-  // The whole reason the cut reads a stamp instead of the divider: the divider is one message, and an
-  // invoke that started earlier saves the channel it loaded and erases it. Erased, the boundary has to
-  // survive anyway — it lives on the messages themselves.
+  // customer messages would leave that message inside the previous attendance, so the boundary would
+  // land after it and the agent's opener would be summarized away with the attendance that ended.
+  // The cut reads a stamp instead of the divider because the divider is one message, and an invoke
+  // that started earlier saves the channel it loaded and erases it; the boundary lives on the
+  // messages themselves.
   test("the boundary survives losing the divider", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 23458;
@@ -692,17 +679,13 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     expect(cut.open.map((m) => String(m.content))).toEqual(["queria remarcar"]);
   });
 
-  // Round-1 review finding (P1). The watermark is monotonic, which only guards at-most-once while
-  // the ids reaching it arrive in order — and the two writers do not share a latency. The customer's
-  // path waits on the eager media pass (STT/vision, a provider round-trip) and an agent's reply waits
-  // on nothing, so an attendant answering a voice note is folded in FIRST. On one shared column that
-  // higher id advances the watermark and the customer's message is skipped for good: the fix for a
-  // memory missing the team's half would have started losing the customer's.
-  // Accepting an out-of-order id means a message can land whose attendance is already OVER: a
-  // delayed media webhook from conversation A, arriving after B has opened. Run through the normal
-  // boundary it would write a divider for A, walk the thread marker backwards to A, and arm
-  // compaction for B — the conversation still being served. B would be summarised mid-attendance and
-  // its raw turns replaced by a summary of a conversation that has not finished.
+  // A monotonic watermark only guards at-most-once while ids arrive in order, and the two writers do
+  // not share a latency: the customer's path waits on the eager media pass (STT/vision) and an
+  // agent's reply waits on nothing, so an attendant answering a voice note is folded in FIRST and
+  // would skip the customer's message for good on one shared column. Accepting an out-of-order id
+  // means a message can land whose attendance is OVER (a delayed media webhook from A after B has
+  // opened); through the normal boundary it would write a divider for A, walk the marker back to A,
+  // and arm compaction for B, summarising the conversation still being served.
   test("a delayed message from an older conversation does not move the attendance", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12406;
@@ -737,14 +720,14 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     // The voice note from A, still transcribing when B started.
     expect(await ingest(800, 901, "<audio> do primeiro")).toBe("ingested");
 
-    // It is in the thread — nothing is lost, which is the whole point of #194 —
+    // NOTE: It is in the thread, so nothing is lost.
     const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
     const contents = (
       ((cp?.channel_values as { messages?: BaseMessage[] })?.messages ??
         []) as BaseMessage[]
     ).map((m) => String(m.content));
     expect(contents.some((c) => c.includes("<audio> do primeiro"))).toBe(true);
-    // — and it changed nothing else. No second boundary armed for B, and the thread still says B.
+    // NOTE: And it changed nothing else: no second boundary armed for B, and the thread still says B.
     expect(closed).toEqual([800]);
     const at = await suDb.agentThread.findUniqueOrThrow({
       where: {
@@ -765,15 +748,12 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     ).toBe(1);
   });
 
-  // Round-8 review finding (P1), and the half of the late-arrival rule a marker check cannot reach.
-  // ../../src/modules/memory/cut.ts decides which attendance is OPEN by reading the last stamp in the
-  // channel and walking back over its run — so a late message stamped with the conversation it
-  // belongs to redefines the open attendance from the END of the thread. Everything above it, the
-  // live conversation included, becomes the closed prefix, and compaction replaces a conversation
-  // still being served with a summary of it.
-  //
-  // Asserted through the real consumer rather than by reading kwargs: the stamp only matters because
-  // of what the cut does with it.
+  // The half of the late-arrival rule a marker check cannot reach. ../../src/modules/memory/cut.ts
+  // decides which attendance is OPEN by reading the last stamp in the channel and walking back over
+  // its run, so a late message stamped with its own conversation would redefine the open attendance
+  // from the END of the thread: everything above it, the live conversation included, becomes the
+  // closed prefix and compaction summarises a conversation still being served. Asserted through the
+  // real consumer rather than by reading kwargs: the stamp only matters because of what the cut does.
   test("a late arrival does not put the live conversation in the closed prefix", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12409;
@@ -814,21 +794,20 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     // 841 is still being served, so it is OPEN — not swept into a summary of a finished attendance.
     expect(open.some((c) => c.includes("segundo atendimento"))).toBe(true);
     expect(closed.some((c) => c.includes("segundo atendimento"))).toBe(false);
-    // The late message is in the thread, which is the point of #194, and it travels with the open
-    // attendance because it never claimed one.
+    // NOTE: The late message is in the thread, and it travels with the open attendance because it
+    // never claimed one.
     expect(open.some((c) => c.includes("<audio> do primeiro"))).toBe(true);
     expect(
       stampedConversationId(messages[messages.length - 1] as BaseMessage),
     ).toBe(null);
   });
 
-  // Round-6 review finding (P2), and the same hazard as the test above reached through the OTHER
-  // writer. The frontier was read from the arriving message's own role, so a delayed customer
-  // message still counted as current whenever the new attendance had been opened by a human agent —
-  // which is the ordinary shape of it: the bot qualifies, a person takes over, and the takeover
-  // message is the one that opens the next conversation. The customer's own mark is still back in
-  // the old attendance, so the delayed note read as the newest thing on the thread, closed the LIVE
-  // conversation and walked the marker backwards.
+  // The same hazard reached through the OTHER writer. Reading the frontier from the arriving
+  // message's own role would count a delayed customer message as current whenever a human agent
+  // opened the new attendance, which is the ordinary shape: the bot qualifies, a person takes over,
+  // and the takeover opens the next conversation. The customer's own mark is still in the old
+  // attendance, so the delayed note would read as newest, close the LIVE conversation and walk the
+  // marker backwards.
   test("a delayed message is late even when the newer one came from the other writer", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12408;
@@ -1037,14 +1016,12 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     expect(at.lastAgentMessageId).toBe(101);
   });
 
-  // Issue #194, hazard 2, and the reason the watermark stops being a high-water mark. The two
-  // customer messages do NOT share a latency: one with media waits on the eager pass (a provider
-  // round-trip for STT/vision) before reaching ingestion, the other waits on nothing. So the LATER
-  // message can be folded in first, and a monotonic watermark then reads the earlier one as already
-  // handled. It is not late, it is ABSENT: nothing re-delivers it and nothing restores it.
-  //
-  // Asserted on the CHANNEL rather than on the return value alone, because "ingested" is a proxy —
-  // what the issue says goes missing is the customer's words in the thread the agent reads.
+  // Why the watermark is not a high-water mark. Two customer messages do NOT share a latency: one
+  // with media waits on the eager pass (STT/vision) before reaching ingestion, the other waits on
+  // nothing. The LATER one can be folded in first, and a monotonic watermark would then read the
+  // earlier one as handled. It would not be late but ABSENT: nothing re-delivers or restores it.
+  // Asserted on the CHANNEL rather than the return value alone, because "ingested" is a proxy for
+  // the customer's words being in the thread the agent reads.
   test("a customer message that arrives after a higher id is still folded in", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12401;
@@ -1081,17 +1058,16 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     );
     expect(contents.some((c) => c.includes("consegue me ligar?"))).toBe(true);
 
-    // Dedup still holds for a genuine re-delivery of either id, which is the property the
-    // high-water mark was there for and the one that must survive replacing it.
+    // NOTE: Dedup still holds for a genuine re-delivery of either id: the property a high-water mark
+    // gives, and the one the window must keep.
     expect(await ingest(200, "DUP-ALTO")).toBe("skipped");
     expect(await ingest(100, "DUP-BAIXO")).toBe("skipped");
   });
 
-  // The decision issue #187 asked to make EXPLICITLY rather than as a side effect: a human agent's
-  // reply is visible to the TURN, not only to the summarizer. An agent resuming a conversation after
-  // a handoff and not knowing what its own team promised is the same defect one turn earlier — it
-  // would quote a price nobody agreed to. The note travels with it so the model can tell who spoke;
-  // stored bare, the words would read as the customer's here too.
+  // A human agent's reply is visible to the TURN, explicitly, not only to the summarizer. An agent
+  // resuming after a handoff without knowing what its own team promised would quote a price nobody
+  // agreed to. The note travels with it so the model can tell who spoke; stored bare, the words would
+  // read as the customer's here too.
   test("the turn that resumes reads what the team promised, attributed", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 12388;
@@ -1281,14 +1257,11 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     expect(cut.closed.map((m) => String(m.content))).toEqual(["primeira"]);
   });
 
-  // Issue #203, the half that survives the claim: the row is READ at the top of the section and
-  // WRITTEN at the end, with checkpointer round-trips in between, and the queue that ordered them is
-  // process-local. Another replica writing in that window used to be erased by whichever append
-  // finished second, because it recomputed the mark and the dedupe ledger from what it had read
-  // BEFORE the other one landed.
-  //
-  // The other replica is personified by writing the row from inside `stillWanted`, which is called
-  // exactly in that window and for an unrelated reason. Nothing else in this file can reach it.
+  // The row is READ at the top of the section and WRITTEN at the end, with checkpointer round-trips in
+  // between, and the queue that orders them is process-local. Another replica writing in that window
+  // must survive: recomputing the mark and the dedupe ledger from what was read BEFORE it landed
+  // would erase it. The other replica is personified by writing the row from inside `stillWanted`,
+  // which is called exactly in that window and for an unrelated reason. Nothing else here reaches it.
   test("a concurrent write in the read-to-write window is not walked backwards", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 7301;

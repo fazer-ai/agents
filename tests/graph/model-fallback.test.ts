@@ -32,10 +32,10 @@ import {
 
 // WHICH failures are worth asking a DIFFERENT provider, as a table.
 //
-// The rows are the shapes measured against the real SDK stack (issue #143): a local
-// openai-compatible endpoint answering each status, plus a hang and a refused connection, driven
-// through `createChatModel` + `runModelCall`. The `status` column is what `statusOf` read off the
-// error the SDK raised, so every row here is a shape production can actually produce.
+// The rows are the shapes the real SDK stack raises: a local openai-compatible endpoint answering
+// each status, plus a hang and a refused connection, driven through `createChatModel` +
+// `runModelCall`. The `status` column is what `statusOf` reads off the error the SDK raises, so
+// every row here is a shape production can actually produce.
 const TABLE: Array<{
   name: string;
   err: unknown;
@@ -206,8 +206,8 @@ describe("isFallbackWorthy", () => {
     });
   }
 
-  // The bound the whole design rests on. Measured against the real stack: with LangChain's default
-  // AsyncCaller a 503 takes SEVEN requests and 77s to surface, a 502 99s. A fallback behind that
+  // NOTE: The bound the whole design rests on. With LangChain's default AsyncCaller a 503 takes
+  // SEVEN requests and 77s to surface on the real stack, a 502 99s. A fallback behind that
   // arrives after the customer is gone, so the primary gets exactly one attempt when there is
   // something behind it.
   test("the primary gets one attempt, not LangChain's six retries", () => {
@@ -318,10 +318,9 @@ describe("runModelCall with something behind the primary", () => {
     expect(reply.content).toBe("from the fallback");
   });
 
-  // The fallback answers the customer in the primary's place, so it inherits the primary's one
-  // recovery too. Review found this: the fallback was invoked BARE, so a 200 carrying no completion
-  // — measured at 1 in 184 on one install (issue #63) — cost the turn on the very call that exists
-  // because the turn was already about to be lost.
+  // NOTE: The fallback answers the customer in the primary's place, so it inherits the primary's one
+  // recovery too. Invoked BARE, a 200 carrying no completion (rare, but seen in production) would
+  // cost the turn on the very call that exists because the turn was already about to be lost.
   test("an empty completion FROM THE FALLBACK is retried too", async () => {
     const primary = failing(
       Object.assign(new Error("overloaded"), { status: 503 }),
@@ -391,7 +390,7 @@ describe("runModelCall with something behind the primary", () => {
 // The fallback answers the customer in the primary's place, so it has to be able to do what the
 // primary could. A fallback invoked BARE looks identical from the outside — a reply arrives, the
 // turn posts — and the agent has silently lost every tool for that turn: no calendar, no handoff,
-// no document. Mutation found this one: unbinding the fallback's tools left every other test green.
+// no document. This is the only test that fails if the fallback's tools are unbound.
 describe("the fallback is asked the same question the primary was", () => {
   test("it is bound to the same toolset", async () => {
     const tool = new DynamicStructuredTool({
@@ -424,13 +423,9 @@ describe("the fallback is asked the same question the primary was", () => {
 // ONCE THE FALLBACK HAS THE TURN, IT KEEPS IT.
 //
 // A tool call routes back through the agent node, so a turn with tools runs that node once per
-// round. Without this, each round asks the dead primary again before failing over again, and the
-// cost is the failure's own latency multiplied by the rounds — which is the budget this whole change
-// exists to remove, reappearing inside a single turn.
-//
-// Measured on the three-round turn below (two tool calls, then the answer), with the primary failing
-// in 200ms: 3 primary calls, 3 "the fallback took the turn" warns for ONE failover, 609.3ms. After:
-// 1, 1, 204.8ms. At the 45s ceiling instead of 200ms those 3 calls are 135s of dead waiting.
+// round. Without the demotion each round asks the dead primary again before failing over again:
+// the failure's latency (up to the 45s ceiling) and its "the fallback took the turn" warn are paid
+// once per round instead of once per turn, the budget the fallback exists to remove.
 describe("the fallback keeps the turn once it has it", () => {
   const peek = () =>
     new DynamicStructuredTool({
@@ -600,17 +595,11 @@ describe("the fallback keeps the turn once it has it", () => {
 
 // THE WRITE BOUNDARY: A FALLBACK IS A PROVIDER AND A MODEL, OR IT IS NOTHING.
 //
-// The runtime half of this was already written and tested when review asked what happens to a bag
-// that names only one of the two. Measured on the stored bag: it persists as
-// `{provider: "openai", model: null}`, `hasModelFallback` answers false, and `modelFallbackToForm`
-// maps it back to "No fallback" — so the operator's provider is gone on the next load with nothing
-// on screen to say why, and the same bag reaches the MCP patch as a diff showing `provider: openai`
-// for a fallback that does not exist.
-//
-// Refused rather than repaired, because repairing means choosing which half to throw away. And
-// refused at the WRITE rather than in the editor alone: the editor is one of three transports that
-// reach this bag (REST create, REST update, MCP patch), and the save gate only covers the first
-// operator who meets it.
+// A half-named bag (`{provider: "openai", model: null}`) reads back as "No fallback", so the
+// operator's provider vanishes on the next load and the MCP patch shows a diff for a fallback that
+// does not exist. Refused rather than repaired, because repairing means choosing which half to
+// throw away; refused at the WRITE rather than in the editor alone, because the editor is one of
+// three transports that reach this bag (REST create, REST update, MCP patch).
 describe("hasModelFallback reads the repo's own model rule", () => {
   const cfg = (provider: string | null, model: string | null) =>
     readModelFallbackConfig({
@@ -649,16 +638,12 @@ describe("hasModelFallback reads the repo's own model rule", () => {
     }
   });
 
-  // WHAT PICKING A DEFAULT COMMITS US TO, and the reason this fence sits next to the table rather
-  // than in the reasoning module: the table is the one place an id is chosen for somebody who chose
-  // nothing, so a default that the transport policy does not cover is a 400 on the FIRST turn of
-  // every new agent, on the path nobody configured.
-  //
-  // The gpt-5.6 family is exactly that case and it is why the fence exists: its server-side default
-  // effort refuses function tools on /v1/chat/completions (issue #66, measured in
-  // ./openai-reasoning), so a default from that family is only safe because `planOpenAITransport`
-  // pins `toolEffort: "none"` for it. Asserted through the PLAN and never against a list of ids, so
-  // the next default is checked by the same rule instead of being added to a second copy of it.
+  // NOTE: WHAT PICKING A DEFAULT COMMITS US TO. The table is the one place an id is chosen for
+  // somebody who chose nothing, so a default the transport policy does not cover is a 400 on the
+  // FIRST turn of every new agent. The gpt-5.6 family's default effort refuses function tools on
+  // /v1/chat/completions, so a default from it is safe only because `planOpenAITransport` pins
+  // `toolEffort: "none"`. Asserted through the PLAN, never a list of ids, so the next default is
+  // checked by the same rule instead of a second copy of it.
   test("every declared default is a model the transport policy covers", () => {
     for (const [provider, def] of Object.entries(PROVIDER_DEFAULT_MODEL)) {
       if (def === "") continue;
@@ -727,10 +712,9 @@ describe("assertSettingsModelFallback", () => {
   // THE MODEL IS NOT REQUIRED FOR EVERY PROVIDER, and this rule is not this block's to invent. An
   // `openai-compatible` endpoint that serves a single model discards the name it is sent, which is
   // why `modelConfigSchema` lets the PRIMARY through empty there and `createChatModel` sends
-  // "default". Asking for both halves unconditionally made an operator's own llama.cpp server
-  // impossible to name as a fallback without inventing a model id for it — refused by the write
-  // boundary and by the save gate at once. Review found it; there is one predicate now
-  // (`modelOptionalFor`), read here, by the schema and by the editor's save guard.
+  // "default". Asking for both halves unconditionally would make an operator's own llama.cpp server
+  // impossible to name as a fallback without inventing a model id. One predicate
+  // (`modelOptionalFor`) is read here, by the schema and by the editor's save guard.
   test("openai-compatible with no model is a whole fallback, not half of one", () => {
     expect(
       refuses(
@@ -812,9 +796,9 @@ describe("assertSettingsModelFallback", () => {
     ).toContain("provider is missing");
   });
 
-  // ONLY WHAT THE WRITE CHANGES. A bag that already holds a half-named block — written before this
-  // rule, or by a path that predates it — is re-sent untouched by every save that edits some other
-  // section, and refusing those would freeze the agent on a field the operator is not editing.
+  // NOTE: ONLY WHAT THE WRITE CHANGES. A bag already holding a half-named block (stored data can
+  // predate the rule) is re-sent untouched by every save that edits some other section, and refusing
+  // those would freeze the agent on a field the operator is not editing.
   test("a stored half-block re-sent unchanged does not block an unrelated save", () => {
     const legacy = { modelFallback: { provider: "openai", model: null } };
     expect(

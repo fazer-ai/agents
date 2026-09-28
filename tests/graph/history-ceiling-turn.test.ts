@@ -11,16 +11,12 @@ import type { NormalizedChatwootEvent } from "@/modules/chatwoot/types";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
-// Issue #55 end-to-end. The unit tests cover the rule; this one covers the two things only a real
-// turn can show. First, that the ceiling configured on the agent row actually reaches the model
-// call (agent.settings.limits → loadAgentConfig → buildModelAndGraph → the agent node), because a
-// knob that never arrives is the failure mode nobody notices. Second, that the trim LEAVES A TRACE:
-// from the operator's chair a silent trim and an agent that forgot on its own look identical, and
-// the whole point of the line is to tell them apart.
-//
-// It also fixes the two properties of that line that are easy to lose later: it is INFO, because
-// warn/error fan out to the alert channels and a correctly configured ceiling trims on nearly every
-// turn of a long thread, and it carries counts only, never a fragment of what was dropped.
+// The unit tests cover the rule; this covers what only a real turn shows. First, the ceiling on the
+// agent row reaches the model call (agent.settings.limits → loadAgentConfig → buildModelAndGraph →
+// the agent node): a knob that never arrives fails unnoticed. Second, the trim LEAVES A TRACE, since
+// from the operator's chair a silent trim and an agent that forgot look identical. The line is INFO,
+// because warn/error fan out to the alert channels and a working ceiling trims on nearly every turn
+// of a long thread, and it carries counts only, never a fragment of what was dropped.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -51,8 +47,8 @@ let instanceId = 0n;
 // Distinctive enough that finding it anywhere is proof, and never a substring of anything else.
 const FIRST_QUESTION = "MARCADOR-PRIMEIRA-PERGUNTA";
 // Long replies so a handful of turns is enough to blow past the ceiling, the way a real thread
-// spanning several attendances does over weeks. 604 tokens each, measured: six turns put ~3k of
-// history in front of a 2k ceiling, so the oldest attendance has to go.
+// spanning several attendances does over weeks. At 604 tokens each, six turns put ~3k of history in
+// front of a 2k ceiling, so the oldest attendance has to go.
 const REPLY = `Claro. ${"palavra ".repeat(600)}`;
 
 // Records every message list handed to the model, so the test can assert what the model SAW rather
@@ -119,10 +115,9 @@ async function setCeiling(maxHistoryTokens: number | null) {
   });
 }
 
-// The `generate` lines of ONE thread, scoped so that neither test below can answer with the other's
-// rows. Both run a thread in the same tenant and one of them asserts that NO trim line exists, which
-// read across the tenant is a claim about its neighbour: swapping the two `test()` blocks used to
-// turn this file red with `Received length: 2`, so the green depended on declaration order (#258).
+// The `generate` lines of ONE thread, scoped so neither test below can answer with the other's rows:
+// both run in the same tenant and one asserts that NO trim line exists, which read across the tenant
+// would be a claim about its neighbour and would depend on declaration order.
 async function generateLines(convId: number) {
   return flowLogRows(suDb, {
     where: {
@@ -139,12 +134,10 @@ const isTrim = (r: { detail: unknown }) =>
   typeof (r.detail as Record<string, unknown> | null)?.historyDropped ===
   "number";
 
-// The two questions this file asks of the trail are NOT the same question, and one reader cannot
-// wait correctly for both. A trimmed turn writes TWO `generate`/`info` rows, its ordinary one and a
-// separate one for the trim (`onHistoryTrim` is its own `emitFlowEvent` in src/graph/runtime.ts).
-// Measured on this file: the no-ceiling thread produces 6 rows and 0 trims, the ceiling thread 8 and
-// 2. So a single reader waiting on the TOTAL count is satisfied by the six ordinary rows while both
-// trim writes are still in flight, and the positive test intermittently reads none.
+// The two questions this file asks of the trail need different readers. A trimmed turn writes TWO
+// `generate`/`info` rows, its ordinary one and one for the trim (`onHistoryTrim` is its own
+// `emitFlowEvent` in src/graph/runtime.ts), so a reader waiting on the TOTAL count is satisfied by
+// the ordinary rows while the trim writes are still in flight, and intermittently reads none.
 
 // "Did this thread trim?" — poll until a trim row lands. The line is what is being asserted, so
 // waiting for it is the whole job.
@@ -157,21 +150,13 @@ async function waitForTrimLines(convId: number) {
   return trims;
 }
 
-// "Did this thread trim NOTHING?" — wait for the turns' own bookkeeping, then read.
-//
-// The landmark is the count of NON-trim rows, never a trim appearing: polling for something that
-// must never arrive can only spend the whole timeout and then agree with itself, which is what this
-// assertion used to do for 3 of the file's 4 seconds.
-//
-// NOTE: an absence can only ever be asserted against a barrier, and `emitFlowEvent` offers none, so
-// this composes the two that exist. The turn's OWN row is dispatched after any trim row of the same
-// turn — `onHistoryTrim` runs while the history window is built, before the model call, and the
-// ordinary row closes the generate stage after it — so `turns` ordinary rows means every trim write
-// this thread could owe was already dispatched. The settle re-read covers the rest: two independent
-// transactions dispatched in order can still land out of order on a pool. Neither is a lock, which
-// is why the regression this corroborates is ALSO caught deterministically one assertion earlier:
-// `onHistoryTrim` fires only when the window dropped something (src/graph/graph.ts), and anything
-// dropped means the model no longer saw all 12 messages.
+// "Did this thread trim NOTHING?" Waits on the count of NON-trim rows: polling for a trim that must
+// never arrive would only spend the whole timeout and agree with itself. `emitFlowEvent` offers no
+// barrier, so this composes two: a turn's ordinary row is dispatched after any trim row of that turn
+// (`onHistoryTrim` runs while the window is built, before the model call), so `turns` ordinary rows
+// means every owed trim write was dispatched; the settle re-read covers two transactions landing out
+// of order on a pool. Neither is a lock, so the regression is ALSO caught one assertion earlier: a
+// trim fires only when the window dropped something, so the model no longer saw all 12 messages.
 async function trimLinesAfterTurns(convId: number, turns: number) {
   let rows: Awaited<ReturnType<typeof generateLines>> = [];
   for (let i = 0; i < 30; i++) {
@@ -319,7 +304,7 @@ describe.skipIf(!dbUp)("a turn under the agent's history ceiling", () => {
     expect(last).toBeDefined();
     if (!last) return;
 
-    // The effect the issue is about: the first attendance no longer rides on every turn.
+    // NOTE: The effect under test: the first attendance no longer rides on every turn.
     expect(last.some((m) => String(m.content).includes(FIRST_QUESTION))).toBe(
       false,
     );

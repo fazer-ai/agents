@@ -11,16 +11,10 @@ import {
 
 // The flush's hold on a thread is invisible to everyone but the flush, and this is the fence on that.
 //
-// It exists because the first version of issue #588's fix used `markTurnReserved`, which IS counted
-// by `isTurnInFlight` — and two subsystems ask that before doing their own work on the thread:
-// `undoRefusedTurn` refuses to roll back a superseded answer while it reads true, and
-// `claimIngestWrite` answers busy so `drainPendingIngest` reaches none of the queued messages. A hold
-// across the whole turn therefore made every debounce rollback skip, leaving answers the customer
-// never received in memory, and sent replies without the history they were supposed to carry.
-//
-// The whole suite passed with that defect present. Nothing covered either behaviour, which is why
-// this file asserts the PROPERTY rather than waiting for a test of the consequences: whatever the
-// flush holds must not be visible to the questions those two ask.
+// `markTurnReserved` is the wrong tool for this hold: `isTurnInFlight` counts it, and while that
+// reads true `undoRefusedTurn` skips the debounce rollback (leaving undelivered answers in memory)
+// and `claimIngestWrite` answers busy (so replies go out without the queued history). This asserts
+// the PROPERTY, since the consequences have no other test: the flush's hold is invisible to both.
 describe("a flush hold is not a turn", () => {
   const T = "tenant:1:ci:42";
 

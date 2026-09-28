@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import config from "@/config";
 import { runModelCall } from "@/graph/model-limit";
 
-// Issue #812: a model call that waits for a permit of the process-wide semaphore past the threshold
+// A model call that waits for a permit of the process-wide semaphore past the threshold
 // says so ONCE, while it is still waiting. Exercises the real singleton: the permits are taken by
 // calls that hang until the test lets them go.
 

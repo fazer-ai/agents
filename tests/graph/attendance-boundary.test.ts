@@ -159,10 +159,10 @@ describe("attendanceHasStarted", () => {
     );
   });
 
-  // THE REOPENED CASE. Asking "does 1 appear anywhere" answered yes for an attendance that ended
-  // before 2 ran, so the writer skipped the divider for a conversation that had genuinely just
-  // resumed — and the first turn of it reached the model as a continuation of 2. The stamp is inert
-  // to the model; the divider is the only part it reads.
+  // NOTE: The reopened case. Asking "does 1 appear anywhere" answers yes for an attendance that
+  // ended before 2 ran, so the writer would skip the divider for a conversation that just resumed and
+  // its first turn would reach the model as a continuation of 2. The stamp is inert to the model; the
+  // divider is the only part it reads.
   test("a conversation that ran EARLIER has not started the current attendance", () => {
     const thread = [stamped(1), new AIMessage("resposta"), stamped(2)];
     expect(attendanceHasStarted(thread, 1)).toBe(false);
@@ -176,7 +176,7 @@ describe("attendanceHasStarted", () => {
   });
 });
 
-// The guard in front of the table above (issue #194): only the newest message the THREAD has seen
+// The guard in front of the table above: only the newest message the THREAD has seen
 // may make a statement about which attendance it is on. Every false row is a message that, allowed
 // through, would summarise a conversation still being served.
 describe("movesAttendanceFrontier", () => {
@@ -184,8 +184,8 @@ describe("movesAttendanceFrontier", () => {
     ["a thread that has never been written", [null, null], 500, true],
     ["the ordinary case: the newest id there is", [500, null], 501, true],
     ["a delayed id, its own direction ahead", [500, null], 499, false],
-    // THE ROUND-6 CASE. The attendant opened the new conversation, so the customer's own mark is
-    // still back in the old one and their delayed note read as current.
+    // NOTE: The attendant opened the new conversation, so the customer's own mark is still back in
+    // the old one; checking only the sender's own direction would read their delayed note as current.
     ["a delayed id, the OTHER direction ahead", [500, 502], 501, false],
     ["a new id above both directions", [500, 502], 503, true],
     // A direction that has never written owes nothing: an attendant's first reply must not read as

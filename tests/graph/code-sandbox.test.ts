@@ -14,9 +14,9 @@ import { zoneFormatter, zoneOffsetSeconds } from "@/graph/tools/zone-offset";
 import { CODE_TOOL_GLOBALS } from "@/lib/code-tool-vocabulary";
 import { replaceLoneSurrogates } from "@/lib/text";
 
-// The snippet the issue is about, as a model writes it: normalise, weigh, `%11%10`, and END with
-// the verdict. `12351612850` is the reporter's own number, valid, second check digit through the
-// remainder-10 rule; typed unpunctuated, which is where the model's comparison broke.
+// A CPF check as a model writes it: normalise, weigh, `%11%10`, and END with the verdict.
+// `12351612850` is valid, its second check digit going through the remainder-10 rule; the
+// unpunctuated spelling is the one a model's own comparison gets wrong.
 const CPF_SNIPPET = (input: string) => `
 function validateCpf(raw) {
   const d = String(raw).replace(/\\D/g, "");
@@ -75,8 +75,8 @@ describe("runSandboxedCode", () => {
       ],
       ["new TypeError('kept')", '{"name":"TypeError","message":"kept"}'],
       // NOTE: A parsed document can carry `__proto__` as an own key, and an assignment by that name
-      // reaches the legacy setter instead of the object, so the key vanished from the rendering
-      // (PR #485, round 3). The nested form is the one that dropped a whole subtree.
+      // reaches the legacy setter instead of the object, dropping the key from the rendering. The
+      // nested form is the one that would drop a whole subtree.
       [
         `JSON.parse('{"__proto__":{"c":1},"a":1}')`,
         '{"__proto__":{"c":1},"a":1}',
@@ -95,12 +95,10 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // The sandbox ships NO domain logic, and this is the fence. `validateCpf`/`validateCnpj` came
-  // from PR #485, where the MODEL wrote the snippet and its arithmetic could not be trusted; with
-  // the operator writing the body that reason is gone, and a runtime that ships CPF is asked for
-  // CEP, phone and inscricao estadual next. The rule is written once, in the body, by whoever owns
-  // it. Asserted by name rather than left to the global sweep below, which would go green on a
-  // helper added under a name it happens not to list.
+  // The sandbox ships NO domain logic, and this is the fence: the operator writes the rule once, in
+  // the body, and a runtime that ships CPF is asked for CEP, phone and inscricao estadual next.
+  // Asserted by name rather than left to the global sweep below, which would go green on a helper
+  // added under a name it happens not to list.
   test("no domain helper is installed: the body brings its own rules", async () => {
     const out = await runSandboxedCode(
       `[typeof validateCpf, typeof validateCnpj, typeof checkDigit]`,
@@ -111,8 +109,8 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // ...and the rule the operator writes instead answers the issue's own number, unpunctuated,
-  // which is where the model's comparison broke. The algorithm is the body's, not the runtime's.
+  // ...and the rule the operator writes instead answers the number, unpunctuated too. The algorithm
+  // is the body's, not the runtime's.
   test("a body that carries the CPF rule itself answers the issue's number", async () => {
     const cases: Array<[string, string]> = [
       ["12351612850", '{"valid":true}'],
@@ -175,68 +173,26 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // The value path is the one that DOES get a fresh deadline: rendering runs interpreter code, and a
-  // value the body finished building with the deadline nearly spent would otherwise have its render
-  // interrupted and come back as "[object Object]".
-  //
-  // WHAT THE BODY SPENDS IS PINNED TO THE CLOCK, NOT TO THE WORK. Two earlier versions of this test
-  // asserted how fast this machine is, and both kept the shard red (#518). The first spent 250 ms of
-  // a fixed 300 ms budget and then built 60k objects: it passed on a laptop and failed on every CI
-  // runner, deterministically. The second measured the build and set the deadline just past it --
-  // better, because it no longer wrote the machine down, but it still asked the SECOND run to finish
-  // the same build within 1.5x of what the FIRST one took, and one scheduler preemption on a shared
-  // runner is wider than that margin (measured here: the build varies 1.2x over 25 runs, and the
-  // whole margin is ~12 ms).
-  //
-  // So the body no longer races its own budget. It builds the value with the budget wide open, then
-  // SPINS on `Date.now()` until a chosen instant, which puts the end of the body at a wall-clock
-  // point that does not move with how fast the build was. A stall during the build is absorbed
-  // whole, because the spin targets an absolute instant and not a duration.
-  //
-  // WHAT IS LEFT WHEN THE BODY RETURNS IS MEASURED, ON THIS MACHINE, FROM THE REPLY. One quantity
-  // decides the whole test: the span between the deadline starting in `open()` and the snippet's
-  // first statement -- call it the setup. Ask for a leftover below it and the BODY is interrupted;
-  // ask for one above `setup + render` and the render fits anyway and the renewal guards nothing.
-  // Four review rounds each found a different contaminant in a host-side ESTIMATE of that span
-  // (worker startup, dispatch, result transfer, per-call jitter, disposal after the render), because
-  // `wall - ms` is not the setup and no correction term turns it into one.
-  //
-  // It does not have to be estimated. On a run that came back at all, `ms` covers the setup plus the
-  // body, and the body ends at an instant this test chose, so the setup falls straight out of the
-  // reply:
-  //
-  //     setupMs = leftMs - (budgetMs - ms)
-  //
-  // A calibration run with a leftover nothing could exhaust reads it off; the run that is asserted
-  // on then asks for that plus a sliver. A machine three times slower measures three times more and
-  // asks for three times more, and no constant written here has to cover it. `ms` starts marginally
-  // before the deadline does, which the assertion at the end handles by bounding the leftover from
-  // the other side.
+  // The value path gets a FRESH deadline: rendering runs interpreter code, and a value built with the
+  // deadline nearly spent would otherwise have its render interrupted and come back as "[object Object]".
+  // The body builds with the budget wide open, then spins on `Date.now()` to an absolute instant, so
+  // what it spends is pinned to the clock and not to the work: a fixed budget, or a margin relative to
+  // a first run, asserts this machine's speed and fails on shared CI runners. The setup (deadline start
+  // to first statement) is read off the reply, `setupMs = leftMs - (budgetMs - ms)`, never estimated
+  // host-side from `wall - ms`, which also carries worker startup, dispatch, transfer and disposal.
+  // A leftover below the setup interrupts the BODY; one above `setup + render` lets it fit unrenewed.
   test("a value built with the last of the budget is still rendered whole", async () => {
-    // N IS SQUEEZED FROM BOTH SIDES, AND NEITHER SIDE IS FREE. Above, the renewal installs a FIXED
-    // `RENDER_BUDGET_MS`, so a value too big to render inside it fails even on a call with a
-    // 30-second timeout -- the machine's speed back in by the other door. Below, the leftover this
-    // test grants the render is about one setup, which does NOT shrink with N, so a smaller fixture
-    // narrows the very gap the test lives in. Both ends measured here, on the nominal leftover the
-    // loop below controls:
-    //
-    //            renders inside the fixed ceiling   defect hides from a leftover of
-    //     20k    yes                                30 ms   (test lands at 11-14)
-    //     40k    yes                                50 ms
-    //    200k    yes                                --
-    //    240k    NO                                 --
-    //
-    // So 40k sits about 5x under the ceiling and about 3.6x under the leftover that would let an
-    // unrenewed render through; halving it would buy ceiling headroom that the precondition below
-    // already guards, and spend margin that nothing guards.
+    // NOTE: N is squeezed from both sides. The renewal installs a FIXED `RENDER_BUDGET_MS`, so a value
+    // too big fails even under a 30 s timeout; and the leftover granted to the render is about one
+    // setup, which does not shrink with N, so a smaller fixture narrows the gap the test lives in.
+    // 40k renders about 5x under the ceiling (240k does not render at all) and takes about 3.6x the
+    // leftover that would let an unrenewed render through (a 20k fixture hides the defect from 30 ms).
     const N = 40_000;
     const CHARS = 20_000_000;
-    // NOTE: THE RENDER IS MEASURED FROM INSIDE, by the only clock that is not contaminated: its own.
-    // A getter runs when the renderer reaches it (the test below this one is the fence for that), so
-    // a getter on the first element and one on the last bracket the walk, and their `console.log`
-    // comes back in the reply. Nothing host-side is in the span -- not the worker spawn, not the
-    // dispatch, not the transfer, not the disposal -- which is what four earlier rounds each failed
-    // to subtract out of `wall - ms`. Measured: 43-45 ms here, stable over 4 runs.
+    // NOTE: The render is timed from inside, on the interpreter's own clock: a getter on the first
+    // element and one on the last bracket the walk (getters run when the renderer reaches them, fenced
+    // by the next test), and their `console.log` comes back in the reply. No host-side span (spawn,
+    // dispatch, transfer, disposal) enters it, which is why `wall - ms` is not used.
     const BUILD = `(() => {
       const v = Array.from({ length: ${N} }, (_, i) => ({ i }));
       v[0] = { get i() { console.log("A" + Date.now()); return 0 } };
@@ -270,7 +226,7 @@ describe("runSandboxedCode", () => {
         timeoutMs: budgetMs,
         maxChars: CHARS,
       });
-      // What the run itself says was left of the budget when the body returned -- measured on the run
+      // NOTE: What the run itself says was left of the budget when the body returned, read off the run
       // that matters, never carried over from another one. A `limit` reply carries no `ms` at all
       // (the host drops it), so nothing here can read a number off an interrupted run by accident.
       const leftoverMs =
@@ -278,10 +234,10 @@ describe("runSandboxedCode", () => {
       return { out, leftoverMs };
     };
 
-    // 64 ms is six times the setup measured here (10-12 ms), and its job is only to be survivable,
-    // not to be right: whatever the leftover turns out to be, the subtraction gives the setup. A
-    // machine slow enough to spend more than that measures itself at 128, then 256; the ceiling is a
-    // runaway guard, not a budget, and hitting it fails on the null rather than inventing a number.
+    // NOTE: 64 ms only has to be survivable, several times a typical setup: whatever the leftover
+    // turns out to be, the subtraction gives the setup. A slower machine doubles to 128, then 256; the
+    // ceiling is a runaway guard, not a budget, and hitting it fails on the null rather than inventing
+    // a number.
     let calMs = 64;
     const calibrate = async () => {
       let probe = await attempt(calMs);
@@ -292,34 +248,20 @@ describe("runSandboxedCode", () => {
       expect(probe.leftoverMs).not.toBeNull();
       return calMs - (probe.leftoverMs as number);
     };
-    // TWICE, KEEPING THE SMALLER, because the two directions of error are not symmetric. A setup
-    // read too small makes the asserted run ask for less than it needs, which comes back `limit` and
-    // the loop below corrects. One read too large hands the render a leftover it should never have
-    // had, and a render that fits is exactly what this test cannot tell from a render that was
-    // renewed -- it would report green over the defect. So the estimate is biased to the recoverable
-    // side. The first call is also what warms the interpreter, which running this test alone would
-    // otherwise pay inside the only measurement it has. Measured: a single read lands at 10-12 ms
-    // here, the smaller of two at 8-9.
+    // NOTE: Twice, keeping the smaller, because the errors are not symmetric. A setup read too small
+    // makes the asserted run ask for too little, which comes back `limit` and the loop below corrects;
+    // one read too large hands the render a leftover it should not have, and a render that fits cannot
+    // be told from a renewed one (green over the defect). The first call also warms the interpreter,
+    // which a test run alone would otherwise pay inside its only measurement.
     const firstSetupMs = await calibrate();
     const setupMs = Math.min(firstSetupMs, await calibrate());
 
-    // Now the setup plus a sliver, and then a CONTROLLER rather than a ladder, because the two ways
-    // of being wrong carry different amounts of information. Overshooting is measured exactly -- the
-    // run reports its own leftover -- so it is corrected by exactly that much. Undershooting is only
-    // a direction, because an interrupted run reports nothing at all, so it takes a step. Every
-    // worker is spawned fresh and sets itself up at its own pace, so the calibration above cannot
-    // promise anything about this one; what makes that harmless is that the assertion reads the
-    // asserted run's own clock, which lets the steps be generous without ever buying a green.
-    //
-    // The two ways this can end are distinguishable, which is what makes retrying on one of them
-    // safe (measured, both shapes):
-    //
-    //   body interrupted   -> kind "limit", limit "time", and NO `ms`
-    //   render interrupted -> kind "error", name "InternalError", WITH `ms`
-    //
-    // So `limit` means the sliver lost to jitter and is retried; `error` is the defect this test
-    // exists to catch and is never retried past. A retry loop blind to the difference would grow the
-    // leftover until the render fits and report green.
+    // NOTE: A controller rather than a ladder: an overshoot reports its own leftover and is corrected
+    // by exactly that much, an undershoot reports nothing and takes a step. Each worker sets itself up
+    // at its own pace, so the assertion reads the asserted run's own clock, never the calibration's.
+    // The endings differ: an interrupted BODY is kind "limit" with no `ms`, an interrupted RENDER is
+    // kind "error" `InternalError` with `ms`. Only `limit` is retried: a loop blind to the difference
+    // would grow the leftover until the render fits and report green.
     const TOL_MS = 5;
     let leftMs = setupMs + 2;
     let r = await attempt(leftMs);
@@ -336,45 +278,29 @@ describe("runSandboxedCode", () => {
     const { out, leftoverMs } = r;
 
     expect(out.kind).toBe("value");
-    // NOTE: EVERY TERM OF THIS BOUND COMES OFF THE RUN BEING ASSERTED. `leftoverMs` is
-    // `leftMs - (ms - 500)`, and `ms - 500` is that worker's OWN setup, so the calibration above is
-    // only a starting point for the search: a worker slower or faster than the ones that calibrated
-    // cannot move this number, because it never enters it. What it bounds is:
-    //
-    //     real leftover = prefix + leftoverMs <= setup(this run) + TOL,  since prefix <= setup
-    //
-    // The prefix is the sliver between `ms` starting at the top of `run()` and the deadline starting
-    // partway into `open()`, once the runtime is built -- measured at 0.4 ms of an 8-9 ms setup, and
-    // bounded rather than measured because it is a prefix of exactly what `ms` covers. So the real
-    // leftover is about one setup of this very worker, and what it has to stay under scales with the
-    // machine the same way: rendering 40k objects is the same interpreter doing the same kind of
-    // work as setting one up. Measured, the two ends stay a factor of 3.6 apart.
+    // NOTE: Every term of this bound comes off the run being asserted: `leftoverMs` is
+    // `leftMs - (ms - 500)`, and `ms - 500` is that worker's own setup, so no calibrating worker can
+    // move it. Real leftover = prefix + leftoverMs <= setup + TOL, since the prefix (`ms` starting in
+    // `run()` before the deadline starts in `open()`) is part of the setup. So the render gets about one
+    // setup of this worker, which scales with the machine the same way rendering 40k objects does.
     expect(leftoverMs as number).toBeLessThanOrEqual(TOL_MS);
-    // NOTE: AND THIS IS THE PROOF, both halves off the same run. `leftMs` is the exact upper bound of
-    // what the render could have had on the ORIGINAL deadline -- exact because the prefix cancels:
-    //
-    //     real leftover = prefix + leftoverMs <= setup + leftoverMs = leftMs,  since prefix <= setup
-    //
-    // and `renderMs` is what the render actually took, on the interpreter's own clock. One being
-    // larger than the other says the render could not have finished on the deadline it inherited, so
-    // the whole value coming back is the renewal and nothing else. No proportionality argument, no
-    // timing carried between workers, no host clock. Measured: 11 against 44, a factor of 4.
+    // NOTE: The proof, both halves off the same run: `leftMs` bounds what the render could have had on
+    // the ORIGINAL deadline (prefix + leftoverMs <= setup + leftoverMs = leftMs), and `renderMs` is what
+    // it took on the interpreter's clock. A render longer than that bound means the value coming back
+    // is the renewal's work; no timing is carried between workers and no host clock enters it.
     const renderMs = renderMsOf(out);
     expect(renderMs).not.toBeNull();
     expect(renderMs as number).toBeGreaterThan(leftMs);
     const v = (out as { value: string }).value;
     expect(v.startsWith('[{"i":0},{"i":1}')).toBe(true);
     expect(v.endsWith(`{"i":${N - 1}}]`)).toBe(true);
-    // NOTE: The 20 s below is comfortably above the twelve round trips this can take (one
-    // precondition, two calibrations, up to nine controlled attempts, ~0.6 s each), so nothing here
-    // is bounded by a default nobody chose. Measured end to end, the controller settles on its first
-    // attempt and the whole test takes about 2 s.
+    // NOTE: 20 s covers the twelve round trips this can take (one precondition, two calibrations, up
+    // to nine controlled attempts), so nothing here is bounded by a default nobody chose.
   }, 20_000);
 
-  // A value can still run the body's code AFTER the body returned: a getter, a proxy trap. The
-  // renderer used to swallow that and answer "[object Object]" as a successful value, so the agent
-  // read a verdict nobody produced and the operator was never alerted — the failure contract says a
-  // throw from the body is a failure, and this is one, one step later.
+  // A value can still run the body's code AFTER the body returned: a getter, a proxy trap. A throw
+  // there is a failure of the body, one step later; answering "[object Object]" as a value would hand
+  // the agent a verdict nobody produced and never alert the operator.
   test("a throw while the value is being read is an error, not a value", async () => {
     for (const code of [
       'return { get x() { throw new Error("boom") } }',
@@ -416,14 +342,12 @@ describe("runSandboxedCode", () => {
     expect(utc).toMatchObject({ kind: "value", value: '["UTC","string"]' });
   });
 
-  // Round 4 of PR #485: TIMEZONE and NOW_LOCAL are strings, and `Date` was the interpreter's, whose
-  // local methods follow the HOST's zone (UTC in the container), so `new Date(NOW_LOCAL).getDate()`
-  // was the UTC day — the exact date arithmetic the description advertises, wrong every evening.
-  // Measured before the design: `process.env.TZ` inside a Bun worker changes nothing (assigned, or
-  // passed as the worker's env), and the process zone is shared by every turn in flight anyway. So
-  // the zone is applied INSIDE the interpreter, through one host function that answers the zone's
-  // offset at an instant. Tokyo, so that a host in São Paulo (this machine) and one in UTC (CI)
-  // both disagree with every expected value; the reference values are Bun's own Date under TZ.
+  // TIMEZONE and NOW_LOCAL are strings, and the interpreter's own `Date` follows the HOST's zone (UTC
+  // in the container), so `new Date(NOW_LOCAL).getDate()` would be the UTC day. The zone is applied
+  // INSIDE the interpreter, through one host function answering the zone's offset at an instant:
+  // `process.env.TZ` in a Bun worker changes nothing, and the process zone is shared by every turn in
+  // flight. Tokyo, so a São Paulo host and a UTC host both disagree with every expected value; the
+  // reference values are Bun's own Date under TZ.
   test("Date's local methods follow TIMEZONE, not the host's zone", async () => {
     const now = new Date("2026-01-14T22:30:00Z"); // 07:30 on Thursday the 15th in Tokyo
     const out = await runSandboxedCode(
@@ -469,17 +393,12 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // A zone with transitions, across both of them. The two wall-clock times that have no single
-  // answer are pinned to what the spec (and Bun) say: a time inside the spring gap keeps the offset
-  // from before it, a time that happens twice in autumn is its first occurrence. The gap case is
-  // what a one-step conversion gets wrong by an hour.
-  // Round 5 of PR #485: an offset-less string with a field out of range (`2026-13-01T00:00`, a
-  // minute of 60) went through `Date.UTC`, which normalises, where the engine's own parser answers
-  // NaN — a malformed customer date silently became another date. The wall clock is now what the
-  // engine makes of the same text as UTC, so the two spellings agree field for field: measured in
-  // QuickJS and in Bun alike, month 13 / minute 60 / second 60 / month 0 / day 0 are NaN, February
-  // 30 and 24:00 normalise. `setYear` (Annex B) was also outside the shim; the engine happened to
-  // route it through `setFullYear`, and it is defined on its own now so that nothing rests on that.
+  // An offset-less string with a field out of range (`2026-13-01T00:00`, a minute of 60) is NaN, as
+  // the engine's own parser says; `Date.UTC` would normalise it and turn a malformed customer date
+  // into another date. The wall clock is what the engine makes of the same text as UTC, so the two
+  // spellings agree field for field (QuickJS and Bun alike: month 13, minute 60, second 60, month 0,
+  // day 0 are NaN; February 30 and 24:00 normalise). `setYear` (Annex B) is defined by the shim
+  // itself rather than resting on the engine routing it through `setFullYear`.
   test("a malformed local date is NaN like the engine's own, and setYear is local too", async () => {
     const out = await runSandboxedCode(
       `[String(Date.parse("2026-13-01T00:00")), String(new Date("2026-01-01T00:60").getTime()),
@@ -508,6 +427,10 @@ describe("runSandboxedCode", () => {
     });
   });
 
+  // A zone with transitions, across both of them. The two wall-clock times that have no single
+  // answer are pinned to what the spec (and Bun) say: a time inside the spring gap keeps the offset
+  // from before it, a time that happens twice in autumn is its first occurrence. The gap case is
+  // what a one-step conversion gets wrong by an hour.
   test("a DST zone is honored across its transitions, gap and overlap included", async () => {
     const out = await runSandboxedCode(
       `[new Date("2026-01-10T12:00:00Z").getTimezoneOffset(),
@@ -533,10 +456,9 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // Round 7: every offset-less text the engine accepts beyond the ISO `T` form is read in the HOST's
-  // zone (measured: three hours apart between a UTC host and a São Paulo one). Tokyo as the agent,
-  // so that this machine (São Paulo) and CI (UTC) both disagree with the expected values; a date
-  // alone stays UTC and a designator stays the engine's, as the spec says.
+  // The engine reads every offset-less text it accepts beyond the ISO `T` form in the HOST's zone.
+  // Tokyo as the agent, so a São Paulo host and a UTC host both disagree with the expected values; a
+  // date alone stays UTC and a designator stays the engine's, as the spec says.
   test("an offset-less text in any format the engine accepts is read in TIMEZONE", async () => {
     const out = await runSandboxedCode(
       `[new Date("2026-09-05 12:00:00").toISOString(),
@@ -591,17 +513,16 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // Round 14: the text the engine read in the host's zone was recovered from the instant it made,
-  // through the host's offset at that instant. The engine builds that instant from the offset at
-  // the WALL CLOCK read as UTC (measured), so on a host with a DST gap two wall clocks become one
-  // instant (New York, March 8th: 06:30 and 07:30 both land on 11:30Z), and the one the snippet
-  // wrote is gone before the shim sees it. The wall clock must come from the text: the engine
-  // reads the same text as UTC when it ends in a designator. The host's zone can only be set on a
-  // child process, so the vectors run there, on two hosts whose gaps fall on either side of UTC.
+  // The engine builds an offset-less text's instant from the host offset at the WALL CLOCK read as
+  // UTC, so on a host with a DST gap two wall clocks become one instant (New York, March 8th: 06:30
+  // and 07:30 both land on 11:30Z), and recovering the text from that instant loses the one written.
+  // The wall clock comes from the text instead: the engine reads the same text as UTC when it ends in
+  // a designator. The host's zone can only be set on a child process, so the vectors run there, on
+  // two hosts whose gaps fall on either side of UTC.
   test("an offset-less text is read in TIMEZONE on a host with a DST gap, too", () => {
     const expected = JSON.stringify([
-      "2026-03-07T17:30:00.000Z", // 02:30 Tokyo, a New York host's gap (was 18:30Z there)
-      "2026-03-07T21:30:00.000Z", // 06:30 Tokyo, inside a New York host's window (was 22:30Z)
+      "2026-03-07T17:30:00.000Z", // NOTE: 02:30 Tokyo, a New York host's gap
+      "2026-03-07T21:30:00.000Z", // NOTE: 06:30 Tokyo, inside a New York host's window
       "2026-03-07T17:30:00.000Z", // the slash form, same wall clock
       "2026-03-07T17:30:00.123Z", // ISO with a four-digit fraction: the engine's local ISO form
       "2026-03-07T17:30:00.000Z", // ISO with an expanded year
@@ -631,9 +552,8 @@ describe("runSandboxedCode", () => {
     }
   }, 30_000);
 
-  // Round 11: the Date shim resolved `String`, `Number`, `Math`, `isNaN`, `Object` when called —
-  // after the snippet, whose own top-level `const` had shadowed them. Bound when the shim is
-  // installed, like the renderer's and the error reader's.
+  // The Date shim binds `String`, `Number`, `Math`, `isNaN`, `Object` when it is installed, like the
+  // renderer and the error reader: resolved at call time, they would be the snippet's own `const`s.
   test("a snippet that shadows a global still gets the zone", async () => {
     const out = await runSandboxedCode(
       `const String = 0, Number = 0, Math = 0, isNaN = 0, Object = 0;
@@ -654,19 +574,18 @@ describe("runSandboxedCode", () => {
         15,
         7,
         "Thu Jan 15 2026 07:30:00 GMT+0900",
-        // Round 12: `Date()` without `new` is the current local date as a string — checked by shape,
-        // since two reads of the clock can straddle a second (round 13).
+        // NOTE: `Date()` without `new` is the current local date as a string, checked by shape since
+        // two reads of the clock can straddle a second.
         "string",
         true,
       ]),
     });
   });
 
-  // Round 8, the same century bug seen from inside: year 99 rendered as 1999 with an offset of
-  // minus a billion minutes. Reference values from Bun under TZ=America/Sao_Paulo (LMT, −03:06:28).
-  // Round 9 added the seconds: local mean time had them (São Paulo −03:06:28, Tokyo +09:18:59),
-  // and a minute's rounding put the clock 28 s off Intl's. `getTimezoneOffset` is whole minutes cut
-  // toward zero, as the engines do.
+  // A year in the first century keeps its century and its zone, to the second: local mean time has
+  // seconds (São Paulo -03:06:28, Tokyo +09:18:59), and rounding to the minute would put the clock
+  // off Intl's. `getTimezoneOffset` is whole minutes cut toward zero, as the engines do. Reference
+  // values from Bun under TZ=America/Sao_Paulo.
   test("a date in the first century is in the zone too, to the second", async () => {
     const probe = `const d = new Date(0); d.setUTCFullYear(99, 5, 15); d.setUTCHours(12, 0, 0, 0);
       const e = new Date(d); e.setHours(8, 53, 32);
@@ -710,9 +629,9 @@ describe("runSandboxedCode", () => {
     });
   });
 
-  // Round 7: the renderer named `Date`, `JSON`, `Object`… as globals, resolved when it ran — after
-  // the snippet, whose own `const Date = 1` had shadowed them, so the verdict rendered as
-  // "[object Object]". The bindings are taken when the renderer is made, before any snippet.
+  // The renderer takes its bindings (`Date`, `JSON`, `Object`...) when it is made, before any
+  // snippet: resolved when it runs, a snippet's own `const Date = 1` would shadow them and the verdict
+  // would render as "[object Object]".
   test("a snippet that shadows a global by accident still gets its result rendered", async () => {
     const cases: Array<[string, string]> = [
       ["const Date = 1; ({ valid: true })", '{"valid":true}'],
@@ -735,10 +654,10 @@ describe("runSandboxedCode", () => {
     expect(logged).toMatchObject({ kind: "value", logs: ['{"ok":true}'] });
   });
 
-  // A positive-offset zone (round 6): the wall clock as UTC is half a day AFTER the instant it
-  // names, so reading the offset at it took the far side of every transition. Auckland's spring gap
-  // (02:00 → 03:00 on 2025-09-28) and autumn overlap (03:00 → 02:00 on 2025-04-06), through the
-  // constructor, parsing and a setter; reference values from Bun under TZ=Pacific/Auckland.
+  // A positive-offset zone: the wall clock read as UTC is half a day AFTER the instant it names, so
+  // reading the offset there takes the far side of every transition. Auckland's spring gap (02:00 to
+  // 03:00 on 2025-09-28) and autumn overlap (03:00 to 02:00 on 2025-04-06), through the constructor,
+  // parsing and a setter; reference values from Bun under TZ=Pacific/Auckland.
   test("a positive-offset DST zone resolves its gap and overlap the same way", async () => {
     const out = await runSandboxedCode(
       `[new Date(2025, 8, 28, 2, 30).toISOString(),
@@ -803,8 +722,8 @@ describe("runSandboxedCode", () => {
   });
 
   test("the memory ceiling is the CONFIGURED one, not the interpreter's own heap maximum", async () => {
-    // 800k JSValues: fits under the default ceiling (measured) and not under 8 MB. Asserting the pair
-    // is what tells "setMemoryLimit is wired" apart from "the WASM heap ran out eventually" — an
+    // NOTE: 800k JSValues fit under the default ceiling and not under 8 MB. Asserting the pair
+    // is what tells "setMemoryLimit is wired" apart from "the WASM heap ran out eventually": an
     // unbounded push reports "out of memory" either way, just much later and much larger.
     const alloc = `new Array(800000).fill(1).length`;
     expect(await runSandboxedCode(alloc)).toMatchObject({
@@ -817,17 +736,16 @@ describe("runSandboxedCode", () => {
   });
 
   test("runaway recursion is refused by the interpreter, and honest recursion is not", async () => {
-    // NOTE: The loop in front is the fence. The interrupt handler fires every 10k opcodes, and
-    // without work before the recursion the engine's limit tripped before the first one fired deep;
-    // with it, the handler is entered near full depth, which is where a budget past the thread's
-    // native room turned this reply into `aborted` (round 4 of PR #485: the first form of this test
-    // passed at 512 KiB by that phase alone).
+    // NOTE: The loop in front is the fence. The interrupt handler fires every 10k opcodes; without
+    // work before the recursion the engine's limit trips before the first one fires deep, and a budget
+    // past the thread's native room would pass unnoticed. With it, the handler is entered near full
+    // depth, where such a budget turns this reply into `aborted`.
     const busy = "for (let i = 0; i < 12000; i++) {}\n";
     const runaway = await runSandboxedCode(
       `${busy}function f(n) { return f(n + 1) }; f(0)`,
     );
     expect(runaway).toMatchObject({ kind: "limit", limit: "stack" });
-    // ~1,340 frames fit under SANDBOX_STACK_BYTES; measured, and the constant's comment says so.
+    // NOTE: ~1,340 frames fit under SANDBOX_STACK_BYTES, as the constant's comment says.
     const honest = await runSandboxedCode(
       `${busy}function f(n) { return n === 0 ? 0 : 1 + f(n - 1) }; f(1000)`,
     );
@@ -837,10 +755,10 @@ describe("runSandboxedCode", () => {
 
   // A thread with less native room than the budget assumes (another OS, another Bun) gets the same
   // answer: the RangeError JSC throws through the WASM frames is the stack limit, and nothing in the
-  // interpreter is touched after it. 512 KiB is the budget measured to sit past this machine's
-  // native room (macOS; ~2,400 frames), so here this is the host path; on a thread with more room
-  // it is the engine's own refusal and this proves less. A budget past the WASM shadow stack is a
-  // different failure (a trap, `aborted`), so it cannot be forced from further up.
+  // interpreter is touched after it. 512 KiB sits past a macOS thread's native room (~2,400 frames),
+  // so there this is the host path; on a thread with more room it is the engine's own refusal and this
+  // proves less. A budget past the WASM shadow stack is a different failure (a trap, `aborted`), so it
+  // cannot be forced from further up.
   test("a stack budget the thread cannot honor is still reported as the stack limit", async () => {
     const out = await runSandboxedCode(
       `for (let i = 0; i < 12000; i++) {}\nfunction f(n) { return f(n + 1) }; f(0)`,
@@ -928,18 +846,11 @@ describe("runSandboxedCode", () => {
     expect(v.logs.join("").length).toBeLessThanOrEqual(600);
   });
 
-  // PR #485, round 2: two more values the snippet controls that reached the host unbounded. An
-  // empty `console.log()` spent nothing against the budget, so a loop of them built an array of a
-  // million entries on this side of the memory ceiling; and `e.name` is one assignment away from a
-  // megabyte, while only the message was clipped.
-  // Round 8: a logged string crossed the boundary WHOLE and was cut on the host side — copied out
-  // of the interpreter's 32 MB heap into the host's, where nothing bounds it: +75 MB of RSS for one
-  // call, +143 MB for eight at once, measured. The console methods now cut inside the VM, and the
-  // host reads the length off the VM string without copying and refuses an uncut line with a
-  // sentinel; that sentinel is what a host-side cut would leave here.
-  // Round 10, the same for the result and for a thrown value: 15 million characters as the last
-  // expression added 101 MB of RSS for one call; the renderer and the error reader now cut inside
-  // the VM, and the host refuses an uncut string with a sentinel rather than copying it.
+  // Every string the snippet controls is cut INSIDE the VM, before it crosses to the host: the result,
+  // a thrown value, a console line. A host-side cut would first copy the whole string out of the 32 MB
+  // interpreter heap into the host's, where nothing bounds it (tens of MB of RSS per call). The host
+  // reads the length off the VM string without copying and refuses an uncut one with a sentinel; that
+  // sentinel is what a host-side cut would leave here.
   test("a huge result and a huge thrown value are cut before they cross the boundary", async () => {
     const marker = "…[truncated]";
     const result = await runSandboxedCode(`"x".repeat(15_000_000)`);
@@ -1022,11 +933,10 @@ describe("runSandboxedCode", () => {
     ).toBeLessThan(400);
   });
 
-  // Round 20: a snippet can build a NUL or half a character (`String.fromCharCode(0)`, a lone
-  // `\\ud800`), and the strings it leaves in a console line or an error message become the
-  // ToolMessage's content, which the checkpoint writes as jsonb — and Postgres refuses a NUL and an
-  // unpaired surrogate in jsonb, failing the turn instead of returning the result. Repaired where
-  // the strings are made, before they cross the thread boundary, like every other writer here.
+  // A snippet can build a NUL or half a character (`String.fromCharCode(0)`, a lone `\\ud800`), and a
+  // console line or error message becomes the ToolMessage's content, which the checkpoint writes as
+  // jsonb: Postgres refuses a NUL and an unpaired surrogate there, failing the turn. They are repaired
+  // where the strings are made, before the thread boundary, like every other writer here.
   test("a NUL or half a character made by the snippet does not cross the thread boundary", async () => {
     const out = await runSandboxedCode(
       `console.log("a" + String.fromCharCode(0) + "b" + "\\ud800");
@@ -1042,10 +952,9 @@ describe("runSandboxedCode", () => {
     expect(replaceLoneSurrogates(text)).toBe(text);
   });
 
-  // Round 21: Intl reports a year BEFORE 1 CE as a year of its era (astronomical −1 is "2 BC"),
-  // and the formatter neither asked for the era nor read it, so the wall clock was rebuilt in 2 CE
-  // and the offset came out as years — even in UTC. The era is read and folded back into the
-  // astronomical year JavaScript's Date counts in; year 0 is 1 BC.
+  // Intl reports a year BEFORE 1 CE as a year of its era (astronomical -1 is "2 BC"); the era is read
+  // and folded back into the astronomical year Date counts in (year 0 is 1 BC). Without it the wall
+  // clock is rebuilt in 2 CE and the offset comes out as years, even in UTC.
   test("a date before 1 CE is in the zone too, era folded into the astronomical year", async () => {
     const out = await runSandboxedCode(
       `const d = new Date("-000001-01-01T12:00:00Z"); const z = new Date("0000-06-15T12:00:00Z");
@@ -1095,12 +1004,11 @@ describe("runSandboxedCode", () => {
     expect(performance.now() - started).toBeLessThan(3000);
   });
 
-  // Round 18: `ready` is posted when the module loads, and the runtime, the context, the renderer
-  // and the four preludes are set up on the request, before the snippet runs. A failure there was
-  // an uncaught error after `ready`, which the host reads as the snippet's abort — so an install or
-  // environment problem told the model to simplify and retry, every turn, instead of reaching the
-  // operator as the sandbox being unavailable. Asked of the thread directly, because the host
-  // resolves the zone before the request and an unknown one cannot reach the shim through it.
+  // `ready` is posted when the module loads, and the runtime, context, renderer and the four preludes
+  // are set up on the request, before the snippet runs. A failure there is the sandbox being
+  // unavailable, for the operator; read as the snippet's abort, it would tell the model to simplify
+  // and retry every turn. Asked of the thread directly, because the host resolves the zone before the
+  // request and an unknown one cannot reach the shim through it.
   test("the interpreter failing to set up after the thread is ready is the sandbox's failure, not the snippet's", async () => {
     const worker = new Worker(
       new URL("../../src/graph/tools/code-sandbox.worker.ts", import.meta.url)
@@ -1148,11 +1056,9 @@ describe("runSandboxedCode", () => {
   });
 });
 
-// The text the model reads, as a decision table: one row per outcome, and every row that is not a
-// value tells the model what to change.
 describe("localIsoNow", () => {
-  // Round 8: `Date.UTC` reads a year of 0–99 as 1900–1999, so the wall clock of a date in that
-  // range was rebuilt nineteen centuries late and the offset came out as sixteen million hours.
+  // `Date.UTC` reads a year of 0 to 99 as 1900 to 1999, so a date in that range must not go through
+  // it, or its wall clock lands nineteen centuries late and the offset comes out as millions of hours.
   test("a year below 100 keeps its own century", () => {
     const y99 = new Date(0);
     y99.setUTCFullYear(99, 5, 15);
@@ -1179,7 +1085,7 @@ describe("localIsoNow", () => {
     for (const [tz] of rows) {
       expect(new Date(localIsoNow(tz, at)).getTime()).toBe(at.getTime());
     }
-    // Round 11: with the milliseconds, or the round trip lands up to 999 ms early.
+    // NOTE: With the milliseconds, or the round trip lands up to 999 ms early.
     const withMs = new Date("2026-09-02T22:05:33.412Z");
     expect(localIsoNow("America/Sao_Paulo", withMs)).toBe(
       "2026-09-02T19:05:33.412-03:00",
@@ -1192,9 +1098,9 @@ describe("localIsoNow", () => {
 
 describe("SandboxQueue", () => {
   test("holds a burst to its limit, and every call still runs", async () => {
-    // Six busy snippets through a gate of two: three batches of ~200 ms, not one. The elapsed
-    // time is the proof the gate exists; the outcomes are the proof nothing was dropped or
-    // misreported as the sandbox failing to start, which is what 50-at-once measured with no gate.
+    // NOTE: Six busy snippets through a gate of two: three batches of ~200 ms, not one. The elapsed
+    // time proves the gate exists; the outcomes prove nothing was dropped or misreported as the
+    // sandbox failing to start.
     const queue = new SandboxQueue(2);
     const started = performance.now();
     const outs = await Promise.all(
@@ -1208,10 +1114,9 @@ describe("SandboxQueue", () => {
     expect(queue.queued).toBe(0);
   });
 
-  // What the gate has to do with fifty callers is answer all fifty — none dropped, none refused for
-  // want of a slot. The DEFAULT deadline is not part of that question, and leaving it in made this
-  // an assertion about how fast fifty workers start on the machine at hand: green locally, red on
-  // every CI runner for four consecutive commits (#518). A deadline no honest machine can miss
+  // What the gate owes fifty callers is an answer for each, none dropped, none refused for want of a
+  // slot. The default deadline is not part of that question: with it, this would assert how fast fifty
+  // workers start on the machine at hand and fail on CI runners. A deadline no honest machine misses
   // keeps the queue as the only thing measured.
   test("a burst of fifty cheap calls all come back as values under the default gate", async () => {
     const outs = await Promise.all(
@@ -1240,6 +1145,8 @@ describe("SandboxQueue", () => {
   });
 });
 
+// The text the model reads, as a decision table: one row per outcome, and every row that is not a
+// value tells the model what to change.
 describe("formatSandboxResult", () => {
   const rows: Array<
     [Exclude<SandboxOutcome, { kind: "unavailable" }>, RegExp[]]
@@ -1290,9 +1197,9 @@ describe("formatSandboxResult", () => {
     expect(text).toBe(`Result: ${"x".repeat(100)}…[truncated]`);
   });
 
-  // PR #485, round 1: a head-first clip over the whole text let 4,000 characters of console output
-  // push the `Result:` line off the end, so a snippet that finished correctly handed the model no
-  // verdict at all. The tail is the deliverable; the output takes what is left.
+  // A head-first clip over the whole text would let console output push the `Result:` line off the
+  // end, handing the model no verdict for a snippet that finished. The tail is the deliverable; the
+  // output takes what is left.
   test("console output never pushes the result or the error off the end", () => {
     const logs = Array.from({ length: 100 }, () => "y".repeat(100));
     const ok = formatSandboxResult(
@@ -1447,9 +1354,8 @@ describe("function-body mode (a code tool's call)", () => {
   });
 
   // A body that returns a promise did not finish, and there is no event loop here to finish it. The
-  // renderer walks the object, finds no own keys, and answers `Result: {}` with `failed: false`, so
-  // the agent reads an empty object as the operator's verdict and nobody is alerted -- including
-  // when the async body THREW, which came back the same way (round 31, measured on all four).
+  // renderer would walk it, find no own keys and answer `Result: {}` as the operator's verdict with
+  // nobody alerted, even when the async body THREW.
   test("a returned promise is an error, not an empty object", async () => {
     const bodies = [
       "return Promise.resolve(42);",

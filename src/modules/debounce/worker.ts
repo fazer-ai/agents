@@ -16,22 +16,13 @@ import {
 } from "@/modules/scheduler/worker";
 import { debounceDedupeKey } from "./service";
 
-// Dedicated FAST drain for DEBOUNCE jobs only (inbound message coalescing). Kept separate from the
-// scheduler so the per-agent debounce window (seconds) is honored without running the reaper/sweep at
-// that cadence; the scheduler's reaper still re-pends a stranded CLAIMED debounce job. Same single-
-// replica discipline as the other workers (globalThis singleton survives `bun --hot`). The claim uses
-// FOR UPDATE SKIP LOCKED, so it is still correct if briefly doubled.
-//
-// SLOTS, NOT BATCHES (issue #807). The lane holds at most `slots` jobs in flight, and every tick
-// fills only the slots that are free, without waiting for any job it started. It used to claim a
-// batch and await the whole of it before the next tick could claim, so the slowest job of a batch
-// held every tenant's replies: measured, one model call that took 5 min 36 s left four other
-// conversations due and unclaimed for up to 6 minutes, and a burst on one agent moved another
-// agent's first reply from ~75 s to 291 s with 1 to 3 model calls in flight against a budget of 20.
-//
-// The lane is sized by the model semaphore (config.agent.modelConcurrency), which stays the only
-// throttle on model calls: fewer slots would cap the lane below what the operator configured, and
-// more would leave claimed rows waiting for a permit while the reaper's stale window runs on them.
+// Dedicated FAST drain for DEBOUNCE jobs only, so the per-agent window is honored without ticking the
+// scheduler's reaper/sweep that fast (the reaper still re-pends a stranded CLAIMED debounce job).
+// Single replica (globalThis singleton survives `bun --hot`); FOR UPDATE SKIP LOCKED keeps the claim
+// correct if briefly doubled. SLOTS, NOT BATCHES: each tick fills only the free slots without awaiting
+// the jobs it started. The lane is sized by the model semaphore (config.agent.modelConcurrency), the
+// only throttle on model calls: more slots would leave claimed rows waiting for a permit while the
+// reaper's stale window runs on them. See docs/debounce.md.
 
 // The rows this process is executing RIGHT NOW, kept out of the claim itself. Without the batch
 // barrier a row can become claimable while its own run is still in flight, by two production
@@ -41,18 +32,10 @@ import { debounceDedupeKey } from "./service";
 // by construction (single replica, globalThis singleton).
 const inFlight = new Set<bigint>();
 
-// WHEN THE LANE IS FULL, WHO IS WAITING FOR IT (issue #812). A due flush with no free slot waits for
-// the instance, not for its model, and nothing said so: replies got slower and the logs were silent.
-// Every tick that ends with the lane full asks which due rows are still unclaimed, and a row that has
-// waited past `config.agent.capacityWaitAlertMs` is announced once, while it is still waiting.
-//
-// The wait is counted from the later of the row's `run_at` and the moment this process saw the lane
-// fill. A row that was already overdue when the lane filled waited on something else (a restart, a
-// stopped worker, the deploy in between), and blaming the lane for it would page the operator about
-// capacity on every deploy. A tick that finds room and claims less than it could ends the
-// saturation: whatever is due fitted, so nothing is waiting, and the next one measures from scratch.
-//
-// Both are per process, like the in-flight set above.
+// Who is waiting while the lane is full. A tick that ends full asks which due rows are unclaimed,
+// and one waiting past `config.agent.capacityWaitAlertMs` is announced once. The wait counts from the
+// later of `run_at` and when the lane filled, so time overdue through a restart or deploy is not
+// blamed on capacity. A tick that claims less than it could ends the saturation. Per process.
 const lane: {
   fullSince: number | null;
   announced: Set<bigint>;

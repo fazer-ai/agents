@@ -64,14 +64,14 @@ export function readBurstStart(payload: unknown): number | null {
 }
 
 // The burst's newest known Chatwoot message id, kept in the job payload so a flush abandoned by the
-// human-takeover gate can still advance the handled watermark without a network fetch (issue #8).
+// human-takeover gate can still advance the handled watermark without a network fetch.
 export function readLastMessageId(payload: unknown): number | null {
   if (!payload || typeof payload !== "object") return null;
   const v = (payload as Record<string, unknown>).lastMessageId;
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
-// Whether any message of this burst is a customer's REACTION (issue #746). The fork's default page
+// Whether any message of this burst is a customer's REACTION. The fork's default page
 // carries a reaction only when the message it reacts to is among the page's last twenty of the same
 // conversation, so the flush cannot learn from the page that one is missing. The arm can: it saw the
 // webhook. Sticky across the burst's arms, and across a flush still running, so a text typed after an
@@ -81,17 +81,16 @@ export function readReactionArmed(payload: unknown): boolean {
   return (payload as Record<string, unknown>).reactionArmed === true;
 }
 
-// The id of the burst's EARLIEST reaction (PR #821, review round 2). A conversation the agent never
-// answered has no mark to catch up from, and the id that armed the flush last is the newest one: a
-// reaction followed by a text would be read past. The flush catches up from here instead.
+// The id of the burst's EARLIEST reaction. A conversation the agent never answered has no mark to
+// catch up from, and the id that armed the flush last may be a text typed after the reaction, which
+// would read past it. The flush catches up from here instead.
 export function readReactionFrom(payload: unknown): number | null {
   if (!payload || typeof payload !== "object") return null;
   const v = (payload as Record<string, unknown>).reactionFrom;
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
-// Whether the thread's debounce row carries a reaction right now (PR #821, review round 6). The post
-// gate asks it: a reaction that arrives while a turn runs re-arms this row with the mark, and the
+// Whether the thread's debounce row carries a reaction right now. The post gate asks it: a reaction that arrives while a turn runs re-arms this row with the mark, and the
 // default page the gate reads would not carry it, so the turn would post over it instead of yielding
 // to the flush it armed. A database read, so the common post pays no extra Chatwoot call.
 export async function reactionArmedOnThread(params: {
@@ -112,22 +111,11 @@ export async function reactionArmedOnThread(params: {
   return row !== null && readReactionArmed(row.payload);
 }
 
-// Stamps when a burst STARTED waiting for a busy thread, if it is not stamped already.
-//
-// UNDER THE ARM LOCK, and that is the entire reason this exists instead of a `payloadPatch` on the
-// reschedule. The patch rides `rescheduleJob`, whose compare-and-set requires the row to still be
-// CLAIMED — and the window it has to survive is exactly the one where that is false: a message
-// arriving while the first deferring flush runs re-arms the row to PENDING with a fresh payload, the
-// CAS then fails, and the stamp is discarded rather than merged. Repeated arrivals in that window
-// restarted the deadline every time, which is the customer-never-answered case the deadline exists
-// to prevent (found in review of #588, and the reason the first test of it was not enough: it only
-// re-armed a row that was already stamped).
-//
-// Taking `armDebounce`'s own lock makes the two orderings both work: the arm runs first and this
-// merges into what it wrote, or this runs first and the arm carries the stamp forward as a live row.
-//
-// Never overwrites: the deadline belongs to the FIRST deferral, and a later one that reset it would
-// be the same defect wearing a different hat.
+// Stamps when a burst STARTED waiting for a busy thread, if it is not stamped already. Under
+// `armDebounce`'s lock rather than a `payloadPatch` on `rescheduleJob`: that CAS needs the row still
+// CLAIMED, and a message arriving mid-flush re-arms it to PENDING, so the stamp would be dropped and
+// the deadline restarted on every arrival. With the shared lock either order merges. Never
+// overwrites: the deadline belongs to the FIRST deferral.
 export async function stampDeferral(params: {
   tenantId: bigint;
   threadId: string;
@@ -158,16 +146,10 @@ export async function stampDeferral(params: {
   );
 }
 
-// Drops the deferral stamp, because the waiting it measured is over.
-//
-// Without this the deadline outlives the burst it belonged to, and the protection turns ITSELF off:
-// a deferred flush eventually runs, a message arriving during its delivery re-arms the row and
-// carries the stamp into the NEW burst, and the flush cannot clear it on completion because that
-// compare-and-set needs a row that is still CLAIMED. Once the carried stamp is older than the
-// ceiling, every later flush skips the busy-thread check outright, even against a turn that just
-// started. Found in review of #588, one round after the bug it mirrors.
-//
-// Under the arm lock, like the stamp, so a re-arm racing this cannot resurrect what it removed.
+// Drops the deferral stamp once the waiting it measured is over. Otherwise a re-arm during the
+// flush carries the stamp into the NEW burst (the completion CAS needs a CLAIMED row, so it cannot
+// clear it), and once older than the ceiling every later flush skips the busy-thread check. Under the
+// arm lock, like the stamp, so a racing re-arm cannot resurrect what this removed.
 export async function clearDeferral(params: {
   tenantId: bigint;
   threadId: string;
@@ -202,7 +184,7 @@ export interface ArmDebounceParams {
   // Chatwoot id of the inbound message arming this flush (see readLastMessageId). Optional: an arm
   // without it keeps the burst's previous high-water mark.
   lastMessageId?: number;
-  // Whether the arming message is a customer's reaction (issue #746): see `readReactionArmed`.
+  // Whether the arming message is a customer's reaction: see `readReactionArmed`.
   reaction?: boolean;
   base?: PrismaClient;
   now?: Date;
@@ -225,17 +207,10 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         where: { kind: "DEBOUNCE", dedupeKey },
         select: { status: true, payload: true },
       });
-      // The flush's deferral deadline, carried across re-arms of a row that is still LIVE — PENDING
-      // (a deferred flush waiting for its next try) or CLAIMED (one running right now). It is kept
-      // separately from `burstStartedAt` and on a wider set of statuses on purpose: the deadline
-      // answers "how long has this burst been waiting for a busy thread", which a customer typing
-      // again does not restart, while `burstStartedAt` answers "when did this burst open", which a
-      // claim in flight deliberately does. Tying the deadline to the latter let every message that
-      // arrived during the CLAIMED window push it forward, so a customer who kept writing at a
-      // wedged thread was never answered at all (found in review of #588).
-      //
-      // A DONE or DEAD row carries nothing forward: the flush that was deferring has finished, and
-      // a stale stamp would make the next burst on this thread start out already past its deadline.
+      // NOTE: The deferral deadline survives re-arms of a LIVE row (PENDING or CLAIMED), unlike
+      // `burstStartedAt`, which a claim in flight resets: it measures how long the burst has waited
+      // for a busy thread, which a customer typing again must not restart. A DONE or DEAD row carries
+      // nothing, or the next burst would start out already past its deadline.
       const stillLive =
         existing?.status === "PENDING" || existing?.status === "CLAIMED";
       const deferringSince = stillLive
@@ -259,9 +234,9 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
       const reactionArmed =
         params.reaction === true ||
         (stillLive && readReactionArmed(existing.payload));
-      // Carried across a CLAIMED row too, like `deferringSince` (PR #821, review round 3): a text
-      // that arrives while the reaction's flush runs supersedes that turn, and the flush it arms
-      // would find its own text on the page and never ask for the reaction.
+      // NOTE: Carried across a CLAIMED row too, like `deferringSince`: a text that arrives while the
+      // reaction's flush runs supersedes that turn, and the flush it arms would find its own text on
+      // the page and never ask for the reaction.
       const prevReactionFrom = stillLive
         ? readReactionFrom(existing.payload)
         : null;
@@ -294,12 +269,9 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         dedupeKey,
         runAt: new Date(runAtMs),
         payload,
-        // NOTE: A new burst is new work; a message joining the burst already open is the SAME flush
-        // being pushed out, and one waiting on its backoff must not be handed five more attempts by
-        // every message the contact types.
-        //
-        // The key is the THREAD, reused by every burst this contact ever sends, so before this a
-        // flush that dead-lettered left every later burst on that thread with one attempt (#339).
+        // NOTE: A new burst is new work with fresh attempts (the key is the THREAD, reused by every
+        // burst); a message joining the open burst is the SAME flush pushed out, and must not hand
+        // one waiting on its backoff more attempts.
         rearm: continuingBurst ? "same-work" : "new-work",
       });
       return new Date(runAtMs);

@@ -16,7 +16,7 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 // on the wire, and a model that sends one anyway still gets slots on the operator's grid and the
 // customer still gets an answer.
 
-// NOTE: the turn's SSRF guard is not injectable (prepare.ts builds the toolpack ctx without one), so
+// The turn's SSRF guard is not injectable (prepare.ts builds the toolpack ctx without one), so
 // this test resolves www.googleapis.com for real. Every HTTP response is stubbed; only DNS is live.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;

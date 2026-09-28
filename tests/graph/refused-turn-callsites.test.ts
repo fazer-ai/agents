@@ -103,7 +103,8 @@ describe("every post-generation refusal rolls the turn back", () => {
     expect(bareRefusalsAfterTheRollback(comparing, TURN_REFUSALS)).toEqual([]);
   });
 
-  // NOTE: The trap the comment stripping exists for: runtime.ts prose quotes the outcomes by name.
+  // NOTE: The trap the comment stripping exists for: runtime.ts prose quotes the outcomes by name,
+  // and without the strip this file reported two phantom sites there.
   test("prose above a routed refusal does not invent an offender", () => {
     const prosey = `
   const refuse = async (outcome) => outcome;

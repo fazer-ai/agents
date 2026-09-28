@@ -521,8 +521,8 @@ describe("runSandboxedCode", () => {
   // two hosts whose gaps fall on either side of UTC.
   test("an offset-less text is read in TIMEZONE on a host with a DST gap, too", () => {
     const expected = JSON.stringify([
-      "2026-03-07T17:30:00.000Z", // 02:30 Tokyo, a New York host's gap
-      "2026-03-07T21:30:00.000Z", // 06:30 Tokyo, inside a New York host's window
+      "2026-03-07T17:30:00.000Z", // NOTE: 02:30 Tokyo, a New York host's gap
+      "2026-03-07T21:30:00.000Z", // NOTE: 06:30 Tokyo, inside a New York host's window
       "2026-03-07T17:30:00.000Z", // the slash form, same wall clock
       "2026-03-07T17:30:00.123Z", // ISO with a four-digit fraction: the engine's local ISO form
       "2026-03-07T17:30:00.000Z", // ISO with an expanded year

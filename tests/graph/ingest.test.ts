@@ -585,10 +585,10 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     // 2. While the bot is silent, ingest a customer message.
     expect(await ingest({ messageId: 11, text: "obrigado!" })).toBe("ingested");
 
-    // 3. Idempotency is membership, not a comparison. The same id is a re-delivery and is skipped;
+    // NOTE: 3. Idempotency is membership, not a comparison. The same id is a re-delivery and is skipped;
     //    a LOWER id that was never folded in is ingested, where a high-water mark would read it as
     //    handled and lose the customer's words for good. What still refuses a low id is a window
-    //    that has forgotten that far back, which ./ingest-dedup.ts decides and tests as a table.
+    //    that has forgotten that far back, which ../../src/graph/ingest-dedup.ts decides and tests as a table.
     expect(await ingest({ messageId: 11, text: "DUP" })).toBe("skipped");
     expect(await ingest({ messageId: 5, text: "OLD" })).toBe("ingested");
 

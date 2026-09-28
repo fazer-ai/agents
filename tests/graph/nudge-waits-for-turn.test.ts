@@ -342,7 +342,7 @@ describe.skipIf(!dbUp)(
         nudge: { source: "followup", kind: "inactivity", step: 1 },
         base: appDb,
         deps: {
-          // O PRIMEIRO É LENTO DE PROPÓSITO. A fila `ingest:` serializa a seção da
+          // NOTE: O PRIMEIRO É LENTO DE PROPÓSITO. A fila `ingest:` serializa a seção da
           // reivindicação, não o invoke: com os dois modelos instantâneos o perdedor acaba antes de
           // o vencedor começar a escrever, e o teste passaria mesmo com a devolução arrancada. Um
           // invoke de 1,5 s põe os dois de fato em cima um do outro.
@@ -358,7 +358,7 @@ describe.skipIf(!dbUp)(
         nudge: { source: "followup", kind: "inactivity", step: 2 },
         base: appDb,
         deps: {
-          // OS DOIS LENTOS, e o segundo um pouco menos: quem vence a corrida da reivindicação não
+          // NOTE: OS DOIS LENTOS, e o segundo um pouco menos: quem vence a corrida da reivindicação não
           // é determinístico, e com um modelo instantâneo o desfecho sem a devolução dependeria de
           // quem vencesse. Com os dois lentos o invoke que termina por último é sempre o de 1,5 s,
           // qualquer que seja a ordem de reivindicação, e sem a devolução do hold ele sempre salva
@@ -675,7 +675,7 @@ describe("o laço da espera é o mesmo nos dois turnos", () => {
 
   // NOTE: A ESPERA, A BARREIRA E A FILA, NESTA ORDEM. Esperar dentro da fila trava quem está sendo
   // esperado (o rollback do turno anterior toma a MESMA chave na saída), e drenar antes da espera
-  // lê um thread que fica velho pelos minutos da espera (./runtime.ts diz as duas no mesmo lugar).
+  // lê um thread que fica velho pelos minutos da espera (../../src/graph/runtime.ts diz as duas no mesmo lugar).
   test("no nudge a espera vem antes da barreira, e a barreira antes da fila", async () => {
     const src = codeOnly(await Bun.file("src/graph/nudge.ts").text());
     const espera = src.indexOf("waitForTurnToClear(");

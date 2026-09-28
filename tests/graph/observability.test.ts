@@ -12,7 +12,7 @@ import {
 } from "@/graph/observability";
 import type { ScopedDb } from "@/lib/tenancy";
 
-// NOTE: `buildLangfuseHandler` below mints a real trace, whose events the SDK delivers on a
+// `buildLangfuseHandler` below mints a real trace, whose events the SDK delivers on a
 // BACKGROUND flush through `globalThis.fetch`; an unreachable baseUrl does not keep them in the
 // process, so an unsettled flush would POST through the stub the NEXT test file installs. This file
 // creates the work, so it drains it here. The 15s budget covers ~9s of SDK retries with backoff:

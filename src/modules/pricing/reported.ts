@@ -1,12 +1,8 @@
-// WHAT OPENROUTER SAID A CALL COST, read off a response's `usage` object (issue #866), when it said
-// so in a way that can stand for the whole charge.
-//
-// Only OpenRouter: another provider's `cost` field, if one ever appears, means whatever that vendor
-// means by it. A value that is not a finite non-negative number is no figure at all, and a BYOK call
-// (`usage.is_byok`) is excluded because OpenRouter's credits then pay only its BYOK fee, while the
-// inference itself is billed to the operator's own vendor key, so `cost` would be the fee standing
-// in for the call. `undefined` is "this usage says nothing about cost"; `null` is "it said, and the
-// figure cannot stand"; both fall back to the price table rather than to zero.
+// What OpenRouter said a call cost, read off a response's `usage`, when it can stand for the whole
+// charge. Only OpenRouter (another vendor's `cost` means whatever it means). A non-finite or negative
+// value is no figure, and a BYOK call (`usage.is_byok`) is excluded: `cost` is then only OpenRouter's
+// fee, with inference billed to the operator's vendor key. `undefined` says nothing about cost; `null`
+// means the figure cannot stand; both fall back to the price table, never to zero.
 export function reportedCostFromUsage(
   provider: string,
   usage: unknown,

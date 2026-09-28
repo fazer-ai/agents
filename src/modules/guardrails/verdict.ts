@@ -1,21 +1,13 @@
-// How a guardrail verdict is ASKED FOR and how it is READ. The analysis itself (which checks run,
-// what travels in which call) lives in ./analyze; this file owns the answer's shape.
-//
-// A verdict arrives one of two ways. Where the provider implements constrained decoding the schema
-// below travels with the call and the model cannot answer outside it; everywhere else the model is
-// asked in the prompt for "ONLY a JSON object" and the answer is recovered from whatever text comes
-// back. `acceptsConstrainedOutput` (./graph/model-config) decides which, and the split is about the
-// ENDPOINT, never about how good the model is.
-//
-// Both paths end at `readVerdict`, and they share one rule that this feature has broken three times:
-// a verdict that could not be read must never come out looking like a verdict that says "clean".
-// Guardrails fail OPEN, so every ambiguity collapsed into CLEAN is a message delivered unscreened
-// under a control the operator believes is running. `error` is what keeps the two apart.
+// How a guardrail verdict is ASKED FOR and how it is READ; the analysis itself lives in ./analyze.
+// Where the provider implements constrained decoding the schema travels with the call; elsewhere the
+// prompt asks for "ONLY a JSON object" and the answer is recovered from the text.
+// `acceptsConstrainedOutput` decides by ENDPOINT, never by model quality. Both paths end at
+// `readVerdict`, whose rule is that an unreadable verdict never looks "clean": guardrails fail OPEN, so
+// ambiguity collapsed into CLEAN is a message delivered unscreened. `error` keeps the two apart.
 
-// How a call asks for the verdict. Not a capability of the model: the same adapter serves an
-// endpoint we know and one we do not, so this is decided from the provider and travels with the
-// call. The two constrained values are the same shape in two DIALECTS, and the split is not
-// cosmetic — measured live, asking Gemini in the json-schema dialect is refused outright.
+// How a call asks for the verdict. Not a capability of the model: the same adapter serves an endpoint
+// we know and one we do not, so this is decided from the provider and travels with the call. The two
+// constrained values are one shape in two DIALECTS: Gemini refuses the json-schema dialect outright.
 export type VerdictMode = "prose" | "json-schema" | "openapi";
 
 export interface GuardrailVerdict {
@@ -42,27 +34,14 @@ export const unanalyzed = (error: string): GuardrailVerdict => ({
   error,
 });
 
-// The verdict shape, as JSON Schema rather than as prose in the prompt.
-//
-// NOTE: a plain schema and NOT a zod type, which changes what happens on a deviation rather than
-// how this reads. Measured against local servers standing in for each adapter: handed a schema, an
-// answer that IS json but is not a verdict arrives as `parsed` unvalidated (`{"violado": true}`
-// came through untouched), which is why `verdictFromObject` re-checks it here instead of trusting
-// the decoder; handed a zod type, the OpenAI adapter routes the call through the SDK's own parser,
-// which rejects the whole call instead.
-//
-// NOTE: `includeRaw` is what keeps the model's own text reachable when the schema produced nothing.
-// How far that reaches depends on the adapter, and it was measured rather than assumed: on
-// Anthropic a reply that answers in TEXT instead of calling the forced tool arrives as
-// `parsed: null` with the text intact, and `readVerdict` recovers it; on OpenAI a reply that is not
-// json fails inside the call itself, so there is nothing left to recover and the analysis reports
-// the failure — the same "not screened" it would have reported before, one retry later.
-//
-// NOTE: strict mode (OpenAI) requires a closed object with every property listed as required, so
-// `suggestedReply` is required AND nullable: the model must answer the field, and null is one of
-// the answers. `categories` is deliberately NOT an enum — an operator's `customPolicy` has no key
-// in the prompt, so a violation of it would have no legal value to report, and constraining the
-// vocabulary would edit what a model that JUDGES is allowed to say.
+// The verdict shape, as JSON Schema rather than as prose in the prompt. A plain schema, NOT a zod
+// type: with a schema, json that is not a verdict arrives as `parsed` unvalidated (so
+// `verdictFromObject` re-checks it), while a zod type makes the OpenAI adapter reject the whole call.
+// `includeRaw` keeps the model's text reachable when the schema produced nothing (Anthropic answering
+// in text instead of the forced tool; on OpenAI non-json fails inside the call). Strict mode needs a
+// closed object with every property required, so `suggestedReply` is required AND nullable.
+// `categories` is NOT an enum: a `customPolicy` violation has no key, and constraining the vocabulary
+// would edit what a model that JUDGES may say.
 export const VERDICT_SCHEMA = {
   title: "guardrail_verdict",
   type: "object",
@@ -88,15 +67,10 @@ export const VERDICT_SCHEMA = {
   >;
 };
 
-// The same verdict in the OpenAPI 3.0 subset, which is what Gemini's responseSchema speaks: `type`
-// holds ONE value and nullability is a flag beside it. Measured live on gemini-3.5-flash and
-// -flash-lite: asked with the type union above, the request comes back 400 ("Proto field is not
-// repeating, cannot start list") and the analysis has to be remade in prose, so every screen costs
-// two calls; asked like this, one call answers, with `suggestedReply` still allowed to be null.
-//
-// NOTE: derived from the schema above rather than written out, so the two cannot drift apart on the
-// fields they share. What derivation cannot catch is a NEW nullable field, which would keep its
-// type union here — tests/modules/guardrail-verdict.test.ts fails on exactly that.
+// The same verdict in the OpenAPI 3.0 subset Gemini's responseSchema speaks: `type` holds ONE value
+// and nullability is a flag. Asked with the type union above, Gemini answers 400 and every screen
+// would cost a second prose call. Derived from the schema above so shared fields cannot drift; a NEW
+// nullable field would keep its union here, which tests/modules/guardrail-verdict.test.ts catches.
 export const VERDICT_SCHEMA_OPENAPI = {
   ...VERDICT_SCHEMA,
   properties: {
@@ -165,19 +139,10 @@ export function verdictFromObject(
   };
 }
 
-// The response must contain EXACTLY ONE verdict, and anything else is "we did not get an answer".
-// One rule, because three rounds of review found three ways to read a non-answer as an approval, and
-// they were all the same mistake: for a moderation feature, ambiguity has to fail towards "unknown",
-// never towards "clean". What it settles, in order of how they were found:
-//
-//   * a verdict followed by prose that carries braces ("the policy {toxicity} applies") — the prose
-//     is not a parseable verdict, so it drops out and the real one is still found;
-//   * `{}` or `{"violated": "true"}` — parseable and unusable, so neither of them is a candidate;
-//   * a self-correction (`{"violated": true}` … `Correction: {"violated": false}`) — two candidates,
-//     and picking either one is a guess about which the model meant.
-//
-// The alternative for the last case, taking the last object, is a guess in the other direction: the
-// same shape would silently approve a real violation whenever the trailing object is the stale one.
+// The response must contain EXACTLY ONE verdict; anything else is "we did not get an answer", since
+// for moderation ambiguity fails towards "unknown", never "clean". Prose with braces after a verdict
+// drops out (not parseable); `{}` or `{"violated": "true"}` are not candidates; a self-correction gives
+// two candidates, and taking the last one would silently approve a violation when it is the stale one.
 function parseVerdict(raw: string): GuardrailVerdict {
   const candidates: GuardrailVerdict[] = [];
   for (const slice of topLevelObjects(raw)) {

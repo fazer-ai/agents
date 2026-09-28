@@ -1,16 +1,7 @@
-// THE LOCAL PRICE TABLE CHECKED AGAINST LANGFUSE'S, PER MODEL (issue #868).
-//
-// `llm_usage.cost_usd` is priced when a row is written, from a pinned copy of a public price table
-// (issue #863), and that copy goes stale without anything noticing. Langfuse prices the same calls
-// from a table of its own. Two independent tables disagreeing about a model is the signal that one of
-// them is wrong, or that the tenant pays something neither knows, so the dashboard's "Cost by model"
-// card puts the two side by side and flags a model where they part.
-//
-// Computed at READ time, beside the Langfuse query the card already makes, with that query's tenant,
-// period and environments: the spend ceiling's poll also reads Langfuse per model, but it only runs
-// while a ceiling is on and folds the models into totals, so a check stored with its snapshot would
-// exist for almost nobody. Nothing here corrects anything: it names the model and both figures, and
-// what to do about it is the operator's call.
+// The local price table checked against Langfuse's, per model. Two independent tables disagreeing
+// about a model means one is wrong or the tenant pays something neither knows. Computed at read time
+// beside the card's Langfuse query: the spend ceiling's poll only runs while a ceiling is on and folds
+// models into totals, so a check stored with its snapshot would exist for almost nobody.
 
 // A model is flagged only when the two figures part by MORE than this fraction of the larger one...
 export const COST_DIVERGENCE_RELATIVE = 0.2;
@@ -24,7 +15,7 @@ export interface LocalModelCost {
   calls: number;
   // Calls whose row carried a price; the rest are null in `cost_usd` and are not in `costUsd`.
   pricedCalls: number;
-  // Of those, the calls priced by this tenant's own price for the model (issue #865), not by the table.
+  // Of those, the calls priced by this tenant's own price for the model, not by the table.
   ownPricedCalls?: number;
   costUsd: number;
 }
@@ -37,10 +28,9 @@ export interface LangfuseModelCost {
 
 // `match`: both figures agree within the thresholds. `diverges`: they do not. `incomplete`: some of
 // the model's local calls have no price, so the local figure is a floor and comparing it would flag
-// a gap the price table never claimed to cover; it is neither a pass nor a divergence. `own`: some of
-// them were priced by the tenant's own price (issue #865), which is what the card tells the operator
-// to set when this account pays what neither table knows; judging that figure against Langfuse's
-// table would keep flagging the model after the operator did exactly that.
+// a gap the price table never claimed to cover. `own`: some were priced by the tenant's own price,
+// which is what the card tells the operator to set, so judging it against Langfuse's table would keep
+// flagging the model after the operator did exactly that.
 export type CostComparisonStatus = "match" | "diverges" | "incomplete" | "own";
 
 export interface CostComparison {
@@ -79,21 +69,11 @@ export function snapshotBase(name: string): string | null {
   return name.replace(SNAPSHOT_SUFFIX, "");
 }
 
-// WHICH LEDGER MODEL A LANGFUSE NAME IS. Exact first; else a Langfuse name that is a ledger name plus
-// a dated-snapshot suffix.
-//
-// The suffix is the common case, not an edge. Measured in `langfuse-langchain@3.38.20`
-// (`lib/index.mjs`): `handleGenerationStart` writes the generation's `model` from
-// `invocation_params.model`, falling back to `metadata.ls_model_name`, which is the configured id the
-// ledger also stores; `handleLLMEnd` then updates the same generation with
-// `response_metadata.model_name`, the name the VENDOR answered with, which OpenAI gives as the dated
-// snapshot (`gpt-5.4-mini-2026-03-17`, measured in `src/graph/usage.ts`). An update whose value is
-// undefined is dropped on serialize, so a response that carries no model name keeps the configured
-// id. `providedModelName` is that final value. A call we trace by hand
-// (`recordDirectGeneration`) carries the ledger's own name. So one ledger model can arrive as two
-// Langfuse names, and both are summed into it. A name that is BOTH a ledger name and a dated snapshot
-// of another ledger name could be either; the exact match is only its representative here, and
-// `compareModelCosts` compares the two as one group.
+// Which ledger model a Langfuse name is: exact first, else a ledger name plus a dated-snapshot suffix.
+// The suffix is the common case: the Langfuse callback overwrites the generation's configured model id
+// with the name the vendor answered with (OpenAI's dated snapshot), so one ledger model arrives under
+// two Langfuse names and both are summed into it. A name that is both a ledger name and a snapshot of
+// another is ambiguous; `compareModelCosts` compares the two as one group.
 export function matchLedgerModel(
   langfuseName: string,
   ledgerNames: ReadonlySet<string>,
@@ -135,15 +115,10 @@ function candidateLedgerModels(
   return out;
 }
 
-// ONE COMPARISON PER GROUP OF LEDGER MODELS THAT LANGFUSE CANNOT TELL APART. When the period has calls
-// configured with both an alias and its dated snapshot (`gpt-4o` and `gpt-4o-2024-08-06`), the
-// alias's calls can reach Langfuse under the snapshot's name (the vendor answers with it, see
-// `matchLedgerModel`), so the Langfuse figure under that name may be either model's or both. Handing
-// it all to the exact match flagged a divergence that is only a split, and listed the alias as
-// local-only. So a Langfuse name with more than one candidate joins its candidates into one group,
-// transitively, and the group is compared as a whole: the sum of its ledger rows against the sum of
-// every Langfuse name matched into any of them. A model no ambiguous name touches is a group of one,
-// compared exactly as before.
+// One comparison per group of ledger models that Langfuse cannot tell apart. With both an alias and
+// its dated snapshot configured, the alias's calls can reach Langfuse under the snapshot's name, so
+// handing that figure to the exact match flags a split as a divergence. A name with more than one
+// candidate joins them into one group (transitively), compared as sums on both sides.
 export function compareModelCosts(
   local: readonly LocalModelCost[],
   langfuse: readonly LangfuseModelCost[],

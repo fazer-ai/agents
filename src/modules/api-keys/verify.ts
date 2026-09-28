@@ -5,16 +5,11 @@ import basePrisma from "@/api/lib/prisma";
 import { asSuperAdminOn } from "@/lib/tenancy";
 
 // Bearer API key for the REST v1 API and the MCP transport. The plaintext is `fazerai_<base64url>`
-// (256-bit); only its SHA-256 hash is stored (ApiKey.keyHash, unique), so a DB dump never yields a
-// usable key and lookup is a constant-time B-tree probe on the hash. Verified BEFORE the tenant is
-// known, so the hash lookup runs as super admin (the key row carries its own tenantId; RLS still
-// fences every downstream tenant query). `role` is fixed on the key (NOT re-derived from the
-// creator's current role); revocation is the soft `revokedAt`. Never log the plaintext.
-//
-// A FLEET key carries no tenant (`tenantId` null) and SUPER_ADMIN: the principal it resolves to is
-// the one a SUPER_ADMIN session is, so the request boundary selects a tenant per request the same
-// way (`X-Tenant-Id`, or the MCP `tenant` argument). The row shape is held by a CHECK in the
-// database, so the two fields cannot disagree by the time they are read here. Issue #308.
+// (256-bit); only its SHA-256 hash is stored, so a DB dump never yields a usable key. Verified BEFORE
+// the tenant is known, so the lookup runs as super admin (RLS still fences every downstream query).
+// `role` is fixed on the key, not re-derived from the creator. Never log the plaintext. A FLEET key
+// has no tenant and SUPER_ADMIN (a DB CHECK holds that shape), so the request boundary selects a
+// tenant per request as it does for a SUPER_ADMIN session.
 
 export const API_KEY_PREFIX = "fazerai_";
 // Compatibility window for the brand rename: keys minted before it carry `secv4_`. The stored hash
@@ -59,7 +54,7 @@ export interface ApiKeyPrincipal {
   tenantId: bigint | null;
   role: UserRole;
   // When the minter answered the password step-up; null for a key that predates the rule, which
-  // answers the step-up with its creator's password instead (review round 3 on #308).
+  // answers the step-up with its creator's password instead.
   stepUpAt: Date | null;
 }
 

@@ -8,37 +8,18 @@ import {
 import { runModelCall } from "@/graph/model-limit";
 
 // The reply, rewritten to be SPOKEN. Runs after prepareSpeechText, on the audio path only, on its own
-// model call (buildSpeechNormalizer): currency, numbers, dates, times and abbreviations in words, and
-// an enumeration said the way a person says it rather than recited. Same language as the reply, so it
-// is not hard-coded to one locale the way a regex pass would be. Plain text in, plain text out: no
-// SSML (fragmented and brittle across providers and model versions, see docs/tts.md).
-//
-// This is a REWRITE, and the fact-preservation rule in the prompt is what keeps it from becoming an
-// invention. The main agent is told nothing about any of it: it writes the answer, this rewrites a
-// copy for the ear, and Chatwoot's transcript plus the checkpointer keep the original.
-//
-// Best-effort: the CALLER wraps this in try/catch and falls back to the un-normalized text, so a slow
-// or failing rewrite never blocks or breaks the audio reply.
+// model call: currency, numbers, dates, times and abbreviations in words, enumerations said as a
+// person says them, in the reply's language. Plain text, no SSML (brittle across providers, see
+// docs/tts.md). The prompt's fact-preservation rule keeps the rewrite from inventing; the original
+// stays in Chatwoot and the checkpointer. Best-effort: the caller falls back to the raw text.
 
 const NORMALIZE_TIMEOUT_MS = 20_000;
 
-// Measured, not composed. The wording this replaces ("changing ONLY what a TTS would read wrong" +
-// "preserve the wording") forbade the one thing the reported reply needed, and measuring showed a
-// worse problem than style: rewriting "08:00, 08:30 e 09:00" item by item FUSES the last two into
-// "oito e trinta e nove horas", which a listener hears as 08:39, a time that was never offered.
-//
-// Rate on that exact reply, n=24 per arm, temperature 0, old wording → this one:
-//   fused:      gpt-5.4-mini 17/24 → 1/24 · gpt-4o-mini 5/24 → 0/24 · gpt-5.4 10/24 → 0/24
-//   fact lost:  gpt-5.4-mini  0/24 → 0/24 · gpt-4o-mini 0/24 → 0/24 · gpt-5.4 17/24 → 0/24
-// Two other fixtures (a 14h/14h30/15h offer and a three-price list) score zero on both arms.
-//
-// Each line here bought something in that measurement, which is the bar for adding another:
-//   * "keep every fact" is what buys the freedom to restructure. It REPLACES "preserve the wording";
-//   * the enumeration line is what breaks the fusion;
-//   * the date line exists because gpt-5.4 read "18/08" as "dezoito do zero oito" in 17/24 runs and
-//     the enumeration rule alone made that more consistent, not less (24/24). With it: 0/24.
-// A longer variant that also spelled the fusion out measured identically (16/96 fused either way) and
-// was dropped: on #95, spelling a rule out at length made a prompt measurably worse.
+// Every line earns its place against the battery in docs/tts.md, which is the bar for adding another:
+// rewriting "08:00, 08:30 e 09:00" item by item fuses the last two into a time never offered.
+// "Keep every fact" (not "preserve the wording") gives the freedom to restructure, the enumeration
+// line prevents the fusion, and the date line stops "18/08" being read digit by digit. A rule spelled
+// out at length does no better and can make the prompt worse.
 const SYSTEM_PROMPT =
   "You prepare an assistant's chat message to be read aloud by a text-to-speech engine. " +
   "Rewrite it so it SOUNDS like a person speaking, in the SAME language as the message.\n" +

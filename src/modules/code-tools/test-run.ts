@@ -1,13 +1,8 @@
 // Run a code tool's body ONCE, from the editor, unsaved, with arguments the operator typed (the
-// `POST /v1/code-tools/test` behind the "Test" button). The loop it closes is the one n8n's "test
-// step" closes: the operator sees the value, the console output or the failure before granting
-// the tool to an agent, instead of coaxing the agent into calling it and reading the trace.
-//
-// It adds no capability — whoever reaches it can save the body and call it from the playground —
-// and it runs the body through the same `runCodeToolDefinition` a turn uses, so the sandbox, the
-// limits, the clock, the context shape and the failure sentence are one code path. The arguments
-// are validated by the same zod schema the model's would be, so a value the schema refuses is
-// reported here the way the model would see it refused.
+// `POST /v1/code-tools/test` behind the "Test" button), like n8n's "test step". It adds no capability
+// (whoever reaches it can save and call from the playground) and runs through the same
+// `runCodeToolDefinition` and zod validation a turn uses, so sandbox, limits, context shape and failure
+// sentence are one code path.
 
 import { ToolInputParsingException } from "@langchain/core/tools";
 import { z } from "zod";
@@ -76,14 +71,9 @@ export async function runCodeToolTest(
       "inputSchema",
     );
   }
-  // The SHAPE, before the tolerant parser sees it. `parseToolInputSchema` is fed stored rows and is
-  // deliberately forgiving, so a non-record value arrives as an EMPTY schema and the declared
-  // arguments vanish: the body runs with `input` empty and the operator reads a green result for a
-  // call that never carried their argument, then meets the service's `z.record` on save. The
-  // endpoint adds no capability over a save, so it owes the same refusals (round 17, round 24).
-  // `null` is refused with the rest: the service's `.optional()` accepts an ABSENT schema, not a
-  // null one, and reading null as "no arguments" here would be the endpoint being kinder than the
-  // save again.
+  // NOTE: the shape, before the tolerant parser sees it. `parseToolInputSchema` reads a non-record
+  // (null included) as an EMPTY schema, so the body would run without the declared arguments and show
+  // green for a call the save then refuses. The endpoint owes the same refusals as a save.
   if (
     def.inputSchema !== undefined &&
     !z.record(z.string(), z.unknown()).safeParse(def.inputSchema).success

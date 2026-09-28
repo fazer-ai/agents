@@ -36,14 +36,9 @@ import { contactAuthFlightKey, singleFlight } from "./state";
 
 // The contact authorization check as the runtime calls it: identity from the mirrored contact,
 // credential from the vault, one request per incoming message (single-flight coalesces concurrent
-// deliveries), and a verdict the four callers (the webhook gate, the debounce flush, the proactive
-// nudge, the manual re-engage) act on the same way. The DB reads here are short and scoped; the
-// network call runs outside any transaction (docs/tenancy.md, rule 3).
-//
-// Under the default mode nothing is cached, so the endpoint's answer is always current. Under
-// `mode: "once"` a positive verdict is stored per contact and reused until it expires (issue #189,
-// grants.ts) — the reuse lives HERE, in the one function all four callers already go through, so no
-// caller has to remember it and none of them can disagree about when a stored verdict applies.
+// deliveries), and one verdict the four callers act on the same way. The network call runs outside
+// any transaction (docs/tenancy.md, rule 3). Under `mode: "once"` a positive verdict is stored and
+// reused (grants.ts), and the reuse lives HERE so no caller can disagree about when it applies.
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -111,9 +106,9 @@ function bagOf(value: unknown): Record<string, unknown> {
     : {};
 }
 
-// The two refusal codes a local rule gives (issue #646). OUR codes, like every `reason`, so they are
-// safe in the flow line: they name WHICH rule refused, never the value it compared. The phone and
-// the identifier stay out of telemetry exactly as they do on the endpoint path.
+// The two refusal codes a local rule gives. OUR codes, like every `reason`, so they are safe in the
+// flow line: they name WHICH rule refused, never the value it compared. The phone and the identifier
+// stay out of telemetry exactly as they do on the endpoint path.
 export const RULE_NOT_LISTED = "rule_not_listed";
 export const RULE_UNMET = "rule_unmet";
 
@@ -183,12 +178,10 @@ export async function authorizeContact(
           ? (attrs as Record<string, unknown>).identifier
           : null,
       );
-      // A local rule answers here, and the endpoint is never asked (issue #646). Before the identity
-      // check for an ATTRIBUTE rule, because it does not ask about the contact's identity at all: a
-      // widget visitor with no phone and no email, on a conversation an operator marked, is exactly
-      // the case "serve the conversations we marked" exists for. No grant is read, written or
-      // dropped: grants exist to spare an endpoint, a rule reads our own rows on every message, and
-      // a stored verdict would only make a list edit take effect late.
+      // NOTE: a local rule answers here and the endpoint is never asked. An ATTRIBUTE rule runs before
+      // the identity check, since a widget visitor with no phone or email on a marked conversation is
+      // its whole use case. No grant is read, written or dropped: a rule reads our own rows every
+      // message, and a stored verdict would only make a list edit take effect late.
       if (rule && rule.kind === "attribute") {
         const conversationDbId = params.conversationDbId;
         const conv =
@@ -218,11 +211,9 @@ export async function authorizeContact(
       // listed, which is what it is.
       if (rule) return allowlistVerdict(rule, phone, identifier);
       if (!cfg.url) return { outcome: "error", reason: "not_configured" };
-      // The stored verdict, when the operator asked for one (issue #189). Read here rather than
-      // before the identity, because what a grant is ABOUT is the identity the mirror holds right
-      // now: a contact whose phone changed since is not necessarily the person the endpoint said
-      // yes to. Read before the credential too, so a reuse costs neither the vault round-trip nor
-      // the managed-OAuth refresh that a real ask would.
+      // NOTE: the stored verdict, read after the identity (a grant is about the identity the mirror
+      // holds now) and before the credential, so a reuse costs neither the vault read nor a
+      // managed-OAuth refresh.
       const grantKey = { tenantId, agentId, contactId: contactDbId };
       // The deadline starts HERE, before the first step that can wait. The credential is resolved
       // under it because a managed-OAuth entry refreshes its token to produce it — a network call
@@ -337,17 +328,10 @@ export async function authorizeContact(
             signal: ctrl.signal,
           },
         );
-        // ONLY `once` GRANTS; EVERY MODE UN-GRANTS. The asymmetry is the rule, not an oversight:
-        // the mode decides who READS a grant, and it is deliberately not part of the policy
-        // fingerprint, so grants written under `once` survive a switch to `perMessage`. Dropping
-        // only under `once` left a round trip open — grant, switch to `perMessage`, the endpoint
-        // starts refusing, switch back inside the TTL, and the contact is served from an allow
-        // older than the refusal. The cost on the other side is one indexed DELETE of nothing per
-        // refusal under the default mode, which is what the rule is worth.
-        //
-        // An error stores and drops nothing: it is transient by contract (the next message
-        // retries), and a blip of the endpoint must not cost a contact the verdict they were
-        // legitimately given.
+        // NOTE: only `once` grants; every mode un-grants. The mode is not in the policy fingerprint,
+        // so grants survive a switch to `perMessage`; dropping only under `once` would let a contact be
+        // served, after switching back inside the TTL, from an allow older than a refusal. An error
+        // stores and drops nothing: it is transient, and a blip must not cost a legitimate verdict.
         if (verdict.outcome === "denied") {
           // Stamped with the instant this check STARTED, not with the instant the delete lands: what
           // orders a concurrent allow against this refusal is when each was asked, and a retry that
@@ -376,15 +360,11 @@ export async function authorizeContact(
   return { ...verdict, shared };
 }
 
-// The execution-log line for a verdict. `detail` carries an outcome enum, a boolean, an HTTP status
-// and OUR OWN reason code — a fixed list, every value of which is in this repository. The
-// endpoint's own reason is deliberately absent: the slug guard is a check on SHAPE, and
-// `5511999999999` is slug-shaped, so passing it through would put a phone number in a detail that
-// alert channels are promised to be PII-free. It goes to the operator note instead, which lives in
-// their Chatwoot beside the conversation it describes. The customer's text never appears anywhere:
-// it travels to the endpoint and nowhere else. A denial is ordinary operation (info); a check that
-// could not run, or a contact that could not be asked about, is something the operator should hear
-// (warn, so alert channels fire on inbox traffic).
+// The execution-log line for a verdict. `detail` carries only an outcome enum, a boolean, an HTTP
+// status and OUR OWN reason code. The endpoint's reason is absent: the slug guard checks shape and
+// `5511999999999` is slug-shaped, so it would put a phone in alert-channel data; it goes to the
+// operator note instead. The customer's text never leaves the endpoint request. A denial is info; a
+// check that could not run or a contact that could not be asked about is warn, so alerts fire.
 export function contactAuthFlowEvent(result: ContactAuthResult): FlowEvent {
   const reason = reasonSlug(result.reason);
   const failed = result.outcome === "error";

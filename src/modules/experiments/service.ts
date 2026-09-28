@@ -17,31 +17,18 @@ import { auditMutation, projectionMoved } from "@/modules/audit/service";
 export const variantSchema = z.object({
   key: z.string().min(1),
   weight: z.number().nonnegative().optional(),
-  // NO length bound here, deliberately, and the asymmetry with the controller is the point. This
-  // schema is a READER: `parseVariants` runs it over a stored row, and it parses the ARRAY, so one
-  // oversized prompt written under the old contract would fail the whole parse and silently disable
-  // the entire experiment for every turn. The ceiling belongs where a caller can still be told about
-  // it — `variantSchemaT` in the controller — which is what keeps a NEW variant inside the same
-  // ceiling the agent's own prompt is held to (#58) without breaking an upgrade.
+  // NO length bound here, deliberately: this is a READER over the stored ARRAY, so one oversized
+  // prompt in an existing row would fail the whole parse and silently disable the experiment. The
+  // ceiling lives on writes (`variantWriteSchema`), where a caller can still be told.
   systemPrompt: z.string().optional(),
 });
 export type Variant = z.infer<typeof variantSchema>;
 
-// THE SAME SHAPE, BOUNDED, FOR WRITES ONLY.
-//
-// `systemPrompt` REPLACES the agent's own prompt when the variant is assigned (`loadAgentConfig`),
-// so a variant that skipped the agent's ceiling would ship a prompt the agent itself would have been
-// refused — and it breaks a derivation downstream, since the log debug mode sizes its ceiling from
-// the largest operator-authored prompt this API accepts (#58).
-//
-// It is a SECOND schema rather than a bound on the reader because the reader parses the whole ARRAY
-// off a stored row: one prompt written under the older, unbounded contract would fail that parse and
-// silently disable the entire experiment for every turn. Bounding a write refuses the caller, who
-// can act on it; bounding a read refuses the tenant, who cannot.
-//
-// And it goes on the two functions both write paths converge on, not on either surface: the REST
-// controller publishes the same ceiling in its own schema so a client can see it, and the MCP tool
-// maps its arguments straight into these calls without a schema of its own.
+// The same shape, bounded, for writes only. `systemPrompt` REPLACES the agent's own prompt when the
+// variant is assigned, so it is held to the agent's ceiling (the log debug mode also sizes its ceiling
+// from the largest prompt this API accepts). A second schema rather than a bound on the reader:
+// bounding a write refuses the caller, who can act on it; bounding a read refuses the tenant, who
+// cannot. Applied on the two functions both write paths converge on (the MCP tool has no schema).
 export const variantWriteSchema = variantSchema.extend({
   systemPrompt: z.string().max(config.agent.promptMaxChars).optional(),
 });
@@ -111,19 +98,10 @@ export async function resolveVariantOverride(
   return variants.find((v) => v.key === key)?.systemPrompt ?? null;
 }
 
-// What the audit row carries.
-//
-// Same two halves as the other four families: identity, policy and shape are PROJECTED, everything
-// else is listed in `UNDISCLOSED` below and compared without being carried.
-//
-// The variants contribute their KEYS and WEIGHTS and never their `systemPrompt`. A prompt is the
-// largest field an experiment holds, and what a reader needs from a variant change is that the
-// split moved and which arm it moved for; the prompt is readable on the experiment for as long as
-// the experiment exists, and this row outlives it. But editing one arm's prompt while leaving its
-// key and weight alone is a substantive change to the experiment and moves nothing above, so the
-// whole variant array is compared.
-//
-// `tests/modules/audit-config-families.test.ts` holds the fence over this model's columns.
+// What the audit row carries: identity, policy and shape are PROJECTED, the rest is in `UNDISCLOSED`
+// and compared without being carried. Variants contribute KEYS and WEIGHTS, never `systemPrompt` (the
+// row outlives the experiment); the whole array is still compared, so editing only one arm's prompt
+// writes a row. `tests/modules/audit-config-families.test.ts` holds the fence over this model's columns.
 function auditProjection(r: {
   name: string;
   agentId: bigint | null;
@@ -151,10 +129,8 @@ const UNDISCLOSED = ["variants"] as const;
 
 export const EXPERIMENT_NAME_MAX = 200;
 
-// The name is how a human tells one experiment from another in a list, and it was bounded on the
-// REST body (1-200) and nowhere else — so the MCP road stored a blank one and a 5000-character one
-// alike. Here instead, on the two functions both roads converge on, which is where the variants'
-// ceiling already lives and for the same reason.
+// The name is how a human tells experiments apart, bounded here on the two functions both write roads
+// (REST and MCP) converge on, where the variants' ceiling already lives.
 export function assertExperimentNameUsable(name: string | undefined): void {
   if (name === undefined) return;
   if (name.trim().length === 0 || name.length > EXPERIMENT_NAME_MAX) {
@@ -168,15 +144,10 @@ export function assertExperimentNameUsable(name: string | undefined): void {
   }
 }
 
-// The agent is what an experiment IS FOR. `resolveVariantOverride` looks it up by exact id, so a row
-// that names none overrides no turn, ever, while reading `enabled: true` in `experiment_list`, in
-// `GET /v1/experiments` and in the audit trail. The REST body documented `null` as "any agent", which
-// it never was (#547). Refused here, on the two functions both write roads converge on, for the
-// reason the name ceiling above gives.
-//
-// `undefined` on the UPDATE is a patch that does not mention the agent, which is a different
-// statement and stays legal. The create has nothing else to state, so having none is the refusal.
-// A row stored before this rule keeps its null and stays inert: naming an agent is what repairs it.
+// The agent is what an experiment IS FOR: `resolveVariantOverride` looks it up by exact id, so a row
+// naming none overrides no turn while reading `enabled: true` everywhere. `undefined` on the UPDATE is
+// a patch that does not mention the agent and stays legal; the create has nothing else to state. A
+// stored null row stays inert until an agent is named.
 export function requireExperimentAgent(
   agentId: bigint | null | undefined,
 ): bigint {
@@ -192,33 +163,19 @@ export function requireExperimentAgent(
   return agentId;
 }
 
-// `Experiment.agentId` is a plain BigInt with no `@relation`, so no foreign key ever caught an id
-// that names nothing — and `resolveVariantOverride` looks the agent up by exact id, so such a row is
-// an experiment that overrides no turn, ever, while reading `enabled: true` in the console and in
-// `experiment_list`. The same is true of another tenant's agent id, which RLS then hides from the
-// only query that would use it.
-//
-// Not a foreign key, because the delete side is already answered: `deleteAgent` nulls
-// `Experiment.agentId` inside its own transaction, deliberately, so a deleted agent leaves no
-// dangling binding. What was missing is the write side, and this is it.
-//
-// Only reached with an agent named, which `requireExperimentAgent` above is what guarantees: the
-// two questions are separate on purpose, because "no agent at all" and "an agent that is not here"
-// are different refusals and the second one costs a locked read.
+// `Experiment.agentId` has no `@relation`, so nothing else refuses an id that names no agent (or
+// another tenant's, which RLS then hides), leaving an experiment that overrides no turn. Not a foreign
+// key because `deleteAgent` already nulls the binding in its own transaction; this is the write side.
+// Separate from `requireExperimentAgent`: "no agent" and "an agent that is not here" are different
+// refusals, and the second costs a locked read.
 async function assertAgentPresent(
   db: ScopedDb,
   agentId: bigint,
 ): Promise<void> {
-  // LOCKED, with the lock a foreign key would have taken, and that is the whole argument: there is
-  // no FK here, so at READ COMMITTED nothing stops `deleteAgent` from committing between an
-  // unlocked read and the write that references the row — it takes the agent's own `FOR UPDATE`,
-  // nulls the experiments that point at it, deletes it, and this write then commits the dangling
-  // reference it exists to refuse. `FOR KEY SHARE` is what an FK's referencing insert takes: it
-  // conflicts with the DELETE and with a key change, and with nothing else, so renaming the agent
-  // is not blocked and two experiments on one agent do not serialise against each other.
-  //
-  // RLS applies to the raw statement exactly as it does to the reads around it, so another tenant's
-  // agent comes back as zero rows and is refused here rather than stored and hidden later.
+  // NOTE: `FOR KEY SHARE`, the lock an FK's referencing insert takes: without an FK, `deleteAgent`
+  // could commit between an unlocked read and this write, storing the dangling reference. It conflicts
+  // only with DELETE and key changes, so renames and sibling experiments do not serialize. RLS applies
+  // to the raw statement, so another tenant's agent comes back as zero rows.
   const rows = await db.$queryRaw<Array<{ id: bigint }>>`
     SELECT id FROM agents WHERE id = ${agentId} FOR KEY SHARE`;
   if (rows.length === 0) {
@@ -232,10 +189,9 @@ async function assertAgentPresent(
   }
 }
 
-// The read-backed half, for a preview to ask. ADVISORY, and the word is load-bearing: this runs its
-// own scoped read outside the transaction the apply writes in, so the agent can be deleted between
-// the two halves. `assertAgentPresent` INSIDE the write is what actually holds. This only moves the
-// refusal an operator will hit almost every time — an id they mistyped — to where they asked (#490).
+// The read-backed half, for a preview to ask. ADVISORY: it reads outside the apply's transaction, so
+// the agent can be deleted in between; `assertAgentPresent` inside the write is what holds. This only
+// moves the common refusal (a mistyped id) to where the operator asked.
 export async function assertExperimentAgentExists(
   ctx: TenantContext,
   agentId: bigint,

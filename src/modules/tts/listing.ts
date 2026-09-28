@@ -34,15 +34,10 @@ const OPENAI_VOICES = [
 ];
 const OPENAI_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"];
 
-// OpenRouter's audio API (launched 2026-05-01) DOES expose a live catalog (GET
-// /models?output_modalities=speech, each entry carrying a `supported_voices` array), but voices are
-// scoped per model and this function isn't passed the currently-selected model — wiring true live
-// listing needs that extra parameter. Until then: curated, verified live against the real catalog
-// (no openai/* entries exist here, unlike chat/vision/transcription) AND against a real
-// /audio/speech call (confirms the model/voice/response_format combination actually works — see
-// providers.ts on why kokoro, not the also-real gemini TTS, is the default). Voices are the default
-// model's `supported_voices`; picking a different model needs different voices (combobox "use
-// custom" covers it).
+// OpenRouter exposes a live speech catalog, but voices are scoped per model and this function is not
+// given the selected model, so the list is curated and verified against a real /audio/speech call.
+// Voices are the default model's (see providers.ts for why kokoro); another model needs other
+// voices, which the combobox's "use custom" covers.
 const OPENROUTER_VOICES = [
   "af_alloy",
   "af_bella",
@@ -71,9 +66,8 @@ async function resolveApiKey(
   const entry = await runScopedOn(base, ctx, (db) =>
     tryResolveApiKeyEntry(db, credentialRef),
   );
-  // One null for three states, and that is right here: the picker's job is to list what it can, and
-  // an unusable credential produces the same empty list as a missing one. The `state` split exists
-  // for the runtime paths, where the operator needs the reason in a log line (issue #471).
+  // NOTE: One null for three states, on purpose: the picker lists what it can, and an unusable credential
+  // yields the same empty list as a missing one. The `state` split serves the runtime's log lines.
   return entry.state === "ok" ? entry.secret : null;
 }
 
@@ -133,12 +127,9 @@ export async function listTtsOptions(
   }
   const apiKey = await resolveKey(base, ctx, credentialRef);
   if (!apiKey) {
-    // NOTE: the sentence names three possibilities and picks none, because the resolver returns
-    // `null` for all three (the ref points at nothing, the entry holds no secret, or the entry is a
-    // multi-field/managed credential whose secret is an object rather than an API key) and this
-    // code learns nothing else. Naming one of them would be inventing a cause nobody measured,
-    // which is the defect issue #292 exists to remove — one layer down. Telling them apart means
-    // reading the entry back on the failure path, and that is a behaviour change, not a wording one.
+    // NOTE: the sentence names three possibilities and picks none, because the resolver returns `null`
+    // for all three (no entry, no secret, or a multi-field credential) and naming one would invent a
+    // cause. Telling them apart would need a read-back on the failure path.
     throw new AppError(
       "credential did not resolve to an API key",
       400,
@@ -210,12 +201,9 @@ export async function listTtsOptions(
       .filter((m) => m.id.length > 0);
   } catch (e) {
     if (e instanceof AppError) throw e;
-    // NOTE: the sentence carries the PROVIDER and not the error text. A failure to reach a host is
-    // raised by the client with the request in hand, and Bun's header validation puts the offending
-    // header VALUE in the message it throws — measured: `Header 'Authorization' has invalid value:
-    // 'Bearer <the vault secret>'`. Interpolating that would answer a write-only credential back to
-    // whoever called the listing endpoint. The text stays in `message`, which is the log line, and
-    // the catalog entry has no placeholder for it (found by review, issue #292).
+    // NOTE: the sentence carries the provider, not the error text: Bun's header validation puts the
+    // header VALUE in its message (`'Bearer <the vault secret>'`), which would echo a write-only
+    // credential to the caller. The text stays in `message`, the log line.
     throw new AppError(
       `failed to list ElevenLabs ${kind}: ${e instanceof Error ? e.message : String(e)}`,
       502,

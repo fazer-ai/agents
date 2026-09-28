@@ -59,18 +59,10 @@ export async function recordAudit(
   });
 }
 
-// Records a mutation from INSIDE the service that performs it, in the caller's own transaction.
-//
-// The trail used to be written by the MCP transport, after the service it called had committed
-// (`recordMcpAudit`). Two things follow from writing it here instead, and neither is available one
-// layer up. It covers whichever door the mutation came through, because the MCP tools and the REST
-// controllers reach the same functions — a change made in the console left no row at all. And it
-// shares the mutation's transaction, so a lost row means a lost change: the second transaction the
-// transport opened could fail on its own and leave the change with no record of who made it.
-//
-// The actor comes from the context and never from an argument: `userId` is the principal the request
-// resolved, and `actorType` is how it authenticated. A caller that could pass its own would be able
-// to attribute a change to somebody else.
+// Records a mutation from INSIDE the service that performs it, in the caller's own transaction, so it
+// covers every door (MCP tools and REST controllers reach the same functions) and a lost row means a
+// lost change. The actor comes from the context, never from an argument: a caller that could pass its
+// own could attribute a change to somebody else.
 export async function auditMutation(
   db: ScopedDb,
   ctx: TenantContext,
@@ -79,22 +71,11 @@ export async function auditMutation(
   await auditMutationOn(db, ctx, ctx.tenantId, entry);
 }
 
-// The same record, for a mutation whose SUBJECT is not the tenant the actor is operating as.
-//
-// `tenantId` is which trail the row joins, and it answers to the row that CHANGED, not to the
-// principal that changed it. Two shapes need it and the plain `auditMutation` gets both wrong:
-//
-// - A fleet-level change belongs to no tenant (`null`). Branding is global, and a SUPER_ADMIN with a
-//   tenant selected in the console has a `ctx.tenantId`, so keying on the context would file a change
-//   to the whole deployment under whichever tenant the header happened to name.
-// - A SUPER_ADMIN may write a tenant OTHER than the selected one: `PATCH /v1/tenants/7` succeeds with
-//   `X-Tenant-Id: 5`, because the update runs `asSuperAdmin` and never consults the context (measured).
-//   The row belongs to 7.
-//
-// And `null` is not merely "no tenant": those rows are the only ones that SURVIVE the tenant. Every
-// audit row is `ON DELETE CASCADE` on its tenant, so a `tenant.delete` recorded against the tenant it
-// deletes is erased by the same statement, leaving the one act whose record matters most with no
-// record at all (measured).
+// The same record, for a mutation whose SUBJECT is not the tenant the actor is operating as:
+// `tenantId` is the trail of the row that CHANGED. A fleet-level change is `null` (keying on the
+// context would file it under whichever tenant the header named), and a SUPER_ADMIN can write a tenant
+// other than the selected one. `null` rows are also the only ones that survive their tenant: audit
+// rows cascade on tenant delete, so a `tenant.delete` keyed on its own tenant would erase itself.
 export async function auditMutationOn(
   db: ScopedDb,
   ctx: TenantContext,
@@ -113,16 +94,10 @@ export async function auditMutationOn(
   });
 }
 
-// Whether a projected change is a change at all.
-//
-// The trail records changes, and `docs/api-and-fleet.md` states that as a property of the trail
-// rather than of one family: more than one editor in this console PATCHes its whole form on every
-// save, so a row per apply would fill the trail with saves that moved nothing. It lives here because
-// the projections it compares are built to be compared — same literal, same key order on both sides.
-//
-// It answers for what the PROJECTION holds and nothing else, so a service whose projection cannot
-// show a change (a value stored encrypted, say) has to carry its own marker for it. The alert-channel
-// URL is the case, and `channels.ts` says how.
+// Whether a projected change is a change at all. The trail records changes, and several editors
+// PATCH their whole form on every save. It answers only for what the PROJECTION holds, so a service
+// whose projection cannot show a change (a value stored encrypted) carries its own marker, as the
+// alert-channel URL does in `channels.ts`.
 export function projectionMoved(before: unknown, after: unknown): boolean {
   return JSON.stringify(before) !== JSON.stringify(after);
 }
@@ -143,9 +118,8 @@ export interface AuditLogItem {
 // cannot drift. Pagination and scope are deliberately NOT here: see `buildAuditWhere`.
 export interface AuditFilterOpts {
   action?: string;
-  // How the actor authenticated. Its value is one word on every row until the write side of #306
-  // lands, which is exactly why it is worth filtering by afterwards: it is what separates a change
-  // made at the console from one made by a token.
+  // How the actor authenticated: what separates a change made at the console from one made by a
+  // token.
   actorType?: ActorType;
   actorId?: bigint;
   // Both bounds inclusive, matching the Logs page's own since/until.
@@ -158,14 +132,9 @@ export interface ListAuditOpts extends AuditFilterOpts {
   // Keyset on `(created_at, id)`, which is also the order the page is read in. See `AuditCursor`
   // below for why it is both columns and not either one alone.
   cursor?: AuditCursor;
-  // WHICH TRAIL, and it is a question rather than a filter.
-  //
-  // `tenant` is the RLS read every caller has always had. `fleet` and `all` are a DIFFERENT QUERY:
-  // the rows keyed to no tenant are not filtered out of the tenant read, they are unreachable from
-  // it, because the policy is `tenant_id = current_setting('app.tenant_id')` and NULL satisfies no
-  // comparison. Reaching them means entering the fleet role, which is the only role the
-  // `fleet_super_admin` policy (`USING true`) admits — so the widening is a role change, and a role
-  // change is SUPER_ADMIN's alone.
+  // WHICH TRAIL, and it is a question rather than a filter. `fleet` and `all` are a different query:
+  // rows with no tenant are unreachable from the tenant read (NULL satisfies no RLS comparison), so
+  // the widening is a role change into the fleet role, and that is SUPER_ADMIN's alone.
   scope?: AuditScope;
 }
 
@@ -174,17 +143,10 @@ export interface AuditPage {
   // Pass back as `cursor` for the next (older) page; null when there are no more rows. Opaque:
   // `<ISO instant>|<id>`, and callers are not to build one (see `parseAuditCursor`).
   nextCursor: string | null;
-  // The newest row IN THE WHOLE TRAIL, past any filter, and null when the trail is empty.
-  //
-  // It is the one number that says something about what the trail does NOT hold: compared against a
-  // record's own updatedAt, it is how an operator learns that a change happened which nothing here
-  // can describe. Narrowed to the filter it would report the newest row the operator happens to be
-  // looking at, which answers a question nobody asked and reads like the answer to this one.
-  //
-  // The greatest TIMESTAMP, not the timestamp of the greatest id. The two disagree here: `createdAt`
-  // is written by the client (measured), so a row that committed later can carry an earlier stamp,
-  // and this number is compared against a record's own `updatedAt` — a comparison between times has
-  // to be answered by the largest time or it reports a covered record as newer than the trail.
+  // The newest row IN THE WHOLE TRAIL, past any filter, and null when the trail is empty. Compared
+  // against a record's own updatedAt, it tells the operator a change happened that nothing here
+  // describes. The greatest timestamp, not the greatest id's: `createdAt` is written by the client, so
+  // a later commit can carry an earlier stamp.
   latestAt: string | null;
 }
 
@@ -203,18 +165,9 @@ const AUDIT_SELECT = {
   createdAt: true,
 } as const;
 
-// Reads the audit log. `before`/`after` were allowlist-sanitized at write time.
-//
-// The default is the tenant's own trail, RLS-scoped, which is what every caller had before #520.
-// The two wider scopes enter the fleet role and are refused outright to anyone but a SUPER_ADMIN:
-// REFUSED AND NOT NARROWED, because a scope that quietly answered with the caller's own rows would
-// be the same silent omission this exists to end, wearing the name of the fix.
-// THE OPERATOR'S FILTER, alone: what the page's controls say, and nothing about which trail or where
-// the page is. Extracted so a second reader cannot answer a different question than the list did --
-// an export whose rows do not match the screen is worse than no export, because it is quoted.
-//
-// The cursor is NOT here, and that is the seam: it is where the reader is, not what it asked for, so
-// a one-shot dump has no use for it and would silently start halfway down.
+// The operator's filter alone, shared by every reader so an export cannot answer a different question
+// than the list did. The cursor is NOT here: it is where the reader is, not what it asked for, and a
+// one-shot dump would silently start halfway down.
 export function buildAuditWhere(
   opts: AuditFilterOpts,
 ): Prisma.AuditLogWhereInput {
@@ -231,11 +184,9 @@ export function buildAuditWhere(
   };
 }
 
-// WHICH TRAIL, and who may ask for it. Refused and never narrowed: a scope that quietly answered
-// with the caller's own rows would be the omission #520 exists to end, wearing the name of the fix.
-// Returns the trail's own predicate, kept SEPARATE from the operator's filter above because
-// `latestAt` is documented as the newest row of the trail PAST ANY FILTER -- it takes this one and
-// not the other.
+// WHICH TRAIL, and who may ask for it. Refused and never narrowed: a scope that quietly answered with
+// the caller's own rows would be a silent omission wearing the name of the fix. Kept separate from the
+// operator's filter because `latestAt` is the newest row of the trail PAST ANY FILTER.
 export function auditTrailFor(
   ctx: TenantContext,
   scope: AuditScope,
@@ -272,10 +223,8 @@ export async function listAudit(
   const take = Math.min(opts.limit ?? 100, 500);
   const where: Prisma.AuditLogWhereInput = {
     ...buildAuditWhere(opts),
-    // NOTE: the row-comparison `(created_at, id) < (t, i)`, spelled the way Prisma can express it.
-    // Measured against the tuple form on the same probe: identical plans, 45 buffers against 39 for
-    // a tenant and 5 against 5 for `all` -- so this costs nothing, and it keeps the predicate inside
-    // the same `where` the list and the export already share.
+    // NOTE: the row-comparison `(created_at, id) < (t, i)`, spelled the way Prisma can express it
+    // (same plan as the tuple form), so the predicate stays inside the shared `where`.
     ...(opts.cursor?.at
       ? {
           OR: [
@@ -324,36 +273,18 @@ export async function listAudit(
   };
 }
 
-// THE PAGE'S POSITION, AS THE TWO COLUMNS IT IS ORDERED BY (issue #530).
-//
-// It used to be the id alone, and that was cheap to say and expensive to run: `created_at` was a
-// plain predicate over a walk ordered by `id`, so a window that is not the newest one made Postgres
-// walk the primary key backwards discarding everything outside it. Measured on a 500k-row probe with
-// this table's own indexes, a 30-day window 80 days back: 9,277 buffers and 24.3 ms for a tenant,
-// 9,237 and 38.6 ms for `all`, throwing away 448,000 rows to collect 51. Ordering by the column the
-// window is cut on turns the same question into a range scan of an index that is already sorted the
-// way the page is read: 39 buffers and 0.15 ms, 5 and 0.02 ms. No new index -- the ones the table
-// already has serve it once the ORDER BY matches them.
-//
-// The id STAYS, as the tie-break, because `created_at` is not unique and is not the database's:
-// Prisma sends the value from the Node process on every insert (measured -- the column's
-// `DEFAULT CURRENT_TIMESTAMP` never runs), so a burst can share a millisecond and two processes can
-// disagree about the order. A keyset on the time alone would repeat a row of a tied pair or skip it.
+// The page's position, as the two columns it is ordered by. Ordering by `created_at` makes a window
+// cut on it a range scan of an existing index instead of a backward walk of the primary key. The id is
+// the tie-break: `created_at` is not unique and is sent by the Node process (the column's DEFAULT
+// never runs), so a keyset on the time alone would repeat or skip a row of a tied pair.
 export interface AuditKeyset {
   createdAt: Date;
   id: bigint;
 }
 
 export interface AuditCursor {
-  // Where the last page stopped. Always present: a cursor IS a position.
-  //
-  // It was nullable for one release (#530 -> #544). The release before #530 paged `id < X` under
-  // `ORDER BY id`, so a cursor it handed out was a BOUND and not a position, and it could not be
-  // translated into one -- `created_at` is written by the client, so a row can carry a stamp older
-  // than a row with a smaller id, and every unseen row stamped ahead of X sits ahead of X's own
-  // tuple. It was therefore carried as a bound alongside the keyset until no process could still be
-  // emitting one. That is now (#544): #530 shipped in v1.15.0 and this is the release after it, so
-  // a bare id is a malformed cursor again and gets the 400 every other one gets.
+  // Where the last page stopped. Always present: a cursor IS a position. A bare id is not one (a row
+  // can carry a stamp older than a row with a smaller id), so it is a malformed cursor and gets a 400.
   at: AuditKeyset;
 }
 
@@ -361,42 +292,25 @@ export interface AuditCursor {
 // is "which page was it on": a cursor nobody can read is one nobody can check.
 const CURSOR_SEP = "|";
 
-// The instant half, as `toISOString` spells it for a four-digit year that is not `0000`.
-//
-// THE SHAPE IS THE RANGE CHECK, and it is exhaustive rather than a list of bad spellings. Beyond
-// four digits that method switches to the EXPANDED form (`-100000-…`, `+275760-…`), which is
-// canonical JavaScript and reaches years no `timestamptz` holds; `0000` is a four-digit year the
-// calendar Postgres uses does not have at all. Both are refused at bind time, which turns a
-// malformed cursor into a 500 where this endpoint promises a 400.
-//
-// Swept rather than guessed: every one of the 10,000 four-digit years was built, round-tripped and
-// bound against Postgres, and `0000` is the only one it refuses. So four digits minus that year IS
-// the set the column accepts, and the canonical round trip below already rules out dates that do not
-// exist inside it -- there is no third case for a later reader to discover.
+// The instant half, as `toISOString` spells it for a four-digit year that is not `0000`. The shape is
+// the range check: past four digits `toISOString` uses the expanded form, reaching years no
+// `timestamptz` holds, and `0000` is the one four-digit year Postgres refuses. Both would fail at bind
+// time, turning a malformed cursor into a 500 where this endpoint promises a 400.
 const CURSOR_INSTANT = /^(?!0000)\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
 export function encodeAuditCursor(at: AuditKeyset): string {
   return `${at.createdAt.toISOString()}${CURSOR_SEP}${at.id}`;
 }
 
-// Returns null for anything that is not one of ours, a BARE ID included (#544).
-//
-// A bare id was this endpoint's cursor before #530 and was accepted for one release after it, read
-// as that release's own `id <` bound rather than as a position -- the only reading of the three
-// considered that resumes from the same place, since translating it into the row's `(created_at,
-// id)` answers from a different one. It is refused again now, so `115` gets the same 400 as any
-// other malformed cursor; see `AuditCursor.at` for why it could never simply be converted.
+// Returns null for anything that is not one of ours, a bare id included (see `AuditCursor.at`).
 export function parseAuditCursor(raw: string): AuditCursor | null {
   const parts = raw.split(CURSOR_SEP);
   if (parts.length !== 2) return null;
   const head = parts[0] as string;
   const when = new Date(head);
-  // CANONICAL OR NOTHING, checked by round trip against the exact spelling this codec emits.
-  // `new Date` is not a validator: it ROLLS FORWARD a date that does not exist (`2026-02-30` becomes
-  // March 2nd, so the walk resumes at an instant nobody asked for and skips whatever lies between),
-  // and it accepts forms with no offset -- `Sep 4 2026`, `2026-09-04T12:00` -- by reading them in the
-  // SERVER'S OWN ZONE, which measured three hours off here and would make one cursor name different
-  // instants on two deployments. Six of seven such spellings were accepted before this line.
+  // NOTE: canonical or nothing, checked by round trip. `new Date` rolls a nonexistent date forward
+  // (`2026-02-30` becomes March 2nd, skipping rows) and reads offset-less forms in the server's own
+  // zone, so one cursor would name different instants on two deployments.
   if (!CURSOR_INSTANT.test(head)) return null;
   if (Number.isNaN(when.getTime()) || when.toISOString() !== head) return null;
   // `parseDbId` and not a `BigInt` cast: it is the one bounded parse in the tree, so the id half of

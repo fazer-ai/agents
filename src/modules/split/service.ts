@@ -79,17 +79,14 @@ export function readSplitConfig(settings: unknown): SplitConfig {
   };
 }
 
-// WHAT STOOD BETWEEN TWO BALLOONS IN THE TEXT THE MODEL WROTE, carried beside the chunks because
-// splitting throws it away and two callers have to put the text back together: the overflow merge
-// below, and the consolidated retry in `deliverReply`. Rejoining with a fixed "\n\n" delivers a
-// paragraph the model wrote as ONE broken into two — a silent edit of the agent's own words, in the
-// direction the customer reads.
+// What stood between two balloons in the model's text, carried beside the chunks because both the
+// overflow merge and the consolidated retry rejoin it: a fixed "\n\n" would split one of the
+// model's paragraphs in two.
 export interface ReplyParts {
   chunks: string[];
   // `seps[i]` is the EXACT whitespace that preceded `chunks[i]` in the original; `seps[0]` is "".
-  // Captured rather than classified: a category ("paragraph break" → "\n\n", "sentence" → " ")
-  // restores a plausible delimiter and not the real one, so `"Intro.\n- item"` comes back as
-  // `"Intro. - item"` and a Markdown list is flattened into a sentence.
+  // Captured rather than classified: a category restores a plausible delimiter, not the real one,
+  // and flattens `"Intro.\n- item"` into `"Intro. - item"`.
   seps: string[];
 }
 
@@ -98,9 +95,7 @@ export interface ReplyParts {
 export function splitReplyParts(text: string, cfg: SplitConfig): ReplyParts {
   const trimmed = text.trim();
   if (!trimmed) return { chunks: [], seps: [] };
-  // Both splits use a CAPTURING group, so the delimiters come back interleaved with the pieces and
-  // the original can be reassembled exactly. Without the capture the whitespace is consumed and
-  // gone, and every rejoin downstream is a guess about what the model wrote.
+  // NOTE: capturing groups keep the delimiters, so the original can be reassembled exactly.
   const paraParts = trimmed.split(/(\n{2,})/);
   const chunks: string[] = [];
   const seps: string[] = [];
@@ -110,17 +105,15 @@ export function splitReplyParts(text: string, cfg: SplitConfig): ReplyParts {
   };
   for (let pi = 0; pi < paraParts.length; pi += 2) {
     const p = (paraParts[pi] ?? "").trim();
-    // What separated this paragraph from the previous one — the run of newlines the model typed,
-    // which is not always exactly two.
+    // NOTE: the run of newlines the model typed, not always exactly two.
     const paraSep = pi === 0 ? "" : (paraParts[pi - 1] ?? "\n\n");
     if (!p) continue;
     if (p.length <= cfg.maxChars) {
       push(p, paraSep);
       continue;
     }
-    // Over-long paragraph → accumulate sentences up to maxChars. Everything this loop emits after
-    // its first chunk continues the SAME paragraph, so it rejoins with the whitespace that stood
-    // between those two sentences — a space, a newline before a list item, whatever it was.
+    // NOTE: over-long paragraph: accumulate sentences up to maxChars. Later chunks continue the same
+    // paragraph, so they rejoin with the whitespace that stood between those sentences.
     const sentParts = p.split(/((?<=[.!?…])\s+)/);
     let buf = "";
     let pendingSep = paraSep;
@@ -168,57 +161,29 @@ export function typingDelayMs(chunk: string, cfg: SplitConfig): number {
 const realSleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
-// WHAT REACHED THE CUSTOMER, which is not a single bit — the same three-answers rule
-// `deliverPendingAttachments` follows (../../graph/runtime.ts), for the same reason: "nothing was
-// delivered" answers more than one question and the caller acts differently on each.
+// What reached the customer, in three answers, following the rule `deliverPendingAttachments`
+// follows (../../graph/runtime.ts): "nothing was delivered" answers more than one question.
 export interface ReplyDelivery {
   // How many messages actually landed in the conversation. The caller keys "the customer was
   // answered" off this, and the console holds a "delivering" indicator until it arrives.
   delivered: number;
-  // A send failed AND the remainder's one retry failed too, so part of the reply is missing. A run
-  // called off mid-split is NOT this: nothing was attempted after the fence, by decision — reported
-  // as a failure, a /reset landing between two balloons would put `lastError` back on the
-  // conversation it had just cleared.
+  // A send failed and the remainder's one retry failed too. A run called off mid-split is not this:
+  // reported as a failure, a /reset between balloons would put `lastError` back on a cleared conversation.
   failed: boolean;
-  // AT LEAST ONE SEND CANNOT BE ACCOUNTED FOR: it was rejected, and Chatwoot could not be asked
-  // whether it landed. It may be in the conversation and it may not, and the caller has to know the
-  // difference from a clean `failed` (issue #499).
-  //
-  // What rides on it is whether the TURN may run again. `delivered: 0, failed: true` makes
-  // `runLoadedTurn` throw, and a throw is what eventually puts the ledger row `DEAD` and hands it to
-  // the delivery recovery, which re-runs the whole turn — model, tools and all — half an hour later
-  // (../chatwoot/recover-delivery.ts states this as a property of its design). That is right when
-  // nothing landed and we KNOW it: the customer is owed an answer. It is wrong when we do not know,
-  // because the side effects the turn already committed would fire a second time over a message
-  // that may well have arrived. The report has to carry which of the two it is.
+  // A rejected send that Chatwoot could not be asked about: it may or may not have landed. Decides
+  // whether the turn may run again: `delivered: 0, failed` without this makes `runLoadedTurn` throw,
+  // and the recovery re-runs the whole turn, which is only safe when nothing landed and we know it.
   unproven: boolean;
 }
 
 // Sends the reply, split + paced when enabled. Typing toggles are best-effort (admin-token, may be
 // unsupported on a channel) and never block the send. The sleep is injectable for tests.
 //
-// THE UNIT OF DELIVERY IS THE REPLY, NOT THE BALLOON (issue #429), and it is the split that makes
-// the question exist: a one-balloon reply either lands or does not, while N sends separated by a
-// typing pause give a transient Chatwoot failure N-1 windows to land INSIDE the answer — and the
-// window is as wide as the reply is long, because `typingDelayMs` is deliberately proportional to
-// the chunk. What that leaves is not a failed send. It is a customer holding half an answer.
-//
-// So a failure past the first landed balloon NEVER throws, and the asymmetry is the whole design:
-//
-//   nothing landed   A real turn failure, reported as `failed` with `delivered: 0`. The caller
-//                    throws on it, the operator is told, and the recovery (#295) re-runs the turn —
-//                    safe precisely because the customer received nothing that could duplicate.
-//   something landed  A throw here discards `delivered`, the count that exists to report what the
-//                    customer received, and hands the whole reply back to the recovery, which runs
-//                    the turn again: the balloons that already arrived are sent a SECOND time and
-//                    every side-effecting tool the turn chose runs again. Returning instead settles
-//                    the ledger row as answered, which is what closes that path.
-//
-// The remainder is retried ONCE, consolidated into a single send, and that is the same rule read
-// from the customer's side: they get the whole answer rather than a truncated one, and no balloon
-// they already have is sent again. Per-chunk durable state was the alternative and buys nothing
-// here — the chunks are still in memory in this very process, so the only thing it would add is
-// resuming after a process death, which is the recovery's job and not this loop's.
+// The unit of delivery is the reply: a failure after a balloon landed never throws, since a throw
+// would hand the reply to the recovery and resend what the customer already has, side-effecting
+// tools included. The remainder is retried once, consolidated into a single send. See docs/split.md.
+// No per-balloon durable state: the chunks are still in memory in this process, so all it would add
+// is resuming after a process death, which is the recovery's job, not this loop's.
 export async function deliverReply(
   client: ChatwootClient,
   conversationId: number,
@@ -226,28 +191,15 @@ export async function deliverReply(
   cfg: SplitConfig,
   sleep: (ms: number) => Promise<void> = realSleep,
   flow?: FlowContext,
-  // Asked before EACH balloon. A split reply is several sends with a typing pause between them, so
-  // one answer taken before the loop covers only the first: a run called off after balloon two would
-  // keep typing the rest into a conversation the operator was told had been cleared. Returns how
-  // many actually landed, so the caller still reports what the customer received.
+  // Asked before each balloon: one answer before the loop covers only the first. Returns how many
+  // landed, so the caller still reports what the customer received.
   calledOff: () => Promise<boolean> = async () => false,
-  // THE NEWEST MESSAGE THAT EXISTED BEFORE THIS REPLY, when the caller knows one — the customer
-  // message this turn is answering (issue #499). Anything this reply writes is newer than it, so it
-  // is the point past which the read-back stops looking.
-  //
-  // Without it, the FIRST send failing has nothing to stop at: a conversation with a hundred
-  // messages of history fills all five pages with rows that were there before, and the walk runs out
-  // of pages and answers `unknown` — which now means the chunk is dropped and the reply never
-  // arrives. It costs no read, unlike the pre-send `readBoundary` this replaces: the caller already
-  // holds the id.
+  // The newest message that existed before this reply (the customer message it answers), when the
+  // caller knows one. It bounds the read-back at no cost; without it a long history can exhaust the
+  // page ceiling and a first-send failure answers `unknown`.
   anchor: number | null = null,
-  // THE OPERATOR'S SIGNATURE, attached AFTER the cut and never before it (issue #599). Both of its
-  // separators contain "\n\n", which is what `splitReplyParts` cuts on: concatenated onto the reply
-  // upstream, `blank` gives the signature a balloon of its own and `--` gives the customer a balloon
-  // whose entire body is `--`, while at the `maxChunks` ceiling it is merged into the last paragraph
-  // instead — one configuration rendering two ways depending on how long the reply was. Null when
-  // the channel is not one the operator chose, when there is no signature, or on an audio reply,
-  // which the caller answers before reaching here.
+  // The operator's signature, attached after the cut and never before: both separators contain the
+  // "\n\n" `splitReplyParts` cuts on. Null when there is none, or on an audio reply.
   signature: {
     text: string;
     position: SignaturePosition;
@@ -260,16 +212,13 @@ export async function deliverReply(
     "split",
     {
       detail: { enabled: cfg.enabled },
-      // The numbers only exist once the loop returned, and they are the line an operator reads to
-      // find out why a customer got half an answer — the stage no longer throws, so without this it
-      // would report `ok` and say nothing about it.
+      // NOTE: the stage does not throw on a partial delivery, so without these numbers it reads `ok`.
       detailOf: (out) => ({ delivered: out.delivered, failed: out.failed }),
     },
     async () => {
       if (!cfg.enabled) {
         const sendId = crypto.randomUUID();
-        // Through the SAME function the split branch uses, on a one-element array. Split off is not
-        // a second rule about signatures, it is one chunk.
+        // NOTE: the same function on a one-element array: split off is one chunk, not a second rule.
         const [single = reply] = signature
           ? attachSignature([reply], signature.text, signature)
           : [reply];
@@ -277,17 +226,13 @@ export async function deliverReply(
           await client.sendMessage(conversationId, single, { sendId });
           return { delivered: 1, failed: false, unproven: false };
         } catch (e) {
-          // ASKED HERE TOO. There is no remainder to salvage on this path, so nothing is ever
-          // resent — but the answer still decides whether the TURN may run again, and that question
-          // does not depend on how many balloons the reply was split into. A rejection nobody
-          // checked used to be reported as unaccounted for, which settles the burst and retires the
-          // delivery on a reply that may never have been written.
+          // NOTE: nothing is resent on this path, but the verdict still decides whether the turn may run
+          // again, which does not depend on how many balloons the reply had.
           const verdict = await accountForRejectedSend(
             client,
             conversationId,
             sendId,
-            // The caller's anchor is all there is here: nothing has been sent on this path before
-            // now, so no completed send can supply one.
+            // NOTE: nothing has been sent on this path yet, so the caller's anchor is the only boundary.
             anchor,
             e,
             flow,
@@ -299,56 +244,36 @@ export async function deliverReply(
         }
       }
       const { chunks: rawChunks, seps } = splitReplyParts(reply, cfg);
-      // Attached here, to the chunk that will actually carry it, and `seps` stays aligned because
-      // the count never changes. A reply that trimmed to zero chunks is a turn that said nothing,
-      // and nothing is what it gets signed with.
+      // NOTE: `seps` stays aligned because attaching never changes the count.
       const chunks = signature
         ? attachSignature(rawChunks, signature.text, signature, reply)
         : rawChunks;
       let delivered = 0;
       let failed = false;
       let unproven = false;
-      // HOW FAR BACK A READ-BACK HAS TO LOOK, and nothing more. It is fed only by sends that
-      // returned an id, so it costs no read of its own — which is the whole difference from what
-      // stood here before (issue #499). A dedicated `readBoundary` used to run on the SUCCESSFUL
-      // path to establish it, bounded by the typing pause because an unbounded read would tax every
-      // reply that never fails; and that budget (1680ms for the reply in conversation 1445) is the
-      // first thing an overloaded Chatwoot misses. When it did, the reconciliation answered "not
-      // landed" without reading anything, and the retry sent the reply again.
-      //
-      // Now identity decides and this only bounds cost: null simply means the read-back pages to
-      // its own ceiling instead of stopping early. Correctness no longer depends on it.
+      // NOTE: how far back a read-back has to look, fed only by sends that returned an id. It bounds cost
+      // only: identity decides, and null just means paging to the ceiling. A pre-send read to establish
+      // it would tax every reply, and a short one is exactly what an overloaded Chatwoot misses.
       let boundary: number | null = anchor;
-      // THE ONE PLACE A DELIVERY IS RECORDED, because there are four ways to learn of one — a send
-      // that returned, a rejected send the read-back found, and the same two for the consolidated
-      // retry — and each is also a new boundary. Two of them used to count without moving it, which
-      // left a stale value answering the next read: with chunks `A / B / B`, the middle `B` landing
-      // under a rejection made the FINAL `B` match it and report as delivered when it never was.
-      //
-      // NOTE: on the two retry call sites the advance has no reader — the retry is the last act of
-      // the loop and `break` follows it — and the mutation that drops the id there kills no test,
-      // measured. They pass it anyway because the value here is that "delivered" has ONE spelling:
-      // a confirmer that has to remember the boundary separately is the confirmer that forgets, and
-      // this loop has already grown two of them.
+      // NOTE: the one place a delivery is recorded, and each delivery is also a new boundary. A confirmer
+      // that counts without advancing it leaves a stale boundary: with chunks `A / B / B`, a middle `B`
+      // found under a rejection would make the final `B` match it. The retry call sites have no later
+      // reader but use it anyway, so "delivered" has one spelling.
       const noteDelivered = (id: number | null): void => {
         delivered += 1;
         if (id !== null && (boundary === null || id > boundary)) boundary = id;
       };
       try {
         for (const [i, chunk] of chunks.entries()) {
-          // Asked BEFORE the typing indicator as well as before the send (issue #209 review,
-          // round 9): the indicator is customer-facing too, and a run called off during the
-          // previous balloon's send would otherwise show it once more before standing down. The
-          // first balloon is covered by the caller's own ask, one statement before this loop.
+          // NOTE: asked before the typing indicator too, since it is customer-facing. The first balloon is
+          // covered by the caller's own ask just before this loop.
           if (i > 0 && (await calledOff())) break;
           await client
             .toggleTyping(conversationId, true)
             .catch(() => undefined);
           await sleep(typingDelayMs(chunk, cfg));
           if (await calledOff()) break;
-          // NAMED BEFORE IT LEAVES, because a name is only useful if it exists on the attempt that
-          // fails: the send that times out never returns anything, so the id has to travel out with
-          // the request rather than come back with the response.
+          // NOTE: minted before the request, because the send that times out never returns anything.
           const sendId = crypto.randomUUID();
           try {
             const res = await client.sendMessage(conversationId, chunk, {
@@ -356,18 +281,9 @@ export async function deliverReply(
             });
             noteDelivered(createdMessageId(res));
           } catch (e) {
-            // A REJECTED SEND DOES NOT MEAN AN UNDELIVERED ONE. The request has a 15s deadline
-            // (`AbortSignal.timeout` in ../chatwoot/client.ts), and a timeout — or a response whose
-            // body could not be read — rejects here with the message already written on the far
-            // side. Retrying that blindly is the duplication this whole change exists to prevent,
-            // just moved one layer down and made likelier: an overloaded Chatwoot is exactly when
-            // both the timeout and the retry happen.
-            //
-            // The type of the error cannot settle it either. A 502 comes from a proxy that may or
-            // may not have forwarded the request, and a 500 is Chatwoot failing at an unknown point
-            // in its own transaction. So this asks the only party that knows: it READS the
-            // conversation back and looks for the chunk. Costly, and only on a path that is already
-            // the exception.
+            // NOTE: a rejected send is not an undelivered one. The 15s deadline (../chatwoot/client.ts) can
+            // reject with the message already written, and neither a 502 nor a 500 says whether it was. So
+            // this reads the conversation back and looks for the chunk; blindly retrying would duplicate.
             const verdict = await accountForRejectedSend(
               client,
               conversationId,
@@ -377,49 +293,21 @@ export async function deliverReply(
               flow,
             );
             if (verdict.known && verdict.id !== null) noteDelivered(verdict.id);
-            // ASKED AGAIN, and after the reconciliation rather than before it. The failed request
-            // burned up to 15 seconds and the read above is more I/O, so the answer taken before
-            // the first send is about a moment that is long gone — and the rule this file follows
-            // (../../graph/nudge.ts) is one ask per stretch of I/O preceding a write, with no I/O
-            // between the ask and the write it guards. A `/reset` landing in that stretch is the
-            // operator clearing the conversation, so what follows is a stand-down and NOT a failure:
-            // reported as one it would put `lastError` back on what they just cleared.
+            // NOTE: asked again after the reconciliation: the failed request and the read are I/O, so the
+            // earlier answer is stale (one ask per stretch of I/O before a write, as in ../../graph/nudge.ts).
+            // A /reset here is a stand-down, not a failure.
             if (await calledOff()) break;
-            // WHAT THE CHUNK ITSELF IS OWED, decided by which of the three answers came back, and
-            // the middle one is the whole of issue #499:
-            //
-            //   landed    → the customer has it. Not resent, and counted as delivered.
-            //   absent    → read far enough back to be sure it is not there. Resent, because
-            //               nothing can be duplicated by sending a message that does not exist.
-            //   unknown   → the conversation could not be read. LEFT OUT, and the reply comes up
-            //               short and says so.
-            //
-            // The base tree spelled `absent` and `unknown` the same way and resent on both. That is
-            // the duplicate two customers received: an overloaded Chatwoot loses the POST's
-            // response and the read-back in one go, so the case that cannot be told apart is
-            // precisely the case that arises.
-            //
-            // Resending on `unknown` was defended on the two errors being asymmetric — a resend
-            // "costs one duplicated balloon the customer and the operator can both see". Measured,
-            // the operator sees nothing: the loop reported `delivered: 1, failed: false` while the
-            // customer read the reply twice. A gap, by contrast, IS reported: `failed` is the
-            // partial badge on the conversation, and `lastError` when nothing landed at all.
-            // Between an invisible duplicate and a visible gap, the gap wins.
-            //
-            // Everything still owed goes as ONE message. Not a re-walk of the remaining balloons: a
-            // second pass would give the same transient failure the same N windows to land in, and
-            // the pacing that makes a reply read as human is worth less than the reply arriving
-            // whole.
+            // NOTE: landed: counted, not resent. Absent: resent, since nothing can duplicate. Unknown: left out
+            // and reported `failed`, because the Chatwoot that loses the POST's response also fails the read,
+            // and an invisible duplicate is worse than a visible gap. What is owed goes as ONE message: a
+            // re-walk would give the same transient failure the same N windows.
             if (!verdict.known) {
               failed = true;
               unproven = true;
             }
             const from = verdict.known && verdict.id === null ? i : i + 1;
-            // BUILT FROM THE RAW BALLOONS, not the signed ones, and then signed ONCE. With
-            // `frequency: "all"` every chunk already carries a signature, so joining them put the
-            // badge three times inside a single message — one configuration rendering two ways
-            // depending on whether a send happened to fail, which is the defect class
-            // attach-to-a-chunk exists to close (#616, review round 1 of #617).
+            // NOTE: built from the raw balloons and signed once; with `frequency: "all"` joining the signed
+            // chunks would put the badge several times inside one message.
             const owedRaw = rawChunks
               .slice(from)
               .reduce(
@@ -427,16 +315,9 @@ export async function deliverReply(
                 "",
               );
             if (!owedRaw) break;
-            // THE RETRY CARRIES A SIGNATURE IF AND ONLY IF THE BALLOONS IT REPLACES DID, which is
-            // the only rule that cannot disagree with the decision already made above. A
-            // conditional on frequency and position could: with the model's own copy merged into a
-            // balloon at the `maxChunks` ceiling, the balloon pass recognised it and signed
-            // nothing, while the retry's own evidence — the lossy reconstruction it was handed —
-            // no longer matched the signature exactly, so it prepended a second one (round 8).
-            //
-            // It also says the `once` rule without naming it: a `top` signature whose first balloon
-            // already landed is not among the balloons being retried, so none of them was signed
-            // and neither is the retry.
+            // NOTE: the retry is signed iff the balloons it replaces were, the one rule that cannot disagree
+            // with the balloon pass (a conditional on frequency would re-sign a model copy the merge made
+            // inexact). It also covers `once`: a landed top-signed first balloon is not among them.
             const owedWasSigned = rawChunks
               .slice(from)
               .some((raw, k) => chunks[from + k] !== raw);
@@ -446,14 +327,12 @@ export async function deliverReply(
                     [owedRaw],
                     signature.text,
                     signature,
-                    // ITS OWN TEXT: whether the model already signed the TURN was answered above,
-                    // by the balloons; what is left for `attachSignature` is whether THIS message
-                    // already carries a copy.
+                    // NOTE: whether the turn is signed was answered by the balloons; this asks only whether this
+                    // message already carries a copy.
                     owedRaw,
                   )[0] ?? owedRaw)
                 : owedRaw;
-            // The retry is a send like any other, so it names itself like any other: it carries the
-            // same 15s deadline and can be rejected after being accepted in exactly the same way.
+            // NOTE: same 15s deadline, so it can be rejected after being accepted like any other send.
             const retrySendId = crypto.randomUUID();
             try {
               noteDelivered(
@@ -464,12 +343,8 @@ export async function deliverReply(
                 ),
               );
             } catch (retryErr) {
-              // THE SAME QUESTION, asked of the same party. This send has the deadline the first one
-              // had, so a rejection here is just as ambiguous — and reporting `failed` with nothing
-              // else delivered is what makes `runLoadedTurn` throw, which runs the whole turn again
-              // and posts a second copy of a reply the customer already has. The reconciliation is
-              // not a property of the first attempt; it belongs to every send that can be rejected
-              // after being accepted.
+              // NOTE: just as ambiguous as the first rejection, and a bare `failed` would make `runLoadedTurn`
+              // throw and re-run a turn whose reply the customer may already have.
               const retryVerdict = await accountForRejectedSend(
                 client,
                 conversationId,
@@ -480,16 +355,11 @@ export async function deliverReply(
               );
               if (retryVerdict.known && retryVerdict.id !== null) {
                 noteDelivered(retryVerdict.id);
-                // ASKED ONE LAST TIME, and for the third stretch of I/O in this catch: the retry
-                // itself and its read-back. The rule is the same one the ask above follows
-                // (../../graph/nudge.ts) and the LAST stretch is the one that was missing — with
-                // nothing delivered, `failed` is what makes the caller throw, and a throw after a
-                // `/reset` puts `lastError` back on the conversation the operator had just cleared.
-                // Standing down is not a failure, here as everywhere else in this loop.
+                // NOTE: fence asked once more after the retry's own I/O: with nothing delivered, `failed` makes
+                // the caller throw, and after a /reset that would restore `lastError` on a cleared conversation.
               } else if (!(await calledOff())) {
                 failed = true;
-                // Same rule as the balloon above, for the retry's own read-back: only a proven
-                // absence leaves the report clean enough for the turn to be run again.
+                // NOTE: only a proven absence leaves the report clean enough for the turn to run again.
                 if (!retryVerdict.known) unproven = true;
               }
             }
@@ -497,9 +367,8 @@ export async function deliverReply(
           }
         }
       } finally {
-        // In a `finally` because the loop above can now leave by a failure as well as by the fence.
-        // Skipped, the customer watches the agent "type" a reply that is never coming — and the
-        // indicator is per conversation, so nothing later clears it either.
+        // NOTE: in a `finally` because the loop can leave by a failure too; the indicator is per
+        // conversation and nothing later would clear it.
         await client.toggleTyping(conversationId, false).catch(() => undefined);
       }
       return { delivered, failed, unproven };
@@ -507,51 +376,24 @@ export async function deliverReply(
   );
 }
 
-// DID THE CHUNK REACH THE CUSTOMER, asked of Chatwoot rather than inferred from the error.
+// Did the chunk reach the customer, asked of Chatwoot by the send's own id (`CHATWOOT_SEND_ID_KEY`,
+// echoed by the fork) rather than by content, which is not an identity: a conversation can hold the
+// same words twice. `after` is only a cost bound (null pages to the ceiling). Fails closed: an
+// unreadable conversation answers unknown, and the caller leaves that chunk out rather than risk a
+// duplicate.
 //
-// Reading the conversation back is the only thing that separates "the POST never landed" from "the
-// POST landed and the response did not come back", and those two need opposite handling: one owes
-// the customer a resend, the other owes them silence.
-//
-// IT ASKS FOR A NAME, NOT FOR WORDS. The send carries its own id out with the request
-// (`CHATWOOT_SEND_ID_KEY`, ../chatwoot/constants.ts) and the fork echoes it back on the read, so
-// this looks for THAT message rather than for a message that says the same thing.
-//
-// Content used to be all there was, because a send that fails never returns an id — and content is
-// not an identity: a conversation legitimately holds the same words twice, an earlier "Olá!" or the
-// balloon this very reply sent two sends ago. Repairing that took a boundary, the boundary took a
-// read of its own on the SUCCESSFUL path, and that read had to be kept short so it would not tax
-// every reply that never fails. An overloaded Chatwoot misses a short read, and an overloaded
-// Chatwoot is the whole population of this function's callers: the proof failed exactly when it was
-// needed, and the resend that followed is the duplicate two customers received (issue #499).
-//
-// `after` survives as a COST bound and nothing else — it is the oldest id worth paging back to, fed
-// only by sends that already returned one. Null means page to the ceiling, not "cannot prove".
-//
-// Fails CLOSED, and what that now means is the opposite of what it meant: an unreadable
-// conversation answers "not landed", and the caller LEAVES THAT CHUNK OUT of the retry rather than
-// putting it back in. The reply comes up short and says so, instead of arriving twice and
-// reporting success.
-// The whole read-back, across however many pages it takes, costs what ONE `getMessages` already
-// cost: the per-request deadline is what is left of this budget, so a conversation that needs three
-// pages is not three times the wait. Beyond it the answer is unknown, which leaves the chunk out.
+// The whole read-back costs what one `getMessages` does: each request's deadline is what is left of
+// this budget. Beyond it the answer is unknown.
 const READBACK_BUDGET_MS = 10_000;
-// A ceiling on the pathological case rather than a real expectation. The window this reads against
-// is between a rejected POST and the very next statement, so filling one page takes ~20 inbound
-// messages in that instant; five pages is a hundred, and past that the conversation is not one this
-// reconciliation can say anything useful about.
+// A ceiling on the pathological case: filling one page in the instant after a rejected POST takes
+// ~20 inbound messages, so five pages is a hundred.
 const READBACK_MAX_PAGES = 5;
-// Chatwoot's page size for a conversation's messages, read the same way `debounce/handler.ts` reads
-// it: a page that comes back shorter is the conversation's first, so nothing older can be hiding
-// behind it.
+// Chatwoot's page size, read as `debounce/handler.ts` reads it: a shorter page is the conversation's
+// first, so nothing older can hide behind it.
 const CHATWOOT_MESSAGES_PAGE = 20;
 
-// THREE ANSWERS, NOT TWO, and collapsing the last two is the defect (issue #499). "I read the
-// conversation and this message is not there" and "I could not read the conversation" are opposite
-// facts that the base tree both spelled `null`, and the caller treated both as "resend".
-//
-// This repo already states the rule elsewhere in this very file's history — no rows is UNKNOWN, not
-// zero — and this is the site where it was not applied.
+// Three answers, not two: "read and not there" and "could not read" are opposite facts, and only the
+// first makes a resend safe. No rows is unknown, not zero.
 type LandedVerdict =
   // Chatwoot holds it. The id comes back because it is also the oldest point a later read-back on
   // this same reply needs to page to.
@@ -563,24 +405,16 @@ type LandedVerdict =
   // there, and this is the ONE case where the send is neither confirmed nor safe to repeat.
   | { known: false };
 
-// STATUSES CHATWOOT ANSWERS WITHOUT HAVING WRITTEN A MESSAGE. Authentication and authorization are
-// decided before the controller runs, and 404 and 422 are the route and the payload being refused —
-// in none of them does a row exist on the far side.
-//
-// 5xx is deliberately NOT here, and neither is 429. A 500 is Chatwoot failing at an unknown point in
-// its own transaction and a 502 is a proxy that may or may not have forwarded the request, which is
-// the whole reason this function exists; a 429 can be answered by a proxy after the write. The list
-// is what is definitively pre-create, never what is merely likely.
+// Statuses Chatwoot answers without having written a message (auth, route, payload refused). 5xx and
+// 429 are deliberately absent: a 500 fails at an unknown point, a 502 proxy may have forwarded, and a
+// 429 can come from a proxy after the write. Only what is definitively pre-create belongs here.
 const PRE_CREATE_STATUSES = new Set([400, 401, 403, 404, 405, 422]);
 
 function isPreCreateStatus(status: number): boolean {
   return PRE_CREATE_STATUSES.has(status);
 }
 
-// WHAT A REJECTED SEND MEANS, asked in ONE place so the two delivery paths cannot answer it
-// differently (issue #499). Splitting on or off, the question is the same — did those words reach
-// the customer? — and the path with no remainder to salvage used to skip it entirely, reporting
-// every rejection as unaccounted for.
+// What a rejected send means, asked in one place so both delivery paths answer it the same way.
 async function accountForRejectedSend(
   client: ChatwootClient,
   conversationId: number,
@@ -590,13 +424,8 @@ async function accountForRejectedSend(
   flow: FlowContext | undefined,
 ): Promise<LandedVerdict> {
   reportFailedSend(flow, conversationId, err);
-  // A REJECTION THAT COULD NOT HAVE CREATED A MESSAGE IS A PROVEN ABSENCE, not an ambiguous one.
-  // Ambiguity has one source: the request may have been served before the response was lost. Two
-  // families cannot have been.
-  //
-  // Reading either as unknown is expensive now that unknown means "do not resend": the turn reports
-  // `posted-partial`, settles the burst and retires the delivery as answered, with nothing sent and
-  // nothing ever retrying. A credential that expired would silently stop answering customers.
+  // NOTE: a rejection that could not have created a message is a proven absence. Reading it as
+  // unknown would stop resending: an expired credential would silently stop answering customers.
   if (err instanceof ChatwootMissingTokenError)
     return { known: true, id: null };
   if (err instanceof ChatwootApiError && isPreCreateStatus(err.status))
@@ -621,45 +450,25 @@ async function findLandedMessage(
         before === undefined ? undefined : { before },
         remaining,
       );
-      // HOW MANY MESSAGES CAME BACK, asked of the response rather than of the parsed rows, because
-      // the parser folds three different answers into one empty array: a page that really is empty,
-      // a body that was not a list at all, and a full page whose rows were all unreadable. Only the
-      // first is an answer; the other two are a degraded read.
+      // NOTE: counted on the response, not the parsed rows: the parser folds an empty page, a non-list
+      // body and a page of unreadable rows into the same empty array.
       const carried = chatwootMessageListLength(raw);
       const rows = parseChatwootMessages(raw);
-      // FOUND IS FOUND, and it is asked FIRST — before anything about the page's quality. The id was
-      // minted for this send alone, so a row carrying it IS the message, whatever its neighbours
-      // are: a page that also holds one entry this build could not read still proves delivery if the
-      // one we are looking for is on it. Asking about the page first would report a rejected-but-
-      // delivered send as unaccounted for, badge and all.
-      //
-      // No boundary, no `private`, no `message_type`: those were narrowing a match on CONTENT, and a
-      // name cannot be worn by somebody else's message.
+      // NOTE: found is asked first, before the page's quality: the id was minted for this send alone, so
+      // a row carrying it is the message whatever its neighbours are.
       const hit = rows.find((m) => m.sendId === sendId);
       if (hit !== undefined) {
-        // The create's response was lost and this read found the message: it is still one the turn
-        // created, and the turn's closing line names it (issue #855).
+        // NOTE: still a message the turn created, and the turn's closing line names it.
         if (typeof hit.id === "number") noteLandedMessage(client, hit.id);
         return { known: true, id: hit.id };
       }
-      // ABSENCE, THOUGH, MAY ONLY REST ON A PAGE THAT WAS READ WHOLE — the rule three review rounds
-      // arrived at one case at a time: a body that is not a list, a page whose rows were all
-      // unreadable, a page where only SOME rows were. They are not three cases. An entry this build
-      // could not name is an entry that might be the message, so a page holding even one of them
-      // rules nothing out. `null` needs no arm of its own: a response that was not a list can never
-      // equal a row count, and a mutation battery is what showed spelling it out was a dominated
-      // term rather than a second rule.
+      // NOTE: absence may only rest on a page read whole: an entry this build could not parse might be
+      // the message. A non-list response never equals a row count, so it needs no arm of its own.
       const readWhole = rows.length === carried;
       if (!readWhole) return { known: false };
-      // A PAGE SHORTER THAN CHATWOOT'S IS THE TOP OF THE HISTORY, which is how absence gets proved
-      // without walking to an empty page. `debounce/handler.ts` reads the endpoint the same way
-      // ("a page shorter than Chatwoot's is the conversation's first"). Asking for one more page
-      // costs a request that can FAIL, and a failure there would turn a proved absence into
-      // `unknown` — the chunk dropped from a reply that was genuinely owed.
-      //
-      // An empty FIRST page is the exception, and stays unknown: a conversation we have just written
-      // to cannot really be empty, so nothing there is a degraded read. It is the same verdict
-      // `recoverDelivery` reaches on its own anchored read, for the same reason.
+      // NOTE: a page shorter than Chatwoot's is the top of the history, which proves absence without a
+      // further request that could fail. An empty first page stays unknown: a conversation just written
+      // to cannot really be empty (same verdict as `recoverDelivery`).
       if (rows.length === 0 && before === undefined) return { known: false };
       if (rows.length < CHATWOOT_MESSAGES_PAGE)
         return { known: true, id: null };
@@ -667,16 +476,12 @@ async function findLandedMessage(
         (min, m) => (m.id < min ? m.id : min),
         rows[0]?.id ?? 0,
       );
-      // FAR ENOUGH BACK TO BE SURE, which is what turns silence into an answer. Chatwoot answers
-      // with the newest ~20, so a conversation that moved more than a page between the timed-out
-      // POST and this read pushes our message off it, and "absent from the newest twenty" is not
-      // absence. Two things end the walk with certainty: reaching a send this same loop already
-      // completed, since nothing older can carry an id minted after it, or running out of history
-      // altogether (the empty page above).
+      // NOTE: Chatwoot answers with the newest ~20, so absence from one page is not absence. Reaching
+      // `after` (a send this loop completed) ends the walk with certainty: nothing older carries our id.
       if (after !== null && oldest <= after) return { known: true, id: null };
       before = oldest;
     }
-    // Out of pages without ever reaching a point that proves absence.
+    // NOTE: out of pages without reaching a point that proves absence.
     return { known: false };
   } catch (e) {
     logger.warn(
@@ -688,18 +493,15 @@ async function findLandedMessage(
   }
 }
 
-// The id Chatwoot assigned to a message we just created, so the boundary can advance past a balloon
-// this very reply sent. Without it, two identical balloons in one reply make the first answer for
-// the second.
+// The id Chatwoot assigned to a message we just created, so the boundary advances past it.
 function createdMessageId(res: unknown): number | null {
   if (typeof res !== "object" || res === null) return null;
   const id = (res as { id?: unknown }).id;
   return typeof id === "number" && Number.isFinite(id) ? id : null;
 }
 
-// A send that did not get through, on the one path that no longer reports it by throwing. Warn and
-// not error: whether the turn failed is decided by what landed overall, and the caller is the only
-// one that can see that.
+// A send that did not get through, reported without throwing. Warn, not error: whether the turn
+// failed depends on what landed overall, which only the caller sees.
 function reportFailedSend(
   flow: FlowContext | undefined,
   conversationId: number,

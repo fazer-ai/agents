@@ -44,37 +44,19 @@ function scanString(value: string, where: string): void {
   if (SECRET_KV_PATTERN.test(value)) throw new SecretLeakError(where);
 }
 
-// The same question asked of SOURCE CODE, where the key/value matcher above cannot be used as it
-// stands. In a JSON value, `password: <anything concrete>` is a leak. In a program it is usually a
-// variable: `const password = input.password` and `return { authorization: input.authorization }`
-// are what a body that FORWARDS a credential looks like, and refusing them makes the agent that
-// owns such a tool unexportable, with the scanner blocking the backup it exists to protect (round
-// 30, measured: four ordinary bodies refused).
-//
-// So the pair still has to be concrete, and in code "concrete" means a STRING LITERAL. An
-// expression is a reference to a value that lives elsewhere; a quoted run of characters is the
-// value itself. Everything else the scanner knows (the shaped patterns: `sk-`, `AKIA`, a JWT) is
-// applied unchanged, since those are recognisable wherever they appear, quoted or not.
-//
-// THREE delimiters, not two. JavaScript writes a literal with `'`, `"` or a backtick, and a backtick
-// one is exactly as concrete as the other two (round 31: `const apiKey = \`abcdef123456\`` walked
-// out of the scanner untouched).
+// The same question asked of SOURCE CODE. In a program `password: <x>` is usually a variable
+// (`const password = input.password` forwards a credential), and refusing those would make agents
+// with such tools unexportable, the scanner blocking the backup it protects. So in code "concrete"
+// means a STRING LITERAL; the shaped patterns (`sk-`, `AKIA`, a JWT) apply unchanged, quoted or not.
+// All three JavaScript delimiters count: a backtick literal is as concrete as the other two.
 const SECRET_KV_IN_CODE_PATTERN =
   /(?:access[_-]?token|api[_-]?key|client[_-]?secret|password|authorization|secret)["'`]?\s*[:=]\s*(["'])(?!\s*\{\{)[^"'\s&]{6,}\1/i;
 
-// The backtick is asked separately, because it is the only delimiter whose literal can stop being a
-// literal halfway through. An interpolation is an expression, so
-// `const api_key = \`${input.chave}\`` forwards a credential the way the paragraph above exists to
-// allow -- but exempting the WHOLE template the moment a `${` appears anywhere exempts
-// `const password = \`hunter2secret-${input.id}\`` too, where the secret is the static half and the
-// interpolation is a suffix (round 34).
-//
-// So the interpolations are REMOVED and what is left is asked the same question the quoted arm
-// asks: is the value one unbroken run of 6 or more characters that a secret could be. That is the
-// quoted arm's own shape, not a new rule -- `"Bearer {{token}}"` does not match there either,
-// because the run breaks at the space -- and it lands where it should on the three cases that
-// matter: `Bearer ${input.token}` leaves "Bearer " and breaks, `${input.chave}` leaves nothing, and
-// `hunter2secret-${input.id}` leaves fourteen unbroken characters.
+// The backtick is asked separately: it is the only literal that can stop being one halfway through.
+// Exempting the whole template on any `${` would also exempt `\`hunter2secret-${input.id}\``, so the
+// interpolations are REMOVED and the rest is asked the quoted arm's own question: one unbroken run of
+// 6+ characters. `Bearer ${input.token}` leaves "Bearer " and breaks, `${input.chave}` leaves nothing,
+// and `hunter2secret-${input.id}` leaves fourteen unbroken characters.
 const SECRET_KV_TEMPLATE_PATTERN =
   /(?:access[_-]?token|api[_-]?key|client[_-]?secret|password|authorization|secret)["'`]?\s*[:=]\s*`([^`]*)`/gi;
 // One level of nesting inside the interpolation, which is what a body writes (`${a.b ?? "x"}`);

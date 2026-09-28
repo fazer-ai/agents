@@ -74,7 +74,7 @@ export interface SynthesizeReplyParams {
   };
   // Optional execution-flow context: when present, the provider synth is logged as a `tts` stage.
   flow?: FlowContext;
-  // The corrupted-audio check (issue #779). Defaults to the deployment's `config.ttsCheck`.
+  // The corrupted-audio check. Defaults to the deployment's `config.ttsCheck`.
   check?: TtsCheckConfig;
   // Asked before paying for a regeneration: true = the turn this audio belongs to was called off,
   // so a new synthesis would be billed for a reply nobody will send.
@@ -112,14 +112,11 @@ export async function synthesizeReply(
     return null;
   };
 
-  // The checks that need no network, in the order a skip reports them. Shared with the turn's plan
-  // (./modality.ts, issue #859), so a reply these refuse is also one the model was never told would
-  // be spoken.
-  // NOTE: container per destination channel. Like every other check here it runs BEFORE the paid
-  // rewrite below, so an unsupported combination skips without burning a call whose output would be
-  // discarded. No format = the provider cannot emit anything this channel accepts (openrouter on
-  // Instagram: mp3-only, and Meta refuses mp3) — synthesizing would produce a message Chatwoot shows
-  // as sent and Meta then rejects, so degrade to a text reply with a visible skip.
+  // NOTE: The checks that need no network, in the order a skip reports them, shared with the turn's plan
+  // (./modality.ts) so a reply these refuse was never announced as spoken.
+  // NOTE: they run BEFORE the paid rewrite below, so an unsupported combination burns no call. No
+  // format = the provider cannot emit anything this channel accepts (openrouter on Instagram): Meta
+  // would reject it after Chatwoot shows it sent, so degrade to text with a visible skip.
   const impossible = staticTtsImpossibility(cfg, params.channelType);
   if (impossible) {
     logger.warn(
@@ -140,8 +137,8 @@ export async function synthesizeReply(
     tryResolveApiKeyEntry(db, cfg.credentialRef as string),
   );
   if (entry.state !== "ok") {
-    // Gone/unfilled and wrong-KIND are separate lines because the operator's move differs: re-pick or
-    // fill one, move the other to the field it belongs on (issue #471).
+    // NOTE: separate lines because the operator's move differs: re-pick or fill a gone/unfilled one,
+    // move a wrong-KIND one to the field it belongs on.
     if (entry.state === "unusable") {
       logger.warn(
         "tts: credential %s is a %s credential, which cannot be used as an API key — skipping",
@@ -164,11 +161,9 @@ export async function synthesizeReply(
     return skip("no_base_url");
   }
 
-  // The rewrite for speech, LAST of all: it is a billed model call, and every check above can still
-  // abort this synthesis. It used to run before the credential was even resolved, which was harmless
-  // while the rewrite was opt-in and is not now that it ships on: an agent set to mirror/preference
-  // with no TTS credential would pay for a rewrite on every audio-triggering turn and still fall back
-  // to text. Best-effort: any failure here keeps the raw speech text. The Chatwoot transcribedText
+  // NOTE: The rewrite for speech, LAST of all: it is a billed model call, and every check above can still
+  // abort this synthesis (an agent with no TTS credential would otherwise pay for a rewrite on every
+  // audio turn and still fall back to text). Best-effort: any failure here keeps the raw speech text. The Chatwoot transcribedText
   // keeps the ORIGINAL reply either way; only the synth input is rewritten.
   if (cfg.normalize && params.deps?.normalizeSpeech) {
     try {
@@ -196,16 +191,11 @@ export async function synthesizeReply(
           normalized: cfg.normalize,
           format,
           providerFormat: provider.providerFormat(format),
-          // Which synthesis of this reply the line is: 1, or a regeneration after the detector
-          // called the previous one corrupted (issue #779).
+          // NOTE: 1, or a regeneration after the detector called the previous one corrupted.
           attempt,
-          // AND NOT THE REPLY ITSELF, which is the fix this issue asked for and the one the
-          // contract refuses (issue #763). `docs/logs.md` promises `execution_logs` NEVER carries
-          // message text: that promise is what makes the Logs page and `GET /v1/logs` exportable,
-          // and `redactSecretsDeep` removes credentials, not a customer's name or number, which a
-          // reply routinely repeats back. The spoken words live on the conversation instead — the
-          // audio attachment's `transcribed_text`, which `GET /v1/conversations/:id/messages`
-          // already returns — and that surface has the access control this one does not.
+          // NOTE: not the reply itself: `docs/logs.md` promises `execution_logs` never carries message
+          // text, and `redactSecretsDeep` removes credentials, not a customer's name or number. The spoken
+          // words live on the audio attachment's `transcribed_text`, behind the conversation's access control.
         },
         // TTS is best-effort: the runtime falls back to a text reply on a synth error, so log a warn
         // (advisory), not a red error, on the conversation/Logs.
@@ -228,8 +218,8 @@ export async function synthesizeReply(
   // Synthesized ONCE per attempt from the same `speech`: a regeneration repeats the synthesis and
   // never the rewrite above, which is a billed model call whose output did not change.
   let out = await synth(1);
-  // The deployment owns the detector; the agent may pick what the check does with it (issue #802),
-  // and one that never picked follows the deployment's mode.
+  // NOTE: the deployment owns the detector; the agent may pick what the check does with it, and one
+  // that never picked follows the deployment's mode.
   const deployment = params.check ?? config.ttsCheck;
   const check: TtsCheckConfig = {
     ...deployment,

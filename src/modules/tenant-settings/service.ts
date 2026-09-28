@@ -211,25 +211,14 @@ function sides<T>(
   return (before, after) => ({ before: of(before), after: of(after) });
 }
 
-// Read, merge and write in ONE transaction, with the tenant row locked.
+// Read, merge and write in ONE transaction, with the tenant row locked. Every block lives in one JSON
+// column that several routes write (the profile text and the logo upload most visibly), so separate
+// transactions would let the later commit discard the earlier one. The merge gets the raw settings
+// inside the lock, never a pre-lock snapshot.
 //
-// Every settings block lives in a single JSON column, so this is a read-modify-write of a value
-// several writers share — the two halves of the company profile most visibly, since the console
-// edits its text fields and uploads its logo through different routes. Reading in one transaction
-// and writing in another lets two writers each merge into the value they read and the later commit
-// discard the earlier one: a profile save that erases the logo which finished uploading a moment
-// before, with both requests answering success.
-//
-// The merge runs INSIDE the lock and is handed the raw settings, so what it merges into is what is
-// about to be written and never a snapshot from before someone else's write.
-//
-// The audit row is written here, under the same lock and in the same transaction, for the same
-// reason the merge is: this is the one place that holds both the value being replaced and the value
-// replacing it. Every block writer goes through here, so none of them can ship without a record.
-// `project` is handed the raw settings both times, so each caller decides in ONE function what its
-// block's trail says, and a block whose projection would carry a secret cannot accidentally get the
-// default (a credential is a `vault:<id>` reference here, never a value; that is the vault rule this
-// column has been held to since #124).
+// The audit row is written here too, the one place holding both the replaced and the replacing value,
+// so no block writer ships without a record. Each caller's `project` decides what its trail says (a
+// credential is a `vault:<id>` reference here, never a value).
 async function patchBlock<
   T extends
     | EmbeddingSettings
@@ -242,9 +231,8 @@ async function patchBlock<
   ctx: TenantContext,
   base: PrismaClient,
   key: "embedding" | "langfuse" | "company" | "spendCeiling" | "priceOverrides",
-  // Handed BOTH states, the one being replaced and the one replacing it, so a block can report what
-  // MOVED without carrying what it holds. The company profile is the block that needs the
-  // difference: see `sides` below for the shape the other three use.
+  // Handed both states, so a block can report what moved without carrying what it holds (the
+  // company profile needs the difference; see `sides` for the shape the others use).
   audit: {
     action: AuditAction;
     target: string;
@@ -253,10 +241,8 @@ async function patchBlock<
       after: Record<string, unknown>,
     ) => { before: unknown; after: unknown };
   },
-  // Last so it stays a trailing callback at every call site. May be async, so a caller that has to
-  // read or do something UNDER THE LOCK, before the commit, can do it here. The logo upload is the
-  // one: it needs the key it is about to supersede, and the block it reads outside the lock is
-  // already stale by the time it writes.
+  // Last so it stays a trailing callback. May be async to read under the lock before the commit: the
+  // logo upload needs the key it supersedes, and a read outside the lock is already stale.
   merge: (raw: Record<string, unknown>) => T | Promise<T>,
 ): Promise<T> {
   const tenantId = requireTenantId(ctx);
@@ -278,14 +264,10 @@ async function patchBlock<
   });
 }
 
-// The ref rule and the KIND rule for the embedding key, in one place so the MCP preview can ask them
-// (#490). Resolving the ref answers neither: `resolveSecretRef` only checks that the entry exists,
-// and `tenant_settings_update` previewed "will wire" for a `google_oauth` (which does not yield a
-// plain string) and an `mcp_env` (which is `neverOutbound`) that the apply refuses (#510, review
-// round 2).
-//
-// ADVISORY when the preview calls it, authoritative when the write does: it reads outside the
-// write's transaction, so a kind changed in between still answers there.
+// The ref rule and the KIND rule for the embedding key, in one place so the MCP preview can ask them.
+// Resolving the ref answers neither: it only checks the entry exists (a `google_oauth` or `mcp_env`
+// entry resolves and is still refused). Advisory for the preview, authoritative for the write: it
+// reads outside the write's transaction.
 export async function assertEmbeddingCredentialUsable(
   ctx: TenantContext,
   ref: string,
@@ -301,16 +283,10 @@ export async function updateEmbeddingSettings(
   patch: Partial<EmbeddingSettings>,
   base: PrismaClient = basePrisma,
 ): Promise<EmbeddingSettings> {
-  // The same boundary every other ref column has been held to since #124: `vault:<id>`, in this
-  // tenant, canonically spelled. Nothing checked this one, so a PATCH carrying a vault entry NAME
-  // stored it and indexing then failed with no credential the operator could see was wrong (#254).
-  // The block holds one field, so naming it IS changing it — there is no unrelated save to protect
-  // here, unlike the agent's bags.
-  //
-  // `…For` and not the plain ref check: this key is read as a plain string and POSTed to the
-  // embedding provider, and this module's own comment in rag/documents.ts already said the kind was
-  // never checked — an operator picking the Chatwoot credential here got every chunk of their
-  // knowledge base POSTed at the Chatwoot host. Issue #471.
+  // NOTE: `vault:<id>`, in this tenant, canonically spelled, like every other ref column; a stored
+  // entry NAME fails indexing with nothing visibly wrong. `…For` checks the kind too: this key is
+  // POSTed to the embedding provider as a plain string, so a wrong kind (the Chatwoot credential)
+  // would send the knowledge base to that host. The block holds one field, so naming it IS changing it.
   const incoming = patch.credentialRef;
   const credentialRef =
     incoming == null
@@ -360,12 +336,9 @@ export interface LangfuseUpdateInput {
 
 // Updates the langfuse block. credentialRef, when provided non-null, is validated against the vault
 // (must exist and be kind "langfuse"). null clears it.
-// The ref rule and the KIND rule, in one place so the MCP preview can ask them (#490). Resolving the
-// ref is not asking the second one: `vault:<id>` names an entry of any kind, and `tenant_settings_update`
-// previewed "will wire" for a generic credential the apply refuses to store (#510).
-//
-// ADVISORY when the preview calls it, authoritative when the write does: it reads outside the write's
-// transaction, so a kind changed in between still answers there.
+// The ref rule and the KIND rule, in one place so the MCP preview can ask them: `vault:<id>` names
+// an entry of any kind. Advisory for the preview, authoritative for the write (it reads outside the
+// write's transaction).
 export async function assertLangfuseCredentialUsable(
   ctx: TenantContext,
   ref: string,
@@ -405,13 +378,9 @@ export async function updateLangfuse(
     if (input.credentialRef === null) {
       credentialRef = null;
     } else {
-      // Validate: ref must resolve, in this tenant, and be a langfuse-kind entry.
-      // NOTE: requireVaultRef rather than tryResolveVaultEntry, which answered "not found" for two
-      // values that are something else. A lenient spelling (`vault:007`) resolved and was then
-      // stored verbatim, where it compares unequal against the id list the credential picker builds
-      // and reports a working credential as unavailable; and an entry created empty on purpose
-      // (credential_create) was refused for having no secret yet, which is the one case the write
-      // boundary admits deliberately. Both are the ref rule, so both answer to the ref check (#254).
+      // NOTE: requireVaultRef rather than tryResolveVaultEntry: a lenient spelling (`vault:007`) must be
+      // canonicalized or it compares unequal against the picker's id list, and an entry created empty on
+      // purpose is admitted by the write boundary.
       credentialRef = await assertLangfuseCredentialUsable(
         ctx,
         input.credentialRef,
@@ -455,8 +424,7 @@ export async function updateLangfuse(
       });
     },
   );
-  // A Langfuse save changes what the spend ceiling's poll would find (#426, review round 15): a
-  // credential added or removed is learned now, not at the next period.
+  // NOTE: a Langfuse save changes what the spend ceiling's poll would find, so it is resynced now.
   await syncTenantSpendPoll(requireTenantId(ctx), base);
   return next;
 }
@@ -497,21 +465,15 @@ export async function updateCompanySettings(
     {
       action: "tenant_settings.company_set",
       target: "tenant_settings:company",
-      // WHICH fields moved, and never what they hold. This block is the operator's own identity, and
-      // for a sole trader that is a CPF, a home address and a personal phone: `AuditEntry` forbids
-      // PII in the clear because a tenant admin reads these rows, and unlike the profile itself a row
-      // KEEPS the value after the profile that held it was corrected or cleared. Counted rather than
-      // assumed before choosing: of the 32 distinct fields every other audited action projects, not
-      // one is a person's document, address, phone or email.
-      //
-      // Keys and not an allowlist of the safe ones, so a field added to `companySettingsSchema` later
-      // cannot arrive projected in the clear by default. The current value is always readable from
-      // `GET /v1/tenant-settings`; what a trail owes is who changed it and when.
+      // NOTE: WHICH fields moved, never what they hold: for a sole trader this block is a CPF, a home address
+      // and a personal phone, `AuditEntry` forbids PII in the clear, and a row keeps the value after the
+      // profile is corrected. Keys rather than an allowlist of safe fields, so a field added later cannot
+      // arrive in the clear by default. The current value is readable from `GET /v1/tenant-settings`.
       project: (before, after) => {
         const b = parseCompanySettings(before);
         const a = parseCompanySettings(after);
-        // No exclusion for the logo half: `CompanyUpdateInput` omits both of its fields and the merge
-        // carries them over, so they cannot differ here. A guard against it survived being deleted.
+        // NOTE: No exclusion for the logo half: `CompanyUpdateInput` omits both of its fields and the merge
+        // carries them over, so they cannot differ here.
         const changed = (
           Object.keys(COMPANY_DEFAULTS) as (keyof CompanySettings)[]
         ).filter((k) => b[k] !== a[k]);
@@ -608,17 +570,10 @@ export async function updateSpendCeiling(
     {
       action: "tenant_settings.spend_ceiling_set",
       target: "tenant_settings:spendCeiling",
-      // THE NUMBERS THEMSELVES, because they are what the trail is about: this block decides whether
-      // the agent answers a customer at all, and "somebody moved the ceiling" is unanswerable without
-      // saying from what to what. None of them is a secret or PII — a token count, a percentage, two
-      // switches and a cooldown.
-      //
-      // The customer-facing sentence is the exception, and it is FINGERPRINTED rather than quoted:
-      // it is free text an operator writes, so quoting it would paste a paragraph into every row for
-      // a field the console reads back in full anyway. A bare "set" cannot answer the question the
-      // trail is actually asked — one sentence replaced by another read as unchanged on both sides —
-      // so what goes in is a short digest, which differs exactly when the text differs and carries
-      // none of it back. `null` stays `null`, because "cleared" is a state and not a value.
+      // NOTE: The numbers themselves: this block decides whether the agent answers at all, and none of them is a
+      // secret or PII. The customer-facing sentence is fingerprinted, not quoted: free text would paste a
+      // paragraph into every row, while a bare "set" would read one sentence replaced by another as
+      // unchanged. `null` stays `null`, because "cleared" is a state.
       project: sides((raw) => {
         const b = readSpendCeilingConfig(raw);
         return {
@@ -644,11 +599,9 @@ export async function updateSpendCeiling(
       // how a save in dollars retires a block written in tokens (`legacyTokens`).
       // not-caller-input: the STORED block merged with the patch, so a failure here is not necessarily the caller's
       const stored = spendCeilingSettingsSchema.parse({ ...current, ...patch });
-      // ...unless the patch names no dollar field and the block is still in tokens: the console saves
-      // the whole block, but the API takes partial patches, and an operator changing only the
-      // customer's sentence has not seen the new unit. Merging against the synthesized zeroes would
-      // store a dollar block and drop the one warning that the old ceiling is no longer enforced
-      // (review round 1). The token keys stay until a patch names a dollar figure.
+      // NOTE: ...unless the patch names no dollar field and the block is still in tokens: a partial API
+      // patch (say, only the sentence) would otherwise store a dollar block of synthesized zeroes and drop
+      // the warning that the old ceiling is no longer enforced.
       const touchesUsd =
         patch.monthlyInboxUsd !== undefined ||
         patch.monthlyPlaygroundUsd !== undefined;
@@ -667,19 +620,16 @@ export async function updateSpendCeiling(
       return stored;
     },
   );
-  // The poll that keeps the figure fresh follows the switch: armed while the ceiling is on, cancelled
-  // when it is off (issue #426). Best-effort inside, so it never fails the save.
+  // NOTE: the poll follows the switch (armed while on, cancelled when off). Best-effort, so it never
+  // fails the save.
   await syncTenantSpendPoll(requireTenantId(ctx), base);
   return readSpendCeilingConfig({ spendCeiling: next });
 }
 
-// The tenant's own prices (issue #865). The whole list is replaced on every save: it is edited as a
-// table on one screen, and a partial patch of a list has no key to merge on but the pair itself.
-//
-// Validated here and not only at the route: two rows for the same provider and model would leave
-// "which one priced this call" to list order, so the save refuses them with the row that repeats.
-// The write's validation, shared by the console's route and the MCP tool (a preview included), so
-// both refuse the same list with the same message.
+// The tenant's own prices. The whole list is replaced on every save: it is edited as one table, and
+// a list has no key to merge on but the pair itself. Validated here, not only at the route, so the
+// console and the MCP tool (preview included) refuse the same list: two rows for one provider and
+// model would leave the price to list order.
 export function parsePriceOverrides(overrides: unknown): PriceOverride[] {
   const parsed = priceOverridesSchema.safeParse(overrides);
   if (!parsed.success) {

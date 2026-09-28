@@ -1,17 +1,11 @@
 import { z } from "zod";
 
 // Pure business-hours time logic (DST-correct via Intl; Temporal is unavailable in Bun). A schedule
-// has two dimensions: a weekly grid of {day, start, end} windows, and date EXCEPTIONS that replace
-// the grid on the dates they match. start/end are "HH:MM" local wall times in the configured IANA
-// timezone. Used by the reactive availability gate, follow-ups, the console indicators and the
-// bookable-slot filter — never embeds I/O, so it is deterministic and unit-testable with fixed
-// instants (incl. DST boundaries).
-//
-// Every decision takes a whole `Schedule`, not a WindowSpec[]. That is deliberate: exceptions cannot
-// travel inside an array of weekly windows, so an optional second argument would have compiled at all
-// nine existing read sites and silently kept ignoring holidays — the exact failure this module exists
-// to remove. Passing the schedule makes the compiler name every site that has to carry the new
-// dimension.
+// is a weekly grid of {day, start, end} windows plus date EXCEPTIONS that replace the grid on the
+// dates they match; start/end are "HH:MM" local wall times in the IANA timezone. No I/O, so it is
+// deterministic and unit-testable with fixed instants. Every decision takes a whole `Schedule`, not a
+// WindowSpec[]: exceptions cannot travel inside a windows array, and an optional second argument
+// would let a read site compile while silently ignoring holidays.
 
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -52,40 +46,20 @@ export interface Schedule {
   timezone: string;
 }
 
-// How many entries of each dimension a schedule may hold. Named rather than inline because a second
-// place sizes itself from the window count: the audited prompt renders a schedule in full once per
-// variable name, and the log debug mode's ceiling reserves room for that
-// (`src/modules/flowlog/service.ts`, issue #58).
-//
-// Only ONE of the two is also enforced by the reader, and the asymmetry is the rule rather than an
-// oversight, because truncation is not the same act on the two dimensions:
-//
-//   - a WINDOW is availability, so dropping one can only make the schedule narrower. Truncating at
-//     the reader therefore fails in the safe direction, and it is what makes the allowance above a
-//     bound instead of a margin: the rendering is linear in the count, ~13 characters per window
-//     (measured through `formatWindowsSummary`: 2,639 at 200 windows and 65,039 at 5,000), and
-//     `businessHoursCreateSchema` is not the only writer — the agent import takes both columns as
-//     `z.array(z.unknown())`, so without this a hand-authored bundle would render past what the
-//     ceiling reserved;
-//   - an EXCEPTION is a closure, so dropping one makes the schedule WIDER. A dated holiday past the
-//     cap would stop being honoured and the weekly grid would apply on it, which is the exact
-//     always-open failure this module exists to prevent (measured: with Christmas at position 401
-//     of 401, `isOutOfHoursNow` at noon on the 25th flips from true to false). Truncating there
-//     would also do it SILENTLY and RETROACTIVELY, to rows already written. So the exceptions bound
-//     is enforced where a person can be told about it — the import, which warns — and never here.
+// How many entries of each dimension a schedule may hold. The log debug mode's ceiling reserves room
+// for the audited prompt rendering a schedule once per variable name (`src/modules/flowlog/service.ts`).
+// Only the window cap is enforced by the reader: dropping a WINDOW can only narrow availability, and
+// it bounds the rendering even for writers that skip the create schema (the agent import). Dropping
+// an EXCEPTION (a closure) would silently and retroactively widen the schedule, reopening a holiday,
+// so that cap is enforced only where a person can be told (the import, which warns).
 export const MAX_SCHEDULE_WINDOWS = 200;
 export const MAX_SCHEDULE_EXCEPTIONS = 400;
 
-// Shape-valid windows only, with dead ones dropped and the count bounded. Validated ENTRY BY ENTRY,
-// like parseExceptions below, and for a sharper reason: the two failure directions are not symmetric
-// here. An empty window list is not "closed", it is ALWAYS OPEN (see scheduleCanClose), so refusing
-// the whole array over one unreadable element silently widens availability on every day of the week
-// — the single direction this dimension must never fail in. Dropping that one element cannot: the
-// schedule it leaves is a subset of the one the operator wrote.
-//
-// Dead windows (end <= start) go too. The half-open [start, end) test in isOpenAt can never match
-// them, so they would only feed an impossible window to nextOpenAt. Writes reject them
-// (assertValidWindows); this also heals rows persisted before that validation existed.
+// Shape-valid windows only, with dead ones dropped and the count bounded. Validated entry by entry:
+// an empty window list is ALWAYS OPEN (see scheduleCanClose), so refusing the whole array over one
+// bad element would widen availability, while dropping that element leaves a subset of what the
+// operator wrote. Dead windows (end <= start) can never match the half-open [start, end) test; writes
+// reject them (assertValidWindows) and this heals rows already stored.
 export function parseWindows(raw: unknown): WindowSpec[] {
   if (!Array.isArray(raw)) return [];
   const out: WindowSpec[] = [];
@@ -284,17 +258,10 @@ export function isOpenAt(schedule: Schedule, at: Date): boolean {
   );
 }
 
-// Can this schedule ever close? A schedule that does not exist and one with no windows are the same
-// answer — always open — and everything downstream of the reactive gate (the operator's private note,
-// the customer's away message) therefore never runs for either.
-//
-// Named because two very different places need it and only one of them is the gate. The console has
-// to say whether the away message an operator wrote can go out at all, and re-deriving "no windows
-// means always open" over there is how a console starts describing a runtime it no longer matches.
-//
-// Typed as a guard rather than a boolean, so the gate that asks it keeps the narrowing its old inline
-// null-check gave it. True is a stronger claim than the name promises — there IS a schedule, and it
-// closes — which is exactly the pair every caller needs before doing anything with it.
+// Can this schedule ever close? No schedule and a schedule with no windows are both always open, so
+// nothing downstream of the gate (the operator's note, the away message) runs for either. Shared with
+// the console so it cannot describe a runtime it no longer matches. A type guard: true means there IS
+// a schedule and it closes, the pair every caller needs.
 export function scheduleCanClose(
   schedule: Schedule | null | undefined,
 ): schedule is Schedule {

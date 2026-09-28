@@ -85,9 +85,9 @@ async function resolveApiKey(
   const entry = await runScopedOn(base, ctx, (db) =>
     tryResolveApiKeyEntry(db, credentialRef),
   );
-  // One null for three states, and that is right here: the picker's job is to list what it can, and
-  // an unusable credential produces the same empty list as a missing one. The `state` split exists
-  // for the runtime paths, where the operator needs the reason in a log line (issue #471).
+  // NOTE: one null for three states, and that is right here: the picker lists what it can, and an
+  // unusable credential produces the same empty list as a missing one. The `state` split exists for
+  // the runtime paths, where the operator needs the reason in a log line.
   return entry.state === "ok" ? entry.secret : null;
 }
 
@@ -393,20 +393,14 @@ export async function listProviderModels(
         throw new AppError(`unsupported provider: ${provider}`, 400);
     }
   } catch (e) {
-    // Re-throw AppErrors as-is; wrap network/timeout errors.
-    //
-    // NOTE: what reaches here has to BE a network error, which is why every read of the parsed body
-    // above is null-safe (`readProviderJson` for the body, `?.` for each item). A `TypeError` from
-    // reading a field off `null` lands in this catch indistinguishable from a refused connection,
-    // and this sentence then sends the operator to check a network that is fine. Two rounds of
-    // review on issue #292 found it twice, one layer apart: the body, then the items inside it.
+    // NOTE: re-throw AppErrors as-is; wrap network/timeout errors. What reaches here has to BE a
+    // network error, which is why every read of the parsed body above is null-safe: a `TypeError`
+    // off `null` would land here looking like a refused connection.
     if (e instanceof AppError) throw e;
-    // NOTE: the sentence carries the PROVIDER and not the error text. A failure to reach a host is
-    // raised by the client with the request in hand, and Bun's header validation puts the offending
-    // header VALUE in the message it throws — measured: `Header 'Authorization' has invalid value:
-    // 'Bearer <the vault secret>'`. Interpolating that would answer a write-only credential back to
-    // whoever called the listing endpoint. The text stays in `message`, which is the log line, and
-    // the catalog entry has no placeholder for it (found by review, issue #292).
+    // NOTE: the user-facing sentence carries the PROVIDER, not the error text: Bun's header validation
+    // puts the offending header VALUE (the vault secret) in its message, which would answer a
+    // write-only credential back to the caller. The text stays in `message`, the log line; the catalog
+    // entry has no placeholder for it.
     throw new AppError(
       `failed to list models: ${e instanceof Error ? e.message : String(e)}`,
       502,

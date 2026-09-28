@@ -18,16 +18,9 @@ import { loggableCategories } from "./log-categories";
 import { judgesAnything } from "./prompts";
 import type { GuardrailAction, GuardrailsConfig } from "./settings";
 
-// The moderation gate both runtimes call. It was a closure inside runLoadedTurn until the proactive
-// path needed it too (issue #160): a follow-up is a message the customer never asked for, and it was
-// the only customer-facing text in the product that nothing screened. Copying the closure would have
-// made the two paths drift on the day one of them changed, which is why this is a unit and not a
-// second copy.
-//
-// What one screening DID, as a single value. It used to be a nullable reply, and callers then grew
-// side channels for the two questions that value cannot answer — a flag for "was anything written
-// down", set through a callback. Three consecutive review rounds found a caller reading one of the
-// three for another's question, so they became one union with the three answers in it.
+// The moderation gate both runtimes call, one unit so the reactive and proactive (follow-up) paths
+// cannot drift. `GuardrailDecision` is what one screening DID, as a single union: separate flags for
+// "was anything written down" invite a caller to read one answer for another's question.
 export type GuardrailDecision =
   // Nothing was screened: guardrails off, this direction switched off, or nothing left to ask. No
   // model call, no delay, nothing written.
@@ -44,10 +37,10 @@ export type GuardrailDecision =
   | { kind: "replaced"; reply: string }
   // Tripped with the `silent` action: send nothing. The operator note was written.
   | { kind: "suppressed" }
-  // Tripped with the `handoff` action (issue #704): the subject is not sent, the conversation goes
-  // to the team, and the customer reads `reply` instead, or nothing when it is null. The operator
-  // note was written. The TRANSFER is the caller's to make (`applyGuardrailHandoff`), at the point
-  // where its own gates say the turn may still act: this gate runs before them.
+  // Tripped with the `handoff` action: the subject is not sent, the conversation goes to the team,
+  // and the customer reads `reply` instead, or nothing when it is null. The operator note was
+  // written. The TRANSFER is the caller's (`applyGuardrailHandoff`), at the point where its own gates
+  // say the turn may still act: this gate runs before them.
   | { kind: "handed-off"; reply: string | null };
 
 // The text to send in place of `subject`, or null to send nothing.
@@ -105,10 +98,9 @@ export interface GuardrailReport {
   refused?: string;
 }
 
-// Where a screening gets announced to a human. The gate decides WHEN (one place, below); this
-// decides WHERE, because the two runtimes have different places: a conversation the operator can
-// open, and a transcript in a surface that is not a conversation at all (issue #136). Errors are
-// the sink's to swallow — an announcement that fails must not fail the turn it describes.
+// Where a screening gets announced to a human. The gate decides WHEN (one place, below); this decides
+// WHERE: a conversation the operator can open, or a transcript in a surface that is not a
+// conversation. Errors are the sink's to swallow: a failed announcement must not fail the turn.
 export type GuardrailAnnounce = (r: GuardrailReport) => void | Promise<void>;
 
 // The inbox announcement, shared by the reactive and proactive paths so the two cannot drift. Only
@@ -169,11 +161,9 @@ export interface GuardrailGateParams {
   makeModel?: typeof createChatModel;
   // Overrides the ledger sink. Tests inject; production takes the default, which writes the row.
   persistUsage?: UsagePersist;
-  // The tenant's Langfuse, for the OTHER book (#426, review round 8). The gate runs outside the
-  // graph, so the turn's own trace handler never sees its calls: the ledger had the row and the
-  // dollar ceiling, which sums Langfuse's generations, had nothing (measured: a screened turn
-  // reached Langfuse with the agent's generation and not the guardrail's). Required rather than
-  // optional so the next call site cannot forget it; null when the tenant has none.
+  // The tenant's Langfuse, for the other book: the gate runs outside the graph, so the turn's trace
+  // handler never sees its calls, and the dollar ceiling (which sums Langfuse's generations) would miss
+  // them. Required so no call site can forget it; null when the tenant has none.
   langfuseCfg: LangfuseConfig | null;
 }
 
@@ -220,11 +210,9 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
     direction: "input" | "output",
   ): BaseChatModel | null => {
     if (model !== undefined) return model;
-    // A key that never resolved is a gate configured to run that cannot, which is the same answer
-    // as a model that refuses to build and belongs on the same side of the fence. It used to sit up
-    // in the early guard next to "the operator switched this off", so one condition answered two
-    // questions and the operator's own reading of a deleted vault entry was "no guardrail ran" —
-    // the one case of the three the issue names that stayed invisible.
+    // NOTE: a key that never resolved is a gate configured to run that cannot, the same answer as a
+    // model that refuses to build. Kept apart from "the operator switched this off", or a deleted vault
+    // entry would read as "no guardrail ran" and stay invisible.
     if (!p.apiKey) {
       model = null;
       emitFlowEvent(p.flow, {
@@ -309,10 +297,9 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         generationPrompt:
           dir.action === "generated" ? dir.generationPrompt : undefined,
       },
-      // Constrained where the endpoint implements it, in the dialect it speaks, and asked for in
-      // the prompt everywhere else. The provider decides, not the model id: the same adapter serves
-      // OpenAI itself and whatever an operator points `openai-compatible` at (issue #131). Reaching
-      // it through the gate is what puts the proactive path on the same footing as the reactive one.
+      // NOTE: constrained where the endpoint implements it, asked for in the prompt elsewhere. The
+      // provider decides, not the model id: one adapter serves OpenAI and whatever `openai-compatible`
+      // points at.
       verdictAskMode(gr.provider),
       callbacks(),
     );

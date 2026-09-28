@@ -1,8 +1,6 @@
-// What an audio reply says, and what it hands over in writing (issue #787). A URL or an e-mail
-// address read aloud is useless (nobody copies from a voice note), and prepareSpeechText turned a
-// markdown link into its label, so its URL reached the customer by no path at all. Measured on a
-// production instance, 8,000 audio replies: e-mail in 602 (125 read aloud), link in 896 (750 read
-// aloud, 146 never delivered).
+// What an audio reply says, and what it hands over in writing. A URL or an e-mail address read aloud
+// is useless (nobody copies from a voice note), and a markdown link spoken as its label would deliver
+// its URL by no path at all.
 //
 // Two invariants, and every rule below serves one of them: no item is ever in the speech, and every
 // written item is exactly the destination, since it is the only copy the customer gets.
@@ -59,7 +57,7 @@ const TRAILING_PUNCTUATION = /[?!.,:*_~;'"\p{Pf}…‼‽⁇⁈⁉]$/u;
 // the item and never enters the written copy.
 const WRAPPERS = "`*_~";
 const INTRODUCTION_MAX_WORDS = 4;
-// Unicode word boundaries (UAX #29), so a language written without spaces is not one long word.
+// Unicode word boundaries (UAX 29), so a language written without spaces is not one long word.
 const WORDS = new Intl.Segmenter(undefined, { granularity: "word" });
 // `includes("")` is true, and the character before index 0 or past the end is "".
 const isWrapper = (c: string) => c.length === 1 && WRAPPERS.includes(c);
@@ -159,8 +157,8 @@ function itemSpans(text: string): Span[] {
 // its recipient: `?subject=…` makes it neither the address nor a URI a chat client opens, and out
 // of the URI its percent escapes would name another mailbox (`foo%2Bbar@` is `foo+bar@`).
 function target(mailto: string | undefined, destination: string): string {
-  // One pass, so what one replacement produces is never read as markdown again (`&amp;#38;` is
-  // `&#38;`, `\&amp;` is `&amp;`).
+  // NOTE: one pass, so what one replacement produces is never read as markdown again (`&amp;#x26;` is
+  // `&#x26;`, `\&amp;` is `&amp;`).
   const decoded = destination.replace(
     /\\([!-/:-@[-`{-~])|&(amp|lt|gt|quot);|&#(?:([0-9]{1,7})|[xX]([0-9a-fA-F]{1,6}));/g,
     (_, escaped?: string, named?: string, dec?: string, hex?: string) => {

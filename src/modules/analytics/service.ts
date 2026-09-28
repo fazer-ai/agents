@@ -8,7 +8,7 @@ import { classifyOutcome } from "@/modules/conversations/resolution-origin";
 // Instance metrics for the operational dashboard. LLM tokens/calls are aggregated FROM THE LOCAL
 // LlmUsage table (captured at the source in the model callback), never mirrored from Langfuse —
 // so the figures are RLS-isolated, fleet-aggregable, and survive Langfuse being down/optional.
-// Cost is no longer stored locally; it comes from Langfuse (see langfuse-costs.ts).
+// This module reads no cost: the dashboard's cost figures come from Langfuse (langfuse-costs.ts).
 // All aggregation runs INSIDE the scoped tx (GUC active) so RLS fences it to the tenant; a raw
 // query outside the tx would leak or zero out. The $extends auto-scopes writes only, so reads
 // rely on RLS here — which is exactly the boundary we want.
@@ -75,13 +75,9 @@ export interface MetricsFilter {
 }
 
 // Validate an IANA timezone before interpolating it into `AT TIME ZONE` (an unknown zone makes
-// Postgres throw). `Intl.DateTimeFormat` throws RangeError for bad zones.
-//
-// A zone the caller SENT and this cannot read is refused, not replaced (issue #372). The fallback
-// this replaces is the worst shape of the family: `tz=America/Sao_Paolo` (one typo) silently
-// bucketed the dashboard in UTC, so a 21h local turn showed up on tomorrow — the exact bug the
-// zone parameter exists to prevent, with numbers that look right. ABSENT still means UTC, because
-// absent is not a value; `""` is one, and it is what a cleared select submits.
+// Postgres throw). A zone the caller sent and this cannot read is refused, not replaced: falling back
+// to UTC would shift a late local turn onto tomorrow with numbers that look right. Absent means UTC;
+// `""` is a value (what a cleared select submits) and is refused.
 export function normalizeTimeZone(tz: string | undefined): string {
   if (tz === undefined) return "UTC";
   try {
@@ -224,14 +220,9 @@ export async function getInstanceMetrics(
 
 // Operational KPIs (the AI-support-agent standard: Intercom Fin / OpenAI). "Involved" = the bot
 // actually ran on the conversation (it produced LlmUsage). Resolution = of those, how many the AGENT
-// itself closed. Automation = Involvement × Resolution = resolved-by-bot / total. All computed from
-// local data (LlmUsage + the Conversation mirror), RLS-scoped inside the tx.
-//
-// Resolution used to read `status === "resolved" && assigneeType !== "User"`, which counted six
-// closings that are not the agent's — including a follow-up ladder closing out a lead that never
-// answered, and Chatwoot's own `auto_resolve_after`. Both make the number RISE as engagement gets
-// worse. It now reads `Conversation.resolvedBy`, recorded where we close a conversation; the whole
-// argument is in src/modules/conversations/resolution-origin.ts.
+// itself closed, read from `Conversation.resolvedBy` (not from status and assignee, which counts
+// follow-up and Chatwoot auto-resolve closings; see src/modules/conversations/resolution-origin.ts).
+// Automation = Involvement × Resolution. Computed from local data, RLS-scoped inside the tx.
 export interface DashboardKpis {
   totalConversations: number;
   involved: number;
@@ -244,22 +235,10 @@ export interface DashboardKpis {
   involvementRate: number;
   resolutionRate: number;
   automationRate: number;
-  // MEDIAN seconds from the conversation's creation to the team's first reply — Chatwoot's own
-  // first-response SLA, mirrored (`chatwootCreatedAt` / `chatwootFirstReplyAt`) rather than
-  // recomputed, so this reports the same number the operator reads on the Chatwoot dashboard.
-  // Median and not mean: one conversation opened on a Friday night and answered on Monday moves a
-  // mean by hours and says nothing about the week.
-  //
-  // This is the only KPI here that does not go through LlmUsage, and it is the only one that still
-  // answers on an inbox the agent never touched. NULL when no conversation in the window carries
-  // both readings — a conversation nobody has answered yet has no response time, and one no event
-  // has been seen for since the columns existed has not been mirrored yet. Hence the sample count
-  // beside it: a median over four conversations is not a service level, and the caller has to be
-  // able to tell that apart from a median over four hundred.
-  //
-  // A conversation the BUSINESS opened counts its own opening message as the reply, because that is
-  // what `first_reply_created_at` means to Chatwoot. Timing the customer's wait instead is a
-  // different metric (Chatwoot answers it with `waiting_since`) and a different decision.
+  // MEDIAN seconds from creation to the team's first reply, Chatwoot's own first-response SLA
+  // mirrored rather than recomputed; median because one weekend conversation moves a mean by hours.
+  // NULL when no conversation in the window carries both readings, hence the sample count beside it.
+  // A conversation the business opened counts its own opening message as the reply, as Chatwoot does.
   firstResponseSeconds: number | null;
   firstResponseSampled: number;
 }
@@ -279,13 +258,13 @@ export async function getKpis(
         // mirror conversation (conversationId stays null), and source="inbox" makes that explicit.
         conversationId: { not: null },
         source: "inbox",
-        // A billed call is not the same claim as "the agent took this conversation", and this is
+        // NOTE: A billed call is not the same claim as "the agent took this conversation", and this is
         // the only reader that makes the second one. Vision runs on the incoming attachment before
         // the bot-ownership gate decides anything, so an image sent into a conversation a human
         // handled start to finish would otherwise land here as bot involvement.
         //   The null arm is not a formality: Prisma renders `notIn` as plain SQL `NOT IN`, which
-        // drops NULL rows rather than keeping them (measured), and a legacy row with no node is an
-        // agent turn. Without it this filter would quietly shrink every historical figure.
+        // drops NULL rows rather than keeping them, and a legacy row with no node is an agent turn.
+        // Without it this filter would quietly shrink every historical figure.
         OR: [{ node: null }, { node: { notIn: [...NON_AGENT_TURN_NODES] } }],
         ...(filter.since ? { createdAt: { gte: filter.since } } : {}),
       },
@@ -373,17 +352,11 @@ export interface TimeseriesPoint {
   cachedReadTokens: number;
 }
 
-// Daily LLM usage series for the dashboard chart. Raw SQL (date_trunc has no Prisma builder)
-// runs INSIDE the scoped tx so RLS fences llm_usage to the tenant — never filter tenant_id by hand.
-// Respects `filter.source` (omitted → all sources) so the chart tracks the selected segment.
-//
-// `bucket` is a LOCAL day key (YYYY-MM-DD) in `filter.tz`, not a UTC ISO instant, so a 22h-BRT turn
-// (01h UTC) lands on the right local day instead of leaking into "tomorrow" in UTC. Returning the
-// key as text (to_char) keeps it unambiguous on the client (no Date/timezone round-trip).
-//   created_at is `timestamp WITHOUT time zone` (Prisma's default) holding the UTC wall-clock, so we
-// double-shift: `AT TIME ZONE 'UTC'` reads the naive value AS UTC → a real instant (timestamptz),
-// then `AT TIME ZONE $tz` renders that instant as wall-clock in the target zone. A single shift
-// would (wrongly) interpret the stored value as already being in $tz.
+// Daily LLM usage series for the dashboard chart, run INSIDE the scoped tx so RLS fences llm_usage
+// (never filter tenant_id by hand). `bucket` is a local day key (YYYY-MM-DD, as text) in `filter.tz`.
+// created_at is `timestamp WITHOUT time zone` holding UTC wall-clock, so it is double-shifted:
+// `AT TIME ZONE 'UTC'` makes it an instant, then `AT TIME ZONE $tz` renders it in the target zone.
+// A single shift would read the stored value as already being in $tz.
 export async function getTimeseries(
   ctx: TenantContext,
   filter: MetricsFilter = {},

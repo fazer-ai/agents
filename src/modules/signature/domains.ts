@@ -1,11 +1,8 @@
-// THE CLOSED FIELDS OF THE SIGNATURE BLOCK, in one place for the three readers of that question: the
-// runtime reader (`readSignatureConfig`), the write boundary (`assertSettingsSignature`) and the MCP
-// patch schema. Before #618 each spelled its own copy, and the boundary spelled only one of the
-// three, which is how `position` and `separator` stored anything with a 200 while the runtime read
-// the default and GET echoed the value it ignored.
-//
-// A leaf module on purpose: the MCP schema and the agents service both import it, and neither can
-// import the signature service without pulling the prompt renderer in behind it.
+// The closed fields of the signature block, in one place for its three readers: the runtime reader
+// (`readSignatureConfig`), the write boundary (`assertSettingsSignature`) and the MCP patch schema, so
+// the boundary cannot accept a value the runtime ignores. A leaf module on purpose: the MCP schema and
+// the agents service both import it, and neither can import the signature service without pulling
+// the prompt renderer in behind it.
 export const SIGNATURE_POSITIONS = ["top", "bottom"] as const;
 export const SIGNATURE_SEPARATORS = ["blank", "--"] as const;
 export const SIGNATURE_FREQUENCIES = ["all", "once"] as const;

@@ -1,19 +1,11 @@
-// Whether a reply works as speech at all (issue #856). #787 took the URLs and the e-mail addresses
-// out of a voice note; this is the reply as a whole. A price table, a numbered walkthrough or a
-// 1,000-character answer is built to be read: heard, the customer cannot scan back, cannot compare
-// two prices, and replays the note to catch the one number they needed. Measured on a production
-// deployment's voice replies, reviewed by hand: 17 of 27 would have been better as text (longer than
-// ~450 characters 13, a list of 3+ items 8, 3+ money values or long numbers 6, a link 5).
-//
-// The model cannot fix it: it does not know the reply will become audio (the runtime decides after
-// generation), and the speech rewrite has to keep every fact. So the runtime decides, before
-// synthesis, deterministically and without a model: a reply past any of the agent's limits goes as
-// text. A text reply costs the same one message as a voice note, so nothing is added. It is the
-// agent's choice (`tts.textInstead`, off by default), so updating the service changes no agent.
+// Whether a reply works as speech at all. A price table, a numbered walkthrough or a long answer is
+// built to be read: heard, the customer cannot scan back or compare two prices. The model cannot fix
+// it (the speech rewrite must keep every fact), so the runtime decides before synthesis,
+// deterministically: a reply past any of the agent's limits goes as text, at the same one-message
+// cost. Opt-in per agent (`tts.textInstead`, off by default).
 //
 // Pure, like `planSpokenReply`: the runtime and the playground both ask it, so the operator hears
-// what the customer hears. `unspeakable` is the decision on its own, with no plan and no log, for
-// any other caller that has to choose a turn's modality from a text and the agent's settings.
+// what the customer hears. `unspeakable` is the bare decision, with no plan and no log.
 
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import type { TtsConfig } from "./settings-shared";
@@ -126,8 +118,8 @@ export function unspeakable(
 }
 
 export interface AudioReplyPlan extends SpokenReplyPlan {
-  // Why the reply goes as text when audio was on the table: the #787 case (nothing but the
-  // introduction of a link is left to say) or the first limit it reached. null = it is spoken.
+  // Why the reply goes as text when audio was on the table: nothing but a link's introduction is
+  // left to say, or the first limit it reached. null = it is spoken.
   textReason: "introduction" | SpeakabilityVerdict | null;
 }
 

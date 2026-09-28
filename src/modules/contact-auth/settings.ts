@@ -14,25 +14,17 @@ import {
 // the verdict, so revoking there takes effect on the customer's next message. Off by default; every
 // other field clamps rather than throws, so a malformed write can never break the webhook.
 
-// How long a positive verdict counts for (issue #189). `perMessage` is the gate as it shipped: the
-// endpoint owns the answer, and asking it every time is what lets a revocation there land on the
-// contact's very next message. `once` trades that immediacy for the call: the first `authorized:
-// true` is stored per contact and reused until it expires. Two operators asked for it — an endpoint
-// that is expensive or rate-limited (a burst of five WhatsApp messages is five identical lookups),
-// and a gate that is an UNLOCK, where the customer sends a code once and should stay served
-// afterwards without the endpoint having to remember them.
+// How long a positive verdict counts for. `perMessage` asks the endpoint every time, so a revocation
+// there lands on the contact's very next message. `once` stores the first `authorized: true` per
+// contact and reuses it until it expires, for an expensive or rate-limited endpoint and for an UNLOCK
+// gate where the customer sends a code once and should stay served.
 export type ContactAuthMode = "perMessage" | "once";
 
-// A verdict the runtime reaches from data it already holds, instead of asking an endpoint (issue
-// #646). For the rules whose answer is in our own tables (a pilot list of numbers, a mirrored
-// attribute), an operator-hosted service is pure cost: TLS, a vault credential, a timeout budget on
-// the webhook path, and an availability dependency, because a fail-closed gate whose endpoint is down
-// stops answering customers.
-//
-// TYPED, for the reason tool-preconditions.ts gives: the gate decides whether the turn happens at
-// all, and it is fail-closed, so every way a rule could fail to answer would be a refused customer.
-// A closed set of conditions always terminates and always answers. The attribute condition IS the
-// precondition's, parsed by the same function, so an operator who learned one surface learned both.
+// A verdict the runtime reaches from data it already holds, instead of asking an endpoint (a pilot
+// list of numbers, a mirrored attribute), sparing the TLS, credential, timeout budget and availability
+// dependency of a fail-closed endpoint. TYPED, as in tool-preconditions.ts: the gate is fail-closed,
+// so every way a rule could fail to answer would refuse a customer, and a closed set of conditions
+// always answers. The attribute condition IS the precondition's, parsed by the same function.
 export type ContactAuthRule =
   // The contact's mirrored phone (compared by digits, so `+55 (11) 9...` and `5511 9...` are one
   // number) or its operator identifier is on the list.
@@ -125,10 +117,10 @@ export function invalidContactAuthRule(raw: unknown): boolean {
 
 export interface ContactAuthConfig {
   enabled: boolean;
-  // The local rule, when the verdict comes from data we already hold (issue #646). EITHER this or
-  // `url`: with a rule set the endpoint is never called, so a rule and a url together mean the rule.
-  // A rule is always evaluated per message and never stores a grant: a stored verdict exists to
-  // spare somebody's endpoint, and a rule reads our own rows.
+  // The local rule, when the verdict comes from data we already hold. EITHER this or `url`: with a
+  // rule set the endpoint is never called, so a rule and a url together mean the rule. A rule is
+  // always evaluated per message and never stores a grant: a stored verdict exists to spare somebody's
+  // endpoint, and a rule reads our own rows.
   rule: ContactAuthRule | null;
   // The authorization endpoint: a fixed origin, no placeholders (the identity travels in the body).
   // https in production; http only where the SSRF guard allows private targets, the same rule HTTP
@@ -168,8 +160,8 @@ export interface ContactAuthConfig {
   // assigns the team ONLY when the conversation's instance matches. The editor already refuses to
   // pin while the agent spans several accounts, and this covers the drift it cannot see: an agent
   // MOVED to another account keeps the number it was given in the old one, and there the editor
-  // sees a single account and has nothing to warn about. null ⇒ legacy value stored before this
-  // field existed (applied under the older, weaker check).
+  // sees a single account and has nothing to warn about. null ⇒ a legacy value with no recorded
+  // instance (applied under the weaker check).
   handoffTeamInstanceId: number | null;
 }
 

@@ -1,14 +1,8 @@
-// NOTE: Text-to-speech provider abstraction. Each provider has a different shape, so each gets a thin
-// adapter behind one interface + registry. Adding a provider = one function + one registry entry, no
-// caller changes. The API key is a vault entry; provider/voice are per-agent. The OUTPUT CONTAINER
-// follows the destination channel (TtsRequest.format, chosen by pickTtsFormat): WhatsApp renders a
-// recorded voice note (PTT) only when the audio is **Ogg/Opus** — anything else arrives as a plain
-// file attachment — while Meta's Instagram messaging accepts audio only as aac/m4a/wav/mp4 and
-// refuses ogg AND mp3 (the send job fails AFTER Chatwoot shows the message as sent, so the customer
-// silently never receives it). openai emits aac natively; elevenlabs has no aac/wav output, so its
-// Instagram replies are raw PCM wrapped in a 44-byte RIFF header locally (pcmToWav — a header write,
-// not a transcode); openrouter only emits mp3 and therefore cannot serve Instagram at all (the
-// service falls back to a text reply there).
+// Text-to-speech provider abstraction: a thin adapter per provider behind one interface + registry.
+// The output container follows the destination channel (`pickTtsFormat`): WhatsApp renders a voice
+// note only for Ogg/Opus, and Instagram accepts only aac/m4a/wav/mp4, failing other formats after
+// Chatwoot shows the message sent. elevenlabs has no aac/wav, so its PCM gets a local RIFF header
+// (pcmToWav, not a transcode); openrouter emits only mp3 and cannot serve Instagram (text fallback).
 
 import type { TtsVoiceSettings } from "./settings-shared";
 import { pcmToWav } from "./wav";

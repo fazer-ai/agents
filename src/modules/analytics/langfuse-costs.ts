@@ -28,12 +28,12 @@ export type LangfuseCosts =
       byModel: { model: string; costUsd: number }[];
       // The Langfuse instance URL, so the dashboard can offer an "open in Langfuse" link (item 13).
       baseUrl: string;
-      // Deep link straight to the tenant's project (item 6): `${baseUrl}/project/${id}`. Best-effort
-      // — omitted when the project id couldn't be resolved, so the dashboard falls back to baseUrl.
+      // Deep link straight to the tenant's project: `${baseUrl}/project/${id}`. Best-effort: omitted
+      // when the project id couldn't be resolved, so the dashboard falls back to baseUrl.
       projectUrl?: string;
-      // The local ledger's cost per model against `byModel` (issue #868), over the same tenant,
-      // period and environments. Absent when the ledger could not be read: the check did not run,
-      // which is not the same as having passed.
+      // The local ledger's cost per model against `byModel`, over the same tenant, period and
+      // environments. Absent when the ledger could not be read: the check did not run, which is not
+      // the same as having passed.
       costCheck?: CostCheck;
     };
 
@@ -117,17 +117,10 @@ async function fetchMetrics(
   return body.data as Record<string, unknown>[];
 }
 
-// WHAT THE PROJECT HOLDS IS NOT WHAT THIS TENANT SPENT (issue #427). A Langfuse project is shared
-// by every tenant of the install and by anything else the operator points at it, so a cost query
-// without a fence answers with other people's money. Every trace we write carries the tenant's slug
-// as the `userId` and one of our two environments, which is exactly what the spend ceiling's poll
-// filters by: the same filters here are what let the dashboard's figure and the ceiling's bar be
-// two readings of one number instead of two numbers.
-//
-// Measured on a local Langfuse during this rodada: the unfenced 30-day total was $7.71, of which
-// $2.70 belonged to two other tenants and was being shown to the third as its own cost.
-//
-// `any of` needs `type: "stringOptions"`; asked as `"string"` Langfuse refuses the whole request.
+// A Langfuse project is shared by every tenant of the install, so a cost query without a fence
+// answers with other people's money. These are the spend ceiling's poll filters (the tenant's slug
+// as `userId`, and one of our two environments), so the dashboard's figure and the ceiling's bar
+// read one number. `any of` needs `type: "stringOptions"`; as `"string"` Langfuse refuses the request.
 function costFilters(
   tenantSlug: string,
   source: UsageSource | undefined,

@@ -23,11 +23,10 @@ import { readSttConfig, type SttConfig } from "./settings";
 
 // Speech-to-text orchestration: download the voice note, transcribe via the configured provider
 // (key from the vault), and write the transcription back onto the Chatwoot attachment meta so the
-// debounce re-fetch reads it (and human agents see it too). The meta write-back is a FORK route —
-// on upstream Chatwoot it 404s, so every completed transcription is also stashed in the in-process
-// annotation store (chatwoot/annotations.ts) that the flush overlays (issue #49). We never store
-// the transcription in our own DB — Chatwoot already holds the conversation, consistent with the
-// anti-PII no-body-mirror rule. All network I/O is outside transactions; deps are injectable.
+// debounce re-fetch reads it (and human agents see it too). The meta write-back is a FORK route that
+// 404s on upstream Chatwoot, so every transcription is also stashed in the in-process annotation store
+// (chatwoot/annotations.ts) that the flush overlays. Never stored in our own DB (anti-PII
+// no-body-mirror rule). All network I/O is outside transactions; deps are injectable.
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -44,10 +43,8 @@ export async function resolveSttConfig(
   instanceId: bigint,
   chatwootInboxId: number,
   base: PrismaClient = basePrisma,
-  // The agent whose settings answer, when the caller already knows it: a delivery on an OBSERVER's
-  // route (issue #476) is read by the observer's runtime, not by whoever `Inbox.agentId` names —
-  // nobody, on an inbox a human team answers — so the inbox read below would answer for the wrong
-  // agent, or for none. Absent, the inbox's responder answers, as before.
+  // The agent whose settings answer, when the caller knows it: an observer's route is read by the
+  // observer's runtime, not by the inbox's responder (`Inbox.agentId`, possibly nobody).
   opts: { agentId?: bigint | null } = {},
 ): Promise<SttConfig | null> {
   const cfg = await runScopedOn(base, sysCtx(tenantId), async (db) => {
@@ -147,9 +144,8 @@ async function transcribeOnce(
     tryResolveApiKeyEntry(db, cfg.credentialRef as string),
   );
   if (entry.state !== "ok") {
-    // Two reasons the credential cannot serve this, kept apart because the operator's move is not the
-    // same: gone or unfilled is a credential to re-pick, and the wrong KIND is one that belongs on
-    // another field (issue #471).
+    // NOTE: kept apart because the operator's move differs: gone or unfilled is a credential to re-pick,
+    // the wrong KIND belongs on another field.
     if (entry.state === "unusable") {
       logger.warn(
         "stt: credential %s is a %s credential, which cannot be used as an API key — skipping",
@@ -176,9 +172,8 @@ async function transcribeOnce(
     base,
     makeClient: params.deps?.makeClient,
   });
-  // NOTE: the download sits OUTSIDE the withFlowStage span below, so a failure here used to leave NO
-  // `stt` line at all — the operator saw a turn that answered "não consegui ouvir" with nothing on the
-  // Logs page to explain it. Emit the stage line, then re-throw (the caller decides; see the contract
+  // NOTE: the download sits OUTSIDE the withFlowStage span below, so without this a failure leaves no
+  // `stt` line to explain a turn that answered "não consegui ouvir". Emit the stage line, then re-throw (the caller decides; see the contract
   // above). `retryOnMissing` absorbs Chatwoot's write race on a fresh voice note.
   let bytes: ArrayBuffer;
   let contentType: string | null;
@@ -217,8 +212,8 @@ async function transcribeOnce(
   const text = cleanTranscription(raw);
   if (!text) return null;
 
-  // NOTE: Stash BEFORE the write-back: on upstream Chatwoot (no fork meta route) the in-process
-  // overlay is the only reader that will ever see this transcription (issue #49).
+  // NOTE: stash BEFORE the write-back: on upstream Chatwoot (no fork meta route) the in-process
+  // overlay is the only reader that will ever see this transcription.
   stashMediaAnnotation(
     {
       tenantId: params.tenantId,
@@ -261,10 +256,9 @@ async function transcribeOnce(
 }
 
 export interface PlaygroundTranscribeParams {
-  // The REQUEST's context, unlike the inbound path above, whose tenant id this process read from a
-  // row. Rebuilding one here would tell the unknown-tenant check at `runScopedOn` that a caller's
-  // stale selector was internal, and the operator would get "agent not found" for a tenant that is
-  // gone rather than a refusal naming the selection they are carrying (issue #268).
+  // The request's context, not a rebuilt one: rebuilding would tell `runScopedOn`'s unknown-tenant
+  // check that a stale selector was internal, answering "agent not found" instead of a refusal naming
+  // the selection.
   ctx: TenantContext;
   agentId: bigint;
   audio: ArrayBuffer;

@@ -50,7 +50,7 @@ export interface GuardrailDirectionConfig {
   // Steering prompt for action === "generated": guides HOW the guardrails agent writes the
   // replacement reply (tone, what to offer, what to avoid). Empty → generic safe reply.
   generationPrompt: string;
-  // What the CUSTOMER reads when action === "handoff" (issue #704): the case went to the team. Not
+  // What the CUSTOMER reads when action === "handoff": the case went to the team. Not
   // `templateMessage`, which is a refusal, and a refusal is the wrong sentence for "a person will
   // continue". EMPTY is a real value and means: say nothing, only hand over.
   handoffMessage: string;
@@ -197,17 +197,11 @@ export function readGuardrailsConfig(settings: unknown): GuardrailsConfig {
   return {
     enabled: bool(bag.enabled, GUARDRAILS_DEFAULTS.enabled),
     provider,
-    // NOTE: An empty model is stored by the editor whenever the operator enables guardrails without
-    // opening the provider select, and the model field shows the provider default anyway. Sending it
-    // through is not a soft failure: the name goes on the wire verbatim, the provider refuses the
-    // call, and analyzeGuardrail fails open, so the guardrail reads as enabled and screens nothing.
-    // Resolving it here is what makes the runtime send the model the editor displayed.
-    //
-    // The agent's own model answers the same question the other way (`guardModelBeforeSave` refuses
-    // to save it empty), and the asymmetry is deliberate. That one is the operator's core choice and
-    // has no defensible default; this one is a supporting choice whose default the editor already
-    // shows. A save-time refusal here would also leave every already-saved empty value broken, and
-    // those are exactly the installs running unprotected today.
+    // NOTE: an empty model (saved when the operator enables guardrails without opening the provider
+    // select) resolves to the provider default the editor displays; sent verbatim, the provider would
+    // refuse it and the fail-open guardrail would screen nothing. Unlike the agent's own model (refused
+    // empty at save), this is a supporting choice with a shown default, and a save-time refusal would
+    // leave every already-saved empty value broken.
     model: str(bag.model) ?? PROVIDER_DEFAULT_MODEL[provider] ?? "",
     credentialRef: str(bag.credentialRef),
     baseURL: str(bag.baseURL),

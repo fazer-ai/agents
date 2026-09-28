@@ -45,31 +45,14 @@ export function partsInTimezone(
   };
 }
 
-// Floors to a `minutes`-wide slot ON THE LOCAL WALL CLOCK of `timezone`, which is not the same thing
-// as flooring the epoch wherever the zone's offset is not a whole multiple of
-// the slot. Measured in Asia/Kathmandu (+05:45), rounding to the half hour: 00:05 on the 18th floors
-// to 23:45 on the 17th, so a caller that renders the result as "the current moment" states YESTERDAY
-// and anything reasoning from it is a day off (round 6 of the review on issue #685).
-//
-// The DATE is what makes this load-bearing: the rounding exists to keep a value stable inside a slot
-// for the prompt cache, and moving the local date to buy that is trading the answer for the cache.
 // The local wall clock of `date` in `timezone`, floored to a `minutes`-wide slot counted from local
-// midnight. It returns PARTS, and that is the design rather than a detail: every earlier version of
-// this returned an instant, and each of rounds 7, 8 and 10 of the review found a different defect in
-// the arithmetic that produced it — a floor that moved forward, a floor 75 minutes behind on a
-// 30-minute slot, a floor that reported yesterday's date. All three came from the same place, doing
-// arithmetic on instants and then asking a timezone what wall clock they landed on, across a
-// transition where that question has two answers.
-//
-// Floored parts have no such question. The date is the date `partsInTimezone` already read, so it is
-// right by construction; the time is integer arithmetic on the minutes since local midnight, so it is
-// always a slot boundary and never later than the clock it was read from; and two instants inside one
-// local slot produce the same parts, which is the prompt-cache stability this exists for. What it
-// gives up is the one case an instant could have answered better: on a day whose clocks SKIPPED the
-// boundary (America/Santiago's 6 September 2026 begins at 01:00, so 00:00 never happens there), the
-// floor names that missing wall clock. The error is bounded by the slot and the date stays right,
-// which is the trade this function is here to make — a wrong DATE is the defect, a time floored into a
-// skipped hour is a coarse answer.
+// midnight, so two instants inside one slot give the same parts (prompt-cache stability). It returns
+// PARTS, not an instant: flooring the epoch is wrong wherever the offset is not a multiple of the
+// slot (Asia/Kathmandu, +05:45: 00:05 floors to 23:45 of the previous DAY), and instant arithmetic
+// across a transition asks the timezone a question with two answers. The date is the one
+// `partsInTimezone` read, so it is right by construction. Cost: on a day whose clocks SKIPPED the
+// boundary (America/Santiago, 6 Sep 2026 starts at 01:00) the floor names a missing wall clock, an
+// error bounded by the slot; a wrong DATE is the defect this avoids.
 export function flooredLocalParts(
   date: Date,
   timezone: string,
@@ -77,9 +60,9 @@ export function flooredLocalParts(
 ): TimeParts {
   const p = partsInTimezone(date, timezone);
   if (!Number.isFinite(minutes) || minutes <= 0) return p;
-  // MINUTES SINCE LOCAL MIDNIGHT, not the minute field: a slot of 120 flooring only the minutes would
-  // reset every hour and behave like 60, and 45 would mean something different in each hour
-  // (`get_current_time` takes any positive integer here).
+  // NOTE: MINUTES SINCE LOCAL MIDNIGHT, not the minute field: a slot of 120 flooring only the
+  // minutes would reset every hour and behave like 60, and 45 would mean something different in each
+  // hour (`get_current_time` takes any positive integer here).
   const sinceMidnight = Number(p.HH) * 60 + Number(p.mm);
   if (!Number.isFinite(sinceMidnight)) return p;
   const floored = Math.floor(sinceMidnight / minutes) * minutes;

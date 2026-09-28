@@ -6,8 +6,8 @@ export function zoneFormatter(timezone: string): Intl.DateTimeFormat {
   return new Intl.DateTimeFormat("en-US", {
     timeZone: timezone,
     hourCycle: "h23",
-    // The era too: a year before 1 CE comes back as a year OF ITS ERA (astronomical −1 is "2 BC"),
-    // and without the era the wall clock was rebuilt in 2 CE, an offset of years (round 21).
+    // NOTE: The era too: a year before 1 CE comes back as a year OF ITS ERA (astronomical −1 is
+    // "2 BC"), and without the era the wall clock would be rebuilt in 2 CE, off by years.
     era: "short",
     year: "numeric",
     month: "2-digit",
@@ -46,7 +46,7 @@ export function wallClock(
   const parts = fmt.formatToParts(new Date(instantMs));
   const get = (type: Intl.DateTimeFormatPartTypes) =>
     Number(parts.find((p) => p.type === type)?.value ?? "0");
-  // Folded back into the astronomical count JavaScript's Date uses: 1 BC is year 0, 2 BC is −1.
+  // NOTE: Folded back into the astronomical count JavaScript's Date uses: 1 BC is year 0, 2 BC is −1.
   const era = parts.find((p) => p.type === "era")?.value ?? "";
   const yearOfEra = get("year");
   return {
@@ -60,11 +60,10 @@ export function wallClock(
 }
 
 // East-positive SECONDS: wall time = instant + offset. Whole seconds, because the wall clock has no
-// fraction to compare against — and seconds rather than minutes, because a historical offset has
-// them (São Paulo's local mean time was −03:06:28, and a minute's rounding put the sandbox's clock
-// 28 s off Intl's for such an instant; PR #485, round 9). An instant Intl cannot place (NaN, out
-// of range) is reported as UTC rather than thrown, since the caller is `Date` arithmetic that
-// never throws.
+// fraction to compare against, and seconds rather than minutes, because a historical offset has them
+// (São Paulo's local mean time is −03:06:28; minutes would put the sandbox's clock off Intl's). An
+// instant Intl cannot place (NaN, out of range) is reported as UTC rather than thrown, since the
+// caller is `Date` arithmetic that never throws.
 export function zoneOffsetSeconds(
   fmt: Intl.DateTimeFormat,
   instantMs: number,
@@ -76,9 +75,8 @@ export function zoneOffsetSeconds(
   } catch {
     return 0;
   }
-  // NOTE: Not `Date.UTC`: it reads a year of 0–99 as 1900–1999, and the offset for a date in that
-  // range came out as sixteen million hours (PR #485, round 8). `setUTCFullYear` takes the year
-  // as written.
+  // NOTE: Not `Date.UTC`: it reads a year of 0 to 99 as 1900 to 1999, which would skew the offset for
+  // such a date by centuries. `setUTCFullYear` takes the year as written.
   const wall = new Date(0);
   wall.setUTCFullYear(w.year, w.month - 1, w.day);
   wall.setUTCHours(w.hour, w.minute, w.second, 0);

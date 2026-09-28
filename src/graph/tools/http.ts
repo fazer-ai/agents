@@ -30,18 +30,14 @@ import { resolveSecretInjection } from "@/modules/vault/secret-types";
 import type { NoEffectReporter } from "./effect-free";
 import { normalizeToolName } from "./toolName";
 
-// Custom HTTP tools (from ToolDefinition rows). The agent calls them mid-turn; each is a thin,
-// SECURITY-bounded HTTP client. Hard rules (hardened spec, anti prompt-injection):
+// Custom HTTP tools (from ToolDefinition rows): a thin, SECURITY-bounded HTTP client per tool.
 //   - interpolation touches PATH/QUERY/BODY only, NEVER the origin (scheme://host:port);
 //   - the final host must be in the per-tool allowlist AND pass the SSRF guard before any fetch;
-//   - the credential (resolved by name from the vault) flows ONLY where the operator writes {{secret}}
-//     (headers, the URL path/query, a raw body, a fixed value) or via typed auto-injection — never
-//     into the model-visible schema/return or a trace (the origin pin keeps {{secret}} out of the host);
+//   - the vault credential flows ONLY where the operator writes {{secret}} or via typed
+//     auto-injection, never into the model-visible schema/return or a trace;
 //   - no redirects, https-only (unless allowHttp), bounded timeout + response size.
-// Fields carry a `source` (n8n-style): "ai" (the model fills it; appears in the tool schema) or
-// "fixed" (a constant/context template sent without the model). Conversation/contact context
-// (e.g. {{conversation_id}}) and {{secret}} are available in fixed values, headers, the URL and a raw
-// body; the secret is interpolated server-side and never enters the model schema or a trace.
+// Fields carry a `source`: "ai" (the model fills it, in the tool schema) or "fixed" (a constant or
+// context template such as {{conversation_id}}, sent without the model).
 
 export interface HttpToolDef {
   name: string;
@@ -58,11 +54,11 @@ export interface HttpToolDef {
   // "kv" assembles JSON from explicit rows (a lone {{aiField}} value keeps the AI's type); "raw" sends
   // the interpolated template; legacy "fields"/absent assembles JSON from the non-path input fields.
   body?: unknown;
-  // HTTP statuses this tool declares as RESULTS rather than integration failures (issue #59).
-  // Empty/absent keeps issue #40's default, where every non-2xx is a failure. See ./http-status.
+  // HTTP statuses this tool declares as RESULTS rather than integration failures. Empty/absent
+  // means every non-2xx is a failure. See ./http-status.
   expectedStatuses?: number[] | null;
   credentialRef?: string | null;
-  // Predefined secret type of the credential (item 8). When set (non-generic), the resolved secret is
+  // Predefined secret type of the credential. When set (non-generic), the resolved secret is
   // auto-injected per the type (header/bearer/basic/query) — the operator need not write {{secret}}.
   credentialKind?: string | null;
   // Header/query param name for generic `header`/`query` credential kinds (from VaultEntry.paramName).
@@ -74,32 +70,27 @@ export interface HttpToolDef {
   // Resolved ack message (null when the tool's ack is disabled): posted to the customer before the
   // tool runs. The ack flows only into the conversation, never into the request — it is not a secret.
   ackMessage?: string | null;
-  // What this tool's RESPONSE says about an appointment, when it says anything (issue #352). Read by
+  // What this tool's RESPONSE says about an appointment, when it says anything. Read by
   // readAppointmentDeclaration; anything it cannot make sense of declares nothing.
   appointment?: unknown;
-  // What this tool's RESPONSE should look like by the time it reaches the model (issue #456). Read
-  // by readResponseTemplate; anything it cannot make sense of declares nothing, which is the raw
-  // body and the clip this file has always handed over.
+  // What this tool's RESPONSE should look like by the time it reaches the model. Read by
+  // readResponseTemplate; anything it cannot make sense of declares nothing (raw body plus the clip).
   outputSchema?: unknown;
-  // The GENERIC integration instance this tool hands `{{conversation_ref}}` for (issue #818). A tool
+  // The GENERIC integration instance this tool hands `{{conversation_ref}}` for. A tool
   // whose templates use the variable and name no instance refuses to run: sending an empty handle
   // would be a request the receiver stores and can never use.
   conversationRefIntegrationId?: bigint | null;
 }
 
 // The context variable an HTTP tool uses to hand the operator's system a handle to THIS
-// conversation (issue #818). Not in `deps.context` like the others: it is minted on demand, only for
+// conversation. Not in `deps.context` like the others: it is minted on demand, only for
 // a tool that renders it, because minting is a database write and every other variable is free.
 export const CONVERSATION_REF_VAR = "conversation_ref";
 
-// How long a tool call waits before it is aborted, when the caller names nothing. EXPORTED
-// because a caller that is MORE patient than this reports a success the runtime would never
-// have: an endpoint answering in 12s reads as fine and then aborts on every turn.
-//
-// OPERATOR-SET, because the right value belongs to the provider rather than to us. See
-// HTTP_TOOL_TIMEOUT_MS in ../../config.ts for what the number is FOR: it is one end of a chain, and
-// a deployment whose provider caps its own request at 30s has to raise this above that cap, or our
-// abort wins the race and the provider's own error never arrives.
+// How long a tool call waits before it is aborted, when the caller names nothing. EXPORTED because a
+// more patient caller would report a success the runtime never has. OPERATOR-SET because the right
+// value belongs to the provider: see HTTP_TOOL_TIMEOUT_MS in ../../config.ts (a provider that caps
+// its own request at 30s needs this above that cap, or our abort hides the provider's error).
 export const DEFAULT_HTTP_TOOL_TIMEOUT_MS = config.agent.httpToolTimeoutMs;
 
 export interface HttpToolDeps {
@@ -107,27 +98,22 @@ export interface HttpToolDeps {
   // the credential is missing.
   resolveCredential: (ref: string) => Promise<string | null>;
   allowHttp?: boolean;
-  // The instance's declared internal targets (issue #615), default `config.ssrf.internalTargets`.
+  // The instance's declared internal targets, default `config.ssrf.internalTargets`.
   // Offered to the SSRF guard only for a host this tool's own allowedHosts names: the instance says
   // which internal services exist, the tool says it means to use one, and without both the call
   // gets the full guard. Injectable so a test does not have to reload config.
   internalTargets?: readonly InternalTarget[];
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
-  // THE WHOLE-TURN DEADLINE, when the caller has one (the observer's tick). Aborting an invoke stops
-  // the CALLER waiting, not this handler writing: a tool that was resolving a credential when the
-  // budget ran out still reaches its POST, and the tick has already been reported as a retryable
-  // failure — so the retry sends it a second time. The Chatwoot client refuses past its deadline
-  // for exactly this reason (ChatwootClientConfig.expiresOn); an external endpoint is the same
-  // hazard with none of the idempotency. Absent ⇒ no deadline, which is every reactive turn.
+  // THE WHOLE-TURN DEADLINE, when the caller has one (the observer's tick). Aborting an invoke
+  // stops the CALLER waiting, not this handler: past the budget its POST would still go out after the
+  // tick was reported retryable, and the retry would send it twice (same reason as
+  // ChatwootClientConfig.expiresOn). Absent ⇒ no deadline, which is every reactive turn.
   expiresOn?: AbortSignal;
-  // THE CALLER'S WITHDRAWAL FENCE, asked in the same place the deadline is: immediately before the
-  // request goes out. A deadline answers "is there still time"; this answers "is anyone still
-  // waiting for it" — a `/reset`, a supersede or a detach that landed while this tool resolved a
-  // credential or a DNS name leaves the budget perfectly alive and the run withdrawn all the same,
-  // and the POST reaches somebody else's system anyway (issue #568, review round 28). Absent ⇒ the
-  // call proceeds, which is what every caller with no fence to offer means; only an explicit `false`
-  // stops it, since a fence that could not answer is not a withdrawal.
+  // THE CALLER'S WITHDRAWAL FENCE, asked right before the request goes out. The deadline asks
+  // "is there still time"; this asks "is anyone still waiting": a `/reset`, supersede or detach during
+  // credential or DNS resolution withdraws the run with the budget alive. Absent ⇒ proceed; only an
+  // explicit `false` stops it, since a fence that could not answer is not a withdrawal.
   stillWanted?: () => Promise<boolean>;
   maxResponseChars?: number;
   // Posts a "I'll look into that…" ack to the customer before a slow tool runs (best-effort). Wired
@@ -142,15 +128,14 @@ export interface HttpToolDeps {
   // playground, which registers no appointments anyway. See WallClockResolver.
   timezone?: string;
   // The same two closures the toolpack layer gets, for a tool whose definition DECLARES that its
-  // response describes an appointment (issue #352). Bound to the tenant + this conversation's thread
+  // response describes an appointment. Bound to the tenant + this conversation's thread
   // in prepare.ts; absent on the playground, where a tool that books is best-effort like every other
   // side effect. NEVER model args.
   appointmentBooked?: (args: {
     eventId: string;
-    // The booking system, and the NAME of the tool that reached this closure. Both are optional and
-    // both default to Google Calendar, which is what the only caller was until #352: `provider`
-    // decides the record's identity and whether the Calendar tools can reach the appointment,
-    // `tool` decides which tool a failure is reported against.
+    // The booking system, and the NAME of the tool that reached this closure. Both default to
+    // Google Calendar: `provider` decides the record's identity and whether the Calendar tools can
+    // reach the appointment, `tool` which tool a failure is reported against.
     provider?: string;
     tool?: string;
     calendarId?: string | null;
@@ -167,26 +152,22 @@ export interface HttpToolDeps {
     eventId: string,
     opts?: { provider?: string; tool?: string },
   ) => Promise<void>;
-  // Mints (or re-reads) this conversation's `{{conversation_ref}}` for a GENERIC instance (issue
-  // #818). Bound to the tenant + THIS conversation's thread in prepare.ts; absent where there is no
-  // conversation to hand (the playground) and on a muted turn, whose client refuses what the turn
-  // sends and must not hand out a door to a later send either. Absent ⇒ a tool that renders the
-  // variable refuses to run.
+  // Mints (or re-reads) this conversation's `{{conversation_ref}}` for a GENERIC instance. Bound to
+  // the tenant + THIS conversation's thread in prepare.ts; absent where there is no conversation (the
+  // playground) and on a muted turn, whose client must not hand out a door to a later send. Absent ⇒
+  // a tool that renders the variable refuses to run.
   conversationRef?: (
     integrationInstanceId: bigint,
   ) => Promise<
     | { ok: true; ref: string }
     | { ok: false; reason: "instance_missing" | "instance_not_generic" }
   >;
-  // Reports what went wrong INSIDE a tool that still returns success to the model. Two kinds reach
-  // it, and they share this channel because they share the property that makes them dangerous: the
-  // call succeeded, so nothing else anywhere says a word. A declared appointment path that does not
-  // resolve is one (the booking is real and already made). A response the operator's template could
-  // not render, or a response that was clipped with no template to render, is the other — there the
-  // model got an answer with a hole in it, and #456 is the measurement of what a model does with a
-  // hole. The only thing to do with either is put it where the operator reads it.
   // Called when this tool refuses before sending anything: see effect-free.ts.
   onNoEffect?: NoEffectReporter;
+  // Reports what went wrong INSIDE a tool that still returns success to the model, where nothing else
+  // would say a word: a declared appointment path that does not resolve (the booking is already
+  // made), or a response the template could not render or that was clipped with no template (the
+  // model got an answer with a hole in it). Both belong where the operator reads.
   onSideEffectError?: (e: {
     tool: string;
     phase: string;
@@ -431,15 +412,11 @@ async function registerDeclaredAppointment(
     const { ms, exists } = zonedWallClock(local, tz);
     // `exists` answers the SPRING-FORWARD half: an hour the zone skipped is not a time at all.
     if (!exists || !Number.isFinite(ms)) return null;
-    // And this answers the FALL-BACK half, which `exists` cannot see because both readings are real.
-    // `01:30` on a fall-back night happens TWICE, an hour apart, and zonedWallClock returns whichever
-    // it lands on — so an operator meaning the second occurrence would get an appointment and a
-    // reminder an hour early, silently. Two instants rendering the same wall clock is the whole test.
-    //
-    // The cost is one hour a year, in the zones that shift, for an API that answers without an
-    // offset: those bookings are reported as an unresolved start instead of being guessed at. The
-    // booking still stands in the operator's own system, and the report names the path they can point
-    // somewhere unambiguous.
+    // NOTE: And this answers the FALL-BACK half, which `exists` cannot see: `01:30` on a fall-back
+    // night happens TWICE, and zonedWallClock returns whichever it lands on, so the second occurrence
+    // would book and remind an hour early. Two instants rendering the same wall clock is the test.
+    // The cost is one ambiguous hour a year for an offset-less API: reported as an unresolved start
+    // (the booking stands in the operator's system) instead of guessed.
     const wallOf = (at: number): string => {
       const q = partsInTimezone(new Date(at), tz);
       return `${q.YYYY}-${q.MM}-${q.DD}T${q.HH}:${q.mm}:${q.ss}`;
@@ -494,10 +471,9 @@ async function applyExtractedAppointment(
     eventId: value.externalId,
     provider: value.provider,
     tool: toolName,
-    // No calendar is involved, and every field that would name one says so. `calendarId` null is the
-    // record's column left empty; `credentialRef` null is what tells the reminder handler there is
-    // no Google to ask about this appointment (#376). The provider above is what tells the per-turn
-    // context block the same thing, since a record carries no credential.
+    // NOTE: No calendar is involved. `calendarId` null leaves the column empty; `credentialRef` null
+    // tells the reminder handler there is no Google to ask; the provider tells the per-turn context
+    // block the same thing, since a record carries no credential.
     calendarId: null,
     startISO: value.startISO,
     credentialRef: null,
@@ -513,15 +489,10 @@ async function applyExtractedAppointment(
 }
 
 // The operator's response template, applied to one response. Returns the text the model should be
-// given, or null for "hand over the raw body" — which is what every tool written before #456 says,
-// and what every response this cannot render says.
-//
-// ONLY 2xx, the same gate `registerDeclaredAppointment` uses and for a related reason. A non-2xx
-// body is the provider's own error message and the model needs it verbatim; a template pointed at
-// success fields would paper it over with a block of absent markers. `expectedStatuses` does not
-// change this: it says a status is a RESULT rather than an integration failure, which is how a
-// lookup declares that its 404 means "no record" (issue #59) — it does not say the 404 body carries
-// the success fields.
+// given, or null for "hand over the raw body" (no template, or a response this cannot render).
+// ONLY 2xx: a non-2xx body is the provider's own error, needed verbatim, and a template pointed at
+// success fields would paper it over with absent markers. `expectedStatuses` does not change this:
+// a 404 declared as "no record" is a RESULT, but its body still lacks the success fields.
 function projectResponse(
   def: HttpToolDef,
   deps: HttpToolDeps,
@@ -576,9 +547,9 @@ export function buildHttpTool(
   deps: HttpToolDeps,
 ): StructuredToolInterface {
   const baseContext = deps.context ?? {};
-  // NOTE: self-heal shapes authored before write-time normalization existed (or written straight to the
-  // DB): a JSON-Schema-shaped inputSchema becomes the compact map and known single-brace {var}
-  // placeholders become {{var}}, so pre-fix rows work without re-creation.
+  // NOTE: self-heal shapes that skipped write-time normalization (legacy rows, or rows written
+  // straight to the DB): a JSON-Schema-shaped inputSchema becomes the compact map and known
+  // single-brace {var} placeholders become {{var}}, so such rows work without re-creation.
   const { shapes } = normalizeToolShapes(
     {
       urlTemplate: def.urlTemplate,
@@ -638,7 +609,7 @@ export function buildHttpTool(
   return failableTool(
     async (rawInput: Record<string, unknown>) => {
       let input = rawInput;
-      // 0a. `{{conversation_ref}}` (issue #818), minted BEFORE anything is sent — the ack included —
+      // NOTE: 0a. `{{conversation_ref}}`, minted BEFORE anything is sent (the ack included)
       // and before the request, because the receiver may call back while this call is still running
       // and the ref has to correlate by then. Every refusal here sends nothing, and says why in the
       // words the model can pass on.
@@ -868,14 +839,10 @@ export function buildHttpTool(
         if (bodyCfg.mode === "raw") {
           body = interpolate(bodyCfg.raw, lookupWithSecret);
         } else if (bodyCfg.mode === "kv") {
-          // Explicit key/value rows. A value that is a LONE {{aiField}} the model supplied keeps its
-          // original type (number/array/object/bool); a known aiField the model OMITTED is skipped
-          // (matches the legacy fields behavior — never emit ""); anything else (context/secret/fixed/
-          // mixed text) interpolates to a string.
-          // NOTE: null-prototype, because `payload[k] = v` on a plain object hits the INHERITED
-          // setter when k is "__proto__" — the assignment succeeds, no own property is created, and
-          // JSON.stringify drops the row without a word. That is the same silent payload loss this
-          // area is about (issue #150), and fixing it here fixes it for rows already stored.
+          // NOTE: Explicit key/value rows. A LONE {{aiField}} the model supplied keeps its original
+          // type; a known aiField the model OMITTED is skipped (never emit ""); anything else
+          // interpolates to a string. Null-prototype because `payload[k] = v` with k "__proto__" on
+          // a plain object hits the inherited setter and JSON.stringify silently drops the row.
           const payload: Record<string, unknown> = Object.create(null);
           for (const { key, value } of bodyCfg.rows) {
             const k = key.trim();
@@ -897,10 +864,7 @@ export function buildHttpTool(
         } else {
           // Legacy "fields": assemble JSON from the non-path input fields (AI input keeps its type; a
           // fixed field contributes its interpolated value).
-          // NOTE: null-prototype, because `payload[k] = v` on a plain object hits the INHERITED
-          // setter when k is "__proto__" — the assignment succeeds, no own property is created, and
-          // JSON.stringify drops the row without a word. That is the same silent payload loss this
-          // area is about (issue #150), and fixing it here fixes it for rows already stored.
+          // NOTE: null-prototype, same "__proto__" silent-drop reason as the kv branch above.
           const payload: Record<string, unknown> = Object.create(null);
           for (const f of fields) {
             if (pathFields.has(f.name)) continue;
@@ -921,7 +885,7 @@ export function buildHttpTool(
         }
       }
 
-      // 3b. Auto-inject the credential per its predefined secret type (item 8), so a typed
+      // 3b. Auto-inject the credential per its predefined secret type, so a typed
       // credential needs no hand-written header. Skips if the operator already set the target header/
       // param manually (their explicit value wins, including a {{secret}} they wrote themselves).
       if (secret && def.credentialKind) {
@@ -951,63 +915,46 @@ export function buildHttpTool(
           : {}),
       });
 
-      // 5. Fetch — no redirects, and one bound over the WHOLE exchange. Not a bound on the
-      // headers: `fetchBounded` reads the body under the same armed timer, because a provider that
-      // answers at once and then stalls mid-body used to leave this line pending forever (#464).
-      // It also caps what the read retains, which is the other half of the same defect.
-      // ASKED HERE, immediately before the send, and not at handler entry: everything above this
-      // line can wait (credential resolution is a DB read, the ack is a network write), and the
-      // point of the check is to catch a budget that ran out DURING that waiting. Refused rather
-      // than thrown so the model is told, and phrased as the tool not having run, because it did
-      // not.
+      // NOTE: 5. Fetch, no redirects, with one bound over the WHOLE exchange: `fetchBounded` reads
+      // the body under the same timer (a provider can stall mid-body) and caps what it retains.
+      // The budget is checked HERE, not at handler entry, to catch it running out during the waits
+      // above (DB read, ack). Refused rather than thrown so the model is told the tool did not run.
       if (deps.expiresOn?.aborted) {
         return "Could not call the tool (the run's time budget ran out before the request was sent).";
       }
       // Asked HERE, past every wait this handler makes (the ack, the credential, the SSRF lookup)
       // and immediately before the send. See `stillWanted` on the deps.
       if (deps.stillWanted && !(await deps.stillWanted().catch(() => true))) {
-        // Nothing left the process here — the acknowledgement, when there is one, is the exit
-        // ABOVE, and that one is a message the customer already got (review round 36).
+        // NOTE: Nothing left the process here: the acknowledgement, when there is one, went out
+        // ABOVE and is a message the customer already got.
         deps.onNoEffect?.(def.name);
         return "Could not call the tool (the run was called off before the request was sent).";
       }
       const { res, body: responseBody } = await fetchBounded(
         url.toString(),
-        // The deadline rides in `init.signal`, which `bounded` already relays onto its own
-        // controller, so a request that DOES get sent is cancelled when the budget ends instead of
-        // running to its own timeout past the end of the tick. Through the existing relay rather
-        // than a new option: the timer there has to be able to cut the BODY read too, and two
-        // controllers racing for that is how the #464 defect came back.
+        // NOTE: The deadline rides in `init.signal`, which `bounded` relays onto its own
+        // controller, so a sent request is cancelled when the budget ends. Not a new option: that
+        // timer must also cut the BODY read, and two controllers racing for it lose the body bound.
         { method, headers, body, redirect: "error", signal: deps.expiresOn },
         { timeoutMs, fetchImpl: doFetch },
       );
 
       const text = responseBody.text;
-      // THE PROJECTION, and it runs BEFORE the clip because that ordering is the feature. In the
-      // response #456 measured, every status-bearing field sat past char 4000: rendering after the
-      // cut could never have reached one. The clip below still applies to whatever comes out, as a
-      // backstop — a template with many tokens, or one long value, can still overrun.
+      // NOTE: THE PROJECTION runs BEFORE the clip: the fields a template wants can sit past the
+      // clip point, where rendering after the cut could never reach them. The clip still applies
+      // to the rendered text as a backstop (many tokens, or one long value, can overrun).
       const rendered = projectResponse(def, deps, res.status, text);
       const modelBody = rendered.text ?? text;
       const trimmed = clipToModelLimit(modelBody, maxChars).text;
-      // The clip is otherwise invisible from both ends: the model reads `…[truncated]` as an end,
-      // and the operator reads a plausible answer. Reported for a TEMPLATED response too — the
-      // first draft guarded this on "did it render", reasoning that an operator whose own text
-      // overran already knows about it, and the mutation battery kept that condition alive with no
-      // test able to tell either way. It is the same silent hole (the model loses the tail), so
-      // what differs is only the ADVICE.
-      //
-      // And the advice needs three branches, not two, because "it did not render" covers a tool
-      // that has no template AND a tool whose template deliberately does not apply here. Telling
-      // the second one to declare a template names something it already did, for a case where a
-      // template is not the remedy.
+      // NOTE: The clip is otherwise invisible from both ends: the model reads `…[truncated]` as an
+      // end, the operator a plausible answer. Reported for a TEMPLATED response too (same lost
+      // tail), with different ADVICE: "did not render" splits into no template versus a template
+      // that deliberately does not apply here, where "declare a template" would be wrong.
       if (modelBody.length > maxChars) {
         const templated = rendered.text !== null;
-        // A SECOND CUT, upstream of this one and reported separately: past the read cap the body
-        // arrives truncated, so a JSON response stops parsing and a template that would have
-        // applied reports itself as "not JSON". Without this branch the advice sends the operator
-        // to fix a template that was never the problem — and the count would be the cap rather
-        // than the size their provider actually answered with.
+        // NOTE: A SECOND CUT, upstream: past the read cap the body arrives truncated, so JSON stops
+        // parsing and the template reports "not JSON". Without this branch the advice would blame
+        // a sound template and report the cap instead of the provider's real size.
         const capped = responseBody.chars > text.length;
         const advice =
           rendered.skipped === null
@@ -1038,16 +985,13 @@ export function buildHttpTool(
           ),
         });
       }
-      // NOTE: By default every non-2xx is an integration failure worth alerting on — a broken
-      // credential, a provider outage, a rejected payload (issue #40) — unless the operator declared
-      // this status a result for this tool (issue #59). The model sees the same "HTTP <status>" body
-      // in both cases; only the failure marking moves.
+      // NOTE: By default every non-2xx is an integration failure worth alerting on (a broken
+      // credential, an outage, a rejected payload) unless the operator declared this status a result
+      // for this tool. The model sees the same "HTTP <status>" body either way.
       const resultText = `HTTP ${res.status}\n${trimmed}`;
-      // THE REGISTRATION, and it hangs off 2xx alone rather than off `isExpectedResult`. Those two
-      // answer different questions: `expectedStatuses` says "this status is a result, not an
-      // integration failure", which is how a lookup declares that its 404 means "no record" (issue
-      // #59). A 404 is not a booking. Registering on every status the operator called a result would
-      // record an appointment out of the response that says there is none.
+      // NOTE: THE REGISTRATION hangs off 2xx alone, not `isExpectedResult`: a lookup may declare its
+      // 404 a result ("no record"), and registering on it would record an appointment out of the
+      // response that says there is none.
       if (res.status >= 200 && res.status < 300) {
         await registerDeclaredAppointment(def, deps, text);
       }

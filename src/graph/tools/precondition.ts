@@ -20,21 +20,13 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// Wraps ONE assembled tool in its operator-declared precondition (issue #101). The wrap happens at
-// the single seam where every source's tools meet (prepare.ts, after dropDuplicateToolNames), so
-// native, document, HTTP, MCP, toolpack and RAG are all covered by the same six lines rather than by
-// six copies of the check.
-//
-// The refusal reaches the model as a NORMAL tool result, not as a ToolFailure (tools/failure.ts).
-// That distinction is the one that file draws and it holds here: a ToolFailure means the integration
-// broke and should page an operator, while a precondition doing its job is the system working. The
-// flow log still gets a line — via `onRefused` — because an operator does need to see a rule firing,
-// just not as an incident.
-// Why a REASON rides along with the refusal: the two ways a call gets refused are the same to the
-// model and opposite to the operator. A condition that is simply unmet is the rule working, and
-// pages nobody. A state read that FAILED refused it without knowing anything about the condition —
-// and it refuses EVERY guarded call for as long as it lasts, so an operator whose database is
-// timing out would otherwise watch every guarded tool go quiet with `info`/`ok` as the only trace.
+// Wraps ONE assembled tool in its operator-declared precondition, at the single seam where every
+// source's tools meet (prepare.ts, after dropDuplicateToolNames). The refusal reaches the model as a
+// NORMAL tool result, not a ToolFailure (tools/failure.ts): a precondition doing its job is the
+// system working, not a broken integration; the flow log still gets a line via `onRefused`.
+// The REASON separates the two refusals that look alike to the model: an unmet condition pages
+// nobody, while a FAILED state read refuses every guarded call for as long as it lasts, and would
+// otherwise show only as `info`/`ok`.
 export type RefusalReason = "unmet" | "unreadable";
 
 export function guardedTool(
@@ -166,9 +158,8 @@ export function applyToolPreconditions(
   });
 }
 
-// The flow-log line for one refusal, and the LEVEL is the whole point of the function existing
-// separately: it is the difference between "the operator's rule fired" and "the database is down",
-// and it was the same line for both until round 5 of PR #378.
+// The flow-log line for one refusal. The LEVEL is why this is its own function: it separates "the
+// operator's rule fired" from "the database is down".
 export function preconditionFlowEvent(info: {
   tool: string;
   cond: ToolPrecondition;
@@ -178,16 +169,10 @@ export function preconditionFlowEvent(info: {
   const unreadable = info.reason === "unreadable";
   return {
     stage: "tool",
-    // NOTE: INFO for an unmet condition, deliberately. A precondition refusing a call is the system
-    // working as the operator configured it, and warn/error is what reaches the alert channels: a
-    // rule that fires on every third conversation would otherwise page all day. It still has to be
-    // VISIBLE, because "the agent never hands off any more" is exactly the report this feature will
-    // generate, and the answer has to be one line away in the Logs page.
-    //
-    // NOTE: WARN when the state could not be READ, and that one IS an incident. The refusal was decided
-    // by a failed database read rather than by the rule, it applies to every guarded tool at once,
-    // and it lasts as long as the fault does — the definition of what an alert channel is for. The
-    // model is told the same sentence either way; only the operator sees the difference.
+    // NOTE: INFO for an unmet condition: warn/error reaches the alert channels, and a rule firing on
+    // every third conversation would page all day, yet it stays one line away in the Logs page.
+    // WARN when the state could not be READ: that refusal hits every guarded tool for as long as the
+    // fault lasts, which is an incident. The model is told the same sentence either way.
     level: unreadable ? "warn" : "info",
     status: unreadable ? "error" : "ok",
     detail: {
@@ -198,9 +183,8 @@ export function preconditionFlowEvent(info: {
       // flow-log detail is PII-free by contract (modules/flowlog).
       preconditionKey: info.cond.key,
       preconditionScope: info.cond.scope,
-      // NOTE: The error's CLASS, never its message. A driver error carries the failing query — and, in
-      // this codebase's own measured case, the connection string — and this detail is rendered in
-      // the console.
+      // NOTE: The error's CLASS, never its message: a driver error can carry the failing query and
+      // even the connection string, and this detail is rendered in the console.
       ...(unreadable
         ? { error: info.err instanceof Error ? info.err.name : "unknown" }
         : {}),

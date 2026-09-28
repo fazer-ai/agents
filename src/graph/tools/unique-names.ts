@@ -1,37 +1,13 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { FlowEvent } from "@/modules/flowlog/service";
 
-// One agent, one meaning per tool name.
-//
-// The toolset is assembled from independent sources — native tools, document templates, HTTP tool
-// definitions, MCP servers, toolpacks, knowledge bases — and only some of them can be asked about
-// when a name is written down. An MCP server names its own tools when it is contacted, and a
-// toolpack's names come from the pack, so "is this name still free?" is a question no authoring-time
-// check can finish answering. The assembly is the one place that sees every name at once, so it is
-// where the answer is decided; the write-time checks that CAN run (a document slug against the
-// built-ins) stay, because an error at the keyboard beats a surprise at the turn.
-//
-// What a duplicate costs if it survives to here: the model is handed two functions with one name.
-// Providers differ on what they do with that — some reject the request outright, taking the agent
-// silent — and LangGraph's ToolNode resolves a call by the first match, so the operator sees one
-// tool's arguments arriving at the other tool's implementation.
-//
-// DROPPED rather than fatal: refusing to build the toolset would take a whole agent down over one
-// name, while dropping leaves every other tool working and exactly one tool missing. The names that
-// lost are returned rather than swallowed, so the caller can say so.
-//
-// EARLIER WINS, and the order the toolset is built in is the precedence. That order puts the native
-// tools first, which is the half that matters: they are the ones the operator cannot rename.
-//
-// AND A NATIVE NAME IS RESERVED EVEN WHEN THE NATIVE IS NOT BUILT (issue #457, review round 5).
-// Ordering only defends a name the native tool actually claims this turn, and `buildNativeTools`
-// drops the ones outside the agent's allowlist — so an agent with `handoff_to_human` turned off left
-// the name free for an HTTP or toolpack tool to answer under. The rest of the repo already reasons
-// as if that could not happen: tool preconditions restrict rules to native names on the argument
-// that a native's name IS its identity, and the hand-back decision reads a `handoff_to_human` result
-// as a transfer that really happened (../handback.ts). `reserved` is what makes that argument true
-// unconditionally rather than only while the native is granted. The name is reported as dropped like
-// any other collision, so the operator sees it in the Logs page instead of guessing.
+// One agent, one meaning per tool name. Only the assembly sees every name at once (MCP and toolpack
+// names are known only when built), and a duplicate that reached the model would be rejected by some
+// providers or routed by ToolNode's first match to the wrong implementation. Duplicates are DROPPED,
+// not fatal, so one name cannot take the agent down; EARLIER WINS, and natives come first. `reserved`
+// holds native names even when the native is not built, because preconditions and the hand-back read
+// a native's name as its identity (docs/graph.md, tool preconditions). Dropped names are returned so
+// the caller can report them.
 export function dropDuplicateToolNames(
   tools: StructuredToolInterface[],
   reserved: readonly string[] = [],
@@ -53,15 +29,9 @@ export function dropDuplicateToolNames(
   return { tools: kept, dropped };
 }
 
-// The flow-log line for a tool that lost its name (#389). The process log above already said it, and
-// that is the half nobody reads: the operator's report is "the agent stopped booking appointments",
-// and the answer to it has to be one line away in the Logs page, next to the turn where the tool was
-// missing. The sibling case one seam over — a precondition matching no assembled tool — has been
-// reported this way since #101; this is the same class of static misconfiguration decided at the same
-// moment, and it was the only one of the two the console could not show.
-//
-// INFO, not warn, for that sibling's reason: a duplicate stands until the operator renames something,
-// so a warn would page the alert channels once per turn for as long as it lasts.
+// The flow-log line for a tool that lost its name, so the operator sees the missing tool in the Logs
+// page next to the turn. INFO, not warn: a duplicate stands until the operator renames something, so
+// a warn would page the alert channels once per turn for as long as it lasts.
 export function droppedToolNamesEvent(dropped: string[]): FlowEvent {
   return {
     stage: "tool",

@@ -6,24 +6,17 @@ import {
 } from "@/api/features/realtime/realtime.service";
 import { SKIP_REPLY_TOOL } from "@/graph/silence";
 
-// Surfaces COARSE, real-time agent progress to the operator as a transient
-// "typing indicator" on the per-tenant realtime channel. It is a LangChain
-// callback handler bound to the running turn: the model generating → "thinking",
-// a tool executing → "tool" (+ the tool's name so the UI can show a specific
-// label). Metadata only (an enum + a tool name, which is operator config they
-// already see), never message content. No-op when the conversation has no mirror
-// row id — there is nothing for the UI to key the indicator on. Broadcasts are
-// non-throwing (the realtime publish swallows), as a callback handler must be;
-// they are also not awaited (a fire-and-forget publish), unlike UsageCapture.
+// Surfaces coarse, real-time agent progress ("thinking", "tool" + name) to the operator as a
+// transient typing indicator on the per-tenant realtime channel. Metadata only, never message
+// content. No-op without a mirror row id (nothing for the UI to key on). Broadcasts never throw, as
+// a callback handler must not, and are fire-and-forget, unlike UsageCapture.
 
 export interface StatusTarget {
   tenantId: bigint;
   conversationDbId: bigint | null;
-  // Whether the TURN has already put something in front of the customer. Rides on the `skip_reply`
-  // step and on nothing else, because that indicator is the one that asserts a silence: mid-turn the
-  // operator has no trail to consult, and this bubble is exactly what they are looking at a second
-  // after a transfer landed in their queue (issue #726). Absent ⇒ the question was not answered, and
-  // the UI keeps today's label rather than inventing either answer.
+  // Whether the TURN has already put something in front of the customer. Rides only on the
+  // `skip_reply` step, the indicator that asserts a silence, which the operator reads right after a
+  // transfer lands. Absent means unanswered: the UI keeps its default label rather than guess.
   turnDelivered?: () => boolean;
 }
 
@@ -54,9 +47,8 @@ export class AgentStatusReporter extends BaseCallbackHandler {
       stage,
       tool,
       balloons: extra?.balloons ?? null,
-      // A fragment and not a null, for the same reason the flow line spells it that way: a client
-      // that sees the key reads it as an answer, and `false` everywhere would have every step
-      // asserting that nothing was delivered.
+      // NOTE: omitted rather than null: a client that sees the key reads it as an answer, and
+      // `false` everywhere would have every step asserting nothing was delivered.
       ...(extra && "delivered" in extra ? { delivered: extra.delivered } : {}),
     });
   }

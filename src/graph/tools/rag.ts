@@ -40,13 +40,11 @@ const NO_GROUNDED_INFO =
 // length-bounded and the whole list capped, so a verbose KB description never bloats the prompt.
 const SEARCH_BASE_DESC =
   "Search the knowledge base for information to help answer the customer. Returns the most relevant passages.";
-// NOTE: The contract, not just the mechanics. Approval copies `content` into the knowledge base
-// verbatim, and a later answer is grounded ONLY on what search returns — so a hedge written into the
-// content ("solicita-se validação") is embedded and comes back as a hedge in every answer on that
-// subject, forever (issue #81). Told only "propose an entry for human review", a model reasonably
-// writes a message TO the reviewer, and hedging is the polite register for that. Naming the reader
-// (the future retrieval, not the reviewer) and pointing doubt at `rationale` is the fix at the
-// source, the same way grounding is a runtime invariant instead of a habit each tenant rediscovers.
+// The contract, not just the mechanics. Approval copies `content` into the knowledge base
+// verbatim and later answers are grounded ONLY on what search returns, so a hedge written into the
+// content ("solicita-se validação") comes back as a hedge in every answer on that subject. Told only
+// "propose an entry for human review", a model writes TO the reviewer, and hedges; naming the reader
+// (the future retrieval) and pointing doubt at `rationale` prevents that at the source.
 const SUGGEST_BASE_DESC =
   "Propose a new knowledge-base entry for human review. It is queued for approval and is NOT used until a human approves it. On approval the `content` becomes the entry EXACTLY as you wrote it, and later answers are grounded on that text alone — so write it as a standalone statement that reads correctly with no conversation around it. Conditions, limits and exceptions that are PART OF THE FACT belong in the content and must be kept there ('free shipping above R$200', 'only for contracts signed after March'): dropping them would store a rule that is wrong outside its conditions. What does not belong is doubt ABOUT the fact — 'please confirm', 'subject to validation' — or any commentary about the suggestion itself, because approval turns that text into the answer the agent gives from then on. Uncertainty and provenance go in `rationale`, which the reviewer reads and which never enters the knowledge base.";
 
@@ -122,7 +120,7 @@ function chunkSource(meta: unknown): { title?: string; url?: string } {
 }
 
 // One retrieved passage as the model reads it: the base it came from and, for an article synced from a
-// help center portal, the article's public URL (issue #794), so the agent can hand the customer the
+// help center portal, the article's public URL, so the agent can hand the customer the
 // link the article lives at instead of guessing one.
 export function passageWithSource(
   h: Pick<ChunkHit, "knowledgeBaseName" | "documentUrl" | "content">,
@@ -195,7 +193,7 @@ function searchTool(ctx: RagToolCtx) {
       limit?: number;
       knowledge_base?: string;
     }) => {
-      // How many times the query embedding had to be asked again, for the tool line (issue #844): a
+      // How many times the query embedding had to be asked again, for the tool line: a
       // slow search is then attributed to the provider on the line itself, not guessed at.
       let retries = 0;
       const hits = await searchKnowledge({

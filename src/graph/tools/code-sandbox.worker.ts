@@ -1,15 +1,8 @@
-// The thread that runs ONE operator-authored code tool body and exits. Spawned per call by
-// code-sandbox.ts, which explains why a thread and why a fresh one; this file is the interpreter
-// side of that contract and knows nothing about the tool.
-//
-// The interpreter is QuickJS compiled to WebAssembly (quickjs-emscripten): a real JavaScript engine
-// with no ambient authority. Its global object has exactly what ECMAScript defines plus the
-// `console` installed below — no fetch, no process, no require, no timers, no way to reach this
-// thread's globals — and the runtime enforces a CPU deadline (the interrupt handler), a heap
-// ceiling and a stack ceiling. Measured before the design was settled: a `while(true)` returns
-// "interrupted" at the deadline, an unbounded `push` returns "out of memory", `/(a+)+$/` on 28
-// characters is interrupted rather than run to completion, and `Object.getOwnPropertyNames(
-// globalThis)` lists the standard constructors and nothing else.
+// The thread that runs ONE operator-authored code tool body and exits, spawned per call by
+// code-sandbox.ts; this file is the interpreter side and knows nothing about the tool. QuickJS over
+// WebAssembly has no ambient authority: its global object is ECMAScript plus the `console` below
+// (no fetch, process, require, timers or path to this thread's globals), and the runtime enforces a
+// CPU deadline (the interrupt handler), a heap ceiling and a stack ceiling.
 import variant from "@jitl/quickjs-wasmfile-release-sync";
 import {
   newQuickJSWASMModuleFromVariant,
@@ -48,10 +41,9 @@ export interface SandboxCall {
 
 export type SandboxReply =
   | { kind: "ready" }
-  // The interpreter could not be set up for this request — the runtime, the context, the renderer
-  // or a prelude failed before the snippet ran. Ours, not the snippet's: the host reports it as
-  // the sandbox being unavailable, where an uncaught error here read as the snippet's abort and
-  // told the model to simplify and retry, every turn (round 18).
+  // The interpreter could not be set up for this request (runtime, context, renderer or a prelude
+  // failed before the snippet ran). Ours, not the snippet's: reported as unavailable, since reading
+  // it as the snippet's abort would tell the model to simplify and retry on every turn.
   | { kind: "unavailable"; reason: string }
   | { kind: "value"; value: string; logs: string[]; ms: number }
   | {
@@ -80,10 +72,9 @@ function limitOf(e: ThrownValue): SandboxLimit | undefined {
 const QuickJS = await newQuickJSWASMModuleFromVariant(variant);
 
 // Renders a value the way the model should read it, INSIDE the interpreter: JSON where JSON can say
-// it, and a spelling where it cannot. `vm.dump` would not do — it JSON-stringifies inside the VM
-// with no replacer, so an object holding a BigInt comes out as "[object Object]", a nested NaN as
-// null, a Map as {}. Measured, each of them. The walk carries its ancestors so a cycle is named
-// rather than thrown, and stops at a depth no snippet result legitimately reaches.
+// it, and a spelling where it cannot. Not `vm.dump`, which stringifies with no replacer, so a BigInt
+// holder comes out as "[object Object]", a nested NaN as null, a Map as {}. The walk carries its
+// ancestors so a cycle is named rather than thrown, and stops at a depth no result reaches.
 const RENDER_SOURCE = `(function () {
   // The bindings this walker names, taken now, before any snippet runs: a snippet that writes
   // \`const Date = 1\` shadows the global for everything evaluated after it, this function included,
@@ -167,9 +158,9 @@ function makeRenderer(vm: QuickJSContext): {
       if (r.error) {
         return { ok: false, error: r.error };
       }
-      // NOTE: The length is read off the VM string without copying it, and a result the VM side did
-      // not cut is refused rather than copied — the fence on "bounded before it crosses". Measured
-      // before: a 15-million-character result added 101 MB of RSS for one call (PR #485, round 10).
+      // NOTE: the length is read off the VM string without copying it, and a result the VM side did
+      // not cut is refused rather than copied: copying it would put an unbounded string in the
+      // host's heap, past the fence on "bounded before it crosses".
       const lengthHandle = vm.getProp(r.value, "length");
       const length = vm.getNumber(lengthHandle);
       lengthHandle.dispose();
@@ -181,17 +172,15 @@ function makeRenderer(vm: QuickJSContext): {
       r.value.dispose();
       return { ok: true, text: s };
     },
-    // NOTE: A handle still alive when the context goes trips an assertion inside JS_FreeRuntime
-    // (measured: every call printed it until this line existed). The renderer's function handle is
-    // the one that outlives the snippet, so it is released by hand, before the context.
+    // NOTE: a handle still alive when the context goes trips an assertion inside JS_FreeRuntime.
+    // The renderer's function handle outlives the snippet, so it is released by hand, first.
     dispose: () => fn.dispose(),
   };
 }
 
 // A NUL or half a character the snippet built (`String.fromCharCode(0)`, a lone surrogate) would
-// ride a console line or an error message into the ToolMessage, whose checkpoint is a jsonb write
-// Postgres refuses — the turn would fail instead of returning the result (round 20). Repaired here,
-// where the strings are made, the way every other third-party writer's text is.
+// ride a console line or an error message into the ToolMessage, whose jsonb checkpoint Postgres
+// refuses, failing the turn. Repaired here, where the strings are made.
 const storable = makeStorable;
 
 function clip(s: string, max: number): string {
@@ -199,12 +188,10 @@ function clip(s: string, max: number): string {
 }
 
 // `console` with the five methods a snippet reaches for, all writing to the same captured list.
-// Each argument is rendered like a result would be, so `console.log({a: 1})` reads back as JSON and
-// not as "[object Object]". The methods are VM code, and they cut each line to the budget BEFORE
-// handing it to the host: a `console.log("x".repeat(15_000_000))` used to cross the boundary whole
-// — copied out of the interpreter's 32 MB heap into the host's, where nothing bounds it — and
-// measured +75 MB of RSS for one call, +143 MB for eight at once (PR #485, round 8). What reaches
-// `emit` is at most one budget's worth, and the budget also caps how many calls reach it at all.
+// Each argument is rendered like a result, so `console.log({a: 1})` reads back as JSON. The methods
+// are VM code and cut each line to the budget BEFORE handing it to the host: an uncut line would be
+// copied out of the interpreter's heap into the host's, where nothing bounds it. What reaches `emit`
+// is at most one budget's worth, and the budget also caps how many calls reach it at all.
 const CONSOLE_SOURCE = `(function (emit, render, maxChars) {
   var total = 0;
   // One past the budget, so the host still sees the overflow and writes its marker.
@@ -275,26 +262,13 @@ function installConsole(
   emit.dispose();
 }
 
-// Two validators the snippet can call instead of writing the algorithm. They exist because of a
-// measurement, not a guess: with only the generic tool, gpt-4o-mini asked to validate the issue's
-// CPF wrote a wrong algorithm in 2 of 6 runs (a `% 11` without the `* 10`, a second digit summed
-// over nine positions instead of ten) and each wrong program returned a confident `false` — the
-// authorship of the rule is where the model's error moves once the comparison leaves it. A
-// check-digit routine that every Brazilian tenant needs is cheaper to ship once than to have
-// rewritten per turn. The CNPJ one accepts the alphanumeric format (letters count as their ASCII
-// code minus 48, the two check digits stay numeric), verified against the published example
-// `12.ABC.345/01DE-35`.
-
-// `Date` in the agent's zone. The interpreter's own Date follows the HOST's zone (UTC in the
-// container), and a Bun worker cannot be given another one (measured: `process.env.TZ` assigned
-// inside the worker, or passed as its env, changes nothing) — nor should it, since the process zone
-// is shared by every turn in flight. So the zone is applied inside: one host function answers the
-// zone's offset at an instant (Intl lives on the host), and this prelude re-defines, on top of it,
-// everything in Date that is local — the getters and setters, the component constructor, parsing of
-// a date-time with no offset, and toString — while getTime, toISOString and the UTC methods stay the
-// engine's. The two wall times without a single answer follow the spec (and Bun, which is where the
-// tests' reference values come from): a time inside a spring gap keeps the offset from before it,
-// a time that happens twice in autumn is its first occurrence.
+// `Date` in the agent's zone. The interpreter's Date follows the HOST's zone, and a Bun worker cannot
+// be given another (`process.env.TZ` in the worker changes nothing; the process zone is shared by
+// every turn anyway). So one host function answers the zone's offset at an instant (Intl lives on
+// the host), and this prelude re-defines everything local in Date (getters, setters, the component
+// constructor, offset-less parsing, toString); getTime, toISOString and the UTC methods stay the
+// engine's. A time in a spring gap keeps the offset from before it; a repeated autumn time is its
+// first occurrence (the spec, and Bun, which the tests' reference values come from).
 const DATE_SHIM_SOURCE = `(function (offsetAt) {
   var NativeDate = Date;
   // Taken now, before any snippet, like the renderer's: a top-level const named isNaN reached
@@ -550,14 +524,11 @@ const RENDER_BUDGET_MS = 200;
 const ERROR_NAME_MAX_CHARS = 100;
 
 // The engine's own limit is a QuickJS error; the HOST's is a RangeError thrown by JSC through the
-// WASM frames, when the interrupt handler (a JS callback, fired every 10k opcodes) is entered at a
-// depth the thread's native stack cannot take. Measured with the budget at 512 KiB: the native
-// limit came first (~2,400 frames on macOS), and only when an interrupt happened to fire deep, so
-// the recursion test passed by phase. The frames that throw unwinds never ran their epilogues (the
-// shadow stack pointer is wherever the deepest one left it), so after it NOTHING in the interpreter
-// is called again — no dump, no dispose; the thread is discarded with the reply. Left uncaught, the
-// RangeError was what killed the thread (`stack` came back as `aborted`). The budget is sized so
-// this is the exception (code-sandbox.ts), and this is what a thread with less room gets.
+// WASM frames when the interrupt handler (a JS callback every 10k opcodes) is entered deeper than
+// the thread's native stack allows. Those frames never ran their epilogues, so after it NOTHING in
+// the interpreter is called again (no dump, no dispose); the thread is discarded with the reply.
+// Uncaught, the RangeError would kill the thread and read as `aborted` instead of `stack`. The
+// budget (code-sandbox.ts) makes this the exception, for a thread with less room.
 const HOST_STACK_LIMIT = {
   ok: false,
   error: { name: "InternalError", message: "stack overflow" } as ThrownValue,
@@ -597,16 +568,11 @@ function evaluate(
   };
 }
 
-// Reading a thrown value RUNS the snippet's code again: `message` can be a getter, `toString` a
-// method, and both are the snippet's. n8n's Python sandbox was escaped through exactly that seam
-// (CVE-2026-0863: the formatting of an attacker-built exception ran outside the sandbox's checks).
-// Here the read happens inside the interpreter, so the snippet's own deadline still governs it, and
-// an interrupted read is reported as such rather than thrown. Measured: a getter that loops forever
-// comes back at the deadline. The deadline is deliberately NOT renewed for this read — renewing it
-// handed that getter 200 ms more, and a legitimate error object takes microseconds to read. The
-// reader also CUTS name, message and stack to one past the budget before anything crosses the
-// boundary: `throw new Error("y".repeat(15_000_000))` used to be copied whole into the host's heap
-// (PR #485, round 10), and the bindings it uses are taken before any snippet runs.
+// Reading a thrown value RUNS the snippet's code again (`message` can be a getter, `toString` a
+// method); n8n's Python sandbox was escaped through that seam (CVE-2026-0863). The read happens
+// inside the interpreter, under the snippet's own deadline, NOT renewed (renewing hands a looping
+// getter more time; a real error object reads in microseconds). Name, message and stack are cut to
+// one past the budget before crossing, and the bindings are taken before any snippet runs.
 const DESCRIBE_ERROR_SOURCE = `(function () {
   var stringify = JSON.stringify, Str = String;
   return function (e, max) {
@@ -632,15 +598,11 @@ const DESCRIBE_ERROR_SOURCE = `(function () {
   };
 })()`;
 
-// A body that returns a promise is a body that did not finish, and the sandbox has no event loop to
-// finish it: `return Promise.resolve(42)` and `return (async () => 42)()` both reach the renderer as
-// an object with no own keys and were reported as `Result: {}` with `failed: false` (round 31,
-// measured). The agent then read an empty object as the operator's verdict, and the async body that
-// THREW read the same way, so a broken tool looked like a working one answering nothing.
-//
-// Asked INSIDE the interpreter, because `.then` can be a getter and reading it is running the
-// body's code: under the render deadline, and a getter that throws answers `false` and leaves the
-// verdict to the render path, which reports a throw-while-reading as the error it is.
+// A body that returns a promise did not finish, and the sandbox has no event loop to finish it:
+// rendered, the promise is an object with no own keys, a `Result: {}` the agent would read as the
+// operator's verdict even when the async body threw. Asked INSIDE the interpreter, because `.then`
+// can be a getter (running the body's code): under the render deadline, and a throwing getter
+// answers `false`, leaving the render path to report the throw.
 const IS_THENABLE_SOURCE = `(function (v) {
   try {
     return v !== null
@@ -732,9 +694,8 @@ function makeErrorReader(
   };
 }
 
-// An error names its line, and the model needs the line more than the message: measured live,
-// gpt-4o-mini re-sent the same unparseable snippet nine times on "unexpected token in expression:
-// ''" alone. `offset` is the wrapper line the function-body retry adds above the snippet.
+// An error names its line, and the model needs the line more than the message: a bare "unexpected
+// token" leads a model to re-send the same unparseable snippet. `offset` is the wrapper line the function-body retry adds above the snippet.
 function withSourceLine(
   error: ThrownValue,
   code: string,
@@ -824,7 +785,7 @@ function run(req: SandboxRequest): SandboxReply {
     if (out.ok) {
       // NOTE: Rendering runs interpreter code too, on its own short deadline: a snippet that spent its
       // whole budget building the value would otherwise have its result interrupted mid-render and
-      // come back as "[object Object]" (measured, and fenced by test).
+      // come back as "[object Object]" (fenced by test).
       renewDeadline();
       // BEFORE the render, because the render is what turns a promise into `{}`.
       if (thenable.isThenable(out.value)) {
@@ -840,9 +801,9 @@ function run(req: SandboxRequest): SandboxReply {
       const rendered = render(out.value, req.maxChars);
       out.value.dispose();
       if (!rendered.ok) {
-        // The body threw WHILE its value was being read — a getter, a proxy trap. That is the same
-        // failure a `throw` in the body is, one step later, and reporting it as a value handed the
-        // agent "[object Object]" as a successful verdict with nobody alerted (round 19).
+        // NOTE: the body threw WHILE its value was being read (a getter, a proxy trap): the same
+        // failure as a `throw` in the body, not a value, or the agent reads "[object Object]" as a
+        // successful verdict with nobody alerted.
         const thrown = errors.read(rendered.error) as ThrownValue;
         return {
           kind: "error",
@@ -874,11 +835,9 @@ function run(req: SandboxRequest): SandboxReply {
       ...(out.limit ? { limit: out.limit } : {}),
     };
   } finally {
-    // NOTE: A runtime the host unwound through (HOST_STACK_LIMIT) is NOT freed: its frames never
-    // ran their epilogues, and `JS_FreeRuntime` asserts on what they left — measured, an engine
-    // abort printed on every such call. The reply still posts (the abort is caught here), so the
-    // outcome cannot tell; the fence is the fixture that reads the thread's stderr. The thread is
-    // discarded with the reply either way. Freeing is best effort on the normal path too.
+    // NOTE: a runtime the host unwound through (HOST_STACK_LIMIT) is NOT freed: its frames never ran
+    // their epilogues, and `JS_FreeRuntime` aborts on what they left. The reply still posts, so the
+    // outcome cannot tell; the fixture reading the thread's stderr fences it. Freeing is best effort.
     if (!unwound) {
       try {
         errors.dispose();

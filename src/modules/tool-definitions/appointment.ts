@@ -4,7 +4,8 @@
 // A DECLARATION, not a tool the agent calls: the Calendar toolpack registers a booking from its own
 // code, and an operator's tool can only match that through its definition. A separate native tool is
 // a call the model can omit, silently losing the follow-up pause. Reminders are OPT-IN, the record is
-// not: an appointment that arms no reminder is still a complete record.
+// not: a reminder is a message on top of whatever the operator's own system already sends, and an
+// appointment that arms no reminder is still a complete record.
 
 import { clipText, makeStorable, unstorableCodePoints } from "@/lib/text";
 import {
@@ -59,9 +60,8 @@ export function readAppointmentDeclaration(
   // through. `readProviderSlug` says null for both a malformed slug and for the reserved
   // `google_calendar`, so `?? DECLARED_PROVIDER` silently moved an explicitly named booking system
   // into the shared namespace: the book tool saved as `declared` while its paired cancel tool, spelled
-  // correctly, saved as `feegow`, and the cancellation then never found the record. The form has
-  // refused this since the third round; this is the same refusal on the REST/MCP path, which is where
-  // a declaration can also be written.
+  // correctly, saved as `feegow`, and the cancellation then never found the record. The form refuses
+  // this too; this is the same refusal on the REST/MCP path, where a declaration can also be written.
   if (bag.provider !== undefined && bag.provider !== null) {
     if (readProviderSlug(bag.provider) === null) return null;
   }

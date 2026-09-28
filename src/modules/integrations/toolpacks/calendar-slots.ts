@@ -128,10 +128,12 @@ export interface AggregateResult {
 
 // Availability across several calendars (one per professional: "who can see me first?"). Each is
 // computed SEPARATELY and merged; pooling busy intervals would answer when EVERY professional is
-// free. Chronological, ties in the operator's calendar order. The ceiling is on the total and drops
-// WHOLE start times (a half-listed time would call a free professional busy), and where it stopped
-// is REPORTED so the caller can continue. The first time is always kept, which is safe only because
-// the caller bounds the source count (MAX_AGGREGATE_CALENDARS in google-calendar.ts).
+// free. Chronological, ties in the operator's calendar order. The ceiling is on the total, not per
+// calendar: keeping each calendar's first N starts shrinks the searched RANGE, so an afternoon request
+// would answer "unavailable" with the afternoon free. It drops WHOLE start times (a half-listed time
+// would call a free professional busy), and where it stopped is REPORTED so the caller can continue.
+// The first time is always kept, safe only because the caller bounds the source count
+// (MAX_AGGREGATE_CALENDARS in google-calendar.ts).
 export function computeAggregatedSlots(input: AggregateInput): AggregateResult {
   const { sources, maxSlots, ...slotInput } = input;
   const decorated: Array<{ order: number; at: number; slot: AggregatedSlot }> =

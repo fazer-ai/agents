@@ -826,8 +826,8 @@ async function readBlockingWindows(
   // nothing but that same calendar: its own bookings already arrive via freeBusy, and reading it
   // as a blocker would turn its transparent events into blocks of itself. With siblings in the
   // query it MUST be read, because a calendar can be operable and still carry closures its
-  // siblings have to respect. Dropping it whenever it appeared in the query (an earlier revision
-  // of this change) made an all-day closure on a doubly-listed calendar invisible to everyone.
+  // siblings have to respect. Dropping it whenever it appears in the query would make an all-day
+  // closure on a doubly-listed calendar invisible to everyone.
   const out: Array<{ id: string; windows: BusyWindow[] }> = [];
   const blocking = blockingIds.filter((id) =>
     sources.some((s) => s.calendarId !== id),
@@ -993,8 +993,7 @@ function buildCheckAvailabilityTool(
         granularityMinutes: resolveSlotGranularity(sel.config),
         minLeadMinutes,
         // NOTE: Only when aggregating. The multiplication this bounds does not exist with one calendar,
-        // and what a single-calendar instance returns is not this change's to alter: capping it would
-        // shorten a list operators have been reading since before the feature existed.
+        // and capping a single-calendar result would shorten a list operators already rely on.
         maxSlots:
           sources.length > 1 ? MAX_SLOT_ENTRIES : Number.POSITIVE_INFINITY,
       });

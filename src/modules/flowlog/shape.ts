@@ -1,5 +1,6 @@
 // What a tool call may leave in `ExecutionLog.detail`, a column documented (docs/logs.md) as never
-// carrying message text or PII. Every argument and result value becomes its SHAPE, for every tool:
+// carrying message text or PII. Every argument and result value becomes its SHAPE, for every tool
+// (a per-tool allowlist would leave privacy to each tool's author and fail open until they decide):
 //   { cpf: "12345678900", limit: 5, filtro: { status: "pago" } }
 //     → { cpf: "string(11)", limit: "number", filtro: { status: "string(4)" } }
 // KEYS are named only at the top level of a tool's arguments, matched against the parameters the

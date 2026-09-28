@@ -592,8 +592,8 @@ export async function approveApprovalItem(params: {
   // NOTE: The content used to come from the phase-1 snapshot, which is a lost update as soon as a
   // second reviewer can edit: A starts approving and reads the hedged text, B saves a revision (the
   // row becomes EDITED, which the claim still accepts), A claims and stores its stale snapshot. Both
-  // are told it worked and the un-revised text is what got embedded — precisely the outcome this
-  // issue is about. `RETURNING` makes the claim and the read one operation, so whatever the row
+  // are told it worked and the un-revised text is what got embedded — precisely the outcome the
+  // review exists to prevent. `RETURNING` makes the claim and the read one operation, so whatever the row
   // holds at claim time is what is approved.
   const claimed = await claimApprovalForStorage(ctx, params.id, base);
   if (!claimed) return { outcome: "not-pending" };

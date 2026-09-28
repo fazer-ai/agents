@@ -667,7 +667,7 @@ export async function updateDocument(
     const mark = <T extends object>(p: T) => (hidden ? markUndisclosed(p) : p);
     const beforeProj = mark(docAuditProjection(existing.row));
     const afterProj = mark(docAuditProjection(updated));
-    // NOTE: The action this issue invents: `PATCH /v1/knowledge/documents/:id` has no MCP twin, so
+    // NOTE: This action exists because `PATCH /v1/knowledge/documents/:id` has no MCP twin, so
     // an edit to a document reached the trail through nothing at all. Recorded only when it moved,
     // which for a body means its LENGTH moved or the title did: the text itself is neither carried
     // nor compared here (`reingest` above compares it, and that is the ingest's business).

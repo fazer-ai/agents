@@ -118,7 +118,7 @@ export async function writeFlowEvent(
           // the size policy `detail` is under — it is standing in for a scrub that does not
           // exist: a provider's error text is not allowlisted the way `detail` is, and it can
           // echo the customer's own message back (a content-filter refusal quoting the input).
-          // Lifting it would widen PII exposure to buy nothing this issue asked for.
+          // Lifting it would widen PII exposure for no gain.
           errorMessage: ev.errorMessage
             ? sanitizeErrorMessage(ev.errorMessage)
             : undefined,

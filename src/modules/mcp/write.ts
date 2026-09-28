@@ -649,8 +649,7 @@ export async function agentSettingsSet(
     );
     // NOTE: PROJECTED, like the read — the same question asked in a third place. A client is expected to
     // reuse the preview's `after` (that is what a dry run is for), so a diff carrying the fields the
-    // write refuses hands back a document that the apply rejects. Fixing `agent_settings_get` alone
-    // left this one, which is the shape of miss this PR is about.
+    // write refuses hands back a document that the apply rejects.
     const afterPreview = dropOutputOnlyInputFields(
       readBehaviorSettings(nextBag),
     );

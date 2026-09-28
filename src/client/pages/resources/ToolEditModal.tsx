@@ -807,7 +807,7 @@ export function PathPicker({
   // NOTE: set by a pick when this caller restores focus itself, read once by `onCloseAutoFocus`.
   // Every other way out of the offer keeps Radix's return to the trigger.
   const pickedRef = useRef(false);
-  // The filter is per visit, and clearing it in `onOpenChange` would miss the ordinary way out.
+  // NOTE: The filter is per visit, and clearing it in `onOpenChange` would miss the ordinary way out.
   // Every caller closes by setting the controlled `open` prop from its own `onPick`, which Radix
   // never sees: `onOpenChange` fires for the interactions IT handles, not for a prop the parent
   // changed. So the transition itself is what clears, whoever caused it.
@@ -2423,7 +2423,7 @@ export function ToolEditModal({
                   disabled={
                     !form.urlTemplate.trim() ||
                     urlTemplateInvalid ||
-                    // Deliberately separate from `urlTemplateInvalid`, which is false for a
+                    // NOTE: Deliberately separate from `urlTemplateInvalid`, which is false for a
                     // relative template on purpose. `buildHttpTool` refuses that shape before a
                     // request goes out, so without this the button spends a real round trip to be
                     // told what the form already knows, as Save does.

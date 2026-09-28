@@ -212,7 +212,9 @@ interface SplitState {
 // The example context for the signature preview, built through `buildPromptVars` (the function
 // production uses), so every variable the chips offer resolves here too. The CONTACT is an example;
 // the agent and the company are the operator's OWN, since a signature is mostly those two names.
-// The stand-ins cover an agent still being named and a tenant with no company name set.
+// The stand-ins cover an agent still being named and a tenant with no company name set. The preview
+// RENDERS through <Markdown>: the field is a plain textarea, so the preview is the only place that
+// shows whether `**Gi**` lands as bold or as four asterisks.
 export function signaturePreviewVars(
   agentName?: string | null,
   companyName?: string | null,
@@ -1314,6 +1316,9 @@ export function BehaviorTab({
     return on;
   }, [savedObservability, langfuseSendContent, judgedAt, t]);
 
+  // NOTE: Required while the gate is on: an enabled gate with no URL fails closed on every message.
+  // A `user:pass@` URL is refused as the reader refuses it (credentials belong in the vault), or the
+  // save would succeed on a field the runtime reads as unconfigured. See docs/contact-auth.md.
   const contactAuthUrlHasCredentials = (() => {
     try {
       const u = new URL(contactAuth.url.trim());

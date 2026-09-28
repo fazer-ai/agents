@@ -998,7 +998,7 @@ export function useKnowledgeManager(opts: {
       return (
         <span className="rounded-full bg-success/10 px-2 py-0.5 text-success text-xs">
           {t("knowledge.docStatus.READY", "{{count}} chunks", {
-            // `?? 0` because the column is nullable and i18next resolves the plural from a NUMBER:
+            // NOTE: `?? 0` because the column is nullable and i18next resolves the plural from a NUMBER:
             // a null lands in the `other` form for every value.
             count: doc.chunkCount ?? 0,
           })}

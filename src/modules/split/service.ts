@@ -207,7 +207,11 @@ export async function deliverReply(
     separator: SignatureSeparator;
     frequency: SignatureFrequency;
   } | null = null,
+  // False when the text is the operator's (a guardrail's template or hand-over message standing in
+  // for the reply): it keeps Chatwoot's Liquid. The model's text is escaped.
+  modelText = true,
 ): Promise<ReplyDelivery> {
+  const literal = modelText ? literalForChatwoot : (text: string) => text;
   return withFlowStage(
     flow,
     "split",
@@ -221,15 +225,15 @@ export async function deliverReply(
         const sendId = crypto.randomUUID();
         // NOTE: the same function on a one-element array: split off is one chunk, not a second rule.
         // NOTE: the model's text is escaped for Chatwoot's Liquid and the signature is not.
-        const [single = literalForChatwoot(reply)] = signature
+        const [single = literal(reply)] = signature
           ? attachSignature(
               [reply],
               signature.text,
               signature,
               undefined,
-              literalForChatwoot,
+              literal,
             )
-          : [literalForChatwoot(reply)];
+          : [literal(reply)];
         try {
           await client.sendMessage(conversationId, single, { sendId });
           return { delivered: 1, failed: false, unproven: false };
@@ -256,14 +260,8 @@ export async function deliverReply(
       // Chatwoot's Liquid after the cut, so the cut never lands inside an escape, and the signature is
       // attached as the operator wrote it.
       const chunks = signature
-        ? attachSignature(
-            rawChunks,
-            signature.text,
-            signature,
-            reply,
-            literalForChatwoot,
-          )
-        : rawChunks.map(literalForChatwoot);
+        ? attachSignature(rawChunks, signature.text, signature, reply, literal)
+        : rawChunks.map(literal);
       let delivered = 0;
       let failed = false;
       let unproven = false;
@@ -336,7 +334,7 @@ export async function deliverReply(
             // inexact). It also covers `once`: a landed top-signed first balloon is not among them.
             const owedWasSigned = rawChunks
               .slice(from)
-              .some((raw, k) => chunks[from + k] !== literalForChatwoot(raw));
+              .some((raw, k) => chunks[from + k] !== literal(raw));
             const owed =
               signature && owedWasSigned
                 ? (attachSignature(
@@ -346,9 +344,9 @@ export async function deliverReply(
                     // NOTE: whether the turn is signed was answered by the balloons; this asks only whether this
                     // message already carries a copy.
                     owedRaw,
-                    literalForChatwoot,
-                  )[0] ?? literalForChatwoot(owedRaw))
-                : literalForChatwoot(owedRaw);
+                    literal,
+                  )[0] ?? literal(owedRaw))
+                : literal(owedRaw);
             // NOTE: same 15s deadline, so it can be rejected after being accepted like any other send.
             const retrySendId = crypto.randomUUID();
             try {

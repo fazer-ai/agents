@@ -3887,6 +3887,64 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   // And the window inside the handoff path: the closing line is screened by the guardrail before it
   // goes out, which is a model call, so the answer taken before it is spent by the time it returns.
   // The rendezvous is the judge's own call, the same one the reply branch uses.
+  // The follow-up the output check replaced keeps the escape only when a model wrote the replacement:
+  // the operator's template keeps Chatwoot's Liquid, a generated reply is escaped.
+  for (const [convId, action, expected] of [
+    [9473, "template", "Oi {{contact.name}}"],
+    [9474, "generated", "Gerada {{ '{{' }}foo}}"],
+  ] as const) {
+    test(`output '${action}' on a follow-up: the replacement's Liquid follows who wrote it`, async () => {
+      await withGuardrails(
+        {
+          enabled: true,
+          provider: "openai",
+          model: GUARD_MODEL,
+          input: { enabled: false },
+          output: {
+            enabled: true,
+            action,
+            checks: {
+              toxicity: true,
+              unsafeContent: false,
+              competitorMentions: false,
+              promptAdherence: false,
+            },
+            templateMessage: "Oi {{contact.name}}",
+          },
+        },
+        async () => {
+          await seedConv(convId, null);
+          const s = stub();
+          await runAgentNudge({
+            tenantId,
+            threadId: `${tenantId}:${instanceId}:${convId}`,
+            nudge: { source: "followup", kind: "inactivity", step: 1 },
+            base: appDb,
+            deps: {
+              makeModel: ((cfg: { model: string }) =>
+                cfg.model === GUARD_MODEL
+                  ? guardrailModel(async () => ({
+                      content: JSON.stringify({
+                        violated: true,
+                        categories: ["toxicity"],
+                        rationale: "x",
+                        suggestedReply: "Gerada {{foo}}",
+                      }),
+                    }))
+                  : new FakeListChatModel({
+                      responses: ["Ainda por aí {{contact.email}}?"],
+                    })) as never,
+              makeClient: s.makeClient,
+              checkpointer: new MemorySaver(),
+              persistUsage: async () => {},
+            },
+          });
+          expect(s.messages).toEqual([[convId, expected]]);
+        },
+      );
+    });
+  }
+
   test("a job retired while the handoff line is screened does not send it", async () => {
     await withGuardrails(
       {

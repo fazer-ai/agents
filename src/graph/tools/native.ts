@@ -174,6 +174,9 @@ export interface HandoffTurnState {
   // Optional because the turn-state shape is spelled out by hand at five call sites that build the
   // toolset, and absent is exactly what it means: nobody declared anything.
   declinedToSpeak?: boolean;
+  // `customerMessage` is the operator's hand-over message, set by an output check that handed the
+  // conversation over, not a line the model wrote: it keeps Chatwoot's Liquid instead of being escaped.
+  lineByOperator?: boolean;
   // THIS turn changed the conversation's owner itself: its transfer, or the nudge's IMMEDIATE close
   // (the reactive turn defers its close past the graph). Two marks, because they answer different
   // things: `ownerChanged` is set when a change LANDED and never cleared, and `ownerChangesInFlight`
@@ -647,6 +650,7 @@ function handoffTool(ctx: ToolCtx) {
         // deliver and a declaration not to, and whichever the runtime asked about first would win.
         const spoken = customerMessage?.trim() ?? "";
         ctx.handoffState.customerMessage = spoken || null;
+        ctx.handoffState.lineByOperator = false;
         ctx.handoffState.declinedToSpeak = speaks && !spoken;
         ctx.handoffState.completed = true;
       }
@@ -2560,6 +2564,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         if (ctx.handoffState) {
           const line = handoff_message?.trim() ?? "";
           ctx.handoffState.customerMessage = line || null;
+          ctx.handoffState.lineByOperator = false;
           // No line is a SILENT transfer, said so as `handoff_to_human` says it: otherwise the model's
           // next reply could still go out before the status webhook reaches the mirror.
           ctx.handoffState.declinedToSpeak = !line;

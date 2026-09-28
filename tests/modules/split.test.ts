@@ -1242,6 +1242,29 @@ describe("deliverReply: a balloon that fails mid-reply", () => {
       ]);
     });
 
+    // The operator's text standing in for the reply (a guardrail template) keeps its Liquid.
+    test("operator text is sent as written, signature included", async () => {
+      const rec = { sent: [] as string[], typing: [] as boolean[] };
+      await deliverReply(
+        failingStub(rec, () => false),
+        1,
+        "Olá {{contact.name}}",
+        { ...SPLIT_DEFAULTS, enabled: true },
+        noSleep,
+        undefined,
+        undefined,
+        null,
+        {
+          text: "Alex",
+          position: "bottom",
+          separator: "blank",
+          frequency: "once",
+        },
+        false,
+      );
+      expect(rec.sent).toEqual(["Olá {{contact.name}}\n\nAlex"]);
+    });
+
     test("an unsigned retry is escaped too", async () => {
       const rec = { sent: [] as string[], typing: [] as boolean[] };
       await deliverReply(

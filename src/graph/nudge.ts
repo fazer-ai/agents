@@ -39,6 +39,7 @@ import {
   guardrailLeftAMark,
   guardrailRan,
   guardrailTripped,
+  screenedByOperator,
   screenedText,
 } from "@/modules/guardrails/gate";
 import { applyGuardrailHandoff } from "@/modules/guardrails/handoff";
@@ -1363,6 +1364,7 @@ async function runAgentNudgeBody(
           handoffState.completed = handed;
           if (handed) {
             handoffState.customerMessage = d.reply;
+            handoffState.lineByOperator = true;
             // A policy with no line is a SILENT transfer: said so, as the reactive binding does, or
             // the model's own next reply could still reach the customer before the mirror catches up.
             handoffState.declinedToSpeak = d.reply === null;
@@ -1514,20 +1516,22 @@ async function runAgentNudgeBody(
   // close a turn the customer reads, and the handoff farewell is the SAME sentence `deliverText`
   // signs on the reactive path, so leaving it bare here would read as a bug. A one-element array
   // because this path sends one message: "split off" is one chunk, not a second signature rule.
-  const sign = (text: string): string => {
+  const sign = (text: string, modelText = true): string => {
+    // The model's text is escaped for Chatwoot's Liquid. The operator's is not: the signature, and a
+    // guardrail's template or hand-over message standing in for the model's (`modelText` false).
+    const literal = modelText ? literalForChatwoot : (t: string) => t;
     const sig = signatureFor(
       cfg.signatureConfig,
       cfg.promptVars,
       cfg.promptOpts,
     );
-    // The model's text is escaped for Chatwoot's Liquid, the operator's signature is not.
-    if (!sig) return literalForChatwoot(text);
-    const [out = literalForChatwoot(text)] = attachSignature(
+    if (!sig) return literal(text);
+    const [out = literal(text)] = attachSignature(
       [text],
       sig,
       cfg.signatureConfig,
       undefined,
-      literalForChatwoot,
+      literal,
     );
     return out;
   };
@@ -1575,7 +1579,7 @@ async function runAgentNudgeBody(
       delivered = true;
       await client.sendPrivateNote(
         conversationId,
-        `${OUTSIDE_WINDOW_NOTE_PREFIX}${literalForChatwoot(line)}`,
+        `${OUTSIDE_WINDOW_NOTE_PREFIX}${handoffState.lineByOperator ? line : literalForChatwoot(line)}`,
       );
       return "noted-window" as const;
     };
@@ -1584,14 +1588,19 @@ async function runAgentNudgeBody(
       // probe (`handedOff` short-circuits it), so nothing between the check above this function and
       // here can change the answer. The screening below is a model call, a stretch worth re-reading.
       if (sendModeNow() !== "freeform") return await noteOutsideWindow();
-      const line2 = screenedText(await screenOutput(line), line);
+      const lineDecision = await screenOutput(line);
+      const line2 = screenedText(lineDecision, line);
+      const line2ByOperator = guardrailTripped(lineDecision)
+        ? screenedByOperator(lineDecision)
+        : handoffState.lineByOperator === true;
       if (line2 === null) return "silent";
       // NOTE: Asked again for the same reason the window below is: the screening is a model call, and
       // both answers above it are spent by the time it returns. The reply branch does exactly this.
       if (!(await stillWanted())) return "stale";
       if (sendModeNow() !== "freeform") return await noteOutsideWindow();
+      const signedLine = sign(line2, !line2ByOperator);
       delivered = true;
-      keepSentId(await client.sendMessage(conversationId, sign(line2)));
+      keepSentId(await client.sendMessage(conversationId, signedLine));
       await recordProactiveSpeech();
       logger.info(
         "agentNudge handed off: conv=%s source=%s",
@@ -2310,6 +2319,8 @@ async function runAgentNudgeBody(
     // so the job should run again rather than swallow the miss.
     const decision = await screenOutput(reply);
     const screened = screenedText(decision, reply);
+    const screenedIsOperator =
+      guardrailTripped(decision) && screenedByOperator(decision);
 
     // NOTE: the recheck covers ONE window, the judge's own model call, between the ownership answered
     // before generation and the send and post-actions that consume it. Skipped when no judge ran (the
@@ -2395,7 +2406,7 @@ async function runAgentNudgeBody(
         delivered = true;
         await client.sendPrivateNote(
           conversationId,
-          `${OUTSIDE_WINDOW_NOTE_PREFIX}${literalForChatwoot(screened)}`,
+          `${OUTSIDE_WINDOW_NOTE_PREFIX}${screenedIsOperator ? screened : literalForChatwoot(screened)}`,
         );
         markFollowUp("noted-window");
         await applyPostActions({
@@ -2417,8 +2428,9 @@ async function runAgentNudgeBody(
     // where the reply can still fall through to the template/note branch below instead of being
     // lost to that rejection — on the handoff path, permanently.
     if (canMessagePost && sendModeNow() === "freeform") {
+      const signedReply = sign(screened, !screenedIsOperator);
       delivered = true;
-      keepSentId(await client.sendMessage(conversationId, sign(screened)));
+      keepSentId(await client.sendMessage(conversationId, signedReply));
       await recordProactiveSpeech();
       logger.info(
         "agentNudge messaged: conv=%s source=%s",

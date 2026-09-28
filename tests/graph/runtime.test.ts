@@ -8629,6 +8629,60 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(attachments).toEqual([]);
     });
 
+    // The reply the output check sends instead of the model's keeps the escape only when a model wrote
+    // it: the operator's template keeps Chatwoot's Liquid, a generated reply is escaped.
+    for (const [convId, action, expected] of [
+      [9481, "template", "Olá {{contact.name}}"],
+      [9482, "generated", "Gerada {{ '{{' }}foo}}"],
+    ] as const) {
+      test(`output '${action}': the replacement goes out as ${action === "template" ? "the operator wrote it" : "escaped model text"}`, async () => {
+        await setGuardrails({
+          enabled: true,
+          provider: "openai",
+          model: GUARD_MODEL,
+          credentialRef: gVaultRef,
+          input: { enabled: false },
+          output: {
+            enabled: true,
+            action,
+            checks: {
+              toxicity: true,
+              unsafeContent: false,
+              competitorMentions: false,
+              promptAdherence: false,
+            },
+            templateMessage: "Olá {{contact.name}}",
+          },
+        });
+        await seedConv(convId);
+        const sent: Array<[number, string]> = [];
+        const verdict = JSON.stringify({
+          violated: true,
+          categories: ["toxicity"],
+          rationale: "x",
+          suggestedReply: "Gerada {{foo}}",
+        });
+        await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => ({ content: verdict }))
+                : (new FakeListChatModel({
+                    responses: ["resposta {{contact.email}}"],
+                  }) as unknown as BaseChatModel),
+            makeClient: guardStub(sent, [], [], []),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(sent).toEqual([[convId, expected]]);
+      });
+    }
+
     // The recovered text is what the guardrail screened, and the customer got the safe reply
     // instead, so nothing on the log says a recovered reply was delivered.
     test("a recovered reply the output guardrail replaced is not logged as recovered", async () => {

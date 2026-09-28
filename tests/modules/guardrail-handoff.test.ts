@@ -7,6 +7,7 @@ import {
   guardrailTripped,
   handedOffNote,
   REFUSED_REPLY_NOTE_MAX,
+  screenedByOperator,
   screenedText,
 } from "@/modules/guardrails/gate";
 import { applyGuardrailHandoff } from "@/modules/guardrails/handoff";
@@ -91,6 +92,15 @@ describe("what the gate hands the caller", () => {
       refused: "x".repeat(REFUSED_REPLY_NOTE_MAX * 2),
     });
     expect(note.length).toBeLessThan(REFUSED_REPLY_NOTE_MAX + 200);
+  });
+
+  test("screenedByOperator: the template and the hand-over message are the operator's, a generated reply is not", () => {
+    expect(screenedByOperator({ kind: "replaced", reply: "T" })).toBe(true);
+    expect(
+      screenedByOperator({ kind: "replaced", reply: "G", generated: true }),
+    ).toBe(false);
+    expect(screenedByOperator({ kind: "handed-off", reply: "H" })).toBe(true);
+    expect(screenedByOperator({ kind: "clean" })).toBe(false);
   });
 
   test("the note sink posts a hand-over", async () => {

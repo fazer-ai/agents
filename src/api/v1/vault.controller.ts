@@ -23,6 +23,7 @@ import {
 
 // These translationKeys are localized centrally in `onError`, so they are declared here for the i18n
 // extractor (keepRemoved: false). Keep the defaults in sync with src/api/locales/*.json.
+// comment-waiver: i18n extractor anchors, one line per key.
 // translate('errors.credentialPending', 'The credential {{ref}} has not been filled yet')
 // translate('errors.credentialPendingUnsupportedKind', 'This credential type is set up via a connect flow and cannot be created as a pending reference')
 // translate('errors.credentialKindUnusableAsKey', 'This field reads an API key and the "{{kind}}" credential type cannot supply one: it either holds several fields instead of a single secret, or it is one this product never sends to another service. Pick a different credential.')

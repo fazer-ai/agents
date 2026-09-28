@@ -44,8 +44,8 @@ export function authorize(
 // not belong to. For a principal bound to one tenant (an API key) it is forgeable and ignored: a
 // mismatching value is flagged as an anomaly to log, never silently accepted.
 //
-// A malformed selector is REPORTED rather than folded into "no target", and the boundary refuses it
-// (api/middlewares/tenancy.ts): folded, each route answered it differently, some with a 200.
+// A malformed selector is REPORTED, and the boundary refuses it (api/middlewares/tenancy.ts):
+// folded into "no target", each route would answer it its own way, some with a 200.
 export function resolveRequestTenantContext(
   user: { id: bigint; tenantId: bigint | null; role: UserRole } | null,
   headerTenantId: string | undefined,

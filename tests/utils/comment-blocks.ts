@@ -19,7 +19,7 @@ const NARRATION =
   /\b(measured|medido|real case|caso real|used to|before this change|originally|turned out|we found)\b/i;
 // Text a tool reads rather than a person: a suppression, a type directive, an i18n key, an edition marker.
 const DIRECTIVE =
-  /^(\/\/|\/\*)\s*(biome-ignore|@ts-|t\(|translate\(|@(full|free|master)-only|\/ <reference|eslint)/;
+  /^(\/\/|\/\*)\s*(biome-ignore|@ts-|t\(|@(full|free|master)-only|\/ <reference|eslint)/;
 
 export type CommentBlock = { line: number; lines: number; text: string };
 

@@ -110,9 +110,9 @@ The reach checks (the boot guard in `src/lib/db-guard.ts`, and the runtime-role 
 | INHERIT TRUE, SET TRUE | yes | refuses |
 | INHERIT FALSE, SET TRUE | yes | refuses |
 | INHERIT FALSE, SET FALSE | no | accepts |
-| INHERIT TRUE, SET FALSE | no | accepts |
+| INHERIT TRUE, SET FALSE | no | refuses (reported as inherited) |
 
-The second row is the one an inheritance check misses, and it is not exotic: on a `NOINHERIT` runtime role a plain `GRANT` already yields `inherit_option false, set_option true`. Each privileged role found is reported as inherited or reachable via SET ROLE, because the repairs differ (revoke the membership, or `GRANT … WITH SET FALSE`). The fleet role is checked against a wider attribute set (`OUTLIVES_SET_ROLE`: SUPERUSER, BYPASSRLS, CREATEDB, CREATEROLE, REPLICATION), since the runtime role acquires each of them on entering it; LOGIN is excluded because a session is already open by then. The measurement is in `tests/scripts/db-bootstrap.test.ts`.
+The last row is refused conservatively, because the checks also ask inheritance, and an inherited privileged role is reported as such. The second row is the one an inheritance check alone misses, and it is not exotic: on a `NOINHERIT` runtime role a plain `GRANT` already yields `inherit_option false, set_option true`. Each privileged role found is reported as inherited or reachable via SET ROLE, because the repairs differ (revoke the membership, or `GRANT … WITH SET FALSE`). The fleet role is checked against a wider attribute set (`OUTLIVES_SET_ROLE`: SUPERUSER, BYPASSRLS, CREATEDB, CREATEROLE, REPLICATION), since the runtime role acquires each of them on entering it; LOGIN is excluded because a session is already open by then. The measurement is in `tests/scripts/db-bootstrap.test.ts`.
 
 ## LangGraph checkpointer
 

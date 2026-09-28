@@ -149,7 +149,8 @@ export function broadcastAdminMessage(message: AdminBroadcast): void {
   publish(TOPICS.ADMIN_BROADCASTS, message);
 }
 
-// Every open connection of one user, through the per-user topic rather than a global broadcast.
+// Every open connection of one user, through the per-user topic rather than a global broadcast, so
+// the cost is that user's connection count (usually 1), not the number of connected users.
 export function sendToUser(userId: bigint, event: ServerEvent): void {
   publish(TOPICS.user(userId), event);
 }
@@ -281,8 +282,9 @@ function broadcastPresence(): void {
   publish(TOPICS.CHAT_GLOBAL, buildTick());
 }
 
-// One process-wide presence timer rather than one per socket, alive only while a user is attached
-// so idle servers and test suites do not leak an interval.
+// One process-wide presence timer rather than one per socket: Bun fans the tick out to every
+// subscriber, so its cost does not grow with open connections and the snapshot is built once. Alive
+// only while a user is attached, so idle servers and test suites do not leak an interval.
 let presenceTickInterval: ReturnType<typeof setInterval> | null = null;
 
 function startPresenceTicker(): void {

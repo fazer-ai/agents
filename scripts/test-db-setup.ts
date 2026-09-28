@@ -56,7 +56,7 @@ async function main() {
     );
   }
 
-  // The `.env` name is the base; the target is per checkout, by the same derivation tests/setup.ts
+  // NOTE: The `.env` name is the base; the target is per checkout, by the same derivation tests/setup.ts
   // applies at preload. Deriving it in both places rather than asking each checkout to edit its
   // `.env` is what makes the isolation impossible to forget; see tests/db-name.ts.
   const dbName = testDbNameFor(declared, ROOT);

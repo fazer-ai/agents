@@ -42,6 +42,7 @@ import { getTenant, listTenants, type TenantUpdate } from "./tenants.service";
 // src/api/locales/*.json from these lines and prunes anything nothing references, and
 // `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
 // throw site rather than an English sentence on a pt-BR caller's screen.
+// comment-waiver: i18n extractor anchors, one line per key.
 // translate('errors.conversationNotFound', 'Conversation not found.')
 // translate('errors.reengageNoAgent', 'No agent is bound to the inbox of this conversation.')
 // translate('errors.returnNoResponder', 'No responder is bound to the inbox of this conversation.')

@@ -150,7 +150,7 @@ export async function assertRuntimeRoleIsNotSuperuser(
   const row = rows[0];
   if (!row) throw new Error("could not resolve the current DB role");
 
-  // TWO queries, because a CASE cannot protect a function call: PostgreSQL resolves the reference
+  // NOTE: TWO queries, because a CASE cannot protect a function call: PostgreSQL resolves the reference
   // while PARSING, so `CASE WHEN to_regprocedure(…) IS NULL THEN NULL ELSE public.fazerai_fleet_role()
   // END` raises `function … does not exist` on a database whose migrations have not run.
   // The first query only asks whether it is there; the second is sent only if it is.

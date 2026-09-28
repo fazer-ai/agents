@@ -46,6 +46,7 @@ import type { ChunkHit } from "@/modules/rag/sql";
 
 // i18n extractor anchors, one line per AppError key (keepRemoved: false prunes a key with no
 // literal reference). Keep in sync with src/modules/rag/loaders.ts and src/modules/rag/documents.ts.
+// comment-waiver: i18n extractor anchors, one line per key.
 // translate('errors.documentTooLarge', 'Document is too large to process')
 // translate('errors.invalidKnowledgeBaseName', 'Name must be 1 to {{max}} characters and cannot be blank')
 // translate('errors.embeddingEmpty', 'The embedding credential is empty.')

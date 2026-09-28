@@ -566,7 +566,9 @@ export async function updateUserRole(
 
 // A tenant administrator removes the person from THEIR tenant: the membership, and the account only
 // when it was the last one, since the rest of the account is not theirs to delete. The fleet deletes
-// the account with every membership. Never the acting user, never a scope's last admin.
+// the account with every membership. Never the acting user, never a scope's last admin. Users have
+// no incoming FKs besides their memberships (invitedById/actorId are plain columns), so the row
+// deletes cleanly.
 export async function deleteUser(
   ctx: TenantContext,
   userId: bigint,

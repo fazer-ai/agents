@@ -1,17 +1,9 @@
-// Per-agent runtime limits, read from agent.settings.limits (Json, additive). Mirrors
-// readDebounceConfig / readSttConfig.
-//
-// - maxToolCalls: the soft+hard cap on tool executions within a SINGLE turn. The graph counts tool
-//   executions since the last customer message; at maxToolCalls-2 it nudges the model to wrap up,
-//   and at maxToolCalls it invokes the model WITHOUT tools so the turn always ends in a text answer
-//   instead of hitting LangGraph's GraphRecursionError.
-// - maxHistoryTokens: ceiling on the persisted history handed to the model each turn. null = no
-//   ceiling, which is the historical behavior and stays the default: an instance that upgrades must
-//   never silently start forgetting. See src/graph/history-window.ts for what the ceiling buys.
-// - retrySilence: a reactive turn that would end with nothing for the customer, no handoff and no
-//   `skip_reply` is asked once more, with an instruction naming both exits (issue #885). ON unless
-//   set to `false`: an unanswered customer is the worse failure, and the switch keeps the upgrade
-//   reversible.
+// Per-agent runtime limits, read from agent.settings.limits (Json, additive).
+// - maxToolCalls: per-turn cap; at max-2 the model is nudged to wrap up, at max it runs WITHOUT tools
+//   so the turn ends in text instead of LangGraph's GraphRecursionError.
+// - maxHistoryTokens: null (no ceiling) by default, so an upgrade never silently starts forgetting.
+// - retrySilence: a reactive turn ending with no reply, handoff or `skip_reply` is asked once more;
+//   on unless `false`, since an unanswered customer is the worse failure.
 
 export interface LimitsConfig {
   maxToolCalls: number;

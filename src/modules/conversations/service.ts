@@ -88,9 +88,8 @@ export interface ListConversationsFilter {
   // Free-text search: matches the contact display name or the Chatwoot conversation id (see
   // buildConversationsWhere). No message-body search — the mirror holds metadata only.
   q?: string;
-  // Only conversations whose inbox is BOUND to this agent (issue #607). An inbox it merely observes
-  // does not count: an observer answers nothing there, and the list already tells the two apart.
-  // An id of another tenant, or of no agent, is an empty page under the caller's own scope.
+  // Only conversations whose inbox is BOUND to this agent; an inbox it merely observes does not
+  // count. An id of another tenant, or of no agent, is an empty page under the caller's own scope.
   agentId?: bigint;
 }
 
@@ -111,8 +110,8 @@ export interface ConversationListItem {
   contact: { name: string | null } | null;
   // The bound persona's name, so the list can show it for AI-handled rows. Null when no agent bound.
   agentName: string | null;
-  // The monitoring agents watching this conversation's inbox as observers (issue #476), by name,
-  // so a row says who is reading it even when nobody of ours answers it.
+  // The monitoring agents watching this conversation's inbox as observers, by name, so a row says
+  // who is reading it even when nobody of ours answers it.
   observerNames: string[];
   // True when the bound agent's availability schedule is currently closed (item 23). Computed
   // server-side; false when no agent / no schedule.
@@ -168,11 +167,10 @@ function buildConversationsWhere(
   return where;
 }
 
-// The agents the Conversations screen can be narrowed to (issue #607): id and name, nothing of their
-// configuration. Its own read because `/v1/agents` is TENANT_ADMIN, and an AGENT-role user who can
-// read the conversations must also be able to see, and clear, a filter a shared link put on them.
-// Every agent of the tenant, by name, since the roster is small and a filter offering only the
-// first page would leave the rest unpickable.
+// The agents the Conversations screen can be narrowed to: id and name only. Its own read because
+// `/v1/agents` is TENANT_ADMIN, and an AGENT-role user must be able to see and clear a filter a
+// shared link put on them. Every agent, since a filter offering only the first page would leave the
+// rest unpickable.
 export async function listConversationAgentOptions(
   ctx: TenantContext,
   base: PrismaClient = basePrisma,
@@ -317,13 +315,9 @@ export async function listConversations(
 // ── operations (on-demand fetch + actions over the Chatwoot client) ──
 //
 // The mirror holds METADATA only; the thread is fetched on demand from Chatwoot (admin token).
-// Actions (reply/handoff/return/status) go over the client (bot token) — NETWORK happens OUTSIDE
-// any tx; we then optimistically update the mirror for immediate UI feedback (the webhook reconciles
-// the canonical state, with its lastEventAt monotonic guard).
-//
-// NOTE: getConversationDetail's message normalization follows the Chatwoot message shape
-// (payload[] of { id, content, message_type, private, created_at, sender }), CONFIRMED live against
-// a chatwoot-pro instance (message_type is a NUMBER here, unlike the webhook where it is a string).
+// Actions go over the client (bot token) OUTSIDE any tx, then optimistically update the mirror (the
+// webhook reconciles the canonical state, with its lastEventAt monotonic guard). In the admin
+// messages API `message_type` is a NUMBER, unlike the webhook where it is a string.
 
 // A message attachment as the admin messages API serializes it (_message.json.jbuilder maps each
 // via Attachment#push_event_data): file_type bucket, the (host-served) data_url, an image thumb_url,
@@ -381,16 +375,15 @@ export interface ConversationDetail {
   agentId: string | null;
   agentName: string | null;
   // Whether that persona is switched on. With `agentMode`, what the console needs to know whether
-  // anything answers this inbox before it offers to hand a conversation back (issue #495).
+  // anything answers this inbox before it offers to hand a conversation back.
   agentEnabled: boolean;
-  // ...and whether it has a BOT on this deployment (issue #495 review, round 2). A binding is not an
-  // identity: with the row gone the server refuses the hand-back with 409 and the re-engage cannot
-  // load the agent, so the console must not offer either. Derived from the same lookup the header's
-  // held-by-another-party answer already makes, so it costs no query.
+  // ...and whether it has a BOT on this deployment. A binding is not an identity: without the bot
+  // row the server refuses the hand-back with 409 and the re-engage cannot load the agent, so the
+  // console must offer neither. Derived from the held-by-another-party lookup, so it costs no query.
   agentHasBot: boolean;
-  // The monitoring agents observing this inbox (issue #476), by name.
+  // The monitoring agents observing this inbox, by name.
   observerNames: string[];
-  // The same observers with their ids, so the console can link to each one (issue #494).
+  // The same observers with their ids, so the console can link to each one.
   observers: { id: string; name: string }[];
   // The bound persona's operating mode (item 1), so the console can flag a test agent. null = no agent.
   agentMode: AgentMode | null;
@@ -451,15 +444,10 @@ export interface ConversationDetail {
     // an indicator that promises a follow-up the sweep suppresses is indistinguishable from a broken
     // scheduler, which is the worst failure mode for an indicator whose whole job is to be trusted.
     pausedByAppointment: boolean;
-    // A follow-up job IS armed for this conversation and the handler will drop it when it claims it
-    // (isFollowUpLive: agent enabled, follow-up on, not redirect-managed, not test-silenced, bot
-    // still owns the conversation). Nothing is coming, but nothing completed either — so the console
-    // must show neither a countdown nor the "sequence complete" marker.
-    //
-    // It is keyed on a job EXISTING, not on liveness alone, because the two look identical from the
-    // outside and mean opposite things: a sequence whose last step is configured to resolve the
-    // conversation ends with the bot no longer owning it, which is a completed sequence, not an
-    // abandoned one. What separates them is whether a step is still queued.
+    // A follow-up job IS armed and the handler will drop it when it claims it (isFollowUpLive fails),
+    // so the console shows neither a countdown nor "sequence complete". Keyed on a job EXISTING, not
+    // on liveness alone: a sequence whose last step resolves the conversation also ends with the bot
+    // not owning it, and that one is complete, not abandoned.
     abandoned: boolean;
   } | null;
   // Pending appointment reminders for THIS conversation (deterministic Calendar-booked reminders), for
@@ -479,24 +467,24 @@ export interface ConversationDetail {
   // Recent execution-flow markers for THIS conversation (PII-free), interleaved into the timeline:
   // tool calls (name + status + duration) and proactive follow-up sends. Oldest → newest.
   trail: ConversationTrailEntry[];
-  // What the conversation has spent, as the provider reported it (issue #853): the total for the
-  // header and the newest turns' lines for the timeline.
+  // What the conversation has spent, as the provider reported it: the total for the header and the
+  // newest turns' lines for the timeline.
   usage: ConversationUsage;
 }
 
 // A compact, PII-free activity marker drawn inline in the conversation timeline. Derived from the
 // ExecutionLog: a tool call (kind "tool") or a proactive turn, by where it came from: an inactivity
 // follow-up ("followup"), an appointment reminder ("reminder"), a channel-redirect follow-up
-// ("redirect"), or an inbound integration's event ("event", issue #846).
+// ("redirect"), or an inbound integration's event ("event").
 export interface ConversationTrailEntry {
   id: string;
   kind: "tool" | "followup" | "reminder" | "redirect" | "event";
   // Proactive rows only: whether the origin above was RECORDED by the turn (true) or inferred from
-  // the nudge source, for a line written before #846 (false). The screen matches only a recorded
-  // row by `messageId`; an inferred one keeps the time-window match it always had. null on tools.
+  // the nudge source on a line that records none (false). The screen matches only a recorded row by
+  // `messageId`; an inferred one keeps the time-window match. null on tools.
   originRecorded: boolean | null;
   // Proactive rows only: the Chatwoot id of the message the turn sent the customer, or null when it
-  // sent none (a note, a silence) or the line predates #846.
+  // sent none (a note, a silence) or the line does not record it.
   messageId: number | null;
   // "event" rows only: the name of the integration that spoke, null when the line names no instance
   // or the instance no longer exists (the screen then says "External event").
@@ -516,11 +504,10 @@ export interface ConversationTrailEntry {
   // tool → the sanitized error message when the tool FAILED (status "error"), so the operator sees WHY
   // it failed inline instead of just a ✗. null on success and for follow-up/reminder rows.
   errorMessage: string | null;
-  // `skip_reply` only → whether that TURN had put something in front of the customer (a handoff's
-  // closing line, an attachment) when the agent decided to stay quiet. The marker is the one entry
-  // that asserts a silence, and the name of the tool cannot tell a transfer that answered from a
-  // transfer that declared it had nothing to say (issue #726). null on every other row, and null on
-  // a `skip_reply` row written before this shipped: unknown, so the screen keeps the plain label.
+  // `skip_reply` only: whether that TURN had put something in front of the customer (a handoff's
+  // closing line, an attachment) when the agent decided to stay quiet, which the tool name alone
+  // cannot tell. null on every other row, and on a `skip_reply` line that does not record it
+  // (unknown, so the screen keeps the plain label).
   turnDelivered: boolean | null;
   at: string;
 }
@@ -627,8 +614,8 @@ async function loadConvRef(
   contactId: bigint | null;
   lastFollowUpAt: Date | null;
   lastRepliedMessageId: number | null;
-  // When OUR side last spoke here (issue #750): the estimate's fence and episode predicate read
-  // it, and they have to read what the sweep reads.
+  // When OUR side last spoke here: the estimate's fence and episode predicate read it, and they have
+  // to read what the sweep reads.
   lastRepliedAt: Date | null;
   chatwootFirstReplyAt: Date | null;
   lastProactiveAt: Date | null;
@@ -663,8 +650,8 @@ async function loadConvRef(
         contactId: true,
         lastFollowUpAt: true,
         lastRepliedMessageId: true,
-        // The estimate's fence and episode predicate read it, and they have to read what the sweep
-        // reads or the indicator promises a follow-up that never fires (issue #750).
+        // NOTE: the estimate's fence and episode predicate must read what the sweep reads, or the
+        // indicator promises a follow-up that never fires.
         lastRepliedAt: true,
         chatwootFirstReplyAt: true,
         lastProactiveAt: true,
@@ -726,33 +713,12 @@ interface ConsoleWriteState {
   lastEventAt: Date | null;
 }
 
-// Writes the mirror after a console action, claiming the version Chatwoot produced for it.
-//
-// The two write endpoints do not serialize the conversation's `updated_at` (assignments renders the
-// agent, toggle_status a status blob), so a write applied straight from what we asked for lands with
-// no version at all. An event Chatwoot serialized BEFORE the click and is still retrying then arrives
-// carrying a higher version and the pre-click truth, and the mirror accepts it — undoing the handoff
-// or the resolve until Chatwoot's own event for the action arrives, or permanently if that delivery
-// is lost. While the row is wrong the runtime's ownership recheck reads it, so the bot can answer on
-// top of the human (issue #77).
-//
-// Reading the conversation back is what closes it: the REST show DOES render the same
-// `updated_at.to_f` the webhook carries, so the local write can be ordered by the same key everything
-// else uses, with no clock of ours involved. The cost is one extra GET per console action.
-//
-// The version is an improvement on the write, not a precondition for it: when the read fails or the
-// payload does not parse, fall back to the blind write so the console still reflects what the
-// operator just did — exactly the behavior that preceded this.
-// What the mirror write knows afterwards, and the two halves answer different questions. `state` is
-// what was STORED, and it is null whenever the live read could not be versioned — the unversioned
-// fallback writes only the fields the action meant to change, on purpose, so there is no trustworthy
-// full row to hand back.
-//
-// `observed` is what Chatwoot SAID, kept even when it could not be versioned. Discarding it is how a
-// caller comes to treat "I could not decide" as "nothing is there": the hand-back's final read is the
-// only look anybody takes after the unassign, and on a versionless Chatwoot a human who claimed the
-// conversation in that window was seen and then thrown away. Required rather than optional so a new
-// caller has to say what it does with an undecided read.
+// What the mirror write knows afterwards. `state` is what was STORED, null whenever the live read
+// could not be versioned (the fallback writes only the fields the action meant to change, so there
+// is no trustworthy full row to hand back). `observed` is what Chatwoot SAID, kept even unversioned:
+// the hand-back's final read is the only look taken after the unassign, and a human who claimed the
+// conversation in that window must not be discarded. Required, so a new caller says what it does
+// with an undecided read.
 interface ConsoleWriteMirror {
   state: ConsoleWriteState | null;
   observed: {
@@ -762,24 +728,18 @@ interface ConsoleWriteMirror {
   } | null;
 }
 
-// THE READING THAT ORDERS A CONSOLE WRITE THAT COULD NOT BE VERSIONED (issue #469), taken by the
-// caller BEFORE its own writes to Chatwoot and handed to `mirrorConsoleWrite` as `markAt`.
-//
-// One function rather than one per console action, because the decision is one: a reading taken
-// AFTER the action would contain a colleague who replied during the round trip, and a mark built
-// from it would have the takeover's fence skip that colleague's handover, which is issue #430
-// reintroduced by the guard against this one. Written once, a mutation on it is observable from
-// every call site; written per site, the copy no test happens to reach keeps whatever it was given.
-//
-// A failed read is `null`, which stamps nothing and leaves the previous mark standing: this side
-// learned nothing new, and an older mark can only ever refuse less.
+// The reading that orders a console write that could not be versioned, taken by the caller BEFORE
+// its own writes to Chatwoot and handed to `mirrorConsoleWrite` as `markAt`. A reading taken after
+// the action could contain a colleague who replied during the round trip, and the takeover's fence
+// would then skip that colleague's handover. One function, so every call site shares the decision.
+// A failed read is `null`: it stamps nothing and leaves the previous mark standing.
 function readLiveBeforeConsoleWrite(
   client: ChatwootClient,
   chatwootConversationId: number,
 ): Promise<LiveConversationState | null> {
-  // try/catch rather than `.catch` alone: a client that cannot answer this call at all throws
-  // SYNCHRONOUSLY (issue #495 review, round 3 found the same shape on the attachment read), and a
-  // rejection handler never sees that — it would crash a read every caller documents as failing open.
+  // NOTE: try/catch rather than `.catch` alone: a client that cannot answer this call throws
+  // SYNCHRONOUSLY, which a rejection handler never sees, and every caller treats this read as
+  // failing open.
   try {
     return client
       .getConversation(chatwootConversationId)
@@ -790,6 +750,12 @@ function readLiveBeforeConsoleWrite(
   }
 }
 
+// Writes the mirror after a console action, claiming the version Chatwoot produced for it. The two
+// write endpoints do not serialize `updated_at`, so a blind write carries no version and an event
+// Chatwoot serialized BEFORE the click, still retrying, would outrank it and undo the action (the
+// runtime's ownership recheck reads this row). Reading the conversation back gets the same
+// `updated_at.to_f` the webhook carries; when that read fails or has no version, the blind write
+// still runs so the console reflects the operator's action.
 async function mirrorConsoleWrite(
   ctx: TenantContext,
   base: PrismaClient,
@@ -806,42 +772,18 @@ async function mirrorConsoleWrite(
     assigneeId?: number | null;
     assigneeType?: string | null;
   },
-  // WHERE THE SOURCE'S MESSAGE SEQUENCE STOOD BEFORE THIS ACTION WAS APPLIED (issue #469), or null
-  // when the caller took no reading before its own writes.
-  //
-  // REQUIRED, and it cannot be derived here: this function runs AFTER its caller's Chatwoot calls,
-  // so its own live read is a post-write one. A colleague replying between the click and that read
-  // would land INSIDE it, the mark would cover their reply, and the fence would then skip the very
-  // handover it must act on — trading the defect this closes for the one #430 closes. The reading
-  // has to be at or before the mutation, which only the caller can take, and asking for it by
-  // parameter is what makes each call site say whether it has one.
+  // Where the source's message sequence stood BEFORE this action was applied, or null when the caller
+  // took no reading. Required and not derivable here: this runs after the caller's Chatwoot calls, so
+  // a read here could cover a colleague's reply typed after the click and the fence would skip it.
   markAt: number | null,
 ): Promise<ConsoleWriteMirror> {
   const tenantId = requireTenant(ctx);
-  // THE MARK, STAMPED BEFORE ANYTHING HERE CAN RETURN (issue #469). It says which message Chatwoot
-  // already had when the operator's action was applied, which is what lets the human-reply takeover
-  // tell a reply that predates the click from one typed after it — the distinction a deadline
-  // cannot draw.
-  //
-  // ON EVERY PATH, including the one that reconciles with a real version, and that is not belt and
-  // braces: the recovery of issue #439 carries NO version by construction (`chatwoot_status_at` is
-  // a mark that advances on redeclaration, so it cannot serve as one there — recover-takeover.ts
-  // states why), and it runs at least half an hour after the delivery it rebuilds. On a versioned
-  // Chatwoot the reconcile below returns early, so a mark written only on the unversioned tail
-  // would leave exactly the deployment that HAS versions with nothing to fence the recovery with,
-  // and a hand-back made inside that half hour undone. Measured as a review finding, not supposed.
-  // On the live path it takes nothing away, which is not the same as changing nothing: a delivery
-  // whose version predates the click is already refused by the version check, and one written after
-  // the click sits above this mark. The two predicates disagree in exactly one shape — a payload
-  // whose version compares EQUAL, which is what a console write that did not move `updated_at`
-  // leaves — and there the version check passes it (the comparison is strict) and the mark refuses
-  // it, which is the fence doing its job rather than a side effect. Measured, with a control.
-  //
-  // In a statement of its own because it must never move BACKWARDS: two console writes are separate
-  // requests, nothing serializes them, and an older one committing last would hand the fence a mark
-  // that no longer describes the newest click. `GREATEST` ignores a NULL, so the first write stamps
-  // its own value. `null` stamps nothing and leaves the previous mark standing, which is the honest
-  // answer when this side learned nothing new.
+  // NOTE: the mark is stamped before anything here can return, on every path. It says which message
+  // Chatwoot already had when the action was applied, so the human-reply takeover can tell a reply
+  // that predates the click from one typed after it. The takeover recovery carries no version, so a
+  // mark written only on the unversioned tail would leave versioned deployments unfenced. Its own
+  // statement with `GREATEST`, so it never moves backwards when two console writes commit out of
+  // order (a NULL column takes the first value).
   if (markAt !== null) {
     await runScopedOn(
       base,
@@ -852,14 +794,10 @@ async function mirrorConsoleWrite(
        WHERE id = ${id}`,
     );
   }
-  // NOTE: An operator commanding a non-resolved status ends the resolution, and that is decided HERE
-  // rather than inside either write below. Deliberately NOT `clearsResolutionOrigin`: that function
-  // answers "did the ordering leave this close standing?", and a click has no ordering to consult.
-  // It is a command, so it holds whatever the mirror currently reads — including the case the shared
-  // rule refuses, where the row still shows the pre-resolve status because our own resolve webhook
-  // has not landed, and both the stored and the live status therefore read non-resolved. Living in
-  // the unversioned fallback meant exactly that case escaped: a successful versioned reconcile
-  // returns before the fallback runs, and the stamp survived the reopen into the next close.
+  // NOTE: an operator commanding a non-resolved status ends the resolution, decided here and not in
+  // either write below, and not via `clearsResolutionOrigin`: a click is a command with no ordering
+  // to consult. The versioned reconcile returns before the fallback, so clearing only there would
+  // let the stamp survive the reopen while our own resolve webhook has not landed.
   if (fallback.status != null && fallback.status !== "resolved") {
     await runScopedOn(base, ctx, (db) =>
       db.conversation.updateMany({
@@ -881,10 +819,9 @@ async function mirrorConsoleWrite(
         assigneeName: live.assigneeName,
       };
     }
-    // A snapshot with no version buys nothing here and can cost: without one, the reconcile applies
-    // the WHOLE snapshot, so a status click could carry back an assignee that a webhook has since
-    // changed. The fallback writes exactly the fields this action meant to change, which is what the
-    // console did before any of this.
+    // NOTE: a snapshot with no version is not reconciled: the reconcile would apply the WHOLE
+    // snapshot, so a status click could carry back an assignee a webhook has since changed. The
+    // fallback writes exactly the fields this action meant to change.
     if (live && live.updatedAt !== null) {
       const outcome = await reconcileMirrorFromLive({
         tenantId,
@@ -917,17 +854,10 @@ async function mirrorConsoleWrite(
       "conversations: live read after a console write failed — writing unversioned",
     );
   }
-  // THE NAME FOLLOWS THE HOLDER, and that is decided HERE rather than at each call site because
-  // every caller that writes an assignee has this problem and none of them holds the answer.
-  // `assigneeName` is a column of its own, rendered next to the assignee, so a fallback that moves
-  // the id and leaves the name shows the NEW holder's id under the PREVIOUS holder's name until some
-  // later webhook happens to repair it. That is worse than showing no name: it names the wrong
-  // person, confidently, on the screen an operator uses to decide who is handling a conversation.
-  //
-  // Three cases, and only the last is a guess:
-  //   - the holder is not moving: leave the name alone, the row already has the right one;
-  //   - the holder is the one the live read just saw: take that read's name, which is the true one;
-  //   - anything else: null. The name is genuinely unknown here, and unknown is written as unknown.
+  // NOTE: the name follows the holder. `assigneeName` is its own column, so a fallback that moves
+  // the id and keeps the name would show the new holder under the previous holder's name. Holder
+  // not moving: keep the name. Holder is the one the live read saw: take that name. Otherwise:
+  // null, since the name is unknown here.
   const nextType =
     fallback.assigneeType === undefined
       ? conv.assigneeType
@@ -945,15 +875,10 @@ async function mirrorConsoleWrite(
               ? observed.assigneeName
               : null,
         };
-  // THIS WRITE CLAIMS NO VERSION, and nothing else on this branch does either — the toggle and the
-  // assignment endpoints render no `updated_at` (issue #77) and the read that would have supplied
-  // one is the read that just failed. So the ordering marks stay where the pre-click state left
-  // them, and the human-reply takeover's freshness check, which compares a delivery against one of
-  // them, would let a payload Chatwoot serialized BEFORE the operator's click pass and undo it —
-  // which is what the mark stamped at the top of this function answers (issue #469).
-  //
-  // The status claim of issue #436 does not cover it and was measured not to: it fences a
-  // transition still on the wire, and by the time this runs Chatwoot has already decided.
+  // NOTE: this write claims no version (the toggle and assignment endpoints render no `updated_at`,
+  // and the read that would supply one just failed), so a payload serialized before the click could
+  // pass the takeover's freshness check. The mark stamped at the top of this function answers that;
+  // the status claim does not, since it fences a transition still on the wire.
   await updateMirror(ctx, base, id, { ...fallback, ...named });
   return { state: null, observed };
 }
@@ -1022,12 +947,9 @@ export async function getConversationDetail(
         )?.chatwootAgentBotId ?? null)
       : null;
 
-  // The EPISODE's activation, not this row's (issue #261). A channel-redirect episode is two
-  // conversations of one contact and `/teste` stamps only the one it was typed in, so the row alone
-  // answers for half of it. Both readers below take this: the badge the console renders, and the
-  // follow-up estimate — and they have to agree with the gates in `webhook.ts`, which now answer the
-  // episode's question. A badge reading "awaiting /teste" over an agent that is answering is the
-  // console contradicting what the operator can see in the conversation.
+  // NOTE: the EPISODE's activation, not this row's. A channel-redirect episode is two conversations
+  // of one contact and `/teste` stamps only the one it was typed in. The badge and the follow-up
+  // estimate both read this, and must agree with the gates in `webhook.ts`.
   const episodeActivatedAt = await episodeTestActivatedAt({
     tenantId,
     instanceId: conv.chatwootInstanceId,
@@ -1057,9 +979,9 @@ export async function getConversationDetail(
       inboxCwId != null &&
       (redirectCfg.widgetInboxId === inboxCwId ||
         redirectCfg.entryInboxId === inboxCwId);
-    // Whether a follow-up for this conversation is alive AT ALL, by the same predicate the handler
-    // re-checks when it claims the job. Both branches below are gated on it: the estimate because the
-    // sweep would never enqueue it, and the armed job because the handler would drop it (issue #72).
+    // NOTE: whether a follow-up here is alive at all, by the predicate the handler re-checks when it
+    // claims the job. Both branches below are gated on it: the sweep would never enqueue the
+    // estimate, and the handler would drop the armed job.
     const followUpLive = isFollowUpLive({
       agentEnabled: agent?.enabled ?? false,
       followUpEnabled: cfg.enabled,
@@ -1068,16 +990,10 @@ export async function getConversationDetail(
       testActivatedAt: episodeActivatedAt,
       status: conv.status,
       assigneeType: conv.assigneeType,
-      // The strict ownership answer, which this reader is the one that needs: nothing runs after the
-      // indicator to correct it, so a conversation another persona's bot is holding must not be
-      // counted down (issue #214). The bot id is already in hand — the same one the header's
-      // "held by another party" line is drawn from.
-      //
-      // `heldByAnotherParty` alone is not the whole answer here: it leaves an AgentBot it cannot
-      // identify UNCOUNTED, which is right for the hand-back offer it was written for (there is
-      // nobody named to hand back to) and wrong for a promise, because the unidentified bot may be
-      // the foreign one. Unverifiable is therefore not ours — the same call the live payload's own
-      // parser makes when it refuses an "AgentBot" with no numeric id.
+      // NOTE: the strict ownership answer: nothing runs after the indicator to correct it, so a
+      // conversation another persona's bot holds must not be counted down. `heldByAnotherParty`
+      // alone leaves an unidentifiable AgentBot uncounted; for a promise, unverifiable is not ours
+      // (as the live payload's parser refuses an "AgentBot" with no numeric id).
       mirrorHolder: (() => {
         const holder = {
           assigneeType: conv.assigneeType,
@@ -1089,8 +1005,8 @@ export async function getConversationDetail(
           (conv.assigneeId == null || ourAgentBotId == null);
         return unverifiableBot ? "not-ours" : "ours";
       })(),
-      // The half of #72 that the sweep's newest arm opened: a conversation nobody ever answered is
-      // no longer selected, so a countdown here would promise a re-engagement that cannot happen.
+      // NOTE: the sweep never selects a conversation nobody ever answered, so a countdown there would
+      // promise a re-engagement that cannot happen.
       ourSideHasSpoken: ourSideHasSpoken(conv),
     });
     const isRedirectWidgetConv =
@@ -1111,8 +1027,8 @@ export async function getConversationDetail(
           )
         : null;
     const hours = hoursRow ? parseSchedule(hoursRow) : null;
-    // The conversation's one FOLLOWUP row, whatever its state: PENDING is the job the estimate reads,
-    // and DEAD is a follow-up the sweep will not offer again in this episode (issue #796).
+    // NOTE: the conversation's one FOLLOWUP row, whatever its state: PENDING is the job the estimate
+    // reads, and DEAD is a follow-up the sweep will not offer again in this episode.
     const jobRow = managedByRedirect
       ? null
       : await runScopedOn(base, ctx, (db) =>
@@ -1137,12 +1053,9 @@ export async function getConversationDetail(
     // step is "2d". The tooltip uses this to explain the deferral.
     let nextRunAtDeferred = false;
     const firstStep = cfg.steps[0];
-    // The estimate exists to show what the handler will ACTUALLY do, including its terminal case: a
+    // NOTE: the estimate shows what the handler will ACTUALLY do, including its terminal case: a
     // schedule that never reopens (a closure outliving the scan horizon, or a recurring one covering
-    // every date) makes the handler END the sequence, so the console must show no next step rather
-    // than a time inside the closure. Null here means exactly that. Before date exceptions this
-    // branch was unreachable — a weekly grid always reopens within the scan — so the estimate could
-    // fall back to the ungated time without ever being wrong.
+    // every date) makes the handler END the sequence, so null here means no next step.
     const openWindowFor = (dueAt: Date): Date | null =>
       hours && hours.windows.length > 0 ? nextOpenAt(hours, dueAt) : dueAt;
     // NOTE: A PENDING step-0 job enqueued before a re-arm will be DROPPED by the handler's
@@ -1156,10 +1069,9 @@ export async function getConversationDetail(
       conv.lastInboundAt,
       conv.lastRepliedAt,
     );
-    // A follow-up that died in THIS episode (its row went DEAD after the silence began): the sweep
-    // leaves the conversation out until either side speaks again, so the estimate must not promise
-    // a step 1 that will not run (issue #796). The same comparison as the sweep's SQL.
-    // Dated by the episode written on the row when there is one, as the sweep does.
+    // NOTE: a follow-up that died in THIS episode (its row went DEAD after the silence began): the
+    // sweep leaves the conversation out until either side speaks again, so no step 1 is promised.
+    // Same comparison as the sweep's SQL, dated by the row's episode when it carries one.
     const deadEpisode = (jobRow?.payload as { episode?: unknown } | null)
       ?.episode;
     const diedThisEpisode =
@@ -1168,39 +1080,19 @@ export async function getConversationDetail(
       (typeof deadEpisode === "string"
         ? deadEpisode === followUpEpisodeKey(fencedSilenceStart)
         : jobRow.updatedAt >= fencedSilenceStart);
-    // The episode, through the same function the other two readers use. It moves UP here, instead of
-    // living only in the branch below, because of issue #750: before it a fresh episode was born from
-    // the customer speaking, and the inbound webhook cancels the pending job in the same movement. Our
-    // own reply now opens an episode too, and cancels nothing — so the state "pending later-step job +
-    // fresh episode" became reachable, and the handler drops that job (`else if (newEpisode) return
-    // done`). Without the mirror here, the console counts down a step that will never fire.
+    // NOTE: our own reply opens an episode and cancels nothing, so a pending later-step job can meet
+    // a fresh episode, and the handler drops it (`else if (newEpisode) return done`). The console
+    // must not count it down.
     const newEpisode = isNewFollowUpEpisode(
       conv.lastFollowUpAt,
       conv.lastInboundAt,
       conv.lastRepliedAt,
     );
-    //
-    // WHOEVER OPENED IT (issue #752). The handler asks nothing about who spoke — for `stepIndex > 0`
-    // it is `else if (newEpisode) return done`, flat — so a pending later step is doomed in both
-    // shapes of a fresh episode, and a console that suppressed only one of them counted down, in the
-    // other, a step that will be discarded the moment the worker claims it. #750 mirrored the check
-    // for the episode OUR reply opens and deliberately left the customer's out, on the argument that
-    // the inbound webhook cancels the pending job in the same movement that advances
-    // `lastInboundAt`. That argument is about how LONG the state lasts in production, not about
-    // whether the console is right while it lasts: the cancel can be lost or delayed (a failed
-    // webhook, a worker that never claimed it), and the reader here is the one with nothing after it
-    // to correct the promise. Narrower than the handler is the one thing this predicate must not be.
-    //
-    // E O COMPROMISSO NÃO SEGURA ESTE JOB, que foi a primeira coisa que eu escrevi aqui e está
-    // errada (review r1). A tentação é dizer que com um compromisso vivo o worker ADIA em vez de
-    // descartar, então o job sobreviveria e a contagem dele valeria; o que desmente é o `upsertJobRow`
-    // da varredura: ele casa por (tenant, kind, dedupeKey) e o UPDATE reescreve payload e `run_at` de
-    // uma linha PENDING, com o comentário dele nomeando este caso. A varredura não pula conversa com
-    // job pendente, então o passo tardio é sobrescrito pelo passo 0 do episódio novo — e quando a
-    // varredura NÃO seleciona, quem a impede é a mesma pergunta que o `pausedByAppointment` abaixo
-    // faz, pelo passo 0 (o `unfencedAgentIds` da varredura é `!appointmentPauseApplies(cfg,
-    // cfg.steps[0])`). Nas duas pontas o job condenado não conta, e a pausa aparece pelo passo que
-    // vai rodar de verdade, que é o que este leitor já calcula depois.
+    // NOTE: whoever opened the episode. The handler drops a pending later step in both shapes of a
+    // fresh episode, and the inbound webhook's cancel of that job can be lost or delayed, so this
+    // predicate must not be narrower than the handler. A live appointment does not save the job
+    // either: the sweep's `upsertJobRow` overwrites a PENDING row with the new episode's step 0, and
+    // the pause shows through `pausedByAppointment` below, for the step that will actually run.
     const supersededLaterStepJob =
       job != null && jobStepIndex > 0 && newEpisode;
     // The inactivity floor, the same one the handler and the SQL use: our reply counts as movement.
@@ -1215,20 +1107,12 @@ export async function getConversationDetail(
       (agent?.followUpArmedAt == null ||
         fencedSilenceStart == null ||
         fencedSilenceStart < agent.followUpArmedAt);
-    // NOTE: a job whose step no longer exists is a sequence that is OVER, and the handler says so
-    // by returning `done` on its very first look (issue #103 moved that check to the top). An
-    // operator who shortens a sequence with a later-step job still pending leaves exactly that
-    // state, so the console has to reach the same terminal answer — otherwise it counts down to a
-    // step that will never fire, prints "step 5 of 1", and (once the step decides the pause)
-    // reports the conversation as appointment-paused over a job that is about to end instead.
-    //
-    // Its own arm, ahead of both others, because falling through is not the same answer: the
-    // estimate arm below would offer step 1, which is a countdown for a sequence about to end.
+    // NOTE: a job whose step no longer exists is a sequence that is OVER (the handler returns `done`
+    // on its first look), as when an operator shortens a sequence with a later step pending. Its own
+    // arm ahead of the others: falling through would count down to step 1 of a sequence about to end.
     const jobStepGone = job != null && cfg.steps[jobStepIndex] === undefined;
-    // ...unless that job was already superseded by an episode our own reply opened (issue #750): the
-    // sequence it belonged to is over on both counts, and the sweep is about to start a fresh step 0.
-    // Suppressing here would hide the countdown of the NEW episode behind a job from the old one,
-    // and the operator would read "nothing scheduled" for a conversation that is about to be chased.
+    // NOTE: ...unless that job was already superseded by an episode our own reply opened: the sweep
+    // is about to start a fresh step 0, and suppressing here would hide the NEW episode's countdown.
     if (jobStepGone && !supersededLaterStepJob) {
       nextStep = null;
     } else if (
@@ -1261,15 +1145,10 @@ export async function getConversationDetail(
         nextRunAt = gated.toISOString();
       }
     } else if (
-      // No job armed yet: estimate the FIRST step so the operator sees a live countdown during the
-      // idle window. The sweep only enqueues the job ~at fire time, so for short delays (e.g. 1 min)
-      // the pending-job window is seconds — without this estimate the indicator would sit at "none
-      // scheduled" the whole time, then jump straight to "complete". Same eligibility as the sweep:
-      // follow-up on, a fresh episode (none fired yet, OR the customer replied since the last one — a
-      // reply restarts the sequence at step 0), the bot still owns the conversation, the agent isn't
-      // test-silenced, and we know when the conversation last moved. The episode predicate MUST match
-      // the sweep/handler (isNewFollowUpEpisode) or the indicator disagrees with what actually fires.
-      // (managedByRedirect already forces job=null; guard the estimate too so it stays suppressed.)
+      // NOTE: no job armed yet: estimate the FIRST step, since the sweep enqueues the job only about
+      // at fire time and the indicator would otherwise sit at "none scheduled", then jump to
+      // "complete". Same eligibility as the sweep and handler (isNewFollowUpEpisode, ownership,
+      // test-silence, activity), or the indicator disagrees with what actually fires.
       followUpLive &&
       firstStep &&
       newEpisode &&
@@ -1297,26 +1176,11 @@ export async function getConversationDetail(
         nextRunAt = gated.toISOString();
       }
     }
-    // A live appointment suppresses BOTH shapes: the sweep never enqueues the estimated step, and an
-    // already-armed job is rescheduled by the handler for as long as the appointment stands, so its
-    // countdown would just slip an hour at a time. Show the reason instead of a time that never comes.
-    //
-    // NOTE: read from the SAME source the handler uses (loadAppointmentContext via
-    // hasLiveAppointment), instead of a third hand-kept copy of the predicate. The estimate and the
-    // sweep have now drifted twice — the suppression itself in #39, and this indicator in #60 — so
-    // anything else here would be the third.
-    //
-    // The `nextStep` guard is what makes the flag mean "the appointment is hiding something": every
-    // OTHER reason the follow-up will not run (conversation resolved or taken by a human, episode
-    // older than the arming, agent test-silenced, sequence already finished) leaves nextStep null on
-    // its own, and announcing "paused by appointment" there would state a reason that is not the
-    // reason — and, because the completion marker yields to this flag, would hide a finished sequence
-    // behind it. It also skips the query on every conversation with nothing to suppress.
-    //
-    // NOTE: which step is about to fire decides it, not the agent (issue #103). `nextStep` is
-    // 1-based for display, so the step the worker will actually run is `steps[nextStep - 1]` — the
-    // same index the handler resolves from the job's payload. The three sites agreeing is not the
-    // same condition written out three times: it is one function, asked here about this step.
+    // NOTE: a live appointment suppresses both shapes (the sweep never enqueues the estimated step,
+    // and the handler keeps rescheduling an armed job), so show the reason instead of a time. Read
+    // through the handler's own source (loadAppointmentContext), asked about the step about to fire
+    // (`steps[nextStep - 1]`), not the agent. Gated on `nextStep` so the flag appears only when the
+    // appointment is what hides something: every other reason already leaves nextStep null.
     const upcomingStep =
       nextStep === null ? undefined : cfg.steps[nextStep - 1];
     const pausedByAppointment =
@@ -1392,20 +1256,9 @@ export async function getConversationDetail(
       managedByRedirect,
       redirectNext,
       pausedByAppointment,
-      // POR "NADA VEM", E NÃO PELO MOTIVO DE NADA VIR. A forma antiga era
-      // `job !== null && !followUpLive`, e ela nomeia um caminho só: o job que o handler descarta
-      // porque um humano assumiu, o agente foi desligado, o follow-up saiu. Existem outros dois, e
-      // nos dois o job fica pendente sem que nada esteja agendado — o episódio novo que condena o
-      // passo tardio sem que a cerca de ativação deixe o passo 0 entrar no lugar, e o próprio
-      // `fencedStep0Job`, que é anterior a tudo isto. Com `abandoned` falso ali, o `nextStep` nulo e
-      // nenhuma pausa, a tela escreve "sequência de follow-up concluída" numa conversa com job
-      // PENDENTE que vai ser descartado: o exato oposto do que este campo existe para impedir, e o
-      // motivo de ele ser sobre o job EXISTIR e não sobre a liveness.
-      //
-      // Então a pergunta passa a ser a que a tela faz: há passo na fila e não há nada agendado. A
-      // pausa fica de fora porque ela é o outro estado, tem campo próprio e volta sozinha quando o
-      // compromisso passar. O caminho antigo continua coberto: sem liveness nenhum braço agenda
-      // nada, então `nextStep` é nulo ali por construção.
+      // NOTE: keyed on "nothing is coming", not on why: a PENDING job with no scheduled step (the
+      // handler would drop it, a fresh episode dooms a later step, or `fencedStep0Job`) must not read
+      // as "sequence complete". The appointment pause is the other state, with its own field.
       abandoned: job !== null && nextStep === null && !pausedByAppointment,
     };
   }
@@ -1451,38 +1304,13 @@ export async function getConversationDetail(
       },
     }),
   );
-  // THE DELIVERY FACT IS THE TURN'S, so it is folded over the turn before any row is shaped.
-  //
-  // Each `skip_reply` line records what the turn had delivered at the instant that line was written,
-  // and a turn can write more than one: a model may emit the decision alongside the tool that speaks,
-  // and such a batch does not end the turn (`onlySkipped` in graph.ts), so the model is asked again
-  // and answers with the decision alone. The first of those lines is written while the companion is
-  // still running, and reads "nothing yet" — truthfully about that instant, and misleadingly about
-  // the turn, which is what the marker is read as being about.
-  //
-  // TWO WRITERS, AND THE TURN'S OWN ANSWER WINS. The `skip_reply` line carries what the turn had
-  // committed to at the instant that line was written, which is all the live indicator can ever
-  // have; the `generate` line the runtime writes when the turn ENDS carries what actually reached
-  // the customer.
-  //
-  // The stamp alone is not enough, and round 2 of review is why. Since issue #639 a lone
-  // `skip_reply` no longer ends the turn, so the batch after the decision still runs: a transfer
-  // with a closing line delivers a message AFTER the only line that carried a stamp, and reading the
-  // stamps would answer "nothing was delivered" about a reply on the screen. The stamps are also
-  // provisional in the other direction — an attachment is reserved before its download — which is
-  // why the turn's own answer, taken after everything landed, is preferred to all of them.
-  //
-  // Among the stamps, the LAST of the turn, and the rows arrive newest-first so the first one seen
-  // is it. It is the fallback: a turn written before this shipped has no `generate` answer, and an
-  // older, more provisional stamp must not outlive a later one.
-  //
-  // AND BOTH FIT IN THE SAME WINDOW, which is what makes the preference mean anything: this read is
-  // capped at the 60 newest rows, so a turn's answer would be worthless if the cap could take it
-  // while leaving the marker it answers for. It cannot — the answer is written when the turn ends,
-  // so it is NEWER than the decision it governs, and nothing newer than a row inside a newest-first
-  // window falls outside it. That ordering is a claim about what happens rather than about what the
-  // code says, since `emitFlowEvent` does not await its write, so it is measured on a real turn
-  // (`tests/graph/runtime.test.ts`, "silêncio decidido e transferência depois").
+  // NOTE: the delivery fact is the turn's, folded over the turn before any row is shaped. A turn can
+  // write several `skip_reply` lines, each stamped with what it had delivered at that instant, and a
+  // batch after the decision can still deliver (a transfer's closing line). The `generate` line the
+  // runtime writes when the turn ENDS carries what actually reached the customer, so it wins; else
+  // the LAST stamp (rows arrive newest-first). That end line is newer than the decision it governs,
+  // so the 60-row newest-first cap cannot drop it while keeping the marker (tests/graph/runtime.test.ts
+  // covers it on a real turn, since `emitFlowEvent` does not await its write).
   const deliveredByTurn = new Map<string, boolean>();
   const finalByTurn = new Map<string, boolean>();
   for (const r of trailRows) {
@@ -1558,7 +1386,7 @@ export async function getConversationDetail(
       const recorded = isNudgeOrigin(detail.origin) ? detail.origin : null;
       const kind: ConversationTrailEntry["kind"] =
         recorded ??
-        // A line written before #846 carries no origin, and keeps the inference it always had.
+        // NOTE: a line that records no origin keeps the inference from its trigger.
         (detail.trigger === "appointment_reminder" ? "reminder" : "followup");
       trail.push({
         id: String(r.id),
@@ -1816,10 +1644,9 @@ export async function handoffConversation(
       id,
       conv,
       client,
-      // NOTE: The holder is only part of what this write ASKED FOR when it named one. An untargeted
-      // handoff sends no assignment request and the open toggle assigns nobody, so claiming `User`
-      // in the fallback had the mirror stamp a person onto a conversation that had none whenever the
-      // post-write read came back unusable, and the row one line down said otherwise.
+      // NOTE: the holder is part of what this write ASKED FOR only when it named one: an untargeted
+      // handoff sends no assignment and the open toggle assigns nobody, so claiming `User` in the
+      // fallback would stamp a person onto a conversation that has none.
       {
         status: "open",
         ...(assigneeId !== null ? { assigneeType: "User", assigneeId } : {}),
@@ -1829,23 +1656,16 @@ export async function handoffConversation(
       // Taking a reading before the write would buy a round trip for a comparison nobody makes.
       null,
     );
-    // Optimistic realtime feedback (the inbound webhook reconciles canonically). It announces the row
-    // as STORED, not as asked for: the two differ when the live read came back with something else
-    // (an assignment Chatwoot resolved differently, or a webhook that outranked this write), and a
-    // publication of the intent would arrive last and leave the console showing a state nobody holds.
-    // NOTE: WHERE THIS WRITE LANDED, resolved once and read by both the broadcast and the row. They are
-    // the same fact and they must not be able to disagree: an untargeted handoff (the console's
-    // ordinary one, no assignee named) never calls `assignToAgent`, so who holds the conversation
-    // afterwards is Chatwoot's answer and not this call's argument. A row built from the argument
-    // would say `null` about a conversation a person is holding, one line under a broadcast that
-    // names them.
+    // NOTE: where this write landed, resolved once and read by both the broadcast and the row, so
+    // they cannot disagree. It is the row as STORED, not as asked for: the live read may have come
+    // back with something else, and an untargeted handoff never calls `assignToAgent`, so the holder
+    // is Chatwoot's answer and not this call's argument.
     landed = {
       status: state?.status ?? "open",
       assigneeId: state ? state.assigneeId : (assigneeId ?? conv.assigneeId),
       // NOTE: `User` only where THIS call put one there. An untargeted handoff makes no assignment
-      // request at all, and the open toggle does not auto-assign anybody (measured on 4.17.0,
-      // `docs/chatwoot.md`), so with no usable post-write state the holder is the one the
-      // conversation already had. The broadcast reads the same value and inherits the correction.
+      // request and the open toggle auto-assigns nobody (`docs/chatwoot.md`), so with no usable
+      // post-write state the holder is the one the conversation already had.
       assigneeType: state
         ? state.assigneeType
         : assigneeId !== null
@@ -1859,15 +1679,9 @@ export async function handoffConversation(
         (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
     });
   } finally {
-    // `before` off the mirror rather than off a live read: this call already made the only round
-    // trips it needs, and the row answers "what did this action move", which is the state the
-    // operator was looking at when they clicked.
-    //
-    // NOTE: The TYPE travels with the id on both sides. `User` and `AgentBot` are separate id namespaces
-    // in Chatwoot (the hand-back below compares holders that way for the same reason), so a row
-    // carrying only `assigneeId: 7` cannot tell one from the other, and a handoff that moved a
-    // conversation from a bot to a person with the same numeric id reads as a row where nothing
-    // changed.
+    // NOTE: `before` comes off the mirror, not a live read: the row answers "what did this action
+    // move", which is the state the operator saw when they clicked. The TYPE travels with the id on
+    // both sides, since `User` and `AgentBot` are separate id namespaces in Chatwoot.
     await recordConversationAction(ctx, base, id, {
       action: "conversation.handoff",
       before: {
@@ -1880,37 +1694,18 @@ export async function handoffConversation(
   }
 }
 
-// Return to the bot: set status pending AND unassign the human (the gate requires BOTH
-// status === "pending" and assignee_type !== "User"). A live probe against the chatwoot-pro fork
-// confirmed that toggle_status → pending does NOT clear the assignee, so unassigning is mandatory —
-// otherwise the next inbound message still carries assignee_type "User" and the bot stays silent.
-//
-// STATUS FIRST, and that ordering is chosen for the failure, not for the success: the two calls are
-// separate requests and either can fail. Unassigning first and then failing leaves a conversation
-// with no assignee and a status the gate refuses — the human is gone and the bot still will not
-// speak, which is nobody's conversation. Failing the other way leaves the human holding it exactly
-// as before, one status apart. The caller reports the partial either way; only one of the two
-// partials is recoverable by doing nothing.
-//
-// What the ordering costs is paid back by the read between them. Whoever is holding the conversation
-// is read LIVE and the unassign only fires for that same holder, because putting the status call
-// first opens a window the other order did not have: a human claiming the conversation while it runs
-// would be removed by an unconditional unassign that was aimed at somebody else. Chatwoot has no
-// conditional unassign, so this is the compare done here — it narrows the window to one request
-// instead of two, and the direction it fails in is leaving a human in place, which is the direction
-// a takeover should always win.
+// Return to the bot: set status pending AND unassign the human (the gate requires both, and
+// toggle_status to pending does NOT clear the assignee in the chatwoot-pro fork). STATUS FIRST,
+// chosen for the failure: unassigning first and then failing leaves nobody's conversation (no
+// human, a status the gate refuses), while the other partial leaves the human holding it. The
+// window this opens is narrowed by reading the holder LIVE and unassigning only that same holder
+// (Chatwoot has no conditional unassign), so a human who claims it meanwhile stays.
 export type ReturnToAgentOutcome = "returned" | "taken-over";
 
-// A hand-back needs somebody to hand back TO (issue #495). The status write is the same one a
-// takeover undoes — `pending`, the human unassigned — and on an inbox with no responder of ours,
-// or one whose responder is switched off or only observes (issue #209), nothing ever picks the
-// conversation up again: it sits pending with nobody on it, and the person who had it lost it
-// with no trace of why. So the refusal comes BEFORE any write, off the rows this deployment
-// already holds, and it names which of the three it is — the console shows the reason as is.
-//
-// Asked of every caller, the console button, the MCP tool and `/reset` alike: `/reset` runs for a
-// test agent's conversation, so it passes, and a caller that reaches here for an agent that could
-// not answer was about to strand the conversation whichever door it came through.
+// A hand-back needs somebody to hand back TO. On an inbox whose responder is missing, switched off,
+// only observes, or has no bot, nothing ever picks the conversation up again, so the refusal comes
+// BEFORE any write and names the reason (the console shows it as is). Asked of every caller (the
+// console button, the MCP tool, `/reset`), since each would strand the conversation the same way.
 export async function requireAnsweringResponder(
   ctx: TenantContext,
   inbox: { agentId: bigint | null } | null,
@@ -1943,12 +1738,9 @@ export async function requireAnsweringResponder(
         // column on a row this already reads.
         select: { enabled: true, mode: true, settings: true },
       }),
-      // ...AND THE PERSONA'S BOT, on THIS deployment (issue #495 review, round 1). A binding is not
-      // an identity: the row can be missing — an instance reconnected, a bot deleted upstream and
-      // the reconcile not run — and then the runtime has no token and no route to answer with. The
-      // three checks below all ask "would anything pick this up", and a responder with no bot
-      // answers that with no more than a bound one does; without this the hand-back parked the
-      // conversation pending and unassigned the person on the strength of a row that names nobody.
+      // NOTE: ...and the persona's bot on THIS deployment. A binding is not an identity: the row can
+      // be missing (an instance reconnected, a bot deleted upstream and the reconcile not run), and
+      // then the runtime has no token and no route to answer with.
       db.chatwootAgentBot.findUnique({
         where: {
           tenantId_chatwootInstanceId_agentId: {
@@ -1979,39 +1771,10 @@ export async function requireAnsweringResponder(
       "errors.returnAgentNoBot",
     );
   }
-  // ...AND A CONFIG THAT ACTUALLY BUILDS (issue #495 review, round 3). Bound, on, answering and with
-  // a bot is still not "would answer": a credential deleted, pending or rotated makes every reactive
-  // turn end as `agent-unavailable`, and the hand-back would park the conversation pending on an
-  // agent that cannot run. Asked with the runtime's OWN loader rather than a second opinion about
-  // what runnable means, so the two cannot drift.
-  //
-  // `skipExperiment` for the reason that flag exists: resolving a variant INSERTS the thread's
-  // assignment, and a check that never runs the tested prompt would enrol the conversation in an
-  // experiment it takes no part in. Nothing else here writes.
-  //
-  // NOTHING THIS PROBE LEARNS IS SWALLOWED (issue #495 review, round 9). It has three ways to end
-  // and each one now says something:
-  //
-  //   - a 4xx `AppError` is a VERDICT about the configuration — `modelConfig: {}`, an agent nobody
-  //     configured, makes `parseModelConfig` throw exactly this — and it refuses;
-  //   - `null` is the loader's own "cannot run" (a `credentialRef` that no longer resolves), and it
-  //     refuses;
-  //   - anything else is RETHROWN, unchanged, rather than folded into "unreadable".
-  //
-  // That last branch is the round-9 correction and it is the project's own rule: a credential blob
-  // that fails to decrypt — a corrupt row, or `ENCRYPTION_KEY` rotated — throws a plain crypto or
-  // JSON error, and CLAUDE.md says to throw rather than fall back on exactly that. Swallowing it
-  // read a permanent, deterministic failure as a blip and handed the conversation to a responder
-  // whose every turn would fail the same way, having unassigned the person who had it.
-  //
-  // And "a database blip" is not what the fail-open was protecting: this loader reads through the
-  // same connection the hand-back already used for `loadConvRef` and the locked row read, so a
-  // database that cannot answer has failed this request several statements earlier. What the
-  // swallow actually covered was the deterministic case, which is the one that must not pass.
-  //
-  // `skipExperiment` for the reason that flag exists: resolving a variant INSERTS the thread's
-  // assignment, and a check that never runs the tested prompt would enrol the conversation in an
-  // experiment it takes no part in. Nothing else here writes.
+  // NOTE: and a config that actually builds, asked with the runtime's own loader (`skipExperiment`, so
+  // the probe enrols the thread in no experiment). A 4xx `AppError` or the loader's `null` refuses;
+  // anything else (a credential that fails to decrypt) is rethrown, not read as a blip. The whole
+  // guard is in docs/chatwoot.md ("Nothing to hand back to").
   if (runnableFor) {
     const cfg = await runScopedOn(base, ctx, (db) =>
       loadAgentConfig(
@@ -2029,29 +1792,10 @@ export async function requireAnsweringResponder(
       if (err instanceof AppError && err.statusCode < 500) return null;
       throw err;
     });
-    // ...AND THE MODEL HAS TO BUILD, not merely the config to load (issue #495 review, round 6). A
-    // loaded config is still not a runnable one: `openai-compatible` with no effective URL is
-    // refused by `createChatModel` and by nothing before it. Synchronous and side-effect-free — it
-    // constructs the client object and calls nobody — so it costs a hand-back nothing.
-    //
-    // EVERY throw here refuses, not only an `AppError` (issue #495 review, round 9). This call
-    // touches no database, no vault and no network: it is a constructor over data already in hand,
-    // so a throw from it is deterministic and the runtime's own next turn gets the identical one.
-    // The vendors' own SDKs are where several of those live — `ChatAnthropic` throws a plain `Error`
-    // when no key is available anywhere, environment included — and reading a plain `Error` as a
-    // blip let precisely that case unassign a human for a responder that cannot start.
-    //
-    // This is also what makes an empty `apiKey` a question nobody has to guess at: each SDK applies
-    // its own rule, environment fallback included, and answers here.
-    //
-    // THE VERDICT IS HELD, NOT THROWN HERE (issue #495 review, round 16). `loadAgentConfig` answers
-    // `null` for a switched-off agent and for a monitoring one — and for a row that is gone — as well
-    // as for a credential that does not resolve, and those four are not one remediation. An
-    // administrator flipping the switch, or the mode, between the read at the top of this function
-    // and this one sent the operator to "check its model credential" for a responder that is merely
-    // off, and the re-read below that would have named it correctly was unreachable behind the throw.
-    // So each way of not running records WHY, and the reason is chosen after the last reading, in the
-    // order the operator can act on: off, then observes, then not runnable.
+    // NOTE: the model has to build too: any throw from this side-effect-free constructor is
+    // deterministic, so it refuses. The verdict is held, not thrown here, because the loader's `null`
+    // also covers an agent just switched off or flipped to monitoring; the reason is chosen after the
+    // last reading, in the order the operator can act on: off, then observes, then not runnable.
     let notRunnable: string | null =
       cfg === null ? "config did not load" : null;
     if (cfg) {
@@ -2071,18 +1815,9 @@ export async function requireAnsweringResponder(
         notRunnable = "the model could not be built";
       }
     }
-    // ...AND A KEY WHERE THE PROVIDER NEEDS ONE (issue #495 review, round 15), which the constructor
-    // above does NOT answer for every provider. I removed this rule in round 6 arguing that each
-    // SDK applies its own, and that was only half true: `ChatAnthropic` throws without a key and is
-    // caught above, while the `ChatOpenAI`-based constructors accept `apiKey: ""` and fail on the
-    // first request instead. So the probe passed and the hand-back unassigned a human for an agent
-    // whose every call is rejected — the strand this guard exists to refuse.
-    //
-    // The rule is not re-derived here: `config-health.ts` already states it as
-    // `provider !== "openai-compatible"`, which is also the editor's `required=` on that field. An
-    // openai-compatible endpoint authenticates by its URL and an empty key is its normal state; for
-    // every other provider a key is what makes the model callable at all. Asked of the RESOLVED key
-    // rather than of `credentialRef`, so a ref that resolved to an empty secret is caught too.
+    // NOTE: a key where the provider needs one, which the constructor does not check for every
+    // provider (the `ChatOpenAI`-based ones accept `apiKey: ""` and fail on the first request). The
+    // rule is `config-health.ts`'s (all but `openai-compatible`), asked of the RESOLVED key.
     if (
       cfg !== null &&
       cfg.mc.provider !== "openai-compatible" &&
@@ -2090,25 +1825,10 @@ export async function requireAnsweringResponder(
     ) {
       notRunnable = "the provider needs a key and the agent has none";
     }
-    // ...AND A TEST AGENT NOBODY HAS ACTIVATED HERE ANSWERS NOTHING EITHER (issue #495 review, round
-    // 10). `test` mode is not a mode that answers: the receiver's own gate keeps such an agent
-    // silent on every conversation whose `testActivatedAt` is null, and `loadAgentConfig` knows
-    // nothing about activation, so this guard passed a responder that is silent by construction and
-    // the hand-back parked the conversation pending with nobody answering. Asked with
-    // `isTestSilenced`, the predicate the other five callers use, rather than by re-deriving it.
-    //
-    // ASKED LAST, AND ON ITS OWN READING (issue #495 review, round 12). The snapshot at the top of
-    // this function is several awaits old by here — `loadAgentConfig` reads the agent again on its
-    // way past — so a flip from production to test committing in between left this gate looking at
-    // `production`, skipping itself, while the config it was judging was the test agent's. Re-read
-    // rather than reordered, because the reading that decides has to be the last one taken; the same
-    // read re-asks the switch and the mode, whose earlier answers are that snapshot's too.
-    //
-    // Through `episodeTestActivatedAt` and not the row's own stamp: on a redirect pair the
-    // activation can live on the SIBLING conversation, and reading the row alone would refuse a
-    // hand-back for an agent that is activated and answering. It costs nothing on the ordinary path
-    // — the lookup is skipped for a production agent, for a row already stamped, and outside a
-    // redirect episode.
+    // NOTE: a `test` agent not activated here answers nothing either (`isTestSilenced`, through
+    // `episodeTestActivatedAt` since a redirect pair's activation can live on the sibling). Asked
+    // last, on a fresh read of the agent that also re-asks the switch and the mode, because the
+    // snapshot at the top is several awaits old by here.
     const last = await runScopedOn(base, ctx, (db) =>
       db.agent.findUnique({
         where: { id: agentId },
@@ -2161,21 +1881,10 @@ export async function requireAnsweringResponder(
   }
 }
 
-// THE ATTACHMENT CHATWOOT ACTUALLY HAS, and that it is OURS (issue #495 review, rounds 3 and 4).
-// Our `ChatwootAgentBot` row says a bot was created and attached once; it does not say the
-// attachment still stands, nor that it is still this responder's. A bot deleted or detached in the
-// Chatwoot UI leaves the row behind — `reconcileInboxBots` only reports that drift, since it asks
-// whether the BOT exists rather than whether it is attached — and an out-of-band rebind, or a local
-// persistence that failed after the remote call, leaves a DIFFERENT bot receiving the inbox. Both
-// end the same way: the hand-back sets the conversation pending and takes the human off it while
-// nothing this workspace names is listening.
-//
-// Comparing the ID and not merely "some bot is there" is what covers the second: a number that is
-// not ours means the inbox belongs to a persona we did not validate.
-//
-// FAILS OPEN, like the baseline read on the same path. An unreadable answer — the request failing,
-// the route absent, a client that cannot answer at all — is a blip and not evidence, and refusing on
-// it would take a hand-back away from the operator over a transient. Only a DEFINITE answer refuses.
+// The attachment Chatwoot actually has, and that it is OURS: our `ChatwootAgentBot` row does not say
+// the bot is still attached to this inbox, nor that the attached bot is this responder's (an
+// out-of-band rebind). Fails OPEN on an unreadable answer, like the baseline read; only a definite
+// answer refuses. A missing local row refuses on its own.
 async function requireLiveAttachment(
   ctx: TenantContext,
   where: {
@@ -2216,13 +1925,9 @@ async function requireLiveAttachment(
     );
     return;
   }
-  // A MISSING LOCAL ROW REFUSES ON ITS OWN (issue #495 review, round 10), before the remote answer is
-  // even consulted. `ours` being undefined means this workspace has no bot for that agent — the row
-  // was deleted between the responder check above and here, and `deleteAgent` deliberately leaves the
-  // remote bot attached — so Chatwoot happily reports a numeric id that belongs to a persona whose
-  // route token no longer exists here. Accepting it handed the conversation to nobody and unassigned
-  // the person holding it. Unlike the remote answers, this one is local evidence and definite: there
-  // is nothing transient about a row that is not there.
+  // NOTE: a missing local row refuses before the remote answer is consulted: `deleteAgent` leaves
+  // the remote bot attached, so Chatwoot would report an id for a persona whose route token is gone.
+  // Unlike the remote answers, a row that is not there is definite.
   if (ours === undefined) {
     throw new ConflictError(
       "The responder of this inbox has no bot on this Chatwoot; reconnect the instance.",
@@ -2238,18 +1943,13 @@ async function requireLiveAttachment(
   }
 }
 
-// The same refusal, asked of a conversation id alone, for a caller that has not loaded one (issue
-// #495 review, round 1). The MCP DRY RUN is that caller: it previews off `getConversationDetail` and
-// so answered "this will return the conversation" for an inbox whose responder is unbound, off, only
-// observing or without a bot — a preview the approved apply then refuses with a 409, which is exactly
-// the preview/apply coherence docs/mcp.md requires.
+// The same refusal, asked of a conversation id alone, for a caller that has not loaded one: the MCP
+// DRY RUN, whose preview must answer what the apply will do (docs/mcp.md).
 export async function assertConversationReturnable(
   ctx: TenantContext,
   id: bigint,
-  // The client the REMOTE half needs (issue #495 review, round 4). Without it the preview asked only
-  // the local rules and approved a hand-back the apply then refused with a 409 on the very next
-  // call, with no state change in between — the incoherence docs/mcp.md rules out. One GET, on a
-  // preview whose whole job is to answer what the apply will do.
+  // The client the REMOTE half needs: without it the preview would approve a hand-back the apply
+  // refuses with a 409 on the very next call. One GET.
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
 ): Promise<void> {
@@ -2259,11 +1959,9 @@ export async function assertConversationReturnable(
     conv.chatwootInstanceId,
     { ...deps, base },
   );
-  // ...then the inbox Chatwoot names, for the same reason the apply reads it (issue #495 review,
-  // round 6): a preview judging a transferred conversation by the inbox it LEFT approves a hand-back
-  // the apply then refuses, and the transfer is not a state change that happened in between — it had
-  // already happened when the preview ran. The apply's own lock has no place here: nothing is
-  // written.
+  // NOTE: the inbox Chatwoot names, as the apply reads it: a preview judging a transferred
+  // conversation by the inbox it LEFT would approve what the apply refuses. Nothing is written, so
+  // the apply's lock has no place here.
   const live = await readLiveBeforeConsoleWrite(
     client,
     conv.chatwootConversationId,
@@ -2275,13 +1973,8 @@ export async function assertConversationReturnable(
     live?.inboxId ?? null,
     conv.inbox,
   );
-  // IN THE APPLY'S OWN ORDER (issue #495 review, round 14), attachment first and the local state
-  // last. Coherence is about the REASON as well as the verdict: a responder that is switched off AND
-  // whose bot is gone is refused by both halves, but the preview answered `returnAgentOff` while the
-  // apply answered `returnAgentNoBot`, with no state change in between — so an operator approving a
-  // preview was handed a different remediation than the one they had read, which is what
-  // docs/mcp.md rules out. The apply's precedence is the one that moved (round 10 put the local
-  // reading last, closest to the write), so it is the one this follows.
+  // NOTE: in the apply's own order, attachment first and the local state last: coherence covers the
+  // REASON as well as the verdict, so a responder both off and detached gets the same refusal key.
   await requireLiveAttachment(
     ctx,
     {
@@ -2302,14 +1995,10 @@ export async function assertConversationReturnable(
   });
 }
 
-// WHICH INBOX A HAND-BACK IS JUDGED AGAINST, off what CHATWOOT says rather than off the mirror
-// (issue #495 review, round 6). Shared by the preview and the apply so the two cannot drift: a
-// preview that resolved this differently is the incoherence docs/mcp.md rules out, and the rule is
-// three lines of precedence that would otherwise live twice.
-//
-// `mirrored` is the fallback and only that: it stands when the source named no inbox at all. When
-// the source DID name one and this side has no row for it, the answer is null — an inbox this
-// runtime does not serve has no responder — and never the mirror's stale row.
+// Which inbox a hand-back is judged against, off what CHATWOOT says rather than the mirror. Shared
+// by the preview and the apply so the two cannot drift. `mirrored` stands only when the source named
+// no inbox; an inbox the source names that has no row here is null (this runtime does not serve it,
+// so it has no responder), never the mirror's stale row.
 async function resolveHandBackInbox(
   ctx: TenantContext,
   base: PrismaClient,
@@ -2339,52 +2028,27 @@ export async function returnConversationToAgent(
   id: bigint,
   deps: LoadChatwootClientDeps = {},
   base: PrismaClient = basePrisma,
-  // The holder this hand-back is FOR, when the caller already established one. /reset does: it reads
-  // the holder, decides the conversation is worth taking back from THAT person, and only then calls
-  // here — and between those two moments somebody else can arrive. Reading the baseline here would
-  // adopt the newcomer and hand the conversation away from them, which is the guard inverted.
-  //
-  // Optional because the other two callers have no such expectation: the console button and the MCP
-  // tool say "return this conversation", with no claim about who is holding it, and for them the
-  // only honest baseline is the live one read below. A caller that omits it can only ever refuse to
-  // unassign somebody, which is the safe direction for one that forgets.
+  // The holder this hand-back is FOR, when the caller already established one (/reset reads it and
+  // decides first, and somebody else can arrive in between). Reading the baseline here would adopt
+  // the newcomer. The console and MCP omit it; omitting it can only ever refuse to unassign somebody.
   expectedHolder?: ReturnToAgentHolder,
 ): Promise<ReturnToAgentOutcome> {
   const tenantId = requireTenant(ctx);
   const conv = await loadConvRef(ctx, id, base);
-  // ASKED ONCE, ON THE INBOX CHATWOOT NAMES, and no longer on the mirror first (issue #495 review,
-  // round 7). The early refusal read the row that a pending transfer webhook has not updated yet, so
-  // a conversation already moved INTO a staffed inbox was refused on the strength of the unstaffed
-  // one it left — a 409 for the very direction the live resolution below exists to get right, and
-  // one the caller cannot act on because nothing is wrong. What it bought was refusing before the
-  // client existed; what it cost was a wrong answer, and the probe it duplicated (a vault round
-  // trip) is now run once instead of twice.
-  //
-  // Operator-initiated → instance admin token (audit shows the operator, not the persona).
+  // NOTE: the responder is asked once, late, against the inbox Chatwoot names (a transfer webhook
+  // may not have landed). Operator-initiated, so the instance admin token (audit shows the operator).
   const client = await loadChatwootClient(tenantId, conv.chatwootInstanceId, {
     ...deps,
     base,
   });
-  // The BASELINE, read live and BEFORE the status call, because "who held it when this request
-  // started" is the only thing a takeover can be measured against. The mirrored row is not that: an
-  // assignment webhook can be late or lost, and then a human who was already there reads as somebody
-  // who arrived mid-request — the hand-back refuses, the caller is told "taken-over", and the
-  // conversation is not returned. /reset never saw it because it reconciles from live first; the
-  // console and MCP callers do not.
-  //
-  // Falls back to the mirror when the read fails, which is where this stood before: an unreadable
-  // baseline is not evidence that nobody was there.
+  // NOTE: the BASELINE, read live and BEFORE the status call: "who held it when this request started"
+  // is what a takeover is measured against, and the mirror may lag a late or lost assignment webhook.
+  // An unreadable baseline falls back to the mirror; it is not evidence that nobody was there.
   const readHolder = (): Promise<LiveConversationState | null> =>
     readLiveBeforeConsoleWrite(client, conv.chatwootConversationId);
-  // TAKEN BEFORE THE TOGGLE, and taken unconditionally, which is the whole of its correctness
-  // (issue #469). The mark this hand-back leaves has to name a message that already existed when
-  // the operator clicked: a reading made afterwards would include a colleague's reply typed in the
-  // round trip, and the fence would then skip that reply as though it predated the click — the
-  // defect of issue #430, reintroduced by the guard against this one.
-  //
-  // Unconditional even when `expectedHolder` spares the baseline read, because that caller (/reset)
-  // is a hand-back like any other and its conversation needs the same mark; a mark taken only on
-  // the path that happens to read for another reason is a fence that exists on some clicks.
+  // NOTE: taken before the toggle and unconditionally (even when `expectedHolder` spares the
+  // baseline), since it is also the mark: it must name a message that existed when the operator
+  // clicked, or the takeover's fence would skip a colleague's reply typed during the round trip.
   const before = await readHolder();
   const baseline = expectedHolder ??
     (before === null
@@ -2396,48 +2060,15 @@ export async function returnConversationToAgent(
       assigneeType: conv.assigneeType,
       assigneeId: conv.assigneeId,
     };
-  // ...AND ASKED AGAIN HERE, ON THE FAR SIDE OF THE NETWORK (issue #495 review, round 1). The check
-  // above runs before `loadChatwootClient` and the baseline GET, both of which await, and an unbind,
-  // a responder switch, a disable or a flip to monitoring committing inside that window reaches this
-  // write on a snapshot that is already stale — parking the conversation pending with nobody on it,
-  // which is the exact outcome the guard exists to prevent. Re-read rather than serialized against
-  // binding writes: the write below is a Chatwoot call, so a lock here would be held across somebody
-  // else's network, and the re-read closes all but the microseconds between it and the toggle.
-  //
-  // Off the INBOX AS IT STANDS, not the row loaded at the top: a conversation moved to another inbox
-  // mid-request must be judged by the one it is on now.
-  //
-  // ...AND UNDER THE INBOX'S OWN ROW LOCK, which is what makes it a fence rather than a fresher
-  // snapshot (issue #495 review, round 3). `bindInbox` detaches the bot in Chatwoot BEFORE it takes
-  // this lock and clears `Inbox.agentId`, so a plain read here can see a responder whose remote
-  // detach has already happened and whose commit lands a moment later — the conversation is handed
-  // back to nobody, exactly the stranding this refuses. Taking `FOR NO KEY UPDATE` on the same row
-  // `persistBinding` locks serialises the two: an unbind in flight either commits before this read
-  // (and is seen) or waits for this transaction (and lands after a hand-back the operator asked for,
-  // which is the unbind's own consequence and not a strand nobody chose).
-  //
-  // The lock is NOT held across the Chatwoot write: it is released with the transaction below, and
-  // the live reading it authorises is what the toggle then acts on. Holding it across somebody
-  // else's network is the thing this module refuses to do anywhere.
-  //
-  // ...AND OFF THE INBOX **CHATWOOT** NAMES, not the one the mirror does (issue #495 review, round
-  // 6). A transfer reaches this side by webhook, so a conversation moved a moment ago still carries
-  // its old `inboxId` here — and the old inbox's healthy responder and attachment would then
-  // authorise parking a conversation that now lives somewhere with no responder at all, which is the
-  // stranding this whole guard exists to refuse. The baseline GET above already holds the answer;
-  // it was being thrown away. Falls back to the mirror only when the source named no inbox (an
-  // unreadable baseline, or a Chatwoot whose payload omits the field), because there the mirror is
-  // the only account of the conversation anybody has.
-  //
-  // An inbox Chatwoot names and this side has no row for is NOT a fallback case: it is an inbox this
-  // runtime does not serve, so there is no responder to hand anything back to, and `null` here is
-  // read as exactly that refusal one call below.
+  // NOTE: the binding is re-read here, past the awaits above, off the inbox Chatwoot names (the
+  // mirror may still name the one it LEFT; null for an inbox this runtime does not serve), UNDER the
+  // inbox row's `FOR NO KEY UPDATE` lock that `persistBinding` takes, so an unbind in flight commits
+  // before this read or after the hand-back. The lock is released before the Chatwoot write. The full
+  // sequence is in docs/chatwoot.md ("Nothing to hand back to").
   const relocated = before?.inboxId ?? null;
   const nowInbox = await runScopedOn(base, ctx, async (db) => {
-    // The inbox NUMBER with the agent (issue #495 review, round 4): a conversation transferred
-    // while the client and the baseline were awaiting is judged by the inbox it is on now, and the
-    // live attachment below has to be read on THAT inbox — an attached bot on the one it left says
-    // nothing about the one it arrived at.
+    // NOTE: the inbox NUMBER as well as the agent: the live attachment below has to be read on the
+    // inbox the conversation is on now.
     const targetId =
       relocated === null
         ? ((
@@ -2463,8 +2094,7 @@ export async function returnConversationToAgent(
     await db.$queryRaw`SELECT id FROM inboxes WHERE id = ${targetId} FOR NO KEY UPDATE`;
     return db.inbox.findUnique({
       where: { id: targetId },
-      // `id` as well, because the mirror's own `inboxId` is corrected from it after the write
-      // (issue #495 review, round 13).
+      // NOTE: `id` as well, because the mirror's own `inboxId` is corrected from it after the write.
       select: { id: true, agentId: true, chatwootInboxId: true },
     });
   });
@@ -2480,28 +2110,11 @@ export async function returnConversationToAgent(
     base,
     id,
   );
-  // ...AND ONE LAST LOOK AT WHICH INBOX IT IS ON, taken after every probe and immediately before the
-  // write (issue #495 review, round 7). The inbox above was resolved from the BASELINE read, and
-  // between that read and here sit the locked row read, a vault round trip for the runnable probe
-  // and the attachment GET — long enough for a transfer to land, and a transfer landing there had
-  // the old inbox's responder validated and the new inbox's never looked at, which is the stranding
-  // this whole guard refuses.
-  //
-  // A REFUSAL rather than a re-validation loop: the operator clicks again and the second click is
-  // judged on the inbox the conversation is actually on, which is a bounded, honest answer where a
-  // retry is an unbounded one. Fails OPEN like every other live answer here — an unreadable read is
-  // a blip, and a payload naming no inbox is not evidence that it moved.
-  //
-  // What is LEFT is one round trip wide and is not closable from this side: a transfer committing
-  // between this read and the toggle still wins, exactly as an unbind committing there does
-  // (`.codex-review-waived`). Chatwoot offers no conditional status write to fence it with, and a
-  // lock here would be held across somebody else's network.
-  //
-  // Measured against the number the hand-back was JUDGED ON, not against the row it resolved to: an
-  // inbox Chatwoot names that this side has no row for resolves to no row at all, and comparing
-  // against that null would report "it moved" for a conversation that has not moved since the
-  // baseline — burying the real answer (nothing here answers that inbox) under a retry the operator
-  // would keep making.
+  // NOTE: one last look at which inbox it is on, after every probe and immediately before the write:
+  // a transfer landing meanwhile REFUSES (the next click is judged on the right inbox) rather than
+  // looping. Fails open. Compared against the number the hand-back was JUDGED ON, not the row it
+  // resolved to. A transfer between this read and the toggle still wins: Chatwoot has no conditional
+  // status write, and a lock here would be held across somebody else's network.
   const judgedInboxId =
     relocated ??
     liveInbox?.chatwootInboxId ??
@@ -2519,16 +2132,9 @@ export async function returnConversationToAgent(
       "errors.returnConversationMoved",
     );
   }
-  // THE LOCAL STATE OF THE RESPONDER, ASKED LAST (issue #495 review, rounds 4 and 10). It asks
-  // everything the first reading did — the runnable probe included, since a responder swapped from A
-  // to B inside the window had A's model configuration validated and B's never looked at — and it is
-  // placed HERE, after both GETs, rather than before them: an administrator switching the agent off,
-  // flipping it to monitoring or breaking its credential while the attachment read and the move
-  // confirmation were on the wire would otherwise be invisible to a validation taken two round trips
-  // earlier, and the hand-back would remove the human for an agent that will not answer.
-  //
-  // It costs the GETs on a path that then refuses, which is the cheap half of the trade: the reading
-  // that decides has to be the last one taken, and everything before the write is local.
+  // NOTE: the responder's local state, asked last, after both GETs: an agent switched off, flipped
+  // to monitoring, swapped or with a broken credential while those were on the wire would otherwise
+  // be invisible, and the hand-back would remove the human for an agent that will not answer.
   await requireAnsweringResponder(
     ctx,
     liveInbox,
@@ -2542,17 +2148,9 @@ export async function returnConversationToAgent(
       chatwootInboxId: liveInbox?.chatwootInboxId ?? null,
     },
   );
-  // ...AND THE BINDING ITSELF IS RE-READ, not only the agent it named (issue #495 review, rounds 12
-  // and 14), LAST of all the local reads and after the probe above rather than before it: that probe
-  // walks the vault and builds a model, which is the longest await left on this path, and a rebind
-  // committing inside it passed a check taken before it.
-  // `liveInbox` was resolved before the attachment GET and the move confirmation, so a `bindInbox`
-  // swapping or removing the responder in that window left the validation below judging the agent
-  // that USED to be there, while the confirmation above compares only the inbox NUMBER and sees
-  // nothing move. A REFUSAL rather than a re-validation, for the reason the move confirmation
-  // refuses: the operator clicks again and the second click is judged on the binding that now
-  // stands, which is bounded where a retry loop is not. Under the same row lock, so an unbind
-  // half-committed is not what this reads.
+  // NOTE: the binding itself is re-read LAST of all, after the runnable probe (the longest await
+  // left), under the same row lock: a rebind in that window would leave the validation judging the
+  // agent that used to be there. It refuses rather than re-validating, like the move confirmation.
   const boundNow = await runScopedOn(base, ctx, async (db) => {
     if (nowInbox === null) return null;
     await db.$queryRaw`SELECT id FROM inboxes WHERE chatwoot_instance_id = ${conv.chatwootInstanceId} AND chatwoot_inbox_id = ${nowInbox.chatwootInboxId} FOR NO KEY UPDATE`;
@@ -2576,21 +2174,10 @@ export async function returnConversationToAgent(
   await client.toggleStatus(conv.chatwootConversationId, "pending", {
     asAdmin: true,
   });
-  // THE MIRROR LEARNS WHERE THE CONVERSATION ACTUALLY IS (issue #495 review, round 13), and this is
-  // the one write here that is not about status or assignee. A transfer reaches this side by webhook;
-  // when that delivery is delayed or lost, the row keeps naming the inbox the conversation LEFT, and
-  // the reconcile below never touches `inboxId` — so a hand-back this call validated against the
-  // DESTINATION reported success while the mirror still pointed at the origin. What reads that row
-  // next is the console, which immediately offers "Respond now", and `reengageConversation` resolves
-  // its agent from it: the origin inbox's persona then sends a customer-facing reply on a
-  // conversation that is not its own. That is the sharpest thing the stale row can do, and it is not
-  // a UI detail.
-  //
-  // Written on the evidence this call already established: the live read named the destination, it
-  // resolved to a row here, and everything below the toggle was validated against THAT row. Under a
-  // compare-and-set on the inbox we believed we were leaving, so a webhook that landed the move while
-  // this was in flight wins and nothing is written over it. Best-effort: the hand-back has already
-  // happened, and a mirror that could not be corrected is the state that existed a moment ago.
+  // NOTE: the mirror learns where the conversation is: the reconcile below never touches `inboxId`,
+  // and a stale row sends "Respond now" through the ORIGIN inbox's persona. Compare-and-set on the
+  // inbox we believed we were leaving, so a webhook that landed the move wins; best-effort, since
+  // the hand-back has already happened.
   if (
     nowInbox !== null &&
     relocated !== null &&
@@ -2615,24 +2202,10 @@ export async function returnConversationToAgent(
   // case, and refusing to hand back on it would leave the conversation with a human who has already
   // walked away. The live read is the improvement over an unconditional unassign, not a new gate.
   const live = await readHolder();
-  // The whole identity, not the id: "User" and "AgentBot" are separate id namespaces in Chatwoot, so
-  // comparing numbers alone reads User 7 claiming a conversation held by AgentBot 7 as nobody having
-  // moved — and unassigns the human. Any change of holder counts, in either field.
-  //
-  // An EMPTY live assignee is not a competing holder: it means whoever was there has already gone,
-  // and unassigning is then the no-op that also corrects the mirror. Only somebody actually holding
-  // the conversation stops the hand-back.
-  //
-  // "Occupied" is read off the TYPE, not off the id. `parseLiveConversation` accepts a payload that
-  // names a "User" and carries no assignee object — it only rejects that shape for "AgentBot", where
-  // an unverifiable id would let another bot's conversation read as ours. Here the same shape says a
-  // person is holding it and we cannot tell WHICH, and comparing a null id against the baseline
-  // answered "nobody moved" and unassigned them. Unknown is not absent; it fails closed.
-  //
-  // Asked of two different reads below, so it is written once. Copying it was how the second reader
-  // came to answer "somebody is there" about the very party this call had just unassigned: a live
-  // read taken after the unassign can still name them, and only the comparison against the baseline
-  // tells that apart from a person who actually arrived.
+  // NOTE: a holder other than the baseline, by the whole identity ("User" and "AgentBot" are
+  // separate id namespaces). An EMPTY assignee is not a competing holder; a typed holder with no id
+  // is (unknown is not absent, so it fails closed). Written once because a live read after the
+  // unassign can still name the party just removed, and only the baseline tells them apart.
   const holderOtherThan = (
     seen: { assigneeType: string | null; assigneeId: number | null } | null,
   ): { assigneeType: string | null; assigneeId: number | null } | null =>
@@ -2644,16 +2217,9 @@ export async function returnConversationToAgent(
       ? { assigneeType: seen.assigneeType, assigneeId: seen.assigneeId }
       : null;
   const newHolder = holderOtherThan(live);
-  // NOBODY TO REMOVE MEANS NO REQUEST. `assignee_id: 0` on a conversation that already has no
-  // assignee changes nothing at Chatwoot, so the only thing this write can still accomplish is to
-  // arrive AFTER somebody claimed the conversation in the round trip and take it away from them.
-  // There is no conditional assignment to lean on — Chatwoot's assignments#create writes whatever it
-  // is handed, with no holder or version to compare against — so the window is closed by not
-  // spending a write on work that does not exist, rather than by guarding one that does.
-  //
-  // Only for a read that came back EMPTY. An unreadable read stays on the write, for the reason the
-  // baseline gives above: silence is not evidence that the conversation is free, and the caller
-  // asked for it back.
+  // NOTE: nobody to remove means no request: unassigning an already unassigned conversation changes
+  // nothing and could only land after somebody claimed it in the round trip (Chatwoot has no
+  // conditional assignment). Only for a read that came back EMPTY; an unreadable read still writes.
   const nobodyToRemove = live !== null && live.assigneeType === null;
   if (newHolder === null && !nobodyToRemove) {
     try {
@@ -2689,16 +2255,9 @@ export async function returnConversationToAgent(
       String(newHolder.assigneeId ?? "none"),
     );
   }
-  // NOTE: FROM HERE THE EFFECT HAS HAPPENED: the status went to pending and, on the ordinary path, the
-  // human has been unassigned. Everything below is our own bookkeeping (the mirror, its fallback
-  // write, the broadcast, the ownership read that names the outcome) and any of it can throw, so the
-  // row is written in a `finally`.
-  //
-  // NOTE: What it carries then is what THIS CALL already knows, which is not the baseline: the unassign
-  // above either ran and removed whoever was there, or was skipped because the live read found the
-  // conversation free, or was withheld because somebody else is holding it. Falling back to the
-  // baseline would have the row say a human is still assigned on the one path where the hand-back
-  // demonstrably worked.
+  // NOTE: from here the effect has happened, and the bookkeeping below can throw, so the row is
+  // written in a `finally`. It carries what THIS CALL knows, not the baseline: the unassign ran, was
+  // skipped because the conversation was free, or was withheld because somebody else holds it.
   let landedReturn: {
     status: string;
     assigneeType: string | null;
@@ -2722,26 +2281,11 @@ export async function returnConversationToAgent(
       },
       consoleWriteMark(before),
     );
-    // Who the mirror ends up naming, resolved ONCE and read by both the event and the return below.
-    // It is the LAST thing that looked at the conversation, not the first: `mirrorConsoleWrite` does
-    // its own live read AFTER the unassign, so a human who claimed it in that window is here and
-    // nowhere in `newHolder` — and the row and the broadcast already say so.
-    //
-    // Three sources, most-decided first, and the middle one is the whole point of `observed`.
-    //
-    // `state` is the stored row after a versioned reconcile: decided, so it wins.
-    //
-    // `observed` is what Chatwoot said on that same read when it could not be versioned (a deployment
-    // older than 4.0.2 sends no `updated_at`). Falling straight past it to `newHolder` treats "I could
-    // not decide" as "nobody is there", and the window it hides is precisely the one this function
-    // cannot see any other way: a human who claimed the conversation AFTER the unassign went out.
-    // `newHolder` is null there by construction — it was read before the unassign — so the answer
-    // would be "returned" while a person holds it, which is the one answer the caller acts on.
-    //
-    // `newHolder` last: the holder read BEFORE the unassign, which is right when the live read failed
-    // outright and `mirrorConsoleWrite` has already written that same holder to the row. A null here
-    // would tell every open console the conversation is unassigned while Chatwoot and the mirror both
-    // say a human has it.
+    // NOTE: who the mirror ends up naming, resolved once for the event and the return. `state` (a
+    // versioned reconcile) wins; then `observed`, the unversioned read taken AFTER the unassign (a
+    // Chatwoot older than 4.0.2 sends no `updated_at`), the only look that sees a human who claimed
+    // it meanwhile (`newHolder` was read before); then `newHolder`, right when that read failed and
+    // the mirror already wrote the same holder.
     const finalHolder = state
       ? { assigneeType: state.assigneeType, assigneeId: state.assigneeId }
       : (holderOtherThan(observed) ??
@@ -2787,31 +2331,10 @@ export async function returnConversationToAgent(
       lastEventAt:
         (state ? state.lastEventAt : conv.lastEventAt)?.toISOString() ?? null,
     });
-    // The outcome, because "taken over" is not a failure and every caller would otherwise report the
-    // hand-back it asked for as having happened. Nothing throws on this path: the status WAS set to
-    // pending and the mirror WAS corrected — the one thing withheld is the unassign, which is exactly
-    // what the caller told its operator it was doing.
-    //
-    // Read off the same value the console just received, because the two answering differently is the
-    // defect rather than a detail: a caller told "returned" while the row it triggered names a person
-    // has nothing to notice the disagreement with.
-    //
-    // And asked with the OWNERSHIP rule rather than "is there a type here", because the success state
-    // of this very function can carry one: the pending transition, or a concurrent assignment, can
-    // leave the conversation on the inbox's own agent bot — which the gate reads as the AI holding it,
-    // exactly what the caller asked for. Answering "taken-over" there warns the operator that somebody
-    // claimed a conversation the intended agent owns, and takes away the re-engage offer with it.
-    //
-    // A holder whose id never arrived is still a holder: `heldByAnotherParty` keeps that direction for
-    // `User` (any human counts) while an unidentifiable AgentBot stays uncounted, which is the same
-    // answer the unassign above already gives.
-    //
-    // OFF THE RESOLVED INBOX, not the mirror's (issue #495 review, round 8). Everything above is
-    // judged against the inbox Chatwoot names, and this comparison was left reading the row loaded at
-    // the top: on a conversation transferred to an inbox with a DIFFERENT responder, the destination's
-    // own bot holding it afterwards is the success state, and measuring it against the old inbox's bot
-    // reported and audited that success as `taken-over` — taking the re-engage offer away from an
-    // operator whose hand-back worked.
+    // NOTE: "taken over" is an outcome, not a failure: the status was set and only the unassign was
+    // withheld. Read off the value the console just received, with the OWNERSHIP rule against the
+    // RESOLVED inbox's bot: the destination's own bot holding it is the success state. A holder whose
+    // id never arrived still counts for `User`, while an unidentifiable AgentBot stays uncounted.
     const ourAgentBotId =
       liveInbox?.agentId != null
         ? ((
@@ -2875,16 +2398,10 @@ export async function setConversationStatus(
     ...deps,
     base,
   });
-  // THE READING THAT ORDERS AN UNVERSIONED WRITE, taken BEFORE the toggle, for the same reason the
-  // hand-back takes one (issue #469). This endpoint falls back to the same unversioned write, and a
-  // press of `pending` on a bot-owned conversation Chatwoot has as `open` is the operator giving it
-  // back to the agent by another button: measured against the fork with the version stripped, the
-  // conversation went `open` -> `pending` -> `open` again when a delivery frozen before the press
-  // landed, exactly as the hand-back did before it was ordered.
-  //
-  // Taken here rather than inside the mirror because the mirror runs after this toggle, so its own
-  // read is a post-write one and would cover a colleague who replied during the round trip. A failed
-  // read stamps nothing, which leaves the previous mark standing.
+  // NOTE: the reading that orders an unversioned write, taken BEFORE the toggle as the hand-back
+  // does: a press of `pending` on a bot-owned `open` conversation gives it back to the agent, and a
+  // delivery serialized before the press could reopen it. The mirror's own read is post-write, so it
+  // cannot serve. A failed read stamps nothing.
   const before = await readLiveBeforeConsoleWrite(
     client,
     conv.chatwootConversationId,
@@ -2892,16 +2409,10 @@ export async function setConversationStatus(
   await client.toggleStatus(conv.chatwootConversationId, status, {
     asAdmin: true,
   });
-  // NOTE: An operator closing a conversation is not the agent resolving it, and the two are
-  // indistinguishable from status + assignee alone (this path deliberately does NOT assign the
-  // operator: the audit shows the instance admin, not the persona). Recording it is what keeps it
-  // out of the Resolution funnel. Non-resolved statuses need nothing: the mirror clears the stamp.
-  //
-  // BEFORE the mirror write, not after: the recorder only stamps a row that is not already resolved
-  // (a resolve on a resolved conversation is a no-op in Chatwoot and does not change who closed it),
-  // and mirrorConsoleWrite is what makes this row resolved. Running it second would refuse every
-  // console stamp; running it first also makes the re-resolve case fall out for free, because then
-  // the row it reads is the pre-toggle one.
+  // NOTE: an operator closing a conversation is not the agent resolving it, and status + assignee
+  // cannot tell them apart, so it is recorded (keeping it out of the Resolution funnel). BEFORE the
+  // mirror write: the recorder stamps only a row not already resolved, and the mirror write is what
+  // resolves it; reading the pre-toggle row also makes a re-resolve record nothing.
   if (status === "resolved") {
     await recordResolutionOrigin({
       tenantId,

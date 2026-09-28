@@ -28,38 +28,14 @@ import { ourSideHasSpoken } from "@/modules/followups/eligibility";
 import { type ClaimedJob, upsertJobRow } from "@/modules/scheduler/service";
 import { type JobResult, registerJobHandler } from "@/modules/scheduler/worker";
 
-// A CONVERSATION WHOSE CUSTOMER SAID NOTHING, AND THAT NOBODY ON OUR SIDE EVER ANSWERED (issue #895).
-//
-// A message with no text, no attachment, no email subject and no image in the body is never selected
-// for a turn (`hasAnswerableContent`), so no model runs and nothing is sent. That is right. What was
-// wrong is what it left behind: the conversation stayed `pending` and bot-owned, and on a NEW
-// conversation nothing ever moved it again. The follow-up only arms where our side has spoken, and
-// here it never did. Measured on an email inbox: blank emails sat in the pending queue for days, with
-// no log line for the agent at all.
-//
-// WHY A JOB, AND NOT A CLOSE IN THE FLUSH. The first version closed inside the flush and the direct
-// turn, and every review round found another race on that hot path: a request older than the page,
-// an attachment that lands a second later, an operator taking over mid-read, a /reset, a reply of
-// ours in flight. Each needed its own fence at the write. Here the flush and the direct path only
-// ARM one job per thread, and the job decides later, once, with every fence in one place:
-//
-//   - the delay absorbs content that arrives after the message (measured on two email inboxes over
-//     14 days: attachments land within 0.4 s of a blank message, and within 813 s of any message at
-//     the worst); `NOTHING_TO_ANSWER_DELAY_MS` sits well past that;
-//   - a new incoming message retires the job (the receiver, beside the follow-up's retirement), and
-//     a /reset is one, so a conversation that moved on is never judged by a stale arm;
-//   - when it runs it reads everything fresh: the agent still speaks; the mirror says our side never
-//     spoke and no /reset landed after the judged message; the WHOLE history (the catch-up read from
-//     the first id, not the default page of twenty, which would hide an older unanswered request)
-//     read in full, with no reply of ours, at least one incoming message and none answerable or a
-//     reaction; and, last of the network reads, Chatwoot still has it `pending` with our bot or
-//     nobody holding it. The agent's switch and the job's own retirement are asked again right
-//     before the write. What is left is the one round trip of the write itself, half an hour after a
-//     message that said nothing: accepted, where the flush version had the whole read in between.
-//
-// Recorded as `nothing_to_answer`, which the dashboard counts as a close by the agent's side (no
-// model judged anything), with an `info` line: this is not a failure. A job that throws is retried by
-// the scheduler and, past its attempts, dead-letters, which is the alert.
+// Closes a conversation whose customer sent nothing answerable (no turn ever runs for it, by
+// `hasAnswerableContent`) and that our side never answered, since nothing else moves it off `pending`:
+// the follow-up only arms where our side has spoken. The flush and the direct path only ARM one
+// delayed job per thread, rather than closing on the hot path where every race needs its own fence.
+// The job decides once: a newer incoming message (a /reset included) retires it, and when it runs it
+// re-reads the whole history, the mirror and Chatwoot's live status and owner, then re-asks the
+// agent's switch and its own retirement right before the write. Recorded as `nothing_to_answer`, an
+// `info` close by the agent's side; a job that keeps throwing dead-letters, which is the alert.
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -111,24 +87,21 @@ function nothingToAnswerIn(
 // The fork's `MessageFinder::CATCH_UP_LIMIT`: a batch this full may have more behind it.
 const HISTORY_BATCH = 100;
 
-// Well past the worst measured delay of content after its message (813 s, above). A blank email
-// staying in the queue half an hour costs nothing; closing over a voice note that was still arriving
-// would bury it.
+// Well past how late content can land after its message on an email inbox (under 15 minutes). A
+// blank email staying in the queue half an hour costs nothing; closing over a voice note that was
+// still arriving would bury it.
 export const NOTHING_TO_ANSWER_DELAY_MS = 30 * 60_000;
 
 export function nothingToAnswerDedupeKey(threadId: string): string {
   return `nothing-to-answer:${threadId}`;
 }
 
-// Called off by the receiver when a NEWER incoming message arrives (issue #895): the conversation
-// moved on, and a later blank message arms it again from its own flush. Newer than the message the
-// job judged, not merely delivered: an observer route receives the same event on its own delivery,
-// and a redelivery repeats it, and neither may cancel the judgement of the message it carries. A
-// message with no id retires unconditionally, the safe side.
-//
-// A row still waiting is deleted, since nothing will ever read it. A row a worker already claimed is
-// tombstoned instead, as `retireJobsByDedupeKey` does, so the running handler sees `jobRetired` before
-// it writes; that one stays as a DONE row, at most one per conversation, and the next arm reuses it.
+// Called by the receiver when a NEWER incoming message arrives; a later blank message arms it again
+// from its own flush. Newer than the judged message, not merely delivered: an observer route's own
+// delivery and a redelivery carry the same event and must not cancel its judgement. A message with
+// no id retires unconditionally. A waiting row is deleted; a claimed row is tombstoned instead (as
+// `retireJobsByDedupeKey` does) so the running handler sees `jobRetired` before it writes, and it
+// stays as a DONE row, at most one per conversation, that the next arm reuses.
 export async function retireNothingToAnswer(params: {
   tenantId: bigint;
   threadId: string;

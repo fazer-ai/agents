@@ -1,13 +1,8 @@
 import type { ConfigIssue } from "@/modules/agents/config-health";
 
-// The sentence for one configuration warning, in one place, because there are now two readers of it
-// and they are not both a browser. The copy itself stays in the locale catalogs — this decides WHICH
-// entry a given issue reads and what gets interpolated into it, which is the half that used to live
-// inside the editor component and could not be called from anywhere else.
-//
-// Translation is injected rather than imported: the console holds a live i18next instance bound to
-// the operator's language, and the server answers per request from the same catalogs with no
-// instance at all. A module that picked one of the two would make the other one wrong.
+// The sentence for one configuration warning, for the console and the server alike: which catalog
+// entry an issue reads and what is interpolated into it. Translation is injected, since the console has
+// a live i18next instance and the server resolves the same catalogs without one.
 
 export interface ConfigIssueMessageDeps {
   // (key, English fallback, interpolation values) → the sentence. Matches i18next's `t`, so the
@@ -73,16 +68,9 @@ export function configIssueMessage(
         : "-",
       error: deps.guardrailLastError ?? "",
     };
-    // The vendor's own words when they survived the write, generic advice when they did not. They
-    // are what separates "look at this" from "fix this": "400 temperature is not supported" names
-    // the setting, while a list of three things to check makes the operator try all of them.
-    //
-    // The line stops at what a failure row proves, which is less than it looks. It does not say
-    // the message went out unscreened: a failed input check leaves the output check free to screen
-    // the reply, and a split output analysis merges both halves, so it can carry an error from one
-    // and a violation from the other and still replace or suppress the send. All that is certain
-    // is fail-open, and it applies to the failed check alone: that one caught nothing and held
-    // nothing back.
+    // NOTE: The vendor's own words when they survived the write, since they name the setting. The
+    // sentence claims only what a failure row proves: that one check caught and held back nothing,
+    // not that the message went out unscreened (the other check may still have screened it).
     return params.error
       ? t(
           "editor.configIssueGuardrailsFailingCause",
@@ -124,9 +112,8 @@ export function configIssueMessage(
       "This credential no longer exists. Pick another one.",
     );
   }
-  // The credential is there and filled, and its TYPE cannot serve this field. Worth its own sentence
-  // because the other three all end in "fill it in" or "it is gone", and the move here is neither:
-  // the entry is fine, it just belongs somewhere else. Issue #471.
+  // NOTE: The credential is there and filled, but its TYPE cannot serve this field: the fix is to pick
+  // another entry, not to fill this one in.
   if (issue.wrongKind) {
     return t(
       `editor.configIssueWrongKind.${issue.key}`,

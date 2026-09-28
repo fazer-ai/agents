@@ -2,15 +2,9 @@ import type { Locale } from "@/api/lib/i18n";
 import en from "@/client/locales/en.json";
 import ptBR from "@/client/locales/pt-BR.json";
 
-// The server's side of the shared message renderer: the same catalogs the console reads, resolved
-// without an i18next instance.
-//
-// Reading the CONSOLE's catalog from the server looks backwards for a second, and the alternative is
-// worse: a second copy of forty sentences under `src/api/locales`, drifting from the ones an operator
-// sees on the screen this API is describing. The catalogs are plain JSON with no browser in them,
-// every `editor.configIssue*` key survives derivation into the Free build (measured: 13 of 13), and
-// the fence in tests/modules/config-issue-i18n.test.ts already guarantees each key exists in both
-// languages. One text, two readers.
+// The server's side of the shared message renderer: the console's own catalogs, resolved without an
+// i18next instance, so the API says the same sentences the operator sees on screen. Every
+// `editor.configIssue*` key exists in both languages (tests/modules/config-issue-i18n.test.ts).
 const CATALOG: Record<Locale, unknown> = { en, "pt-BR": ptBR };
 
 // i18next interpolation, for the four keys that take values. Deliberately not the library: pulling

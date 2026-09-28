@@ -2,48 +2,12 @@ import { modelConfigSchema } from "@/graph/model-config";
 import { readBehaviorSettings } from "@/modules/agents/behavior-settings";
 import { readVaultRefId, VAULT_REF_PREFIX } from "@/modules/vault/service";
 
-// Which of the three agent actions a write to `updateAgent` is, and what its row carries.
-//
-// `agent_update`, `prompt_set` and `agent_settings_set` are three MCP tools over ONE service
-// function, and the REST route reaches that function with all three at once: the editor's General
-// tab PATCHes `name`, `systemPrompt`, `enabled`, `mode` and `modelConfig` on every save whether or
-// not they changed, and its Behavior tab sends the settings bag whole (`buildSettings()` spreads
-// it). So the field a caller NAMED says nothing about what the operator did — only the comparison
-// does, and the action is read off the diff for that reason. Reading it off the patch would file
-// every console prompt edit as `agent.update` while the identical edit over MCP files as
-// `agent.prompt_set`, which is precisely the divergence `docs/mcp.md` says this seam removes ("the
-// same change leaves the same row whichever of the three transports made it").
-//
-// ── the one question this module answers ──
-//
-// Everything below is one question asked of each field: what counts as the SAME configuration? It
-// is asked once, in `CANONICAL`, and the comparison and the projection both read the answer. The
-// alternative is a special case per field, which is what this file was: four rounds of review each
-// added an `if` for a value that compared unequal while nothing about the agent had changed.
-//
-// A canonical form has to be justified by what the RUNTIME reads, never by taste. Each names its
-// measurement:
-//
-// - `settings` is the bag as `readBehaviorSettings` resolves it, because that view is what every
-//   consumer takes. Two things then fall out rather than being handled: a value the readers CLAMP to
-//   the same result is the same configuration (`debounce.windowSeconds` of 1 and of 2 both read as
-//   3), and a `Date` the readers produce is compared and stored as its ISO string, which is what the
-//   column can hold at all (`truncForAudit` walks objects by enumerable entries, of which a Date has
-//   none, so it would land as `{}`).
-// - `modelConfig` is the keys `modelConfigSchema` names. `validateModelConfigForWrite` asks the
-//   schema whether the value is valid and throws away the STRIPPED result, so a config valid apart
-//   from a stray key is stored with it — measured: a `PATCH` carrying `apiKey: "sk-…"` reaches the
-//   column, and the row is retained and readable by every tenant admin. `exportAgent` already scans
-//   for exactly this shape and refuses to emit. Derived from the schema rather than typed out, and a
-//   PICK rather than a parse, because a legacy config that no longer validates still projects.
-// - a grant's `enabledTools` and `knowledgeBaseIds` are SETS (see `grantSetChanged`).
-// - everything else is itself: they are scalars.
-//
-// What canonicalizing deliberately does NOT do is hide a write. A block the readers do not know is
-// absent from the resolved view, so it would compare equal while stored configuration moved — an
-// import can preserve a forward-compatible block, and an upgrade that adds its reader makes it live.
-// Those are tracked separately, by NAME: the row says which unread blocks moved without copying
-// content nothing in this codebase can vouch for into a tenant-admin-readable row.
+// Which of the three agent actions (`agent_update`, `prompt_set`, `agent_settings_set`) a write to
+// `updateAgent` is, read off the DIFF and never the patch: the console PATCHes every General field and
+// the whole settings bag on each save, and the same change must leave the same row on every transport.
+// What counts as the SAME configuration is decided once per field, in `CANONICAL`, by what the runtime
+// reads (settings as `readBehaviorSettings` resolves them, `modelConfig` as the schema's keys, grant
+// allowlists as sets). Blocks no reader knows are tracked by name in the residue, never hidden.
 
 // Every column of the agent an operator can write. `id`, `createdAt` and `updatedAt` are not on it:
 // the row already carries the target and the timestamp in its own columns.
@@ -103,10 +67,8 @@ const CANONICAL: Partial<
   settings: (v, now) => jsonish(readBehaviorSettings(v, now)),
   modelConfig: (v) => {
     if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
-    // PARSED when it parses, because the parse is what applies the schema's own defaults and those
-    // are what the runtime sees: `model` defaults to `""`, so a config that omits it and one that
-    // sends it empty are the same configuration — measured — and a picker that preserved the
-    // difference filed an `agent.update` for a save that changed nothing.
+    // NOTE: PARSED when it parses, so the schema's defaults apply as the runtime sees them (`model`
+    // omitted and `model: ""` are the same configuration).
     const parsed = modelConfigSchema.safeParse(v);
     if (parsed.success) return parsed.data;
     // PICKED when it does not. A legacy config that no longer validates still has to project
@@ -118,35 +80,18 @@ const CANONICAL: Partial<
   },
 };
 
-// An endpoint that carries its own credential, in any of the three places one fits.
-//
-// `https://user:pw@host`, `https://host/v1?api_key=…` and `https://host/v1#token=…` all pass
-// `z.string().url()` and the editor's own validator, and the row is append-only, so one pasted there
-// once would outlive the correction. Bounded to `http(s)` on purpose: it is what an endpoint is, and
-// it keeps operator prose out of the rule — measured, `"Pergunta: você quer?"` parses as a URL with
-// protocol `pergunta:`, and a rule keyed on parseability alone would start eating template messages.
+// An endpoint that carries its own credential, in userinfo, query or fragment: all pass the URL
+// validators, and the append-only row would outlive the correction. Query and fragment count only for
+// `http(s)`, since prose like `"Pergunta: você quer?"` parses as a URL too.
 function carriesCredential(v: unknown): boolean {
   // TRIMMED first, and the trim is the guard rather than tidiness: `z.string().url()` validates
   // through `new URL`, which ignores surrounding whitespace, so `" https://user:pw@host"` is
   // accepted — and `validateModelConfigForWrite` discards the parsed result, so the string reaches
   // the column with the space still on it. An anchored test on the raw string then says no.
   if (typeof v !== "string") return false;
-  // EMBEDDED, not only entire, and under ANY scheme. `new URL` is handed the whole string, so a
-  // prompt reading `Use https://user:secret@example.com/api` fails to parse and was kept verbatim —
-  // and a prompt is exactly where an operator pastes one inline.
-  //
-  // The password is OPTIONAL in the pattern: `https://sk-live-token@example.com/api` is userinfo
-  // with no colon in it, and the token is the whole of it. Excluding `/` before the `@` is what
-  // keeps an `@` in a PATH out — measured, `https://github.com/orgs/@time/repos` does not match.
-  //
-  // Only the userinfo form is looked for inside text, and the line is drawn by measurement rather
-  // than by caution. `user:pass@` is a shape prose does not produce: on a prompt linking to
-  // `https://clinica.example.com/faq?secao=cancelamento` it does not fire, and on
-  // `ftp://u:hunter2@files.example.com/x` it does. A rule that also fired on an embedded QUERY
-  // cannot tell those two apart — it matches the FAQ link and the credential link alike — and since
-  // the answer here is to drop the WHOLE field, adopting it would delete a prompt from the trail for
-  // linking to a documentation page. The query and fragment half therefore still asks about the
-  // whole string, where there is no prose to confuse it with.
+  // NOTE: Userinfo EMBEDDED anywhere in the text, any scheme, password optional (`https://tok@host`).
+  // Excluding `/` before the `@` keeps an `@` in a path out. Only userinfo is searched inside prose:
+  // an embedded query would match an ordinary FAQ link and drop the whole prompt from the trail.
   if (/[a-z][a-z0-9+.-]*:\/\/[^\s/@]+@/i.test(v)) return true;
   const url = v.trim();
   // The RAW spelling only answers for a string that will not parse. `new URL` normalizes
@@ -157,12 +102,8 @@ function carriesCredential(v: unknown): boolean {
   try {
     const u = new URL(url);
     const httpish = u.protocol === "http:" || u.protocol === "https:";
-    // USERINFO is asked of any scheme, and the query and the fragment only of `http(s)`. The split
-    // is measured, not stylistic. `z.string().url()` accepts `ftp://user:pw@host`, so restricting
-    // the whole rule to `http(s)` let that one through; and userinfo costs nothing to widen because
-    // prose does not have it — `"Pergunta: você quer?"` parses with protocol `pergunta:` and an
-    // empty username, as do `mailto:` and `urn:`. A `?` in prose is common, which is why the other
-    // half stays bounded to what is unambiguously an endpoint.
+    // NOTE: USERINFO under any scheme (`ftp://user:pw@host` passes the schema, and prose parses with an
+    // empty username); query and fragment only under `http(s)`, since a `?` in prose is common.
     if (u.username !== "" || u.password !== "") return true;
     return httpish && (u.search !== "" || u.hash !== "");
   } catch {
@@ -172,23 +113,9 @@ function carriesCredential(v: unknown): boolean {
   }
 }
 
-// Such an endpoint is dropped from the canonical form rather than redacted in place, so the residue
-// is what answers for it: rotating the credential reports that unread configuration moved, and never
-// what it moved to.
-//
-// Applied to every field at every depth, because the sites are not one. Counting the reader's own
-// output: `stt.baseURL`, `tts.baseURL`, `tts.normalizeBaseURL`, `vision.baseURL`, `contactAuth.url`,
-// `guardrails.baseURL`, `memory.compaction.baseURL`, `modelFallback.baseURL` — eight, plus
-// `modelConfig.baseURL`. A guard written on one of the nine is a guard on none of the other eight,
-// and the tenth arrives with the next block.
-// A credential reference that is not a REFERENCE.
-//
-// `docs/mcp.md` says every `credentialRef` is a `vault:<id>` and "never the secret itself", but the
-// schema types it as a non-empty string and `collectCredentialRefWrites` validates only the refs a
-// write CHANGES — so a legacy agent can carry a raw key there, resubmit it unchanged alongside some
-// other edit, and have it copied into both halves of a permanent row. Nine keys carry one
-// (`modelConfig` plus the eight `SETTINGS_CREDENTIAL_PATHS`, one of them spelled
-// `normalizeCredentialRef`), which is why this asks about the NAME rather than repeating the list.
+// A `credentialRef` that is not a `vault:<id>` reference. Only CHANGED refs are validated on write, so
+// a legacy raw key resubmitted unchanged would be copied into a permanent row. Matched by key NAME
+// (`normalizeCredentialRef` too) so a new ref field is covered without a list.
 function isUnvouchableCredRef(key: string, v: unknown): boolean {
   if (!/credentialRef$/i.test(key)) return false;
   if (typeof v !== "string") return false;
@@ -201,6 +128,9 @@ function isUnvouchableCredRef(key: string, v: unknown): boolean {
   return readVaultRefId(v) === null;
 }
 
+// Drops every endpoint that carries a credential, at every depth and in every field (there are nine
+// base URLs and more arrive with each block), rather than redacting in place: the residue then reports
+// that unread configuration moved, never what it moved to.
 function dropUnvouchableUrls(v: unknown): unknown {
   // The ROOT is a position too. An audited scalar can BE the endpoint — a `name` or a
   // `systemPrompt` that is nothing but a URL — and a walk that only inspects object values and array
@@ -214,13 +144,8 @@ function dropUnvouchableUrls(v: unknown): unknown {
   const out: Record<string, unknown> = {};
   for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
     if (carriesCredential(val) || isUnvouchableCredRef(k, val)) continue;
-    // `setOwn`, and the round trip to get here is the point. This was written as a plain assignment
-    // on the reasoning that a CANONICAL value's keys are the readers' and the schema's and so cannot
-    // be `__proto__`. The reasoning was wrong and the measurement says so: `readToolPreconditions`
-    // builds its map with `Object.create(null)` and keys it by TOOL NAME, so `out[name] = cond` on a
-    // null-prototype object creates `__proto__` as an OWN property — measured, the reader returns
-    // `["handoff_to_human", "__proto__"]` and a plain assignment here dropped the second one, taking
-    // an active runtime precondition out of the canonical view.
+    // NOTE: `setOwn`, not a plain assignment: `readToolPreconditions` keys a null-prototype map by
+    // tool name, so `__proto__` can be a real key, and a plain assignment would drop that precondition.
     setOwn(out, k, dropUnvouchableUrls(val));
   }
   return out;
@@ -316,17 +241,9 @@ function changedBlocks(
   return { before: outBefore, after: outAfter };
 }
 
-// Whether a replace-the-set write actually changed the set.
-//
-// Compared as a SET and not as a list, twice over. The grants' order is not the operator's:
-// `replaceAgentToolSelections` is a `deleteMany` + `createMany`, so every save reassigns the ids the
-// read then orders by. And inside a grant, `enabledTools` and `knowledgeBaseIds` are allowlists the
-// runtime reads by MEMBERSHIP — measured: `filterAllowed` builds a `Set`, `prepare.ts` asks
-// `.includes`/`.some`, the playground builds a `Set`, and no consumer reads the order — so the same
-// allowlist resubmitted shuffled is the same grant. Membership is also why they are DEDUPLICATED
-// here: `normalizeGrants` permits a repeated entry and a `Set` cannot hold one, so dropping a
-// duplicate leaves the runtime's capability set untouched. Sorting by each entry's own serialization
-// is a total order by construction: no entry ties with another unless they are equal.
+// Whether a replace-the-set write actually changed the set. Compared as SETS, twice: every save
+// reassigns the grant ids the read orders by (`deleteMany` + `createMany`), and the runtime reads
+// `enabledTools`/`knowledgeBaseIds` by membership only, so they are also deduplicated here.
 export function grantSetChanged(before: unknown[], after: unknown[]): boolean {
   const SET_VALUED = ["enabledTools", "knowledgeBaseIds"];
   const canon = (g: unknown) => {
@@ -342,19 +259,12 @@ export function grantSetChanged(before: unknown[], after: unknown[]): boolean {
   return key(before) !== key(after);
 }
 
-// A projection with the unread marker on it, whatever shape the projection had.
-//
-// A field whose canonical form was DROPPED projects `undefined`, and one whose canonical form is a
-// scalar projects a string or a number — assigning a property onto either throws. That is not a
-// cosmetic bug: the audit shares the mutation's transaction, so the throw rolls the write back, and
-// the write it rolls back is exactly the one an operator makes to REMOVE a credential they pasted
-// into a name or a prompt by accident. Measured, before this existed:
-// `TypeError: undefined is not an object`.
+// A projection with the unread marker on it, whatever shape the projection had. A dropped field
+// projects `undefined` and a scalar a primitive; assigning onto either throws, and the audit shares
+// the mutation's transaction, so the throw would roll back the write that removes a pasted credential.
 function markable(v: unknown): Record<string, unknown> {
-  // Shaping and not a guard: without this arm a dropped field projects
-  // `{ value: undefined, unreadConfigChanged: true }`, which serializes to the same row, and a
-  // mutation battery on it kills nothing for that reason. It is kept so the value is honest before
-  // it is serialized, rather than relying on `JSON.stringify` to erase the difference.
+  // NOTE: Shaping, not a guard: `{ value: undefined, ... }` serializes to the same row, but the value
+  // stays honest before serialization.
   if (v === undefined) return { unreadConfigChanged: true };
   if (v !== null && typeof v === "object" && !Array.isArray(v)) {
     return { ...(v as Record<string, unknown>), unreadConfigChanged: true };
@@ -362,14 +272,9 @@ function markable(v: unknown): Record<string, unknown> {
   return { value: v, unreadConfigChanged: true };
 }
 
-// The audit-safe form of any value a row is about to carry, for the projections built outside this
-// module. `auditMutation` bounds sizes and repairs what the column refuses; it does not know that an
-// endpoint can carry its own credential, and the create/clone/import/delete rows project a `name`
-// that an operator is free to make one.
-// The contact gate's allowlist is a list of PEOPLE (issue #646): phones and identifiers. The trail
-// is append-only, so a number projected here would outlive its removal from the list, which is the
-// opposite of what removing it meant. The rule is recorded by its shape (the kind, how many of each)
-// and, when the entries moved without the counts moving, by a marker saying they did.
+// The contact gate's allowlist is a list of PEOPLE, and the trail is append-only, so a number projected
+// here would outlive its removal. The rule is recorded by shape (kind, counts), plus a marker when the
+// entries moved without the counts moving.
 function redactContactAuthRule(
   before: Record<string, unknown>,
   after: Record<string, unknown>,
@@ -405,6 +310,8 @@ function redactContactAuthRule(
   }
 }
 
+// The audit-safe form of a value a row is about to carry, for projections built outside this module
+// (`auditMutation` bounds sizes but does not know an endpoint or a `name` can carry a credential).
 export function auditSafe(v: unknown): unknown {
   return dropUnvouchableUrls(v);
 }

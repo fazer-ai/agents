@@ -52,7 +52,7 @@ export const writeBody = t.Object({
       description: "What this template is for, for the operator.",
     }),
   ),
-  // NOTE: deliberately permissive Records, not the structural union. Elysia's `normalize` STRIPS
+  // Deliberately permissive Records, not the structural union. Elysia's `normalize` STRIPS
   // what a schema does not declare, and a discriminated union of six block types declared field by
   // field would drop every property it does not name, silently, with a 200. Passing the array
   // through intact is what lets the service refuse it with a message that says what to write.

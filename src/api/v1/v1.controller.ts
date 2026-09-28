@@ -537,7 +537,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
       return { instance: instanceIdentity, outcome };
     },
     {
-      // NOTE: RANK, not just a session, unlike `/handoff`, `/return` and `/status` (the attendant's
+      // RANK, not just a session, unlike `/handoff`, `/return` and `/status` (the attendant's
       // screen in docs/ui.md): this route speaks to the CUSTOMER, firing a proactive turn on the
       // tenant's model budget. `requireRole`, never `!== "AGENT"`: it is hierarchical, so SUPER_ADMIN
       // and the fleet key still pass (docs/tenancy.md). It runs in `beforeHandle`, before the handler
@@ -718,7 +718,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     },
     {
       query: t.Object({
-        // NOTE: usage segment: "inbox" (real) | "playground". Omitted: both of our environments, and
+        // Usage segment: "inbox" (real) | "playground". Omitted: both of our environments, and
         // never the project's other traffic.
         source: t.Optional(
           t.Union([t.Literal("inbox"), t.Literal("playground")], {

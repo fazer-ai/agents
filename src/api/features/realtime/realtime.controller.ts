@@ -38,7 +38,7 @@ const ClientMessage = t.Object({
   payload: t.Optional(t.String({ maxLength: 1024 })),
 });
 
-// NOTE: no `response` schema on purpose: with one set, Elysia 1.4.x rejects every return value of
+// No `response` schema on purpose: with one set, Elysia 1.4.x rejects every return value of
 // `.ws()`'s `message` handler, whatever the schema's shape. Body validation works and stays; client
 // typing of server messages comes from the `useWebSocket<TIn, TOut>` generics. Smoke-test a manual
 // round trip before reintroducing a response schema.
@@ -56,7 +56,7 @@ export const realtimeController = new Elysia({
   .use(authPlugin)
   .use(originPlugin)
   .resolve(async ({ getAuthUser }) => ({ user: await getAuthUser() }))
-  // NOTE: HTTP to WS bridge: `sendToUser` from outside a WS handler takes the same `server.publish`
+  // HTTP to WS bridge: `sendToUser` from outside a WS handler takes the same `server.publish`
   // path, which is how a background job or webhook reaches a user's open tabs. This one pings the
   // caller; a route that targets other users must gate who can target whom.
   .post(

@@ -298,7 +298,7 @@ export const integrationsAdminController = new Elysia({
       response: errors(400, 401, 403, 404, 422),
     },
   )
-  // NOTE: Rotation is a POST because it MUTATES: the old URL stops resolving the moment it commits.
+  // Rotation is a POST because it MUTATES: the old URL stops resolving the moment it commits.
   // It exists for the two cases the stored token cannot cover: an instance whose token is stored as
   // a hash only, and a URL that leaked.
   .post(

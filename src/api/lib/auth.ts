@@ -262,7 +262,7 @@ export const authPlugin = new Elysia({ name: "auth" })
         },
       };
     },
-    // NOTE: compatibility alias: "admin" means TENANT_ADMIN or above.
+    // Compatibility alias: "admin" means TENANT_ADMIN or above.
     requireAdmin(enabled: boolean) {
       if (!enabled) return;
 

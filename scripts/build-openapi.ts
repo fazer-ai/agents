@@ -61,7 +61,7 @@ function stripNonOpenApiKeys(node: unknown): unknown {
   return out;
 }
 
-// NOTE: Elysia emits a group's index route as `/v1/agents/` (the `.get("/")` inside the group),
+// Elysia emits a group's index route as `/v1/agents/` (the `.get("/")` inside the group),
 // but the server answers both spellings, so the trailing slash is an artifact of how the route is
 // declared, not the canonical path, and it makes readers think the two forms differ. Strip it.
 // Guarded against collisions: if the unslashed twin already exists, the entries would silently

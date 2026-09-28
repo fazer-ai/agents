@@ -236,7 +236,7 @@ if (config.compactionWorker.enabled) {
   startCompactionWorker();
 }
 
-// NOTE: reached through the EventEmitter surface because `process.on("SIGTERM", …)` does not
+// Reached through the EventEmitter surface because `process.on("SIGTERM", …)` does not
 // type-check. @types/node 25 declares `Process extends InternalEventEmitter<ProcessEventMap>`, so
 // the signal handlers are INHERITED from an event map rather than declared as overloads, and
 // bun-types 1.4.0 augments `NodeJS.Process` with an explicit `on(event: "memoryPressure", …)`. A

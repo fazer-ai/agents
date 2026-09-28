@@ -92,7 +92,7 @@ export const writeBody = t.Object({
         "Static request headers; values may contain {{secret}} placeholders.",
     }),
   ),
-  // NOTE: `t.Unknown`, not `t.Record`: the record schema REBUILDS the map, so a field named
+  // `t.Unknown`, not `t.Record`: the record schema REBUILDS the map, so a field named
   // `__proto__` becomes the object's prototype on the way in, the service's refusal
   // (code-tools/service.ts) judges a schema the caller never sent, and the tool saves with the
   // declared argument missing. The shape is still described here and validated by the service's zod.
@@ -114,7 +114,7 @@ export const writeBody = t.Object({
         "Query-string params (any method); values may contain {{param}}/{{context}}/{{secret}} placeholders.",
     }),
   ),
-  // NOTE: deliberately a permissive Record, not a union of the three body modes: Elysia's `normalize`
+  // Deliberately a permissive Record, not a union of the three body modes: Elysia's `normalize`
   // STRIPS what a schema does not declare (see the riskTier case in tools-controller.test.ts), so a
   // body in an unsupported shape would come back 200 with `body: {}`, silently emptied. Passing it
   // through intact lets the service refuse it with a message that says what to write instead.

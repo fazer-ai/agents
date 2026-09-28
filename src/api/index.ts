@@ -154,7 +154,7 @@ const api = new Elysia()
           },
         },
         security: [{ bearerToken: [] }, { sessionCookie: [] }],
-        // NOTE: every controller assigns a matching instance-level `tags` (or per-route
+        // Every controller assigns a matching instance-level `tags` (or per-route
         // `detail.tags` for the mixed v1 controller). Keep this list in sync: a tag declared
         // here with no operations shows as an empty group; an operation with no tag shows loose.
         tags: [

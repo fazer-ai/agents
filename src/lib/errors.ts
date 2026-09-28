@@ -21,7 +21,7 @@ export class AppError extends Error {
   // NOTE: interpolation values for translationKey ({{placeholders}} in the locale entry).
   // `message` must arrive pre-interpolated: it is the log line and the untranslated fallback.
   readonly translationParams?: Record<string, string | number>;
-  // NOTE: optional. The value this refusal is ABOUT, by the name the SERVER uses for it: a column
+  // Optional. The value this refusal is ABOUT, by the name the SERVER uses for it: a column
   // (`systemPrompt`), a key of a patch (`document`), or a dotted path into a bag the server owns
   // (`guardrails.output.templateMessage`). Never a form path and never localized: it is a key the
   // client keys on, and it must read the same in every language the sentence is written in.
@@ -30,7 +30,7 @@ export class AppError extends Error {
   // src/modules/agents/config-health.ts). Absent when the refusal is not about one input (see
   // src/api/lib/refusal.ts).
   readonly field?: string;
-  // NOTE: optional. The playground turn this refusal ended, so the console can point at its lines on
+  // Optional. The playground turn this refusal ended, so the console can point at its lines on
   // the Logs page. Set by the playground's entry points on the way out rather than in the
   // constructor, since the error is usually raised far below the code that knows the turn.
   turnId?: string;
@@ -81,7 +81,7 @@ export class ConflictError extends AppError {
 // missing the X-Tenant-Id selector). 400, not 500. The key is set HERE because no call site passes
 // a message either: the refusal is the class.
 export class TenantTargetRequiredError extends AppError {
-  // NOTE: the default is the catalog sentence VERBATIM, the same string as the admin surface's
+  // The default is the catalog sentence VERBATIM, the same string as the admin surface's
   // `translate` default, so every producer of this refusal says one thing.
   constructor(message = "A target tenant is required") {
     super(message, 400, "errors.tenantTargetRequired");

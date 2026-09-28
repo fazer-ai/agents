@@ -180,7 +180,7 @@ export interface SafeUrlOptions {
   // SSRF_ALLOW_PRIVATE_TARGETS=true is set explicitly). Protocol and URL-parseability checks
   // always run regardless — file:, ftp:, etc. are never allowed.
   allowPrivate?: boolean;
-  // NOTE: the internal targets THIS call may reach with the guard on, normally
+  // The internal targets THIS call may reach with the guard on, normally
   // `config.ssrf.internalTargets`. Absent everywhere except the HTTP tool, and there only for a tool
   // whose own allowedHosts names the host: a call site that does not pass it keeps the full guard,
   // which is the property the instance-wide flag lacks. See `matchInternalTarget`.

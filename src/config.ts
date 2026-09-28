@@ -261,7 +261,7 @@ const config = {
     MAX_PORT,
   ),
   publicUrl: PUBLIC_URL || "http://localhost:3000",
-  // NOTE: "test" belongs in the union: `bun test` sets NODE_ENV=test and it wins over the `.env`, so
+  // "test" belongs in the union: `bun test` sets NODE_ENV=test and it wins over the `.env`, so
   // every `=== "development"` is false under the suite. Guard on `!== "production"` to cover test.
   env: (NODE_ENV || "development") as "development" | "production" | "test",
   // NOTE: Distribution edition. Single source of truth shared with the frontend bundle
@@ -274,7 +274,7 @@ const config = {
   // Boot fails fast if the runtime role is superuser/bypassrls (RLS would be a no-op) UNLESS
   // this is true AND env !== production. NEVER set in production.
   allowSuperuserRuntime: ALLOW_SUPERUSER_RUNTIME === "true",
-  // NOTE: filesystem root for issued document PDFs (`<dir>/<tenantId>/documents/<documentId>.pdf`)
+  // Filesystem root for issued document PDFs (`<dir>/<tenantId>/documents/<documentId>.pdf`)
   // and the tenant's letterhead logo (`<dir>/company/<tenantId>-logo.<ext>`). Served ONLY via the
   // authenticated, tenant-scoped /v1/documents routes, never under staticPlugin. The `documents/`
   // segment keeps them clear of the `<tenantId>/<quoteId>.pdf` an upgraded install already has in
@@ -293,7 +293,7 @@ const config = {
   // a derived-but-distinct value so the separation holds even if MCP_JWT_SECRET is unset.
   mcpJwtSecret:
     MCP_JWT_SECRET || `${JWT_SECRET || "change-me-in-production"}:mcp`,
-  // NOTE: Dynamic Client Registration is ON by default: every supported MCP client (Codex, Claude
+  // Dynamic Client Registration is ON by default: every supported MCP client (Codex, Claude
   // Code) self-registers and aborts before login without `registration_endpoint`, and
   // pre-registering does not help (Codex's loopback port is random, /authorize matches redirect_uri
   // exactly). MCP_DCR_ENABLED=false closes it. A self-registered client still shows as "unverified",
@@ -336,7 +336,7 @@ const config = {
   // NOTE: When true (the default), the first-run /setup flow requires the token
   // printed in the server log. Disable only on trusted networks.
   setupTokenRequired: SETUP_TOKEN_REQUIRED !== "false",
-  // NOTE: Global cap on concurrent agent model calls — the LLM round-trip in the LangGraph agent node
+  // Global cap on concurrent agent model calls — the LLM round-trip in the LangGraph agent node
   // (graph.ts) plus the opt-in TTS-normalize call. Conversations drain fully in parallel (the debounce
   // worker does not serialize them); this is the ONLY throttle on model calls, applied process-wide
   // across every entrypoint (debounce/webhook/nudge/playground) so a burst does not hammer the
@@ -349,7 +349,7 @@ const config = {
       "It is the only throttle on concurrent model calls, process-wide.",
       MAX_COUNT,
     ),
-    // NOTE: How long one call to an agent's own model may take, retries included, when no fallback
+    // How long one call to an agent's own model may take, retries included, when no fallback
     // model is configured, so a provider that accepts the connection and never answers cannot hold
     // the turn. A turn with a fallback is bounded by the fallback's own 45 s ceiling instead
     // (src/graph/model-fallback.ts).
@@ -360,7 +360,7 @@ const config = {
       "It is how long one call to the agent's own model may take, retries included, when no fallback model is configured.",
       MAX_DURATION_MS,
     ),
-    // NOTE: How long a reply may wait for capacity before the operator is told: a due flush waiting
+    // How long a reply may wait for capacity before the operator is told: a due flush waiting
     // for a slot of a full debounce lane, or a model call waiting for a permit of the semaphore above.
     // Delay, not occupancy: a full lane that drains in seconds is healthy. The lane ticks every 2.5 s
     // and a turn takes about 10 s, so 30 s is several turns of queue.
@@ -376,7 +376,7 @@ const config = {
     // ceiling: prompts past tens of KB usually hold knowledge-base content and degrade instruction
     // adherence. Intentionally surfaced only as a save error — no UI affordance points here.
     promptMaxChars: agentPromptMaxChars,
-    // NOTE: How long ONE HTTP tool call may take, headers and body together, before it is aborted.
+    // How long ONE HTTP tool call may take, headers and body together, before it is aborted.
     // Configurable because each link of the chain must be more patient than the one below it: set
     // equal to a provider's own cap, we abort first and the operator gets our generic failure instead
     // of the provider's message. 30s clears providers that cap at 15-20s; one behind a 30s cap raises
@@ -459,7 +459,7 @@ const config = {
       MAX_DURATION_MS,
     ),
   },
-  // NOTE: Cadence of the per-tenant `SPEND_CEILING_POLL` scheduler job: how often a
+  // Cadence of the per-tenant `SPEND_CEILING_POLL` scheduler job: how often a
   // tenant's month-to-date cost is read from Langfuse into the local snapshot the spend ceiling's
   // gate reads. Armed only while the tenant's ceiling is on. The ceiling's effective lag is THIS plus
   // Langfuse's own ingestion lag, and the two ADD, so it is the overshoot bound an operator accepts
@@ -513,7 +513,7 @@ const config = {
   // single-tenant/self-hosted box you control. Network transports (http/sse) are always allowed
   // and pass the SSRF guard.
   mcpStdioEnabled: MCP_STDIO_ENABLED === "true",
-  // NOTE: Corrupted-audio check for synthesized replies (docs/tts.md "Checking the audio"). The
+  // Corrupted-audio check for synthesized replies (docs/tts.md "Checking the audio"). The
   // detector is deployment-level: infrastructure the operator runs next to this service, like the
   // database, so its address and token stay here. Empty URL = off. `mode` is the DEFAULT for an agent
   // that never chose one; an agent's own `settings.tts.checkMode` applies only while a URL is set.
@@ -539,7 +539,7 @@ const config = {
         : SSRF_ALLOW_PRIVATE_TARGETS === "false"
           ? false
           : (NODE_ENV || "development") === "development",
-    // NOTE: The internal services an HTTP tool may reach with the guard ON. Read only by the
+    // The internal services an HTTP tool may reach with the guard ON. Read only by the
     // HTTP tool, and there only when the tool's own allowedHosts names the host. See src/lib/ssrf.ts.
     internalTargets: parseInternalTargets(
       SSRF_INTERNAL_TARGETS,
@@ -556,7 +556,7 @@ const config = {
   // prepend but never append. One proxy (every compose file here) is the last entry; a CDN in front
   // of that proxy makes it two.
   trustedProxyHops: parseHops(TRUSTED_PROXY_HOPS, "TRUSTED_PROXY_HOPS"),
-  // NOTE: Per-client rate-limit ceilings (requests/minute). These are runaway guards, NOT tight
+  // Per-client rate-limit ceilings (requests/minute). These are runaway guards, NOT tight
   // throttles: navigating the console fires dozens of parallel reads, and one MCP client funnels
   // every tool call through a single address, so the buckets must be generous. CAVEAT: everyone
   // behind one NAT counts against the same bucket. The static (1000/min) and DCR (10/min) limits are

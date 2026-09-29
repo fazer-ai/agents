@@ -9,25 +9,14 @@ import { generateApiKey } from "@/modules/api-keys/verify";
 import { seedChatwootInstance } from "@/tests/utils/chatwoot";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
-// WHO MAY MAKE THE AGENT SPEAK TO A CUSTOMER (issue #753).
+// Who may make the agent speak to a customer: `/conversations/:id/reengage` refuses a principal
+// below TENANT_ADMIN. A session can hold rank AGENT (user edits and invitations take that role), and
+// `/conversations/:id` is the one console route not admin-gated (docs/ui.md).
 //
-// `POST /v1/conversations/:id/reengage` carried `requireAuth: true` and nothing finer, so authority
-// stopped being a question at the door: any authenticated principal of the tenant reached the write
-// service. The issue was found as an UNDECIDED holdout scenario of #750 and its body says nothing in
-// the product can present a rank below `TENANT_ADMIN` — true of the API key, whose role is fixed at
-// mint, and FALSE of the session: `PATCH /api/admin/users/:id` and `POST /api/admin/invitations`
-// both take `role: "AGENT"`, `accept-invite` returns the cookie, and `/conversations/:id` is the one
-// console route that is deliberately not admin-gated (`docs/ui.md`). So the door is open today.
-//
-// TWO DOORS, because they resolve the rank by different paths and a guard can cover one of them: the
-// session, whose role is read from the USER ROW (a cookie signed `AGENT` against a row that says
-// `TENANT_ADMIN` is admitted — an assertion made that way proves nothing), and the Bearer API key,
-// whose role is a column. Both are of rank AGENT here and both have to answer alike.
-//
-// AND THE CONTROL IS PART OF THE MEASUREMENT. A refusal proves nothing about authority unless the
-// same call, on the same conversation, in the same harness, gets further for a principal that is
-// admitted — otherwise the environment is what refused. That was the whole defect of #750's s7: a
-// 500 from DNS that did not separate from the guard.
+// Two doors, because they resolve the rank differently: the session reads it from the USER ROW (a
+// cookie signed `AGENT` over a row saying `TENANT_ADMIN` is admitted), the API key from a column.
+// Every refusal has a control: the same call on the same conversation gets further for an admitted
+// principal, otherwise the environment is what refused.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
@@ -156,10 +145,9 @@ async function mintKey(
   name: string,
 ): Promise<string> {
   const { token, hash, prefix } = generateApiKey();
-  // Inserted directly, and that is the point: `createApiKey` fixes the role at `TENANT_ADMIN`
-  // (`FIXED_ROLE`, "fine-grained scopes deferred" beside it), so the rank the issue is about cannot
-  // be minted through the service. The row shape is legal — `api_keys_role_tenant_check` only
-  // forbids a SUPER_ADMIN carrying a tenant and a non-SUPER_ADMIN without one.
+  // NOTE: Inserted directly because `createApiKey` fixes the role at `TENANT_ADMIN` (`FIXED_ROLE`),
+  // so an AGENT key cannot be minted through the service. The row is legal: the
+  // `api_keys_role_tenant_check` only forbids a SUPER_ADMIN with a tenant and others without one.
   await su?.apiKey.create({
     data: {
       tenantId,
@@ -311,15 +299,10 @@ describe.skipIf(!dbUp)(
         answers.push([res.status, await res.json()] as const);
       }
 
-      // One that exists and is the tenant's, one that exists in another tenant, one that exists
-      // nowhere: the same answer to all three. Authority checked after the id is resolved makes the
-      // refusal an existence oracle, and the AGENT enumerates the tenant's conversations by the
-      // difference between 403 and 404.
-      //
-      // WHAT THE RED HERE DID AND DID NOT SAY, because the stub answers where the service would:
-      // before the fence all three came back 200, which proves the ROUTE admitted the rank — not
-      // that a foreign conversation was re-engaged. The real service is fenced by RLS and would
-      // answer 404 for the other tenant's id; what this test measures is the guard's POSITION.
+      // NOTE: A conversation of this tenant, one of another tenant, one that exists nowhere: the
+      // same answer to all three, or the refusal is an existence oracle (403 vs 404). The stub
+      // answers where the service would, so this measures the guard's POSITION, not whether a
+      // foreign conversation was re-engaged (the real service is fenced by RLS).
       expect(answers.map(([s]) => s)).toEqual([403, 403, 403]);
       expect(answers.map(([, b]) => b)).toEqual([
         answers[0]?.[1],
@@ -362,11 +345,8 @@ describe.skipIf(!dbUp)(
         status.push(res.status);
       }
 
-      // `docs/ui.md` describes the conversation screen as the ops an attendant gets — "handoff,
-      // return-to-AI, resolve, status select" — and re-engagement is not among them: it is the one
-      // that SPEAKS to the customer, on the tenant's model budget. So the fence closes that door and
-      // leaves these three, and this test is what makes that a recorded decision rather than a
-      // residue of having fixed one route.
+      // NOTE: An attendant keeps the conversation screen's other ops (docs/ui.md); re-engagement is
+      // the one fenced because it SPEAKS to the customer, on the tenant's model budget.
       expect(status).toEqual([200, 200, 200]);
       expect(readReached()).toEqual(["handoff", "return", "status"]);
     });

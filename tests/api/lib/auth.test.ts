@@ -19,7 +19,7 @@ const mockUser = {
   googleId: null as string | null,
 };
 
-// The row the session lookup reads: the person, with their one membership (issue #756).
+// The row the session lookup reads: the person, with their one membership.
 const mockPersonRow = {
   id: mockUser.id,
   email: mockUser.email,

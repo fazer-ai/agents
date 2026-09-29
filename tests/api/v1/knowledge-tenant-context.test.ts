@@ -8,17 +8,13 @@ import {
   setupPrismaMock,
 } from "@/tests/utils/prisma-mock";
 
-// The seam that was broken, over a real request: what the controller HANDS DOWN.
+// What the controller HANDS DOWN, over a real request through the real app (so the `X-Tenant-Id`
+// header is parsed by the boundary the browser talks to).
 //
 // `runScopedOn` verifies an unknown tenant only for a `SUPER_ADMIN` context, so the module has to
-// receive the caller's context and not an id lifted out of it. Every route in this controller used
-// to call a helper that unwrapped `tenantContext` down to `ctx.tenantId`, which meant the id arrived
-// at the module with its provenance gone and was rebuilt as TENANT_ADMIN. Asserted here rather than
-// only in `tests/modules/tenant-selector-entry-points.test.ts`, because that file proves the
-// FUNCTIONS refuse and says nothing about whether the transport still reaches them with a context.
-//
-// Driven through the real app so the `X-Tenant-Id` header is parsed by the boundary the browser
-// actually talks to. Issue #280.
+// receive the caller's context, not `ctx.tenantId` lifted out of it and rebuilt as TENANT_ADMIN.
+// `tests/modules/tenant-selector-entry-points.test.ts` proves the FUNCTIONS refuse; this file
+// proves the transport reaches them with a context.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
@@ -38,14 +34,9 @@ const listKnowledgeBases = mock(
 // A SPY ON THE MODULE OBJECT, NOT A REGISTRY REWRITE. A rewrite is process-global and its undo is a
 // second rewrite that does not undo anything: `await import()` hands back the LIVE namespace, and
 // the mock rewrote it in place, so handing that same object back re-registers the stub while
-// reading as a cleanup. tests/lib/module-mock-package.test.ts states this; this file was written
-// before it did.
-//
-// Measured on the four shards: with the rewrite in place, `listKnowledgeBases` went on answering
-// `[]` for every file downstream, and tests/modules/tenant-selector-entry-points.test.ts, which
-// calls the real one to prove it REFUSES a dead tenant selector, got the stub, so nothing
-// was refused and the tenant lookup it counts never happened. Two failures in shard 1/4, neither
-// naming this file.
+// reading as a cleanup (tests/lib/module-mock-package.test.ts). A leaked `[]` would silence
+// tests/modules/tenant-selector-entry-points.test.ts, which calls the real one to prove it REFUSES
+// a dead tenant selector.
 const spy = spyOn(ragService, "listKnowledgeBases").mockImplementation(
   listKnowledgeBases,
 );

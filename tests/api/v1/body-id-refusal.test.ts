@@ -8,26 +8,12 @@ import {
   setupPrismaMock,
 } from "@/tests/utils/prisma-mock";
 
-// What a route does with an id in its BODY that is not one.
-//
-// The same question the path surface answered in #371 and the query string answered alongside it, on
-// the transport neither reached. `BigInt` is arbitrary precision and lenient in both directions: it
-// takes spellings a column does not (`0x11` is 17n, `" 7 "` is 7n), so a body that named no row can
-// be handed one, and it takes values past 2^63-1, which reach POSTGRES as a bind error and answer
-// 500 on routes that already advertise 400.
-//
-// Measured over these eight routes before the fix: seven answered 400 with the plain-text string
-// `Invalid ID format`, produced by a catch-all in src/app.ts that recognised the thrown SyntaxError
-// by its MESSAGE — no content type a JSON client can read, no locale, no name for the field. The
-// eighth, `PATCH /v1/agents/:id`, answered 404 "Business hours not found." for `abc`, telling a
-// caller who mistyped that the row was gone. And the out-of-range spelling escaped both answers on
-// all eight, because a digits-only check is the half people remember and the range is the half they
-// do not. Issue #407.
-//
-// The request budget is spent deliberately: the whole spelling set goes to ONE route and every other
-// route gets the one spelling that reaches furthest (out of range, which no digits check catches).
-// The limiter's budget is a single 600/min bucket shared by every test file in the worker, and a
-// sweep that ignores that starved 24 unrelated tests on CI once already (see the note in
+// What a route does with an id in its BODY that is not one (route-id-refusal.test.ts covers the
+// path and query). `BigInt` is lenient both ways: it takes spellings a column does not (`0x11` is
+// 17n, `" 7 "` is 7n), handing a body that named no row one, and values past 2^63-1, which Postgres
+// refuses at bind time as a 500. The refusal is a JSON 400 naming the field, in the caller's locale.
+// The whole spelling set goes to ONE route and every other route gets only the out-of-range one:
+// the limiter is one 600/min bucket shared by every file in the worker (see the note in
 // tests/api/v1/route-id-refusal.test.ts).
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
@@ -187,9 +173,7 @@ describe("the refusal a malformed body id produces", () => {
   });
 
   // A malformed id and a well-formed id for a row that is gone are different situations, and only
-  // one of them is the caller's to fix. `updateAgent` collapsed both into NotFound; the same file
-  // already answered 400 for a malformed tool-grant id, so it gave two answers to one mistake
-  // depending on which field carried it.
+  // one of them is the caller's to fix, so a malformed id is a 400 on every field, never a 404.
   test("a malformed hours id is refused, not reported as a missing row", async () => {
     const res = await send("PATCH", "/api/v1/agents/7", {
       businessHoursId: "abc",
@@ -198,10 +182,8 @@ describe("the refusal a malformed body id produces", () => {
     expect(await res.json()).toEqual({ error: "Not a valid businessHoursId" });
   });
 
-  // The half the status cannot show, and the reason the catch-all in src/app.ts had to go rather
-  // than be repaired: it answered `new Response("Invalid ID format")`, so `apiErrorMessage`
-  // (src/client/lib/apiError.ts) found no `error` key and fell back to its generic transport
-  // sentence, in English, whatever the caller asked for.
+  // The half the status cannot show: a plain-text body has no `error` key, so `apiErrorMessage`
+  // (src/client/lib/apiError.ts) would fall back to its generic English transport sentence.
   test("it is JSON, and localized", async () => {
     const res = await send(
       "POST",

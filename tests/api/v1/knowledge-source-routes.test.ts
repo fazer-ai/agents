@@ -6,7 +6,7 @@ import { generateApiKey } from "@/modules/api-keys/verify";
 import type { SourceInput } from "@/modules/rag/source";
 import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
-// The three REST routes of a knowledge base source (issue #794), measured at the door: who may call
+// The three REST routes of a knowledge base source, exercised at the door: who may call
 // them, what a malformed body gets back, and what a missing base or a base without a source answers.
 // The source module runs for real against the test database; the only seams are the database handle
 // (the app's singleton is mocked by the harness) and the SSRF check's DNS lookup, which a portal on a
@@ -199,8 +199,8 @@ describe.skipIf(!dbUp)("knowledge base source routes (issue #794)", () => {
     ).toBeNull();
   });
 
-  // The console shows the refusal next to the form, so it has to arrive in the caller's language
-  // (issue #798): before the keys, a pt-BR screen read "slug is required and must be a portal slug".
+  // NOTE: the console shows the refusal next to the form, so it has to arrive in the caller's
+  // language, not as the English schema message.
   test("a pt-BR caller reads every refusal in Portuguese, naming the field", async () => {
     const cases: [unknown, string, string][] = [
       [{ ...GOOD, baseUrl: "" }, "baseUrl", "A URL do portal é obrigatória."],

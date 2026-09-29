@@ -6,18 +6,11 @@ import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
-// The agent trail, driven through a real request to the console's own door.
-//
-// `tests/modules/audit-agent-family.test.ts` proves the SERVICE records. It cannot see the half the
-// issue is actually about: whether the REST route reaches that service with a principal at all. The
-// console speaks these six routes, `agents.controller.ts` never mentioned `audit`, and the row can
-// only name who wrote it if the transport hands the context down.
-//
-// The service is WRAPPED and the wrapper calls through, for the reason `mock.module` always demands
-// here: it is global to the process and outlives this file for every other one in the same worker, so
-// a stub that swallowed the real behaviour would turn somebody else's file green for the wrong
-// reason. All the wrapper does is record the context it was handed and give the write the test
-// database, which the controller has no way to inject.
+// The agent trail through a real request: whether the six REST routes in
+// src/api/v1/agents.controller.ts hand the service a principal at all (the service's recording is
+// tests/modules/audit-agent-family.test.ts). The service is WRAPPED and calls through, because
+// `mock.module` is global to the worker and a stub would turn other files green for the wrong
+// reason; the wrapper records the context and hands the write the test database.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
@@ -68,11 +61,9 @@ mock.module("@/modules/agents/service", () => ({
 
 const server = (await import("@/app")).default;
 
-// TOP-LEVEL, outside the describe below, and measured rather than assumed: an `afterAll` inside a
-// `describe.skipIf(...)` that skips does NOT run, while this one does. `mock.module` already
-// installed the wrapper globally for the whole worker by the time `dbUp` was decided, so leaving the
-// restore inside would leak it into every later file in the same process — handing their writes an
-// `app` that is `undefined` and routing them into the incomplete singleton mock.
+// TOP-LEVEL, outside the describe below: an `afterAll` inside a `describe.skipIf(...)` that skips
+// does NOT run, and the wrapper is already global to the worker, so a restore inside would leak it
+// into every later file.
 afterAll(() => {
   mock.module("@/modules/agents/service", () => real);
 });

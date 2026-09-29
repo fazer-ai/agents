@@ -6,13 +6,11 @@ import { PrismaClient, type UserRole } from "@/../generated/prisma/client";
 import config from "@/config";
 import { personData } from "@/tests/utils/person";
 
-// The consent DECISION, driven through its own door (#497).
+// The consent DECISION, driven through its own door.
 //
 // `tests/modules/mcp-oauth-consent.test.ts` proves the pending record and the approvals. This file
-// answers what no module test can see: whether the row that records the decision shares the fate of
-// the decision. Until #497 it did not — the grant committed, then a second transaction appended the
-// row best-effort inside a `try/catch` that logged at warn — so a granted consent could leave
-// nothing behind, and a reader cannot tell that from a consent that never happened.
+// proves the row that records the decision shares the decision's transaction: a best-effort second
+// write could leave a granted consent with no row, indistinguishable from one that never happened.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
@@ -39,15 +37,11 @@ if (suUrl && appUrl) {
 }
 const suDb = su as PrismaClient;
 
-// THE APP'S OWN CLIENT, not the shared stub. `setupPrismaMock` replaces `@/api/lib/prisma` with a
-// mock carrying `user` and `tenant` only, so every request through this controller answered 500 on
-// `mcpOAuthPendingAuthorization` — and two of the assertions below went GREEN on it, because "the
-// grant did not stand" is also true when the request never reached the database. The principal is
-// therefore a real row, and the transaction under test is a real one.
-// The value the registry held before this file touched it, captured as the PROPERTY rather than as
-// the namespace: `mock.module` rewrites the namespace object in place, so handing that object back
-// at teardown puts nothing back (`tests/lib/module-mock-undo.test.ts` is the fence, and it
-// caught this file doing exactly that). A fresh literal holding the original client does restore it.
+// THE APP'S OWN CLIENT, not the shared stub, which carries `user` and `tenant` only: on it every
+// request answers 500, and "the grant did not stand" passes without reaching the database.
+// The original is captured as the PROPERTY, not the namespace: `mock.module` rewrites the namespace
+// in place, so handing it back restores nothing (`tests/lib/module-mock-undo.test.ts`); a fresh
+// literal holding the original client does restore it.
 const originalPrisma = (await import("@/api/lib/prisma")).default;
 mock.module("@/api/lib/prisma", () => ({ default: app }));
 // Top-level rather than inside the `describe`, since an `afterAll` in a describe that SKIPS never
@@ -256,10 +250,9 @@ describe.skipIf(!dbUp)(
       }).toEqual({ codes: 0, approvals: 0 });
     });
 
-    // THE POINT OF THE SEAM. With the row's write refused, the grant must not stand: no code to
+    // NOTE: THE POINT OF THE SEAM. With the row's write refused, the grant must not stand: no code to
     // exchange, no approval remembered, and the pending still unconsumed so the user can decide
-    // again. Before #497 the three writes had already committed and only the row was missing, which
-    // is the one outcome a trail must never produce — a grant nobody can read.
+    // again. A grant with no row is the one outcome a trail must never produce.
     test("a refused audit write takes the whole grant with it", async () => {
       await clear();
       const { requestId, csrf } = await pending(tenantId);
@@ -302,7 +295,7 @@ describe.skipIf(!dbUp)(
     });
 
     // A FLEET-LEVEL SUPER_ADMIN, WITH A TENANT SELECTED IN THE CONSOLE. `/authorize` parks a
-    // tenant-less pending for that principal on purpose, so the decision has to file fleet-level too —
+    // tenant-less pending for that principal on purpose, so the decision has to file fleet-level too,
     // and `X-Tenant-Id` is a SELECTOR, not the principal's tenant. Reading `ctx.tenantId` straight
     // would make the refusal below fire on a legitimate grant, or file the row on whatever tab the
     // admin had open, which is the same mistake `admin.service.ts` documents for its own family.
@@ -336,16 +329,10 @@ describe.skipIf(!dbUp)(
       ]);
     });
 
-    // THE FOURTH BRANCH, which wrote nothing and did not even warn. `auditConsentDecision` dispatched
-    // on the principal — SUPER_ADMIN, else a tenant, and no `else` — so a non-SUPER_ADMIN holding a
-    // pending with a null tenant fell through in silence.
-    //
-    // Reachable only if the role changed inside the pending's 10-minute TTL, and measured: the only
-    // producer of a null `tenantId` on a pending is a SUPER_ADMIN at /authorize, and `users_role_tenant_check`
-    // forbids a SUPER_ADMIN with a tenant, while `updateUserRole` writes only the role — so demoting
-    // one fails at the database today (that is #534). The state is therefore constructed here rather
-    // than driven, because the app cannot reach it yet and the code must still answer when #534 is
-    // fixed.
+    // NOTE: THE FOURTH BRANCH: a non-SUPER_ADMIN holding a pending with a null tenant is refused,
+    // not silently skipped. Only a SUPER_ADMIN at /authorize parks a null-tenant pending, so this is
+    // a SUPER_ADMIN demoted inside the pending's TTL; the state is constructed directly rather than
+    // driven through a demotion.
     test("a principal that no longer matches the pending is refused, not ignored", async () => {
       await clear();
       const { requestId, csrf } = await pending(null);

@@ -5,16 +5,14 @@ import type { TenantContext } from "@/lib/tenancy";
 import { generateApiKey } from "@/modules/api-keys/verify";
 import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
-// WHO CAN SEE WHAT THE AGENT FILTER OFFERS (issue #607, review round 1).
+// WHO CAN SEE WHAT THE AGENT FILTER OFFERS.
 //
-// The Conversations screen is not admin-gated, and the filter first read its options from
-// `/v1/agents`, which is TENANT_ADMIN: an AGENT-role user got no control at all, and a shared link
-// carrying `agentId` narrowed their list with nothing on screen to see or clear. The options now come
-// from the conversations' own read, behind the same gate as the list.
+// The Conversations screen is not admin-gated while `/v1/agents` is TENANT_ADMIN, so the filter's
+// options come from the conversations' own read, behind the same gate as the list: otherwise an
+// AGENT-role user gets no control, and a shared link carrying `agentId` narrows their list invisibly.
 //
-// The control is part of the measurement, as in reengage-role-gate.test.ts: the same AGENT key is
-// refused by `/v1/agents`, so the 200 below is the new route's gate and not a key that could read
-// everything.
+// The control, as in reengage-role-gate.test.ts: the same AGENT key is refused by `/v1/agents`, so
+// the 200 below is the options route's gate and not a key that could read everything.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;

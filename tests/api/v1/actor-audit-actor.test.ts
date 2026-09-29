@@ -8,18 +8,12 @@ import type { TenantContext } from "@/lib/tenancy";
 import { personData } from "@/tests/utils/person";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
-// The actor family's trail, driven through the console's own doors (issue #400).
-//
-// `tests/modules/audit-actor-family.test.ts` proves the SERVICES record. This file answers the half
-// no service test can see: whether the doors reach them with a principal, and WHICH principal.
-//
-// That second half is the whole reason these two controllers are wired differently from every other
-// audited family, and the difference is invisible from either side alone. `admin.controller.ts` runs
-// on `authPlugin` and builds its context by hand, because its scope is the caller's HOME tenant: a
-// SUPER_ADMIN has none, which is what lets them re-role across tenants. Mounting `tenancyPlugin`
-// there — the obvious tidy-up, and what every sibling controller does — would hand these routes the
-// `X-Tenant-Id` SELECTOR instead, and a fleet admin with a tenant open in one tab would silently
-// lose the ability to administer anyone outside it. The last two tests are that fence.
+// The actor family's trail, driven through the console's own doors: whether they reach the services
+// (tests/modules/audit-actor-family.test.ts) with a principal, and WHICH one.
+// src/api/features/admin/admin.controller.ts runs on `authPlugin` and builds its context from the
+// caller's HOME tenant (a SUPER_ADMIN has none, so they can re-role across tenants). Mounting
+// `tenancyPlugin` like every sibling would scope it to the `X-Tenant-Id` SELECTOR instead, fencing a
+// fleet admin to the open tab. The last two tests are that fence.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
@@ -149,10 +143,9 @@ function req(path: string, init: RequestInit = {}): Request {
   });
 }
 
-// A tenant trail is isolated by its tenant. The FLEET trail (`tenant_id NULL`) is NOT: it is shared
-// with every other file running against this database, so it is read by ACTOR. Measured, not
-// guessed — without the actor filter this file read `tests/modules/mcp-admin.test.ts`'s fleet rows
-// as its own and reported the wrong principal on a row it had just written correctly.
+// A tenant trail is isolated by its tenant. The FLEET trail (`tenant_id NULL`) is NOT: other files
+// (tests/modules/mcp-admin.test.ts among them) write fleet rows to the same database, so it is read
+// by ACTOR.
 const rowsOf = async (of: bigint | null, action?: string) =>
   (await su?.auditLog.findMany({
     where: {
@@ -260,9 +253,8 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
     expect(row?.after).toMatchObject({ role: "TENANT_ADMIN" });
   });
 
-  // The door's other half of #496: the service now refuses to demote a scope's last administrator,
-  // and that refusal has to arrive as the 409 the console renders rather than as the 500 an unmapped
-  // error produces. Its own tenant, seeded and removed here, because the guard counts the scope.
+  // The service refuses to demote a scope's last administrator, and the refusal must arrive as the
+  // 409 the console renders, not an unmapped 500. Its own tenant, because the guard counts the scope.
   test("demoting a tenant's last administrator answers 409, not 500", async () => {
     cookie = await signIn({
       id: FLEET_ADMIN_ID,
@@ -302,11 +294,10 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
     }
   });
 
-  // #534 at the door: a fleet administrator's demotion describes a row the database cannot store
-  // unless the write also names where they land, and it used to be attempted anyway — the operator
-  // got `users_role_tenant_check` back as a 500. The seeded second fleet administrator is not
-  // decoration: without it the last-admin guard (#496) answers first, with a 409, and this test
-  // would be measuring that instead.
+  // A fleet administrator's demotion has to name the tenant they land in: no database constraint
+  // stops a person with no membership, who then has nothing to enter, so the service refuses the
+  // request (`TenantRequiredError`, 422) before any write. The second fleet administrator keeps the
+  // last-admin guard from answering first with its 409.
   test("demoting a fleet administrator answers 422 without a tenant, and moves them with one", async () => {
     cookie = await signIn({
       id: FLEET_ADMIN_ID,
@@ -364,10 +355,9 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
     }
   });
 
-  // Self-demotion was guarded only for the transition to AGENT, and that was complete only while the
-  // others could not be stored: naming a tenant now makes "fleet administrator → this tenant's admin"
-  // a storable row, and the caller would lose their own fleet access at the next authentication
-  // lookup, past a route that promises it cannot happen (#534).
+  // Self-demotion is refused for every target, not only AGENT: naming a tenant makes "fleet
+  // administrator → this tenant's admin" a storable row, and the caller would lose their own fleet
+  // access at the next authentication lookup.
   test("a fleet administrator cannot re-role themselves, tenant named or not", async () => {
     cookie = await signIn({
       id: FLEET_ADMIN_ID,

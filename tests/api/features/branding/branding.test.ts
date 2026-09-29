@@ -5,7 +5,7 @@ import {
   toDto,
 } from "@/api/features/branding/branding.service";
 
-// Footer-link white-labeling (issue #4): the sanitizers are the single gate between operator
+// Footer-link white-labeling: the sanitizers are the single gate between operator
 // input and an href/mailto: in every visitor's sidebar, so they are pinned here. The write
 // validation errors throw BEFORE any DB access, so they run without Postgres. The
 // updateBrandingColors block is Full-only: in the Free edition that module is the

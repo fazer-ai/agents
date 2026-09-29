@@ -479,7 +479,7 @@ describe("realtime.service", () => {
       role: "AGENT" as const,
     };
 
-    // Issue #756: a person with several memberships picks the stream the same way the REST header
+    // NOTE: a person with several memberships picks the stream the same way the REST header
     // picks the request's tenant. The upgrade carries no header, so the session arrives resolved to
     // the person's default, and the socket's own selector decides among ALL their memberships.
     const member = {

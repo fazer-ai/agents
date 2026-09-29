@@ -42,7 +42,7 @@ describe("auth.service", () => {
 
       const result = await getUserByEmail("test@example.com");
 
-      // The person, as the schema stores them since issue #756 (tests/utils/prisma-mock.ts).
+      // NOTE: the person as the schema stores them (tests/utils/prisma-mock.ts).
       expect(result).toEqual(asPersonRow(mockUser));
       expect(mockFindFirst).toHaveBeenCalledTimes(1);
     });
@@ -62,7 +62,7 @@ describe("auth.service", () => {
 
       expect(mockFindFirst).toHaveBeenCalledWith({
         where: { email: { equals: "TEST@EXAMPLE.COM", mode: "insensitive" } },
-        // The person and every membership (issue #756).
+        // NOTE: the person and every membership.
         select: {
           id: true,
           email: true,
@@ -94,7 +94,7 @@ describe("auth.service", () => {
         ...createdUser,
         memberships: asPersonRow(createdUser).memberships,
       });
-      // The person and their first membership, in one statement (issue #756).
+      // NOTE: the person and their first membership, in one statement.
       expect(mockCreate).toHaveBeenCalledWith(
         expect.objectContaining({
           data: {

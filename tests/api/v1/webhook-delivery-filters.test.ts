@@ -6,15 +6,13 @@ import {
   listWebhookDeliveries,
 } from "@/modules/webhooks/outbound/deliveries";
 
-// ── AN UNUSABLE FILTER IS A REFUSAL, NEVER A DROPPED FILTER ──
+// An unusable filter is a refusal, never a dropped filter. Written as a matrix because the legs of
+// the question (unparseable, out of range, explicitly empty) are different inputs, and what the
+// endpoint promises is the whole matrix.
 //
-// Written as a matrix rather than a case per bug because three review rounds found three legs of
-// the same question — unparseable, out of range, explicitly empty — and each leg was a different
-// input. What the endpoint promises is the whole matrix, so the whole matrix is what is asserted.
-//
-// The two halves are the two layers a value passes through, and both are load-bearing: the query
-// parser turns strings into the service's types (REST only), and the service owns the ranges and
-// the vocabulary (REST **and** MCP, which never sees a query string).
+// The two halves are the two layers a value passes through, both load-bearing: the query parser
+// turns strings into the service's types (REST only), and the service owns the ranges and the
+// vocabulary (REST **and** MCP, which never sees a query string).
 
 const VALUES: Record<string, string[]> = {
   // Empty is not absent: a form submits it when its input is blank, and treating it as "no filter"

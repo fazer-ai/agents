@@ -6,15 +6,10 @@ import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
-// THE REFUSAL AS THE CALLER RECEIVES IT (#614), through the route rather than the service.
-//
-// `tests/modules/agents.test.ts` proves the rule; it cannot see the half that made the issue: the
-// opt-in travels in the PATCH body, and a controller that parses it and forgets to hand it down
-// leaves every replace refused, while one that never asks leaves every partial bag destroying
-// configuration. Both halves look identical from inside the service.
-//
-// Same wrapper as tests/api/v1/agents-audit-actor.test.ts, and for the same reason: the controller
-// has no way to inject the test database, so the service is WRAPPED (never stubbed) to hand it one.
+// THE REFUSAL AS THE CALLER RECEIVES IT, through the route (tests/modules/agents.test.ts proves the
+// rule). The opt-in travels in the PATCH body: a controller that drops it refuses every replace, one
+// that never asks lets every partial bag destroy configuration, and the service cannot tell them
+// apart. The service is WRAPPED as in tests/api/v1/agents-audit-actor.test.ts to get the test DB.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;

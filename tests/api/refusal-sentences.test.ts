@@ -7,22 +7,13 @@ import { type KeyResolver, listProviderModels } from "@/modules/models/service";
 import { listTtsOptions } from "@/modules/tts/listing";
 import { createVaultEntry } from "@/modules/vault/service";
 
-// THE SENTENCE THE CALLER ACTUALLY READS, produced by the code that refuses.
-//
-// The guards in tests/api/error-catalog.test.ts ask their questions of the SOURCE: whether an entry
-// carries a placeholder, whether a call site passes a bag with the right names in it. Both were
-// written because a source-level mistake here is invisible at runtime — `translateWithLocale` falls
-// back to the pre-interpolated English `message` for a placeholder it was given no value for, so a
-// forgotten bag answers a pt-BR reader a complete, useful, permanently untranslated sentence
-// (issue #291). A rule that can only be checked in the source is one that has never been read.
-//
-// So this file closes the loop from the other end: it CALLS the refusing function, hands the
-// AppError to the same `refusalBody` the error handler uses, and pins the rendered string in both
-// languages. Issue #292 split fifteen keys whose one sentence had to answer for several different
-// refusals; what proves the split landed is that each of them now reads differently, to a reader.
-//
-// Every producer below is the real function with its network, key resolution and storage injected —
-// none of these refusals is reached by a fake that stands in for the rule.
+// THE SENTENCE THE CALLER ACTUALLY READS, produced by the code that refuses. The guards in
+// tests/api/error-catalog.test.ts ask the SOURCE whether an entry carries a placeholder and whether a
+// call site passes a bag with the right names, because a forgotten bag is invisible at runtime:
+// `translateWithLocale` falls back to the English `message` and answers pt-BR in English. This file
+// closes the loop from the other end: it CALLS each refusing function (network, key resolution and
+// storage injected), renders the AppError through the error handler's `refusalBody`, and pins the
+// string in both languages, so refusals that share a cause but need different repairs read differently.
 
 const ctx: TenantContext = { tenantId: 1n, userId: null, role: "TENANT_ADMIN" };
 // Injected away: every case here refuses before the first query.
@@ -97,9 +88,8 @@ interface Case {
 }
 
 const CASES: Case[] = [
-  // ONE FACT, TWO PHRASINGS. The chat listing said "credentialRef is required to list provider
-  // models" and the TTS listing "credentialRef is required to list ElevenLabs options"; both mean
-  // the caller named no credential, and both now answer the one sentence the catalog always had.
+  // ONE FACT, TWO PHRASINGS: the chat and TTS listings both mean the caller named no credential,
+  // so both answer the same catalog sentence.
   {
     what: "the chat model listing, with no credential named",
     key: "errors.credentialRequired",
@@ -130,8 +120,8 @@ const CASES: Case[] = [
     en: "A credential is required to list provider models.",
     pt: "Uma credencial é obrigatória para listar os modelos do provedor.",
   },
-  // TWO FACTS THAT SHARED THAT KEY. Naming no credential and naming one that cannot be read are
-  // different mistakes with different repairs, and they answered the same sentence.
+  // TWO FACTS, TWO KEYS: naming no credential and naming one that cannot be read are different
+  // mistakes with different repairs.
   {
     what: "a credential that resolves to nothing",
     key: "errors.credentialNotUsable",
@@ -162,9 +152,8 @@ const CASES: Case[] = [
     en: "A base URL is required for this provider.",
     pt: "Uma URL base é obrigatória para este provedor.",
   },
-  // THE VALUES THE SENTENCE NOW CARRIES. `unknown ${capability} provider: ${provider}` was answered
-  // by "Unknown model provider." — the two values the caller needs were in the message and nowhere
-  // else, so the reader was told the provider is unknown without being told which one.
+  // THE VALUES THE SENTENCE CARRIES: the reader needs to be told WHICH provider is unknown, for
+  // which capability, not only that one is.
   {
     what: "an unknown chat provider",
     key: "errors.unknownProvider",
@@ -195,8 +184,7 @@ const CASES: Case[] = [
     en: "Unknown tts provider: bogus.",
     pt: "Provedor de tts desconhecido: bogus.",
   },
-  // THREE WAYS A LISTING FAILS, and they were one sentence: "Failed to retrieve model list from
-  // provider." Seventeen distinct messages sat behind it. The repairs differ — a 401 is the
+  // THREE WAYS A LISTING FAILS, three sentences, because the repairs differ: a 401 is the
   // credential, an unexpected shape is not the operator's to fix, and an unreachable host is the
   // base URL or the network.
   {
@@ -254,9 +242,8 @@ const CASES: Case[] = [
     en: "Unsupported image type. Allowed: PNG, JPG",
     pt: "Tipo de imagem não suportado. Permitidos: PNG, JPG",
   },
-  // SIZE IN BYTES AND SIZE IN PIXELS were one key. A file can pass the byte cap and still decode
-  // into gigabytes, and "Image is too large" sent the operator to compress a file that was already
-  // small.
+  // SIZE IN BYTES AND SIZE IN PIXELS are separate keys: a small file can still decode into
+  // gigabytes, and "too large" alone sends the operator to compress a file that is already small.
   {
     what: "a logo whose declared dimensions are past the pixel budget",
     key: "errors.imageTooManyPixels",
@@ -273,7 +260,7 @@ const CASES: Case[] = [
     pt: "Não foi possível ler o cabeçalho da imagem, então o tamanho dela não pode ser conferido. Exporte o arquivo novamente.",
   },
   // A PROVIDER THAT ANSWERS, in a body nothing can parse. It is reached inside the same `try` that
-  // answers a network failure, and the catch there used to call it unreachable.
+  // answers a network failure, and must not be reported as unreachable.
   {
     what: "a provider whose answer is not JSON at all",
     key: "errors.providerListUnexpectedResponse",
@@ -304,8 +291,8 @@ const CASES: Case[] = [
     en: "openai answered the list request in an unexpected format.",
     pt: "openai respondeu à requisição da lista em um formato inesperado.",
   },
-  // THREE SHAPES OF A BAD SECRET, one sentence. Only the first is about the value as a whole; the
-  // other two name an input on the credential form, and named neither.
+  // THREE SHAPES OF A BAD SECRET: only the first is about the value as a whole; the other two
+  // name the input on the credential form that is wrong.
   {
     what: "a multi-field secret sent as a string",
     key: "errors.invalidVaultValue",
@@ -379,11 +366,9 @@ describe("a refusal reads differently for each thing it refuses", () => {
     });
   }
 
-  // NOT A SENTENCE, and that is the answer: a malformed ITEM inside a well-formed list is dropped,
-  // the way every other unusable row already is (`typeof id !== "string"` → skip). What made this
-  // worth a test is where it USED to land — reading a field off `null` threw a TypeError inside the
-  // try that answers a network failure, so one bad row in a provider's list told the operator the
-  // provider could not be reached, and took the whole picker down with it (issue #292, round 2).
+  // NOT A SENTENCE: a malformed ITEM inside a well-formed list is dropped like any unusable row.
+  // A TypeError from reading a field off `null` would land in the try that answers a network
+  // failure, reporting the provider unreachable and emptying the whole picker.
   test("a malformed item is skipped, not reported as an unreachable provider", async () => {
     const models = await listProviderModels(
       ctx,
@@ -396,12 +381,9 @@ describe("a refusal reads differently for each thing it refuses", () => {
     expect(models).toEqual([{ id: "claude-x" }]);
   });
 
-  // THE ONE THING A NETWORK FAILURE MUST NOT SAY. Bun raises header validation with the offending
-  // header VALUE inside the message — `Header 'Authorization' has invalid value: 'Bearer <secret>'`
-  // — and a stored key with a stray newline is enough to reach it. An entry that interpolated that
-  // text would answer a write-only vault secret to whoever called the listing endpoint (found by
-  // review, issue #292). The fixture below is that exact message, and the assertion is on the
-  // ANSWER, in both languages, not on the entry: an entry can grow a placeholder at any time.
+  // THE ONE THING A NETWORK FAILURE MUST NOT SAY: Bun's header validation puts the header VALUE
+  // (`Bearer <secret>`) in its message, reachable with a stray newline in a stored key. The
+  // assertion is on the ANSWER in both languages, since an entry can grow a placeholder any time.
   test("a network failure never answers with the text of the error", async () => {
     const secret = "sk-live-NEVER-ON-THE-WIRE";
     const leaky = new TypeError(
@@ -425,10 +407,8 @@ describe("a refusal reads differently for each thing it refuses", () => {
     }
   });
 
-  // The point of the whole exercise, asked of the answers rather than of the catalog: no two of
-  // these refusals read the same, EXCEPT the pair that was deliberately made to (one fact, two
-  // phrasings). A split that renamed a key without changing what it says would go green above and
-  // red here.
+  // Asked of the answers rather than the catalog: no two of these refusals read the same, EXCEPT
+  // the one-fact-two-phrasings pair. A renamed key that says the same thing goes red here.
   test("no two different refusals answer with the same sentence", async () => {
     const byPt = new Map<string, string[]>();
     for (const c of CASES) {

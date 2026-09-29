@@ -7,18 +7,14 @@ import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // A refusal from the SCHEMA layer, as the client receives it and as the server records it.
 //
-// It goes through the REAL app because the branch under test is the `onError` in src/app.ts, and
-// because the two things it has to stop doing are both invisible from a unit: the answer echoed the
-// submitted body back (`found`), and the log line was the error itself, so the same echo reached
-// stdout. `POST /api/v1/vault` is the call site that makes it concrete rather than theoretical: its
-// body carries a write-only secret next to a `name` with `minLength: 1`, and schema validation runs
-// BEFORE the role guard, so an unauthenticated request reaches this branch. Issue #255.
+// It runs the `onError` in src/app.ts because both leaks it guards are invisible from a unit: the
+// answer must not echo the submitted body (`found`), and neither must the log line. `POST
+// /api/v1/vault` makes it concrete: a write-only secret sits next to a `name` with `minLength: 1`,
+// and schema validation runs BEFORE the role guard, so an unauthenticated request reaches it.
 setupPrismaMock();
-// ITS OWN APP, NOT THE PROCESS'S. This file registers routes below, and registering them on the
-// shared default export only ever worked for whichever file reached it first: Elysia compiles its
-// router on first use, so a later file's routes never took effect and its requests fell through to
-// the `/*` SPA handler, arriving as HTML that `res.json()` refuses. `buildApp()` is the same builder
-// the server runs, so the `onError` arm under test is still the real one.
+// ITS OWN APP, NOT THE PROCESS'S: Elysia compiles its router on first use, so routes this file
+// added to the shared export after another file's request would fall through to the `/*` SPA
+// handler. `buildApp()` is the builder the server runs, so the `onError` arm is the real one.
 const app = await buildApp();
 
 const SUBMITTED_SECRET = "sk-live-DO-NOT-ECHO-ME";
@@ -37,8 +33,8 @@ app.get("/__schema/query", () => ({ ok: true }), {
 app.get("/__schema/response", () => ({ wrong: "shape" }) as never, {
   response: { 200: t.Object({ expected: t.String() }) },
 });
-// NOTE: see the note in refusal-wire.test.ts. Elysia freezes the route table on the first request
-// the singleton serves, so a route registered by the second such file to load is silently dropped.
+// Elysia freezes the route table on the first request it serves, so `compile()` stays below the
+// last route registered here (see the note in refusal-wire.test.ts).
 app.compile();
 
 const send = async (
@@ -68,11 +64,10 @@ const vaultWithBlankName = (lang = "en") =>
     postJson({ name: "", value: { api_key: SUBMITTED_SECRET } }, lang),
   );
 
-// The second real call site, and the one that says WHY the field is not simply the pointer. The
-// playground body declares `draft.promptVars` as `t.Record(t.String(), t.String({ maxLength: 500 }))`
-// (agents.controller.ts:120), mounted directly rather than inside a union, so TypeBox descends into
-// it and reports the CALLER's key as the last segment. Naming that segment would put a string the
-// caller chose into the response and, worse, into the log line this file exists to keep clean.
+// The second real call site, and WHY the field is not simply the pointer. The playground body
+// declares `draft.promptVars` as a `t.Record` of strings (src/api/v1/agents.controller.ts), mounted
+// directly rather than inside a union, so TypeBox reports the CALLER's key as the last segment.
+// Naming that segment would put a caller-chosen string into the response and the log line.
 const playgroundWithSecretVarName = () =>
   send(
     "/api/v1/agents/1/playground",
@@ -178,8 +173,7 @@ describe("a schema refusal over the wire", () => {
   });
 
   // Elysia sets 422 on the context BEFORE it throws, so a branch that answers a different status
-  // with a raw Response leaves the access log reporting the status it did not send. Measured on a
-  // listening app: a server fault answered 500 and was logged as 422 with the sync line removed.
+  // with a raw Response must sync `set.status`, or the access log reports 422 for a 500.
   test("the access log reports the status that was actually sent", async () => {
     const info = spyOn(logger, "info");
     try {

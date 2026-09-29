@@ -2,15 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { Elysia, t } from "elysia";
 import { playgroundDraftSchema } from "@/api/v1/agents.controller";
 
-// Regression for the playground audio/file endpoints. Elysia's multipart parser auto-parses any
-// form field whose value starts with `{`/`[` and is valid JSON into an object (see
-// adapter/web-standard formData). The live-edit `draft` rides multipart as `JSON.stringify(...)`,
-// so it arrives ALREADY as an object — typing it `t.String()` 422s ("Expected string but found
-// [object Object]"). The body schema must accept the object (union with string for the malformed-
-// JSON degrade path).
+// Elysia's multipart parser auto-parses any form field that starts with `{`/`[` and is valid JSON
+// into an object, so the live-edit `draft` (sent as `JSON.stringify(...)`) arrives as an object and a
+// `t.String()` field would 422. The body schema accepts the object (union with string for the
+// malformed-JSON degrade path).
 //
-// The REAL schema is imported, never mirrored. A copy here validated its own fields and told us
-// nothing about the endpoint's: a draft field declared in TypeScript but missing from the schema is
+// The REAL schema is imported, never mirrored: a draft field missing from the endpoint's schema is
 // stripped by Elysia's normalize before the handler runs, and a mirrored schema cannot see that.
 
 const app = new Elysia().post(

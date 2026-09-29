@@ -7,23 +7,14 @@ import {
   setupPrismaMock,
 } from "@/tests/utils/prisma-mock";
 
-// What a route does with an id in its path that is not one.
+// What a route does with an id in its path that is not one. Coverage is over the REAL route table,
+// not a hand-written list: `app.routes` carries the params schema Elysia resolved and the handler it
+// registered. `BigInt` is arbitrary precision, so an id past 2^63-1 parses in the handler and only
+// POSTGRES refuses it (a 500) unless the boundary does.
 //
-// The defect was one rule spelled a hundred times, so the coverage here is over the REAL route table
-// rather than over a hand-written list of paths: `app.routes` carries both the params schema Elysia
-// resolved and the handler it registered, which is what says whether a path segment is an id and
-// whether the handler parsed it. Measured before the sweep, over the 57 GET/DELETE routes carrying
-// one: 46 answered 500, 12 answered 422, one answered 200, and five already answered 400. The 500 is
-// the one the issue reports, because `BigInt` is arbitrary precision, so an id past 2^63-1 parses in
-// the handler and is refused by POSTGRES when the query binds it. Issue #371.
-//
-// The two structural tests below send no requests, and that is deliberate rather than convenient.
-// The limiter's budget is ONE bucket for the whole process (600/min, `peer ?? "unknown"` under
-// `app.handle`, so every request in every file in the worker shares it), and how many files share a
-// process depends on the runner's core count. A per-route request sweep cost about 77 of that budget
-// and passed on this machine while answering 429 on CI, where it also starved 24 tests in other
-// files that had nothing to do with it. So the ROUTES are covered by reading the table, and the
-// requests below are spent only on the wire contract, which reading cannot show.
+// The structural tests send no requests on purpose: the limiter is ONE bucket per process (600/min,
+// shared by every file in the worker), so a per-route request sweep passes locally and 429s on CI
+// while starving unrelated files. Requests are spent only on the wire contract.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
@@ -135,9 +126,8 @@ describe("every route that takes an id in its path parses it", () => {
     expect(stale).toEqual([]);
   });
 
-  // The refusal is a status, and a status a route can return is part of its published contract: the
-  // Eden types the console is built against and the committed openapi.json both come from these
-  // `response:` maps (issue #314 pays for the same rule on 422).
+  // NOTE: A status a route can return is part of its published contract: the Eden types the console
+  // is built against and the committed openapi.json both come from these `response:` maps.
   test("every one of those routes declares the 400 it can answer", () => {
     const undeclared = idParams
       .filter(({ route }) => !("400" in (route.hooks?.response ?? {})))
@@ -147,8 +137,8 @@ describe("every route that takes an id in its path parses it", () => {
 });
 
 // Every spelling `BigInt` accepts and a bigint column does not, plus the one it accepts and the
-// column cannot hold. The last row is the issue: it is not a `SyntaxError`, so the branch in
-// src/app.ts that answers the others never sees it.
+// column cannot hold. The last row is not a `SyntaxError`, so the branch in src/app.ts that answers
+// the others never sees it.
 const MALFORMED = [
   "abc",
   "0x7",
@@ -192,9 +182,8 @@ describe("the refusal a malformed path id produces", () => {
     expect(await res.json()).toEqual({ error: "Not a valid agentId" });
   });
 
-  // The half the status cannot show. `Invalid ID format` was plain text, so `apiErrorMessage`
-  // (src/client/lib/apiError.ts) read no `error` key and fell back to its generic transport
-  // sentence: the console could not surface what the server had already named.
+  // NOTE: The half the status cannot show: the refusal is JSON with an `error` key, which is what
+  // `apiErrorMessage` (src/client/lib/apiError.ts) surfaces instead of its generic transport sentence.
   test("it is JSON, and localized", async () => {
     const res = await get("/api/v1/agents/abc", "pt-BR");
     expect(res.status).toBe(400);
@@ -202,11 +191,9 @@ describe("the refusal a malformed path id produces", () => {
     expect(await res.json()).toEqual({ error: "Não é um id válido" });
   });
 
-  // The tenant selector is an id in a HEADER, and it used to be folded into "no target" when it was
-  // not one. These three routes read a null target differently: measured before this, `abc` answered
-  // 400 here, 403 on the vault route, and 200 with `{ status: "disabled" }` on the metrics route,
-  // which is a successful-looking body for a request that named no tenant. Refused at the boundary,
-  // all three answer the same thing.
+  // NOTE: The tenant selector is an id in a HEADER, and these three routes read a null target
+  // differently (one of them as a successful-looking 200 `{ status: "disabled" }`), so a malformed
+  // one is refused at the boundary rather than folded into "no target".
   test("a malformed tenant selector is refused, not treated as no selector", async () => {
     const paths = [
       "/api/v1/agents",
@@ -243,10 +230,10 @@ describe("the refusal a malformed path id produces", () => {
     expect(res.status).toBe(200);
   });
 
-  // The other half of "a path segment is not an id", on the one route that COMPARED one. The guard
-  // that stops an admin from locking themselves out read `user.id.toString() === params.id`, and
-  // `parseDbId` accepts leading zeros, so `001` addressed the caller's own row while failing that
-  // string equality. Nothing covered this guard at all before, in either spelling.
+  // NOTE: The other half of "a path segment is not an id", on the one route that COMPARES one: the
+  // guard that stops an admin locking themselves out must compare the parsed id, because
+  // `parseDbId` accepts leading zeros and `001` addresses the caller's row while failing a string
+  // equality.
   test("the self-demotion guard reads the id, not the segment", async () => {
     const demote = (segment: string) =>
       app.handle(
@@ -260,7 +247,7 @@ describe("the refusal a malformed path id produces", () => {
         }),
       );
 
-    // The control: the plain spelling of the caller's own id has always been caught.
+    // NOTE: The control: the plain spelling of the caller's own id is caught too.
     expect((await demote(String(fleetUser.id))).status).toBe(403);
 
     const padded = await demote(`00${fleetUser.id}`);

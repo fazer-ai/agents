@@ -9,16 +9,14 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { seedChatwootInstance } from "@/tests/utils/chatwoot";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
-// The conversation family's trail, driven through the console's own doors (issue #398).
+// The conversation family's trail, driven through the console's own doors.
 //
-// `tests/modules/audit-conversation-family.test.ts` proves the SERVICES record. This file answers
-// the half that measurement cannot see: whether the five REST routes reach those services with a
-// principal at all. `v1.controller.ts` contains no `audit`, and it never did: the row was the MCP
-// transport's, so a reply typed into the console went to a live customer and left nothing.
+// `tests/modules/audit-conversation-family.test.ts` proves the SERVICES record. This file proves the
+// five REST routes reach those services with a principal: `v1.controller.ts` writes no row itself.
 //
-// The services are WRAPPED and the wrappers call through, which is what `mock.module` always demands
-// here: it is global to the worker and outlives this file. All a wrapper does is hand the write the
-// test database and a Chatwoot the test controls, neither of which the controller can inject.
+// The services are WRAPPED and call through, since `mock.module` is global to the worker and outlives
+// this file. A wrapper only hands the write the test database and a Chatwoot the test controls,
+// neither of which the controller can inject.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
@@ -182,8 +180,8 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: "Atendente",
           systemPrompt: "Olá.",
-          // A RUNNABLE model configuration, which the hand-back asks for since issue #495 review
-          // round 6: an unconfigured agent cannot answer, so it cannot be handed a conversation.
+          // NOTE: a RUNNABLE model configuration, which the hand-back requires: an unconfigured
+          // agent cannot answer, so it cannot be handed a conversation.
           modelConfig: {
             provider: "openai-compatible",
             model: "local",
@@ -310,8 +308,8 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    // Mesma afirmação de antes (#655 tirou a rota de reply em que ela morava): a sessão é conferida
-    // ANTES de qualquer efeito, então um pedido sem ela não chega ao Chatwoot nem deixa linha.
+    // NOTE: the session is checked BEFORE any effect, so a request without one neither reaches
+    // Chatwoot nor leaves a row.
     test("an action with no session is refused before anything is sent or recorded", async () => {
       await clearAudit();
       chatwootCalls.length = 0;
@@ -330,9 +328,9 @@ describe.skipIf(!dbUp)(
       expect(await rows()).toEqual([]);
     });
 
-    // A cerca da remoção (#655). Uma rota que volta a existir é a lacuna que a #654 declarou voltando
-    // junto: ela manda com o token do bot e nenhuma das duas marcas de engajamento registra o envio.
-    // Autenticada de propósito — sem sessão, um 401 não distinguiria "não existe" de "não pode".
+    // NOTE: the console has no reply route: one would send with the bot's token, and neither
+    // engagement mark would record the send. Authenticated on purpose: without a session, a 401 could
+    // not tell "does not exist" from "may not".
     test("the reply route is gone, and stays gone", async () => {
       await clearAudit();
       chatwootCalls.length = 0;

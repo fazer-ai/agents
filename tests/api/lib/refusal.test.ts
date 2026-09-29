@@ -6,7 +6,7 @@ import { SettingsTextTooLongError } from "@/modules/agents/service";
 // What a refusal ANSWERS, as a table: the message the operator reads, and the name of the value that
 // was refused. The two are decided by different things: the message by the request's locale, the
 // name by the server's own vocabulary. The table exists to keep them from being confused for
-// each other. Issue #231.
+// each other.
 
 interface Row {
   name: string;
@@ -63,8 +63,8 @@ const ROWS: Row[] = [
     body: { error: "Forbidden" },
   },
   {
-    // The class carries a field and no params, which is why the slug refusal below stopped being
-    // thrown through it: a 409 that has to interpolate cannot.
+    // The class carries a field and no params, so the slug refusal below is not thrown
+    // through it: a 409 that has to interpolate cannot be.
     name: "a ConflictError carries its field through, like any other refusal",
     error: new ConflictError(
       "mcp connection name already in use",

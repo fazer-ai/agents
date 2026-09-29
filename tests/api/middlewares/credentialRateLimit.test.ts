@@ -7,15 +7,10 @@ import {
   parseIntSetting,
 } from "@/config";
 
-// The credential endpoints had no bucket of their own: `strictRateLimitMiddleware` was written for
-// them and mounted nowhere, so a password guess was bounded only by the global 600/min, and there is
-// no lockout, no failed-attempt counter and no backoff anywhere else in the auth path.
-//
-// Mounting it was never the hard part. The plugin seeds itself with `max:duration:scoping` and
-// Elysia deduplicates matching plugins, and the limiter as written was (10, 60000, scoped), which is
-// exactly the DCR limiter. Mounting it unchanged would have left these endpoints with the budget
-// they already had while looking fixed, so the tests below check that BOTH buckets exist, not just
-// that one of them answers.
+// The credential bucket is the only throttle on a password guess: the auth path has no lockout,
+// failed-attempt counter or backoff. The plugin seeds itself with `max:duration:scoping` and Elysia
+// deduplicates matching plugins, so a credential limiter with the DCR limiter's (budget, window)
+// would silently vanish; the tests check that BOTH buckets exist, not just that one answers.
 const nativeGlobals = globalThis as unknown as { BunResponse: typeof Response };
 const BunResponse = nativeGlobals.BunResponse;
 const happyResponse = globalThis.Response;
@@ -27,14 +22,9 @@ interface ListeningApp {
 let base = "";
 let server: ListeningApp["server"] | undefined;
 
-// ITS OWN APP, NOT THE PROCESS'S, because `listen()` is a mutation and this one outlived the file.
-//
-// Binding the shared default export starts and compiles the one instance every other file reaches
-// through `app.handle(...)`, and `stop()` does not put it back: it leaves a compiled, once-listening
-// Elysia behind. The next file to hand it a request gets a 500 out of it. Measured on a clean tree:
-// tests/api/v1/mcp-dcr.test.ts answered `Received: 500` where it expects a 404, and neutralising THIS
-// file was what made those two failures go away — found by bisecting bun's own shard ordering, since
-// the pair alone does not reproduce (the two need the rest of the shard around them).
+// Its own app, not the process's: `listen()` on the shared default export compiles the instance every
+// other file reaches through `app.handle(...)`, `stop()` does not undo it, and later files in the
+// shard then get a 500 from it (tests/api/v1/mcp-dcr.test.ts is one).
 beforeAll(async () => {
   (globalThis as { Response: typeof Response }).Response = BunResponse;
   const listening = (await buildApp()).listen(0) as unknown as ListeningApp;
@@ -55,16 +45,10 @@ const post = (path: string) =>
     body: JSON.stringify({ email: "nobody@example.com", password: "12345678" }),
   });
 
-// Which bucket answered, read off the ceiling it advertises, so the number names the limiter.
-//
-// NOTE: the numbers below are the shipped defaults, and tests/setup.ts PINS the `RATE_LIMIT_*`
-// variables to them at preload for this file's sake. They are configurable, and a developer with
-// `RATE_LIMIT_CREDENTIAL_MAX` in their `.env` would otherwise watch a correct app fail here with
-// `Expected: "20", Received: "600"`, which is the exact signature of the collision regression these
-// tests exist to make legible. Reading the expectations from `config` instead would keep the suite
-// green but not the signal: the boot check keeps the (budget, window) PAIRS distinct, not the
-// budgets, so `RATE_LIMIT_CREDENTIAL_MAX=600` is a supported setting that boots fine and leaves the
-// two buckets advertising the same ceiling, with nothing here able to tell them apart.
+// Which bucket answered, read off the ceiling it advertises. The expectations are the shipped
+// defaults, which tests/setup.ts pins at preload so a local `.env` cannot fake a collision. Reading
+// them from `config` would lose the signal: the boot check keeps (budget, window) PAIRS distinct, so
+// `RATE_LIMIT_CREDENTIAL_MAX=600` boots fine and makes both buckets advertise the same ceiling.
 const ceilingOf = async (response: Response) =>
   response.headers.get("ratelimit-limit");
 
@@ -78,9 +62,8 @@ describe("which requests the credential bucket covers", () => {
       // Declared `security: []`, looks the token up, and answers 200 with the invited email and
       // role when it exists. A pure oracle, and cheaper to probe than the POST that consumes it.
       ["GET", "/api/auth/invite"],
-      // Elysia dispatches HEAD to the GET handler, so this is the SAME oracle: the lookup runs and
-      // the 200/404 is the answer, which HEAD returns in full. Listing GET alone left it on the
-      // global 600 budget, measured.
+      // NOTE: Elysia dispatches HEAD to the GET handler, so this is the SAME oracle: the lookup
+      // runs and the 200/404 is the answer. Listing GET alone would leave it on the global budget.
       ["HEAD", "/api/auth/invite"],
     ] as const) {
       const request = new Request(`http://localhost${path}`, { method });
@@ -138,8 +121,8 @@ describe("which requests the credential bucket covers", () => {
 });
 
 describe("both buckets exist on the real app", () => {
-  // The regression the whole change is about. If the credential limiter had kept the DCR limiter's
-  // budget, Elysia would have dropped it and this would read the global 600 instead.
+  // If the credential limiter shared the DCR limiter's budget, Elysia would drop it and this would
+  // read the global 600 instead.
   test("a credential request answers from the credential bucket", async () => {
     expect(await ceilingOf(await post("/api/auth/login"))).toBe("20");
   });
@@ -160,8 +143,7 @@ describe("both buckets exist on the real app", () => {
     }
   });
 
-  // The DCR limiter is the one that would have been deduplicated away, or would have taken the
-  // credential one with it. Both still answer, each from its own ceiling.
+  // A collision would deduplicate one of the two away; both answer, each from its own ceiling.
   test("the DCR limiter still has its own bucket", async () => {
     expect(await ceilingOf(await post("/api/v1/mcp/oauth/register"))).toBe(
       "10",
@@ -216,9 +198,8 @@ describe("boot refuses a configuration that would delete a bucket", () => {
     expect(() => assertCredentialBudgetIsTighter(6000, 5, 600)).toThrow(
       /must be below RATE_LIMIT_USER_PER_MIN/,
     );
-    // Equal rates are refused too, not just looser ones: 3000 per 5 minutes is exactly 600/min, and
-    // the global limiter fronts the same requests, so a credential budget that only matches it never
-    // trips first and the endpoints are no better off than before.
+    // NOTE: equal rates are refused too: 3000 per 5 minutes is exactly 600/min, and the global
+    // limiter fronts the same requests, so a matching credential budget never trips first.
     expect(() => assertCredentialBudgetIsTighter(3000, 5, 600)).toThrow(
       /must be below RATE_LIMIT_USER_PER_MIN/,
     );
@@ -244,20 +225,17 @@ describe("boot refuses a budget the limiter cannot honour", () => {
     expect(parse("15")).toBe(15);
   });
 
-  // The finding this family came from. `Number("Infinity") > 0` is true and `1e309` parses to
-  // exactly Infinity, so the old `RAW && Number(RAW) > 0` shape accepted both. Measured with an
-  // infinite window: the limiter advertises `RateLimit-Reset: NaN` and the bucket never resets, so
-  // the credential endpoints answer 429 permanently once the budget is spent. A config typo would
-  // have locked login for good, with no way back short of an edit and a restart.
+  // `Number("Infinity") > 0` is true and `1e309` parses to Infinity, so a `RAW && Number(RAW) > 0`
+  // check accepts both. With an infinite window the limiter advertises `RateLimit-Reset: NaN` and
+  // the bucket never resets: a config typo would lock login with 429 until an edit and a restart.
   test("an infinite window is refused, however it is spelled", () => {
     expect(() => parse("Infinity")).toThrow(/between 1 and/);
     expect(() => parse("1e309")).toThrow(/between 1 and/);
   });
 
-  // The other half of the same defect, and the reason the bound exists rather than a finiteness
-  // check. `Number.isInteger(1e12)` is true, but 1e12 minutes in milliseconds is past Date's
-  // ±8.64e15 range, so the reset lands on an invalid date exactly like Infinity does. A day is well
-  // past any real throttle, and every unrepresentable value is far on the other side of it.
+  // Why the bound exists rather than a finiteness check: `Number.isInteger(1e12)` is true, but 1e12
+  // minutes in milliseconds is past Date's ±8.64e15 range, so the reset lands on an invalid date
+  // exactly like Infinity does. A day is well past any real throttle.
   test("a window too large for a reset date is refused", () => {
     expect(() => parse("1000000000000")).toThrow(/between 1 and 1440/);
     expect(parse("1440")).toBe(1440);

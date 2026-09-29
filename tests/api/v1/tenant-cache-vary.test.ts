@@ -2,17 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
-// A sweep, not an example, because the defect it guards is invisible at the line that causes it.
+// A sweep, not an example, because the defect is invisible at the line that causes it. Every v1
+// route resolves its tenant from `X-Tenant-Id` (a SUPER_ADMIN's tenant is nowhere else), so a stored
+// response is keyed by a URL that does not name the tenant: switch tenants, hit the same URL, and
+// the browser answers with the previous tenant's bytes without the scoped read ever running.
+// `private` does not help: it keeps shared proxies out, not the one browser that saw both tenants.
 //
-// Every route under v1 resolves its tenant from the `X-Tenant-Id` header, and a SUPER_ADMIN's tenant
-// exists nowhere else. So a response the browser may STORE is keyed by a URL that does not mention
-// the tenant: switch tenants, hit the same URL, and the cache answers with the previous tenant's
-// bytes — without the scoped read that fences them ever running. `private` does not help; it only
-// keeps shared proxies out, not the one browser that saw both tenants.
-//
-// The rule is therefore: under v1, a cacheable response declares `Vary: "X-Tenant-Id"`. Stated as a
-// sweep so the next byte-serving endpoint gets it for free, rather than as a test of the one route
-// that has it today.
+// So under v1 a cacheable response declares `Vary: "X-Tenant-Id"`, and the sweep also covers the
+// next byte-serving endpoint.
 
 const ROOT = new URL("../../../src/api/v1", import.meta.url).pathname;
 

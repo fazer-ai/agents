@@ -10,23 +10,13 @@ import {
   NEWER_THAN_THE_LAST_RENAME,
 } from "../utils/operator-text-classes";
 
-// Runs the ACTUAL migration file, for the reason the sibling file gives: a copy pasted here would
-// drift, and `$executeRawUnsafe` rejects multiple statements.
-//
-// WHAT IS UNDER TEST (issue #604). `20260909120000_rename_http_tools_named_after_natives` moved
-// `assign_label` to `set_labels` and rewrote the PROSE of exactly one operator-authored field, the
-// system prompt. For `toolGuidance` it moved the KEY and left the value's text alone, so
-// `readToolGuidance` went on appending, to the description of `set_labels`, a rule about calling
-// `assign_label`, a name the model is never shown and cannot call. This file covers the six
-// settings fields whose text reaches a model, and the five that do not.
-//
-// THE POPULATION IS MEASURED, NOT ASSUMED. The issue's own table lists five prose fields; walking
-// `src/modules/agents/text-caps.ts` (which says of itself that it is the one place that knows where
-// operator text lives) gives twelve kinds of field, six of them model-facing. Two the issue did not
-// name (`guardrails.customPolicy` and `guardrails.output.generationPrompt`) reach an analysis and
-// a rewrite prompt, and one it did name (`followUps[].instructions`) is not the stored path, which
-// is `followUp.steps[i].instructions`. A migration addressing the path the issue wrote would have
-// rewritten nothing at all.
+// Runs the ACTUAL migration file: a copy would drift, and `$executeRawUnsafe` rejects multiple
+// statements. The earlier rename moved the `toolGuidance` KEY `assign_label` to `set_labels` and left
+// the value's text, so `readToolGuidance` appends to `set_labels` a rule about calling `assign_label`,
+// a name the model cannot call. This file covers the six settings fields whose text reaches a model
+// and the five that do not. The population comes from `src/modules/agents/text-caps.ts` (the one
+// place that knows where operator text lives): it includes `guardrails.customPolicy` and
+// `guardrails.output.generationPrompt`, and the follow-up path is `followUp.steps[i].instructions`.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
@@ -172,9 +162,9 @@ async function auditPaths(agentId: bigint): Promise<string[][]> {
   );
 }
 
-// Every string leaf of a settings bag, as a dotted path. Used to ask which paths a run CHANGED,
-// which is the behavioural form of "the migration addressed the model-facing class": a question
-// about the rows, not about the text of the `.sql`.
+// Every string leaf of a settings bag, as a dotted path. It answers which paths a run CHANGED, the
+// behavioural form of "the migration addressed the model-facing class": a question about the rows,
+// not about the text of the `.sql`.
 function leaves(value: unknown, prefix = ""): Record<string, string> {
   const out: Record<string, string> = {};
   if (typeof value === "string") {
@@ -266,10 +256,9 @@ async function runMigration(text: string): Promise<void> {
   }
 }
 
-// The note the issue measured on a real installation: the key is the new one, the text is the old
-// one. Every case below starts from that shape, because that is what an upgraded install holds.
-// One value per stored path the walker knows, each naming the old tool. Written out rather than
-// generated, so the file says which paths it is asking about.
+// The shape an upgraded install holds: the key is the new one, the text is the old one. Every case
+// below starts from it. One value per stored path the walker knows, each naming the old tool,
+// written out rather than generated so the file says which paths it is asking about.
 const ALL_PATHS_STALE = {
   handoff: { instructions: "h assign_label" },
   availability: { awayMessage: "a assign_label" },
@@ -375,13 +364,10 @@ describe.skipIf(!dbUp)(
           instructions: "xassign_labelx e assign_labelx e xassign_label",
         },
       });
-      // A bag whose shapes the walk must step over instead of rewriting: a non-string note, a
-      // non-object toolGuidance is covered by its own agent below.
-      // A NON-STRING WHOSE TEXT CARRIES THE NAME is the shape that makes the type guards live, and
-      // the mutation battery is what found it: with `42` and `null` alone, dropping
-      // `jsonb_typeof(...) = 'string'` killed no test, because neither renders text the pattern
-      // matches. An array or an object does, and without the guard `jsonb_set` would replace the
-      // whole value with a rewritten STRING: the operator's stored shape destroyed by a rename.
+      // NOTE: A bag whose shapes the walk must step over instead of rewriting (a non-object toolGuidance
+      // is covered by its own agent below). The array and the object are what keep the type guards
+      // tested: `42` and `null` render no text the pattern matches, while without the guard `jsonb_set`
+      // would replace an array or object with a rewritten STRING, destroying the operator's stored shape.
       await agent("shapes", {
         toolGuidance: {
           set_labels: 42,
@@ -425,9 +411,9 @@ describe.skipIf(!dbUp)(
       // and unlike that test it survives a reformat of the file.
       await agent("all_paths", ALL_PATHS_STALE);
 
-      // A NOTE WITH A NEWLINE BEFORE THE NAME. On the serialized bag that newline comes out as `\`
-      // followed by `n`, so a word-boundary PREFILTER over `settings::text` finds nothing and skips
-      // the agent entirely (review round 1 of PR #687). The boundary belongs on the decoded value.
+      // NOTE: A NOTE WITH A NEWLINE BEFORE THE NAME. On the serialized bag that newline comes out as `\`
+      // followed by `n`, so a word-boundary PREFILTER over `settings::text` finds nothing and skips the
+      // agent entirely. The boundary belongs on the decoded value.
       await agent("newline", {
         toolGuidance: {
           set_labels: "Allowed tool:\nassign_label\tassign_label",
@@ -525,7 +511,7 @@ describe.skipIf(!dbUp)(
     });
 
     test("BEFORE the migration, the reader hands the tool a rule about a tool that does not exist", () => {
-      // The issue's measurement, reproduced: the key moved to `set_labels` and the text still names
+      // NOTE: The defect, reproduced: the key moved to `set_labels` and the text still names
       // `assign_label`, so this is what `prepare` appends to that tool's description.
       expect(staleBefore).toBe(NOTE_STALE);
       expect(staleBefore).toContain("assign_label");
@@ -541,7 +527,7 @@ describe.skipIf(!dbUp)(
       expect(
         (s.toolGuidance as Record<string, string>).set_custom_attribute,
       ).toBe("Só o estágio do lead.");
-      // THE EFFECT THE ISSUE NAMES, through the REAL reader rather than a re-read of the column:
+      // NOTE: THE EFFECT ON THE MODEL, through the REAL reader rather than a re-read of the column:
       // `readToolGuidance` is what `prepare` appends to the tool's description.
       const note = readToolGuidance(s).set_labels;
       expect(note).toBe(NOTE_FIXED);
@@ -775,10 +761,9 @@ describe.skipIf(!dbUp)(
       // bag the character before the name is `n`, not a boundary, which is what made a `\y`
       // prefilter skip the whole row.
       expect(serializedBefore).toContain("\\nassign_label");
-      // `\b`, not Postgres's `\y`: JavaScript has no `\y` and reads it as the letter `y`, so the
-      // first version of this line asserted that the text does not contain `yassign_labely`, which
-      // passes without measuring anything. This is the same predicate spelled in the language the
-      // test is written in: the serialized bag has NO word-boundary match, the decoded value does.
+      // NOTE: `\b`, not Postgres's `\y`: JavaScript reads `\y` as the letter `y`, so it would assert the
+      // text lacks `yassign_labely`, which passes without measuring anything. Same predicate, in the
+      // test's language: the serialized bag has NO word-boundary match, the decoded value does.
       expect(serializedBefore).not.toMatch(/\bassign_label\b/);
       expect("Allowed tool:\nassign_label").toMatch(/\bassign_label\b/);
       expect(

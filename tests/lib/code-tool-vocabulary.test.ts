@@ -5,10 +5,9 @@ import {
 } from "@/lib/code-tool-vocabulary";
 import { CONTEXT_VAR_NAMES } from "@/modules/tool-definitions/normalize";
 
-// The vocabulary is DATA so three surfaces cannot disagree about it (issue #538). What keeps it
-// honest is this file: the list has to match the runtime's own allowlist, name for name, or a
-// variable added to `CONTEXT_VAR_NAMES` reaches a body that nothing offers to complete and nothing
-// documents.
+// The vocabulary is DATA so three surfaces cannot disagree about it. The list has to match the
+// runtime's own allowlist, name for name, or a variable added to `CONTEXT_VAR_NAMES` reaches a body
+// that nothing offers to complete and nothing documents.
 
 describe("the code tool vocabulary answers for what the runtime builds", () => {
   test("every interpolated name is described, and nothing is described twice", () => {
@@ -55,11 +54,10 @@ describe("the code tool vocabulary answers for what the runtime builds", () => {
     }
   });
 
-  // The bags are the one pair whose description makes a claim about TIME, and the claim was too
-  // strong: they are read at call time, so a value `set_custom_attribute` wrote in an earlier STEP
-  // is there, but the tool calls of one model message run together (`ToolNode` uses `Promise.all`),
-  // so a write and a read the model emitted in the same message race. `graph/tools/code.ts` says so;
-  // a body author reading only this would build on a value that may not have landed.
+  // NOTE: the bags are the one pair whose description makes a claim about TIME. They are read at call
+  // time, so a value `set_custom_attribute` wrote in an earlier STEP is there, but the tool calls of
+  // one model message run together (`ToolNode` uses `Promise.all`), so a write and a read in the same
+  // message race. The description has to say so, as `graph/tools/code.ts` does.
   test("the attribute bags name the step boundary, not just the turn", () => {
     const bag = CODE_TOOL_CONTEXT_VARS.find(
       (v) => v.name === "conversationAttributes",

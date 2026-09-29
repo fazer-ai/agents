@@ -45,13 +45,11 @@ describe("Semaphore", () => {
     expect(results).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
-  // A released permit is handed straight to the next waiter. Bumping `available` on that path as
-  // well would MINT a permit on every handoff, leaving the semaphore permanently wider than it was
-  // built: measured on the mutation, a 3-permit semaphore came out of one 10-task burst with 10
-  // permits. It is invisible INSIDE a burst, because the minted permits appear as the queue drains
-  // and every caller has already acquired by then, so a second wave is the only place the invariant
-  // is observable. Left untested, the leak surfaced only as a neighbouring suite failing, since the
-  // agent model semaphore is a process-wide singleton.
+  // NOTE: a released permit is handed straight to the next waiter; bumping `available` on that path too
+  // would MINT a permit per handoff and leave the semaphore permanently wider. That is invisible
+  // inside a burst (the minted permits appear as the queue drains), so only a second wave shows it,
+  // and since the agent model semaphore is a process-wide singleton the leak would otherwise surface
+  // only as a neighbouring suite failing.
   test("a burst that queued waiters does not widen the semaphore", async () => {
     const sem = new Semaphore(3);
     const burst = async () => {
@@ -98,9 +96,9 @@ describe("Semaphore", () => {
     expect(order).toEqual(["holder", "a", "b", "c"]);
   });
 
-  // Issue #834: a job past its deadline was left in the queue until a permit freed, which under
-  // saturation is minutes. The waiter that leaves must take no permit with it and leave none behind:
-  // the next waiter gets the one released, and the semaphore is exactly as wide afterwards.
+  // NOTE: a job past its deadline leaves the queue at once instead of waiting for a permit, which under
+  // saturation is minutes. It takes no permit with it and leaves none behind: the next waiter gets
+  // the one released, and the semaphore is exactly as wide afterwards.
   test("a waiter whose signal aborts leaves the queue at once, with the signal's reason", async () => {
     const sem = new Semaphore(1);
     let releaseHolder: () => void = () => {};

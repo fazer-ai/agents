@@ -1,18 +1,10 @@
-// A Chatwoot that answers the two custom-attribute endpoints the way the DEPLOYED fork does.
-//
-// The semantics are not a convention picked here — they were MEASURED on 2026-08-18 with a
-// rolled-back `rails runner` probe against the fork, running the controller's own two lines:
-//
-//   POST /conversations/{id}/custom_attributes  {produto:"A"} -> {produto:"A"}
-//                                               {medida:"B"}  -> {medida:"B"}   (produto GONE)
-//                                               {}            -> {}             (the /reset clear)
-//
-// The action is `@conversation.custom_attributes = params.permit(custom_attributes: {})[...]` plus
-// `save!`, a plain assignment with no setter override on the model, and byte-identical in upstream
-// Chatwoot. `PUT /contacts/{id}` assigns the same way. So BOTH endpoints REPLACE the whole hash.
-//
-// Shapes, read off the deployed jbuilders: `GET /conversations/{id}` renders the conversation
-// partial, where `custom_attributes` is TOP-LEVEL; the contact payload nests it under `payload`.
+// A Chatwoot that answers the two custom-attribute endpoints the way the DEPLOYED fork does. The
+// action is `@conversation.custom_attributes = params.permit(custom_attributes: {})[...]` plus
+// `save!`, a plain assignment (byte-identical upstream), and `PUT /contacts/{id}` assigns the same
+// way, so BOTH endpoints REPLACE the whole hash: `{medida:"B"}` posted after `{produto:"A"}` leaves
+// `produto` GONE, and `{}` is the /reset clear. Shapes, from the deployed jbuilders:
+// `GET /conversations/{id}` has `custom_attributes` TOP-LEVEL; the contact payload nests it under
+// `payload`.
 export interface FakeChatwootRequest {
   method: string;
   path: string;

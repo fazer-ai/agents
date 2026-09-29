@@ -4,8 +4,8 @@ import { normalizeChatwootBaseUrl } from "@/modules/chatwoot/management";
 export interface SeedChatwootInstanceArgs {
   tenantId: bigint;
   accountId: number;
-  // baseUrl + adminToken now live on the parent ChatwootDeployment. Stored as-is: tests pass either a
-  // raw marker ("enc") or a real encryptJson(...) blob, depending on whether they decrypt it.
+  // NOTE: baseUrl + adminToken live on the parent ChatwootDeployment. Stored as-is: tests pass either
+  // a raw marker ("enc") or a real encryptJson(...) blob, depending on whether they decrypt it.
   baseUrl?: string;
   adminToken?: string;
   accountName?: string | null;
@@ -13,17 +13,12 @@ export interface SeedChatwootInstanceArgs {
   id?: bigint;
 }
 
-// NOTE: `chatwoot_instances (server_key, account_id)` is unique GLOBALLY, not per tenant, and the
-// server key is derived from this base URL. Fixtures across the suite reuse a handful of literals
-// ("https://chat.example.com", "https://cw.example"), so two suites running at once against the
-// shared test database — two worktrees, or a rerun started before the first finished — collide on
-// P2002 in whichever file seeds second. The failure surfaces far from its cause and reads like a
-// logic bug in code nobody touched.
-//
-// Stamping the pid into the PATH (not the host) makes concurrent runs disjoint while preserving
-// what fixtures actually rely on: two callers passing the same base URL still land on the same
-// server key, and different base URLs stay different. Applying it here rather than at the ~37 call
-// sites means a new test cannot forget it.
+// `chatwoot_instances (server_key, account_id)` is unique GLOBALLY, not per tenant, and the server
+// key derives from this base URL. Fixtures reuse a handful of literals, so two suites running at
+// once against the shared test database would collide on P2002 far from the cause. Stamping the pid
+// into the PATH (not the host) makes concurrent runs disjoint while keeping what fixtures rely on:
+// the same base URL lands on the same server key, and different ones stay different. Doing it here
+// rather than at every call site means a new test cannot forget it.
 export function withRunNamespace(rawBaseUrl: string): string {
   try {
     const u = new URL(rawBaseUrl);

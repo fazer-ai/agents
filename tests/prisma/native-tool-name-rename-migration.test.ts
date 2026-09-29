@@ -7,7 +7,7 @@ import { normalizeToolName } from "@/graph/tools/toolName";
 // to the first free `<name>_N` in ITS tenant, the grant that references the row by id follows it
 // untouched, every other row is byte-identical, the audit trail records the move and names the
 // agents whose prompt still uses the old name, a re-run rewrites nothing, and FORCE ROW LEVEL
-// SECURITY is back on the three tables it touches — the one it reads included — when the file ends.
+// SECURITY is back on the three tables it touches (the one it reads included) when the file ends.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
@@ -108,11 +108,11 @@ describe.skipIf(!dbUp)(
       // there), so the label decides whether the row can be saved again: "Run code" derives the
       // reserved name and must follow; a label that never derived it is left alone.
       ids.a_run_code = await tool(a, "run_code", "Run code");
-      // A label that reaches the reserved name only by shedding a diacritic (round 21): the console\'s
-      // NFD step, which the file reproduces with a translate table generated from Unicode.
+      // NOTE: a label that reaches the reserved name only by shedding a diacritic: the console's NFD
+      // step, which the file reproduces with a translate table generated from Unicode.
       ids.a_calc = await tool(a, "calculator", "Calculátor");
-      // A label at the authoring limit (200) that derives the name: the suffix would push it past the
-      // limit and lock the row out of the console the other way (round 22); it becomes the name itself.
+      // NOTE: a label at the authoring limit (200) that derives the name: the suffix would push it past
+      // the limit and lock the row out of the console the other way, so it becomes the name itself.
       ids.a_long = await tool(
         a,
         "get_current_time",
@@ -121,7 +121,7 @@ describe.skipIf(!dbUp)(
       ids.a_run_code_2 = await tool(a, "run_code_2");
       ids.a_handoff = await tool(a, "handoff_to_human");
       ids.a_lookup = await tool(a, "lookup_order");
-      // Tenant B: the same native name, and nothing in the way — uniqueness is per tenant.
+      // NOTE: Tenant B: the same native name, and nothing in the way; uniqueness is per tenant.
       ids.b_run_code = await tool(b, "run_code", "Validador");
       agentId = await agent(a, "granted", "p");
       await suDb.query(
@@ -162,9 +162,9 @@ describe.skipIf(!dbUp)(
       expect(await nameOf(ids.b_run_code as bigint)).toBe("run_code_2");
     });
 
-    // Round 20: `ToolEditModal.payloadOf` submits `normalizeToolName(label)` as the name on every
-    // save, so a moved row whose label still derived the reserved name could never be saved again
-    // from the console — an unrelated edit would submit `run_code` and meet the refusal.
+    // NOTE: `ToolEditModal.payloadOf` submits `normalizeToolName(label)` as the name on every save,
+    // so a moved row whose label still derived the reserved name could never be saved again from
+    // the console: an unrelated edit would submit `run_code` and meet the refusal.
     test("the label follows the name where the console would derive the old one from it", async () => {
       const a = await rowOf(ids.a_run_code as bigint);
       expect(a).toEqual({ name: "run_code_3", label: "Run code 3" });
@@ -207,9 +207,9 @@ describe.skipIf(!dbUp)(
 
       expect(named.length).toBeGreaterThan(1500);
 
-      // And every code point of the first two planes on its own, so a symbol the table does not name
+      // NOTE: and every code point of the first two planes on its own, so a symbol the table does not name
 
-      // (round 22: U+212B, which decomposes to A + ring) is asked too, whichever way it is written.
+      // (U+212B, which decomposes to A + ring) is asked too, whichever way it is written.
 
       const everyCodePoint: string[] = [];
 
@@ -294,10 +294,10 @@ describe.skipIf(!dbUp)(
       ]);
     });
 
-    // The durable record (round 17). A prompt that names the tool now reaches the native, or a name
-    // no tool answers to, and nothing in the console says why; the audit trail is where an upgrade's
-    // own change belongs, under the system actor, one line per moved row and one per agent whose
-    // prompt still names it — the operator's list of what to edit.
+    // NOTE: The durable record. A prompt that names the tool now reaches the native, or a name no tool
+    // answers to, and nothing in the console says why; the audit trail records the upgrade's change
+    // under the system actor, one line per moved row and one per agent whose prompt still names it:
+    // the operator's list of what to edit.
     test("writes the audit trail: one line per moved row, one per agent whose prompt names it", async () => {
       const [a, b] = tenants as [bigint, bigint];
       const inA = await auditOf(a);

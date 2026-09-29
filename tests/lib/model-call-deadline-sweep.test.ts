@@ -1,13 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { codeOnly } from "@/tests/utils/source-text";
 
-// EVERY MODEL CALL NAMES ITS DEADLINE (issue #819).
-//
-// `runModelCall` applies a deadline to every call, and one left unnamed gets the agent's
-// `modelCallTimeoutMs`. That default keeps a forgotten call bounded; it does not make it right. A
-// guardrail on the customer's path given two minutes is as wrong as one given none, just less
-// visibly. So every call site under `src/` passes its own `deadlineMs`, and this is where a new one
-// that does not fails.
+// EVERY MODEL CALL NAMES ITS DEADLINE. `runModelCall` gives an unnamed call the agent's
+// `modelCallTimeoutMs`, which keeps a forgotten call bounded without making it right: a guardrail
+// on the customer's path given two minutes is as wrong as one given none, just less visibly. So
+// every call site under `src/` passes its own `deadlineMs`, and a new one that does not fails here.
 
 // The argument text of each `runModelCall(...)` call, balanced on parentheses, in comment-free code.
 export function runModelCallArgs(src: string): string[] {
@@ -47,7 +44,7 @@ describe("every runModelCall under src/ names its deadline", () => {
   });
 
   test("the sweep sees the calls it is about", async () => {
-    // Five sites today (#819): if this drops to zero the sweep is looking at nothing.
+    // NOTE: if this drops to zero the sweep is looking at nothing.
     let calls = 0;
     const { Glob } = await import("bun");
     for await (const file of new Glob("src/**/*.ts").scan(".")) {

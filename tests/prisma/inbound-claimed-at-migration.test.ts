@@ -1,17 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 
-// WHAT THE MIGRATION SHIPS, and the half a behavioural test cannot reach (issue #356).
-//
-// The column is DDL, invisible to every test in the suite that does not name it. The data statement
-// beside it is not: it decides what happens to claims that are RUNNING while the migration executes,
-// and `docs/deploy.md` supports a rolling deploy (`migrate deploy` as a pre-deploy step) over a
-// scaled web tier — so the previous version is serving inbound webhooks at that moment and its
-// claims carry no stamp. Read as stale, one of them could be taken by a duplicate delivery mid-turn,
-// or have its last attempt marked terminally FAILED under the invocation still working on it.
-//
-// Both halves are read here: the FILE for what the statement says, the CATALOG for what a database
-// built from it holds.
+// What the migration ships, which no behavioural test reaches: the FILE for what the data statement
+// says, the CATALOG for what a database built from it holds. `docs/deploy.md` supports a rolling
+// deploy, so the previous version is serving webhooks while the migration runs and its claims carry
+// no stamp. Read as stale, one could be taken by a duplicate delivery mid-turn, or have its last
+// attempt marked FAILED under the invocation still working on it.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
@@ -46,9 +40,9 @@ describe.skipIf(!dbUp)("migration: the inbound claim clock", () => {
       .split("\n")
       .filter((l) => !l.trimStart().startsWith("--"))
       .join("\n");
-    // The whole point, held against the file: a stamp, on exactly the rows a claim could be live
-    // on. `now()` and not a backfill from `received_at`, which cannot answer this — a fifth attempt
-    // is claimed hours after receipt, so a row claimed one second ago carries an ancient receipt.
+    // NOTE: a stamp on exactly the rows a claim could be live on. `now()`, not a backfill from
+    // `received_at`: a fifth attempt is claimed hours after receipt, so a row claimed one second ago
+    // carries an ancient receipt.
     expect(statements).toMatch(
       /UPDATE\s+"inbound_deliveries"\s+SET\s+"claimed_at"\s*=\s*now\(\)\s+WHERE\s+"status"\s*=\s*'PROCESSING'/i,
     );

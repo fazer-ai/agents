@@ -1,31 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 
-// Runs the ACTUAL migration file against the test database. `run_code` stops being a name this
-// release owns, so a precondition keyed to it is about to name nothing, and an inert rule is worse
-// than no rule: the console lists guardable names and `run_code` is no longer one, so it sits in
-// the settings bag where nobody can read it or remove it.
-//
-// Round 32 is the other half, and it is the half that cost the rewrite. Only a native name passes
-// the write boundary, but an agent IMPORT copies a settings bag verbatim and the runtime honours a
-// non-native key whose name matches a tool that exists, on purpose. So the key can be a LIVE guard
-// on an HTTP tool of that name, and the two migrations around this one move exactly such a tool off
-// `run_code` and put it back. Deleting unconditionally handed it back its name without its
-// condition: callable, ungated, and nothing anywhere saying a guard had been dropped.
-//
-// Round 33 widened WHAT answers, and round 35 narrowed it back by one source. An integration's tool
-// names are not in a `name` column but they ARE here: the grant is fail-closed and allowlisted, so
-// `agent_tool_selections.enabled_tools` is the list a toolpack can answer to, exposed BARE. MCP
-// looks identical and is not: an MCP tool reaches the model as `mcp__<server>__<tool>`, and the
-// allowlist holds the upstream name because the filter runs before the rename, so a rule keyed
-// `run_code` cannot be guarding one and keeping the key for it preserves the invisible inert rule
-// this migration removes.
-//
-// What it pins: the key goes when nothing answers to the name, STAYS when something does (an HTTP
-// tool, a code tool, an integration grant naming it, and a spelling that only DERIVES the name),
-// goes despite an MCP grant naming it, the agent's other preconditions and settings are untouched,
-// an agent without the key is not rewritten, and FORCE ROW LEVEL SECURITY is back on all four
-// tables.
+// Runs the actual migration file against the test database. `run_code` is no longer a native name,
+// so a precondition keyed to it may name nothing, and an inert rule is worse than none: the console
+// cannot list or remove it. But an agent import copies a settings bag verbatim and the runtime
+// honours a non-native key matching an existing tool, so the key can be a live guard on an HTTP
+// tool, code tool or integration grant (toolpacks expose names bare) named `run_code`; deleting it
+// unconditionally would leave that tool callable and ungated. An MCP grant does not count: its tool
+// reaches the model as `mcp__<server>__run_code` (the allowlist holds the upstream name). FORCE ROW
+// LEVEL SECURITY must be back on all four tables.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =

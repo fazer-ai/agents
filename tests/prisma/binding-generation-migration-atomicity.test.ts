@@ -1,24 +1,13 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 
-// TWO FILES OF THIS PR LEAVE AN INVARIANT HALF-APPLIED IF THEY STOP IN THE MIDDLE, and `migrate
-// deploy` runs a migration OUTSIDE a transaction, so each opens its own.
-//
-//   * `20260908170000_binding_generation` adds ONE fact in two statements: the inbox counts who
-//     routes it, and the delivery records the count it arrived under. The retry is worse than the
-//     half state -- the first `ALTER TABLE` persisted through the failure, so it meets
-//     `duplicate_column` and the rollout stops until somebody edits schema by hand.
-//   * `20260908170003_binding_generation_triggers` installs the counting itself. Half installed, it
-//     counts responder moves and misses observer moves: a counter that LIES, which is worse than one
-//     that is missing, because every reader added by this PR trusts it to mean "nothing moved".
-//
-// ASKED STATEMENT BY STATEMENT, because that is the only way to ask it. A multi-statement string
-// goes out over the simple-query protocol and Postgres wraps it in an IMPLICIT transaction, so the
-// file comes out atomic whatever it says and deleting the `BEGIN` breaks nothing
-// (.claude/rules/prisma.md, measured in #555). Prisma sends them one at a time; so does this.
-//
-// ON A PROBE DATABASE seeded with the bare tables, not on the suite's: there the columns and the
-// triggers already exist, and dropping them to make room would take each other down with them.
+// Two migrations leave an invariant half-applied if they stop in the middle, and `migrate deploy`
+// runs a migration OUTSIDE a transaction, so each opens its own. Half of COLUMNS_MIGRATION makes the
+// retry meet `duplicate_column`; half of TRIGGERS_MIGRATION counts responder moves and misses
+// observer moves, a counter that LIES to every reader that trusts it to mean "nothing moved".
+// Asked statement by statement, as Prisma sends them: a multi-statement string gets an IMPLICIT
+// transaction and would pass without the `BEGIN` (.claude/rules/prisma.md). On a PROBE database
+// seeded with the bare tables: the suite's already has the columns and triggers.
 
 const COLUMNS_MIGRATION =
   "prisma/migrations/20260908170000_binding_generation/migration.sql";
@@ -63,7 +52,7 @@ const BASE_SCHEMA = `
   );
 `;
 
-// Comment lines out, then cut on semicolons — outside a literal and outside a `$$` body, since the
+// Comment lines out, then cut on semicolons, outside a literal and outside a `$$` body, since the
 // trigger file's functions carry semicolons of their own.
 function statementsOf(text: string): string[] {
   const bare = text.replace(/^\s*--.*$/gm, "");
@@ -99,10 +88,10 @@ function statementsOf(text: string): string[] {
 
 type Probe = { failed: string | null; columns: string[]; triggers: string[] };
 
-// Runs the file the way Prisma does — one statement per round trip — on a database freshly seeded
-// with the bare tables, and reports the failure if one comes. The probe connection is closed before
-// returning: the next run drops the database `WITH (FORCE)`, which would otherwise cut this run's
-// socket and surface as "Connection terminated" from an unrelated test.
+// Runs the file the way Prisma does (one statement per round trip) on a freshly seeded database,
+// and reports the failure if one comes. The probe connection is closed before returning: the next
+// run drops the database `WITH (FORCE)`, which would otherwise cut this run's socket and surface as
+// "Connection terminated" from an unrelated test.
 async function applyStatementByStatement(sql: string): Promise<Probe> {
   const suDb = su as Client;
   await suDb.query(`DROP DATABASE IF EXISTS ${PROBE_DB} WITH (FORCE)`);

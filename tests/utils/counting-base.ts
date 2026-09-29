@@ -2,26 +2,13 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { PrismaClient } from "@/../generated/prisma/client";
 
 // Watches Prisma transactions opened through one client. Survives `$extends`, which `runScopedOn`
-// calls before `$transaction`, so the watch follows the client the scoped helper actually uses.
-//
-// Three answers, and picking the wrong one is a flake rather than a wrong result:
-//
-// `heldHere` is for "is the CALLER inside a transaction right now" — a section that must not hold a
-// connection across an await. It is answered from the caller's own async context, which is the only
-// thing that makes it about the caller: the client is shared with work this run did not start and
-// does not await. `emitFlowEvent` is exactly that (`src/modules/flowlog/service.ts`) — fire-and-
-// forget by design, because a customer must not wait on a log line — and its transaction runs
-// through this same client. Counting it made this assertion fail whenever that INSERT happened to
-// still be in flight: measured on CI, and reproducible here by delaying the start of that write by
-// about 12 ms (a local edit to `writeFlowEvent`, never a committed knob: issue #822), which lands the
-// write on top of the ask.
-//
-// `open` is the raw count of transactions in flight ANYWHERE through this client, which is a leak
-// check ("it left nothing open behind it") and answers nothing about who is asking.
-//
-// `total` catches work that was SPLIT across transactions which should have shared one — a mutation
-// and the audit row recording it, say, where two means the record can be lost without the change
-// being lost.
+// calls before `$transaction`. Three answers, and picking the wrong one is a flake:
+// `heldHere`: is the CALLER inside a transaction now. Answered from the caller's own async context,
+// because the client is shared with work this run did not start: `emitFlowEvent`'s fire-and-forget
+// INSERT (`src/modules/flowlog/service.ts`) would be counted whenever it is still in flight.
+// `open`: transactions in flight ANYWHERE through this client, a leak check, not about who asks.
+// `total`: work SPLIT across transactions that should share one (a mutation and its audit row, where
+// two means the record can be lost without the change).
 export function countingBase(client: PrismaClient): {
   base: PrismaClient;
   heldHere: () => boolean;

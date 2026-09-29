@@ -3,25 +3,14 @@ import { Client } from "pg";
 import { INGEST_ID_WINDOW } from "@/graph/ingest-dedup";
 import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
 
-// Runs the ACTUAL backfill of 20260822150000 against the test database. Three things are pinned,
-// and the first is the one with an incident behind it:
-//
-//   * FORCE ROW LEVEL SECURITY on "agent_threads" binds even the table OWNER. A managed-Postgres
-//     admin role (RDS/Neon/Supabase) is typically owner WITHOUT rolsuper, and there a bare UPDATE
-//     matches zero rows and reports success: no error, no warning, `migrate deploy` green. That is
-//     not hypothetical — 20260818120000 exists to REPAIR 20260807032257, which shipped exactly this
-//     and left an install with follow-ups that never fired (issue #106). The negative twin below
-//     runs the same statements as the APP role with and without the `SET`, so the guard cannot be
-//     dropped without a red test.
-//   * The fill has to SATURATE the window, or the old watermark stops acting as a floor and every
-//     id below it reads as new on a re-delivery — the deduplication bug handed back by the fix for
-//     the ordering one.
-//   * The fill width is frozen at the value INGEST_ID_WINDOW had when the migration ran, and the
-//     migration cannot import the constant. Raising the constant later un-saturates every migrated
-//     row, so the link the migration's own comment can only describe in prose is asserted here.
-//
-// The statements are taken from the file on DISK, minus the DDL. A copy pasted in here would drift,
-// and the DDL cannot be re-run against a database the migration has already been applied to.
+// Runs the ACTUAL backfill of MIGRATION against the test database, and pins three things:
+//   * FORCE ROW LEVEL SECURITY binds even the table OWNER: on managed Postgres (owner WITHOUT
+//     rolsuper) a bare UPDATE matches zero rows and reports success. The negative twin below runs
+//     the statements as the APP role with and without a bypass.
+//   * The fill SATURATES the window, or the old watermark stops acting as a floor.
+//   * The fill width is frozen at INGEST_ID_WINDOW's value when the migration ran.
+// The statements come from the file on DISK minus the DDL: a pasted copy would drift, and the DDL
+// cannot be re-run against a database the migration was already applied to.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -171,10 +160,9 @@ describe.skipIf(!dbUp)("migration: agent thread recent message ids", () => {
     expect(await windowOf(neither)).toEqual({ synced: [], agent: [] });
   });
 
-  // The link the migration's comment can only state in prose. The fill width is frozen at what
-  // INGEST_ID_WINDOW was when it ran, so RAISING the constant reads every migrated row as partial
-  // again — the upgrade hazard the fill exists to close, returning. Lowering it is free, which is
-  // why this is a floor and not an equality.
+  // NOTE: the fill width is frozen at what INGEST_ID_WINDOW was when the migration ran, so RAISING the
+  // constant reads every migrated row as partial again. Lowering it is free, hence a floor, not an
+  // equality.
   test("the frozen fill still saturates the window the code uses", async () => {
     const t = await seedThread("frozen", 900, null, 90004);
     await suDb.query(dataSql);
@@ -182,8 +170,8 @@ describe.skipIf(!dbUp)("migration: agent thread recent message ids", () => {
     expect(w.synced.length).toBeGreaterThanOrEqual(INGEST_ID_WINDOW);
   });
 
-  // The negative twin, run through the FILE's own statements rather than a copy, so deleting the
-  // `SET app.is_super_admin` line turns this red. Precedent, not prediction: issue #106.
+  // NOTE: the negative twin, run through the FILE's own statements rather than a copy, so deleting the
+  // `SET app.is_super_admin` line turns this red.
   describe("run by a NON-superuser role (managed Postgres)", () => {
     async function runAsApp(statements: string) {
       const app = new Client({ connectionString: appUrl });
@@ -195,12 +183,10 @@ describe.skipIf(!dbUp)("migration: agent thread recent message ids", () => {
       }
     }
 
-    // The file's own `SET app.is_super_admin` line is INERT against today's schema. The policy that
-    // read it was split into a role-restricted one (issue #382), and this migration only ever runs
-    // BEFORE that split, on a database whose policy still carried the OR. So re-executing it here
-    // has to supply the bypass of the era it is being run in, or the pair below stops
-    // discriminating: both halves would report "changed nothing", for two different reasons, and
-    // the guard would be green by invisibility rather than by working.
+    // NOTE: the file's own `SET app.is_super_admin` line is INERT against today's schema, whose policy is
+    // role-restricted; the migration only runs on a database whose policy still read that GUC. So the
+    // re-run supplies the bypass of its era, or both halves below report "changed nothing" for two
+    // different reasons and the guard is green by invisibility.
     test("the backfill reaches the rows under the bypass of the era it runs in", async () => {
       const t = await seedThread("rls-with-bypass", 1100, null, 90005);
       await runAsApp(`${ENTER_FLEET_ROLE_SQL};\n${dataSql}`);
@@ -209,8 +195,8 @@ describe.skipIf(!dbUp)("migration: agent thread recent message ids", () => {
 
     test("the same backfill with no bypass silently changes nothing", async () => {
       const t = await seedThread("rls-no-bypass", 1200, null, 90006);
-      // The file exactly as shipped, which today carries only the inert guard. No error, no rows:
-      // exactly the failure this guard exists for.
+      // NOTE: the file as it ships, carrying only the inert guard. No error, no rows: the failure this
+      // guard exists for.
       expect(dataSql).toMatch(/^\s*SET\s+app\.is_super_admin/m);
       await runAsApp(dataSql);
       expect((await windowOf(t)).synced).toEqual([]);

@@ -5,51 +5,18 @@ import { sanitizeErrorMessage } from "@/lib/redact";
 import { unstorableProblem } from "@/lib/text";
 import { claimDueJobs, enqueueJob, failJob } from "@/modules/scheduler/service";
 // Both ledgers below count through the shared scan, so prose that NAMES a column or the guard is not
-// counted as a use of it (#424).
+// counted as a use of it.
 import { countInSrc } from "@/tests/utils/source-text";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// THE GUARD AGAINST THE NEXT COLUMN THAT LOSES AN ERROR MESSAGE.
-//
-// Third instance of one shape, and the reason it is a sweep rather than a fourth call-site fix. The
-// inbound receptor lost a delivery to a character in a third party's body (#218), both `jsonb`
-// walkers behind the flow log and the audit log lost a row to the same thing (#241), and this file
-// is the answer to the same question asked of every column that holds an ERROR message:
-//
-//   does this value reach a column, and has anything applied the rule the column enforces?
-//
-// The rule, measured against this project's own Postgres. A NUL is refused outright by `text` and by
-// `jsonb` alike (22021 / 22P05). An unpaired surrogate is WORSE than refused in a `text` parameter:
-// the driver spends one byte of the tail encoding its replacement, so `boom\ud800tail` lands as
-// `boom<U+FFFD>tai` (one character eaten, silently) and only refuses at all when the orphan sits at
-// the very end and the truncated `EF BF` becomes the last bytes.
-//
-// Error text is where this bites, and the demonstrated way a third party's bytes get in is an HTTP
-// tool: it passes the remote endpoint's response body through verbatim so the model can read it,
-// `toolFailure` makes that body the failure's cause, and with `observability.logToolValues` on the
-// whole body reaches `execution_logs.error_message` (tests/graph/tool-flowlog.test.ts). Asking for
-// detailed logging is what used to make the line disappear.
-//
-// The write it breaks is also the bookkeeping ABOUT a failure: `failJob` is the transition that
-// either schedules the retry or dead-letters the job, so a refused write leaves the row CLAIMED
-// with its old `attempts`, and nothing reclaims it, nothing reports it (issue #243).
-//
-// So `sanitizeErrorMessage` (src/lib/redact.ts) is the ONE place the rule is applied to error text,
-// and this file is the check, in two halves:
-//
-//   1. its output survives every column that holds an error message, asserted at the ROW;
-//   2. the source ledgers below account for every line that puts text in one of those columns, so a
-//      new writer that reaches for a bare cut is a failure here rather than a job that stops moving.
-//
-// The second half exists because a table like the first proves the FUNCTION and nothing about
-// whether the call sites call it (#205). What the ledgers pin is exactly that.
-//
-// NOT in scope, and stated so the ledgers are not read as a clean bill of health for the tree: this
-// is the error family only. The wider question, every write of externally-sourced text into a
-// column, reaches other places with other right answers (a model's own output, the text extracted
-// from an uploaded file, the Chatwoot mirror, an OAuth client's own registration). Each needs its
-// own reading of who can act on a refusal, which is exactly why they are not folded in here under
-// one blanket policy.
+// THE GUARD AGAINST THE NEXT COLUMN THAT LOSES AN ERROR MESSAGE. A NUL is refused by `text` and
+// `jsonb` alike (22021 / 22P05), and an unpaired surrogate in a `text` parameter silently eats a tail
+// byte (`boom\ud800tail` lands as `boom<U+FFFD>tai`). A third party's bytes reach error text through an
+// HTTP tool, whose response body becomes the failure's cause and, with `logToolValues` on, reaches
+// `execution_logs.error_message` (tests/graph/tool-flowlog.test.ts); a refused `failJob` write leaves
+// the row CLAIMED, unretried and unreported. So `sanitizeErrorMessage` is the ONE place the rule is
+// applied to error text: this file asserts its output at the ROW, and the ledgers below account for
+// every call site. Error columns only (scope: docs/logs.md, Model).
 
 const NUL = String.fromCharCode(0);
 
@@ -281,8 +248,8 @@ describe.skipIf(!dbUp)("error text reaches every column that holds it", () => {
       where: { id },
       select: { status: true, attempts: true, lastError: true },
     });
-    // The row moved: the retry is scheduled and the attempt was counted. Before the repair the
-    // write was refused, the row stayed CLAIMED with attempts 0, and nothing reclaimed it.
+    // NOTE: The row moved: the retry is scheduled and the attempt was counted. A refused write would
+    // leave it CLAIMED with attempts 0, and nothing would reclaim it.
     expect(row.status).toBe("PENDING");
     expect(row.attempts).toBe(1);
     expect(row.lastError).toContain("provider said");
@@ -323,20 +290,12 @@ describe.skipIf(!dbUp)("error text reaches every column that holds it", () => {
   });
 });
 
-// Every line in `src/` that names one of the two error columns whose key is unambiguous enough to
-// scan for (`lastError`, `errorMessage`), with what it does there. The count per file is what makes
-// a NEW line in an already-listed file trip this too, rather than only a new file.
-//
-//   flow-event  handed to emitFlowEvent as FlowEvent.errorMessage. Sanitized at the chokepoint in
-//               flowlog/service.ts, so these are the one shape that legitimately passes a raw
-//               exception message along: the guard sits between them and the column.
-//   guarded     sanitizeErrorMessage applied right here, at the write
-//   cleared     writes null (a row leaving the state the error described)
-//   read        reads the column back out: a select, a filter, a DTO field
-//   unrelated   the name, and none of the meaning: a field of a client-side shape that happens to
-//               be called this. The scan cannot tell them apart, which is the honest limit of
-//               keying on a name rather than on a write, and is why they are listed rather than
-//               filtered out by a path rule that would also hide a real one.
+// Every line in `src/` naming an error column whose key is unambiguous enough to scan for
+// (`lastError`, `errorMessage`); counted per file, so a NEW line in a listed file trips this too.
+// flow-event: handed to emitFlowEvent, sanitized at the chokepoint in flowlog/service.ts, the one
+// shape that may pass a raw message along. guarded: sanitizeErrorMessage at the write. cleared:
+// writes null. read: a select, a filter, a DTO field. unrelated: a client-side field that happens to
+// share the name; listed rather than filtered by path, since a path rule would also hide a real one.
 type ErrorSite = "flow-event" | "guarded" | "cleared" | "read" | "unrelated";
 
 const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
@@ -344,7 +303,7 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/graph/prepare.ts": [2, "flow-event"],
   "src/graph/runtime.ts": [5, "flow-event"],
   "src/graph/tool-flowlog.ts": [2, "flow-event"],
-  // #841: a playground turn that failed unhandled. A fixed sentence, never the error's text.
+  // A playground turn that failed unhandled: a fixed sentence, never the error's text.
   "src/modules/playground/service.ts": [1, "flow-event"],
   // An upload row's own failure in the console, which never reaches a column.
   "src/client/pages/resources/useKnowledgeManager.tsx": [1, "unrelated"],
@@ -352,38 +311,36 @@ const ERROR_COLUMN_LINES: Record<string, [number, ErrorSite | string]> = {
   "src/modules/contact-auth/service.ts": [1, "flow-event"],
   "src/modules/conversations/error.ts": [3, "guarded + cleared"],
   "src/modules/conversations/service.ts": [12, "read"],
-  // Down from 4: both roads to DEAD now write through one `finalizeDead` (issue #356).
+  // Both roads to DEAD write through one `finalizeDead`.
   "src/modules/flowlog/alert-worker.ts": [3, "guarded + cleared"],
-  // The sweep's reading of that backoff (issue #796): the type of the row it is handed. And the
-  // line a lost follow-up sequence writes (issue #896), a fixed English sentence.
+  // The follow-up sweep's reading of the failure backoff: the type of the row it is handed. And the
+  // line a lost follow-up sequence writes, a fixed English sentence.
   "src/modules/followups/handlers.ts": [2, "read + flow-event"],
   "src/modules/flowlog/dead-letter.ts": [1, "flow-event"],
   "src/modules/flowlog/read.ts": [4, "read"],
   "src/modules/flowlog/service.ts": [2, "guarded"],
   "src/modules/flowlog/webhook.ts": [1, "flow-event"],
   "src/modules/guardrails/gate.ts": [2, "flow-event"],
-  // The guardrail's own transfer (issue #704), when the status change is refused.
+  // The guardrail's own transfer, when the status change is refused.
   "src/modules/guardrails/handoff.ts": [1, "flow-event"],
   "src/modules/guardrails/health.ts": [4, "read"],
   "src/modules/memory/compact.ts": [1, "flow-event"],
   "src/modules/observe/job.ts": [1, "flow-event"],
-  // Up from 4: the follow-up sweep's re-arm reads the column to tell the scheduler's failure backoff
-  // from a row that stood down (issue #796), a select and the type it is handed as.
+  // The follow-up sweep's re-arm reads the column to tell the scheduler's failure backoff from a row
+  // that stood down: a select and the type it is handed as.
   "src/modules/scheduler/service.ts": [6, "guarded + cleared + read"],
-  // The balloon send that no longer reports its failure by throwing (issue #429): the flow line is
-  // the only place an operator can see that part of a reply went missing.
-  // The poll's failure line: the Langfuse error text travels as a flow event (issue #426).
+  // The poll's failure line: the Langfuse error text travels as a flow event.
   "src/modules/spend-ceiling/poll.ts": [2, "flow-event"],
+  // The balloon send reports its failure without throwing: the flow line is the only place an
+  // operator can see that part of a reply went missing.
   "src/modules/split/service.ts": [1, "flow-event"],
   "src/modules/stt/service.ts": [2, "flow-event"],
-  // The audio check's "unavailable" line (issue #779): a closed `audio check unavailable (<code>)`.
+  // The audio check's "unavailable" line: a closed `audio check unavailable (<code>)`.
   "src/modules/tts/service.ts": [1, "flow-event"],
   "src/modules/vision/service.ts": [2, "flow-event"],
-  // Was 4 until issue #325 collapsed the two DEAD writes into `finalizeDead`; the line that went
-  // is the duplicate, not a guard.
   // Three reads of `lastError`, and none of them a write: the DTO field, the projection that feeds
   // it, and the type. The ledger surfaces the column an operator uses to decide whether to requeue
-  // (issue #305); the value was sanitized where the worker stored it.
+  // and the value was sanitized where the worker stored it.
   "src/modules/webhooks/outbound/deliveries.ts": [3, "read"],
   "src/modules/webhooks/outbound/worker.ts": [3, "guarded + cleared"],
 };
@@ -397,21 +354,20 @@ const GUARD_CALLS: Record<string, number> = {
   "src/lib/redact.ts": 1,
   "src/modules/conversations/error.ts": 1,
   "src/modules/conversations/failure-note.ts": 1,
-  // MOVED from `alert-worker.ts` by #605, not added: the worker's send was extracted so the console's
-  // Test button could take the same one, and the sanitizer travelled with the `catch` it belongs to.
-  // The column it guards is unchanged (`alert_deliveries.last_error`), and the worker still writes it
-  // — from a string this file built.
+  // The worker's send, shared with the console's Test button, sanitizes in its own `catch`. The
+  // column it guards (`alert_deliveries.last_error`) is written by the worker, from a string this
+  // file built.
   "src/modules/flowlog/alert-send.ts": 1,
   "src/modules/flowlog/alerts.ts": 1,
   "src/modules/flowlog/service.ts": 2,
   "src/modules/rag/documents.ts": 1,
   // A knowledge source run's failure (the fetch, the reconcile), before it reaches `last_message`,
-  // and the boot re-arm's before it reaches the log (issue #794).
+  // and the boot re-arm's before it reaches the log.
   "src/modules/rag/source.ts": 3,
   // The third reads it back: a run past its deadline takes its row back only while the row still
-  // carries the failure that deadline wrote, compared in the form `failJob` stored it (issue #811).
+  // carries the failure that deadline wrote, compared in the form `failJob` stored it.
   "src/modules/scheduler/service.ts": 3,
-  // The Langfuse error text, before it reaches `poll_error` (issue #426, review round 1).
+  // The Langfuse error text, before it reaches `poll_error`.
   "src/modules/spend-ceiling/poll.ts": 1,
   "src/modules/webhooks/outbound/worker.ts": 1,
 };

@@ -5,21 +5,14 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Runs the ACTUAL migration file against the test database. The dashboard tells the operator that N
-// conversations predate the recording, which is the whole defence against the Resolution funnel
-// appearing to collapse on upgrade day. That promise rests on one UPDATE, and on the `SET` that lets
-// it see anything at all:
-//
-//   * `conversations` carries FORCE ROW LEVEL SECURITY, so `tenant_isolation` binds the table OWNER
-//     as well. A managed-Postgres admin role (RDS/Neon/Supabase) is typically owner WITHOUT
-//     rolsuper, and there the backfill matches zero rows and reports success. The negative twin
-//     below runs the file as the APP role with and without the `SET`, so the guard cannot be dropped
-//     without a red test. This is the same silent failure as issue #106.
-//   * A backfill that ran but stamped the wrong rows is just as wrong as one that ran on none, hence
-//     the row-by-row assertion over every status an install can hold.
-//
-// The file is executed from DISK on purpose: a copy pasted in here would drift, and Prisma's
-// $executeRawUnsafe rejects multiple statements anyway, which would silently swallow the `SET`.
+// Runs the ACTUAL migration file against the test database. The dashboard's "N conversations predate
+// the recording" rests on one UPDATE and on the `SET` that lets it see anything:
+//   * FORCE RLS binds the table OWNER too, and a managed-Postgres admin role is typically owner
+//     WITHOUT rolsuper, so the backfill would match zero rows and report success. The negative twin
+//     below runs the file as the APP role with and without a bypass.
+//   * A backfill that stamped the wrong rows is as wrong as none, hence the row-by-row assertion.
+// Executed from DISK: a pasted copy would drift, and Prisma's $executeRawUnsafe rejects multiple
+// statements, which would silently swallow the `SET`.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -53,7 +46,7 @@ const db = prisma as PrismaClient;
 
 // The column already exists (the test DB was built by running every migration), so only the data
 // half of the file is replayed here. Splitting on the DDL keeps the `SET`/`UPDATE`/`RESET` trio
-// intact — that trio is what is under test.
+// intact, and that trio is what is under test.
 function dataHalf(file: string): string {
   const i = file.indexOf("SET app.is_super_admin");
   if (i < 0) throw new Error("the migration no longer sets the RLS bypass");
@@ -140,12 +133,10 @@ describe.skipIf(!dbUp)("migration: conversations.resolved_by", () => {
       }
     }
 
-    // The file's own `SET app.is_super_admin` line is INERT against today's schema. The policy that
-    // read it was split into a role-restricted one (issue #382), and this migration only ever runs
-    // BEFORE that split, on a database whose policy still carried the OR. So re-executing it here
-    // has to supply the bypass of the era it is being run in, or the pair below stops
-    // discriminating: both halves would report "matched nothing", for two different reasons, and
-    // the guard would be green by invisibility rather than by working.
+    // NOTE: the file's own `SET app.is_super_admin` line is INERT against today's schema, whose policy is
+    // role-restricted; the migration only runs on a database whose policy still read that GUC. So the
+    // re-run supplies the bypass of its era, or both halves report "matched nothing" for two different
+    // reasons and the guard is green by invisibility.
     test("with no bypass the backfill silently matches nothing", async () => {
       await clearOrigins();
       // The file exactly as shipped. No error, no warning: that is the whole problem.

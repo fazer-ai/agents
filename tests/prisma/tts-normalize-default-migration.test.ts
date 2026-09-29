@@ -2,21 +2,14 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
 
-// Runs the ACTUAL migration file against the test database, over the settings shapes an install can
-// really hold. Two failure modes are being pinned, and neither is hypothetical:
-//
-//   * `#-` RAISES when the path does not land in an object. `PATCH /v1/agents/:id` accepts
-//     `settings: z.record(z.string(), z.unknown())` and stores it verbatim, so `{"tts": [1,2]}` is
-//     reachable. The container runs `migrate deploy` BEFORE `serve`, so one such row anywhere in the
-//     fleet would crash-loop that install's deploy, on a data migration that changes a default.
-//   * FORCE ROW LEVEL SECURITY on "agents" binds even the table OWNER. A managed-Postgres admin role
-//     (RDS/Neon/Supabase) is typically owner WITHOUT rolsuper, and there the UPDATE would match zero
-//     rows and report success. The negative twin below runs the same statement as the APP role with
-//     and without the `SET`, so the guard cannot be dropped without a red test.
-//
-// The migration file is executed from DISK on purpose: a copy pasted in here would drift, and
-// Prisma's $executeRawUnsafe rejects multiple statements anyway, which would silently swallow the
-// `SET`.
+// Runs the ACTUAL migration file from DISK (a copy would drift, and $executeRawUnsafe rejects
+// multiple statements, silently swallowing the `SET`) over the settings shapes an install can hold:
+//   * `#-` RAISES when the path does not land in an object, and `PATCH /v1/agents/:id` stores
+//     `settings` verbatim, so `{"tts": [1,2]}` is reachable. `migrate deploy` runs BEFORE `serve`,
+//     so one such row crash-loops the install's deploy.
+//   * FORCE ROW LEVEL SECURITY on "agents" binds even the OWNER. A managed-Postgres admin role is
+//     typically owner WITHOUT rolsuper, and there the UPDATE would match zero rows and report
+//     success. The negative twin below runs it as the APP role with and without the `SET`.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -191,12 +184,10 @@ describe.skipIf(!dbUp)("migration: tts normalize default on", () => {
       }
     }
 
-    // The file's own `SET app.is_super_admin` line is INERT against today's schema. The policy that
-    // read it was split into a role-restricted one (issue #382), and this migration only ever runs
-    // BEFORE that split, on a database whose policy still carried the OR. So re-executing it here
-    // has to supply the bypass of the era it is being run in, or the pair below stops
-    // discriminating: both halves would report "changed nothing", for two different reasons, and
-    // the guard would be green by invisibility rather than by working.
+    // NOTE: The file's `SET app.is_super_admin` is INERT against today's schema (the policy that read
+    // it is now role-restricted), and this migration only runs on a database whose policy still has
+    // the OR. So the re-run supplies that bypass, or both halves below would report "changed nothing"
+    // for different reasons and the guard would be green by invisibility rather than by working.
     test("the migration's statements reach the rows under the bypass of the era they run in", async () => {
       const id = await seedProbe("rls-probe-with-bypass");
       await runAsApp(`${ENTER_FLEET_ROLE_SQL};\n${sql}`);

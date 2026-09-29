@@ -6,9 +6,9 @@ import {
 } from "@/../scripts/diff-model-prices";
 import { plausibleRefresh } from "@/../scripts/refresh-guard";
 
-// Issue #869: the body of the pull request the weekly price refresh opens. What a reviewer has to
-// see is which rates moved, which rows appeared and which went away, with the provider defaults
-// first, and a refresh that only moved the source commit must not count as a change at all.
+// The body of the pull request the weekly price refresh opens. A reviewer has to see which rates
+// moved, which rows appeared and which went away, with the provider defaults first, and a refresh
+// that only moved the source commit must not count as a change at all.
 
 const SHA_OLD = "a".repeat(40);
 const SHA_NEW = "b".repeat(40);
@@ -117,8 +117,8 @@ describe("diffModelPrices", () => {
     expect(md).not.toContain("## Provider defaults");
   });
 
-  // A default's row that goes away, or moves to another key of the same model, is told as the
-  // rows it was, with all its rates (review round 3).
+  // NOTE: A default's row that goes away, or moves to another key of the same model, is told as the
+  // rows it was, with all its rates.
   test("a default whose row disappears or changes key keeps every rate in the summary", () => {
     const moved = diffModelPrices(
       table(SHA_OLD, "2026-09-18", {
@@ -177,7 +177,7 @@ describe("diffModelPrices", () => {
 });
 
 // A long-context call is priced from the tier's own rates, cache included, so an added or removed
-// row shows all four of them (review round 1).
+// row shows all four of them.
 test("an added model's long-context tier lists its cache rates too", () => {
   const before = table(SHA_OLD, "2026-09-18", {});
   const after = table(SHA_NEW, "2026-09-25", {
@@ -202,7 +202,7 @@ test("an added model's long-context tier lists its cache rates too", () => {
 });
 
 // A source that answers 200 with an empty or truncated file must not become a table with every
-// model removed (verification of #869).
+// model removed.
 test("a default sorts ahead of a model whose name comes first", () => {
   const md = diffModelPrices(
     table(SHA_OLD, "2026-09-18", {

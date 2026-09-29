@@ -46,7 +46,7 @@ let t2 = 0n;
 describe.skipIf(!dbUp)("tenancy isolation (RLS)", () => {
   beforeAll(async () => {
     if (!su) return;
-    // Superuser bypasses RLS — seed two tenants, an instance each, a conversation each.
+    // NOTE: superuser bypasses RLS: seed two tenants, an instance each, a conversation each.
     const a = await su.tenant.create({
       data: { name: "ISO-A", slug: `iso-a-${process.pid}` },
     });
@@ -59,9 +59,9 @@ describe.skipIf(!dbUp)("tenancy isolation (RLS)", () => {
       const inst = await seedChatwootInstance(su, {
         tenantId: t.id,
         accountId: 1,
-        // Distinct server per tenant: a Chatwoot account (serverKey + accountId) is globally unique
-        // to one tenant, so two tenants can't share the same (server, accountId). RLS isolation —
-        // what this suite tests — is unaffected by using separate servers.
+        // NOTE: distinct server per tenant: a Chatwoot account (serverKey + accountId) is globally unique
+        // to one tenant, so two tenants can't share the same (server, accountId). RLS isolation
+        // (what this suite tests) is unaffected by using separate servers.
         baseUrl: `https://iso-${t.id}.local`,
         adminToken: "enc",
       });
@@ -132,10 +132,8 @@ describe.skipIf(!dbUp)("tenancy isolation (RLS)", () => {
     ).rejects.toThrow();
   });
 
-  // Through the real helper, not a copy of what it does. It used to hand-roll
-  // `set_config('app.is_super_admin', ...)`, which was the same statement the helper issued — until
-  // it was not: issue #382 replaced the GUC with a role, and the copy went on passing for a while
-  // against a policy that no longer read it.
+  // NOTE: through the real helper, not a copy of what it does: a hand-rolled copy keeps passing against a
+  // policy that no longer reads what the copy sets.
   test("asSuperAdmin sees every tenant's rows", async () => {
     const rows = await asSuperAdminOn(appDb, (db) =>
       db.conversation.findMany({

@@ -5,9 +5,8 @@ import {
   roleInTenant,
 } from "@/lib/tenancy/membership";
 
-// Issue #756: a person is ONE user with a membership per tenant, and each request runs under the one
-// its `X-Tenant-Id` names. The defect the issue opened on was a login that landed in one of a
-// person's tenants with nothing deciding which; these pin the rule that replaced it.
+// A person is ONE user with a membership per tenant, and each request runs under the one its
+// `X-Tenant-Id` names, so nothing lands a login in one of a person's tenants arbitrarily.
 
 const at = (iso: string) => new Date(iso);
 const TWO: Membership[] = [

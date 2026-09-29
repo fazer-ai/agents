@@ -1,18 +1,13 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 
-// Issue #756: `users` stops being one row per (person, tenant) and becomes one row per PERSON, with
-// the tenants in `tenant_users`. The migration that does it MERGES rows: every email that existed in
-// several tenants becomes one person, and the row that stays is the one that logged in last (the
-// owner's decision on the issue: its password is the one the person used most recently).
-//
-// ON A PROBE DATABASE seeded with the OLD shape, because the suite's database already has the new
-// one. Only what the file names is created, with the constraint and index names the baseline gave
-// them, since the file drops them by name. RUN STATEMENT BY STATEMENT, as Prisma runs it: a
-// multi-statement string would be wrapped in an implicit transaction and prove nothing about the
-// file's own (.claude/rules/prisma.md, #555). AS THE TABLES' OWNER, not as a superuser: a superuser
-// passes every row-level policy, FORCE or not, and the owner the deploy runs as does not, so a write
-// to a FORCE-RLS table that forgot to lift it would decide over zero rows here too.
+// `users` is one row per PERSON, with the tenants in `tenant_users`. The migration MERGES rows:
+// every email present in several tenants becomes one person, and the row that stays is the one that
+// logged in last (its password is the one the person used most recently). ON A PROBE DATABASE
+// seeded with the OLD shape and the constraint and index names the baseline gave them, since the
+// file drops them by name. RUN STATEMENT BY STATEMENT as Prisma runs it (a multi-statement string
+// gets an implicit transaction, `.claude/rules/prisma.md`), and AS THE TABLES' OWNER: a superuser
+// passes every row-level policy, so a FORCE-RLS write that forgot to lift it would pass here.
 
 const MIGRATION = "prisma/migrations/20260925000000_tenant_users/migration.sql";
 const sql = await Bun.file(MIGRATION).text();
@@ -396,8 +391,8 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
     expect(await col("invitations", "invited_by_id")).toEqual([
       ids.anaB as string,
     ]);
-    // The MCP credentials of a row that went are revoked, never moved: moved, they would let whoever
-    // held that row act as the person who stayed (review round 5). The kept row's own survive.
+    // NOTE: The MCP credentials of a row that went are revoked, never moved: moved, they would let
+    // whoever held that row act as the person who stayed. The kept row's own survive.
     for (const table of [
       "mcp_oauth_access_tokens",
       "mcp_oauth_refresh_tokens",
@@ -515,9 +510,9 @@ describe.skipIf(!dbUp)("the tenant_users migration", () => {
     ).toBe("1");
   });
 
-  // Review round 3: a rollout that migrates while the previous image still serves leaves it writing the
-  // old shape. What it writes reaches the new one, so nobody it invites is locked out and no role
-  // change it makes is lost.
+  // NOTE: A rollout that migrates while the previous image still serves leaves it writing the old
+  // shape. What it writes reaches the new one, so nobody it invites is locked out and no role change
+  // it makes is lost.
   test("the previous image's writes reach the memberships while the columns exist", async () => {
     const { ids, c } = await migrate(sql);
     const membership = async (userId: string) =>

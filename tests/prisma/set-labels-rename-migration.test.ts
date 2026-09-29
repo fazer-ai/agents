@@ -3,23 +3,13 @@ import { Client } from "pg";
 import { NATIVE_TOOL_NAMES } from "@/graph/tools/catalog";
 import { normalizeToolName } from "@/graph/tools/toolName";
 
-// Runs the ACTUAL migration file (a copy pasted here would drift, and $executeRawUnsafe rejects
-// multiple statements). `assign_label` became `set_labels`, and the two halves under test are the
-// ones a native rename does not usually need, because the OLD name is stored in tenant rows that
-// every reader silently discards when it stops recognising them:
-//
-//   - the GRANT: an explicit NATIVE row is the exact allowlist, so an agent granted only
-//     `assign_label` would come up with NO label tool and nothing anywhere would say why;
-//   - the GUIDANCE: `readToolGuidance` drops keys outside the catalog, so the operator's note would
-//     vanish from the tool description on the next turn;
-//   - the PRECONDITION, whose loss is not a lost capability but a lost GUARD:
-//     `readToolPreconditions` keeps whatever name it finds and the runtime matches by tool name, so
-//     a rule left under the old name stops matching and the fenced tool runs unfenced with the
-//     editor still showing the fence. The write side is stricter and would refuse the agent's next
-//     settings save outright, since it checks the KEY against the native catalog.
-//
-// Plus the usual half: an HTTP tool a tenant already named `set_labels` is moved off the name the
-// assembly now reserves.
+// Runs the ACTUAL migration file (a copy here would drift, and $executeRawUnsafe rejects multiple
+// statements). `assign_label` becomes `set_labels`, and the OLD name is stored in tenant rows that
+// every reader silently discards once it stops recognising it: the GRANT (an explicit NATIVE row is
+// the exact allowlist, so the agent would have NO label tool), the GUIDANCE (`readToolGuidance` drops
+// keys outside the catalog) and the PRECONDITION (the runtime matches by tool name, so the fenced
+// tool runs unfenced while the editor still shows the fence, and the write side refuses the next
+// settings save). Plus: an HTTP tool already named `set_labels` moves off the now reserved name.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
@@ -90,14 +80,10 @@ async function bagOf(
 const guidanceOf = (id: bigint) => bagOf(id, "toolGuidance");
 const preconditionsOf = (id: bigint) => bagOf(id, "toolPreconditions");
 
-// RUNS THE FILE ONE STATEMENT AT A TIME, on one connection, because that is what `migrate deploy`
-// does and it is the only way this file's atomicity means anything. Handing the whole text to `pg`
-// proves nothing: a multi-statement string goes out over the simple-query protocol, which Postgres
-// wraps in an IMPLICIT transaction, so the file would be atomic whatever it says and deleting its
-// `BEGIN` would break no assertion (measured in #555, recorded in `.claude/rules/prisma.md`).
-//
-// Dollar quoting is the part the scanner in `mcp-oauth-consent-action-rename-migration.test.ts`
-// refuses to see through, and this file has two bodies in it (`$fn$` and `$$`), so the tag is
+// Runs the file ONE STATEMENT AT A TIME on one connection, as `migrate deploy` does. A
+// multi-statement string goes out over the simple-query protocol, which Postgres wraps in an
+// IMPLICIT transaction, so the file would be atomic whatever it says and deleting its `BEGIN` would
+// break no assertion (`.claude/rules/prisma.md`). Dollar-quoted bodies (`$fn$` and `$$`) are
 // tracked: inside one, nothing terminates a statement until its matching closer.
 function statementsOf(text: string): string[] {
   const bare = text.replace(/^\s*--.*$/gm, "");
@@ -203,9 +189,9 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
       );
       return BigInt(r.rows[0].id);
     };
-    // A PROMPT THAT NAMES THE TOOL. The sample agent this repo ships did exactly this, so an
-    // operator who imported it has a stored prompt instructing the model to call a tool the catalog
-    // no longer has (review round 26). The second row is the control for the word boundary.
+    // NOTE: A PROMPT THAT NAMES THE TOOL, the shape an operator who imported the sample agent holds: a
+    // stored prompt instructing the model to call a tool the catalog does not have. The second row is
+    // the control for the word boundary.
     ids.prompt = await (async () => {
       const r = await suDb.query(
         `INSERT INTO "agents" (tenant_id, name, system_prompt, model_config, settings, created_at, updated_at)
@@ -260,9 +246,9 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
        VALUES ($1, $2, 'CODE', $3, '{}', '{}', NOW(), NOW())`,
       [String(tenant2Id), String(ids.importer), String(ids.code)],
     );
-    // ...and one whose DESTINATION key is already taken (a leftover `set_labels_2` rule from an
-    // earlier import). The value has nowhere to go, but the old key still has to leave: left
-    // behind, the native move below reads it as the winning native rule and deletes the real one.
+    // NOTE: ...and one whose DESTINATION key is already taken (a leftover `set_labels_2` rule from
+    // another import). The value has nowhere to go, but the old key still has to leave: left behind,
+    // the native move below reads it as the winning native rule and deletes the real one.
     ids.occupied = await (async () => {
       const r = await suDb.query(
         `INSERT INTO "agents" (tenant_id, name, system_prompt, model_config, settings, created_at, updated_at)
@@ -394,11 +380,10 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
       JSON.stringify({ toolPreconditions: 7, maxToolCalls: 5 }),
     );
 
-    // BOTH TABLES UNDER ONE NAME, in a tenant of its own. Each service refuses a name the other
+    // NOTE: BOTH TABLES UNDER ONE NAME, in a tenant of its own. Each service refuses a name the other
     // holds, but the pre-lock race under READ COMMITTED and an old bundle can both land this pair
-    // (namespace.ts says so in as many words). The assembly resolves it by ORDER — native,
-    // document, HTTP, code — so the HTTP tool is the one that reached the model, and the operator's
-    // rule is about THAT tool (review round 34).
+    // (namespace.ts says so). The assembly resolves it by ORDER (native, document, HTTP, code), so the
+    // HTTP tool is the one that reached the model, and the operator's rule is about THAT tool.
     const t3 = await suDb.query(
       "INSERT INTO tenants (name, slug, created_at, updated_at) VALUES ($1, $2, NOW(), NOW()) RETURNING id",
       ["SETLBL3", `setlbl3-${process.pid}`],
@@ -612,10 +597,9 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
   });
 
   test("with two tools under one name, the rule follows the one that ANSWERS", async () => {
-    // The assembly resolves the duplicate by order (native, document, HTTP, code — first wins), so
-    // the HTTP tool is the one the operator's rule was guarding. Walking CODE first moved the rule
-    // onto the loser and deleted the key, leaving the winner unguarded after the upgrade: a guard
-    // silently gone, which is what this whole block exists to prevent (review round 34).
+    // NOTE: The assembly resolves the duplicate by order (native, document, HTTP, code; first wins), so
+    // the HTTP tool is the one the operator's rule guards. Walking CODE first would move the rule onto
+    // the loser and delete the key, leaving the winner silently unguarded after the upgrade.
     const http = await suDb.query(
       'SELECT name FROM "tool_definitions" WHERE id = $1',
       [String(ids.dup_http)],

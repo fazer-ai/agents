@@ -1,5 +1,5 @@
 // WHO READS EACH PIECE OF OPERATOR TEXT: the one registry two test files read, so a rename's surface
-// and the fence over it cannot disagree (issue #604).
+// and the fence over it cannot disagree.
 //
 // The classes are about SITES of the walker in `src/modules/agents/text-caps.ts`, not about stored
 // paths, because one site can write several paths: the `toolGuidance` loop writes one per native
@@ -9,10 +9,8 @@
 // Rewritten by a rename, because a tool name in this text MEANS the agent's toolset. That is the
 // axis, and it is not "the reader has tools": four of these are read by the tool-calling model
 // itself, and the two guardrail ones are read by a model that has none (`analyze.ts` calls
-// `withStructuredOutput` and says so twice) yet are rules ABOUT what the agent may call, so a stale
-// name there is a policy pointed at a tool that no longer exists. The round's blind holdout caught
-// this: the first version of this file called the class `model_with_tools`, which was false for two
-// of its six members.
+// `withStructuredOutput`) yet are rules ABOUT what the agent may call, so a stale name there is a
+// policy pointed at a tool that no longer exists.
 export const NAMES_AGENT_TOOLS = [
   "followUp.steps[*].instructions",
   "guardrails.customPolicy",
@@ -22,8 +20,8 @@ export const NAMES_AGENT_TOOLS = [
   "handoff.instructions",
   "kanban.instructions",
   "toolGuidance.*",
-  // Issue #859: the notice the agent reads on an audio turn and the note on reply_as_text, both read
-  // by the tool-calling model, where a tool name means the agent's toolset.
+  // NOTE: The notice the agent reads on an audio turn and the note on reply_as_text, both read by the
+  // tool-calling model, where a tool name means the agent's toolset.
   "tts.spokenNoticeText",
   "tts.textChoiceNote",
 ];
@@ -55,13 +53,11 @@ export const PERSON_FACING = [
 
 // PROSE THAT DOES NOT LIVE IN THE SETTINGS BAG. An HTTP or CODE tool definition is a row on its own
 // table, so `text-caps.ts` knows nothing about it, and two of its columns are prose the MODEL reads:
-// the tool's own description and the per-argument descriptions inside `input_schema`. Keyed by
-// `<model>.<column>` because that is what the fence reads out of `prisma/schema.prisma`.
-//
-// Only the `String` columns of those two models are classified, not every column: a `Json` blob or a
-// URL template is not prose, and a fence that demanded a decision about `appointment` would be a tax
-// on unrelated work. A new STRING column on a tool definition is a prose candidate by default, which
-// is the case worth stopping.
+// the tool's description and the per-argument descriptions inside `input_schema`. Keyed by
+// `<model>.<column>` because that is what the fence reads out of `prisma/schema.prisma`. Only the
+// `String` columns are classified: a `Json` blob or a URL template is not prose, and demanding a
+// decision about `appointment` would tax unrelated work. A new STRING column on a tool definition is
+// a prose candidate by default, which is the case worth stopping.
 export const TOOL_COLUMNS: Record<
   string,
   "names_agent_tools" | "person" | "not_prose"

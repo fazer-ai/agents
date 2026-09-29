@@ -39,8 +39,8 @@ describe("isBlockedIp", () => {
     expect(isBlockedIp("::ffff:10.0.0.1")).toBe(true);
   });
 
-  // Regression: the IPv4-mapped/embedded forms in HEX hextets (what `new URL()` normalizes a
-  // dotted literal into) must block too — these were a real SSRF bypass to metadata/loopback.
+  // NOTE: the IPv4-mapped/embedded forms in HEX hextets (what `new URL()` normalizes a dotted literal
+  // into) must block too, or they reach metadata and loopback.
   test("blocks IPv4-mapped/6to4/NAT64 IPv6 written in hex hextets", () => {
     expect(isBlockedIpv6("::ffff:a9fe:a9fe")).toBe(true); // 169.254.169.254 (metadata)
     expect(isBlockedIpv6("::ffff:7f00:1")).toBe(true); // 127.0.0.1
@@ -140,10 +140,9 @@ describe("isNameNotFound", () => {
     expect(
       isNameNotFound(Object.assign(new Error("x"), { code: "ENOTFOUND" })),
     ).toBe(true);
-    // `EMFILE` and `ENOMEM` are the ones worth naming: getaddrinfo can fail for a purely LOCAL
-    // reason (descriptor exhaustion), and the question is whether that failure gets reported as
-    // "your hostname does not exist". It cannot — libuv translates `EAI_SYSTEM` to the underlying
-    // errno, so the code that arrives is `EMFILE`, and only a real not-found is `ENOTFOUND`.
+    // NOTE: getaddrinfo can fail for a purely LOCAL reason (descriptor exhaustion), which must not be
+    // reported as "your hostname does not exist". libuv translates `EAI_SYSTEM` to the underlying
+    // errno, so that arrives as `EMFILE`, and only a real not-found is `ENOTFOUND`.
     for (const code of [
       "EAI_AGAIN",
       "ETIMEDOUT",
@@ -183,15 +182,10 @@ describe("assertSafeOutboundUrl — how a resolver failure is classified", () =>
   });
 
   test("a transient failure is NOT the caller's fault and propagates", async () => {
-    // The distinction the 400 would erase: `EAI_AGAIN` means the resolver failed, not that the
-    // hostname is bad, and a 400 tells the caller its input is wrong and not to retry.
-    //
-    // It exercises the SEAM, not production. Measured under Bun, every lookup failure arrives as
-    // `code: "ENOTFOUND", errno: 4` — a nonexistent name, a name with no A record and a
-    // 300-character label are indistinguishable — so no real resolver reaches this branch today.
-    // What it pins is that the gate is a gate: a runtime that does distinguish gets this behaviour
-    // without another change here, and a future edit that collapses the classification into "any
-    // failure is a 400" turns this red.
+    // NOTE: `EAI_AGAIN` means the resolver failed, not that the hostname is bad; a 400 would tell the
+    // caller its input is wrong and not to retry. This exercises the SEAM: under Bun every lookup
+    // failure arrives as `ENOTFOUND`, so no real resolver reaches this branch, but collapsing the
+    // classification into "any failure is a 400" turns this red.
     const err = await assertSafeOutboundUrl("https://whatever.example/x", {
       lookup: failing("EAI_AGAIN") as never,
     }).catch((e: unknown) => e);

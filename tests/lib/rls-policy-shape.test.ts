@@ -8,15 +8,11 @@ import {
 } from "@/lib/tenancy/fleet-role";
 import { asSuperAdminOn, runScopedOn } from "@/lib/tenancy/multi-tenant";
 
-// Issue #382. The policy every tenant-scoped table carries decides whether a tenant index is
-// reachable at all, and the old shape put a column-free branch in an OR with the tenant predicate:
-// the planner cannot turn either side into an index condition, so the whole policy became a Filter
-// on top of whatever scan it picked. Measured on 1,000,000 rows before the split: 108 ms and
-// 509,949 rows read and discarded to return a page of 51.
-//
-// The two halves below are separate tests on purpose. That the index is reachable says nothing
-// about who can reach the rows, and every arrangement that fixes the plan can also delete the
-// isolation — one of them silently (see the inheritance test).
+// The policy every tenant-scoped table carries decides whether a tenant index is reachable at all:
+// a column-free branch ORed with the tenant predicate keeps the planner from turning either side
+// into an index condition, so the whole policy becomes a Filter on top of whatever scan it picked.
+// Plan and isolation are separate tests on purpose: every arrangement that fixes the plan can also
+// delete the isolation, one of them silently (see the inheritance test).
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -50,18 +46,17 @@ let t2 = 0n;
 // this file would be a second spelling of the thing under test.
 let fleetRole = "";
 const slugPrefix = `rls382-${process.pid}`;
-// The plan probe runs on a table of its own. `outbound_webhook_deliveries` is written by other
-// files in this suite, and a concurrent DELETE moves the statistics out from under the planner:
-// measured, the same policy came out as an `Index Cond` alone and as a bare `Filter` in a full run.
-// What is under test is whether the QUAL can be pushed into an index, not which plan the planner
-// happens to cost cheapest today — and the real table's shape is held by the catalog fence below.
+// The plan probe runs on a table of its own: other files in this suite write
+// `outbound_webhook_deliveries`, and a concurrent DELETE moves the statistics under the planner,
+// flipping the same policy between `Index Cond` and `Filter`. What is under test is whether the QUAL
+// can be pushed into an index; the real table's shape is held by the catalog fence below.
 const PROBE_TABLE = `rls382_plan_${process.pid}`;
 
 // The plan is read as JSON and reduced to the one distinction that matters: did the tenant
 // predicate land ON the index (an `Index Cond`), or on top of a scan that had already read the
-// row (a `Filter`)? `enable_seqscan = off` is what keeps the answer about qual PLACEMENT rather
-// than about the planner's cost choice on a small table — without it a table this size can be
-// scanned either way and the assertion would depend on the seed size.
+// row (a `Filter`)? `enable_seqscan = off` keeps the answer about qual PLACEMENT rather than the
+// planner's cost choice: a table this size can be scanned either way, and the assertion would
+// depend on the seed size.
 async function planOf(setup: (tx: PrismaClient) => Promise<void>) {
   return appDb.$transaction(async (tx) => {
     await setup(tx as unknown as PrismaClient);
@@ -110,8 +105,8 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
         })),
       });
     }
-    // The probe table, with the policies this change ships and the skew the issue measured: one
-    // small tenant whose rows are spread across the id range, so a backward primary-key scan has to
+    // NOTE: The probe table, with the shipped policies and a skewed tenant: one small tenant
+    // whose rows are spread across the id range, so a backward primary-key scan has to
     // walk the table to fill a page. 200 rows for t1, 3000 for t2.
     for (const statement of [
       `CREATE TABLE ${PROBE_TABLE} (
@@ -230,10 +225,9 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
       member: boolean;
       usage: boolean;
     }>;
-    // SET, not MEMBER, is what `asSuperAdmin` needs — a grant made `WITH SET FALSE` answers MEMBER
-    // true and denies `SET ROLE` (measured on 17.10). USAGE is the opposite failure: with it true
-    // the fleet policy applies PASSIVELY to the app role, which reads every tenant's rows with no
-    // error and no plan difference, i.e. the whole isolation model gone silently.
+    // NOTE: SET, not MEMBER, is what `asSuperAdmin` needs: a grant made `WITH SET FALSE` answers
+    // MEMBER true and denies `SET ROLE`. USAGE is the opposite failure: with it true the fleet policy
+    // applies PASSIVELY to the app role, which reads every tenant's rows with no error at all.
     expect(who[0]?.can_set_role).toBe(true);
     expect(who[0]?.member).toBe(true);
     expect(who[0]?.usage).toBe(false);
@@ -267,17 +261,11 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
     expect(fleetRole.length).toBeLessThanOrEqual(63);
   });
 
-  // The derivation has to survive names Postgres accepts and this repository did not think of. Both
-  // of these were live defects, measured before the normalisation went in:
-  //
-  //   * `left(…, 30)` counts CHARACTERS while an identifier is limited to 63 BYTES. A 25-character
-  //     Japanese name derived 86 bytes, Postgres truncated it SILENTLY, the truncation cut off the
-  //     hash, and the next grant failed with `role does not exist`.
-  //   * a database name may contain a double quote, and it landed inside the derived name: the next
-  //     `GRANT … TO "<name>"` came out as `syntax error at or near …`.
-  //
-  // Asked of the EXPRESSION this repository ships, with the database swapped for a parameter, so it
-  // cannot pass against a second copy of the rule written to agree with itself.
+  // NOTE: the derivation has to survive any name Postgres accepts: over 63 BYTES Postgres truncates
+  // SILENTLY, cutting off the hash and failing the next grant with `role does not exist`, and a
+  // double quote in the derived name breaks `GRANT … TO "<name>"`. Asked of the EXPRESSION this
+  // repository ships, with the database as a parameter, so it cannot pass against a second copy of
+  // the rule written to agree with itself.
   test("the derived name stays inside the identifier limit, and safe to interpolate", async () => {
     const expr = FLEET_ROLE_EXPR.replaceAll("current_database()::text", "$1");
     const hostile = [
@@ -296,8 +284,8 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
         name,
       )) as Array<{ derived: string; bytes: number; as_identifier: string }>;
       const r = row[0] as (typeof row)[number];
-      // Under the limit, so `::name` is not a truncation — and the hash survives, which is what
-      // keeps two long names that share a prefix from becoming one role.
+      // NOTE: Under the limit, so `::name` is not a truncation, and the hash survives, which keeps
+      // two long names that share a prefix from becoming one role.
       expect(r.bytes).toBeLessThanOrEqual(63);
       expect(r.as_identifier).toBe(r.derived);
       expect(r.derived).toMatch(/^fazerai_fleet_[a-zA-Z0-9_]+_[0-9a-f]{8}$/);
@@ -345,10 +333,10 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
     expect(afterRollback[0]?.u).toBe(sessionUser as string);
   });
 
-  // WHY the fence asks for exactly one role, and not merely that the fleet role is among them. A
-  // policy is a list, and `USING (true)` applies to every role on it — so one extra name is not a
-  // cosmetic drift, it is every tenant handed to that name with no `SET ROLE` involved at all. The
-  // runtime check in `src/lib/db-guard.ts` asked containment until this was measured.
+  // NOTE: WHY the fence asks for exactly one role, not merely that the fleet role is among them: a policy
+  // is a list and `USING (true)` applies to every role on it, so one extra name is every tenant
+  // handed to that name with no `SET ROLE` at all. The runtime check in `src/lib/db-guard.ts` asks
+  // the same.
   test("one extra role on the fleet policy hands it every tenant", async () => {
     const appRole = (
       (await appDb.$queryRaw`SELECT current_user AS u`) as Array<{ u: string }>
@@ -387,9 +375,9 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
     expect(await readsWithNoScope()).toBe(0);
   });
 
-  // The fence. The plan test above proves ONE table; this one is what makes the next table born
-  // with the old shape fail, and what would have caught the whole defect: the `is_super_admin`
-  // branch is not a property of a table, it is a property of every policy in the schema.
+  // NOTE: the fence. The plan test above proves ONE table; this one fails any table whose tenant policy
+  // carries the `is_super_admin` branch, which is a property of every policy in the schema, not of
+  // one table.
   test("every table under RLS carries the split policy pair, and no tenant policy names the old GUC", async () => {
     const policies = (await suDb.$queryRaw`
       SELECT c.relname                                   AS table_name,
@@ -425,8 +413,8 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
     expect(fleetPolicies.length).toBe(tables.length);
     expect(policies.length).toBe(tables.length * 2);
 
-    // The tenant policy applies to everyone (no TO clause), so the migration never has to know the
-    // deployment's app-role name — which is configurable. Only the fleet policy names a role.
+    // NOTE: The tenant policy applies to everyone (no TO clause), so the migration never has to know
+    // the deployment's configurable app-role name. Only the fleet policy names a role.
     expect(
       tenantPolicies
         .filter((p) => p.roles.join() !== "public")
@@ -444,10 +432,9 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
     ).toEqual([]);
   });
 
-  // The claim that decides POLICY over BYPASSRLS, which is the design this replaced rather than the
-  // one it fixes — so it had no number behind it until here. A table that gets RLS in some future
-  // migration and does not get its fleet policy is invisible to the fleet path under this design,
-  // and fully visible under the other one.
+  // NOTE: the claim that decides POLICY over BYPASSRLS: a table that gets RLS in a future migration
+  // without its fleet policy is invisible to the fleet path under this design, and fully visible
+  // under a BYPASSRLS role.
   test("a table under RLS with no fleet policy fails CLOSED for the fleet path", async () => {
     const probe = `rls382_forgotten_${process.pid}`;
     const bypassRole = `rls382_bypass_${process.pid}`;
@@ -466,9 +453,7 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
       });
       expect((seen as Array<{ n: number }>)[0]?.n).toBe(0);
 
-      // The counterfactual, measured rather than argued: the same table, reached by a BYPASSRLS role
-      // — the design this one was chosen over — hands back every row.
-      //
+      // NOTE: The counterfactual: the same table, reached by a BYPASSRLS role, hands back every row.
       // The grantee is read from the APP connection, not written as `session_user`: inside the su
       // client that resolves to the migration role, and the grant would land on the wrong account.
       const runtimeRole = (

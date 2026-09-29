@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { AppError } from "@/lib/errors";
 import { assertUsableCount, badQueryParam } from "@/lib/query-param";
 
-// The RANGE half of issue #372, kept beside the services rather than in the query parser: MCP and
-// the console's own service calls reach these functions without a query string, so a check that
-// lived only in the parser would hold REST to a rule nothing else obeys.
+// The range check lives beside the services rather than in the query parser: MCP and the console's
+// own service calls reach these functions without a query string, so a check only in the parser
+// would hold REST to a rule nothing else obeys.
 
 describe("assertUsableCount", () => {
   const REFUSED = [0, -1, -5, 1.5, 3.5, Number.NaN, Number.POSITIVE_INFINITY];
@@ -25,8 +25,8 @@ describe("assertUsableCount", () => {
   }
 
   test("zero is refused rather than clamped to the default", () => {
-    // The clamps this replaces answered `limit=0` with the default page — a different question
-    // than the one asked, and indistinguishable by the client from having asked for it.
+    // NOTE: Clamping `limit=0` to the default page would answer a different question than the one
+    // asked, indistinguishable by the client from having asked for it.
     expect(() => assertUsableCount(0, "limit")).toThrow(AppError);
   });
 

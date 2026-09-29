@@ -1,24 +1,13 @@
 import { expect } from "bun:test";
 
 // A sweep that subtracts a hand-written ledger of known offenders is guarded in ONE direction by
-// construction, and every file that holds one tests that direction: the offender set is derived from
-// the tree, so an entry that stopped offending shows up as a waiver nobody removed.
-//
-// The other direction has no anchor in the tree at all. Appending one name silences a NEW offender
-// AND satisfies the stale-waiver rule, so the suite goes green. Measured on
-// `SAY_LESS_GRANDFATHERED`, against main: a fresh throw site whose message interpolates, on
-// `errors.agentNotFound`, whose catalog entry carries no placeholder, took
-// tests/api/error-catalog.test.ts from `1 fail` to `0 fail` by that append alone (issue #293).
-//
-// The SIZE is the only fact about a ledger the tree cannot supply, which is what makes it the anchor.
-// Pinning it does not make growth impossible in a file its author owns, and is not meant to: it makes
-// growth a SECOND edit, in a different place, that reads as a sentence in the diff. `- 26` / `+ 27`
-// says the backlog got worse; an appended string says nothing.
-//
-// EXACT, never an upper bound. A bound sitting above the truth is slack, and slack is one free append
-// per unit of it: a ledger worked from 26 down to 20 under `toBeLessThanOrEqual(26)` has six silent
-// appends banked. Exact equality makes working a ledger DOWN cost the same second edit that growing
-// it does, which is the trade this accepts.
+// construction: the offender set is derived from the tree, so an entry that stopped offending shows
+// up as a stale waiver. The other direction has no anchor: appending one name silences a NEW
+// offender AND satisfies the stale-waiver rule (one append to `SAY_LESS_GRANDFATHERED` turns a real
+// failure in tests/api/error-catalog.test.ts green). The SIZE is the one fact the tree cannot supply,
+// so it is the anchor: growth becomes a SECOND edit that reads in the diff (`- 26` / `+ 27`). EXACT,
+// never an upper bound: slack above the truth is one silent append per unit, and exact equality
+// makes working a ledger DOWN cost the same second edit, which is the trade this accepts.
 export function expectWaiverLedger(
   name: string,
   ledger:

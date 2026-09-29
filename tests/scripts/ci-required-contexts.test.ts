@@ -4,20 +4,13 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import { withoutComments } from "@/../tests/utils/source-text";
 
-// The branch rule on `main` requires a set of status-check CONTEXTS, and a context that never gets
-// published blocks the merge exactly as a red one does. Nothing in this repo connected the two
-// facts, so the workflows drifted from the rule twice and the cost landed on a human: PRs #602 and
-// #641 touched only docs, `paths-ignore` kept all three workflows from starting, the required
-// contexts stayed absent, and the ship gate's T0 merge had to be done by hand (issue #643).
-//
-// The fix has three halves and this fence holds all of them. The workflows always START and ask a
-// `changes` job what moved; the required NAME belongs to a small job that always RUNS; and the
-// question "is this only documentation?" is not answered by the directory alone, because part of
-// `docs/` is read by the suite as INPUT.
-//
-// This test cannot read the branch rule (it lives in GitHub, not in the tree), so REQUIRED below is
-// a copy of it. That is the point rather than a flaw: changing one without the other is the failure
-// this exists to make loud.
+// The branch rule on `main` requires a set of status-check CONTEXTS, and a context that is never
+// published blocks the merge exactly as a red one does (a docs-only PR whose workflows a
+// `paths-ignore` skipped cannot merge). So the workflows always START and ask a `changes` job what
+// moved; the required NAME belongs to a small job that always RUNS; and "is this only
+// documentation?" is not answered by the directory alone, because part of `docs/` is suite INPUT.
+// The rule lives in GitHub, not in the tree, so REQUIRED below is a copy of it: changing one without
+// the other is the failure this makes loud.
 
 const WORKFLOWS = [
   ".github/workflows/lint.yml",
@@ -35,15 +28,12 @@ const SUITE_ROOT = (
   "./tests"
 ).replace(/^\.\//, "");
 
-// The contexts the `main` ruleset of fazer-ai/agents requires. Until the rule is edited this is the
-// list this PR INSTALLS, not the one live: the rule still names `test (1/4)`..`test (4/4)`, and it
-// cannot be edited first because no open PR publishes `tests` yet and every one of them would block
-// on an absent context. The order is merge, then edit the rule, and this list is what the edit must
-// produce.
+// The contexts the `main` ruleset of fazer-ai/agents requires, copied by hand: the list and the rule
+// change together.
 const REQUIRED = ["lint", "type-check", "tests"] as const;
 
-// The trigger-syntax globs that used to sit in `paths-ignore`. They must not come back: that filter
-// skips the workflow, which is what published nothing.
+// Trigger-syntax globs that must never go back into `paths-ignore`: that filter skips the workflow,
+// which then publishes nothing.
 const DOCS_ONLY = [
   "docs/**",
   "**.md",
@@ -79,17 +69,12 @@ for (const f of files) {
 }
 
 /**
- * THE CLASSIFIER'S OWN ANSWER, not a guess at it.
+ * THE CLASSIFIER'S OWN ANSWER, not a guess at it. The arms are run rather than matched as YAML
+ * text: a text match reads a correct classifier as broken once anyone reorders the alternatives
+ * inside an arm or groups two paths into one, and a fence that cries wolf gets deleted.
  *
- * An earlier version of this fence looked for literal text in the YAML (`docs/deploy.md) echo "test
- * input:`). That reads a correct classifier as broken the moment anyone reorders the alternatives
- * inside an arm, which the shell treats as the same program, or groups two paths into one arm, which
- * is the natural shape of the second entry. A fence that cries wolf is the one people learn to
- * delete, so this runs the arms instead of matching them.
- *
- * It also cannot be replaced by a glob library: in shell `case`, `*` crosses `/`, so `.claude/*`
- * matches `.claude/rules/prisma.md`. minimatch and Bun.Glob do not, and swapping them in would
- * silently stop covering a case this already covers.
+ * No glob library can stand in: in shell `case`, `*` crosses `/`, so `.claude/*` matches
+ * `.claude/rules/prisma.md`. minimatch and Bun.Glob do not.
  */
 function extractCase(): { variable: string; arms: string } {
   const run = String(
@@ -128,22 +113,15 @@ function classify(path: string): boolean {
 }
 
 /**
- * Every file the suite OPENS and asserts on, whatever its extension.
- *
- * Comments are stripped first (`withoutComments` keeps string bodies, which is exactly what reading a
- * path out of a literal needs): after this round the fence's own prose names `CLAUDE.md`, and a
- * sweep over raw text would report itself.
- *
- * A path held in a `const` counts, because that is the idiom already in the tree
- * (tests/prisma/rls-policy-split-migration.test.ts). DYNAMIC reads do not: a path built by `join`, a
- * template with a variable, or `new URL` is not resolvable by reading the file, and there are 30-odd
- * of them in `tests/`. That is a declared gap rather than an oversight — the ones that matter here
- * are documentation a person edits by hand, and nobody reaches those through a computed path.
+ * Every file the suite OPENS and asserts on, whatever its extension. Comments are stripped first.
+ * A path held in a `const` counts (the idiom in tests/prisma/rls-policy-split-migration.test.ts).
+ * DYNAMIC reads (`join`, a template with a variable, `new URL`) do not: a declared gap, since the
+ * files that matter here are docs a person edits by hand, never reached through a computed path.
  */
 export function readsIn(source: string): string[] {
-  // Comments first: after this round the fence's own prose names `CLAUDE.md`, so a sweep over raw
-  // text would report itself. `withoutComments` keeps string bodies, which is exactly what reading
-  // a path out of a literal needs.
+  // NOTE: Comments first: the fence's own prose names `CLAUDE.md`, so a sweep over raw text would
+  // report itself. `withoutComments` keeps string bodies, which is exactly what reading a path out of
+  // a literal needs.
   const src = withoutComments(source);
   const consts = new Map<string, string>();
   for (const m of src.matchAll(/\bconst\s+(\w+)\s*=\s*"([^"\n]+)"/g)) {
@@ -190,8 +168,8 @@ describe("the required contexts are always published", () => {
   });
 
   test("no required context is held by a matrix job", () => {
-    // Measured on agents-pro: a skipped matrix job publishes `test (${{ matrix.shard }}/4)`
-    // uninterpolated, so per-shard contexts are absent precisely when the suite is skipped.
+    // NOTE: A skipped matrix job publishes `test (${{ matrix.shard }}/4)` uninterpolated, so per-shard
+    // contexts are absent precisely when the suite is skipped.
     for (const context of REQUIRED) {
       const matrix = allJobs.get(context)?.job.strategy?.matrix;
       expect(`${context} matrix: ${JSON.stringify(matrix ?? null)}`).toBe(
@@ -241,8 +219,8 @@ describe("the required contexts are always published", () => {
 
 describe("the workflows always start", () => {
   test("no workflow filters itself out by path", () => {
-    // Asked of the PARSED triggers, not of the text: these files talk about `paths-ignore` in the
-    // comment that explains why it left, and a grep would read its own tombstone as the thing.
+    // NOTE: Asked of the PARSED triggers, not of the text: these files mention `paths-ignore` in a
+    // comment saying why it is not used, and a grep would read that comment as the thing.
     for (const f of files) {
       for (const [event, cfg] of Object.entries(f.on)) {
         expect(
@@ -292,14 +270,10 @@ describe("what counts as documentation", () => {
   });
 
   test("every file the suite reads is classified as code", () => {
-    // `docs/` is not prose by definition, and neither is any other skippable path. Three tests open
-    // `docs/deploy.md` and assert on it, so an edit there can turn the suite red; letting it skip the
-    // suite would land that red on the next code PR, charged to whoever did not cause it. Measured:
-    // replacing `stop the old process` inside the migration note takes
-    // native-tool-names-renamed-by-migration from 2 pass to 1 pass 1 fail.
-    //
-    // The sweep covers EVERY skippable set, not just `docs/`: `*.md` reaches CLAUDE.md and README.md
-    // at the root, and a test reading one of those would reopen the hole this closed (#676).
+    // NOTE: `docs/` is not prose by definition, and neither is any other skippable path. Three tests
+    // open `docs/deploy.md` and assert on it, so an edit there can turn the suite red; letting it skip
+    // the suite would land that red on the next code PR, charged to whoever did not cause it. EVERY
+    // skippable set is swept: `*.md` reaches CLAUDE.md and README.md at the root too.
     for (const file of filesReadByTests()) {
       expect(`${file} runs the suite: ${classify(file)}`).toBe(
         `${file} runs the suite: true`,
@@ -308,16 +282,11 @@ describe("what counts as documentation", () => {
   });
 
   test("the sweep reads the shapes the tree uses, and refuses the ones it cannot resolve", () => {
-    // Fixtures rather than the tree, so each rule is exercised on its own: every real read in the
-    // tree today is a plain literal, so dropping the comment strip or the const lookup would pass
-    // unnoticed.
-    //
-    // THE FIXTURES NAME A PATH THE CLASSIFIER ALREADY RUNS THE SUITE FOR, and that is forced rather
-    // than arbitrary. This fence sweeps its own file, `withoutComments` keeps string bodies on
-    // purpose (that is how it reads a path out of a literal), so a call spelled inside a fixture
-    // string is indistinguishable from a real one and counts. Spelling a skippable path here would
-    // make the fence demand an arm for a file nothing actually reads. It fails loudly rather than
-    // silently, which is the right direction, but the fixture has no business raising it.
+    // NOTE: Fixtures rather than the tree, so each rule is exercised on its own: every real read in the
+    // tree is a plain literal, so dropping the comment strip or the const lookup would pass unnoticed.
+    // The fixtures name a path the classifier ALREADY runs the suite for, by force: this fence sweeps
+    // its own file with string bodies kept, so a call inside a fixture string counts as real, and a
+    // skippable path here would make the fence demand an arm for a file nothing reads.
     const cases: Array<[string, string, string[]]> = [
       [
         "a plain literal",
@@ -329,8 +298,8 @@ describe("what counts as documentation", () => {
         'await Bun.file("docs/deploy.md").text();',
         ["docs/deploy.md"],
       ],
-      // Outside `docs/` on purpose: the point of #676 is that the sweep is not a directory check,
-      // so a fixture set that only ever named `docs/…` would pass on a sweep narrowed back to it.
+      // NOTE: Outside `docs/` on purpose: the sweep is not a directory check, so a fixture set that only
+      // named `docs/…` would pass on a sweep narrowed back to it.
       [
         "a literal outside docs/",
         'readFileSync("package.json", "utf8");',

@@ -10,11 +10,10 @@ import {
   withDeadline,
 } from "../db-gate";
 
-// The gate itself runs at PRELOAD, before any test file, which is the one place it can refuse a run
-// instead of reporting on one. That also puts it out of reach of a test: by the time this file
-// executes, the gate has already passed. So the DECISION is a pure function and this proves it with
-// fixtures, in both directions: a fence with no offender left passes over an empty set just as
-// happily as over a correct one (issue #351).
+// The gate runs at PRELOAD, the one place it can refuse a run instead of reporting on one, and so out
+// of reach of a test: by the time this file executes it has passed. So the DECISION is a pure
+// function proved here with fixtures, in both directions, since a fence passes over an empty set as
+// happily as over a correct one.
 
 describe("the database gate's decision", () => {
   const configured = {
@@ -51,8 +50,8 @@ describe("the database gate's decision", () => {
 
   test("the opt-out is what makes a deliberate run without a database silent", () => {
     expect(missingDbConfig({ [DB_GATE_OPT_OUT]: "1" })).toBeNull();
-    // Only the exact value. A variable left at "0" or "false" by a shell profile is not a decision
-    // anyone made about this run.
+    // NOTE: only the exact value. A variable left at "0" or "false" by a shell profile is not a
+    // decision anyone made about this run.
     expect(missingDbConfig({ [DB_GATE_OPT_OUT]: "0" })).not.toBeNull();
     expect(missingDbConfig({ [DB_GATE_OPT_OUT]: "true" })).not.toBeNull();
   });
@@ -70,9 +69,8 @@ describe("the database gate's decision", () => {
     ).toContain("would still exit 0");
   });
 
-  // The exact shape Prisma produces, measured: the message OPENS with a newline, so a first-line
-  // trim prints the variable and the database and then stops, which is the one thing a reader
-  // cannot act on.
+  // NOTE: the shape Prisma produces: the message OPENS with a newline, so a first-line trim prints the
+  // variable and the database and then stops, which is the one thing a reader cannot act on.
   test("the driver's reason survives, on one line", () => {
     const msg = unreachableDb(
       "TEST_APP_DATABASE_URL",
@@ -180,8 +178,8 @@ describe("what cancels a probe that will not answer", () => {
 });
 
 // An endpoint that accepts the connection and then never answers is the case the deadline exists
-// for: measured against a listener that accepts and stays silent, the preload was still hanging at
-// 45s. A gate that stalls instead of refusing is not a gate.
+// for: without it the preload hangs with no output. A gate that stalls instead of refusing is not a
+// gate.
 describe("the probe's deadline", () => {
   test("a promise that never settles is rejected, naming what did not answer", async () => {
     const never = new Promise<never>(() => {});
@@ -196,10 +194,9 @@ describe("the probe's deadline", () => {
     ).resolves.toBe("pong");
   });
 
-  // The timer has to be cleared on the winning path too: a pending timeout keeps the event loop
-  // alive, so a probe that answered would still hold the run open for the whole deadline. Measured
-  // from the outside, because a leaked timer is invisible to the process holding it (Bun's
-  // `process.getActiveResourcesInfo` returns an empty list, so asserting on it proves nothing).
+  // NOTE: the timer has to be cleared on the winning path too: a pending timeout keeps the event loop
+  // alive, so a probe that answered would still hold the run open for the whole deadline. Checked
+  // from the outside, because Bun's `process.getActiveResourcesInfo` returns an empty list.
   test("the timer does not outlive a settled probe", async () => {
     const module = new URL("../db-gate.ts", import.meta.url).pathname;
     const started = Date.now();
@@ -214,16 +211,14 @@ describe("the probe's deadline", () => {
     );
     const code = await proc.exited;
     expect(code).toBe(0);
-    // Without the clearTimeout this process stays alive for the full 30s deadline.
+    // NOTE: without the clearTimeout this process stays alive for the full 30s deadline.
     expect(Date.now() - started).toBeLessThan(10_000);
   });
 });
 
-// The gate itself is a PRELOAD, so the two tests above it prove the decision and these two prove
-// the thing that actually ships: a real `bun test` invocation, with a real broken environment,
-// refusing to run. This is where the app-role half was missing, and a unit test could not have
-// caught it, because the shape of the bug was "the preload asks a different question than the
-// guarded files do".
+// The gate is a PRELOAD, so the tests above prove the decision and these prove what ships: a real
+// `bun test` invocation with a broken environment refusing to run. Only this level sees the preload
+// asking a different question than the guarded files do.
 describe("the gate, as a run", () => {
   const noop = new URL("../utils/db-gate-noop.ts", import.meta.url).pathname;
   const repoRoot = new URL("../..", import.meta.url).pathname;
@@ -233,9 +228,9 @@ describe("the gate, as a run", () => {
   const appUrl = process.env.TEST_APP_DATABASE_URL as string;
 
   async function run(env: Record<string, string>) {
-    // The opt-out is stripped from the INHERITED environment and only ever set by a caller that
-    // means it. Otherwise a parent run started with ALLOW_NO_DB=1 would hand it to every child,
-    // and the refusal these tests are watching for would never happen.
+    // NOTE: the opt-out is stripped from the INHERITED environment and only set by a caller that
+    // means it. Otherwise a parent run started with ALLOW_NO_DB=1 would hand it to every child, and
+    // the refusal these tests watch for would never happen.
     const { [DB_GATE_OPT_OUT]: _optOut, ...inherited } = process.env;
     const proc = Bun.spawn(["bun", "test", noop], {
       cwd: repoRoot,
@@ -278,8 +273,8 @@ describe("the gate, as a run", () => {
       TEST_APP_DATABASE_URL: "postgresql://u:p@127.0.0.1:1/nothing_test",
     });
     expect(code).toBe(0);
-    // The run got past the preload and executed the noop file, which is the whole claim: the
-    // opt-out has to skip the PROBE, not merely the variable check that precedes it.
+    // NOTE: the run got past the preload and executed the noop file: the opt-out has to skip the
+    // PROBE, not merely the variable check that precedes it.
     expect(output).toContain("1 pass");
     expect(output).toContain("0 fail");
   }, 60_000);

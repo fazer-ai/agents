@@ -3,20 +3,12 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { Client } from "pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 
-// WHAT THE MIGRATION SHIPS, asked of the file and of the catalog (issue #228).
-//
-// It carries no data statement at all, and that is the decision under test as much as the shapes
-// below are. An earlier version closed every pre-existing non-terminal row here, because those rows
-// predate both id columns and the sweep could not read them. `classifyStrandedDelivery` asks the
-// EVENT NAME first now, and `event` is a column every build has always written — so the sweep reads
-// a legacy row as well as any UPDATE here could, and better in two ways: it can see `claimed_at`,
-// which tells a redelivered row from an abandoned one, and it writes the conversation-level line
-// that a blanket UPDATE could never fill in. tests/modules/delivery-sweep.test.ts is where that is
-// proved, on rows carrying exactly the legacy shape.
-//
-// What is left is DDL, and DDL is invisible to every behavioural test in the suite: an index changes
-// no result, and a name only matters the day Postgres shortens it. Both halves are read here — the
-// FILE for what the statement says, the CATALOG for what a database built from it holds.
+// WHAT THE MIGRATION SHIPS, asked of the file and of the catalog. It carries no data statement, and
+// that is under test too: `classifyStrandedDelivery` reads a legacy row by its EVENT NAME, sees
+// `claimed_at` (a redelivered row versus an abandoned one) and writes the conversation-level line,
+// none of which an UPDATE here could (proved in tests/modules/delivery-sweep.test.ts). What is left
+// is DDL, invisible to every behavioural test: the FILE says what the statement says, the CATALOG
+// what a database built from it holds.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
@@ -46,10 +38,9 @@ const db = prisma as PrismaClient;
 
 describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
   test("writes no data statement: the sweep classifies what it finds", async () => {
-    // The rule, held against the FILE. A statement here cannot read `claimed_at`, so a legacy
-    // `PENDING` row whose receipt is hours old but which was REDELIVERED a second ago — sitting one
-    // instant from its `PENDING -> PROCESSING` CAS — would be closed by it, that CAS would match
-    // nothing, and the upgrade itself would discard a live customer message Chatwoot never resends.
+    // NOTE: a statement here cannot read `claimed_at`, so a legacy `PENDING` row with an old receipt
+    // but REDELIVERED a second ago (one instant from its `PENDING -> PROCESSING` CAS) would be closed,
+    // the CAS would match nothing, and the upgrade would discard a live message Chatwoot never resends.
     // An age fence does not save that row: its receipt is old and only the claim says otherwise.
     expect(sql).not.toMatch(/^\s*UPDATE\s/im);
     expect(sql).not.toMatch(/^\s*DELETE\s/im);
@@ -60,15 +51,10 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
   });
 
   test("builds both indexes CONCURRENTLY, and can be run again after one fails", async () => {
-    // The lock, which is the only thing in this file about the UPGRADE rather than about the sweep.
-    // A plain CREATE INDEX holds a SHARE lock for the whole build and blocks INSERT on the table it
-    // indexes; this migration runs while the previous release is still acking webhooks and writing
-    // this very table AFTER the 200 has gone out, on a bounded retry. Nothing prunes the ledger, so
-    // the build time is bounded by the install's whole history.
-    //
-    // Measured: `prisma migrate deploy` in this repo does not wrap a migration in a transaction, so
-    // Postgres accepts CONCURRENTLY — applied to a scratch database through the real command, both
-    // indexes came out `indisvalid`.
+    // NOTE: a plain CREATE INDEX holds SHARE for the whole build and blocks INSERT, while the previous
+    // release is still writing this table after acking webhooks. Nothing prunes the ledger, so the
+    // build time grows with the install's history. `migrate deploy` does not wrap a migration in a
+    // transaction, so Postgres accepts CONCURRENTLY here.
     const creates = [
       ...sql.matchAll(/CREATE INDEX(\s+CONCURRENTLY)?\s+"([^"]+)"/g),
     ];
@@ -90,11 +76,9 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
   });
 
   test("adds its columns idempotently, so a failed concurrent build can be re-run", async () => {
-    // The same property that lets the indexes be concurrent forces this one: `prisma migrate deploy`
-    // does not wrap this migration in a transaction, so a concurrent build that is cancelled or
-    // fails leaves the columns already added. Marked rolled back and run again, a bare ADD COLUMN
-    // aborts on the first one and the index DROPs below it are never reached — the recovery path
-    // blocked by the half of the file that had already succeeded.
+    // NOTE: `migrate deploy` runs this file outside a transaction, so a failed concurrent build leaves
+    // the columns already added. On the re-run, a bare ADD COLUMN would abort before the index DROPs,
+    // blocking the recovery with the half of the file that had already succeeded.
     const adds = [
       ...sql.matchAll(/ADD COLUMN(\s+IF NOT EXISTS)?\s+"([^"]+)"/g),
     ];
@@ -103,14 +87,10 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
   });
 
   test("names every index it creates short enough for Postgres to keep the name", async () => {
-    // Read from the FILE, not the catalog. The test below asks the database what it has, and the
-    // database was built by an earlier `migrate deploy` — so it answers about the index that exists,
-    // not about the statement that would create one now.
-    //
-    // Postgres truncates an identifier to 63 bytes and keeps the FIRST 63; Prisma truncates its
-    // implicit `@@index` name so the `_idx` suffix survives. The two disagree above 63, so an
-    // implicit name creates an index whose name does not match schema.prisma and every later
-    // `migrate dev` reports drift against a database that is actually correct.
+    // NOTE: read from the FILE: the database was built by an earlier `migrate deploy`, so it answers
+    // about the index that exists, not the statement that would create one now. Postgres keeps the
+    // FIRST 63 bytes of an identifier; Prisma truncates its implicit `@@index` name keeping `_idx`. Above
+    // 63 they disagree, and every later `migrate dev` reports drift against a correct database.
     const names = [
       ...sql.matchAll(/CREATE INDEX(?:\s+CONCURRENTLY)?\s+"([^"]+)"/g),
     ].map((m) => m[1]);
@@ -126,18 +106,12 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
     expect(schema).toContain('map: "chatwoot_webhook_deliveries_retire_idx"');
   });
 
-  // The two indexes, asked of the CATALOG. Their shape changes no result, so no behavioural test can
-  // hold them — and both shapes are load-bearing for reasons a passing suite will never show:
-  //
-  //   * the sweep's is PARTIAL and TENANT-LEADING. Nothing prunes this ledger, so a full index over
-  //     `status` would carry every delivery the install has ever handled, forever, and pay for it on
-  //     every insert; and the sweep is one job per tenant, so a `status`-led index makes each pass
-  //     walk the whole fleet's non-terminal range and let RLS discard the rest afterwards.
-  //   * the retirement's leads with the ACCOUNT, because that is how the write is keyed: display ids
-  //     and message ids are numbered per Chatwoot account.
-  //
-  // Prisma cannot express a partial index, so the first one is declared in raw SQL and deliberately
-  // absent from schema.prisma — which is exactly why it needs a test of its own.
+  // NOTE: the two indexes, asked of the CATALOG; their shape changes no result, so no behavioural test holds:
+  //   * the sweep's is PARTIAL (nothing prunes this ledger, so a full index grows forever and every
+  //     insert pays for it) and TENANT-LEADING (the sweep is one job per tenant; a `status`-led index
+  //     walks the whole fleet's range and lets RLS discard the rest).
+  //   * the retirement's leads with the ACCOUNT: display and message ids are numbered per account.
+  // Prisma cannot express a partial index, so the first is raw SQL, absent from schema.prisma.
   test("ships the index shapes the sweep and the retirement are keyed for", async () => {
     const rows = await suDb.query<{ indexname: string; indexdef: string }>(
       "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'chatwoot_webhook_deliveries'",
@@ -171,8 +145,8 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
   });
 
   test("adds the three columns the sweep reads, and no column for the payload", async () => {
-    // The other half of the file. The sweep needs the delivery's identity and nothing about what the
-    // customer wrote — no ciphertext column, no retention window, no second copy at rest.
+    // NOTE: the other half of the file. The sweep needs the delivery's identity and nothing about what the
+    // customer wrote: no ciphertext column, no retention window, no second copy at rest.
     const cols = await suDb.query<{ column_name: string }>(
       "SELECT column_name FROM information_schema.columns WHERE table_name = 'chatwoot_webhook_deliveries'",
     );

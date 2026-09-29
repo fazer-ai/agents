@@ -1,20 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
 
-// THE SIBLING LOOKUP'S SECOND HALF (issue #540, PR review round 9), and the assertion that says it
-// actually landed (round 11).
-//
-// `responderSiblingRemembers` asks what the responder's own delivery of the same message decided. On
-// a customer message that is keyed by `inbound_message_id` and served by the retire index; on a
-// colleague's reply it is keyed by `human_reply_message_id`, which had no index at all. The case that
-// hurts is the ORDINARY one: the fan-out has no order, so the observer's delivery arrives first about
-// half the time and the query finds NOTHING — and an absence has to read every candidate row before
-// it can be stated, over a ledger nothing prunes.
-//
-// DDL is invisible to every behavioural test in the suite: an index changes no result. Both halves
-// are read here, the FILE for what the statement says and the CATALOG for what a database built from
-// it holds — and the catalog half is the one that catches an interrupted `CONCURRENTLY`, which leaves
-// an index Postgres refuses to use WITHOUT SAYING SO while the migration records as applied.
+// The index behind the sibling lookup on a colleague's reply, and the assertion that it landed.
+// `responderSiblingRemembers` keys that lookup by `human_reply_message_id`; the fan-out has no order,
+// so about half the time it finds nothing, and an absence reads every candidate row of a ledger
+// nothing prunes. An index changes no result, so the FILE and the CATALOG are read here; the catalog
+// half catches an interrupted `CONCURRENTLY`, which leaves an index Postgres silently refuses to use
+// while the migration records as applied.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const INDEX =
@@ -82,8 +74,8 @@ describe.skipIf(!dbUp)("migration: the reply sibling index", () => {
     expect(assertSql).toContain("indisvalid");
     expect(assertSql).toContain("chatwoot_webhook_deliveries");
     expect(assertSql).toContain("RAISE EXCEPTION");
-    // Asked of the whole table, not of the one index this PR adds: the two beside it were built
-    // concurrently too, and an invalid one there is the same silent outage.
+    // NOTE: Asked of the whole table, not of the one index the previous file builds: the two beside
+    // it were built concurrently too, and an invalid one there is the same silent outage.
     expect(indexSql).not.toContain("indisvalid");
   });
 

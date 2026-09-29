@@ -4,9 +4,9 @@ import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
 
 // A provider that answers 200 with no completion on its first N calls and then works. Extends the
-// REAL BaseChatModel on purpose: the failure of issue #63 is not an error the provider returns, it
-// is a TypeError LangChain raises afterwards reading `generations[0][0].message`, so a hand-built
-// error would prove nothing about whether the retry predicate matches production.
+// REAL BaseChatModel on purpose: the failure is not an error the provider returns, it is a TypeError
+// LangChain raises afterwards reading `generations[0][0].message`, so a hand-built error would prove
+// nothing about whether the retry predicate matches production.
 export class EmptyThenReplyModel extends BaseChatModel {
   calls = 0;
   constructor(
@@ -196,9 +196,9 @@ export class ResolveThenReplyModel {
   }
 }
 
-// Transfers declaring silence and then asks to RESOLVE, which on a PROACTIVE turn is the pair that
-// was actually reaching production: no `turnState` there, so `resolve_conversation` closes inside the
-// call, where the follow-up step's own `allowResolve` cannot reach it (issue #671).
+// Transfers declaring silence and then asks to RESOLVE. On a PROACTIVE turn there is no `turnState`,
+// so `resolve_conversation` closes inside the call, where the follow-up step's own `allowResolve`
+// cannot reach it.
 export class SilentHandoffThenResolveModel {
   constructor(private afterText: string) {}
   async invoke(): Promise<AIMessage> {
@@ -234,14 +234,13 @@ export class SilentHandoffThenResolveModel {
   }
 }
 
-// Asks to RESOLVE and then transfers, which is the pair issue #671 is about: the conversation ends
-// up in a human's queue and closed, so the customer has no reply and nobody is looking. The order is
-// a parameter because it decides the outcome: a resolve AFTER the transfer closes a conversation
-// that was just set to `open`, while one BEFORE it is overwritten by the transfer's own toggle.
-//
-// ONE fixture for the scenario and for its boundary (the transfer that throws), so a green test
-// cannot come from the resolve never having been asked for: the same script runs against a client
-// whose `open` toggle works and against one whose `open` toggle fails, and the two must differ.
+// Asks to RESOLVE and then transfers: the conversation ends up in a human's queue and closed, so the
+// customer has no reply and nobody is looking. The order is a parameter because it decides the
+// outcome: a resolve AFTER the transfer closes a conversation that was just set to `open`, while one
+// BEFORE it is overwritten by the transfer's own toggle. ONE fixture for the scenario and its
+// boundary (the transfer that throws), so a green test cannot come from the resolve never having
+// been asked for: the same script runs against a client whose `open` toggle works and one whose
+// `open` toggle fails, and the two must differ.
 export class ResolveAndHandoffModel {
   constructor(
     private reply: string,
@@ -317,13 +316,10 @@ export class HandoffThenReplyModel {
   }
 }
 
-// Hands off successfully and then blows up on the next step. The transfer is done, the closing line
-// is recorded, and the exception leaves through the graph — the shape where the promise has nobody
-// left to deliver it unless the caller delivers on its failure path too.
-// Decides silence ALONE and then keeps working, which is the shape issue #639 made reachable: a lone
-// `skip_reply` no longer ends the turn (ending it and keeping it SILENT are two different
-// guarantees), so the batch after the decision still runs. Here it is a transfer that writes a
-// closing line, so the turn stays textless from the MODEL and still puts a message in the thread.
+// Decides silence ALONE and then keeps working: a lone `skip_reply` does not end the turn (ending it
+// and keeping it SILENT are two different guarantees), so the batch after the decision still runs.
+// Here it is a transfer that writes a closing line, so the turn stays textless from the MODEL and
+// still puts a message in the thread.
 export class SkipThenHandoffModel {
   constructor(private customerMessage: string) {}
   async invoke(): Promise<AIMessage> {
@@ -365,8 +361,8 @@ export class SkipThenHandoffModel {
   }
 }
 
-// Decides silence alone and then queues a picture, which is the other door the issue names: nothing
-// the MODEL wrote reaches the customer, and an attachment does. The text-balloon count stays null on
+// Decides silence alone and then queues a picture, the other door out of a silent turn: nothing the
+// MODEL wrote reaches the customer, and an attachment does. The text-balloon count stays null on
 // such a turn, so anything that asks only about balloons reports that nobody was answered.
 export class SkipThenImageModel {
   constructor(
@@ -414,8 +410,8 @@ export class SkipThenImageModel {
 
 // DECLARES the silence and then asks to close, which is the legitimate shape of an empty turn: the
 // model judged there was nothing to answer and said so with the tool built for it. The control for
-// `ResolveThenReplyModel("")`, whose completion merely comes back empty — the two are identical from
-// the delivery side and must not be treated alike (issue #773).
+// `ResolveThenReplyModel("")`, whose completion merely comes back empty: the two are identical from
+// the delivery side and must not be treated alike.
 export class SkipThenResolveModel {
   async invoke(): Promise<AIMessage> {
     return new AIMessage("");
@@ -451,9 +447,9 @@ export class SkipThenResolveModel {
   }
 }
 
-// Writes a label and then produces nothing — the turn the report measured on 3 of 115 replayed
-// conversations, and the exit with NO deferred resolve: the conversation is left `pending` with no
-// owner while the label the same turn wrote says the customer is being dealt with.
+// Writes a label and then produces nothing: the exit with NO deferred resolve, where the
+// conversation is left `pending` with no owner while the label the same turn wrote says the customer
+// is being dealt with.
 export class LabelsThenEmptyModel {
   constructor(private labels: string[]) {}
   async invoke(): Promise<AIMessage> {
@@ -511,6 +507,9 @@ export class SkipOnlyModel {
   }
 }
 
+// Hands off successfully and then blows up on the next step. The transfer is done, the closing line
+// is recorded, and the exception leaves through the graph: the shape where the promise has nobody
+// left to deliver it unless the caller delivers on its failure path too.
 export class HandoffThenThrowModel {
   constructor(private customerMessage: string) {}
   async invoke(): Promise<AIMessage> {
@@ -539,9 +538,6 @@ export class HandoffThenThrowModel {
   }
 }
 
-// Hands off twice: the first attempt carries a closing line and fails inside the tool, the second
-// carries none and succeeds, and the model then writes its own recovery text. The shape that tells a
-// line bound to the transfer that HAPPENED apart from one recorded by an attempt that did not.
 // Transfers TWICE in the same turn, both successfully: the first call promises a line, the second
 // declares silence. The later decision is the model's current one, and the tool records both fields
 // from the invocation it is in, so the promise does not outlive the call that made it.
@@ -587,9 +583,8 @@ export class HandoffTwiceModel {
   }
 }
 
-// Transfers DECLARING silence (`customerMessage: ""`, issue #662) and then writes its own text
-// anyway, which is what the live battery caught a real model doing once in 18 turns of deliberate
-// silence. The declaration has to win: the tool told the model nothing would be sent.
+// Transfers DECLARING silence (`customerMessage: ""`) and then writes its own text anyway, as a real
+// model sometimes does. The declaration has to win: the tool told the model nothing would be sent.
 export class HandoffDeclaredSilenceModel {
   constructor(private afterText: string) {}
   async invoke(): Promise<AIMessage> {
@@ -618,6 +613,9 @@ export class HandoffDeclaredSilenceModel {
   }
 }
 
+// Hands off twice: the first attempt carries a closing line and fails inside the tool, the second
+// carries the recovery line and succeeds. The shape that tells a line bound to the transfer that
+// HAPPENED apart from one recorded by an attempt that did not.
 export class HandoffRetryModel {
   constructor(
     private firstMessage: string,
@@ -647,11 +645,10 @@ export class HandoffRetryModel {
           return new AIMessage({
             content: "",
             tool_calls: [
-              // The second attempt carries its OWN line, which is what a retry looks like since
-              // issue #662 made the argument required: the recovery text the model would have
-              // written goes through the tool, and the first attempt's promise is discarded with the
-              // attempt that failed to keep it. Declaring silence here instead is a different case,
-              // and it has its own test (a declared silence sends nothing at all).
+              // NOTE: The second attempt carries its OWN line, which is what a retry
+              // looks like with the argument required: the recovery text goes through
+              // the tool, and the first attempt's promise is discarded with the attempt
+              // that failed to keep it. A declared silence here has its own test.
               {
                 name: "handoff_to_human",
                 args: { customerMessage: self.recovery },
@@ -863,10 +860,10 @@ export class SendImageAndResolveModel {
 }
 
 // A guardrail model double that answers BOTH call shapes, because which one goes out is decided by
-// the PROVIDER and not by the test (`acceptsConstrainedOutput`, issue #131). `withStructuredOutput`
-// reuses the same `invoke`, so a double that throws keeps throwing and one that records keeps
-// recording, and a reply that is not json arrives with no parsed answer — the same thing the
-// Anthropic adapter does with a model that answers in text instead of calling the forced tool.
+// the PROVIDER and not by the test (`acceptsConstrainedOutput`). `withStructuredOutput` reuses the
+// same `invoke`, so a double that throws keeps throwing and one that records keeps recording, and a
+// reply that is not json arrives with no parsed answer, as the Anthropic adapter does with a model
+// that answers in text instead of calling the forced tool.
 export const guardrailModel = (
   invoke: (msgs: { content: unknown }[]) => Promise<{ content: string }>,
 ): BaseChatModel =>
@@ -985,8 +982,8 @@ export class SlowFailingModel extends BaseChatModel {
 }
 
 // Um modelo que DEMORA e responde. O par do `SlowFailingModel` acima: onde aquele existe para medir
-// o que um erro tardio faz, este existe para manter um turno vivo enquanto outro roda em cima dele
-// (issue #689), que é a única forma de duas invocações se sobreporem de verdade num teste.
+// o que um erro tardio faz, este existe para manter um turno vivo enquanto outro roda em cima dele,
+// que é a única forma de duas invocações se sobreporem de verdade num teste.
 export class SlowReplyModel extends BaseChatModel {
   calls = 0;
   constructor(
@@ -1013,9 +1010,9 @@ export class SlowReplyModel extends BaseChatModel {
 }
 
 // Plays a fixed script, one step per model round, and records every message list it was asked with
-// and the names of the tools it was bound to (issue #859: what the model is TOLD about a spoken
-// reply is a property of the request, so the request is what a test has to read). A step is either a
-// tool call or the reply that ends the turn; the last step repeats if the graph asks again.
+// and the names of the tools it was bound to (what the model is TOLD about a spoken reply is a
+// property of the request, so the request is what a test has to read). A step is either a tool call
+// or the reply that ends the turn; the last step repeats if the graph asks again.
 export type ScriptStep =
   | { call: string; args?: Record<string, unknown> }
   | { reply: string };
@@ -1054,11 +1051,11 @@ export class ScriptedCaptureModel {
   }
 }
 
-// Writes the whole reply BESIDE a tool call and then ends the turn on an EMPTY message (issue #886).
-// `steps` is what the model does before the empty close: each step is one assistant message, with
-// the text it carries and the tool calls beside it. Measured on real turns in three shapes: the text
-// beside `resolve_conversation` alone, beside `set_labels` with a bare `resolve_conversation` after
-// it, and beside a `private_note`.
+// Writes the whole reply BESIDE a tool call and then ends the turn on an EMPTY message. `steps` is
+// what the model does before the empty close: each step is one assistant message, with the text it
+// carries and the tool calls beside it. Real turns take three shapes: the text beside
+// `resolve_conversation` alone, beside `set_labels` with a bare `resolve_conversation` after it, and
+// beside a `private_note`.
 export class TextBesideToolThenEmptyModel {
   constructor(
     private steps: Array<{
@@ -1093,11 +1090,11 @@ export class TextBesideToolThenEmptyModel {
   }
 }
 
-// A model that plays a fixed script, one step per call, and RECORDS what each call was handed
-// (issue #885). The retry of an unexplained silence is a second call inside the same agent-node
-// round, so what matters is how many calls were made and what the second one was sent: the late
-// instruction, where it travels, and that the empty answer it replaces is not in the history.
-// Past the script it answers empty, which is the defect under test.
+// A model that plays a fixed script, one step per call, and RECORDS what each call was handed. The
+// retry of an unexplained silence is a second call inside the same agent-node round, so what matters
+// is how many calls were made and what the second one was sent: the late instruction, where it
+// travels, and that the empty answer it replaces is not in the history. Past the script it answers
+// empty, which is the defect under test.
 export class ScriptedSilenceModel {
   seen: BaseMessage[][] = [];
   constructor(

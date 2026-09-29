@@ -1,73 +1,28 @@
 import { describe, expect, test } from "bun:test";
 import { commentSpans } from "@/tests/utils/source-text";
 
-// WHERE THE TAG DOES NOT GO, AND WHY THE ANSWER HAD TO BE A CHECK.
-//
-// `CLAUDE.md` asks for a `TODO:`/`NOTE:`/`FIXME:` tag on a comment inside a body, and exempts the
-// comment that DOCUMENTS a symbol. Read literally, a JSX comment sits inside a component's body and
-// needs the tag. The tree never did that, and the disagreement was invisible until a reviewer quoted
-// the rule at one diff: it cost a waiver on #550 and the issue (#553) that this file closes.
-//
-// THE MEASUREMENT THAT DECIDED IT, rather than a preference. The rule is alive where it is about
-// code: `src/**/*.ts` carries 927 tagged in-body comments. In JSX it is not practised at all — 8 of
-// 140. And the 8 are not a different KIND of comment from the 132: "`relative` is load-bearing",
-// "a Select, not a Switch: this knob has THREE states", "Shown for generated too, because…" all
-// document the element directly below them, exactly like the untagged "The toggle and the filter
-// shortcut are SIBLINGS rather than nested, because…". There was no distinction to apply, so the tag
-// in markup recorded who had been asked for it, not what the comment was.
-//
-// So the rule now says a JSX comment documents the element below it — the same shape as a docstring
-// above a declaration — and carries no `NOTE:`. This file is that sentence as a check, because a
-// convention nobody can measure is one argument per PR that adds a comment to markup.
-//
-// `TODO:` AND `FIXME:` STAY ALLOWED, and the asymmetry is the point. `NOTE:` marks an aside, which is
-// what a JSX comment already is by position; the other two mark WORK that is owed, and pending work
-// in markup is still pending work. Nothing in the tree writes them in JSX today, and this check is
-// not what should stop the first one.
-//
-// THE OTHER HALF OF THE RULE IS NOT FENCED HERE, DELIBERATELY. A machine directive cannot carry a tag
-// at all: prefixing `NOTE: ` on `{/* biome-ignore lint/plugin/no-dynamic-i18n-key: … */}` in
-// AuditPage.tsx makes biome report `Found 1 error` on a file that was clean, because the suppression
-// stops being one and the rule it suppressed fires again. There are 108 such directives in `src/`.
-// The toolchain already refuses that mistake loudly on every run, so `CLAUDE.md` states the reason
-// and no second gate repeats the first.
+// A JSX comment documents the element below it, so it carries no `NOTE:` (`CLAUDE.md`, "Where the
+// tag goes"). `TODO:` and `FIXME:` stay allowed: they mark owed work, which is owed in markup too.
+// A tagged machine directive is not fenced here: biome already fails it on every run.
 
 const TAG = /\b(NOTE|TODO|FIXME):/;
 // Only `NOTE:` is refused. See the asymmetry above.
 const ASIDE_TAG = /\bNOTE:/;
 
-// A JSX comment is a block comment the braces HUG: `{/*` … `*/}`, with nothing between them. The
-// adjacency is not a style preference, it is what the formatter already decides, and the formatter
-// runs in CI on every file.
-//
-// THE TWO CASES THIS SEPARATES ARE OPPOSITE HALVES OF THE RULE, and review named both. A block
-// comment can also be the whole content of a CODE body — `useEffect(() => { /* NOTE: empty */ }, [])`
-// — where the tag is REQUIRED, so a check that stopped at "braces around a comment" would report a
-// correct comment as an offence. And a container can follow plain JSX text — `label {/* … */}` —
-// where a check that asked what precedes the brace would silently skip a real site.
-//
-// Biome answers both without a heuristic: it breaks a lone block comment in a body onto its own line
-// (`{\n  /* … */\n}`) and leaves a JSX container hugging (`{/* … */}`). Measured over `src/**/*.tsx`:
-// 140 comments sit between braces and all 140 hug; zero sit between braces without hugging. The test
-// below drives the real formatter over the body shapes and requires it to keep separating them, so
-// this file fails if that behaviour ever changes rather than quietly changing what it enforces.
+// A JSX comment is a block comment the braces hug (`{/* ... */}`). Biome breaks a lone block comment
+// in a code body, where the tag IS required, onto its own line, so adjacency separates the two
+// without a heuristic, and still finds a container after JSX text (`label {/* ... */}`), which a
+// check on what precedes the brace would skip. The formatter test below fails if biome changes.
 function isJsxComment(src: string, start: number, end: number): boolean {
   return (
     src.startsWith("/*", start) && src[start - 1] === "{" && src[end] === "}"
   );
 }
 
-// THE TWO WAYS OF COUNTING THE SAME SHAPE, kept side by side on purpose.
-//
-// `commentSpans` reads through the shared scan, which by a measured decision does not understand JSX
-// TEXT (see the header of `tests/utils/source-text.ts`): a quote in visible text opens a string
-// literal and a non-HTTP `scheme://` opens a line comment, and either swallows a `{/* … */}` whole.
-// A swallowed comment is neither an offender nor a `seen`, so the gate would pass and the count floor
-// with it. Review named `<p>He said "hi {/* NOTE: hidden */} bye"</p>`, and it does swallow.
-//
-// The raw pattern has the opposite weakness: a string literal that spells the shape counts as a
-// comment. So it is a CROSS-CHECK and never the gate — a divergence means one of the two is wrong
-// about that file, and both answers need a person to look. Zero divergence across `src/**/*.tsx`.
+// Two counts of the same shape. `commentSpans` does not understand JSX text (header of
+// `tests/utils/source-text.ts`): a quote or a non-HTTP `scheme://` in visible text swallows a
+// `{/* ... */}`, which then passes the gate unseen. The raw pattern counts a string literal that
+// spells the shape, so it is a cross-check and never the gate: a divergence needs a person to look.
 function jsxComments(src: string): {
   spans: Array<[number, number]>;
   raw: number;
@@ -95,10 +50,8 @@ async function format(source: string): Promise<string> {
   return out;
 }
 
-// The sweep itself, over (path, source) pairs rather than over the glob, so the tree it audits can be
-// a fixture. Without that the wiring is unprovable: a `blind` list nothing populates and an assertion
-// nothing exercises both read as a healthy tree, which is the exact shape review said could pass
-// silently.
+// The sweep over (path, source) pairs rather than the glob, so a fixture tree can prove the wiring:
+// an unpopulated `blind` list and an unexercised assertion both read as a healthy tree.
 function auditTree(files: Array<[string, string]>): {
   offenders: string[];
   blind: string[];
@@ -128,8 +81,8 @@ function auditTree(files: Array<[string, string]>): {
 describe("a comment in markup documents the element below it, and carries no NOTE:", () => {
   test("no JSX comment under src/ is tagged, and none is hidden from the scan", async () => {
     const { Glob } = await import("bun");
-    // EVERY `.tsx` IN `src`, not just the client. `src/modules/documents/render.tsx` renders JSX for
-    // the document pipeline and a glob rooted at the console would never look at it (review, round 2).
+    // NOTE: every `.tsx` in `src`, not just the client: `src/modules/documents/render.tsx` renders
+    // JSX that a glob rooted at the console would never see.
     const files: Array<[string, string]> = [];
     for await (const rel of new Glob("**/*.tsx").scan("src")) {
       files.push([`src/${rel}`, await Bun.file(`src/${rel}`).text()]);
@@ -137,9 +90,8 @@ describe("a comment in markup documents the element below it, and carries no NOT
     const { offenders, blind, seen } = auditTree(files);
     expect(blind).toEqual([]);
     expect(offenders).toEqual([]);
-    // …AND THE SWEEP IS LOOKING AT SOMETHING. A detector that stops recognising `{/* … */}` reports a
-    // clean tree, which is the same output as a clean tree. 140 today; the floor is what a refactor of
-    // the console would have to fall below before this file quietly stopped checking.
+    // NOTE: ...and the sweep is looking at something: a detector that stops recognising `{/* */}`
+    // reports the same output as a clean tree. The floor sits below today's count.
     expect(seen).toBeGreaterThanOrEqual(100);
   });
 
@@ -193,8 +145,8 @@ describe("the detector is not fooled by prose that spells the shape", () => {
       expect(isJsxComment(out, start, end)).toBe(false);
     }
 
-    // …and the container survives the same pass hugging, including the one that follows JSX text,
-    // which is the shape a "what precedes the brace" test would have skipped (review, round 2).
+    // NOTE: ...and the container survives the same pass hugging, including the one after JSX text,
+    // which a check on what precedes the brace would skip.
     const markup =
       "const el = (\n  <div>\n    label {/* NOTE: after text */}\n    <X />\n    {ok && <Y />}{/* NOTE: after a container */}\n  </div>\n);\n";
     const out = await format(markup);

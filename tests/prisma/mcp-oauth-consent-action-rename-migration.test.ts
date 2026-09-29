@@ -1,27 +1,19 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 
-// Runs the ACTUAL migration file against the test database. What it pins: the two consent actions
-// that predate the `<entity>.<verb>` convention are rewritten on the rows already recorded under
-// them, on BOTH sides of the tenant boundary, and nothing else about those rows moves.
-//
-// THE TENANT-NULL HALF IS THE POINT, not a completeness flourish. `audit_logs` carries FORCE ROW
-// LEVEL SECURITY, which binds the table owner too, and `MIGRATION_DATABASE_URL` is only promised to
-// be "superuser OR owner" — on managed Postgres, typically owner without rolsuper, where an UPDATE
-// across tenants matches ZERO rows and reports success. `tests/prisma/migration-rls-bypass.test.ts`
-// asks that of every data migration; what this file adds is the effect, per row.
-//
-// `created_at` and `id` are asserted UNCHANGED because the trail is paged by exactly that pair
-// (#530, #537): a backfill that touched either would reorder rows an operator is walking, and no
-// assertion about the action name would notice.
+// Runs the actual migration file: the two consent actions that predate the `<entity>.<verb>`
+// convention are rewritten on rows on BOTH sides of the tenant boundary, and nothing else moves. The
+// tenant-null half matters: `audit_logs` is FORCE RLS and `MIGRATION_DATABASE_URL` may be an owner
+// without rolsuper, for which a cross-tenant UPDATE matches zero rows and reports success
+// (tests/prisma/migration-rls-bypass.test.ts asks for the bypass; this asserts its effect per row).
+// `created_at` and `id` must not change: the trail is paged by that pair.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
   "prisma/migrations/20260908120000_rename_mcp_oauth_consent_actions/migration.sql";
 
-// READ OUTSIDE THE CONNECTION GUARD. A missing migration file is this test's subject failing to
-// exist, and folding it into the same `catch` that answers "no database here" would turn that into
-// a silent skip — the shard reports 0 fail and the backfill was never written.
+// Read outside the connection guard: folding a missing migration file into the `catch` that answers
+// "no database here" would turn it into a silent skip.
 const sql = await Bun.file(MIGRATION).text();
 
 let dbUp = false;
@@ -74,25 +66,11 @@ async function forced(): Promise<boolean> {
   return r.rows[0]?.f === true;
 }
 
-// RUNS THE FILE ONE STATEMENT AT A TIME, on one connection, to reproduce what `migrate deploy` DOES.
-//
-// Handing the whole file to `pg` instead proves nothing about atomicity, and that is not a worry: a
-// multi-statement string goes out over the simple-query protocol, which Postgres wraps in an
-// IMPLICIT transaction, so the file is atomic whatever it says — measured, with the file's own BEGIN
-// deleted every assertion here still passed.
-//
-// What `migrate deploy` does is the opposite, measured on a scratch database with a file that fails
-// after its first statement: WITHOUT a BEGIN that statement persists through the failure, WITH one
-// the state is back, and two ordinary statements in one file report two different `txid_current()`.
-// A file is therefore not one unit unless it says so, which is what `.claude/rules/prisma.md`
-// records and what this helper reproduces.
-//
-// THE MECHANISM BEHIND THAT IS NOT ASSERTED HERE, deliberately, because the obvious one is refuted
-// by its neighbour: if the engine simply sent each statement on its own, a lone
-// `DROP INDEX CONCURRENTLY` would not care what else is in the file, and measurably it does — it
-// fails with `cannot run inside a transaction block` as soon as any second statement joins it
-// (`tests/prisma/tenant-index-redundancy.test.ts`, measured the same way). Both behaviours are
-// reproduced; the reconciliation is not, so no comment here should claim one.
+// Runs the file one statement at a time, on one connection, as `migrate deploy` does: a file is not
+// atomic unless it opens its own BEGIN. Handing the whole text to `pg` would prove nothing, since a
+// multi-statement string goes over the simple-query protocol, which Postgres wraps in an implicit
+// transaction. Why `migrate deploy` behaves this way is deliberately not claimed: see
+// `.claude/rules/prisma.md`, "O arquivo da migration NÃO roda em transação".
 function statementsOf(text: string): string[] {
   const bare = text.replace(/^\s*--.*$/gm, "");
   // Dollar quoting is the one thing this scanner cannot see through, so it refuses the file rather
@@ -221,11 +199,9 @@ describe.skipIf(!dbUp)("migration: rename the MCP consent actions", () => {
     expect((await stateOf("neighbour")).action).toBe("mcp_client.create");
   });
 
-  // THE REPAIR THE DEPLOY NOTE PROMISES. An image that predates #552 still RECORDS the underscored
-  // names, so on a direct upgrade or after a rollback a consent decision can land under one AFTER
-  // this one-shot migration scanned past it, and the new catalog no longer offers that spelling.
-  // `docs/deploy.md` says the remedy is re-running these two UPDATEs; this is that claim, and it is
-  // asserted rather than promised (round 2 of review).
+  // NOTE: The repair `docs/deploy.md` promises. An older image still records the underscored names,
+  // so after a direct upgrade or a rollback a consent decision can land under one after this
+  // one-shot migration ran; the remedy is re-running these two UPDATEs.
   test("a re-run moves a legacy row that landed after it", async () => {
     await row("straggler", "mcp_oauth_consent_denied", tenantId);
     await runMigration(sql);
@@ -249,11 +225,9 @@ describe.skipIf(!dbUp)("migration: rename the MCP consent actions", () => {
     expect(await forced()).toBe(true);
   });
 
-  // AND IT IS BACK EVEN WHEN THE FILE FAILS HALFWAY, which is what the BEGIN buys. Prisma runs the
-  // `.sql` OUTSIDE a transaction (measured in #520, in both modes), so without one a failure after
-  // the lift leaves `audit_logs` with FORCE off: the table stops binding its owner to the tenant
-  // policy, and the migration is marked applied. Asserted by making the file fail on purpose rather
-  // than by trusting the BEGIN is there (round 3 of review).
+  // NOTE: And it is back even when the file fails halfway, which is what the BEGIN buys: Prisma runs
+  // the `.sql` outside a transaction, so without one a failure after the lift leaves `audit_logs`
+  // with FORCE off and the migration marked applied. The file is made to fail on purpose.
   test("a failure after the lift restores FORCE instead of leaving it off", async () => {
     const broken = sql.replace(
       'ALTER TABLE "audit_logs" FORCE ROW LEVEL SECURITY;',

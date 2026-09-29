@@ -170,6 +170,8 @@ A chip whose token does not fit in what is left before the cap is **disabled**, 
 
 An unknown placeholder is **left standing**, not blanked. That is `interpolatePromptVars`'s own rule, and it is what makes a typo visible on the customer's screen instead of silently deleting the operator's text.
 
+Chatwoot then renders the whole message as Liquid, and the signature keeps that: `{{contact.name}}` in a signature is filled by Chatwoot as before. The model's text beside it is not, since issue #943: `attachSignature` takes a `body` function applied to each chunk's own text and never to the signature, and every Chatwoot send passes `literalForChatwoot` there (see [`chatwoot.md`](chatwoot.md)). The dedupe still reads the chunks as the model wrote them.
+
 ## The playground signs the live turn, and the reload does not
 
 Two places sign, and they are the two the operator is watching when they ask "what would the customer get":

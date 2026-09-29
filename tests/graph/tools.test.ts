@@ -556,6 +556,31 @@ describe("native tools", () => {
     ]);
   });
 
+  // Chatwoot renders a private note as Liquid too, so the model's text goes escaped (the
+  // wire shape is pinned in chatwoot-liquid.test.ts). Without it `{{contact.phone_number}}` in a note
+  // comes out as the contact's phone number.
+  test("private_note and the handoff note carry the model's text literally", async () => {
+    const { client, calls } = recordingClient();
+    const tools = buildNativeTools({ client, conversationId: 7 });
+    await byName(tools, "private_note").invoke({
+      content: "cliente pediu {{contact.phone_number}} e {{foo}}",
+    });
+    await byName(tools, "handoff_to_human").invoke({
+      reason: "motivo {% if true %}x{% endif %}",
+      customerMessage: "",
+    });
+    expect(calls.filter((c) => c[0] === "sendPrivateNote")).toEqual([
+      [
+        "sendPrivateNote",
+        [7, "cliente pediu {{ '{{' }}contact.phone_number}} e {{ '{{' }}foo}}"],
+      ],
+      [
+        "sendPrivateNote",
+        [7, "motivo {{ '{%' }} if true %}x{{ '{%' }} endif %}"],
+      ],
+    ]);
+  });
+
   test("a /reset landing while resolve_conversation reads does NOT close the conversation", async () => {
     // NOTE: the close reads the live status first (a WAIT), and the graph's ask at the tool
     // boundary happened before it. An observation holds no thread claim, so `/reset` can land in
@@ -2394,6 +2419,32 @@ describe("handoff targeting", () => {
       customerMessage: "",
     });
     expect(calls).toContainEqual(["assignToAgent", [5, 9]]);
+  });
+
+  // The name the model asked for is quoted in a note, which Chatwoot renders as Liquid.
+  test("agent_choice with no match quotes the model's name literally", async () => {
+    const { client, calls } = targetingClient([], []);
+    const tools = buildNativeTools({
+      client,
+      conversationId: 5,
+      handoff: {
+        mode: "agent_choice",
+        targetAgentId: null,
+        targetTeamId: null,
+        targetInstanceId: null,
+        instructions: null,
+      },
+    });
+    await byName(tools, "handoff_to_human").invoke({
+      assignTo: "{{contact.name}}",
+      customerMessage: "",
+    });
+    const notes = calls
+      .filter((c) => c[0] === "sendPrivateNote")
+      .map((c) => String(c[1][1]));
+    expect(notes.some((n) => n.includes("\"{{ '{{' }}contact.name}}\""))).toBe(
+      true,
+    );
   });
 
   test("agent_choice resolves the model's name to a team", async () => {

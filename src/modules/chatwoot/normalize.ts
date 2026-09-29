@@ -1,5 +1,8 @@
 import { closedByTheAgentSide } from "@/modules/conversations/resolution-origin";
-import { CHATWOOT_REPLY_TEXT_KEY } from "./constants";
+import {
+  CHATWOOT_REPLY_BY_OPERATOR_KEY,
+  CHATWOOT_REPLY_TEXT_KEY,
+} from "./constants";
 import { bodyImagesBesides, emailBodyImageUrlsFrom } from "./email-body-images";
 import type { RenderableLocation, RenderableMessage } from "./render";
 import type {
@@ -271,6 +274,7 @@ export function normalizeChatwootEvent(
       imported: ca?.imported === true,
       externalError: ca ? str(ca.external_error) || null : null,
       replyText: ca ? str(ca[CHATWOOT_REPLY_TEXT_KEY]) || null : null,
+      replyByOperator: ca?.[CHATWOOT_REPLY_BY_OPERATOR_KEY] === true,
     };
   }
   if ("changed_attributes" in payload) {

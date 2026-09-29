@@ -4,6 +4,7 @@ import {
   type ChatwootClient,
   ChatwootMissingTokenError,
 } from "@/modules/chatwoot/client";
+import { asRendered, literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
   chatwootMessageListLength,
   parseChatwootMessages,
@@ -206,7 +207,11 @@ export async function deliverReply(
     separator: SignatureSeparator;
     frequency: SignatureFrequency;
   } | null = null,
+  // False when the text is the operator's (a guardrail's template or hand-over message standing in
+  // for the reply): it keeps Chatwoot's Liquid. The model's text is escaped.
+  modelText = true,
 ): Promise<ReplyDelivery> {
+  const literal = modelText ? literalForChatwoot : (text: string) => text;
   return withFlowStage(
     flow,
     "split",
@@ -219,9 +224,16 @@ export async function deliverReply(
       if (!cfg.enabled) {
         const sendId = crypto.randomUUID();
         // NOTE: the same function on a one-element array: split off is one chunk, not a second rule.
-        const [single = reply] = signature
-          ? attachSignature([reply], signature.text, signature)
-          : [reply];
+        // NOTE: the model's text is escaped for Chatwoot's Liquid and the signature is not.
+        const [single = literal(reply)] = signature
+          ? attachSignature(
+              [reply],
+              signature.text,
+              signature,
+              undefined,
+              literal,
+            )
+          : [literal(reply)];
         try {
           await client.sendMessage(conversationId, single, { sendId });
           return { delivered: 1, failed: false, unproven: false };
@@ -244,10 +256,12 @@ export async function deliverReply(
         }
       }
       const { chunks: rawChunks, seps } = splitReplyParts(reply, cfg);
-      // NOTE: `seps` stays aligned because attaching never changes the count.
+      // NOTE: `seps` stays aligned because attaching never changes the count. Each balloon is escaped for
+      // Chatwoot's Liquid after the cut, so the cut never lands inside an escape, and the signature is
+      // attached as the operator wrote it.
       const chunks = signature
-        ? attachSignature(rawChunks, signature.text, signature, reply)
-        : rawChunks;
+        ? attachSignature(rawChunks, signature.text, signature, reply, literal)
+        : rawChunks.map(literal);
       let delivered = 0;
       let failed = false;
       let unproven = false;
@@ -271,7 +285,8 @@ export async function deliverReply(
           await client
             .toggleTyping(conversationId, true)
             .catch(() => undefined);
-          await sleep(typingDelayMs(chunk, cfg));
+          // Paced by what the customer reads, not by the escape's extra syntax.
+          await sleep(typingDelayMs(asRendered(chunk), cfg));
           if (await calledOff()) break;
           // NOTE: minted before the request, because the send that times out never returns anything.
           const sendId = crypto.randomUUID();
@@ -320,7 +335,7 @@ export async function deliverReply(
             // inexact). It also covers `once`: a landed top-signed first balloon is not among them.
             const owedWasSigned = rawChunks
               .slice(from)
-              .some((raw, k) => chunks[from + k] !== raw);
+              .some((raw, k) => chunks[from + k] !== literal(raw));
             const owed =
               signature && owedWasSigned
                 ? (attachSignature(
@@ -330,8 +345,9 @@ export async function deliverReply(
                     // NOTE: whether the turn is signed was answered by the balloons; this asks only whether this
                     // message already carries a copy.
                     owedRaw,
-                  )[0] ?? owedRaw)
-                : owedRaw;
+                    literal,
+                  )[0] ?? literal(owedRaw))
+                : literal(owedRaw);
             // NOTE: same 15s deadline, so it can be rejected after being accepted like any other send.
             const retrySendId = crypto.randomUUID();
             try {

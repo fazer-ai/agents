@@ -54,6 +54,7 @@ import {
   type KanbanContext,
   loadKanbanContext,
 } from "@/modules/chatwoot/kanban";
+import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
   type ChatwootVocab,
   loadChatwootVocab,
@@ -1567,18 +1568,21 @@ export async function buildToolset(
                     interpolatePromptVars(t, cfg.promptVars, cfg.promptOpts),
                 ),
               // The opening reaches the customer, so it carries the agent's signature like every reply
-              // (docs/signature.md); one message, one chunk.
+              // (docs/signature.md); one message, one chunk. The model's text is escaped for Chatwoot's
+              // Liquid and the signature is not.
               sign: (text: string) => {
                 const sig = signatureFor(
                   cfg.signatureConfig,
                   cfg.promptVars,
                   cfg.promptOpts,
                 );
-                if (!sig) return text;
-                const [out = text] = attachSignature(
+                if (!sig) return literalForChatwoot(text);
+                const [out = literalForChatwoot(text)] = attachSignature(
                   [text],
                   sig,
                   cfg.signatureConfig,
+                  undefined,
+                  literalForChatwoot,
                 );
                 return out;
               },

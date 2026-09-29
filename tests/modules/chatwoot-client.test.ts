@@ -681,6 +681,36 @@ describe("ChatwootClient", () => {
     expect(forms[1]?.has("content_attributes")).toBe(false);
   });
 
+  // A voice note of the operator's words says so in the same bag, with or without the whole reply.
+  test("the operator's words are marked in content_attributes", async () => {
+    const bodies: BodyInit[] = [];
+    const fetchImpl = (async (_u: string, init?: RequestInit) => {
+      if (init?.body) bodies.push(init.body);
+      return {
+        ok: true,
+        status: 200,
+        text: async () => "{}",
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const client = await createChatwootClient(baseConfig, {
+      fetchImpl,
+      assertSafe: passthroughSafe,
+    });
+    await client.sendAudioMessage(
+      42,
+      new ArrayBuffer(4),
+      "o.ogg",
+      "audio/ogg",
+      {
+        transcribedText: "Olá",
+        byOperator: true,
+      },
+    );
+    expect((bodies[0] as FormData).get("content_attributes")).toBe(
+      JSON.stringify({ fazer_ai_reply_by_operator: true }),
+    );
+  });
+
   test("an admin-token call on that same client still works", async () => {
     const { fetchImpl, calls } = stub(200, { payload: [] });
     const client = await createChatwootClient(

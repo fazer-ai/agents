@@ -7,6 +7,7 @@ import {
   guardrailTripped,
   handedOffNote,
   REFUSED_REPLY_NOTE_MAX,
+  screenedByOperator,
   screenedText,
 } from "@/modules/guardrails/gate";
 import { applyGuardrailHandoff } from "@/modules/guardrails/handoff";
@@ -93,6 +94,15 @@ describe("what the gate hands the caller", () => {
     expect(note.length).toBeLessThan(REFUSED_REPLY_NOTE_MAX + 200);
   });
 
+  test("screenedByOperator: the template and the hand-over message are the operator's, a generated reply is not", () => {
+    expect(screenedByOperator({ kind: "replaced", reply: "T" })).toBe(true);
+    expect(
+      screenedByOperator({ kind: "replaced", reply: "G", generated: true }),
+    ).toBe(false);
+    expect(screenedByOperator({ kind: "handed-off", reply: "H" })).toBe(true);
+    expect(screenedByOperator({ kind: "clean" })).toBe(false);
+  });
+
   test("the note sink posts a hand-over", async () => {
     const notes: string[] = [];
     const sink = chatwootNoteSink(
@@ -112,6 +122,31 @@ describe("what the gate hands the caller", () => {
     });
     expect(notes).toHaveLength(1);
     expect(notes[0]).toContain("RECUSADA");
+  });
+
+  // The note quotes the refused reply and the judge's rationale, both model text, and
+  // Chatwoot renders a note as Liquid; quoted as they were, a refused `{{contact.email}}` would fill in.
+  test("the note quotes the model's text literally", async () => {
+    const notes: string[] = [];
+    const sink = chatwootNoteSink(
+      {
+        sendPrivateNote: async (_c: number, t: string) => {
+          notes.push(t);
+          return {};
+        },
+      } as unknown as ChatwootClient,
+      7,
+    );
+    await sink({
+      direction: "output",
+      outcome: "handed-off",
+      action: "handoff",
+      rationale: "citou {{foo}}",
+      refused: "Seu cadastro: {{contact.email}}",
+    });
+    expect(notes[0]).toContain("citou {{ '{{' }}foo}}");
+    expect(notes[0]).toContain("Seu cadastro: {{ '{{' }}contact.email}}");
+    expect(notes[0]).not.toContain("{{contact.email}}");
   });
 });
 

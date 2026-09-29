@@ -5,6 +5,7 @@ import { assertSafeOutboundUrl } from "@/lib/ssrf";
 import { redactEndpoint } from "@/modules/audit/projection";
 import {
   CHATWOOT_AUTH_HEADER,
+  CHATWOOT_REPLY_BY_OPERATOR_KEY,
   CHATWOOT_REPLY_TEXT_KEY,
   CHATWOOT_SEND_ID_KEY,
 } from "./constants";
@@ -558,7 +559,11 @@ export class ChatwootClient {
     audio: ArrayBuffer,
     fileName: string,
     mime: string,
-    opts: { transcribedText?: string; replyText?: string } = {},
+    opts: {
+      transcribedText?: string;
+      replyText?: string;
+      byOperator?: boolean;
+    } = {},
   ): Promise<unknown> {
     this.assertToken(this.config.botToken, "POST audio message");
     const form = new FormData();
@@ -582,10 +587,17 @@ export class ChatwootClient {
     // The whole reply, only when the speech is not it (issue #792): the text that replaces a refused
     // voice note reads it from here. A JSON string, which is how the builder takes the bag on a
     // multipart create.
-    if (opts.replyText) {
+    if (opts.replyText || opts.byOperator) {
       form.append(
         "content_attributes",
-        JSON.stringify({ [CHATWOOT_REPLY_TEXT_KEY]: opts.replyText }),
+        JSON.stringify({
+          ...(opts.replyText
+            ? { [CHATWOOT_REPLY_TEXT_KEY]: opts.replyText }
+            : {}),
+          ...(opts.byOperator
+            ? { [CHATWOOT_REPLY_BY_OPERATOR_KEY]: true }
+            : {}),
+        }),
       );
     }
     const res = await this.fetchImpl(

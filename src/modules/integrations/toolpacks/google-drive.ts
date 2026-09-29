@@ -4,6 +4,7 @@ import logger from "@/api/lib/logger";
 import { failableTool, toolFailure } from "@/graph/tools/failure";
 import { fetchBounded, fetchBoundedBytes } from "@/lib/outbound";
 import { assertSafeOutboundUrl } from "@/lib/ssrf";
+import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
   type IntegrationSelection,
   registerToolpack,
@@ -312,7 +313,8 @@ function buildSendFileTool(
           dl.bytes,
           sendName,
           sendMime,
-          input.caption ? { caption: input.caption } : {},
+          // The caption is the model's text, escaped for Chatwoot's Liquid.
+          input.caption ? { caption: literalForChatwoot(input.caption) } : {},
         );
       } catch (err) {
         logger.warn({ err }, "drive: send file delivery failed");

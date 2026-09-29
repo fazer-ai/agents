@@ -9,7 +9,10 @@ import {
   mediaFallbackHandler,
 } from "@/modules/chatwoot/channel-failure";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
-import { CHATWOOT_REPLY_TEXT_KEY } from "@/modules/chatwoot/constants";
+import {
+  CHATWOOT_REPLY_BY_OPERATOR_KEY,
+  CHATWOOT_REPLY_TEXT_KEY,
+} from "@/modules/chatwoot/constants";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { type ClaimedJob, completeJob } from "@/modules/scheduler/service";
@@ -60,6 +63,7 @@ function updated(
     transcribed?: string | null;
     // The whole reply the voice note carries when its speech left an item out (#792).
     replyText?: string;
+    byOperator?: boolean;
     event?: string;
   } = {},
 ) {
@@ -80,6 +84,7 @@ function updated(
       ...(opts.replyText === undefined
         ? {}
         : { [CHATWOOT_REPLY_TEXT_KEY]: opts.replyText }),
+      ...(opts.byOperator ? { [CHATWOOT_REPLY_BY_OPERATOR_KEY]: true } : {}),
     },
     attachments:
       opts.transcribed === null
@@ -169,6 +174,7 @@ describe("channelFailureOf", () => {
       code: "131053",
       kind: "media",
       text: REPLY,
+      byOperator: false,
     });
     expect(
       channelFailureOf(updated(2, { error: "131052: x" }), BOT_ID)?.kind,
@@ -186,6 +192,13 @@ describe("channelFailureOf", () => {
     expect(
       channelFailureOf(updated(5, { error: "Media upload error" }), BOT_ID),
     ).toMatchObject({ code: null, kind: "unknown" });
+  });
+
+  // A voice note whose words were the operator's says so, and the text that replaces it keeps them.
+  test("a voice note of the operator's words is read as such", () => {
+    expect(
+      channelFailureOf(updated(13, { byOperator: true }), BOT_ID)?.byOperator,
+    ).toBe(true);
   });
 
   // #792: since #787 the transcription is the speech, which has holes where a URL or an address was.
@@ -632,6 +645,58 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
         data: { settings: {} },
       });
     }
+  });
+
+  // The text replacing the voice note is the model's reply, which Chatwoot renders as
+  // Liquid, so it goes escaped; the operator's signature keeps its own Liquid.
+  test("the model's text goes escaped and the signature's Liquid is left alone", async () => {
+    await suDb.agent.update({
+      where: { id: agentId },
+      data: {
+        settings: {
+          signature: {
+            enabled: true,
+            text: "Att {{contact.name}}",
+            position: "bottom",
+          },
+        },
+      },
+    });
+    try {
+      const cw = fakeChatwoot({});
+      await mediaFallbackHandler(
+        {
+          ...(await claimed(9001)),
+          payloadSecret: encryptJson("Seu cadastro: {{contact.email}} fim"),
+        },
+        appDb,
+        cw.makeClient,
+      );
+      expect(cw.sent.map((m) => m.text)).toEqual([
+        "Seu cadastro: {{ '{{' }}contact.email}} fim\n\nAtt {{contact.name}}",
+      ]);
+    } finally {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: { settings: {} },
+      });
+    }
+  });
+
+  // The operator's words (a guardrail template spoken as audio) keep Chatwoot's Liquid in the text.
+  test("an operator's text replacing the voice note is sent as written", async () => {
+    const cw = fakeChatwoot({});
+    const job = await claimed(9001);
+    await mediaFallbackHandler(
+      {
+        ...job,
+        payload: { ...(job.payload as object), byOperator: true },
+        payloadSecret: encryptJson("Olá {{contact.name}}"),
+      },
+      appDb,
+      cw.makeClient,
+    );
+    expect(cw.sent.map((m) => m.text)).toEqual(["Olá {{contact.name}}"]);
   });
 
   test("an inbox handed to another agent, or a test agent on a conversation never activated, gets nothing", async () => {

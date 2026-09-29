@@ -876,6 +876,51 @@ describe("openCaseInInbox", () => {
     ).toBe(false);
   });
 
+  // The opening and the reason note are the model's words, and Chatwoot renders both as
+  // Liquid, so they go escaped (the wire shape is pinned in chatwoot-liquid.test.ts). The links are
+  // ours and carry no Liquid. A signer, when there is one, owns the whole opening: it attaches the
+  // operator's signature, which keeps its Liquid, and escapes the model's part itself (prepare.ts).
+  test("the opening and the reason reach the case literally", async () => {
+    const f = fakeChatwoot();
+    await openCaseInInbox(
+      f.client,
+      input({
+        customerMessage: "Abrimos seu caso {{contact.email}} ref {{foo}}",
+        reason: "cliente pediu {{contact.phone_number}}",
+      }),
+    );
+    const sends = f.calls
+      .filter((c) => c.fn === "sendMessageAsAdmin")
+      .map((c) => c.args[1]);
+    expect(sends.slice(0, 2)).toEqual([
+      "Abrimos seu caso {{ '{{' }}contact.email}} ref {{ '{{' }}foo}}",
+      "Motivo: cliente pediu {{ '{{' }}contact.phone_number}}",
+    ]);
+    const closed = fakeChatwoot({ canReply: false });
+    await openCaseInInbox(
+      closed.client,
+      input({ customerMessage: "Abrimos {{contact.email}}" }),
+    );
+    const note = closed.calls.find(
+      (c) =>
+        c.fn === "sendMessageAsAdmin" && String(c.args[1]).includes("Abrimos"),
+    );
+    expect(String(note?.args[1])).toEndWith(
+      "Abrimos {{ '{{' }}contact.email}}",
+    );
+    const signed = fakeChatwoot();
+    await openCaseInInbox(
+      signed.client,
+      input({
+        customerMessage: "Abrimos {{foo}}",
+        signCustomerMessage: (t) => `WIRE(${t})`,
+      }),
+    );
+    expect(
+      signed.calls.find((c) => c.fn === "sendMessageAsAdmin")?.args[1],
+    ).toBe("WIRE(Abrimos {{foo}})");
+  });
+
   test("a case that was resolved, or lives in another inbox, does not block a new one", async () => {
     for (const known of [
       { status: "resolved", inboxId: 40 },
@@ -1663,6 +1708,22 @@ describe("the tool", () => {
     if (!t) throw new Error("tool not built");
     return { t, toggles };
   }
+
+  // The note left when the case could not be opened quotes the model's reason, which Chatwoot renders
+  // as Liquid like any note, so it goes escaped.
+  test("the note of a case that failed to open quotes the reason literally", async () => {
+    const f = fakeChatwoot({ failOn: new Set(["createConversation"]) });
+    const { t } = toolFor(f);
+    await t.invoke({ reason: "pediu {{contact.phone_number}}" });
+    const note = f.calls.find(
+      (c) =>
+        c.fn === "sendPrivateNote" &&
+        String(c.args[1]).includes("Não consegui abrir o caso"),
+    );
+    expect(String(note?.args[1])).toEndWith(
+      "Motivo informado: pediu {{ '{{' }}contact.phone_number}}",
+    );
+  });
 
   test("the schema has no destination: the operator picks it, never the model", () => {
     const { t } = toolFor(fakeChatwoot());

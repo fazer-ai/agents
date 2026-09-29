@@ -12,6 +12,7 @@ import {
 } from "@/graph/usage";
 import { clipText } from "@/lib/text";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { analyzeGuardrail } from "./analyze";
 import { loggableCategories } from "./log-categories";
@@ -33,8 +34,9 @@ export type GuardrailDecision =
   // that never resolved and a model that would not build never left this process. A caller whose
   // earlier reads go stale while the judge thinks asks that question, not the kind.
   | { kind: "unavailable"; modelRan: boolean }
-  // Tripped: send this instead of the subject. The operator note was written.
-  | { kind: "replaced"; reply: string }
+  // Tripped: send this instead of the subject. The operator note was written. `generated` marks a
+  // reply the guardrails model wrote; without it the reply is the operator's `templateMessage`.
+  | { kind: "replaced"; reply: string; generated?: true }
   // Tripped with the `silent` action: send nothing. The operator note was written.
   | { kind: "suppressed" }
   // Tripped with the `handoff` action: the subject is not sent, the conversation goes to the team,
@@ -51,6 +53,12 @@ export function screenedText(
   if (d.kind === "suppressed") return null;
   if (d.kind === "handed-off") return d.reply;
   return d.kind === "replaced" ? d.reply : subject;
+}
+
+// Whether `screenedText` answers with text the operator wrote (the template or the hand-over
+// message) rather than a model's. The operator's text keeps Chatwoot's Liquid; a model's is escaped.
+export function screenedByOperator(d: GuardrailDecision): boolean {
+  return (d.kind === "replaced" && !d.generated) || d.kind === "handed-off";
 }
 
 // The policy acted on this text: it replaced it or removed it. The caller's OWN artefacts of the
@@ -119,7 +127,11 @@ export function chatwootNoteSink(
       return;
     const head = `Guardrail (${r.direction}): ${r.categories?.join(", ") || "policy"} — ${r.action}. ${r.rationale ?? ""}`;
     await client
-      .sendPrivateNote(conversationId, handedOffNote(head, r))
+      // The rationale and the refused reply are model text, escaped for Chatwoot's Liquid.
+      .sendPrivateNote(
+        conversationId,
+        literalForChatwoot(handedOffNote(head, r)),
+      )
       .catch(() => {});
   };
 }
@@ -370,7 +382,10 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         r,
       };
     return {
-      d: { kind: "replaced", reply: replacement ?? dir.templateMessage },
+      d:
+        replacement === null
+          ? { kind: "replaced", reply: dir.templateMessage }
+          : { kind: "replaced", reply: replacement, generated: true },
       r,
     };
   };

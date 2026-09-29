@@ -4517,6 +4517,63 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(await silenceRetryLine(98858)).toBeNull();
   });
 
+  // An image caption is the model's text riding as the message content, which Chatwoot
+  // renders as Liquid like any other, so it goes escaped (the wire shape is pinned in
+  // chatwoot-liquid.test.ts), and so does the reply beside it.
+  test("the caption and the reply reach the customer literally", async () => {
+    await allowImageHost();
+    await seedConversation(98943, null);
+    const sent: Array<[string, string | undefined]> = [];
+    const client = {
+      sendMessage: async (_c: number, content: string) => {
+        sent.push(["message", content]);
+        return {};
+      },
+      toggleStatus: async () => ({}),
+      toggleTyping: async () => ({}),
+      sendFileAttachment: async (
+        _c: number,
+        _b: ArrayBuffer,
+        _f: string,
+        _m: string,
+        o: { caption?: string } = {},
+      ) => {
+        sent.push(["attachment", o.caption]);
+        return {};
+      },
+    } as unknown as ChatwootClient;
+    const model = new ScriptedSilenceModel([
+      {
+        text: "",
+        calls: [
+          {
+            name: "send_image",
+            args: { url: IMG_URL, caption: "Foto {{contact.email}}" },
+          },
+        ],
+      },
+      { text: "Veja {{foo}}" },
+    ]);
+    await runAgentTurn({
+      tenantId,
+      instanceId,
+      agentBotId: 9,
+      event: incoming({ conversationId: 98943 }),
+      base: appDb,
+      deps: {
+        makeModel: () => model as unknown as BaseChatModel,
+        makeClient: async () => client,
+        checkpointer: new MemorySaver(),
+        imageDeps,
+      },
+    });
+    expect(sent).toContainEqual([
+      "attachment",
+      "Foto {{ '{{' }}contact.email}}",
+    ]);
+    expect(sent).toContainEqual(["message", "Veja {{ '{{' }}foo}}"]);
+  });
+
   // NOTE: The reply the model wrote beside a tool call is delivered, so that turn is not a silence.
   test("a recovered reply is not retried", async () => {
     await seedConversation(98857, null);
@@ -8571,6 +8628,60 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       expect(sent).toEqual([[946, "GEN-OUT-REPLY"]]);
       expect(attachments).toEqual([]);
     });
+
+    // The reply the output check sends instead of the model's keeps the escape only when a model wrote
+    // it: the operator's template keeps Chatwoot's Liquid, a generated reply is escaped.
+    for (const [convId, action, expected] of [
+      [9481, "template", "Olá {{contact.name}}"],
+      [9482, "generated", "Gerada {{ '{{' }}foo}}"],
+    ] as const) {
+      test(`output '${action}': the replacement goes out as ${action === "template" ? "the operator wrote it" : "escaped model text"}`, async () => {
+        await setGuardrails({
+          enabled: true,
+          provider: "openai",
+          model: GUARD_MODEL,
+          credentialRef: gVaultRef,
+          input: { enabled: false },
+          output: {
+            enabled: true,
+            action,
+            checks: {
+              toxicity: true,
+              unsafeContent: false,
+              competitorMentions: false,
+              promptAdherence: false,
+            },
+            templateMessage: "Olá {{contact.name}}",
+          },
+        });
+        await seedConv(convId);
+        const sent: Array<[number, string]> = [];
+        const verdict = JSON.stringify({
+          violated: true,
+          categories: ["toxicity"],
+          rationale: "x",
+          suggestedReply: "Gerada {{foo}}",
+        });
+        await runAgentTurn({
+          tenantId: gTenantId,
+          instanceId: gInstanceId,
+          agentBotId: G_BOT,
+          event: incoming({ conversationId: convId, inboxId: G_INBOX }),
+          base: appDb,
+          deps: {
+            makeModel: (cfg: ResolvedModelConfig): BaseChatModel =>
+              cfg.model === GUARD_MODEL
+                ? guardrailModel(async () => ({ content: verdict }))
+                : (new FakeListChatModel({
+                    responses: ["resposta {{contact.email}}"],
+                  }) as unknown as BaseChatModel),
+            makeClient: guardStub(sent, [], [], []),
+            checkpointer: new MemorySaver(),
+          },
+        });
+        expect(sent).toEqual([[convId, expected]]);
+      });
+    }
 
     // The recovered text is what the guardrail screened, and the customer got the safe reply
     // instead, so nothing on the log says a recovered reply was delivered.

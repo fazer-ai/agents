@@ -23,6 +23,7 @@ import {
 } from "@/modules/chatwoot/gate-close";
 import { conversationOwnershipNow } from "@/modules/chatwoot/human-takeover";
 import { loadChatwootClient } from "@/modules/chatwoot/instance";
+import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
   buildQuoteResolver,
   parseChatwootMessages,
@@ -65,6 +66,7 @@ import {
   buildGuardrailGate,
   chatwootNoteSink,
   guardrailTripped,
+  screenedByOperator,
   screenedText,
 } from "@/modules/guardrails/gate";
 import {
@@ -860,7 +862,13 @@ async function deliverPendingAttachments(
         file.bytes,
         file.fileName,
         file.mime,
-        { caption: file.caption },
+        // The caption is the model's text, escaped for Chatwoot's Liquid.
+        {
+          caption:
+            file.caption === undefined
+              ? undefined
+              : literalForChatwoot(file.caption),
+        },
       );
       sent = true;
       emitFlowEvent(flow, {
@@ -1337,6 +1345,7 @@ async function runTurnBody(
         if (handed === "failed") return "failed";
         if (handed !== "handed") return "drop";
         handoffState.customerMessage = d.reply;
+        handoffState.lineByOperator = true;
         handoffState.declinedToSpeak = d.reply === null;
         return "handed";
       },
@@ -1606,6 +1615,8 @@ async function runTurnBody(
   const deliverText = async (
     text: string,
     voiceReply: boolean | null,
+    // False when the text is the operator's (a guardrail's template or hand-over message).
+    modelText = true,
   ): Promise<ReplyDelivery | "stale" | "superseded"> => {
     const asked = shouldReplyWithAudio(
       loaded.ttsConfig.mode,
@@ -1674,6 +1685,8 @@ async function runTurnBody(
               // What the channel gets as TEXT if it refuses the audio: the speech has holes where
               // the items were, and the reply does not (issue #792).
               ...(spoken.speech === text ? {} : { replyText: text }),
+              // And whose words they are: the operator's keep Chatwoot's Liquid in that text.
+              ...(modelText ? {} : { byOperator: true }),
             },
           );
           // AND KEEP THE WORDS WHERE OUR OWN READERS LOOK, which on upstream Chatwoot is the only
@@ -1719,6 +1732,8 @@ async function runTurnBody(
             flow,
             writeCalledOff,
             Number.isSafeInteger(sentId) ? sentId : null,
+            null,
+            modelText,
           );
           return { ...items, delivered: 1 + items.delivered };
         }
@@ -1765,6 +1780,7 @@ async function runTurnBody(
       // The audio branch above returned before this line: a spoken "Alex, Minha Empresa" is noise, and
       // the voice note's `transcribedText` is the words that were actually said.
       signed,
+      modelText,
     );
     logger.info(
       "chatwoot agent replied: conv=%s thread=%s len=%d balloons=%d partial=%s",
@@ -1834,7 +1850,13 @@ async function runTurnBody(
       if (guardrailTripped(guarded)) turnState.pendingAttachments.length = 0;
       const screened = screenedText(guarded, line);
       if (screened === null) return;
-      const delivered = await deliverText(screened, await currentVoiceReply());
+      const delivered = await deliverText(
+        screened,
+        await currentVoiceReply(),
+        guardrailTripped(guarded)
+          ? !screenedByOperator(guarded)
+          : handoffState.lineByOperator !== true,
+      );
       // The closing line the transfer already promised, and the one send this turn makes that no
       // later gate can catch — it leaves before them. A run called off during the model call reaches
       // exactly here, so this is where it stops. The transfer itself stays done: the tool ran, the
@@ -2927,6 +2949,8 @@ async function runTurnBody(
     );
     const screened = [reply, ...modelWritten].filter(Boolean).join("\n");
     const outGuard = screened ? await runGuardrail("output", screened) : null;
+    // Whether what goes out below is the operator's text standing in for the reply.
+    let replyByOperator = false;
     // Same wait, same reason: `postBlocked` answered before this model call, and the suppressed
     // branch below returns "blocked" without passing any later ask.
     if (await writeCalledOff()) return refuse(standDown());
@@ -2957,6 +2981,7 @@ async function runTurnBody(
         reply = replacement;
       }
       replyRecovered = false;
+      replyByOperator = screenedByOperator(outGuard);
     }
 
     // Empty reply: no text to post, but the queued images and a deferred resolve intent still apply
@@ -3184,7 +3209,11 @@ async function runTurnBody(
     if (attachments.calledOff)
       return attachments.sent ? "posted" : refuse(standDown());
 
-    const delivered = await deliverText(reply, recheck.voiceReply);
+    const delivered = await deliverText(
+      reply,
+      recheck.voiceReply,
+      !replyByOperator,
+    );
     // Another turn holds the claim on this burst. Nothing left here — the ask sits one statement
     // before the send — and an attachment cannot have gone out either, because the batch above asks
     // the same memoized gate first, so this stands down whole.

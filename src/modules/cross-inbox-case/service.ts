@@ -12,6 +12,7 @@ import {
   type ChatwootClient,
 } from "@/modules/chatwoot/client";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
+import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
   CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE,
   type CrossInboxCaseConfig,
@@ -70,7 +71,8 @@ export interface OpenCaseInput {
   // text may be sent. Absent ⇒ no screening configured on this path.
   screenCustomerMessage?: (text: string) => Promise<CustomerTextVerdict>;
   // The agent's signature over the opening the customer receives, applied after the screening like
-  // every reply's. Absent ⇒ sent as written.
+  // every reply's. It returns what goes on the wire: the model's text escaped for Chatwoot's Liquid
+  // and the signature as the operator wrote it. Absent ⇒ the model's text, escaped.
   signCustomerMessage?: (text: string) => string;
   // The label writers' shared queue is keyed by tenant (see modules/chatwoot/labels.ts).
   tenantId?: bigint | null;
@@ -586,21 +588,25 @@ async function run(
           await attempt("customer_message", () =>
             client.sendMessageAsAdmin(
               caseId,
-              `${OPENING_OUTSIDE_WINDOW_PREFIX}${text}`,
+              `${OPENING_OUTSIDE_WINDOW_PREFIX}${literalForChatwoot(text)}`,
               { private: true },
             ),
           );
         } else {
-          const signed = input.signCustomerMessage?.(text) ?? text;
+          // The signer escapes the model's part itself and leaves the signature's Liquid alone.
+          const signed =
+            input.signCustomerMessage?.(text) ?? literalForChatwoot(text);
           await attempt("customer_message", () =>
             client.sendMessageAsAdmin(caseId, signed, { private: false }),
           );
         }
       }
       await attempt("destination_reason_note", () =>
-        client.sendMessageAsAdmin(caseId, destinationReasonNote(input.reason), {
-          private: true,
-        }),
+        client.sendMessageAsAdmin(
+          caseId,
+          destinationReasonNote(literalForChatwoot(input.reason)),
+          { private: true },
+        ),
       );
       await attempt("destination_link_note", () =>
         client.sendMessageAsAdmin(caseId, destinationLinkNote(originUrl), {

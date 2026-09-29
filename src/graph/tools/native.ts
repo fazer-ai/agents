@@ -32,6 +32,7 @@ import {
 } from "@/modules/chatwoot/client";
 import { type KanbanContext, matchKanbanStep } from "@/modules/chatwoot/kanban";
 import { withConversationLabels } from "@/modules/chatwoot/labels";
+import { literalForChatwoot } from "@/modules/chatwoot/liquid";
 import {
   attributesForModel,
   type ChatwootVocab,
@@ -173,6 +174,9 @@ export interface HandoffTurnState {
   // Optional because the turn-state shape is spelled out by hand at five call sites that build the
   // toolset, and absent is exactly what it means: nobody declared anything.
   declinedToSpeak?: boolean;
+  // `customerMessage` is the operator's hand-over message, set by an output check that handed the
+  // conversation over, not a line the model wrote: it keeps Chatwoot's Liquid instead of being escaped.
+  lineByOperator?: boolean;
   // THIS turn changed the conversation's owner itself: its transfer, or the nudge's IMMEDIATE close
   // (the reactive turn defers its close past the graph). Two marks, because they answer different
   // things: `ownerChanged` is set when a change LANDED and never cleared, and `ownerChangesInFlight`
@@ -604,7 +608,11 @@ function handoffTool(ctx: ToolCtx) {
       // Transfer-with-summary: a private note for the human BEFORE handing off, gated by the
       // per-agent toggle (default on).
       if (reason && ctx.transferWithSummary !== false) {
-        await ctx.client.sendPrivateNote(ctx.conversationId, reason);
+        // The model's words, escaped for Chatwoot's Liquid.
+        await ctx.client.sendPrivateNote(
+          ctx.conversationId,
+          literalForChatwoot(reason),
+        );
         // ASKED AGAIN, between the note and the status change, and only when the note was actually
         // sent — the third handler in this file that WAITS before writing, and the rule is the same
         // one `set_labels` applies inside its queue and `resolve_conversation` after its read: the
@@ -642,6 +650,7 @@ function handoffTool(ctx: ToolCtx) {
         // deliver and a declaration not to, and whichever the runtime asked about first would win.
         const spoken = customerMessage?.trim() ?? "";
         ctx.handoffState.customerMessage = spoken || null;
+        ctx.handoffState.lineByOperator = false;
         ctx.handoffState.declinedToSpeak = speaks && !spoken;
         ctx.handoffState.completed = true;
       }
@@ -683,7 +692,7 @@ function handoffTool(ctx: ToolCtx) {
             // intended target, and the conversation falls back to default routing.
             await ctx.client.sendPrivateNote(
               ctx.conversationId,
-              `Tentei encaminhar para "${assignTo}", mas não encontrei um agente ou time com esse nome no Chatwoot. Deixei no roteamento padrão.`,
+              `Tentei encaminhar para "${literalForChatwoot(assignTo)}", mas não encontrei um agente ou time com esse nome no Chatwoot. Deixei no roteamento padrão.`,
             );
             assigned = ` No agent/team named "${assignTo}" was found; left for default routing.`;
           }
@@ -752,7 +761,10 @@ function handoffTool(ctx: ToolCtx) {
 function privateNoteTool(ctx: ToolCtx) {
   return tool(
     async ({ content }: { content: string }) => {
-      await ctx.client.sendPrivateNote(ctx.conversationId, content);
+      await ctx.client.sendPrivateNote(
+        ctx.conversationId,
+        literalForChatwoot(content),
+      );
       return "Private note posted (visible to agents, not the customer).";
     },
     {
@@ -2537,7 +2549,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         }
         await ctx.client.sendPrivateNote(
           ctx.conversationId,
-          `⚠️ Não consegui abrir o caso na outra caixa (etapa: ${result.step}). O cliente está aguardando atendimento aqui. Motivo informado: ${reason.trim()}`,
+          `⚠️ Não consegui abrir o caso na outra caixa (etapa: ${result.step}). O cliente está aguardando atendimento aqui. Motivo informado: ${literalForChatwoot(reason.trim())}`,
         );
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
           return "Did not hand off (the run was called off while the note was in flight); the note was already filed.";
@@ -2552,6 +2564,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         if (ctx.handoffState) {
           const line = handoff_message?.trim() ?? "";
           ctx.handoffState.customerMessage = line || null;
+          ctx.handoffState.lineByOperator = false;
           // No line is a SILENT transfer, said so as `handoff_to_human` says it: otherwise the model's
           // next reply could still go out before the status webhook reaches the mirror.
           ctx.handoffState.declinedToSpeak = !line;

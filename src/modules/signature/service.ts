@@ -208,17 +208,21 @@ export function attachSignature(
   cfg: Pick<SignatureConfig, "position" | "separator" | "frequency">,
   // The reply as it arose, before the split; only the dedupe reads it.
   whole?: string,
+  // Applied to each chunk's own text and never to the signature: a send to Chatwoot escapes the
+  // model's words and leaves the operator's Liquid alone. The dedupe reads the chunks
+  // as they came, so what the model wrote is compared with what the operator wrote.
+  body: (text: string) => string = (text) => text,
 ): string[] {
-  if (!signature || chunks.length === 0) return chunks;
+  if (!signature || chunks.length === 0) return chunks.map(body);
   // NOTE: with split off a whitespace reply arrives as one blank chunk; this keeps it unsigned, as the
   // split path's zero chunks are.
-  if (chunks.every((c) => c.trim().length === 0)) return chunks;
+  if (chunks.every((c) => c.trim().length === 0)) return chunks.map(body);
   const { position, separator, frequency } = cfg;
   const delimiter = DELIMITERS[separator];
   const put = (chunk: string): string =>
     position === "top"
-      ? `${signature}${delimiter}${chunk.trimStart()}`
-      : `${chunk.trimEnd()}${delimiter}${signature}`;
+      ? `${signature}${delimiter}${body(chunk.trimStart())}`
+      : `${body(chunk.trimEnd())}${delimiter}${signature}`;
   // NOTE: the balloon count must not change: `deliverReply` aligns `seps` with `chunks` by index.
   if (frequency === "all") {
     // NOTE: asked per balloon, not of the whole reply: a model that signed at the end would
@@ -249,15 +253,15 @@ export function attachSignature(
       own.has(i) ||
       alreadySigned([c], signature) ||
       flatSigned(c)
-        ? c
+        ? body(c)
         : put(c),
     );
   }
   const i = position === "top" ? 0 : chunks.length - 1;
   const chunk = chunks[i];
   if (chunk === undefined || alreadySigned(chunks, signature, whole))
-    return chunks;
-  const out = [...chunks];
+    return chunks.map(body);
+  const out = chunks.map(body);
   out[i] = put(chunk);
   return out;
 }

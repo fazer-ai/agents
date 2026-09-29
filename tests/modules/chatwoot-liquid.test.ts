@@ -118,6 +118,11 @@ describe("composeForChatwoot", () => {
       `Dica: {% raw %}${markValue("Use {{foo}}")}{% endraw %} e {{contact.email}}`,
       "Dica: Use {{ '{{' }}foo}} e {{contact.email}}",
     ],
+    // With whitespace control, as Liquid trims it: the opening tag's `{%-` before, its `-%}` after.
+    [
+      `Dica: \n{%- raw -%}${markValue("Use {{foo}}")}{% endraw %}\n fim`,
+      "Dica:Use {{ '{{' }}foo}}fim",
+    ],
     // Nothing in the value to escape: the operator's text goes out as written, code span included.
     [`\`{{contact.email}}\` ${markValue("Ana")}`, "`{{contact.email}}` Ana"],
   ])("%p", (fenced, wire) => {

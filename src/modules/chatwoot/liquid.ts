@@ -84,17 +84,30 @@ export function composeForChatwoot(fenced: string): string {
     charAt[offset] = i;
     offset += c.length;
   });
-  let rawOpen: [number, number] | null = null;
-  for (const m of text.matchAll(/\{%\s*(end)?raw\s*%\}/g)) {
+  // Liquid's whitespace control on those tags trims the operator's text around the block, so the
+  // replay trims it too: `{%-` on the opening tag before the block, its `-%}` after it (the closing
+  // tag's is swallowed with the block and trims nothing).
+  const isSpace = (i: number) => !fromValue[i] && /\s/.test(chars[i] as string);
+  let rawOpen: { from: number; to: number; trimAfter: boolean } | null = null;
+  for (const m of text.matchAll(
+    /\{%(-?)\s*raw\s*(-?)%\}|\{%\s*endraw\s*(-?)%\}/g,
+  )) {
     const from = charAt[m.index] as number;
     const to = charAt[m.index + m[0].length] ?? chars.length;
     if (fromValue.slice(from, to).some(Boolean)) continue;
-    if (!rawOpen && !m[1]) rawOpen = [from, to];
-    else if (rawOpen && m[1]) {
-      for (let j = rawOpen[0]; j < to; j++) {
-        dropped[j] = j < rawOpen[1] || j >= from;
+    const isEnd = m[3] !== undefined;
+    if (!rawOpen && !isEnd) {
+      rawOpen = { from, to, trimAfter: m[2] === "-" };
+      for (let j = from - 1; m[1] === "-" && j >= 0 && isSpace(j); j--)
+        dropped[j] = true;
+    } else if (rawOpen && isEnd) {
+      for (let j = rawOpen.from; j < to; j++) {
+        dropped[j] = j < rawOpen.to || j >= from;
         inCode[j] = true;
       }
+      const trimAfter = rawOpen.trimAfter;
+      for (let j = to; trimAfter && j < chars.length && isSpace(j); j++)
+        dropped[j] = true;
       rawOpen = null;
     }
   }

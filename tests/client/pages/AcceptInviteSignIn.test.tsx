@@ -11,11 +11,11 @@ import {
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { withI18n } from "@/tests/utils/i18n";
 
-// Review round 4 on #756: an invitation to an account that signs in with Google has no password to
-// enter on the accept page. It offers signing in instead, and the invitation waits in the tab (never
-// back on a URL) until the invitee returns to the page signed in.
+// An invitation to an account that signs in with Google has no password to enter on the accept
+// page. It offers signing in instead, and the invitation waits in the tab (never back on a URL)
+// until the invitee returns to the page signed in.
 //
-// NOTE: assertions reduce to strings/booleans before expect; a DOM node in a failing expectation
+// Assertions reduce to strings/booleans before expect; a DOM node in a failing expectation
 // serializes a cyclic happy-dom tree and stalls the runner.
 
 const PARKED = "@app:parked-invite";
@@ -133,7 +133,7 @@ describe("accepting an invitation by signing in", () => {
     expect(sessionStorage.getItem(PARKED)).toBe("tok-756");
   });
 
-  // Review round 7: it stays parked through whatever reloads the sign-in takes, and goes only once the
+  // NOTE: it stays parked through whatever reloads the sign-in takes, and goes only once the
   // invitation is accepted.
   test("back on the page, the parked invitation is read and kept until it is accepted", async () => {
     sessionStorage.setItem(PARKED, "tok-756");

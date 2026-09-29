@@ -17,12 +17,11 @@ import {
 
 // The template message is what the customer reads, and the `generated` action falls back to it
 // whenever no replacement gets written: when the model returns none, and always when the relevance
-// check is the one that tripped, since a reply that did not answer has nothing to rewrite. The
-// field used to be hidden outside the `template` action, so an operator on `generated` could not
-// see or edit the message their customers actually receive.
+// check is the one that tripped, since a reply that did not answer has nothing to rewrite. So the
+// field is shown on `generated` too, where it is the message the customer receives.
 //
-// NOTE: every assertion reduces to a boolean or a string BEFORE expect. A failing expectation that
-// holds a DOM node serializes a cyclic happy-dom tree and stalls the runner.
+// Every assertion reduces to a boolean or a string BEFORE expect: a failing expectation that holds
+// a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 function renderWith(action: GuardrailAction): void {
   const config: GuardrailsConfig = {
     ...structuredClone(GUARDRAILS_DEFAULTS),
@@ -80,7 +79,7 @@ describe("GuardrailsTab template message", () => {
     expect(templateFields() > 0).toBe(true);
   });
 
-  // The one this round is about: on `generated` it is the fallback the customer receives.
+  // NOTE: on `generated` it is the fallback the customer receives.
   test("stays editable on the generated action, where it is the fallback", () => {
     renderWith("generated");
     expect(templateFields() > 0).toBe(true);
@@ -91,8 +90,8 @@ describe("GuardrailsTab template message", () => {
     expect(templateFields()).toBe(0);
   });
 
-  // Issue #704: a hand-over says a person will continue, which is not what a refusal says, so it
-  // has its own box and the template's is gone. Capped like every customer-facing line here.
+  // NOTE: a hand-over says a person will continue, which is not what a refusal says, so it has its
+  // own box and the template's is gone. Capped like every customer-facing line here.
   test("is replaced by the hand-over line on handoff", () => {
     renderWith("handoff");
     expect(templateFields()).toBe(0);
@@ -104,9 +103,8 @@ describe("GuardrailsTab template message", () => {
     expect(handoff.every((v) => v === String(TEMPLATE_MESSAGE_MAX))).toBe(true);
   });
 
-  // The custom policy is clamped at CUSTOM_POLICY_MAX on read, and until now the field said nothing:
-  // an operator pasting a longer policy saw it saved, saw it back on reload, and never learned that
-  // the analysis prompt only carried the first part of it.
+  // NOTE: the custom policy is clamped at CUSTOM_POLICY_MAX on read, so the field declares the cap
+  // or an operator pasting a longer policy never learns the analysis carries only the first part.
   // Substring match: FormField puts the description inside the same <label>, so the accessible name
   // is "Custom policy Extra rules appended to every analysis." rather than the label alone.
   test("every clamped field on this tab declares its cap", () => {
@@ -138,9 +136,9 @@ describe("GuardrailsTab template message", () => {
   // otherwise picking "generated" there looks like a feature that silently does nothing. The
   // template field is the place, because the template is what that direction actually sends.
   //
-  // It lives behind that field's `?` rather than under it (issue #411), which is not a detail of
-  // presentation here: this field renders a server refusal in the same slot a description would
-  // occupy, so an inline explanation would be erased by the very refusal it explains.
+  // NOTE: it lives behind that field's `?` rather than under it: this field renders a server
+  // refusal in the slot a description would occupy, so an inline explanation would be erased by the
+  // very refusal it explains.
   test("the input direction says the template is always what gets sent", () => {
     renderWith("generated");
     expect(
@@ -163,16 +161,15 @@ describe("GuardrailsTab template message", () => {
 
 // THE MARK ACTUALLY REACHING THE BOX.
 //
-// Everything else about #349 is provable without a DOM — where a path is edited, which channel the
-// placement chooses — and none of it proves the last step: that the answer handed to a tab is
-// rendered beside the control it is about. This tab is the one that can be mounted (the editor pulls
-// auth, theme, toast and a live catalog), and its five fields are one of each shape the editor draws:
-// a credential picker, a per-direction textarea, and a policy textarea.
+// Where a refusal's path is edited and which channel the placement chooses are provable without a
+// DOM; the last step is not: that the answer handed to a tab is rendered beside the control it is
+// about. This tab is the one that can be mounted (the editor pulls auth, theme, toast and a live
+// catalog), and its five fields are one of each shape the editor draws: a credential picker, a
+// per-direction textarea, and a policy textarea.
 describe("a refusal handed to the guardrails tab lands at its input", () => {
-  // The other describe in this file scopes its own cleanup, so this block needs one too: without it
-  // the last render of the loop below survives into the next test, and the control that asserts
-  // "none of it is on screen" reads the leftover instead. Measured -- it passes alone and fails in a
-  // full run, which is the signature of state carried between tests rather than of a real defect.
+  // NOTE: the other describe in this file scopes its own cleanup, so this block needs one too:
+  // without it the last render of the loop below survives into the next test, and the control that
+  // asserts "none of it is on screen" reads the leftover (green alone, red in a full run).
   afterEach(() => cleanup());
 
   function renderRefused(refusals: GuardrailsRefusals): void {

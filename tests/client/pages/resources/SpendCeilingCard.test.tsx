@@ -13,8 +13,8 @@ import { ToastProvider } from "@/client/components/Toast";
 import { SpendCeilingCard } from "@/client/pages/resources/SpendCeilingCard";
 
 // The spend ceiling's card shows DOLLARS as Langfuse costed them, and beside the bar the health of
-// the figure and the reconciliation against the ledger (issue #426): a ceiling that undercounts, a
-// snapshot nobody refreshed, a block written in tokens, a tenant with no Langfuse — each has a
+// the figure and the reconciliation against the ledger: a ceiling that undercounts, a snapshot
+// nobody refreshed, a block written in tokens, a tenant with no Langfuse, each has a
 // sentence on this screen, because this is the screen that shows the bar.
 
 const realFetch = globalThis.fetch;
@@ -173,9 +173,9 @@ describe("the spend ceiling card", () => {
     expect(has("openrouter/free-model")).toBe(true);
   });
 
-  // THE FLAG IS RE-READ WHEN THE LANGFUSE CARD SAVES (review round 13): the page bumps
-  // `reloadKey`, and the card asks for the usage again instead of showing the pre-save state until
-  // an unrelated save or a reload.
+  // NOTE: the flag is re-read when the Langfuse card saves: the page bumps `reloadKey`, and the
+  // card asks for the usage again instead of showing the pre-save state until an unrelated save or
+  // a reload.
   test("a bumped reloadKey re-reads the usage", async () => {
     installFetchStub(baseUsage());
     const r = render(
@@ -200,8 +200,8 @@ describe("the spend ceiling card", () => {
     });
   });
 
-  // AN OLDER READ LANDING AFTER A NEWER ONE IS DROPPED (review round 16). The mount-time read is
-  // still out when the Langfuse card saves and bumps `reloadKey`; the save's read answers first
+  // NOTE: an older read landing after a newer one is dropped. The mount-time read is still out
+  // when the Langfuse card saves and bumps `reloadKey`; the save's read answers first
   // with the credential in place, and the mount-time answer, with no credential, lands last. The
   // card keeps the newer answer.
   test("an older usage read landing after a newer one is dropped", async () => {
@@ -251,9 +251,9 @@ describe("the spend ceiling card", () => {
     expect(has("$22.50 of $20.00")).toBe(true);
   });
 
-  // THE CARD RE-READS ON THE POLL'S OWN PERIOD WHILE IT STAYS OPEN (review round 16). The health
-  // beside the bar is the server's per read, so a card left mounted has to ask again, or it keeps
-  // saying "refreshed" from its first read across every missed poll.
+  // NOTE: the card re-reads on the poll's own period while it stays open. The health beside the bar
+  // is the server's per read, so a card left mounted has to ask again, or it keeps saying
+  // "refreshed" from its first read across every missed poll.
   test("a mounted card re-reads the usage every poll interval", async () => {
     const usage = { ...baseUsage(), pollIntervalMs: 40 };
     installFetchStub(usage);
@@ -275,9 +275,9 @@ describe("the spend ceiling card", () => {
     expect(reads).toBeGreaterThanOrEqual(2);
   });
 
-  // A NEGATIVE AMOUNT IS REFUSED, NOT ROUNDED TO ZERO (review round 6). Zero means no ceiling on
-  // that half, so storing it for "-1" would switch the protection off in silence; the field says
-  // why and the save waits until the amount is one the ceiling can take.
+  // NOTE: a negative amount is refused, not rounded to zero. Zero means no ceiling on that half, so
+  // storing it for "-1" would switch the protection off in silence; the field says why and the save
+  // waits until the amount is one the ceiling can take.
   test("a negative amount cannot be saved, and the field says why", async () => {
     installFetchStub(baseUsage());
     renderCard();
@@ -299,8 +299,8 @@ describe("the spend ceiling card", () => {
     expect(save.disabled).toBe(false);
   });
 
-  // NOTHING READ IS SAID (review round 5): until the first poll lands the gate lets every call
-  // through, and "$0 of $20" with nothing beside it reads as an enforcing ceiling at zero.
+  // NOTE: nothing read yet is said: until the first poll lands the gate lets every call through,
+  // and "$0 of $20" with nothing beside it reads as an enforcing ceiling at zero.
   test("a month nobody has polled yet says so beside the bar", async () => {
     const usage = baseUsage();
     usage.entries[0] = entry({
@@ -317,9 +317,9 @@ describe("the spend ceiling card", () => {
     expect(has("failing since")).toBe(false);
   });
 
-  // THE SETTINGS' EXPLICIT NULL WINS (review round 5). After a save in dollars the settings say
-  // `legacyTokens: null`; a usage response that resolved after that save but was read before it
-  // still carries the marker, and `??` let it revive a notice about a ceiling that IS enforced.
+  // NOTE: the settings' explicit null wins. After a save in dollars the settings say
+  // `legacyTokens: null`; a usage response read before that save still carries the marker, and a
+  // `??` would let it revive a notice about a ceiling that IS enforced.
   test("the settings' explicit null retires the token notice whatever an older usage says", async () => {
     const usage = baseUsage();
     usage.legacyTokens = { inbox: 250_000, playground: 1 } as unknown as null;
@@ -344,7 +344,7 @@ describe("the spend ceiling card", () => {
     await waitFor(() => {
       expect(has("Langfuse is not configured")).toBe(true);
     });
-    // The credential's state above the bars, the gate's state on each bar (review round 10).
+    // NOTE: the credential's state above the bars, the gate's state on each bar.
     expect(
       screen.queryAllByText("Not enforced on this half", { exact: false }),
     ).toHaveLength(2);
@@ -353,8 +353,8 @@ describe("the spend ceiling card", () => {
     expect(has("failing since")).toBe(false);
   });
 
-  // THE SENTINEL IS WHAT THE GATE ACTS ON (review round 10, refining round 9). The flag is the
-  // credential's present; the gate reads the row and learns of a credential only at the next
+  // NOTE: the sentinel is what the gate acts on. The flag is the credential's present; the gate
+  // reads the row and learns of a credential only at the next
   // poll. A sentinel row under a true flag is a half the gate lets through, and says so, while
   // nothing says the credential is missing.
   test("a row still carrying the sentinel under a true flag says the half is not enforced", async () => {
@@ -426,10 +426,10 @@ describe("the spend ceiling card", () => {
     expect(put?.body).not.toHaveProperty("monthlyInboxTokens");
   });
 
-  // THE DOLLAR FIELDS ARE EDITED AS TEXT (review round 4). A number parsed on every keystroke and
-  // written back as the field's value turns a cleared field into "0" before the next digit lands,
-  // so typing 5 over it reads "05", and hands a trailing point back to the browser's own heuristic.
-  // The text is what the field shows; the number is what the save sends.
+  // NOTE: the dollar fields are edited as text. A number parsed on every keystroke and written back
+  // as the field's value turns a cleared field into "0" before the next digit lands, so typing 5
+  // over it reads "05", and a trailing point is left to the browser's own heuristic. The text is
+  // what the field shows; the number is what the save sends.
   test("a cleared dollar field stays cleared, and what was typed is what is sent", async () => {
     installFetchStub(baseUsage());
     renderCard();

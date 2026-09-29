@@ -13,24 +13,14 @@ import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
 import { WebhooksPage } from "@/client/pages/WebhooksPage";
 
-// THE PROBE STOPPED REFUSING, SO THE TOAST HAS TO CARRY WHAT THE REFUSAL CARRIED (issue #724).
+// THE PROBE DOES NOT REFUSE, SO THE TOAST CARRIES THE WARNING. `sendWebhookTest` takes the real
+// send's path (a probe on another path condemns what works and approves what does not), so an
+// unusable signing credential answers 2xx, and a green "Test delivered" alone would hide what the
+// button is pressed for. Its own file: WebhooksPageSigningLabel.test.tsx installs its fetch stub in
+// the describe BODY, at collection time, so a second such stub would replace it for both blocks.
 //
-// Before this round a subscription whose signing credential was deleted, or created and never
-// filled, ended the Test button in a RED toast naming the problem, because `sendWebhookTest` refused
-// outright. It stopped refusing — its own worker never did, and a probe that exercises a different
-// path from the real send condemns what works and approves what does not — so the outcome is now a
-// 2xx. That is an improvement ONLY if the warning survives the trip: a green "Test delivered" over a
-// sample that went out unsigned is strictly worse feedback than the refusal it replaced, because
-// this is the button an operator presses precisely to find out.
-//
-// Its own file rather than a second block in WebhooksPageSigningLabel.test.tsx: that file installs
-// its `globalThis.fetch` stub in the describe BODY, which runs at collection time, so a second stub
-// written the same way replaces the first one for both blocks and the earlier tests wait forever for
-// a row the new stub does not serve (measured: 5 failures, 3 of them in tests this round did not
-// touch).
-//
-// NOTE: every assertion reduces to a boolean or a string BEFORE expect — a failing expectation
-// holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
+// Every assertion reduces to a boolean or a string BEFORE expect: a failing expectation holding a
+// DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 const URL_ = "https://ops.example.com/page-toast";
 

@@ -1,16 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { diffProjection, localDayBounds } from "@/client/pages/AuditPage";
 
-// THE ONE THING THAT MAKES THIS PAGE READABLE (issue #401).
-//
-// Measured on a real self-hosted tenant: 20 of 40 rows are `mcp.prompt_set`, and that action takes
-// the WHOLE prompt rather than a patch, so those rows carry two system prompts of roughly 11k
-// characters each. Rendered as two JSON blobs the page is unusable, and the row that says the most
-// is the one that shows the least. What the operator came for is which field moved.
-//
-// The function is exported for this file and used by nothing else on the page's outside, because
-// what it decides — which keys are a change, how a create and a delete differ from an edit, and what
-// a change nobody is allowed to see looks like — is the whole answer the page gives.
+// The field-level diff is what makes the audit page readable: `mcp.prompt_set` takes the WHOLE
+// prompt, so a row can carry two ~11k-character system prompts, and what the operator came for is
+// which field moved (docs/ui.md, Audit). It is exported for this file alone, because what it
+// decides (which keys are a change, how a create and a delete differ from an edit, what a change
+// nobody may see looks like) is the whole answer the page gives.
 
 describe("the field-level diff", () => {
   test("only the keys that moved, over the union of both sides", () => {
@@ -65,16 +60,16 @@ describe("the field-level diff", () => {
 
   // A projection is an object or it is null: every writer in the tree builds one through its own
   // `auditProjection`/`auditSafe` helper, and `null` is how a create says there was no before and a
-  // delete says there is no after (measured across every `auditMutation` call site). A scalar or a
+  // delete says there is no after (true at every `auditMutation` call site). A scalar or a
   // list has no fields to show, so there is nothing here to render and no branch that could be
-  // proven — this pins the shape rather than inventing a rendering for a case nothing produces.
+  // proven: this pins the shape rather than inventing a rendering for a case nothing produces.
   test("a projection with no fields in it has no fields to show", () => {
     expect(diffProjection("antes", "depois").changes).toEqual([]);
     expect(diffProjection([1], [2]).changes).toEqual([]);
   });
 
-  // The measured case. The keys are compared, not the values' length, so a pair of 11k-character
-  // prompts is one row and not a page.
+  // NOTE: the keys are compared, not the values' length, so a pair of 11k-character prompts is one
+  // row and not a page.
   test("two whole system prompts are one changed field", () => {
     const before = { systemPrompt: "x".repeat(11_000), name: "Ana" };
     const after = { systemPrompt: "y".repeat(11_000), name: "Ana" };
@@ -83,11 +78,11 @@ describe("the field-level diff", () => {
     ]);
   });
 
-  // `markUndisclosed` puts the SAME marker on both sides on purpose: it says a write moved something
-  // the projection does not carry (an encrypted secret, a header block), which is a fact about the
-  // change and not about either end of it. A diff by equality therefore erases it, and the one row
-  // that says "a value you cannot see here changed" would render as "nothing was recorded" — the
-  // exact opposite of what it means, on the rows where the trail matters most.
+  // `markUndisclosed` puts the SAME marker on both sides on purpose: it says a write moved
+  // something the projection does not carry (an encrypted secret, a header block), which is a fact
+  // about the change and not about either end of it. A diff by equality therefore erases it, and
+  // the one row that says "a value you cannot see here changed" would render as "nothing was
+  // recorded", the opposite of what it means.
   test("a change nobody may see is reported, not filtered away as equal", () => {
     const d = diffProjection(
       { id: "7", name: "Tool", undisclosedChanged: true },
@@ -99,11 +94,9 @@ describe("the field-level diff", () => {
     expect(d.changes).toEqual([]);
   });
 
-  // The OTHER marker, and the one the page did not know. #394 puts `unreadConfigChanged` on the
-  // FIELD's projection rather than at the top (`{ settings: { … } }`), so a top-level check finds
-  // nothing; and when the edit moved only unread configuration, both sides are the same marker
-  // object and the equality filter drops the field. The card then said "this action recorded no
-  // field values" about a row that exists precisely to report that something changed.
+  // NOTE: the agent family puts `unreadConfigChanged` on the FIELD's projection (`{ settings: { … }
+  // }`), not at the top, so a top-level check finds nothing; and when only unread configuration
+  // moved, both sides are the same marker object and the equality filter would drop the field.
   test("the agent family's marker is found where it actually rides", () => {
     const d = diffProjection(
       { id: "3", settings: { unreadConfigChanged: true } },
@@ -151,14 +144,11 @@ describe("the field-level diff", () => {
   });
 });
 
-// The date range is the filter the issue's own measurement says pays, because of how an operator
-// arrives here: with a day, and no idea which action to look for. The day has to be THEIR day.
-//
-// The boundary function is passed in, and that is the whole reason these assertions mean anything:
-// this suite runs at UTC (measured — `getTimezoneOffset()` is 0 inside the harness), so a version
-// that bounded the UTC day instead of the local one passed every test written against the ambient
-// clock. Each fake below answers "the instant this local date begins", which is what the browser's
-// own `new Date(y, m, d)` answers in production.
+// An operator arrives with a day and no idea which action to look for, and the day has to be THEIR
+// day. The boundary function is passed in because this suite runs at UTC (`getTimezoneOffset()` is
+// 0 in the harness), where a version bounding the UTC day would pass. Each fake answers "the
+// instant this local date begins", which is what the browser's `new Date(y, m, d)` answers in
+// production.
 describe("the day an operator picked", () => {
   // A zone with one fixed offset, in minutes to ADD to local to reach UTC. São Paulo is +180.
   const fixed = (offsetMinutes: number) => (y: number, m: number, d: number) =>

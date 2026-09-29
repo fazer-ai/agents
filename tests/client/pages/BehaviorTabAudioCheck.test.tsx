@@ -19,8 +19,8 @@ import {
 import type { TtsCheckMode } from "@/modules/tts/settings-shared";
 import { behaviorTabProps } from "./behaviorTabProps";
 
-// Issue #802: the audio check is picked per agent, next to the audio reply settings, and an install
-// with no detector still shows the field, disabled, with what is missing and where to read about it.
+// The audio check is picked per agent, next to the audio reply settings, and an install with no
+// detector still shows the field, disabled, with what is missing and where to read about it.
 
 const realFetch = globalThis.fetch;
 const stubFetch = (async () =>

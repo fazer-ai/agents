@@ -20,17 +20,14 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components";
 import { withI18n } from "@/tests/utils/i18n";
 
-// The decision this applies has a table of its own (tests/client/lib/tenantDeepLink.test.ts). What
-// is tested HERE is the part a pure function cannot see: when the parameter is consumed, and when
-// the page underneath is allowed to mount.
+// The decision has a table of its own (tests/client/lib/tenantDeepLink.test.ts); tested HERE is
+// what a pure function cannot see: when the parameter is consumed, and when the page underneath may
+// mount. The gate never shows tenant A's page, buttons live, under a URL that names tenant B: it
+// opens when the answer is KNOWN (a tenant we cannot open: stay put, say why), and holds when it is
+// not (a tenant list we could not read: hold, offer a retry).
 //
-// The gate is the whole point. Everything this component protects against comes down to one picture:
-// tenant A's page, with its buttons live, under a URL that names tenant B. So the rule is that the
-// gate opens when the answer is KNOWN, not when it is convenient — a tenant we cannot open is known
-// (stay put, say why), a tenant list we could not read is not (hold, offer a retry).
-//
-// NOTE: every assertion reduces to a boolean or a string BEFORE expect. A failing expectation that
-// holds a DOM node serializes a cyclic happy-dom tree and stalls the runner.
+// Every assertion reduces to a boolean or a string BEFORE expect: a failing expectation that holds
+// a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 const KEY = "@app:active-tenant";
 let tenantsPayload: Array<{ id: string; name: string }> = [];
@@ -39,7 +36,7 @@ let tenantsFails = false;
 let tenantsCalls = 0;
 let role = "SUPER_ADMIN";
 let userTenantId: string | null = null;
-// The memberships a person's session carries (issue #756); empty for the fleet and a one-tenant user.
+// The memberships a person's session carries; empty for the fleet and a one-tenant user.
 let userTenants: { id: string; name: string; role: string }[] | undefined = [];
 let refreshes = 0;
 const realFetch = globalThis.fetch;
@@ -243,10 +240,9 @@ describe("TenantDeepLink", () => {
     expect(reloads.length).toBe(0);
   });
 
-  // `/admin/users?tenant=<id>` is that page's fleet-wide filter and predates this component, and the
-  // tenants list links straight to it. A component mounted on every protected route that switched on
-  // sight of `tenant` would hijack that link: switch the console, reload, then strip the filter the
-  // operator had just chosen. Hence a parameter of this component's own.
+  // NOTE: `/admin/users?tenant=<id>` is that page's fleet-wide filter, and the tenants list links
+  // straight to it. A component on every protected route that switched on sight of `tenant` would
+  // hijack that link (switch, reload, strip the filter), hence a parameter of this component's own.
   test("the admin users filter is not a switch request", async () => {
     renderAt("?tenant=20");
     await waitFor(() => {
@@ -303,8 +299,8 @@ describe("TenantDeepLink", () => {
     expect(reloads.length).toBe(0);
   });
 
-  // Issue #756: a person who belongs to several tenants follows a link to another of THEIRS the same
-  // way the fleet follows one, from the list the session carries, without reading the fleet list.
+  // NOTE: a person who belongs to several tenants follows a link to another of THEIRS the way the
+  // fleet does, from the list the session carries, without reading the fleet list.
   test("a person with several tenants follows a link to another of theirs", async () => {
     role = "AGENT";
     userTenantId = "10";
@@ -320,8 +316,8 @@ describe("TenantDeepLink", () => {
     expect(tenantsCalls).toBe(0);
   });
 
-  // Review round 2: the admin gate reads the role held in the ACTIVE tenant, so it must not answer
-  // before the link has switched to the tenant where the person IS an administrator.
+  // NOTE: the admin gate reads the role held in the ACTIVE tenant, so it must not answer before the
+  // link has switched to the tenant where the person IS an administrator.
   test("a link to an admin page in a tenant the person administers switches before the admin gate", async () => {
     role = "AGENT";
     userTenantId = "10";
@@ -337,10 +333,9 @@ describe("TenantDeepLink", () => {
     expect(shows("conversations")).toBe(false);
   });
 
-  // Review round 3: a fresh login answers with the default membership's role and no list; `/auth/me`
-  // brings the list a moment later. The admin gate waits for it rather than lose the link.
-  // Review round 4: before `/auth/me` brings the list, a person is not known to be tenant-bound, so a
-  // link to another of their tenants holds the gate instead of refusing it on the wrong tenant's page.
+  // NOTE: a fresh login answers with the default membership's role and no list; `/auth/me` brings
+  // the list a moment later. Until then a person is not known to be tenant-bound, so a link to
+  // another of their tenants holds the gate instead of refusing it on the wrong tenant's page.
   test("right after login, a link to another tenant waits for the membership list", async () => {
     role = "TENANT_ADMIN";
     userTenantId = "10";
@@ -352,8 +347,8 @@ describe("TenantDeepLink", () => {
     expect(seenSearch).toBe("?switchTenant=20");
   });
 
-  // Review round 8: a tenant administrator's deep link waits in the gate, not the admin check, and
-  // that wait asks for the session again too.
+  // NOTE: a tenant administrator's deep link waits in the gate, not the admin check, and that wait
+  // asks for the session again too.
   test("a deep link waiting for the membership list keeps asking for it", async () => {
     role = "TENANT_ADMIN";
     userTenantId = "10";
@@ -406,8 +401,9 @@ describe("TenantDeepLink", () => {
     expect(localStorage.getItem(KEY)).toBe("20");
   });
 
-  // Review round 6: the same wait with no link at all. The role a fresh login answers is the default
-  // membership's, and the tab may have another tenant selected where the person is an administrator.
+  // NOTE: the same wait with no link at all. The role a fresh login answers is the default
+  // membership's, and the tab may have another tenant selected where the person is an
+  // administrator.
   test("right after login, an admin page waits for the session before sending anybody away", async () => {
     role = "AGENT";
     userTenantId = "10";
@@ -440,8 +436,8 @@ describe("TenantDeepLink", () => {
     });
   });
 
-  // Review round 7: the login's own refresh is one attempt, so the wait asks again rather than hold a
-  // spinner for an update nobody scheduled.
+  // NOTE: the login's own refresh is one attempt, so the wait asks again rather than hold a spinner
+  // for an update nobody scheduled.
   test("while it waits for the session, it keeps asking for it", async () => {
     role = "AGENT";
     userTenantId = "10";

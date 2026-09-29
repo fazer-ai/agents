@@ -5,17 +5,12 @@ import { readTtsFormState } from "@/client/pages/agents/ttsFormState";
 
 // One filled-in prop bag for the Behavior tab, for the tests that have to RENDER it.
 //
-// ANNOTATED, NOT CAST, and that is the whole point of the shape below. The bag used to end in
-// `as unknown as React.ComponentProps<typeof BehaviorTab>`, which absorbs a missing prop by
-// absorbing everything: a prop the component REQUIRES and the bag omits is then invisible to tsc
-// and surfaces as `TypeError: undefined is not an object` inside `render`, in whichever file
-// happens to render the tab. Measured: the fallback-provider block (#143) added three required
-// props, the whole suite still type-checked, and seven tests failed on a component they say
-// nothing about. The intersection keeps the missing-key check that a cast throws away.
+// ANNOTATED, NOT CAST: `as unknown as React.ComponentProps<typeof BehaviorTab>` would absorb a
+// missing required prop, invisible to tsc, surfacing as `TypeError: undefined is not an object`
+// inside `render` in whichever file renders the tab. The intersection keeps the missing-key check.
 //
-// The `Record<string, unknown>` half is what makes it a SUPERSET: the two editions do not carry
-// the same props (the observability debug mode reached the Free repo before master), and a bag
-// written against one tree throws on render in the other. The extras are absorbed there.
+// The `Record<string, unknown>` half makes it a SUPERSET: the editions' trees can carry different
+// props, and a bag written against one tree would throw on render in the other.
 export type BehaviorTabProps = React.ComponentProps<typeof BehaviorTab> &
   Record<string, unknown>;
 

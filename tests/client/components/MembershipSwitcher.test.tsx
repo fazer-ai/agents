@@ -5,11 +5,11 @@ import { cleanup, fireEvent, render } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { MembershipSwitcher } from "@/client/components/TenantSwitcher";
 
-// Issue #756: a person who belongs to several tenants gets the header switcher over their OWN
-// memberships (from the session), showing the tenant the session runs under. It is the SUPER_ADMIN's
-// picker without the fleet list and without "create tenant", which is not a member's to do.
+// A person who belongs to several tenants gets the header switcher over their OWN memberships (from
+// the session), showing the tenant the session runs under. It is the SUPER_ADMIN's picker without
+// the fleet list and without "create tenant", which is not a member's to do.
 //
-// NOTE: assertions reduce to strings/booleans before expect; a DOM node in a failing expectation
+// Assertions reduce to strings/booleans before expect; a DOM node in a failing expectation
 // serializes a cyclic happy-dom tree and stalls the runner.
 
 afterEach(() => {

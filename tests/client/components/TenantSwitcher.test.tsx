@@ -18,13 +18,12 @@ import {
 } from "@/client/lib/activeTenant";
 import { api } from "@/client/lib/api";
 
-// What the reconciliation actually buys, measured where the operator pays for it: the console stops
-// sending a selector for a tenant that is not there. Until it does, EVERY request carries the dead
-// id (src/client/lib/api.ts attaches it from storage), so the settings screens load empty and the
-// first save comes back refused. Issue #223.
+// What the reconciliation buys: the console stops sending a selector for a tenant that is not
+// there. Until it does, EVERY request carries the dead id (src/client/lib/api.ts attaches it from
+// storage), so the settings screens load empty and the first save comes back refused.
 //
-// NOTE: every assertion reduces to a boolean or a string BEFORE expect. A failing expectation that
-// holds a DOM node serializes a cyclic happy-dom tree and stalls the runner.
+// Every assertion reduces to a boolean or a string BEFORE expect: a failing expectation that holds
+// a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 let tenantsPayload: Array<{ id: string; name: string }> = [];
 let tenantsFails = false;
@@ -211,9 +210,9 @@ describe("a stored tenant the fleet no longer has", () => {
   });
 
   test("on a detail route it lands on the list root, not on the dead id", async () => {
-    // The route names an agent of the tenant that is gone, so reloading in place would look that id
-    // up under whichever tenant is seeded next and answer 404. The switch already knew this; the
-    // reconciliation did not, and both now ask the same function (reloadOntoSafeRoute).
+    // NOTE: the route names an agent of the tenant that is gone, so reloading in place would look
+    // that id up under whichever tenant is seeded next and answer 404. The switch and the
+    // reconciliation both ask the same function (reloadOntoSafeRoute).
     pathname = "/agents/42";
     setActiveTenantId("999");
     tenantsPayload = [{ id: "1", name: "Acme" }];
@@ -225,8 +224,8 @@ describe("a stored tenant the fleet no longer has", () => {
   });
 
   test("a list we could not read decides nothing", async () => {
-    // A failed read is not the claim "there are no tenants". Clearing on it would cost the operator
-    // their tenant on every server blip, which is a worse defect than the one being fixed.
+    // NOTE: a failed read is not the claim "there are no tenants". Clearing on it would cost the
+    // operator their tenant on every server blip.
     setActiveTenantId("999");
     tenantsFails = true;
     mount();

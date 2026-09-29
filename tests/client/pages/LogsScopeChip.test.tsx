@@ -15,24 +15,17 @@ import { ToastProvider } from "@/client/components";
 import { LogsPage } from "@/client/pages/LogsPage";
 import { withI18n } from "@/tests/utils/i18n";
 
-// THE OTHER PLACE THE PAGE NAMES A GROUP, AND IT WAS NAMING IT SOMETHING ELSE.
+// The chip that scopes the page to one `turnId` names the same group the card does, so the two must
+// agree (the card reading "Webhook de saída" under a chip reading "Turno ccfb7540-…" is the
+// failure). The invariant is the agreement, not a sentence: whatever the card decides this group
+// is, the chip says the same thing and adds the id.
 //
-// #357 taught the group card to say what its rows are; the chip that scopes the whole page to one
-// `turnId` kept saying "Turn {{id}}" unconditionally, so the same group was named twice on one
-// screen and the two disagreed (issue #374). Measured against a running console with a real dead
-// delivery: the card read "Webhook de saída" while the chip above it read "Turno ccfb7540-…".
-//
-// The invariant asserted here is the agreement, not a particular sentence: whatever the card
-// decides this group is, the chip says the same thing and adds the id, which is what the chip
-// exists to name.
-//
-// NOTE: every assertion reduces to a string or a boolean BEFORE expect. A failing expectation still
+// Every assertion reduces to a string or a boolean BEFORE expect: a failing expectation still
 // holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
-// This file asserts on rendered LABELS, so what `t` answers is part of the fixture. It used to
-// secure that by replacing `react-i18next` in the module registry, which secured it for every other
-// file in the process too: the stub the last such file installed was what they all got. `withI18n`
-// hands this tree its own i18next by context instead: same answers, no reach past this file.
+// This file asserts on rendered LABELS, so what `t` answers is part of the fixture. `withI18n`
+// hands this tree its own i18next by context; replacing `react-i18next` in the module registry
+// would reach every other file in the process too.
 const realFetch = globalThis.fetch;
 
 interface Row {

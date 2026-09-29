@@ -13,19 +13,16 @@ import { MemoryRouter } from "react-router";
 import { DashboardPage } from "@/client/pages/DashboardPage";
 import { withI18n } from "@/tests/utils/i18n";
 
-// Issue #283: on an inbox served by humans every KPI on this page is derived from LlmUsage, so the
-// panel reads zero, which reads as failure rather than as "the agent was not here". The number
-// that answers there is Chatwoot's own first-response SLA, and it is only worth mirroring if the
-// operator can SEE it. So this asserts the rendered figure, not the heading above it: a card whose
-// label is right and whose value is a stale zero would pass a label-only test and fail the issue.
+// On an inbox served by humans every KPI on this page derives from LlmUsage and reads zero. The
+// number that answers there is Chatwoot's own first-response SLA, so this asserts the rendered
+// figure, not the heading: a right label over a stale zero would pass a label-only test.
 //
-// NOTE: every assertion reduces to a string or a number BEFORE expect. A failing expectation still
+// Every assertion reduces to a string or a number BEFORE expect: a failing expectation still
 // holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
-// This file asserts on rendered LABELS, so what `t` answers is part of the fixture. It used to
-// secure that by replacing `react-i18next` in the module registry, which secured it for every other
-// file in the process too: the stub the last such file installed was what they all got. `withI18n`
-// hands this tree its own i18next by context instead: same answers, no reach past this file.
+// This file asserts on rendered LABELS, so what `t` answers is part of the fixture. `withI18n`
+// hands this tree its own i18next by context; replacing `react-i18next` in the module registry
+// would reach every other file in the process too.
 const realFetch = globalThis.fetch;
 
 let kpis: Record<string, unknown> = {};
@@ -107,14 +104,10 @@ describe("dashboard: the team's first response", () => {
     expect(cardValue()).toMatch(/^18\D+min/);
   });
 
-  // The reason the whole issue exists, asserted where the operator meets it: no sample is NOT the
-  // same claim as a zero-second response, and the card has to be able to say so.
-  //
-  // The caption is asserted for what it does NOT claim, which is the second half of the same point.
-  // An empty sample proves only that no mirrored pair is available: right after this ships, and
-  // indefinitely for a conversation closed before it that receives no further event, both columns
-  // stay NULL although a person did answer. A caption reading "nobody has answered yet" would be a
-  // false statement about the world, made by the very card built to stop reading absence as zero.
+  // NOTE: no sample is NOT the same claim as a zero-second response. The caption is asserted for
+  // what it does NOT claim: an empty sample proves only that no mirrored pair is available (a
+  // conversation closed before the mirror existed keeps both columns NULL although a person
+  // answered), so "nobody has answered yet" would be false.
   test("no sample reads as no data, never as an instant answer", async () => {
     await renderWith({ firstResponseSeconds: null, firstResponseSampled: 0 });
     expect(cardValue()).toBe("—");
@@ -125,8 +118,8 @@ describe("dashboard: the team's first response", () => {
     expect(/answered|respond/i.test(caption)).toBe(false);
   });
 
-  // The funnel above is all zeros in every case here (involved = 0, the inbox the agent never
-  // touched). That is the state the issue describes, and it must not silence this section.
+  // NOTE: the funnel above is all zeros in every case here (involved = 0, the inbox the agent never
+  // touched), and that must not silence this section.
   test("answers even while every automation KPI is zero", async () => {
     await renderWith({ firstResponseSeconds: 240, firstResponseSampled: 40 });
     expect(cardValue()).toMatch(/^4\D+min/);

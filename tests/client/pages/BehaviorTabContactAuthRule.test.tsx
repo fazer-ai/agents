@@ -21,12 +21,11 @@ import {
 } from "@/client/pages/agents/contactAuthRuleForm";
 import { behaviorTabProps } from "./behaviorTabProps";
 
-// Issue #646: the contact gate can decide from a list or an attribute instead of an endpoint. The
-// editor is where that choice is made, and the endpoint's fields are about a request that is then
-// never sent.
+// The contact gate can decide from a list or an attribute instead of an endpoint. The editor is
+// where that choice is made, and the endpoint's fields are then about a request that is never sent.
 //
-// NOTE: every assertion reduces to a number or a boolean BEFORE expect (a failing expectation holding
-// a DOM node serializes a cyclic happy-dom tree and stalls the runner).
+// Every assertion reduces to a number or a boolean BEFORE expect (a failing expectation holding a
+// DOM node serializes a cyclic happy-dom tree and stalls the runner).
 
 describe("the rule's form state", () => {
   test("a stored list reads as one entry per line and saves back as the same rule", () => {

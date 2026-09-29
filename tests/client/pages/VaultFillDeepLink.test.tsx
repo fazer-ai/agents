@@ -15,18 +15,13 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { ToastProvider } from "@/client/components";
 import { withI18n } from "@/tests/utils/i18n";
 
-// Issue #151: `credential_create` answers with a `fillAt` link so the operator can put the secret in
-// out of band. The vault panel looked the id up in the tenant the browser happened to have selected
-// and, when it was not there, stripped `?fill` anyway. The result was a page that behaved as if the
-// operator had navigated there by hand: no modal, no message, and the link spent, so refreshing did
-// not retry it.
+// `credential_create` answers with a `fillAt` link so the operator can put the secret in out of
+// band. These drive the vault panel through the same `?fill` a real link carries. The assertion
+// that matters is the URL: a miss in the selected tenant must leave the parameter alone, so the
+// operator can switch tenant in the header (a full reload) and have the same link resolve.
 //
-// These drive the panel through the same `?fill` a real link carries. The assertion that matters is
-// the URL: a miss must leave the parameter alone, because that is what lets the operator switch
-// tenant in the header (a full reload) and have the same link resolve.
-//
-// NOTE: every assertion reduces to a boolean or a string BEFORE expect. A failing expectation that
-// holds a DOM node serializes a cyclic happy-dom tree and stalls the runner.
+// Every assertion reduces to a boolean or a string BEFORE expect: a failing expectation that holds
+// a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 let entriesPayload: Record<string, unknown>[] = [];
 const realFetch = globalThis.fetch;

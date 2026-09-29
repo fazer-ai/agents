@@ -8,6 +8,7 @@ import {
   countFile,
   type FileCounts,
   raisedEntries,
+  renderLedger,
   sweptFiles,
 } from "@/tests/utils/comment-blocks";
 
@@ -55,30 +56,5 @@ if (raised.length > 0 && !process.argv.includes("--definition-changed")) {
 }
 
 const { fullOnly, masterOnly } = await droppedBy();
-const entry = ([path, [p, l]]: [string, FileCounts]) =>
-  `  ${JSON.stringify(path)}: [${p}, ${l}],`;
-const section = (marker: string, rows: Array<[string, FileCounts]>) =>
-  rows.length === 0
-    ? []
-    : [`  // @${marker}`, ...rows.map(entry), `  // @${marker}-end`];
-
-const lines = [
-  "// Comment blocks each file may still carry, as [provenance, over the line ceiling]. Written by",
-  "// `bun run comments:ledger`; see tests/lib/comment-sweep.test.ts for what counts.",
-  'import type { FileCounts } from "@/tests/utils/comment-blocks";',
-  "",
-  "export const COMMENT_LEDGER: Record<string, FileCounts> = {",
-  ...counted.filter(([p]) => !fullOnly.has(p) && !masterOnly.has(p)).map(entry),
-  ...section(
-    "full-only",
-    counted.filter(([p]) => fullOnly.has(p)),
-  ),
-  ...section(
-    "master-only",
-    counted.filter(([p]) => masterOnly.has(p)),
-  ),
-  "};",
-  "",
-];
-await Bun.write(LEDGER, lines.join("\n"));
+await Bun.write(LEDGER, renderLedger(counted, fullOnly, masterOnly));
 console.log(`${LEDGER}: ${counted.length} files`);

@@ -476,8 +476,8 @@ function buildCreatePixChargeTool(
           const qd = (qr.json ?? {}) as Record<string, unknown>;
           if (typeof qd.payload === "string") payload = qd.payload;
         } else {
-          // NOTE: A non-2xx never threw, so this used to vanish silently — the charge exists and
-          // the tool returns success either way, but the customer gets no copy-and-paste code.
+          // NOTE: A non-2xx does not throw, so without this log it vanishes silently: the charge
+          // exists and the tool returns success either way, but the customer gets no copy-and-paste code.
           // (A 2xx without a payload is a legitimate state — e.g. no PIX key, invoiceUrl still
           // payable — and stays quiet.)
           logger.warn(

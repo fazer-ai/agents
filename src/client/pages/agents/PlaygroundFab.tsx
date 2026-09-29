@@ -184,8 +184,8 @@ export function PlaygroundFab({
   // Drag the title bar to move the panel, clamped to the agent page region (below the header, right of
   // the sidebar, inside the viewport). Ignores pointer-downs on the bar's buttons (New/Sessions/the
   // minimize chevron handle their own clicks). A pointer-down on the bar's EMPTY area that doesn't move
-  // is treated as a click → minimize (item 14): the whole bar is the drag handle, so the minimize lives
-  // in the gesture's end rather than a full-bleed overlay button that used to swallow every drag.
+  // is treated as a click → minimize: the whole bar is the drag handle, so the minimize lives in the
+  // gesture's end rather than a full-bleed overlay button, which would swallow every drag.
   const onTitleBarPointerDown = (e: ReactPointerEvent) => {
     if ((e.target as HTMLElement).closest("button")) return;
     const rect = panelRef.current?.getBoundingClientRect();

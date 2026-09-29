@@ -563,8 +563,8 @@ export async function approveApprovalItem(params: {
   // Phase 1 (scoped read): does this item exist, is it still claimable, and does its base still
   // exist — the checks that decide WHETHER to claim.
   //
-  // NOTE: The text is deliberately NOT selected here. It used to be, and phase 3 stored that copy,
-  // which is a lost update the moment a second reviewer can edit: the revision lands between this
+  // NOTE: The text is deliberately NOT selected here. If phase 3 stored a copy read now, it would be
+  // a lost update the moment a second reviewer can edit: the revision lands between this
   // read and the claim, the claim accepts it (EDITED is claimable) and the stale copy is what gets
   // embedded. Not reading it here is what makes that impossible to reintroduce — the only text in
   // scope is the one the claim itself returns.

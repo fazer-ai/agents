@@ -425,8 +425,8 @@ export async function embedQuery(
   deps: EmbeddingDeps = {},
 ): Promise<number[]> {
   const baseURL = cfg.baseURL;
-  // One loop for both paths, so the SDK path is held to the same two deadlines: it used to retry
-  // inside LangChain, where neither was ours to set.
+  // NOTE: one loop for both paths, so the SDK path is held to the same two deadlines; retrying inside
+  // LangChain would leave neither ours to set.
   const vector = await throughProvider(() =>
     withTransientRetry(
       async (signal) => {

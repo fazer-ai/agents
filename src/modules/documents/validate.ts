@@ -600,8 +600,7 @@ function valueProblem(field: DocumentField, value: unknown): string | null {
       }
       // The factors AND their product. Each factor is PRINTED on the line, so a quantity of 1e308
       // against a unit price of zero keeps the product inside the cap and still puts an unreadable
-      // number in front of the customer — the first version of this check looked only at the
-      // product and let exactly that through.
+      // number in front of the customer, which a check on the product alone lets through.
       for (const item of parsed.data) {
         if (
           item.quantity > MAX_DOCUMENT_AMOUNT ||

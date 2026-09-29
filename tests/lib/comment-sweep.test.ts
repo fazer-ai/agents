@@ -41,6 +41,37 @@ describe("what the sweep reads as provenance", () => {
     }
   });
 
+  test("history told without a number", () => {
+    for (const text of [
+      "// Review found both halves of that.",
+      "// Flagged by Codex on the last pass.",
+      "// Kept after review r6.",
+      "// The branch that was dropped (r3).",
+      "// Before the fix they were identical.",
+      "// The first version of this check looked only at the product.",
+      "// This used to vanish silently.",
+      "// The order used to be the reverse.",
+      "// Measured on a real socket, the server reads the path.",
+      "// This PR moves the check to the boundary.",
+      "// Nesta PR a regra mudou.",
+      "// Caso real: o turno travou.",
+    ]) {
+      expect(citesProvenance(block(text))).toBe(true);
+    }
+  });
+
+  test("the same words stating a present fact stay prose", () => {
+    for (const text of [
+      "// A read that started before the change is still on the wire.",
+      "// Used to name the downloaded graph image.",
+      "// Measured on the repaired text, not on the value.",
+      "// The first attempt fails fast.",
+      "// A token that no longer matches is refused.",
+    ]) {
+      expect(citesProvenance(block(text))).toBe(false);
+    }
+  });
+
   test("a TODO or FIXME may name the issue that tracks the owed work", () => {
     expect(citesProvenance(block("// TODO: drop the column (#149)."))).toBe(
       false,

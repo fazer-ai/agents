@@ -5,10 +5,9 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { ModelPicker } from "@/client/components/ModelPicker";
 
 // An empty model field still displays text, and the operator reads that text as "the model this
-// will use". It used to be the literal "gpt-5.4-mini" for every provider, so an Anthropic guardrail
-// with nothing selected showed an OpenAI model, which is how a whole config could look configured
-// and screen nothing. The placeholder now has to name the model the runtime would actually fall
-// back to. No credentialRef here, so the picker's loader returns [] without touching the network.
+// will use". A fixed literal for every provider would show an Anthropic guardrail with nothing
+// selected an OpenAI model, so a whole config could look configured and screen nothing. The
+// placeholder names the model the runtime would actually fall back to. No credentialRef here, so the picker's loader returns [] without touching the network.
 //
 // NOTE: The assertion reduces to a string BEFORE expect. A failing expectation that holds a DOM node
 // serializes a cyclic happy-dom tree and stalls the runner.

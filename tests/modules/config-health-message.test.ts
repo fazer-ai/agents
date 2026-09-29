@@ -3,9 +3,9 @@ import type { ConfigIssue } from "@/modules/agents/config-health";
 import { configIssueTranslator } from "@/modules/agents/config-health-copy";
 import { configIssueMessage } from "@/modules/agents/config-health-message";
 
-// Which locale entry an issue reads, and what gets substituted into it. This used to live inside the
-// editor component, where the only way to exercise it was to mount the page — so the four keys that
-// take VALUES were covered by nobody, in either reader.
+// Which locale entry an issue reads, and what gets substituted into it. It lives outside the editor
+// component so the four keys that take VALUES are exercised without mounting the page, in both
+// readers.
 //
 // The server's translator is the one under test here rather than a stub, because it is the half that
 // is new: the console gets interpolation from i18next, and this side does it in twelve lines. A

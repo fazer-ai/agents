@@ -259,9 +259,9 @@ function urlQueryKeys(
   return new Set([...a.searchParams.keys()].filter((k) => other.has(k)));
 }
 
-// The URL as far as it is TRANSMITTED. A fragment is not sent to the upstream — measured on a real
-// socket, the server reads `/x?a=1` for a request to `/x?a=1#token=…` — so a credential written only
-// there authenticates nothing and produces exactly the 401 this warning exists to explain.
+// The URL as far as it is TRANSMITTED. A fragment is not sent to the upstream (the server reads
+// `/x?a=1` for a request to `/x?a=1#token=…`), so a credential written only there authenticates
+// nothing and produces exactly the 401 this warning exists to explain.
 function transmittedUrl(urlTemplate: unknown): string[] {
   if (typeof urlTemplate !== "string") return [];
   return [urlTemplate.split("#")[0] ?? ""];

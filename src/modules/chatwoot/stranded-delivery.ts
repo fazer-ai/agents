@@ -1,31 +1,18 @@
 // What a ledger row still stuck on PENDING or PROCESSING means, long after the attempt that claimed
-// it started.
-//
-// `processChatwootDelivery` brackets its work between a CAS `PENDING -> PROCESSING` and a final
-// `-> PROCESSED`, and the 200 is already out before either runs. A process that dies anywhere in
-// there leaves a non-terminal row with nothing working it: Chatwoot will not redeliver, and a
-// redelivery would CAS against `PENDING` and match nothing. The customer's message is never
-// answered, and the only trace is a row nobody reads (issue #228).
-//
-// Measured, on this repo's own code: an interruption injected between the two CAS points leaves
-// `status = PROCESSING, attempts = 0`, and a second call for the same row returns "skipped". An
-// ordinary exception does NOT reach here — the agent turn, the eager media pass and the mirror write
-// are each caught, so the delivery still reaches PROCESSED.
-//
+// it started. The 200 is out before `processChatwootDelivery`'s CAS `PENDING -> PROCESSING` and its
+// final `-> PROCESSED`, so a process that dies in between leaves a row nothing works: Chatwoot does
+// not redeliver, and the customer's message is never answered. An ordinary exception does NOT strand
+// a row: the agent turn, the eager media pass and the mirror write are each caught.
+
 // This says whether a customer message was LOST, and nothing else. It does not answer, and neither
-// does the sweep that consumes it: recovering the turn needs the gates the delivery path applies
-// before a flush (test mode, availability, redirect) and none of them survive the process that died,
-// so the sweep arms a DELIVERY_RECOVERY that re-runs that path where the gates already live (issue
-// #295, ./recover-delivery.ts).
-//
-// A pure function of the row alone, and it got there by DELETION. What used to live here was a
-// comparison against the conversation's watermarks, meant to tell a message a later burst covered
-// from one nothing covered. Three review rounds each found a different way that fails, for one
-// shared reason: a watermark is a per-CONVERSATION high-water mark and this is a per-MESSAGE
-// question, so every scalar reading of it either closes a real loss or reports a covered message.
-// The fact now comes from the only place that holds it — a turn that runs over a message retires
-// that message's ledger row itself, so a row still non-terminal is one nothing covered. The sweep
-// and that retirement are both in ./delivery-sweep.ts.
+// does the sweep: the gates a flush applies (test mode, availability, redirect) do not survive the
+// dead process, so the sweep arms a DELIVERY_RECOVERY that re-runs the delivery path
+// (./recover-delivery.ts).
+
+// A pure function of the row alone. A watermark is a per-CONVERSATION high-water mark and this is a
+// per-MESSAGE question, so every comparison against one either closes a real loss or reports a
+// covered message. Instead a turn that runs over a message retires that message's ledger row itself,
+// so a row still non-terminal is one nothing covered. Both live in ./delivery-sweep.ts.
 
 import type { HumanReplyRoute } from "./normalize";
 import { LATE_TRANSCRIPTION_EVENT, TURN_BEARING_EVENT } from "./normalize";
@@ -51,15 +38,15 @@ export interface StrandedDeliveryRow {
   // a customer message — a conversation update, the bot's own reply coming back around — and those
   // are the rows where nothing was lost no matter how long they sat.
   inboundMessageId: number | null;
-  // WHAT THIS DELIVERY OWED, when what it owed was the human-reply takeover (issue #439): the shape
-  // the payload had, `composer` or `device`, written at INSERT. Null on every other delivery AND on
-  // every row an older build wrote — which is why it is read only where the answer would otherwise
-  // be the benign `no-message`, never as evidence about a customer message.
+  // What this delivery owed, when what it owed was the human-reply takeover: the shape the payload
+  // had, `composer` or `device`, written at INSERT. Null on every other delivery AND on every row an
+  // older build wrote, which is why it is read only where the answer would otherwise be the benign
+  // `no-message`, never as evidence about a customer message.
   humanReplyShape: string | null;
-  // WHOSE ROUTE it arrived on (issue #476): true an observer's, false the responder's, null a row
-  // written before the column or one stranded before the receiver could state it. Read only where
-  // `humanReplyShape` already decided the row owed a side effect, to say WHICH side effect that is —
-  // never as evidence about a customer message.
+  // Whose route it arrived on: true an observer's, false the responder's, null a row written before
+  // the column or one stranded before the receiver could state it. Read only where `humanReplyShape`
+  // already decided the row owed a side effect, to say WHICH one; never as evidence about a customer
+  // message.
   routeObserved: boolean | null;
 }
 
@@ -80,90 +67,38 @@ export type StrandedVerdict =
   // BENIGN IS ABOUT THE CUSTOMER'S MESSAGE, and it is not the same as "no effect was owed" — the
   // verdict below is what carries that other half.
   | "no-message"
-  // Stranded carrying no customer message, and owing a HUMAN-REPLY TAKEOVER that never ran (issue
-  // #439). The delivery is a colleague's own reply — from the composer or the paired phone — and
-  // since issue #430 that is the delivery that steps the agent off the conversation. A process that
-  // died in the detached window leaves the conversation `pending` and still the bot's, so the next
-  // customer message drives a full turn and the agent answers over the person.
-  //
-  // A VERDICT OF ITS OWN because neither neighbour fits, in opposite directions. `no-message` closes
-  // the row and replays nothing, which is what shipped and is the defect. `lost` is wrong twice
-  // over: it marks the row DEAD and DISPATCHES an alert about a message nobody lost, and it arms a
-  // recovery that spends a model turn answering a reply that was ours. What is owed here is a side
-  // effect, and the recovery for it re-runs the takeover and nothing else.
-  //
-  // The SHAPE is not yet the route: `device` is also what an echo of our own reply looks like on a
-  // provider that does not reserve its ids. That half is decided by the recovery, against the inbox
-  // row (resolveHumanReplyRoute) — asking it here would mean reading an inbox per row inside a scan
-  // sized for indexed queries, and answering it wrong in the safe direction costs the takeover this
-  // verdict exists to recover.
+  // Stranded carrying no customer message, and owing a HUMAN-REPLY TAKEOVER that never ran: a
+  // colleague's reply steps the agent off, and a death in the detached window leaves the conversation
+  // `pending` and the bot's, so the next customer message drives a turn that answers over the person.
+  // Not `no-message` (replays nothing) and not `lost` (DEAD, an alert about a message nobody lost, and
+  // a model turn answering our own reply). `device` is also what an unreserved echo of our own reply
+  // looks like; the recovery decides that against the inbox (`resolveHumanReplyRoute`), since an inbox
+  // read per row does not belong in an indexed scan and a safe-side guess here costs the takeover.
   | "owed-takeover"
-  // Stranded on an OBSERVER's route, carrying a colleague's reply (issue #476 review, round 27). It
-  // owes no takeover: the handover steps the RESPONDER off the conversation, and an observer was
-  // never on it. On an inbox with a responder of ours, that responder's own delivery of the same
-  // reply carries the shape and owes the takeover there, so this row owes nothing at all; on an
-  // inbox nobody of ours answers, there is no takeover to owe and no responder to hand back to.
-  //
-  // What it DID owe, WHERE IT OWED ANYTHING, is the observer's ingestion — the colleague's reply
-  // folded into the memory the observer keeps. Two corrections to what stood here, and they pull in
-  // opposite directions.
-  //
-  // It owes LESS than this said: beside no responder of ours, the route folds nothing in at all
-  // (issue #620), and the claim records exactly that as `route_remembers = false`. Measured on this
-  // tree: `routeRemembers` asks `responderRt !== null` on a watcher's route, and `routeIngests` is
-  // its only reader on an outgoing delivery — `handedToObserver` is written by a turn that stood
-  // down, which an outgoing has none of. So on an observer-only inbox the ingestion never ran, and
-  // nothing was lost to recover.
-  //
-  // And where it DOES owe — the watcher beside a responder, sharing that responder's memory — it is
-  // now recoverable, which this used to deny outright (issue #728). The denial rested on the
-  // DELIVERY recovery's anchor, and that is a fact about that recovery rather than about the row:
-  // the ledger has named the reply since issue #469 (`humanReplyMessageId`, written at INSERT for
-  // the takeover's fence), so a recovery that only needs the words reads them back by id
-  // (./recover-human-reply.ts). The row stays terminal like its neighbours — `DEAD` is the worklist
-  // of customers nobody answered, and a colleague's reply belongs on no such list — and the memory
-  // job is armed beside it.
+  // Stranded on an OBSERVER's route, carrying a colleague's reply. It owes no takeover: the handover
+  // steps the RESPONDER off (whose own delivery of the reply owes it), and an observer was never on it.
+  // What it can owe is the observer's ingestion, and only beside a responder of ours whose memory it
+  // shares (beside none the route folds nothing in, `route_remembers = false`). That is recoverable:
+  // the ledger names the reply (`humanReplyMessageId`), so ./recover-human-reply.ts reads the words
+  // back by id. The row stays terminal, since `DEAD` is the worklist of customers nobody answered, and
+  // the memory job is armed beside it.
   | "observer-strand"
-  // Stranded carrying a colleague's reply on a route NOTHING EVER NAMED (issue #540, window 2). The
-  // process died between the INSERT and the claim, and this build writes `claimedAt` and
-  // `routeObserved` in one statement — so an unclaimed row has no role because nothing was there to
-  // state one, not because the answer was "the responder's".
-  //
-  // Read as `owed-takeover`, which is what shipped, the row is silently mis-served in one direction
-  // only: on a WATCHER's route the takeover recovery correctly answers `not-owed` and reports
-  // nothing, so the observer's lost ingestion — the whole of what that route owed — leaves no trace
-  // anywhere. Read as `observer-strand` it would be mis-served in the other: on the far commoner
-  // responder's route a real handover would never be armed, and the conversation stays with the bot
-  // until the next human reply.
-  //
-  // So this verdict does BOTH honest things instead of guessing between them. It arms the takeover,
-  // which is free where it was not owed — `recover-takeover.ts` re-asks every gate and answers
-  // `not-owed` — and it files the gap line, so a watcher's missing memory is named rather than
-  // silent. The uncertainty is in the line, where an operator reads it, rather than resolved by a
-  // coin toss here.
+  // Stranded carrying a colleague's reply on a route NOTHING EVER NAMED: the process died between the
+  // INSERT and the claim, which writes `claimedAt` and `routeObserved` together, so the null role
+  // records nothing. As `owed-takeover`, a watcher's lost ingestion would leave no trace (the takeover
+  // recovery answers `not-owed` silently); as `observer-strand`, a real handover on the far commoner
+  // responder's route would never be armed. So it does both: arms the takeover, free where not owed
+  // (./recover-takeover.ts re-asks every gate), and files the gap line, so the operator reads the
+  // uncertainty rather than a coin toss.
   | "role-unstated"
-  // Stranded carrying the TRANSCRIPTION of a customer message, on the `message_updated` that finally
-  // wrote it (issue #478 review, round 1). A verdict of its own for the same reason `owed-takeover`
-  // is one, and the two neighbours it sits between are the same two.
-  //
-  // `no-message` is what shipped and is the defect: the words are the message's only readable form
-  // wherever nothing ran a turn at creation — an inaudible voice note, an observer with no responder
-  // beside it, a conversation a colleague already owns — so closing the row benign loses the whole
-  // of what the customer said, and loses it silently.
-  //
-  // `lost` is wrong in the other direction, and about the WORKLIST rather than about the words.
-  // `DEAD` is the list of customers who wrote and were never answered, and nobody here is waiting on
-  // a reply: on the routes this verdict is about, no reply was ever coming. What was owed is the
-  // ingestion, and it is REPLAYABLE — unlike the observer's reply above, this delivery names a
-  // message id and the words are still readable from the account, so the recovery re-runs the same
-  // delivery path with the same event and the gates decide again exactly as they did.
-  //
-  // WHICH IS ALSO WHY IT IS SAFE ON THE ROWS IT OVER-COVERS. A ledger row cannot tell a transcription
-  // nothing covered from the ordinary write-back of a message a turn already answered — the payload
-  // is not stored — so both reach this verdict. Replaying the ordinary one costs nothing: the replay
-  // is a `message_updated`, which drives no turn, and ../chatwoot/webhook.ts's ingest gate refuses a
-  // message the bot answered. It is the REBUILD BEING FAITHFUL TO THE EVENT that makes that true; a
-  // replay rebuilt as a creation would answer the customer twice.
+  // Stranded carrying the TRANSCRIPTION of a customer message, on the `message_updated` that wrote it.
+  // Not `no-message`: wherever nothing ran a turn at creation (an inaudible voice note, an observer
+  // with no responder, a conversation a colleague owns) the words are the message's only readable
+  // form, and closing the row loses them silently. Not `lost`: `DEAD` lists customers awaiting a reply
+  // and none is. The ingestion is REPLAYABLE (the row names the message), and safe on the ordinary
+  // write-backs this over-covers: the replay is a `message_updated`, which drives no turn, and
+  // ./webhook.ts's ingest gate refuses a message the bot answered. A replay rebuilt as a creation would
+  // answer the customer twice.
   | "owed-transcription"
   // Stranded with a customer message nothing ever covered, or stranded by a build whose columns
   // cannot be read. Nothing will answer it.
@@ -180,28 +115,13 @@ export function classifyStrandedDelivery(
   const age =
     policy.now.getTime() - (row.claimedAt ?? row.receivedAt).getTime();
   if (age < policy.staleAfterMs) return "in-flight";
-  // An event that could never have owed a turn never lost one, and this is asked BEFORE the fence
-  // below because the event name is the one column no migration added: a row an older build wrote
-  // still names its event, so this answers for those rows too, which is the population the fence
-  // exists for.
-  //
-  // MEASURED against the local Chatwoot fork (4.16.0), by pointing a real Agent Bot at a capture
-  // endpoint: `AgentBotListener` dispatches exactly seven events, and `contact_created` is not among
-  // them. They are `conversation_resolved`, `conversation_opened`, `conversation_status_changed`,
-  // `conversation_updated`, `message_created`, `message_updated` and `webwidget_triggered`.
-  //
-  // Six of the seven name a conversation, so a row THIS build wrote for them already fails the
-  // message-id check below. The seventh does not: `webwidget_triggered` carries a CONTACT_INBOX
-  // (observed: top-level `id` = 69, the contact_inbox id, and no `conversation` key at all), and
-  // `normalize.ts` reads a conversation id from nothing but the two shapes that are a conversation
-  // or a message (issue #257) — so it reaches the ledger with BOTH ids null and, if the process dies
-  // before the claim, no stamp either: byte for byte the signature the fence below reads as "a build
-  // we cannot read".
-  //
-  // The other population this answers for is every event an OLDER build wrote, which is the one the
-  // fence exists for and the one a rollout produces in bulk. A `message_updated` is that story from
-  // the other direction — our own media write-back coming around, driving no turn — which is why the
-  // name it shares with `isNewIncomingMessage` is one constant and not two.
+  // NOTE: an event that could never have owed a turn never lost one. Asked BEFORE the fence below
+  // because the event name is the one column no migration added, so this answers for older builds'
+  // rows too. `AgentBotListener` dispatches seven events (`conversation_resolved`, `_opened`,
+  // `_status_changed`, `_updated`, `message_created`, `message_updated`, `webwidget_triggered`), and
+  // `webwidget_triggered` carries a contact_inbox and no conversation, so it reaches the ledger with
+  // both ids null and no stamp: the signature the fence reads as "a build we cannot read". See
+  // docs/chatwoot.md, "Webhook receiver".
   const bears = bearsTurn(row);
   if (bears === "no") return "no-message";
   // NOTE: ANSWERED BEFORE THE LEGACY FENCE, and that ordering is the point rather than a shortcut: the
@@ -210,15 +130,12 @@ export function classifyStrandedDelivery(
   // to protect. Asked after it, a transcription row stranded on PROCESSING without a stamp would be
   // called `lost` — the one answer it must never get, since no customer is waiting on a reply.
   if (bears === "transcription") return "owed-transcription";
-  // A row this build never touched, whose nulls are UNRECORDED rather than "nothing was there". Read
-  // the literal way, every message the previous release lost would be closed as carrying none — the
-  // exact silence this sweep exists to remove, on the rows a deploy is most likely to strand, since
-  // the migration runs while that release is still serving and it writes none of these columns.
-  //
-  // Two signatures, one per state, because each state promises a different column. tx1 stamps the
-  // claim on every row this build works, so a PROCESSING row without one was claimed by an older
-  // build. Nothing has claimed a PENDING row, so the stamp says nothing there — what does is the
-  // conversation, written at INSERT for every event that reaches the ledger.
+  // NOTE: a row this build never touched, whose nulls are UNRECORDED rather than "nothing was there".
+  // Read literally, every message the previous release lost would be closed as carrying none, on the
+  // rows a deploy most likely strands (the migration runs while that release still serves). One
+  // signature per state: tx1 stamps the claim on every row this build works, so PROCESSING without one
+  // is an older build's; nothing claims a PENDING row, so there the conversation (written at INSERT
+  // for every event that reaches the ledger) is what speaks.
   if (
     row.claimedAt === null &&
     (row.status === "PROCESSING" || row.conversationId === null)
@@ -235,32 +152,23 @@ export function classifyStrandedDelivery(
     ) {
       return "no-message";
     }
-    // NOTHING CLAIMED IT, SO NOTHING STATED THE ROLE (issue #540, window 2). Asked before the role
-    // itself, because it is about whether the role column was ever WRITTEN rather than what it says:
-    // the claim is the statement, and a row it never reached carries a null that records nothing.
-    // True of every build, not only this one — a PENDING row is unclaimed whoever wrote it.
+    // NOTE: nothing claimed it, so nothing stated the role. Asked before the role itself because it is
+    // about whether the column was ever WRITTEN: the claim is the statement, and a row it never
+    // reached carries a null that records nothing, whoever wrote it.
     if (row.claimedAt === null) return "role-unstated";
-    // The ROLE decides which of the two, and it is read only here: a takeover is the responder's to
-    // owe, and arming one for an observer's row spends a job that answers `not-owed` and reports
-    // nothing (issue #476 review, round 27). Null HERE is a row the claim reached without stating a
-    // role, which is an older build's — the receiver has stated it on every delivery since #476 —
-    // and that is a population this build does not read as a watcher's.
+    // NOTE: the ROLE decides which of the two, read only here: a takeover is the responder's to owe,
+    // and arming one for an observer's row spends a job that answers `not-owed` and reports nothing.
+    // Null HERE is a row the claim reached without stating a role, an older build's, not a watcher's.
     return row.routeObserved === true ? "observer-strand" : "owed-takeover";
   }
   return "lost";
 }
 
-// WHETHER THIS ROW COULD HAVE OWED A CUSTOMER AN ANSWER, from the two columns every build writes in
-// the same way. `message_created` on its own, as it always has been. `message_updated` only when it
-// also names an inbound message — the transcription that arrived on the write-back and was the
-// message's only readable form (issue #478 review, round 1).
-//
-// The pair is what makes this safe to widen. `inboundMessageId` was written for `isNewIncomingMessage`
-// and nothing else until this build, and that predicate requires `message_created`, so a
-// `message_updated` row carrying one CANNOT come from an older build. Every legacy write-back keeps
-// the null it has always had, falls through here and is closed benign exactly as before — which
-// matters most on the rows a deploy strands in bulk, since the migration runs while the previous
-// release is still serving.
+// Whether this row could have owed a customer an answer, from the two columns every build writes the
+// same way: `message_created` on its own, and `message_updated` only when it also names an inbound
+// message (the transcription that was the message's only readable form). Safe to widen because an
+// older build writes `inboundMessageId` only for `isNewIncomingMessage`, which requires
+// `message_created`, so its `message_updated` rows carry null and close benign.
 function bearsTurn(
   row: StrandedDeliveryRow,
 ): "no" | "message" | "transcription" {

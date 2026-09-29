@@ -1,28 +1,20 @@
-// In-process cache for the receiver's route-token resolution.
+// In-process cache for the receiver's route-token resolution. The ack path must not depend on
+// Postgres being healthy, and must not promise more than Postgres can deliver.
 //
-// THE ACK PATH MUST NOT DEPEND ON POSTGRES BEING HEALTHY, AND MUST NOT PROMISE MORE THAN POSTGRES
-// CAN DELIVER. Those pull in opposite directions and the whole design is the line between them.
-//
-// Chatwoot gives the receiver ~5s to answer (`WEBHOOK_TIMEOUT`) and escalates the conversation
-// `pending -> open` when it does not, which takes the bot off a conversation it was about to answer
-// correctly (issue #225). Measured against a real Chatwoot + Sidekiq: one stalled ack, and the
-// activity note "marked open by system due to an error with the bot" lands 5.24s after the
-// customer's message. Resolving the bot is an interactive transaction (RLS needs `set_config`), so
-// under pool pressure it can burn that whole budget for a row that changes almost never.
-//
-// But a 200 is a promise. Chatwoot does not retry a 2xx and the payload is not stored (see
-// docs/chatwoot.md, "No durable payload store"), so acking on the strength of a cached row while
-// Postgres is actually down does not save the event, it loses it in silence, which is strictly worse
-// than the escalation. THE CACHE THEREFORE ANSWERS ONLY WHAT THE PROCESS CAN STILL BACK UP:
-//
+// Chatwoot gives the receiver ~5s (`WEBHOOK_TIMEOUT`) and escalates the conversation
+// `pending -> open` when it misses, taking the bot off a conversation it was about to answer. Resolving
+// the bot is an interactive transaction (RLS needs `set_config`), which pool pressure can stretch past
+// that budget for a row that almost never changes.
+
+// But a 200 is a promise: Chatwoot does not retry a 2xx and the payload is not stored (docs/chatwoot.md,
+// "Webhook receiver"), so acking from a cached row while Postgres is down loses the event in silence,
+// which is worse than the escalation. The cache answers only what the process can still back up:
 //   1. inside the TTL              -> served, no questions
 //   2. past it, last lookup OK     -> served, and refreshed behind the ack
-//   3. past it, last lookup FAILED -> miss, so the ack blocks and fails honestly, and Chatwoot's
-//                                     own retry ladder carries the event instead
-//
-// Rule 3 is what keeps rule 2 truthful, and it costs nothing in the case rule 2 exists for: an idle
-// instance on a HEALTHY database, where the entry is merely old and the refresh will succeed.
-//
+//   3. past it, last lookup FAILED -> miss: the ack blocks and fails honestly, and Chatwoot's own
+//                                     retry ladder carries the event instead
+// Rule 3 keeps rule 2 truthful at no cost to the case rule 2 exists for: an idle, healthy instance.
+
 // Lives in its own module so the writers that have to invalidate it (provisioning, instance
 // connect/disconnect, deletion) can reach it without importing the receiver, which imports them.
 
@@ -228,13 +220,10 @@ export async function awaitRouteTokenRefresh(
 }
 
 // Registers `run` as THE refresh for this token and returns it, or returns the one already running.
-// Registering and starting are one step on purpose: any gap between them is a window where a second
-// caller sees no refresh and starts one.
-//
-// THE RETURNED PROMISE REJECTS WHEN THE REFRESH FAILS, and that is the point: everyone waiting on it
-// resumes into a cache the failure has just closed, so a resolved promise would send each of them
-// down the blocking path to open its own transaction — a burst against the pool at the moment the
-// pool is what is broken. Rejecting spends one lookup for all of them. The caller that STARTS a
+// Registering and starting are one step, or a second caller could see no refresh and start one.
+// The returned promise REJECTS when the refresh fails: every waiter resumes into a cache the failure
+// just closed, and a resolved promise would send each down the blocking path to open its own
+// transaction, a burst against the pool exactly when the pool is broken. The caller that STARTS a
 // refresh is detached, so it attaches the log; nothing else may swallow it.
 export function trackRouteTokenRefresh(
   routeTokenHash: string,

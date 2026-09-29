@@ -2,70 +2,51 @@
  * Ordering rules for the conversation state the mirror keeps in sync with Chatwoot.
  *
  * Pure: no DB, no clock. `mirrorChatwootEvent` collects the facts, calls this once, and writes what
- * it is told. Kept apart so the reasoning below lives in one place and can be exercised as a
- * decision table (`tests/modules/chatwoot-state-order.test.ts`) instead of through the database.
- *
- * ## What the source actually does (measured on the fork, not inferred)
- *
- * 1. A MESSAGE event embeds a conversation SNAPSHOT serialized when the message fired
- *    (`AgentBotListener` builds the payload and only then enqueues it; a failed delivery retries
- *    with that same copy). It describes the conversation as of THAT moment, not the delivery's.
- * 2. `handoff_to_human` posts its message BEFORE assigning the human, so the tail of every handoff
- *    burst carries the pre-handoff state. Applying it rewrote the row back to bot-owned: issue #61.
- * 3. `last_activity_at` has ONE-SECOND resolution and does not advance on a status or assignee
- *    change at all, so a whole burst shares one value. It cannot order that burst.
- * 4. `conversation.updated_at` can: it is the source row's version stamp, it moves on every write
- *    to it (status and assignee changes included), it has sub-second resolution, and it is
- *    serialized together with the state it describes.
- * 5. `AgentBots::WebhookJob` retries 3 times, 3s apart, so deliveries arrive out of order by ~9s.
- * 6. The degraded payload behind issue #27 (`meta` absent) carries a trustworthy status and says
- *    nothing at all about the assignee.
- *
- * ## The rule
- *
- * Conversation state comes from conversation-level events, ordered among themselves by version.
- * A message snapshot moves no state and claims no version. That single sentence closes issue #61:
- * the frozen tail has nothing to say, whatever second it landed in.
- *
- * "Nothing to say" is about STATE. A payload also carries the redirect pairing, which is ordered by
- * its own mark and is not conversation state at all — so a payload discarded for state can still be
- * the only witness of a pairing, and is.
- *
- * One exception, and it is the source's own doing: a brand-new incoming customer message reopens
- * the conversation BEFORE the event is dispatched (`Message#execute_after_create_commit_callbacks`
- * runs `reopen_conversation`, then `dispatch_create_events`). That is a status change, never an
- * assignee change, and it is applied as one.
- *
- * The old code trusted snapshots because a handoff event delayed past the human's first message
- * left the message as the only witness of the new assignee, and under a `last_activity_at`
- * monotonic guard the delayed event LOST on arrival, so the mirror stayed bot-owned for good.
- * Ordering removes that trap: the snapshot claims no version, so the mark does not advance past
- * the delayed event and it applies when it lands. The witness argument was an artifact of the
- * guard it was written against.
- *
- * ## Why three marks and not one
- *
- * Each field is ordered by the version of the payload that last WROTE it. After a degraded payload
- * lands, the status and the assignee legitimately reflect different versions of the source row, so
- * a single mark would order one of them by a number that does not describe it: hold the degraded
- * event's version and the complete event delivered after it loses the assignee it is the only
- * witness of; withhold it and that same event reopens a conversation resolved after it.
- *
- * Splitting them is also what makes the reopen exception safe. It moves the STATUS mark only, so a
- * handoff event still in flight is still ordered by an assignee mark the snapshot never touched.
- *
- * The third mark, the redirect pairing, is the same argument reached from the other end. It is
- * written by an update of its own on the source row (fazer-ai/chatwoot#418), so from that write on it
- * describes a version neither of the other two does. It also cannot borrow their fallback: recording
- * the pairing writes a column, and by point 3 above a column write leaves `last_activity_at` exactly
- * where it was, so the event that carries the answer arrives with a frozen activity timestamp and a
- * recency fence would throw away precisely the payload it exists to keep.
- *
- * ## Versions are compared as raw unix-seconds doubles
- *
- * Never converted to `Date`: that rounds to the millisecond and collapses two writes microseconds
- * apart into one version.
+ * it is told. Kept apart so the reasoning lives in one place and can be exercised as a decision table
+ * (`tests/modules/chatwoot-state-order.test.ts`) instead of through the database.
  */
+
+// What the source does, read on the fork:
+// 1. A MESSAGE event embeds a conversation SNAPSHOT serialized when the message fired
+//    (`AgentBotListener` builds the payload, then enqueues it; a failed delivery retries with that
+//    same copy). It describes the conversation as of THAT moment, not the delivery's.
+// 2. `handoff_to_human` posts its message BEFORE assigning the human, so the tail of every handoff
+//    burst carries the pre-handoff state; applied, it rewrites the row back to bot-owned.
+// 3. `last_activity_at` has ONE-SECOND resolution and does not advance on a status or assignee
+//    change at all, so a whole burst shares one value and it cannot order that burst.
+
+// 4. `conversation.updated_at` can: it is the source row's version stamp, moved by every write to it
+//    (status and assignee included), sub-second, and serialized together with the state it describes.
+// 5. `AgentBots::WebhookJob` retries 3 times, 3s apart, so deliveries arrive out of order by ~9s.
+// 6. A degraded payload (`meta` absent) carries a trustworthy status and says nothing at all about
+//    the assignee.
+
+// The rule: conversation state comes from conversation-level events, ordered among themselves by
+// version. A message snapshot moves no state and claims no version, so the frozen handoff tail has
+// nothing to say whatever second it landed in. "Nothing to say" is about STATE: the redirect pairing
+// has its own mark, so a payload discarded for state can still be the only witness of a pairing.
+// One exception, the source's own doing: a brand-new incoming customer message reopens the
+// conversation BEFORE dispatch (`Message#execute_after_create_commit_callbacks` runs
+// `reopen_conversation`, then `dispatch_create_events`): a status change, never an assignee change.
+
+// A snapshot need not be trusted as the only witness of a new assignee (a handoff event delayed past
+// the human's first message): it claims no version, so the mark does not advance past the delayed
+// event, and that event applies when it lands.
+
+// Why three marks and not one: each field is ordered by the version of the payload that last WROTE
+// it. After a degraded payload, status and assignee reflect different source versions, so one mark
+// would order one of them by a number that does not describe it: hold the degraded event's version
+// and the complete event after it loses the assignee it alone witnesses; withhold it and that event
+// reopens a conversation resolved after it. Split marks also make the reopen exception safe: it moves
+// the STATUS mark only, so a handoff event in flight is still ordered by an untouched assignee mark.
+
+// The third mark, the redirect pairing, is written by an update of its own on the source row, so
+// from then on it describes a version neither other mark does. It cannot borrow their fallback:
+// recording the pairing is a column write, which by point 3 leaves `last_activity_at` frozen, and a
+// recency fence would discard exactly the payload it exists to keep.
+
+// Versions are compared as raw unix-seconds doubles, never converted to `Date`: that rounds to the
+// millisecond and collapses two writes microseconds apart into one version.
 
 import { statusClaimVerdict } from "./status-claim";
 
@@ -80,7 +61,7 @@ export interface StatePayload {
   reopensConversation: boolean;
   /** The status the payload states. Null means it stated none, so none is written. */
   status: string | null;
-  /** False when the payload said nothing about the assignee: the degraded shape of issue #27. */
+  /** False when the payload said nothing about the assignee: the degraded shape (see 6 above). */
   assigneeStated: boolean;
   /** The assignee type stated, null meaning unassigned. Only meaningful when `assigneeStated`. */
   assigneeType: string | null;
@@ -115,12 +96,11 @@ export interface StateRow {
    */
   redirectOriginKnown: boolean;
   /**
-   * THE LOCAL CLAIM (issue #436): a status written on this side that the source has not versioned,
-   * and the instant it stops fencing. `from` is the status it replaced, which is the only one it
-   * refuses; `stampedAt` is the version the source gave that write once the reconcile has read it
-   * back, and null for as long as there is nothing to place a payload against; `refusedAt` is the
-   * newest version refused while that was null, kept for the reconcile to adjudicate. All null when
-   * nothing local is outstanding. See ./status-claim.ts.
+   * The local claim: a status written on this side that the source has not versioned, and the
+   * instant it stops fencing. `from` is the status it replaced, the only one it refuses; `stampedAt`
+   * is the version the source gave that write once the reconcile read it back, null while there is
+   * nothing to place a payload against; `refusedAt` is the newest version refused while that was
+   * null, kept for the reconcile. All null when nothing local is outstanding. See ./status-claim.ts.
    */
   statusClaimUntil: Date | null;
   statusClaimFrom: string | null;
@@ -143,15 +123,11 @@ export interface StateDecision {
   assignee: boolean;
   /**
    * Whether the payload's UNVERSIONED fields may be written: the relations (contact, contact inbox,
-   * inbox) and the attribute bags. Every payload carries them, a message snapshot included, which
-   * is what keeps the agent's attribute context current without an extra API call. What they need
-   * is the recency fence the stale check used to give them for free: now that a conversation event
-   * can win on version alone, one whose `last_activity_at` is older than the row's would roll a bag
-   * back over the newer payload that already mirrored it (a Kanban card jumping back a column when
-   * a delayed handoff lands), or restore a relation a contact merge had already moved (and the
-   * graph's thread key is built from the contact inbox, so that moves the agent's work to another
-   * conversation's history). A payload behind the row on this axis keeps its state ruling and its
-   * unversioned fields silent.
+   * inbox) and the attribute bags, which every payload carries, keeping the agent's attribute context
+   * current without an extra API call. They need a recency fence: a conversation event can win on
+   * version alone, and one with an older `last_activity_at` would roll a bag back (a Kanban card
+   * jumping back a column) or restore a relation a contact merge moved (and the graph's thread key
+   * is built from the contact inbox). Behind on this axis: state ruling kept, these fields silent.
    */
   unversioned: boolean;
   /** Version to stamp on the status mark, or null to leave it where it is. */
@@ -166,15 +142,10 @@ export interface StateDecision {
   /** Version to stamp on the assignee mark, or null to leave it where it is. */
   assigneeAt: number | null;
   /**
-   * Whether the payload's redirect origin may overwrite the stored pairing. A THIRD mark, for the
-   * same reason there are already two: the pairing is written by its own update on the source row
-   * (fazer-ai/chatwoot#418), so after that write the field legitimately reflects a different version
-   * than the status and the assignee do.
-   *
-   * Ordered by version and NEVER by `last_activity_at`, which is the one axis that cannot see this
-   * field move: recording the pairing writes a column, and a column write does not advance
-   * `last_activity_at` at all. Its own conversation_updated therefore arrives carrying a FROZEN
-   * activity timestamp, and a recency fence would discard exactly the event that carries the answer.
+   * Whether the payload's redirect origin may overwrite the stored pairing, on a THIRD mark (see the
+   * header). Ordered by version and NEVER by `last_activity_at`: recording the pairing is a column
+   * write, which does not advance `last_activity_at`, so its own conversation_updated arrives with a
+   * FROZEN activity timestamp and a recency fence would discard exactly the event with the answer.
    */
   redirectOrigin: boolean;
   /** Version to stamp on the redirect-origin mark, or null to leave it where it is. */
@@ -203,31 +174,22 @@ export function decideConversationWrites(
 ): StateDecision {
   const eventAt = payload.activityAt ?? now;
 
-  // A payload can only be behind a row that exists. With no row there is nothing to protect and
-  // nothing to order against, so everything the payload STATES is applied and claims its version.
-  //
-  // NOTE: Stated, which is why both marks are conditional. `mirrorChatwootEvent` defaults a created
-  // row to `open` when the payload carried no status, and that default is a fabrication, not a
-  // reading of the source. Claiming a version for it would protect it: a complete event delivered
-  // afterwards but serialized before, carrying the real `pending` or `resolved`, would lose on
-  // `olderThanStatus` and the invented `open` would stand until something newer arrived.
-  // WHETHER THE PAYLOAD ANSWERS THE PAIRING QUESTION, which is not the same as speaking about it.
-  //
-  // A stated pairing always answers. A stated NIL only answers when there was something to clear:
-  // the fork ships the key on every conversation once it is deployed, and the column is NULL for
-  // every episode that began before it existed. Read as an answer, the first payload after the
-  // upgrade converts "nobody ever told us" into "there is none" on EVERY live conversation at once —
-  // which stamps the mark, and a stamped mark is what tells `episodeOriginQuery` to refuse the
-  // recency fallback those episodes have always run on. They would lose their cross-link and every
-  // later WhatsApp touch, with nothing in the data to say why.
-  //
-  // A clear is a TRANSITION, and Chatwoot's own column cannot say which null it is holding either:
-  // a token that names no origin writes NULL over a NULL. So the only thing that separates the two
-  // is on this side — whether a pairing was ever stated about this conversation before.
+  // NOTE: whether the payload ANSWERS the pairing question, which is not the same as speaking about
+  // it. A stated pairing always answers; a stated NIL only when there was something to clear. The
+  // fork ships the key on every conversation, and the column is NULL for every episode older than it,
+  // so reading nil as an answer would stamp the mark on every live conversation at once after the
+  // upgrade, and a stamped mark makes `episodeOriginQuery` refuse the recency fallback those episodes
+  // run on. Chatwoot's column cannot tell the nulls apart either (a token naming no origin writes NULL
+  // over NULL), so the only separator is whether a pairing was ever stated about this conversation.
   const redirectOriginAnswers =
     payload.redirectOriginStated &&
     (!payload.redirectOriginCleared || (row?.redirectOriginKnown ?? false));
 
+  // NOTE: a payload can only be behind a row that exists, so with no row everything the payload
+  // STATES is applied and claims its version. STATED, which is why both marks are conditional:
+  // `mirrorChatwootEvent` defaults a created row to `open` when the payload had no status, and
+  // claiming a version for that fabrication would protect it against the real `pending` or
+  // `resolved` of a complete event delivered afterwards but serialized before.
   if (row === null) {
     return {
       stale: false,
@@ -256,35 +218,24 @@ export function decideConversationWrites(
     payload.version != null &&
     payload.version < row.redirectOriginAt;
 
-  // Out-of-order guard, on the axis the event itself offers.
-  //
-  // A conversation event that carries a version is judged by that version and by NOTHING ELSE.
-  // Never by `last_activity_at`: a handoff event delayed past the human's first message carries
-  // the older value and would be discarded as stale while being the newest word on the
-  // conversation. A version against a row that has none is the shape of every conversation the
-  // migration touched, and it applies for the same reason: falling back there would recreate that
-  // discard for exactly the conversations live at the upgrade.
-  //
-  // Everything else falls back to `last_activity_at`: a message, which that value describes
-  // exactly, and a conversation event from a Chatwoot too old to send a version, where there is
-  // nothing finer to order by.
+  // NOTE: out-of-order guard, on the axis the event itself offers. A conversation event carrying a
+  // version is judged by that version ONLY, never by `last_activity_at`: a handoff event delayed past
+  // the human's first message carries the older value and would be discarded while being the newest
+  // word. A version against a row with none (every conversation live at the migration) applies for
+  // the same reason. Everything else falls back to `last_activity_at`: a message, which it describes
+  // exactly, and a conversation event from a Chatwoot too old to send a version.
   const stale =
     payload.fromConversationEvent && payload.version != null
       ? olderThanStatus && olderThanAssignee
       : payload.activityAt != null &&
         row.activityAt != null &&
         row.activityAt > payload.activityAt;
-  // NOTE: A stale payload still delivers a PAIRING it is ordered to deliver, and that is the one
-  // exception this branch has. `stale` means "behind the row on every axis this payload offers", and
-  // until the third mark existed those axes were the whole payload. They are not any more: the
-  // pairing is ordered by its own mark, and the first payload to carry one is routinely behind on the
-  // others — a retried snapshot, or any event at all on a conversation the mirror has been following
-  // since before the fork had the field, where the other two marks are set and this one is null.
-  // Discarding it wholesale leaves the episode unpaired and sends the caller to the recency fallback
-  // this column exists to remove, on a consumer that messages AND resolves what it picks.
-  //
-  // Nothing else leaks through: the flags below say so field by field, so a delayed message cannot
-  // reopen a conversation or rewind the activity watermark on the pairing's ticket.
+  // NOTE: a stale payload still delivers a PAIRING it is ordered to deliver, the one exception here.
+  // The pairing has its own mark, and the first payload to carry one is routinely behind on the
+  // others (a retried snapshot, or any event on a conversation followed since before the fork had
+  // the field). Discarding it wholesale leaves the episode unpaired and sends the caller to the
+  // recency fallback, on a consumer that messages AND resolves what it picks. Nothing else leaks: the
+  // flags below say so per field, so a delayed message cannot reopen or rewind the activity watermark.
   if (stale) {
     return {
       stale: true,
@@ -311,28 +262,14 @@ export function decideConversationWrites(
   const statusOrdered = payload.fromConversationEvent && !olderThanStatus;
   const assigneeOrdered = payload.fromConversationEvent && !olderThanAssignee;
 
-  // A REOPEN IS ORDERED TOO, on the only axis a message payload has. `statusOrdered` needs
-  // `fromConversationEvent`, so a message carries no status version at all and the reopen is the
-  // deliberate exception: a brand-new incoming message really does reopen a resolved conversation in
-  // Chatwoot, and that is the one status transition a message reports faithfully.
-  //
-  // Faithfully AT ITS OWN INSTANT. An unordered exception says a message may reopen whenever it
-  // arrives, and every payload here is a snapshot of an earlier moment: Chatwoot freezes its own at
-  // enqueue, and a delivery recovery rebuilds one from reads made a moment before (#295). So a
-  // message serialized BEFORE an operator resolved the conversation, delivered after, walked the
-  // status back to `pending` — and the gate then answered on top of the conversation they had just
-  // closed. MEASURED on the recovery, where the window is widest.
-  //
-  // `activityAt` against the stored status mark, because that is the comparison a message can make:
-  // `last_activity_at` is the message's own clock, and a resolve does not advance it, so a message
-  // that really is newer than the resolve compares greater.
-  //
-  // AT WHOLE SECONDS, and that is the whole difficulty. The two fields are not one clock:
-  // `last_activity_at` is whole seconds and the mark is `updated_at`, which carries a fraction and
-  // within one burst is always a little ahead of the message it accompanies. Compared raw, every
-  // same-second reopen loses to its own companion resolve — the burst issue #61 is about. Truncated,
-  // the same-second case keeps the answer it has always had and only a message from an EARLIER
-  // second is refused, which is the one this rule exists for.
+  // NOTE: a REOPEN is ordered too, on the only axis a message payload has, because it is faithful
+  // only AT ITS OWN INSTANT: every payload is a snapshot of an earlier moment (frozen at enqueue, or
+  // rebuilt by a delivery recovery from earlier reads), so a message serialized BEFORE an operator's
+  // resolve and delivered after would walk the status back to `pending` and get answered. Compared
+  // as `activityAt` (the message's clock, which a resolve does not advance) against the status mark
+  // at WHOLE SECONDS: the mark is `updated_at`, whose fraction runs a little ahead of the message it
+  // accompanies, so a raw comparison refuses every same-second reopen to its own companion resolve.
+  // Truncated, only a message from an EARLIER second is refused.
   const reopenOrdered =
     payload.reopensConversation &&
     (row.statusAt === null ||
@@ -383,13 +320,11 @@ export function decideConversationWrites(
   const advances = (mark: number | null): number | null =>
     advancesFrom(mark, payload.version);
 
-  // NOTE: `>=` again, and here it is not only idempotence. The fork records the pairing and then the
-  // conversation_updated it causes is dispatched, so the companions of that one write — and every
-  // message snapshot serialized from the same row version — agree by construction. Rejecting an
-  // equal version would let delivery order decide which of two identical readings stands.
-  //
-  // A payload carrying NO version (Chatwoot < 4.0.2) writes and stamps nothing, which is the
-  // pre-fence behaviour: there is no key to order by, so last write wins, as it did before.
+  // NOTE: `>=` again, and not only for idempotence: the fork records the pairing and then dispatches
+  // the conversation_updated it causes, so that write's companions and every message snapshot
+  // serialized from the same row version agree by construction, and rejecting an equal version would
+  // let delivery order pick between identical readings. A payload with NO version (Chatwoot < 4.0.2)
+  // stamps nothing: with no key to order by, the last write wins.
   const redirectOrigin = redirectOriginAnswers && !olderThanRedirectOrigin;
 
   return {
@@ -398,12 +333,10 @@ export function decideConversationWrites(
     assignee,
     unversioned: row.activityAt == null || eventAt >= row.activityAt,
     statusAt: status != null ? advances(row.statusAt) : null,
-    // NOTE: A refusal the claim could not place is KEPT, on a mark of its own rather than on the
-    // status mark. Both halves matter: we ack this event and Chatwoot never redelivers it, so
-    // dropping it would lose a hand-back made while our toggle was on the wire; and putting it on the
-    // status mark instead would say the source stamped something it did not, which is the reading
-    // three rounds of review broke in three different ways (issue #468).
-    // ../../modules/chatwoot/status-claim.ts.
+    // NOTE: a refusal the claim could not place is KEPT, on a mark of its own rather than the status
+    // mark: we ack this event and Chatwoot never redelivers it, so dropping it would lose a hand-back
+    // made while our toggle was on the wire, and the status mark would say the source stamped
+    // something it did not. See ./status-claim.ts.
     statusClaimRefusedAt:
       claim === "refuse-and-defer"
         ? advancesFrom(row.statusClaimRefusedAt, payload.version)

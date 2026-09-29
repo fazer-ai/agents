@@ -1,99 +1,49 @@
-// The webhook body a stranded delivery no longer has, rebuilt from what survived it.
+// The webhook body a stranded delivery no longer has, rebuilt from what survived it. The event body
+// is never stored (a customer's words are not held at rest a second time), so the ledger row names
+// only a conversation and a message, and the delivery path takes a webhook body.
 //
-// A delivery that a process death stranded left a ledger row naming a conversation and a message,
-// and nothing else: the event body was deliberately never stored, so that a customer's words are not
-// held at rest a second time (issue #228). Recovering the turn (issue #295) means running the
-// delivery path again, and the delivery path takes a webhook body.
-//
-// SO THIS REBUILDS A BODY, and hands it to `normalizeChatwootEvent` like any other. It does NOT
-// build a `NormalizedChatwootEvent` directly, and that is the whole design: exactly one place knows
-// how a Chatwoot payload becomes an event, the same place a live delivery goes through. Building the
-// event here would be a second reader of the same shape, which is the defect this repo keeps paying
-// for (issues #134, #177, and the `message_type` divergence this very path uncovered).
-//
-// THE TWO SOURCES, and why each field comes from the one it does:
-//
-//   - the CONVERSATION comes from the mirror, not from a re-read. The mirror is what every gate
-//     downstream already consults, it is current rather than as-of-the-strand, and a recovery asks
-//     "may this be answered NOW" — a status or an assignee that moved while the row sat stranded is
-//     the answer, not noise to be papered over.
-//   - the MESSAGE comes from a REST read, because it is the one thing the mirror does not hold.
-//
-// The two sources for the message spell two fields differently, and BOTH were measured live against
-// the local fork rather than assumed — the REST view renders `message_type_before_type_cast` and
-// `sender.push_event_data`, the wire renders the enum and `sender.webhook_data`:
-//
-//   - `message_type` is an INTEGER over REST and the enum STRING on the wire. `messageTypeOf` takes
-//     both, which is the entire reason it exists (see normalize.ts).
-//   - a contact SENDER carries `type: "contact"` over REST and no `type` key at all on the wire.
-//     Carried through as REST gave it: the reader is `isHumanAgentMessage`, which needs an OUTGOING
-//     message, and a recovery only ever rebuilds an inbound one.
-//
-// ATTACHMENTS are the field that does NOT diverge, and that was worth measuring too, because the
-// eager-STT pass downloads a voice note from `data_url` off this body: both views render
-// `attachments.map(&:push_event_data)`, the same method, so what a recovery hands the delivery path
-// is what a live delivery handed it.
-//
-// WHAT IT DELIBERATELY DOES NOT CARRY, each one a field `normalizeChatwootEvent` reads and this body
-// leaves out, so the omission is a decision on the record rather than an oversight:
-//
-//   - `meta.sender` — the contact's identity (phone, email, identifier) and its attribute bag, and
-//     `conversation.custom_attributes` beside it. The attribute half is the easy half: those drive
-//     the MIRROR's attribute merge, and the mirror is where this body's conversation half came from,
-//     so re-merging them here would write the mirror back onto itself and a stale read would undo an
-//     attribute an operator set while the row was stranded.
-//
-//     THE IDENTITY HALF IS NOT THE SAME ARGUMENT, and it is the harder one, because the live
-//     conversation DOES render it (measured at the fork: `conversations#show` renders `meta.sender`
-//     through the full contact partial, with `phone_number`, `email` and `identifier`). So it is
-//     available, it is current, and a review round asked for it: a stranded message may be the very
-//     event that would have refreshed the contact, and `authorizeContact` reads the STORED identity
-//     on a gate that fails closed.
-//
-//     It still may not travel, and the reason is the POSITION rather than the value. The mirror
-//     positions identity per field by the payload's `last_activity_at` (mirror.ts), and this body's
-//     is the stranded message's own clock — deliberately, so a rescue does not stamp the customer's
-//     words with the rescue's hour. An identity read NOW carried at a clock from THEN is exactly the
-//     "source position, never a receipt time" the mirror forbids, and it does not merely fail to
-//     help: MEASURED here, with the contact positioned at that same second by a sibling message of
-//     the same burst and the live phone now different, the field is EMPTIED — the tie rule, which
-//     cannot break a disagreement by arrival order, drops both readings. The contact then reads as
-//     `no_identity` at the very gate the round wanted to protect, and the stored phone is gone.
-//
-//     There is no second position to carry it on: one payload has one clock, and it also orders the
-//     status, the assignee and the inbound watermark. So the identity stays where the mirror already
-//     holds it, absent means "said nothing" — the sentinel the mirror honours — and the exposure is
-//     bounded by the next event on that conversation, which carries the identity at its own clock
-//     and settles it. `tests/modules/chatwoot-recover-delivery.test.ts` pins the omission so this is
-//     not quietly "fixed" back into the empty phone.
-//   - the kanban card. Same reason, same sentinel.
+// This rebuilds a BODY and hands it to `normalizeChatwootEvent`, never a `NormalizedChatwootEvent`:
+// exactly one place knows how a Chatwoot payload becomes an event, the one a live delivery goes
+// through, and building the event here would be a second reader of the same shape.
+
+// The CONVERSATION comes from the mirror, not a re-read: every downstream gate already consults it,
+// and a recovery asks "may this be answered NOW", so a status or assignee that moved while the row
+// sat stranded is the answer, not noise. The MESSAGE comes from a REST read, the one thing the
+// mirror does not hold.
+
+// REST and the wire spell two message fields differently: `message_type` is an INTEGER over REST and
+// the enum STRING on the wire (`messageTypeOf` in ./normalize.ts takes both), and a contact SENDER
+// carries `type: "contact"` over REST and no `type` on the wire, carried as REST gives it because its
+// reader (`isHumanAgentMessage`) needs an OUTGOING message and a recovery rebuilds an inbound one.
+// Attachments do not diverge: both views render `attachments.map(&:push_event_data)`, so the eager
+// STT pass downloads from the same `data_url` a live delivery handed it.
+
+// Deliberately NOT carried (absent means "said nothing", the sentinel the mirror honours):
+//   - `conversation.custom_attributes`: they came from the mirror, so re-merging them would write the
+//     mirror onto itself, and a stale read could undo an attribute an operator set meanwhile.
+//   - `meta.sender`: available live, but this body carries the stranded message's clock, and an
+//     identity read now at that clock can EMPTY the stored field under the mirror's tie rule
+//     (docs/chatwoot.md, "Mirror sync"; docs/contact-auth.md). The next event settles it, and
+//     `tests/modules/chatwoot-recover-delivery.test.ts` pins the omission.
+//   - the kanban card, for the same reason.
 export interface RecoveryConversation {
-  // Chatwoot's per-account DISPLAY id — the only id this may hold (issue #257).
+  // Chatwoot's per-account DISPLAY id, the only id this may hold.
   chatwootConversationId: number;
   contactInboxId: number | null;
   status: string;
   assigneeType: string | null;
   assigneeId: number | null;
   assigneeName: string | null;
-  // The WhatsApp thread this widget conversation is the redirect of, or null.
-  //
-  // The ONE field here the live account cannot answer, MEASURED both ways: the fork renders
-  // `redirect_origin_display_id` from `EventDataPresenter` only — the webhook and cable path — and
-  // the REST conversation show does not carry it at all. So the mirror is authoritative for this and
-  // for nothing else, which is the opposite of every other field in this struct.
-  //
-  // It has to travel because its consumer reads the EVENT and not the row: `processChatwootDelivery`
-  // arms the REDIRECT_FOLLOWUP ladder with `n.redirectOriginDisplayId`, and a body that omits it
-  // arms the ladder with nothing — which then messages and resolves whichever sibling the mirror
-  // last knew, or none.
+  // The WhatsApp thread this widget conversation is the redirect of, or null. The one field the live
+  // account cannot answer: the fork renders `redirect_origin_display_id` only from
+  // `EventDataPresenter` (webhook and cable), never in the REST show, so the mirror is authoritative
+  // here and nowhere else. It must travel because `processChatwootDelivery` arms the REDIRECT_FOLLOWUP
+  // ladder from the EVENT, and a body without it arms the ladder with nothing.
   redirectOriginDisplayId: number | null;
   // The version that stamped that pairing (`chatwootRedirectOriginAt`), or null if nothing ever did.
-  //
-  // It travels WITH the pairing because on the wire the two are one fact: every real body carries
-  // the pairing and the `updated_at` that orders it, and the mirror refuses an older pairing by
-  // comparing them. Carrying one without the other is what makes a rebuilt body able to RESTORE a
-  // pairing a re-entry replaced while the recovery was doing its REST reads — it states the old
-  // value with no version, and an unversioned statement outranks nothing.
+  // It travels WITH the pairing because on the wire they are one fact and the mirror refuses an older
+  // pairing by comparing them: the pairing alone, unversioned, could RESTORE one a re-entry replaced
+  // while the recovery was doing its REST reads.
   redirectOriginAt: number | null;
 }
 
@@ -107,27 +57,22 @@ export interface RecoveryMessage {
   contentAttributes: Record<string, unknown> | null;
   sender: Record<string, unknown> | null;
   attachments: unknown[];
-  // When the CUSTOMER sent it, in Chatwoot's epoch seconds, as the REST read gives it.
-  //
-  // Load-bearing, not decoration. It becomes the body's `last_activity_at`, which is what the mirror
-  // reads to advance `lastInboundAt` — and that column anchors BOTH the follow-up "new episode" gate
-  // and the WhatsApp 24h service window. Left out, `inboundAt` falls back to `now` and a recovery
-  // moves the anchor forward by however long the row sat stranded, so a proactive send made later
-  // reads as in-window when it is not. It also orders the mirror write correctly as OLD, so a
-  // recovery cannot clobber conversation state that moved while the row was DEAD.
-  //
-  // Null when the read gave no timestamp, which restores the old fallback rather than inventing one.
+  // When the CUSTOMER sent it, in Chatwoot's epoch seconds, as the REST read gives it. It becomes the
+  // body's `last_activity_at`, which advances `lastInboundAt`, the anchor of both the follow-up "new
+  // episode" gate and the WhatsApp 24h window: left out, `inboundAt` falls back to `now` and a later
+  // proactive send reads as in-window when it is not. It also orders the mirror write as OLD, so a
+  // recovery cannot clobber state that moved while the row was DEAD. Null when the read gave none.
   createdAt: number | null;
 }
 
-// The three keys an eager pass writes back, spelled at the top level of an attachment the way a
-// webhook carries them, from the `meta` the REST read carries them in. Anything that is not a record
-// is passed through: this reproduces a body, it does not validate one.
 // Local, like the copies in ./messages.ts and ./normalize.ts beside it.
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+// The three keys an eager pass writes back, spelled at the top level of an attachment the way a
+// webhook carries them, from the `meta` the REST read carries them in. Anything that is not a record
+// is passed through: this reproduces a body, it does not validate one.
 const ANALYSIS_META_KEYS = [
   "transcribed_text",
   "image_description",
@@ -150,31 +95,21 @@ function liftAnalysisMeta(attachments: unknown[]): unknown[] {
 }
 
 export function buildRecoveryPayload(params: {
-  // The event name the ledger recorded, replayed verbatim (issue #478 review, round 1). Two reach a
-  // recovery: the creation of a customer message, and the `message_updated` that finally carried its
-  // transcription. Taken from the row rather than asserted, because the difference decides what the
-  // replay DOES — a creation drives a turn, an update never does — and a transcription rebuilt as a
-  // creation would answer a customer a turn had already answered.
+  // The event name the ledger recorded, replayed verbatim. A recovery gets either a customer message's
+  // creation or the `message_updated` that carried its transcription; a creation drives a turn and an
+  // update never does, so a transcription rebuilt as a creation would answer an answered customer.
   event: string;
   conversation: RecoveryConversation;
   // The CHATWOOT inbox id, not the mirror's foreign key. The mirror stores the FK, so the caller
   // resolves it; the body must carry what a real one carries. Null omits both spellings, which is
-  // what a body carrying no route looks like — and the caller refuses to build one rather than pass
+  // what a body carrying no route looks like, and the caller refuses to build one rather than pass
   // it, because `runAgentTurn` returns "skipped" on an event with no inbox.
   inboxId: number | null;
-  // The inbox's name, from whichever row the id resolved to.
-  //
-  // Carried even though little would break without it, and the reason is the rule rather than this
-  // field: its only consumer is the mirror's inbox upsert, where null means "preserve". "The rebuild
-  // reproduces the body" is an invariant worth more than "the rebuild reproduces the body except
-  // where I argued the gap was harmless", because the second one has to be re-argued every time a
-  // field is added. The A/B test is what found it.
-  //
-  // Null is reachable, and it costs a placeholder rather than a wrong answer: an inbox the mirror
-  // has no row for at all (the route came off the live message) upserts as `inbox <id>` until a real
-  // webhook renames it. The REST reads carry no inbox NAME anywhere — the conversation renders the
-  // scalar `inbox_id` and the channel type, nothing more — so the alternative is a third call to the
-  // account for a field only that placeholder depends on.
+  // The inbox's name, from whichever row the id resolved to. Its only consumer is the mirror's inbox
+  // upsert (null means "preserve"), but it is carried because "the rebuild reproduces the body" holds
+  // only without exceptions: "except where the gap looks harmless" is re-argued with every new field.
+  // Null upserts a placeholder `inbox <id>` until a real webhook renames it; the REST reads carry no
+  // inbox name, so the alternative is a third account call for that placeholder alone.
   inboxName: string | null;
   message: RecoveryMessage;
 }): Record<string, unknown> {
@@ -189,28 +124,18 @@ export function buildRecoveryPayload(params: {
     private: m.private,
     content_attributes: m.contentAttributes ?? {},
     sender: m.sender,
-    // NOTE: TRANSLATED, NOT FORWARDED (issue #478 review, round 7). The two reads spell an eager
-    // pass's output in different places: a WEBHOOK attachment carries `transcribed_text` at the top
-    // level, which is what `normalizeChatwootEvent` reads, and the REST message list carries it
-    // under `meta` (../chatwoot/messages.ts). This body is webhook-shaped, so REST attachments
-    // handed through unchanged arrive with the words invisible — and for a transcription strand,
-    // whose whole content IS the words, the rebuild then came back carrying nothing and every real
-    // recovery was refused as a degraded read.
-    //
-    // Vision travels with it for the same reason and one more: a creation's replay that loses the
-    // description re-runs the pass and pays the provider again for a message it already analysed.
-    // Only lifted where the top level does not already say it, so a body that is already
-    // webhook-shaped passes through untouched.
+    // NOTE: translated, not forwarded. A webhook attachment carries `transcribed_text` at the top
+    // level, which `normalizeChatwootEvent` reads, while the REST list carries it under `meta`
+    // (./messages.ts); handed through unchanged, a transcription strand rebuilds with no words and is
+    // refused as a degraded read. Vision is lifted too, or a creation's replay pays the provider again.
+    // Lifted only where the top level is silent, so a webhook-shaped body passes through untouched.
     attachments: liftAnalysisMeta(m.attachments),
-    // WHEN THE MESSAGE ARRIVED, at the top level and not only under the conversation (issue #749,
-    // review round 1). A recovery exists because the delivery was stranded, so the gap between the
-    // message and this replay is exactly the age the agent has to be told about — this is the LEAST
-    // likely body to be seconds old, and the one whose reader most needs the number. The
-    // conversation's `last_activity_at` below carries the same instant for the 24h window, and the
-    // age variables read the MESSAGE's own field, which nothing was filling.
+    // NOTE: when the message arrived, at the top level and not only under the conversation: a
+    // recovery is the body least likely to be seconds old, and the age variables read the MESSAGE's
+    // own field. The conversation's `last_activity_at` below carries the same instant for the 24h window.
     ...(m.createdAt !== null ? { created_at: m.createdAt } : {}),
-    // `inbox` carries the id for the shape that has no conversation scalar (issue #270). Both are
-    // filled here because a real message body fills both.
+    // NOTE: `inbox` carries the id for the shape that has no conversation scalar. Both are filled
+    // here because a real message body fills both.
     ...(params.inboxId !== null
       ? { inbox: { id: params.inboxId, name: params.inboxName } }
       : {}),

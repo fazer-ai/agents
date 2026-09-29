@@ -4,23 +4,13 @@ import { createInstance, type i18n as I18n, type Resource } from "i18next";
 import type { ReactElement, ReactNode } from "react";
 import { I18nextProvider } from "react-i18next";
 
-// A REAL i18next, PER FILE, INSTEAD OF A STUB IN THE PROCESS REGISTRY. A registry stub has no file
-// scope and no teardown, so the last one installed is what every later file imports, with a
-// constant `i18n.language`: tests/client/document-starters-race.test.tsx, which switches language to
-// prove a stale starter list cannot overwrite a newer one, would pass without ever racing.
-// `t(key, fallback)` is i18next's own `defaultValue` signature, so an instance with EMPTY resources
-// answers what a stub would:
-//
-//     t("theme.label", "Theme")            -> "Theme"        (the fallback)
-//     t("theme.light")                     -> "theme.light"  (the key, no fallback given)
-//     t("x", "hi {{ref}}", { ref: "Z" })   -> "hi Z"         (real interpolation)
-//
-// Real interpolation keeps a label from reaching the DOM holding a literal `{{ref}}`, which a
-// hand-written `t` that drops the vars argument does. The instance travels by CONTEXT, through
-// `I18nextProvider`: `useTranslation` reads the context first, so nothing is written to the module
-// registry and nothing leaks. `useSuspense: false` because these tests render without a Suspense
-// boundary. `resources` is for the one file that asserts against the REAL catalogs: `t` answers the
-// catalog entry where there is one and the fallback where there is not.
+// A real i18next per file, passed by CONTEXT through `I18nextProvider`, instead of a stub in the
+// process registry: a registry stub has no teardown, so the last one installed leaks into every later
+// file with a constant `i18n.language` (tests/client/document-starters-race.test.tsx would pass
+// without racing). With EMPTY resources, `t(key, fallback)` answers the fallback, the key when none is
+// given, and real interpolation, so a label never reaches the DOM holding a literal `{{ref}}`.
+// `useSuspense: false` because these tests render without a Suspense boundary. `resources` is for the
+// file that asserts against the REAL catalogs: the catalog entry where there is one, else the fallback.
 export function createTestI18n(lng = "en", resources?: Resource): I18n {
   const instance = createInstance();
   instance.init({

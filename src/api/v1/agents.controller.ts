@@ -136,7 +136,7 @@ export function splitAgentUpdateBody(
   expectedUpdatedAt: Date | undefined;
   settingsMode: "replace" | undefined;
 } {
-  // NOTE: both are about the WRITE, not the agent, so both come off the patch: the strict update
+  // Both are about the WRITE, not the agent, so both come off the patch: the strict update
   // schema refuses an unrecognized key.
   const { expectedUpdatedAt, settingsMode, ...patch } = body;
   return {

@@ -141,7 +141,7 @@ export function ToolsTab({
   onOpenPlayground,
 }: ToolsTabProps) {
   const { t } = useTranslation();
-  // NOTE: the native tools this agent actually has, by ToolGrantsEditor's rule (no NATIVE row = all,
+  // The native tools this agent actually has, by ToolGrantsEditor's rule (no NATIVE row = all,
   // a row = its allowlist), minus what a watcher's muted turn strips (`offeredPackTools`): a rule on
   // a tool the agent does not get is inert and reads as protection. Both branches are filtered, since
   // a saved row can still name a delivery tool; `optionsFor` keeps a saved row's own tool visible.

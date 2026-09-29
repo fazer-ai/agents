@@ -1,18 +1,12 @@
-// The webhook body a stranded delivery no longer has, rebuilt from what survived it. The body is
-// never stored (a customer's words are not held at rest twice), so the ledger names only a
-// conversation and a message. This rebuilds a BODY for `normalizeChatwootEvent`, never a
-// `NormalizedChatwootEvent`: the one reader a live delivery goes through is the only place that
-// knows how a payload becomes an event. The CONVERSATION comes from the mirror, which every gate
-// already reads: a recovery asks "may this be answered NOW", so state that moved while the row sat
-// stranded is the answer, not noise. The MESSAGE comes from a REST read, all the mirror lacks.
+// The webhook BODY a stranded delivery no longer has (bodies are never stored), rebuilt for
+// `normalizeChatwootEvent`: the conversation from the mirror, since a recovery asks "may this be
+// answered NOW", and the message from a REST read. See docs/chatwoot.md, "Webhook receiver".
 
-// Deliberately NOT carried (absent means "said nothing", which the mirror honours):
-// `conversation.custom_attributes`, which came from the mirror, so re-merging writes the mirror onto
-// itself and a stale read could undo an attribute an operator set meanwhile; and `meta.sender` and
-// the kanban card, because this body carries the stranded message's clock and an identity read now
-// at that clock can EMPTY the stored field under the mirror's tie rule (docs/chatwoot.md, "Mirror
-// sync"; docs/contact-auth.md). The next event settles it, and
-// `tests/modules/chatwoot-recover-delivery.test.ts` pins the omission.
+// Deliberately NOT carried (absent means "said nothing"): `conversation.custom_attributes`, which
+// came from the mirror, so a stale read could undo an operator's attribute; and `meta.sender` and the
+// kanban card, since an identity read now at the stranded message's clock can EMPTY the stored field
+// under the mirror's tie rule (docs/chatwoot.md, "Mirror sync"). The next event settles it;
+// tests/modules/chatwoot-recover-delivery.test.ts pins the omission.
 export interface RecoveryConversation {
   // Chatwoot's per-account DISPLAY id, the only id this may hold.
   chatwootConversationId: number;

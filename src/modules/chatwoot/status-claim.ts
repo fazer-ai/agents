@@ -1,18 +1,11 @@
-/**
- * The local status claim: what a status write made on THIS side announces about itself, so a payload
- * serialized before it cannot walk it back. Pure: no DB, no clock of its own; the writers stamp what
- * these functions compute, and `decideConversationWrites` and the takeover's fence ask them what a
- * stored pair means. Why a version cannot do this job, why a claim refuses ONE status, outlives the
- * reconcile and ends only at its deadline, and why only a write that moves FIRST can take one:
- * docs/chatwoot.md, "A person answering the customer ends the attendance".
- */
+// The local status claim: what a status write made on THIS side announces about itself, so a payload
+// serialized before it cannot walk it back. Pure: the writers stamp it, `decideConversationWrites` and
+// the takeover's fence read it. See docs/chatwoot.md, "A person answering the customer ends the attendance".
 
-// Long enough to outlast the critical section it fences plus the deliveries already in flight when
-// it was taken, and no longer: past that the transition is over and the fence is still up. The terms
-// are the writer's two round trips (the toggle and the live read that stamps it, `REQUEST_TIMEOUT_MS`
-// 15s each in ./client.ts) and Chatwoot's redelivery ladder (`AgentBots::WebhookJob`, 3 retries 3s
-// apart, see ./state-order.ts), so 30s plus ~9s, rounded up to 45s. A claim that expired mid-flight
-// would be a fence reporting protection it is not giving.
+// Outlasts the critical section it fences plus the deliveries in flight when taken, and no longer: the
+// writer's two round trips (toggle and stamping live read, `REQUEST_TIMEOUT_MS` 15s each in ./client.ts)
+// plus Chatwoot's redelivery ladder (3 retries 3s apart, see ./state-order.ts), 30s plus ~9s rounded up
+// to 45s. A claim that expired mid-flight would be a fence reporting protection it is not giving.
 export const STATUS_CLAIM_TTL_MS = 45_000;
 
 /** The instant a claim taken at `now` stops standing. */

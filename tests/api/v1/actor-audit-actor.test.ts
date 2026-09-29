@@ -294,9 +294,10 @@ describe.skipIf(!dbUp)("the admin pages name who wrote", () => {
     }
   });
 
-  // A fleet administrator's demotion is a row the database cannot store unless the write names
-  // where they land (`users_role_tenant_check`), so it is refused before the write. The second fleet
-  // administrator keeps the last-admin guard from answering first with its 409.
+  // A fleet administrator's demotion has to name the tenant they land in: no database constraint
+  // stops a person with no membership, who then has nothing to enter, so the service refuses the
+  // request (`TenantRequiredError`, 422) before any write. The second fleet administrator keeps the
+  // last-admin guard from answering first with its 409.
   test("demoting a fleet administrator answers 422 without a tenant, and moves them with one", async () => {
     cookie = await signIn({
       id: FLEET_ADMIN_ID,

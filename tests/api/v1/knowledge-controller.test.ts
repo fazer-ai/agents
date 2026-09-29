@@ -21,7 +21,8 @@ describe("readerSafeBlock", () => {
     });
   });
 
-  // The finding itself: a pending or empty credential is exactly the case that carries the ref.
+  // A pending or empty credential is exactly the case that carries the ref, so it is the one that
+  // must not cross.
   test("the credential ref and its vault id never cross", () => {
     const out = readerSafeBlock({
       reason: "credential_pending",

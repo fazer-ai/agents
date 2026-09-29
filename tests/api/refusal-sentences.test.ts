@@ -7,12 +7,13 @@ import { type KeyResolver, listProviderModels } from "@/modules/models/service";
 import { listTtsOptions } from "@/modules/tts/listing";
 import { createVaultEntry } from "@/modules/vault/service";
 
-// THE SENTENCE THE CALLER ACTUALLY READS, produced by the code that refuses. The source guards in
-// tests/api/error-catalog.test.ts cannot see a forgotten bag, because `translateWithLocale` falls
-// back to the English `message` and answers pt-BR in English. So this file CALLS each refusing
-// function (network, key resolution and storage injected), renders the AppError through the
-// error handler's `refusalBody`, and pins the string in both languages, so refusals that share a
-// cause but need different repairs read differently.
+// THE SENTENCE THE CALLER ACTUALLY READS, produced by the code that refuses. The guards in
+// tests/api/error-catalog.test.ts ask the SOURCE whether an entry carries a placeholder and whether a
+// call site passes a bag with the right names, because a forgotten bag is invisible at runtime:
+// `translateWithLocale` falls back to the English `message` and answers pt-BR in English. This file
+// closes the loop from the other end: it CALLS each refusing function (network, key resolution and
+// storage injected), renders the AppError through the error handler's `refusalBody`, and pins the
+// string in both languages, so refusals that share a cause but need different repairs read differently.
 
 const ctx: TenantContext = { tenantId: 1n, userId: null, role: "TENANT_ADMIN" };
 // Injected away: every case here refuses before the first query.

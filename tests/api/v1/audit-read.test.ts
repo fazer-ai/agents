@@ -177,7 +177,8 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
     const body = (await res.json()) as Page;
     expect(body.entries.map((e) => e.action)).toEqual(["three.c", "two.b"]);
     // NOTE: without the cursor the caller cannot reach row three or tell a full page from the end.
-    // It names the row the page stopped on, in BOTH columns the walk is ordered by.
+    // It names the row the page stopped on, in BOTH columns the walk is ordered by. Opaque by
+    // contract, so this reads it apart rather than rebuilding it.
     expect(body.nextCursor).toBe(
       `${body.entries[1]?.createdAt}|${body.entries[1]?.id}`,
     );

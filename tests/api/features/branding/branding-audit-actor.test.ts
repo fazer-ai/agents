@@ -15,9 +15,10 @@ import {
 // session never reaches the service: the actor is resolved per WRITE HANDLER rather than by mounting
 // the tenancy plugin, so the identity config the login page loads, and the favicon, cost nothing.
 
-// The wrapper CALLS THROUGH: `mock.module` outlives this file, and a stub that swallowed the real
-// behavior would leave `branding.test.ts` (which asserts this function's validation throws) with
-// zero assertions. It only records the context and hands the write the test database.
+// The wrapper CALLS THROUGH: `mock.module` outlives this file, so a stub that swallowed the real
+// behavior would also answer for this service in every later file of the same run, and a test there
+// asserting that its validation throws would pass without running it. It only records the context
+// and hands the write the test database.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;

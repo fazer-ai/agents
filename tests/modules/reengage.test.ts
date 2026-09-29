@@ -1593,8 +1593,8 @@ describe.skipIf(!dbUp)("reengage", () => {
   // não corta é o portão de cauda vazia, que é uma leitura de mensagens e que este arquivo declara
   // não ser um gasto. Uma leitura, então, e não zero.
   //
-  // Medido rodando o console de verdade: sem a checagem cedo, este caminho batia em
-  // `preview.getMessages` contra um Chatwoot inalcançável e devolvia 500 antes de chegar na recusa.
+  // Sem a checagem cedo, este caminho chega a `preview.getMessages` e, com o Chatwoot inalcançável,
+  // devolve 500 antes de chegar na recusa.
   test("a recusa de um turno deste processo não paga o caminho inteiro", async () => {
     const CONV = 9597;
     const CI = 597;

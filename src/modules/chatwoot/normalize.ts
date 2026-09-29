@@ -33,7 +33,7 @@ function num(v: unknown): number | null {
 export function messageTypeOf(
   v: unknown,
 ): "incoming" | "outgoing" | "activity" | "template" | "other" {
-  // NOTE: a string is coerced only when it IS the integer spelling. `Number("")` and `Number("  ")`
+  // A string is coerced only when it IS the integer spelling. `Number("")` and `Number("  ")`
   // are both 0, so a bare coercion would classify a blank `message_type` as `incoming`, the one
   // class that drives an agent turn.
   const n =
@@ -70,7 +70,7 @@ function float(v: unknown): number | null {
 // epoch: seconds read as milliseconds would date every message in 1970. Exported because the
 // message parser reads the same fields, and a second copy would be a second set of edge cases.
 export function chatwootTimestamp(v: unknown): Date | null {
-  // NOTE: every branch exits through here. `Number.isFinite` and `> 0` both pass for an epoch far
+  // Every branch exits through here. `Number.isFinite` and `> 0` both pass for an epoch far
   // outside the range a Date can hold (1e20, or a digit string of the same size), and what comes
   // back is an Invalid Date, which Prisma refuses, failing the WHOLE delivery over an optional
   // field, and failing it again on every retry because the payload never changes. A reading this
@@ -139,7 +139,7 @@ export function normalizeChatwootEvent(
   if (!event) return null;
 
   const isMessage = MESSAGE_BODY_EVENTS.has(event);
-  // NOTE: WHICH OBJECT the body is, decided by the event name and never by looking at the body. See
+  // WHICH OBJECT the body is, decided by the event name and never by looking at the body. See
   // CONVERSATION_BODY_EVENTS: an event we do not know is an event whose `id` we cannot name.
   const conv = isMessage
     ? isRecord(payload.conversation)
@@ -151,12 +151,12 @@ export function normalizeChatwootEvent(
   const meta = conv && isRecord(conv.meta) ? conv.meta : null;
   const assignee = meta && isRecord(meta.assignee) ? meta.assignee : null;
   const sender = meta && isRecord(meta.sender) ? meta.sender : null;
-  // NOTE: contact_inbox ships as the full association object (EventDataPresenter#push_data → contact_inbox);
+  // contact_inbox ships as the full association object (EventDataPresenter#push_data → contact_inbox);
   // tolerate a flat contact_inbox_id scalar too. Same on both shapes (conv = payload | payload.conversation).
   const contactInbox =
     conv && isRecord(conv.contact_inbox) ? conv.contact_inbox : null;
 
-  // NOTE: The message's own inbox object (Message#webhook_data → inbox: {id, name}); conversation events
+  // The message's own inbox object (Message#webhook_data → inbox: {id, name}); conversation events
   // do not carry it. Read for both halves: the name, and the id when the conversation scalar is gone.
   const inboxObj = isMessage && isRecord(payload.inbox) ? payload.inbox : null;
 
@@ -187,7 +187,7 @@ export function normalizeChatwootEvent(
     const ca = isRecord(payload.content_attributes)
       ? payload.content_attributes
       : null;
-    // NOTE: the MESSAGE's own author (payload.sender), distinct from the conversation contact (meta.sender).
+    // The MESSAGE's own author (payload.sender), distinct from the conversation contact (meta.sender).
     const msgSender = isRecord(payload.sender) ? payload.sender : null;
     normalized.message = {
       id: num(payload.id),
@@ -248,7 +248,7 @@ export function normalizeChatwootEvent(
   // (EventDataPresenter push_meta).
   if (sender) {
     const contactAttrs = attrs(sender.custom_attributes);
-    // NOTE: presence of the KEY is the signal, for every identity field: absent leaves the stored
+    // Presence of the KEY is the signal, for every identity field: absent leaves the stored
     // value alone, present-and-empty clears it. `str()` alone would turn both into null and lose the
     // clear, so a removed phone or e-mail would stay the identity the gate asks about.
     const stated = (key: string, raw: unknown) =>
@@ -264,7 +264,7 @@ export function normalizeChatwootEvent(
       ...(contactAttrs ? { customAttributes: contactAttrs } : {}),
     };
   }
-  // NOTE: conversation + kanban-card custom attributes ride along on every event (push_data.custom_attributes
+  // Conversation + kanban-card custom attributes ride along on every event (push_data.custom_attributes
   // and the fork's push_data.kanban_task), so the agent's attribute context needs NO extra API call.
   const convAttrs = conv ? attrs(conv.custom_attributes) : undefined;
   if (convAttrs) normalized.customAttributes = convAttrs;
@@ -490,7 +490,7 @@ export function inboundTranscriptionOnUpdate(
 // excluded (our own is already in the memory thread; another bot's is not this agent's dialogue), and
 // so are private notes (the team talking to itself). A REACTION is excluded too: the fork stores an
 // emoji react as a real outgoing message from `Current.user`, and ingesting it would put
-// `atendente: 👍` in the attendance's memory.
+// `atendente: 👍` in the attendance's memory. It is a nod, not something the team said.
 export function isHumanAgentMessage(e: NormalizedChatwootEvent): boolean {
   return (
     e.message?.messageType === "outgoing" &&
@@ -687,7 +687,7 @@ export function firstAudioAttachment(e: NormalizedChatwootEvent): {
 // grafo como placeholder. `hasPendingInboundMediaUpdate` (./webhook.ts) faz outra pergunta.
 export function awaitsTranscription(n: NormalizedChatwootEvent): boolean {
   if (!isIncomingMessage(n)) return false;
-  // NOTE: o PRIMEIRO áudio, que é o que a transcrição cobre (`firstAudioAttachment` e
+  // O PRIMEIRO áudio, que é o que a transcrição cobre (`firstAudioAttachment` e
   // `runEagerMedia` selecionam esse): com o segundo transcrito e o primeiro não, "algum está
   // transcrito" deixaria o portão atuar sobre a mensagem cuja transcrição ainda vem.
   const audios = (n.message?.attachments ?? []).filter(
@@ -788,7 +788,7 @@ export function firstLocationAttachment(
     if (a.fileType !== "location") continue;
     const lat = a.latitude ?? null;
     const long = a.longitude ?? null;
-    // NOTE: Out-of-range values (|lat| > 90, |long| > 180) are provider garbage, not coordinates:
+    // Out-of-range values (|lat| > 90, |long| > 180) are provider garbage, not coordinates:
     // they would flow into tool args. Same fail-safe as (0,0): drop the coords, keep the title.
     const hasCoords =
       lat !== null &&

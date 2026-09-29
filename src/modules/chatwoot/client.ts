@@ -225,7 +225,7 @@ function mutedFetch(
     if (expiresOn?.aborted) {
       throw new ChatwootExpiredError(new URL(url).pathname);
     }
-    // NOTE: The deadline rides along, not only gates the dispatch. Each request arms its own
+    // The deadline rides along, not only gates the dispatch. Each request arms its own
     // `AbortSignal.timeout`, so without combining the two a call that started inside the budget runs
     // to that timeout and lands its effect after `runObserve` reported the tick as failed
     // (`recordResolutionOrigin` above all).
@@ -723,7 +723,7 @@ export class ChatwootClient {
     return withKeyedQueue(
       this.targetKey("conversation", conversationId),
       async () => {
-        // NOTE: The read uses the admin token although the write is a bot-token call:
+        // The read uses the admin token although the write is a bot-token call:
         // `conversations#show` is in BOT_ACCESSIBLE_ENDPOINTS only on Chatwoot from 2026-06-05 on, so
         // an older instance answers a bot-token GET with 401 and every attribute write would fail.
         // The admin token is also the one guaranteed to exist (the bot token is empty outside a persona).

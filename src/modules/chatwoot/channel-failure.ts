@@ -77,7 +77,7 @@ export function channelFailureOf(
     return null;
   if (m.id === null || n.conversationId === null) return null;
   const code = m.externalError.match(/^\s*(\d+)\b/)?.[1] ?? null;
-  // NOTE: the whole reply when the voice note carries it, which is when its speech had a URL or an
+  // The whole reply when the voice note carries it, which is when its speech had a URL or an
   // address taken out and the transcription reads with holes. The items then reach the customer
   // twice, which costs less than a sentence that stops mid-way.
   const text =
@@ -146,7 +146,7 @@ export async function handleChannelFailure(params: {
   flow: FlowContext;
   base?: PrismaClient;
 }): Promise<void> {
-  // NOTE: the reply the voice note was rendered from. The fork keeps it on the attachment; an upstream
+  // The reply the voice note was rendered from. The fork keeps it on the attachment; an upstream
   // Chatwoot drops that metadata, and then the text this process stashed when it sent the audio is
   // the one place it still is.
   const f: ChannelFailure =
@@ -161,7 +161,7 @@ export async function handleChannelFailure(params: {
             )?.transcribedText?.trim() || null,
         }
       : params.failure;
-  // NOTE: the line belongs to the AGENT behind the bot that sent the message, so the Logs page filtered by
+  // The line belongs to the AGENT behind the bot that sent the message, so the Logs page filtered by
   // agent shows it: the flow log stores the agent it is handed and infers nothing.
   const flow: FlowContext =
     params.flow.agentId != null
@@ -250,7 +250,7 @@ export async function mediaFallbackHandler(
   }
   const text = decryptJson<string>(job.payloadSecret);
   const literal = p.byOperator === true ? (t: string) => t : literalForChatwoot;
-  // NOTE: STILL ALLOWED TO SPEAK HERE, asked again at send time: the job can sit queued while the operator
+  // STILL ALLOWED TO SPEAK HERE, asked again at send time: the job can sit queued while the operator
   // switches the agent off, flips it to monitoring, disconnects the account or `/reset`s the
   // conversation, and the bot's stored token outlives all four. The bot is found by the id the
   // conversation knows it by, so the text goes out under the same identity the audio did.
@@ -283,7 +283,7 @@ export async function mediaFallbackHandler(
     botToken: decryptJson<string>(bot.accessToken),
     ...(makeClient ? { makeClient } : {}),
   });
-  // NOTE: FIRST, because it is the slow part: every gate below runs AFTER these reads, so a takeover
+  // FIRST, because it is the slow part: every gate below runs AFTER these reads, so a takeover
   // or a `/reset` landing meanwhile still stops the send. The send carries a name a rerun looks for:
   // a POST whose response was lost, or a crash before `completeJob`, runs the handler again after the
   // stale-claim interval, so the read pages back to the FAILED message. A failed read THROWS; a
@@ -320,7 +320,7 @@ export async function mediaFallbackHandler(
     if (oldest === undefined || oldest <= messageId) break;
     before = oldest;
   }
-  // NOTE: WHO OWNS IT NOW, read live. The audio went out under the bot, but minutes can pass between that
+  // WHO OWNS IT NOW, read live. The audio went out under the bot, but minutes can pass between that
   // send and this one, and a person may have taken the conversation in between: posting as the bot
   // over them is the one thing no send path here does. An unreadable conversation THROWS, so the job
   // retries instead of guessing either way.
@@ -329,7 +329,7 @@ export async function mediaFallbackHandler(
   );
   if (!live)
     throw new Error("media fallback: the conversation could not be read");
-  // NOTE: AND THE MIRROR, read through the reconcile: a local status claim (a colleague's reply claimed
+  // AND THE MIRROR, read through the reconcile: a local status claim (a colleague's reply claimed
   // `open` before Chatwoot's toggle landed) and a takeover webhook committed after this snapshot are
   // both newer than the live read, and the reconcile returns the row as its own ordering left it. A
   // text that nobody is waiting on costs less than one over a person, so BOTH readings have to say
@@ -354,7 +354,7 @@ export async function mediaFallbackHandler(
     );
     return { outcome: "done" };
   }
-  // NOTE: LAST, and after every network read: the database answers for a `/reset` or a rebinding that
+  // LAST, and after every network read: the database answers for a `/reset` or a rebinding that
   // landed while Chatwoot was being asked, and nothing but the send follows it.
   //
   // The same reads a follow-up makes before it speaks (../../graph/nudge.ts), in the same order: the
@@ -418,7 +418,7 @@ export async function mediaFallbackHandler(
       )
     )
       return "the agent is in test mode and this conversation was not activated";
-    // NOTE: The seam every sender loads first: it refuses a switched-off agent and a monitoring one, and
+    // The seam every sender loads first: it refuses a switched-off agent and a monitoring one, and
     // it carries the signature, which the voice note's transcription never has.
     const cfg = await loadAgentConfig(
       db,
@@ -458,7 +458,7 @@ export async function mediaFallbackHandler(
   if (live.inboxId !== null && live.inboxId !== gate.chatwootInboxId)
     return stop("the conversation moved to another inbox");
 
-  // NOTE: SIGNED, as the text path signs a reply: the audio is exempt from the signature, its text
+  // SIGNED, as the text path signs a reply: the audio is exempt from the signature, its text
   // replacement is not (docs/signature.md).
   const sig = signatureFor(cfg.signatureConfig, cfg.promptVars, cfg.promptOpts);
   const [signed = text] = sig
@@ -471,7 +471,7 @@ export async function mediaFallbackHandler(
   // below, which Chatwoot renders away.
   if (Array.from(signed).length > CHANNEL_TEXT_MAX)
     return stop("the reply is longer than the channel takes in one message");
-  // NOTE: The model's text is escaped for Chatwoot's Liquid and the signature is not.
+  // The model's text is escaped for Chatwoot's Liquid and the signature is not.
   const [wire = literal(text)] = sig
     ? attachSignature([text], sig, cfg.signatureConfig, undefined, literal)
     : [literal(text)];

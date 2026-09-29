@@ -386,7 +386,7 @@ describe("ChatwootClient", () => {
   // written the file, so the eager STT/vision download races it and gets a 404 on a fresh voice note.
   // The retry is opt-in: the interactive media proxy must still fail fast on a genuinely missing file.
   describe("downloadAttachment write race", () => {
-    // NOTE: a public documentation IP (RFC 5737) passes the real anti-SSRF guard without a DNS
+    // A public documentation IP (RFC 5737) passes the real anti-SSRF guard without a DNS
     // lookup: downloadAttachment always uses the real guard, never deps.assertSafe.
     const HOST = "https://203.0.113.10";
     const URL_ = `${HOST}/rails/active_storage/blobs/redirect/abc/audio.ogg`;
@@ -514,7 +514,7 @@ describe("ChatwootClient", () => {
     });
 
     test("a body that is not JSON at all never reaches the message", async () => {
-      // NOTE: a proxy in front of Chatwoot can answer anything; whatever it is, it did not come from
+      // A proxy in front of Chatwoot can answer anything; whatever it is, it did not come from
       // Chatwoot's renderer, so nothing is known about what is inside it.
       const raw = "<html>token 4b3a9f customer Maria</html>";
       const client = await createChatwootClient(baseConfig, {
@@ -752,7 +752,7 @@ describe("ChatwootClient", () => {
   });
 
   test("updateContact can clear an identifier with null", async () => {
-    // NOTE: the unique index is `(identifier, account_id)` with no partial predicate, so an empty string is
+    // The unique index is `(identifier, account_id)` with no partial predicate, so an empty string is
     // a value like any other and a second contact cleared that way would collide with the first.
     const { fetchImpl, calls } = stub(200, {});
     const client = await createChatwootClient(baseConfig, {

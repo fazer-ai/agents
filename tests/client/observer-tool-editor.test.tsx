@@ -186,7 +186,7 @@ test("an agent that only observes is not offered the tools its turn would refuse
 });
 
 test("both places a pack's tools are decided read one predicate", async () => {
-  // NOTE: the auto-grant that fires when an integration is created inside this editor is not
+  // The auto-grant that fires when an integration is created inside this editor is not
   // reachable without driving the creation modal, so both sites share one function and this asks
   // that function directly; a mutant would have to re-introduce a duplicate to get past it.
   const tools = [
@@ -201,7 +201,7 @@ test("both places a pack's tools are decided read one predicate", async () => {
     "drive_send_file",
   ]);
   expect(offeredPackTools(tools, undefined)).toHaveLength(2);
-  // NOTE: ...and the source of both call sites names it. Read from the file rather than deduced:
+  // ...and the source of both call sites names it. Read from the file rather than deduced:
   // this is the assertion that a second, hand-rolled filter cannot pass.
   const src = await Bun.file(
     new URL(

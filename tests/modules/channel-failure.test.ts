@@ -494,12 +494,12 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     });
     await mediaFallbackHandler(await claimed(9001), appDb, found.makeClient);
     expect(found.sent).toEqual([]);
-    // NOTE: ...and the same busy conversation with no earlier send does get the text: reaching the failed
+    // ...and the same busy conversation with no earlier send does get the text: reaching the failed
     // message is what proves there is none.
     const absent = fakeChatwoot({ filler: 45 });
     await mediaFallbackHandler(await claimed(9001), appDb, absent.makeClient);
     expect(absent.sent).toHaveLength(1);
-    // NOTE: Too busy to reach the failed message at all: nothing, rather than a possible duplicate.
+    // Too busy to reach the failed message at all: nothing, rather than a possible duplicate.
     const lost = fakeChatwoot({ filler: 200 });
     await mediaFallbackHandler(await claimed(9001), appDb, lost.makeClient);
     expect(lost.sent).toEqual([]);
@@ -558,7 +558,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
       },
     });
     try {
-      // NOTE: Chatwoot still answers `pending`: its toggle is on the wire.
+      // Chatwoot still answers `pending`: its toggle is on the wire.
       const cw = fakeChatwoot({});
       await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
       expect(cw.sent).toEqual([]);
@@ -960,7 +960,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     expect(pending?.payloadSecret).toBeNull();
     expect(after?.status).toBe("DEAD");
     expect(after?.payloadSecret).toBeNull();
-    // NOTE: A claimed one keeps its claim and loses its body: whatever becomes of the claim, the words go.
+    // A claimed one keeps its claim and loses its body: whatever becomes of the claim, the words go.
     const claimedRow = (await jobsFor(9032))[0];
     expect(claimedRow?.status).toBe("CLAIMED");
     expect(claimedRow?.payloadSecret).toBeNull();

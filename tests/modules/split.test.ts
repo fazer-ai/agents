@@ -1322,7 +1322,7 @@ describe("deliverReply: a send that proves itself by name (issue #499)", () => {
       },
       toggleTyping: async () => ({}),
     } as unknown as ChatwootClient;
-    // NOTE: what the customer reads, counted over what the far side HOLDS and not over what the
+    // What the customer reads, counted over what the far side HOLDS and not over what the
     // client believes it sent: the gap between those two is what this block guards.
     const timesRead = (text: string): number =>
       stored.filter((m) => m.content.includes(text.trim())).length;

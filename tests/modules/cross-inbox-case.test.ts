@@ -716,7 +716,7 @@ describe("openCaseInInbox", () => {
   });
 
   test("a destination that is this conversation's own inbox opens nothing", async () => {
-    // NOTE: the create can hand back the origin itself and flip it open under the turn.
+    // The create can hand back the origin itself and flip it open under the turn.
     const f = fakeChatwoot({
       continueOpen: true,
       inboxes: { 10: { name: "WhatsApp", channel_type: "Channel::Api" } },
@@ -731,7 +731,7 @@ describe("openCaseInInbox", () => {
   });
 
   test("a closed reply window keeps the opening off the customer's channel and leaves it for the team", async () => {
-    // NOTE: an official WhatsApp destination rejects a free-form first message.
+    // An official WhatsApp destination rejects a free-form first message.
     const f = fakeChatwoot({
       canReply: false,
       inboxes: {
@@ -765,7 +765,7 @@ describe("openCaseInInbox", () => {
   });
 
   test("a continued case older than the listing reaches is still told apart by its number", async () => {
-    // NOTE: the listing is the newest 25, and absence from it is not a new case.
+    // The listing is the newest 25, and absence from it is not a new case.
     const f = fakeChatwoot({
       continueOpen: true,
       listNewest: 1,
@@ -808,7 +808,7 @@ describe("openCaseInInbox", () => {
   });
 
   test("two origins of one contact opening at once send one opening, to one case", async () => {
-    // NOTE: per-origin queues alone run side by side, both list before either creates, and an inbox
+    // per-origin queues alone run side by side, both list before either creates, and an inbox
     // that continues open conversations hands both the same case as "opened".
     const f = fakeChatwoot({
       continueOpen: true,
@@ -851,7 +851,7 @@ describe("openCaseInInbox", () => {
   });
 
   test("a policy transfer that did not land stops the opening", async () => {
-    // NOTE: read as a plain drop, the case would open and resolveOrigin would close the origin.
+    // Read as a plain drop, the case would open and resolveOrigin would close the origin.
     const f = fakeChatwoot();
     const r = await openCaseInInbox(
       f.client,
@@ -862,7 +862,7 @@ describe("openCaseInInbox", () => {
   });
 
   test("the opening the customer receives is signed; the note of a closed window is not", async () => {
-    // NOTE: Chatwoot does not sign API sends.
+    // Chatwoot does not sign API sends.
     const sign = (t: string) => `${t}\n\nAna, fazer.ai`;
     const open = fakeChatwoot();
     await openCaseInInbox(open.client, input({ signCustomerMessage: sign }));
@@ -1194,7 +1194,7 @@ describe("openCaseInInbox", () => {
     });
 
     test("called off during the holder search, merge on: nothing is merged", async () => {
-      // NOTE: the merge is the one write nothing undoes.
+      // The merge is the one write nothing undoes.
       let wanted = true;
       const f = fakeChatwoot({
         contacts: { ...noEmail, 9: { email: "ana@exemplo.com" } },
@@ -1261,7 +1261,7 @@ describe("openCaseInInbox", () => {
   });
 
   test("called off during the last read before the create: no case, no opening", async () => {
-    // NOTE: an ask only before this read would miss a withdrawal inside it.
+    // An ask only before this read would miss a withdrawal inside it.
     const f = fakeChatwoot();
     let wanted = true;
     const list = f.client.listContactConversations;
@@ -1323,7 +1323,7 @@ describe("openCaseInInbox", () => {
   });
 
   test("a withdrawal queued ahead of the label write keeps it from putting a label back", async () => {
-    // NOTE: a fence asked before the queue's wait would undo a reset queued inside it.
+    // A fence asked before the queue's wait would undo a reset queued inside it.
     const f = fakeChatwoot();
     let wanted = true;
     const reset = withConversationLabels(1n, 7, async () => {
@@ -1378,7 +1378,7 @@ describe("openCaseInInbox", () => {
   });
 
   test("the origin label waits in the queue every label writer shares", async () => {
-    // NOTE: outside the queue, a `set_labels` beside it reads the same set and the last write erases the other.
+    // Outside the queue, a `set_labels` beside it reads the same set and the last write erases the other.
     const f = fakeChatwoot();
     const get = f.client.getConversationLabels;
     f.client.getConversationLabels = async (id: number) => {
@@ -1453,7 +1453,7 @@ describe("openCaseInInbox", () => {
   });
 
   test("a closed case that cannot be reopened fails the opening, and nothing claims it", async () => {
-    // NOTE: a swallowed reopen would report an open case, and resolveOrigin would close the origin.
+    // A swallowed reopen would report an open case, and resolveOrigin would close the origin.
     const f = fakeChatwoot({
       lockToSingle: true,
       failOn: new Set(["toggleStatus"]),
@@ -1488,7 +1488,7 @@ describe("openCaseInInbox", () => {
   });
 
   test("labels a new case got after its create are kept", async () => {
-    // NOTE: the label write replaces the set, so a new case is not assumed to have no labels.
+    // The label write replaces the set, so a new case is not assumed to have no labels.
     const f = fakeChatwoot({
       afterCreate: (id) => {
         const c = f.convs.find((x) => x.id === id);
@@ -1503,7 +1503,7 @@ describe("openCaseInInbox", () => {
   });
 
   test("called off after the create: nothing more is written, the attribute writer is fenced too", async () => {
-    // NOTE: none of the opening message, notes or labels may go out after a withdrawal.
+    // None of the opening message, notes or labels may go out after a withdrawal.
     let wanted = true;
     const f = fakeChatwoot({
       afterCreate: () => {
@@ -2018,7 +2018,7 @@ describe("the tool", () => {
   });
 
   test("a failed opening with no line is a silent transfer", async () => {
-    // NOTE: without the silence mark the model's next reply could still go out.
+    // Without the silence mark the model's next reply could still go out.
     const f = fakeChatwoot({ failOn: new Set(["createConversation"]) });
     const handoffState: {
       customerMessage: string | null;
@@ -2077,7 +2077,7 @@ describe("the tool", () => {
   });
 
   test("the model is told to call it directly, not to ask for an email first", () => {
-    // NOTE: told only "when it asks for an email, ask the customer", a model asks for an address the
+    // Told only "when it asks for an email, ask the customer", a model asks for an address the
     // contact already has, before calling the tool at all.
     const { t } = toolFor(fakeChatwoot());
     expect(t.description).toContain(
@@ -2093,7 +2093,7 @@ describe("the tool", () => {
   });
 
   test("a failed request after the turn was withdrawn hands nothing off", async () => {
-    // NOTE: the fallback must not transfer a conversation the operator has just cleared.
+    // The fallback must not transfer a conversation the operator has just cleared.
     const f = fakeChatwoot({ failOn: new Set(["createConversation"]) });
     let wanted = true;
     const create = f.client.createConversation;
@@ -2490,7 +2490,7 @@ describe("who holds the case (issue #908)", () => {
   });
 
   test("a person already on the case: nothing is written, the team neither", async () => {
-    // NOTE: the fork drops an assignee who is not in a newly set team, so even the team would take
+    // The fork drops an assignee who is not in a newly set team, so even the team would take
     // the case from the person working it.
     const f = fakeChatwoot({
       continueOpen: true,

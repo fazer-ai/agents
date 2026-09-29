@@ -191,7 +191,7 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
   });
 
   test("the opening is signed with the agent's signature, and left alone without one", async () => {
-    // NOTE: the opening reaches the customer, and Chatwoot does not sign API sends.
+    // The opening reaches the customer, and Chatwoot does not sign API sends.
     const on = (await seenFor(picked, 3n, 77, {
       ...SIGNATURE_DEFAULTS,
       enabled: true,
@@ -294,7 +294,7 @@ describe("both runtimes bind the output gate for it", () => {
     // NOTE: a policy with no line is a silent transfer here too.
     expect(b).toContain("handoffState.declinedToSpeak = d.reply === null;");
     expect(b).toContain("handoffState.completed = handed;");
-    // NOTE: asked after the screening and before the transfer, since inside `ownTransfer`
+    // Asked after the screening and before the transfer, since inside `ownTransfer`
     // the in-flight mark hides the turn's own change from the ownership reads.
     const fence = b.indexOf('if (!(await toolFence())) return "drop";');
     expect(fence).toBeGreaterThan(b.indexOf("await screenOutput(text)"));

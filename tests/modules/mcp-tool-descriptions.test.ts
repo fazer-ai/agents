@@ -85,7 +85,7 @@ describe("scope contract", () => {
     for (const named of ["code_tool_schema", "document_template_schema"]) {
       expect([named, writeOnly.has(named)]).toEqual([named, true]);
     }
-    // NOTE: they stay visible to a reader too, which the sweep above assumes.
+    // They stay visible to a reader too, which the sweep above assumes.
     const readOnly = await listedFor(["mcp:read"]);
     for (const named of ["code_tool_schema", "document_template_schema"]) {
       expect([named, readOnly.has(named)]).toEqual([named, true]);
@@ -161,7 +161,7 @@ describe("MCP tool descriptions", () => {
         BEHAVIOR_PATCH_SHAPE[key as keyof typeof BEHAVIOR_PATCH_SHAPE].unwrap();
       for (const field of Object.keys(block.shape)) declared.add(field);
     }
-    // NOTE: the names a REFUSAL rule has to spell out. They are in the description because of what
+    // The names a REFUSAL rule has to spell out. They are in the description because of what
     // happens to the call, not because of what shape the field has.
     const namedByARule = new Set([
       "credentialRef",

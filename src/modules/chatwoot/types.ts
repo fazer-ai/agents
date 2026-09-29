@@ -179,11 +179,11 @@ export interface NormalizedChatwootEvent {
   conversationUpdatedAt?: number | null;
   // Chatwoot's own first-response SLA (`Conversations::EventDataPresenter`): `created_at`, and
   // `first_reply_created_at`, the first message passing `Message#valid_first_reply?` (the predicate
-  // this codebase spells `isNewHumanAgentMessage`). Mirrored rather than derived here because
-  // Chatwoot computes both from its messages table: independent of webhook order, correct for
-  // conversations older than the mirror, never revised once set. On a business-opened conversation
-  // it marks that opening message; timing the customer's wait would need `waiting_since`, a different
-  // metric. `undefined`/`null` ⇒ the payload did not carry it ⇒ the mirror keeps what it stored.
+  // this codebase spells `isNewHumanAgentMessage`). Mirrored rather than derived: Chatwoot computes both
+  // from its messages table, independent of webhook order and of the mirror's age, never revised once
+  // set. On a business-opened conversation it marks that opening message; timing the customer's wait
+  // would anchor on `waiting_since`, which Chatwoot clears when the reply goes out: a different metric,
+  // and a product decision rather than a translation. `undefined`/`null`: not carried, the mirror keeps.
   conversationCreatedAt?: Date | null;
   firstReplyCreatedAt?: Date | null;
   // The CONVERSATION's custom attributes (conversation.custom_attributes on EventDataPresenter

@@ -295,7 +295,7 @@ describe("google drive toolpack — send file", () => {
   });
 
   test("a file whose declared size is over the cap is refused without reading a byte", async () => {
-    // NOTE: the Content-Length check runs before the read. Checking after the capped read would pull
+    // The Content-Length check runs before the read. Checking after the capped read would pull
     // 15 MB first, and on a slow link that spends the whole 12s budget, turning "too large" into a
     // generic download failure for a file the headers already ruled out.
     let pulled = 0;
@@ -329,7 +329,7 @@ describe("google drive toolpack — send file", () => {
   });
 
   test("a non-2xx download does not have its error page read", async () => {
-    // NOTE: the other cheap refusal: nothing here reads a Drive error page, so pulling one is a read
+    // The other cheap refusal: nothing here reads a Drive error page, so pulling one is a read
     // the bound has to cover for no one's benefit.
     let pulled = 0;
     const { impl } = routerFetch((url: string) => {
@@ -356,7 +356,7 @@ describe("google drive toolpack — send file", () => {
   });
 
   test("a file over the cap is refused, even when the server understates its size", async () => {
-    // NOTE: this asserts the refusal; that the read stops at the cap is asserted on the reader itself,
+    // This asserts the refusal; that the read stops at the cap is asserted on the reader itself,
     // in tests/lib/outbound.test.ts, where the producer can be watched.
     const OVER = 15 * 1024 * 1024 + 1;
     const { impl } = routerFetch((url: string) =>

@@ -165,7 +165,7 @@ describe("the attribute key is checked where it is written", () => {
     expect(src).toContain("invalidCaseAttributeKey(value)");
   });
   test("the Tools save refuses a bad key before the grants PUT", () => {
-    // NOTE: the check runs before the grants PUT, since a PATCH that refuses the key after it would
+    // The check runs before the grants PUT, since a PATCH that refuses the key after it would
     // leave new grants beside the old settings.
     const src = readFileSync(
       "src/client/pages/agents/AgentEditorPage.tsx",
@@ -173,7 +173,7 @@ describe("the attribute key is checked where it is written", () => {
     );
     const start = src.indexOf("async function saveTools(");
     const body = src.slice(start, src.indexOf("\n  }\n", start));
-    // NOTE: the call itself is the condition of the refusal, chained after the other preflight errors.
+    // The call itself is the condition of the refusal, chained after the other preflight errors.
     const check = body.indexOf("// Refused by the PATCH");
     expect(body).toContain(
       "(invalidCaseAttributeKey(crossInboxCase)\n          ? t(",

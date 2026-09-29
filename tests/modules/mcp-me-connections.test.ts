@@ -40,7 +40,7 @@ let tenantA = 0n;
 let userA = 0n;
 let userB = 0n;
 
-// The caller, as the principal the disconnect now records itself under (#400).
+// The caller, as the principal the disconnect records itself under.
 const asUser = (userId: bigint): TenantContext & { userId: bigint } => ({
   tenantId: tenantA,
   userId,

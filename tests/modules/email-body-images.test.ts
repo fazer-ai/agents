@@ -12,10 +12,10 @@ import {
 import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { isDecorativeImage } from "@/modules/vision/decorative";
 
-// ISSUE #864: the picture a customer puts in an email body is kept by Chatwoot's mailbox INSIDE the
-// body (a blob URL in `html_content.full`, or an `<img>` appended to `text_content.full` when the
-// mail has no HTML part), never as an attachment. These are the two pure questions the fix asks:
-// which URLs in the body are Chatwoot's own blobs, and which of those images are ornaments.
+// The picture a customer puts in an email body is kept by Chatwoot's mailbox INSIDE the body (a blob
+// URL in `html_content.full`, or an `<img>` appended to `text_content.full` when the mail has no HTML
+// part), never as an attachment. Two pure questions: which URLs in the body are Chatwoot's own blobs,
+// and which of those images are ornaments.
 
 const BLOB =
   "https://chat.example.com/rails/active_storage/blobs/redirect/eyJfcmFpbHMiOnsiZGF0YSI6MTIzfX0=--abc/image0.jpeg";
@@ -258,8 +258,8 @@ function jpeg(w: number, h: number): ArrayBuffer {
 }
 
 describe("isDecorativeImage", () => {
-  // The sizes are the ones measured on a production mailbox (issue #864): the logo quoted from the
-  // store's own emails, the icon set, the banner, the warning glyph.
+  // NOTE: Sizes as a production mailbox sends them: the logo quoted from the store's own emails, the icon
+  // set, the banner, the warning glyph.
   test.each([
     [908, 140, "the logo of a quoted transactional email"],
     [144, 144, "a signature icon"],

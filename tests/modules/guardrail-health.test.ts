@@ -9,15 +9,13 @@ import {
 } from "@/modules/guardrails/health";
 import { clearFlowLog, flowLogRow } from "@/tests/utils/flowlog";
 
-// What the guardrail screen actually did, read back from the flow log. The reason this read exists
-// at all: analysis is fail-open, so a screen that can never run is indistinguishable from one that
-// ran and approved, and the `guardrail`/`error` row is the only place the difference survives.
+// What the guardrail screen actually did, read back from the flow log. Analysis is fail-open, so a
+// screen that can never run is indistinguishable from one that ran and approved, and the
+// `guardrail`/`error` row is the only place the difference survives.
 //
-// Every row below carries an EXPLICIT createdAt from this process's clock, and the window is
-// computed from that same clock. Letting Postgres stamp `now()` while the window comes from the
-// host puts the two on different clocks, and a Docker VM that drifted behind after a sleep is
-// exactly how a past worker test started reading rows "from the future" (see the alert-worker
-// incident): the count would go empty for reasons that have nothing to do with this code.
+// Every row carries an EXPLICIT createdAt from this process's clock, and the window is computed from
+// that same clock: Postgres stamping `now()` against a host-computed window is two clocks, and a
+// Docker VM that drifted behind after a sleep would empty the count for reasons unrelated to this code.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

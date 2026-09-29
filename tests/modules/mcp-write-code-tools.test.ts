@@ -11,15 +11,13 @@ import {
   codeToolUpdate,
 } from "@/modules/mcp/write-code-tools";
 
-// The code tool's console tools (issue #363), the twin of the HTTP tool_* ones: gate (scope +
-// tenant target) is DB-free; dry-run/apply/audit and the tenant fence need a real Postgres (skipIf).
+// The code tool's console tools, the twin of the HTTP tool_* ones: gate (scope + tenant target) is
+// DB-free; dry-run/apply/audit and the tenant fence need a real Postgres (skipIf).
 //
-// What a dry run promises here is the same thing tool_create's promises: the preview IS what the
-// apply stores. Two things could make it lie for a code tool. The input schema is canonicalized on
-// write (a JSON-Schema-shaped value becomes the compact field map), so a preview echoing the
-// argument would show a shape the row never holds. And the body's static check answers alongside
-// the row on apply, so a preview that omitted it would let a caller approve a body the apply then
-// reports as broken.
+// The dry run promises the preview IS what the apply stores, and two things could make it lie for a
+// code tool: the input schema is canonicalized on write (a JSON-Schema-shaped value becomes the
+// compact field map), and the body's static check answers alongside the row on apply. The preview
+// shows both.
 
 function principal(over: Partial<VerifiedToken>): VerifiedToken {
   return {
@@ -304,8 +302,8 @@ describe.skipIf(!dbUp)("MCP code-tool tools (DB)", () => {
   });
 
   test("a rename the apply would refuse is refused by the dry run too, and keeping your own name is not a collision", async () => {
-    // The one field of a patch whose verdict is not in the payload. Without the availability check
-    // the preview answered a confident diff for a write that always fails (#490).
+    // NOTE: The one field of a patch whose verdict is not in the payload: without the availability check the
+    // preview would answer a confident diff for a write that always fails.
     const p = principal({ tenantId: tenantA });
     const row = await suDb.codeToolDefinition.findFirstOrThrow({
       where: { tenantId: tenantA, name: "validar_cpf" },
@@ -350,9 +348,8 @@ describe.skipIf(!dbUp)("MCP code-tool tools (DB)", () => {
   });
 
   test("a preview shows the values the apply would store, not the ones that were typed", async () => {
-    // The parser trims the label and the description, so a preview echoing the raw arguments
-    // promises a row the apply then writes differently — the divergence #490 is about, one field
-    // over.
+    // NOTE: The parser trims the label and the description, so a preview echoing the raw arguments would
+    // promise a row the apply writes differently.
     const p = principal({ tenantId: tenantA });
     const padded = {
       ...VALID,

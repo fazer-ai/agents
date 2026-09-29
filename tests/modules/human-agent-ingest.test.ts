@@ -13,15 +13,13 @@ import { runClaimed } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
-// The shape this suite exists for is the most common one in a real deployment: the agent qualifies a
-// lead, a human takes the conversation over, and the human closes the sale. Every test here drives
-// the REAL receiver (processChatwootDelivery), because the defect was never in the ingestion unit —
-// it was that no delivery path reached it with an outgoing message, and a unit test cannot see that.
-//
-// What it asserts is the OBSERVABLE effect from issue #187: the transcript that compaction hands to
-// the summarizer, and from there to the contact's permanent memory. Asserting "the message is in the
-// thread" would pass on a message stored as the CUSTOMER's, which is the outcome the issue calls
-// worse than the omission it replaces.
+// The most common shape in a real deployment: the agent qualifies a lead, a human takes the
+// conversation over, and the human closes the sale. Every test drives the REAL receiver
+// (processChatwootDelivery), because what matters is that a delivery path reaches the ingestion with
+// an outgoing message, which a unit test cannot see. The assertion is the OBSERVABLE effect: the
+// transcript compaction hands to the summarizer, and from there to the contact's permanent memory.
+// "The message is in the thread" would pass on a message stored as the CUSTOMER's, which is worse
+// than the omission.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -230,16 +228,16 @@ describe.skipIf(!dbUp)(
         normalized: n,
         base: appDb,
       });
-      // The receiver QUEUES the append now instead of making it (issue #194), so the assertions
-      // below run after the same job the fast tick would drain. Draining it here is what keeps this
-      // an end-to-end test of the real path rather than of the enqueue.
+      // NOTE: The receiver QUEUES the append instead of making it, so the assertions below run after the same
+      // job the fast tick would drain. Draining it here keeps this an end-to-end test of the real path
+      // rather than of the enqueue.
       await drainIngest();
     }
 
-    // A MESMA entrega do helper acima, com duas diferenças que só os casos da #719 precisam: a base é
-    // do caso (um cliente estendido que recusa uma escrita), e o lançamento volta como valor em vez
-    // de derrubar o teste, porque é ele que está sendo medido. Não drena a fila: o que se mede aqui é
-    // o que o receptor deixa para trás.
+    // NOTE: A MESMA entrega do helper acima, com duas diferenças que só os casos de enfileiramento que falha
+    // precisam: a base é do caso (um cliente estendido que recusa uma escrita), e o lançamento volta como
+    // valor em vez de derrubar o teste, porque é ele que está sendo medido. Não drena a fila: o que se
+    // mede aqui é o que o receptor deixa para trás.
     async function deliverRaw(
       convId: number,
       message: Record<string, unknown>,
@@ -341,15 +339,15 @@ describe.skipIf(!dbUp)(
         "cliente: bom dia, quanto fica o plano anual?",
       );
       expect(transcript).toContain("cliente: fechado, pode emitir");
-      // The half issue #187 is about: without it the memory records a customer who asked a price,
-      // never got one, and then agreed to it.
+      // NOTE: The colleague's half: without it the memory records a customer who asked a price, never got one,
+      // and then agreed to it.
       expect(transcript).toContain(
         "atendente: Bom dia! Consigo fechar o anual por R$ 1.200.",
       );
     });
 
-    // The failure mode the issue calls WORSE than the omission: the operator's words stored as the
-    // contact's. A test that only counted messages would pass on exactly that.
+    // NOTE: A failure mode WORSE than the omission: the operator's words stored as the contact's. A test that
+    // only counted messages would pass on exactly that.
     test("the attendant's words are never attributed to the customer", async () => {
       const convId = 502;
       await deliver(convId, fromCustomer("oi"));
@@ -391,8 +389,8 @@ describe.skipIf(!dbUp)(
       expect(transcript).not.toContain("👍");
     });
 
-    // Round-2 review finding (P2): outgoing webhook events carry `attachments`, so an attendant who
-    // answers with a file and no caption used to render to an empty string and be dropped on the spot.
+    // NOTE: Outgoing webhook events carry `attachments`, so an attendant who answers with a file and no caption
+    // must not render to an empty string and be dropped.
     test("an attendant's attachment-only reply still reaches the memory", async () => {
       const convId = 506;
       await deliver(convId, fromCustomer("me manda o contrato"));
@@ -410,22 +408,13 @@ describe.skipIf(!dbUp)(
       expect(transcript).toContain("atendente: <atendente enviou um arquivo");
     });
 
-    // A private note is the operator talking to their own team. It is not part of the dialogue with the
-    // customer, and putting it in the contact's permanent memory would leak internal notes into a
-    // future prompt.
-    // O ENFILEIRAMENTO QUE FALHA NÃO PODE LEVAR A MENSAGEM JUNTO (issue #719). Nesta conversa quem
-    // responde é uma pessoa, então turno nenhum roda: `shouldBotHandle` é falso, o receptor entra no
-    // ramo `!act`, avança a marca e liquida a entrega — e só DEPOIS roda a ingestão contínua, que é a
-    // única coisa que põe a mensagem na memória.
-    //
-    // Com o enfileiramento falhando, nada lançava: a linha fechava `PROCESSED`, que é o estado que a
-    // varredura não revisita, e a marca já estava por cima da mensagem. Nenhum turno depois a lê (o
-    // caminho direto folha a mensagem DO EVENTO, e o flush coalesce a partir da marca), então o que o
-    // cliente escreveu não está em lugar nenhum.
-    //
-    // Os caminhos vizinhos já têm essa cerca — a parada do observador, a transcrição tardia e a
-    // parada por posse da #711 lançam quando o enfileiramento delas falha, deixando a linha em
-    // PROCESSING para a varredura. Este é o caminho comum, e era o único sem ela.
+    // NOTE: O ENFILEIRAMENTO QUE FALHA NÃO PODE LEVAR A MENSAGEM JUNTO. Nesta conversa quem responde é uma
+    // pessoa, então turno nenhum roda: `shouldBotHandle` é falso, o receptor entra no ramo `!act`, avança a
+    // marca e liquida a entrega, e só DEPOIS roda a ingestão contínua, a única coisa que põe a mensagem
+    // na memória. Se o enfileiramento falhasse calado, a linha fecharia `PROCESSED` (que a varredura não
+    // revisita) com a marca por cima da mensagem, e nenhum turno a leria depois (o caminho direto folha a
+    // mensagem DO EVENTO, o flush coalesce a partir da marca). Por isso a entrega lança e deixa a linha em
+    // PROCESSING para a varredura, como fazem a parada do observador, a transcrição tardia e a de posse.
     test("a customer message is not lost when its ingestion enqueue fails", async () => {
       const convId = 507;
       // A conversa já existe no espelho, com a pessoa como dona: é o estado em que o cliente escreve.
@@ -477,11 +466,10 @@ describe.skipIf(!dbUp)(
       expect((await threadMessages(convId)).length).toBe(antes.length);
     });
 
-    // E SE A MARCA NÃO CONSEGUE PASSAR, A LINHA TAMBÉM FICA PARA A VARREDURA (issue #719). A marca é
-    // a escrita que FECHA esta parada: liquidar a linha com ela ainda abaixo da mensagem deixaria um
-    // registro terminal sobre uma mensagem que o resto do sistema continua tratando como não lida, e
-    // um flush depois responderia a ela. É o mesmo `leave-for-sweep` que a hand-over do observador
-    // usa, pela mesma razão (round 21 da #209).
+    // NOTE: E SE A MARCA NÃO CONSEGUE PASSAR, A LINHA TAMBÉM FICA PARA A VARREDURA. A marca é a escrita que
+    // FECHA esta parada: liquidar a linha com ela ainda abaixo da mensagem deixaria um registro terminal
+    // sobre uma mensagem que o resto do sistema continua tratando como não lida, e um flush depois
+    // responderia a ela. É o mesmo `leave-for-sweep` que a hand-over do observador usa, pela mesma razão.
     test("a watermark that cannot be advanced leaves the delivery for the sweep too", async () => {
       const convId = 509;
       await deliver(convId, fromCustomer("oi, ainda dá pra fechar hoje?"));
@@ -627,12 +615,11 @@ describe.skipIf(!dbUp)(
       ).id;
     }
 
-    // O APPEND É A ÚLTIMA CHANCE AQUI TAMBÉM (issue #720). O retry do enfileiramento existe porque
-    // nenhum turno vai cobrir aquela mensagem depois — é o que o próprio `retryArm` diz, e é
-    // literalmente verdade da resposta de um colega: o bot não a escreveu, então turno nenhum a lê.
-    // Mesmo assim ele só era armado sob observador, e na rota comum (que é a do #187: o agente
-    // qualifica, a pessoa fecha a venda) uma indisponibilidade de um segundo do scheduler custava a
-    // metade da conversa em que o negócio foi fechado.
+    // NOTE: O APPEND É A ÚLTIMA CHANCE AQUI TAMBÉM. O retry do enfileiramento existe porque nenhum turno vai
+    // cobrir aquela mensagem depois, e isso é literalmente verdade da resposta de um colega: o bot não a
+    // escreveu, então turno nenhum a lê. Na rota comum (o agente qualifica, a pessoa fecha a venda), sem
+    // retry, uma indisponibilidade de um segundo do scheduler custaria a metade da conversa em que o
+    // negócio foi fechado.
     test("a colleague's reply gets the retries the observer's reply gets", async () => {
       const convId = 511;
       await deliver(convId, fromCustomer("fechou, pode mandar o contrato"));
@@ -654,11 +641,9 @@ describe.skipIf(!dbUp)(
       expect(transcript).toContain("atendente: Fechado!");
     });
 
-    // E QUANDO AS TENTATIVAS ACABAM, A ROTA COMUM TAMBÉM É AVISADA (issue #720). O relato existia,
-    // mas atrás de `(observing || handedToObserver)`: numa instalação sem observador nenhum — a
-    // esmagadora maioria — a resposta do colega sumia da memória sem uma linha em lugar nenhum. A
-    // perda não é recuperável (nenhuma recuperação reconstrói o corpo de uma mensagem outgoing hoje),
-    // então o que resta é dizer que ela aconteceu, onde um operador lê.
+    // NOTE: E QUANDO AS TENTATIVAS ACABAM, A ROTA COMUM TAMBÉM É AVISADA, e não só a rota com observador: numa
+    // instalação sem observador nenhum (a esmagadora maioria) a resposta do colega sumiria da memória sem
+    // uma linha em lugar nenhum. O relato diz que a perda aconteceu, onde um operador lê.
     test("the ordinary route is told when a colleague's reply reaches no memory", async () => {
       const convId = 512;
       await deliver(convId, fromCustomer("combinado então"));
@@ -679,11 +664,10 @@ describe.skipIf(!dbUp)(
       });
     });
 
-    // E O RELATO NÃO SE ALARGA PARA A MENSAGEM DO CLIENTE (issue #720). Tirar a guarda do observador
-    // sem pôr nada no lugar deixaria este bloco responder por qualquer ingestão que falha, e a da
-    // mensagem do cliente falha exatamente no mesmo lugar (#719) — poucas linhas antes do lançamento
-    // que a deixa para a varredura. O operador leria "a resposta de um colega não pôde ser lembrada"
-    // sobre uma mensagem que o cliente escreveu e que a varredura vai recuperar.
+    // NOTE: E O RELATO NÃO SE ALARGA PARA A MENSAGEM DO CLIENTE. Sem guarda própria, este bloco responderia por
+    // qualquer ingestão que falha, e a da mensagem do cliente falha exatamente no mesmo lugar, poucas
+    // linhas antes do lançamento que a deixa para a varredura. O operador leria "a resposta de um colega
+    // não pôde ser lembrada" sobre uma mensagem que o cliente escreveu e que a varredura vai recuperar.
     test("the customer's own lost ingestion is not reported as a colleague's reply", async () => {
       const convId = 514;
       await deliver(convId, fromCustomer("oi"));
@@ -697,22 +681,21 @@ describe.skipIf(!dbUp)(
         { sleep: async () => {} },
       );
 
-      // A entrega da #719 lança, e é o lançamento que deixa a linha recuperável.
+      // NOTE: A entrega da mensagem do cliente lança, e é o lançamento que deixa a linha recuperável.
       expect(erro ?? "a entrega nao lancou").toContain("could not be armed");
       expect(await linhasDeMemoria(await convRowId(convId))).toEqual([]);
-      // E A TENTATIVA CONTINUA SENDO UMA, que é a outra metade da fronteira. O retry do colega não
-      // se alargou para todo mundo: a mensagem do cliente em rota comum é coberta por um turno na
-      // esmagadora maioria das vezes, e quando não é — como aqui — quem a salva é a varredura, não
-      // mais três tentativas de enfileiramento segurando o worker por dois segundos.
+      // NOTE: E A TENTATIVA CONTINUA SENDO UMA, que é a outra metade da fronteira: o retry do colega não vale
+      // para todo mundo. A mensagem do cliente em rota comum é coberta por um turno na esmagadora maioria
+      // das vezes, e quando não é (como aqui) quem a salva é a varredura, não mais três tentativas de
+      // enfileiramento segurando o worker por dois segundos.
       expect(tentativas()).toBe(1);
     });
 
-    // E O ECO DA NOSSA PRÓPRIA RESPOSTA NÃO VIRA RELATO (issue #720, review r1). A cerca é o papel
-    // RESOLVIDO (`humanReplyBy`), não a forma do payload: a forma inclui de propósito a perna
-    // `device` antes de perguntar ao provedor, e num provedor que não reserva os ids do eco aquela
-    // forma é a nossa própria resposta voltando. Com a forma no lugar do papel, uma conversa que nem
-    // o payload nem o espelho sabem nomear um contact-inbox produz `no-thread` — devolvido ANTES de
-    // o papel ser calculado — e um operador seria paginado sobre "a resposta de um colega" que
+    // NOTE: E O ECO DA NOSSA PRÓPRIA RESPOSTA NÃO VIRA RELATO. A cerca é o papel RESOLVIDO (`humanReplyBy`), não
+    // a forma do payload: a forma inclui de propósito a perna `device` antes de perguntar ao provedor, e
+    // num provedor que não reserva os ids do eco aquela forma é a nossa própria resposta voltando. Com a
+    // forma no lugar do papel, uma conversa sem contact-inbox nomeável produziria `no-thread` (devolvido
+    // ANTES de o papel ser calculado), e um operador seria paginado sobre "a resposta de um colega" que
     // pessoa nenhuma escreveu.
     test("an echo of our own reply is not reported as a colleague's lost reply", async () => {
       const convId = 515;
@@ -754,14 +737,11 @@ describe.skipIf(!dbUp)(
       expect(await linhasDeMemoria(await convRowId(convId))).toEqual([]);
     });
 
-    // E A ENTREGA DEIXA DE LIQUIDAR (issue #728), que é a metade do desenho que a #720 decidiu ao
-    // contrário e disse por quê: "para a resposta de um colega não compra nada", porque nem
-    // `owed-takeover` nem `observer-strand` re-armavam ingestão nenhuma. Passaram a re-armar, e a
-    // premissa daquela frase caiu: a linha guarda `human_reply_message_id` desde a #469, então a
-    // mensagem pode ser relida por id e folheada. Prender a linha em PROCESSING é o que a põe na
-    // frente da varredura, que é a única coisa que roda DEPOIS do blip do scheduler — e por isso o
-    // lançamento é a resposta, e não um arme aqui mesmo, que usaria o enfileiramento que acabou de
-    // falhar quatro vezes.
+    // NOTE: E A ENTREGA DEIXA A LINHA PARA A VARREDURA. A linha guarda `human_reply_message_id`, então a
+    // mensagem pode ser relida por id e folheada, e `owed-takeover` e `observer-strand` re-armam a
+    // ingestão. Prender a linha em PROCESSING a põe na frente da varredura, a única coisa que roda DEPOIS
+    // do blip do scheduler; por isso o lançamento é a resposta, e não um arme aqui mesmo, que usaria o
+    // enfileiramento que acabou de falhar quatro vezes.
     test("a colleague's reply whose ingestion fails is left for the sweep", async () => {
       const convId = 513;
       await deliver(convId, fromCustomer("me manda quando puder"));
@@ -781,11 +761,11 @@ describe.skipIf(!dbUp)(
       expect(status).toBe("PROCESSING");
     });
 
-    // E O `no-thread` CONTINUA LIQUIDANDO (issue #728), que é a fronteira do lançamento acima. Uma
-    // conversa que nem o payload nem o espelho sabem nomear um contact-inbox não tem onde guardar a
-    // resposta, e a releitura por id acharia o mesmo nada: prender a linha ali trocaria uma perda
-    // permanente relatada por um limbo que a varredura re-arma para sempre. É o mesmo par que a
-    // transcrição tardia tem logo ao lado — lança no `failed`, avisa no `no-thread`.
+    // NOTE: E O `no-thread` CONTINUA LIQUIDANDO, que é a fronteira do lançamento acima. Uma conversa que nem o
+    // payload nem o espelho sabem nomear um contact-inbox não tem onde guardar a resposta, e a releitura
+    // por id acharia o mesmo nada: prender a linha ali trocaria uma perda permanente relatada por um
+    // limbo que a varredura re-arma para sempre. É o mesmo par que a transcrição tardia tem ao lado:
+    // lança no `failed`, avisa no `no-thread`.
     test("a colleague's reply with no thread to hold it still settles", async () => {
       const convId = 516;
       deliverySeq += 1;
@@ -833,6 +813,8 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    // A private note is the operator talking to their own team, not part of the dialogue with the
+    // customer: kept in the contact's permanent memory it would leak into a future prompt.
     test("a private note is not ingested", async () => {
       const convId = 504;
       await deliver(convId, fromCustomer("preciso de ajuda"));

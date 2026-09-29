@@ -151,8 +151,8 @@ async function seedConversation(
     status?: string;
     assigneeType?: string | null;
     assigneeId?: number | null;
-    // Issue #652: o default é o agente já ter respondido uma vez aqui, que é o estado de uma conversa
-    // que chega a merecer follow-up. Nulo explícito é a conversa em que ninguém do nosso lado falou.
+    // NOTE: O default é o agente já ter respondido uma vez aqui, que é o estado de uma conversa que chega a
+    // merecer follow-up. Nulo explícito é a conversa em que ninguém do nosso lado falou.
     lastRepliedMessageId?: number | null;
   } = {},
 ) {
@@ -202,9 +202,9 @@ async function seedConversation(
   });
 }
 
-// Points the agent's model at a vault entry that does not exist, which is the state issue #281 is
-// about: the agent is live and expected to answer, and nothing it needs to author with resolves.
-// Restored on the way out, because every other test in this file reads the same agent row.
+// Points the agent's model at a vault entry that does not exist: the agent is live and expected to
+// answer, and nothing it needs to author with resolves. Restored on the way out, because every other
+// test in this file reads the same agent row.
 async function withUnresolvableCredential<T>(fn: () => Promise<T>): Promise<T> {
   const before = await suDb.agent.findUniqueOrThrow({
     where: { id: agentId },
@@ -375,11 +375,10 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect((wm as Date).getTime()).toBeGreaterThan(followedUp.getTime());
   });
 
-  // Issue #652, o lado que a cláusula da varredura não alcança: um job ARMADO pela varredura antiga,
-  // numa conversa em que ninguém do nosso lado nunca falou, já está PENDING no banco no instante do
-  // deploy. A varredura nova não o re-enfileira, mas ela também não o apaga — quem o encontra é o
-  // handler, que é exatamente o que o re-check dele existe para pegar ("um job enfileirado ANTES de a
-  // configuração mudar por baixo dele"; uma mudança de código é o caso extremo disso).
+  // NOTE: O lado que a cláusula da varredura não alcança: um job já ARMADO, numa conversa em que ninguém do
+  // nosso lado nunca falou, pode estar PENDING no banco. A varredura não o re-enfileira, mas também não
+  // o apaga; quem o encontra é o handler, que é o que o re-check dele existe para pegar ("um job
+  // enfileirado ANTES de a configuração mudar por baixo dele").
   test("(b2) um follow-up já armado antes do conserto é DESCARTADO se ninguém nunca falou ali", async () => {
     await seedConversation(1060, {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
@@ -643,7 +642,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         persistUsage: async () => {},
       });
       expect(result.outcome).toBe("reschedule");
-      // Marked as a backoff, so the sweep leaves it alone instead of pulling it back (issue #796).
+      // NOTE: Marked as a backoff, so the sweep leaves it alone instead of pulling it back.
       expect(
         (result as { payload?: Record<string, unknown> }).payload
           ?.deferredUnder,
@@ -682,10 +681,10 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(count).toBe(1);
   });
 
-  // (#376) An appointment is a RECORD now, not a projection of the reminder jobs, so a test that
-  // wants a conversation to be holding one writes the record. Where a job row also matters (a
-  // reminder that already fired, one still claimed, one dead-lettered) the test keeps writing that
-  // too — it just no longer decides whether the appointment exists.
+  // NOTE: An appointment is a RECORD, not a projection of the reminder jobs, so a test that wants a
+  // conversation to be holding one writes the record. Where a job row also matters (a reminder that
+  // already fired, one still claimed, one dead-lettered) the test writes that too, but the job does not
+  // decide whether the appointment exists.
   async function seedAppointment(
     convId: number,
     externalId: string,
@@ -719,8 +718,8 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     });
     // Held (rescheduled), NOT nudged and NOT ended — so it resumes once the appointment passes.
     expect(result.outcome).toBe("reschedule");
-    // Marked as an appointment hold, which the sweep never keeps: it selects the conversation only
-    // once no live appointment holds it, so the hold is released then (issue #796).
+    // NOTE: Marked as an appointment hold, which the sweep never keeps: it selects the conversation only once
+    // no live appointment holds it, so the hold is released then.
     expect(
       (result as { payload?: Record<string, unknown> }).payload?.deferredUnder,
     ).toBe("appointment");
@@ -759,11 +758,10 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.sent.length).toBeGreaterThan(0);
   });
 
-  // ISSUE #103. `pauseWhileAppointment` is one boolean for the whole agent, and it conflates two
-  // opposite things: a re-engagement nudge wants to be suppressed while a booking stands, and a
-  // payment-deadline step wants exactly the reverse — it only means anything WHILE the booking is
-  // unconfirmed, and it is the step that later frees the slot. An operator who needs both in one
-  // sequence has no way to say so today.
+  // NOTE: `pauseWhileAppointment` alone is one boolean for the whole agent, and it would conflate two opposite
+  // things: a re-engagement nudge wants to be suppressed while a booking stands, and a payment-deadline
+  // step wants the reverse (it only means anything WHILE the booking is unconfirmed, and it is the step
+  // that later frees the slot). So a step can opt out of the pause on its own.
   //
   // A live appointment in every one of these, so the only thing under test is which step is next.
   async function withReminder(convId: number, tag: string) {
@@ -825,11 +823,9 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.sent).toEqual([]);
   });
 
-  // The one behaviour the gate's move DOES change, measured rather than asserted away. The gate used
-  // to run above the step resolution, so a job whose stepIndex is past the end of a shrunk sequence
-  // met the appointment first and was rescheduled, again and again, until the appointment passed —
-  // only to end the sequence the moment it finally got through. Below the resolution it ends the
-  // sequence straight away. Nothing is lost, because there was no step left to send.
+  // NOTE: The gate runs below the step resolution, so a job whose stepIndex is past the end of a shrunk
+  // sequence ends the sequence straight away instead of being rescheduled until the appointment passes
+  // (only to end it then). Nothing is lost, because there is no step left to send.
   test("(#103) a job past the end of a shrunk sequence ends it, instead of waiting out the appointment", async () => {
     await setAgentSteps([
       { delayValue: 1, delayUnit: "minutes", instructions: "única etapa" },
@@ -851,9 +847,8 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
   });
 
   // NOTE: Chatwoot ≥ 4.16.2 auto-assigns the connected Agent Bot at conversation creation, so
-  // `assignee_type = 'AgentBot'` is the NORMAL bot-owned state — the sweep must treat it exactly
-  // like unassigned (shouldBotHandle's `!== 'User'`), or follow-up never fires in ordinary
-  // operation (issue #27).
+  // `assignee_type = 'AgentBot'` is the NORMAL bot-owned state: the sweep must treat it exactly like
+  // unassigned (shouldBotHandle's `!== 'User'`), or follow-up never fires in ordinary operation.
   test("(o) sweep enqueues for a bot-owned conversation (AgentBot) and skips a human-owned one", async () => {
     await suDb.agent.update({
       where: { id: agentId },
@@ -908,10 +903,9 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(humanJob).toBeNull();
   });
 
-  // A MONITORING agent chases nobody, and the exclusion has to be in the sweep's own SQL and not
-  // only in the handler's predicate (issue #209): rows the handler would drop still fill the
-  // batch's LIMIT, and a busy monitoring agent could keep every eligible production follow-up out
-  // of it.
+  // NOTE: A MONITORING agent chases nobody, and the exclusion has to be in the sweep's own SQL and not only
+  // in the handler's predicate: rows the handler would drop still fill the batch's LIMIT, and a busy
+  // monitoring agent could keep every eligible production follow-up out of it.
   test("(o2) sweep enqueues nothing for a monitoring agent, whatever its conversations look like", async () => {
     await suDb.agent.update({
       where: { id: agentId },
@@ -994,10 +988,10 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(ours.sent).toEqual([[1031, REPLY]]);
   });
 
-  // The SWEEP is the other half of the same question, and it answers it in SQL rather than in
-  // TypeScript (issue #103). Without it the opt-out is unreachable: a conversation with a live
-  // appointment never gets enqueued, so the handler gate that now honours the flag never runs.
-  // The sweep only ever enqueues STEP 0, so step 0 is the step whose flag it has to read.
+  // NOTE: The SWEEP is the other half of the same question, and it answers it in SQL rather than in
+  // TypeScript. Without it the opt-out is unreachable: a conversation with a live appointment never
+  // gets enqueued, so the handler gate that honours the flag never runs. The sweep only ever enqueues
+  // STEP 0, so step 0 is the step whose flag it has to read.
   test("(#103) the sweep enqueues when step 0 opts out of the pause", async () => {
     await setAgentSteps([
       {
@@ -1071,15 +1065,11 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     ).toBeNull();
   });
 
-  // Review round 2. The predicate above used to read the step at RAW index 0, which is not the step
-  // the runtime reads: `readFollowUpConfig` drops every non-object entry BEFORE numbering, so its
-  // step 0 is the first OBJECT in the array. Measured live against the dev server, because the
-  // reachability was the whole question: `PATCH /api/v1/agents/:id` types `settings` as an opaque
-  // record (`z.record(z.string(), z.unknown())`), NOT as the MCP behaviour schema, so this bag is
-  // stored exactly as written and answers HTTP 200.
-  //
-  // The predicate is existential now, so there is no index left to disagree about — and this test
-  // is the one that would have caught the positional version.
+  // NOTE: The runtime's step 0 is the first OBJECT in the array, not the entry at raw index 0:
+  // `readFollowUpConfig` drops every non-object entry BEFORE numbering. So the sweep's predicate is
+  // existential, with no index left to disagree about. Reachable: `PATCH /api/v1/agents/:id` types
+  // `settings` as an opaque record (`z.record(z.string(), z.unknown())`), not as the MCP behaviour
+  // schema, so this bag is stored exactly as written and answers HTTP 200.
   test("(#103) the sweep enqueues when a non-object entry shifts the opted-out step off index 0", async () => {
     await suDb.agent.update({
       where: { id: agentId },
@@ -1180,14 +1170,11 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     ).toBeNull();
   });
 
-  // Review round 3, and the boundary of the feature, pinned so it cannot drift into a surprise.
-  // The sweep gates the START of a sequence, and the only step it can start is step 0, so a LATER
-  // step's opt-out does NOT lift the fence. It could not usefully: round 2 let it, and the cost was
-  // that an appointment-blocked conversation was re-armed every minute for as long as the booking
-  // stood, eating a slot of the sweep's LIMIT 500 and delaying conversations that would actually
-  // send. Once the sequence IS running the handler carries it, and each step's own gate honours its
-  // own opt-out — which is the reported case, where the payment chase is what fires while the
-  // booking stands and is therefore step 0.
+  // NOTE: The boundary of the feature, pinned so it cannot drift into a surprise. The sweep gates the START
+  // of a sequence, and the only step it can start is step 0, so a LATER step's opt-out does NOT lift
+  // the fence: letting it would re-arm an appointment-blocked conversation every minute for as long as
+  // the booking stands, eating a slot of the sweep's LIMIT 500. Once the sequence IS running the handler
+  // carries it, and each step's own gate honours its own opt-out.
   test("(#103) a LATER step opting out does NOT lift the sweep's fence for step 0", async () => {
     await setAgentSteps([
       { delayValue: 1, delayUnit: "minutes", instructions: "re-engajamento" },
@@ -1256,13 +1243,11 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.sent).toEqual([]);
   });
 
-  // Review round 3, from a mutation that SURVIVED: narrowing the SQL to jsonb_typeof = 'object'
-  // broke nothing, which meant the array half of the rule was untested. It is not decoration —
-  // `readStep` rejects on `!raw || typeof raw !== "object"`, and `typeof [] === "object"`, so the
-  // reader turns a bare array into a DEFAULT step that carries no opt-out and occupies position 0.
-  // Measured, not assumed: readFollowUpConfig on `[[], {opted out}]` answers two steps, the first
-  // being the default. So the fence must stay UP here, and an SQL that skipped the array would pick
-  // the opted-out object as step 0 and lift it.
+  // NOTE: The array half of the rule is not decoration: `readStep` rejects on `!raw || typeof raw !==
+  // "object"`, and `typeof [] === "object"`, so the reader turns a bare array into a DEFAULT step that
+  // carries no opt-out and occupies position 0 (`[[], {opted out}]` reads as two steps, the default
+  // first). So the fence must stay UP here; an SQL narrowed to `jsonb_typeof = 'object'` would pick the
+  // opted-out object as step 0 and lift it.
   test("(#103) a bare ARRAY entry counts as step 0, exactly as the reader counts it", async () => {
     await suDb.agent.update({
       where: { id: agentId },
@@ -1317,10 +1302,9 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     ).toBeNull();
   });
 
-  // Review round 4, from a mutation that SURVIVED: dropping `!cfg.pauseWhileAppointment` from the
-  // exempt set broke no test. The agent-wide opt-out is the OLDER half of this predicate and it had
-  // no sweep coverage at all — every existing test exercised the fence staying up. Its positive
-  // case is what the boolean is for, and it is now the pair of the string test below.
+  // NOTE: The agent-wide opt-out's positive case in the sweep. Every other sweep test exercises the fence
+  // staying up, so without this one, dropping `!cfg.pauseWhileAppointment` from the exempt set breaks
+  // nothing. It pairs with the string test below.
   test("(#103) pauseWhileAppointment false lets the sweep enqueue despite a live appointment", async () => {
     await suDb.agent.update({
       where: { id: agentId },
@@ -1369,20 +1353,12 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     ).not.toBeNull();
   });
 
-  // Review round 5. `unfencedAgentIds` answered for an agent whose follow-up is OFF, because
-  // `appointmentPauseApplies` is only asked about the pause and a retained step-0 exemption is
-  // still an exemption. Nothing downstream caught it: the sweep's SQL tests `follow_up_armed_at`,
-  // which is stamped on the OFF→ON transition and never cleared on the way back, so a disabled
-  // agent keeps passing that gate.
-  //
-  // The cost is the one the LIMIT 500 imposes. The handler discards these jobs on its first look,
-  // but the sweep re-enqueues them every minute, and each one occupies a slot that belongs to an
-  // agent that would actually send. Asking about a config whose follow-up is off is a question with
-  // no answer, so the filter is at the call site — NOT inside `appointmentPauseApplies`, which
-  // decides one thing and must keep deciding only that.
-  //
-  // The second agent is what makes this reachable: the sweep returns early when NO enabled agent
-  // has follow-up on, so a tenant with only the disabled one never runs the query at all.
+  // NOTE: `unfencedAgentIds` must skip an agent whose follow-up is OFF: `appointmentPauseApplies` is asked
+  // only about the pause, a retained step-0 exemption is still an exemption, and the sweep's SQL tests
+  // `follow_up_armed_at`, which is stamped on OFF→ON and never cleared. The handler would discard the
+  // jobs, but the sweep would re-enqueue them every minute into slots of its LIMIT 500. The filter is
+  // at the call site, NOT inside `appointmentPauseApplies`, which decides one thing and only that. The
+  // second agent makes this reachable: the sweep returns early when NO enabled agent has follow-up on.
   test("(#103) an agent with follow-up OFF is not exempted from the fence by a retained opt-out", async () => {
     const other = await suDb.agent.create({
       data: {
@@ -1451,13 +1427,10 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     }
   });
 
-  // Review round 3. The SIBLING half of the same predicate, found by asking where else the sweep
-  // states something the reader also states. `->>` renders a JSON string and a JSON boolean to the
-  // same characters, and the reader does not: `bag.pauseWhileAppointment !== false` keeps the pause
-  // ON for a stored "false", while the text comparison read it as OFF and lifted the fence. All
-  // seven spellings were measured against the reader; the string was the only disagreement, and it
-  // is reachable through the same REST hole as the malformed step above. Predates #103 — the
-  // comparison is jsonb on both halves now.
+  // NOTE: The SIBLING half of the same predicate. `->>` renders a JSON string and a JSON boolean to the same
+  // characters, and the reader does not: `bag.pauseWhileAppointment !== false` keeps the pause ON for a
+  // stored "false", so a text comparison would read it as OFF and lift the fence. Reachable through the
+  // same REST path as the malformed step above, which is why the comparison is jsonb on both halves.
   test("(#103) a pauseWhileAppointment stored as the STRING false still pauses, like the reader", async () => {
     await suDb.agent.update({
       where: { id: agentId },
@@ -1506,10 +1479,10 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     ).toBeNull();
   });
 
-  // NOTE: Firing a reminder marks its row DONE. Suppression anchored on PENDING rows alone goes
-  // blind after the LAST reminder fires while the appointment is still ahead (issue #39) — both
-  // the handler re-check and the sweep must treat "DONE with a future start" as a live appointment,
-  // tombstoned (cancelled) rows excluded.
+  // NOTE: Firing a reminder marks its row DONE. Suppression anchored on PENDING rows alone goes blind
+  // after the LAST reminder fires while the appointment is still ahead, so both the handler re-check
+  // and the sweep treat "DONE with a future start" as a live appointment, tombstoned (cancelled) rows
+  // excluded.
   test("(q) follow-up stays paused after the LAST reminder fired while the appointment is ahead", async () => {
     await setAgentSteps([
       { delayValue: 1, delayUnit: "minutes", instructions: "" },
@@ -1565,8 +1538,8 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
         payload: { threadId: threadOf(1041), eventId: "ev_r" },
       },
     });
-    // NOTE: And this one's reminder is mid-flight (CLAIMED — the reminder's own turn runs on it).
-    // Neither status is what the sweep asks about any more: the record is.
+    // NOTE: And this one's reminder is mid-flight (CLAIMED: the reminder's own turn runs on it).
+    // Neither status is what the sweep asks about: the record is.
     await seedConversation(1042, {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
@@ -1685,9 +1658,9 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       { delayValue: 1, delayUnit: "minutes", instructions: "" },
     ]);
     // NOTE: Conv A books with model-supplied garbage for a start; conv B is a plain eligible
-    // conversation. The garbage is refused at the WRITE, so nothing unparseable ever reaches the
-    // sweep's query — where an unguarded cast used to be one bad payload away from killing
-    // follow-ups for the whole tenant.
+    // conversation. The garbage is refused at the WRITE, so nothing unparseable ever reaches the sweep's
+    // query, where an unguarded cast would be one bad payload away from killing follow-ups for the whole
+    // tenant.
     await seedConversation(1045, {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
@@ -1806,9 +1779,9 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     ).toBeNull();
   });
 
-  // Issue #281. An agent whose model credentialRef does not resolve cannot author anything, and the
-  // step used to be spent anyway: the watermark was stamped and the sequence advanced, so a broken
-  // credential silently consumed the whole episode and the customer got nothing once it was fixed.
+  // NOTE: An agent whose model credentialRef does not resolve cannot author anything, so the step is
+  // retried, not spent: stamping the watermark and advancing would let a broken credential silently
+  // consume the whole episode, and the customer would get nothing once it was fixed.
   test("(y) a step whose agent cannot author is retried, not stamped", async () => {
     await setAgentSteps(TWO_STEPS);
     await seedConversation(1090, { lastFollowUpAt: null });

@@ -37,7 +37,7 @@ let tenantId = 0n;
 let otherTenantId = 0n;
 // Every tenant this file creates, so afterAll takes them all down. A test that asserts on WHICH rows
 // a batch picked needs a tenant nobody else wrote to: the claim is a batch, and a sibling's leftover
-// row occupies a slot. That has bitten this file twice.
+// row occupies a slot.
 const tenants: bigint[] = [];
 let tenantSeq = 0;
 async function newTenant(): Promise<bigint> {
@@ -56,23 +56,13 @@ function ctx(t: bigint): TenantContext {
 const ok204 = (() =>
   new Response(null, { status: 204 })) as unknown as typeof fetch;
 
-// NOTE: `created_at` is stamped by the CLIENT, not by the column default. Prisma sends a value for
-// `@default(now())` on every insert, so the DEFAULT CURRENT_TIMESTAMP in the migration never fires,
-// and the claim then compares that host timestamp against Postgres `now()`. Two clocks.
-//
-// Production absorbs the difference in the 30s coalesce window. A test that passes
-// `coalesceWindowMs: 0` strips all of it and is left with the few milliseconds between the insert
-// and the claim: measured here, 4ms. A row stamped even 50ms ahead of the database is invisible to
-// `created_at <= now()`, so the claim comes back empty and the test fails on `claimed >= 1` having
-// nothing to do with the code under test. The Docker VM hosting Postgres locally drifts after the
-// Mac sleeps, which is how a whole run turns red and then heals on its own. Injecting a 500ms
-// host-ahead skew reproduces it exactly: all three due tests fail, and none of them do once the
-// stamp comes from the database.
-//
-// So every delivery is stamped from the database's own clock, and the coalesce window each test
-// passes is what decides due or fresh. `now()` in an earlier transaction is by construction at or
-// before `now()` in the claim's, so there is no margin to tune and no assumption about how far the
-// two clocks are apart.
+// `created_at` is stamped by the CLIENT: Prisma sends a value for `@default(now())` on every insert,
+// so the column default never fires and the claim compares a host timestamp against Postgres `now()`.
+// Production absorbs the gap in the 30s coalesce window; a test passing `coalesceWindowMs: 0` has
+// only the milliseconds between insert and claim, so a host clock slightly ahead (the local Docker VM
+// drifts after the Mac sleeps) makes the row invisible to `created_at <= now()`. So every delivery is
+// stamped from the database's own clock: `now()` in an earlier transaction is at or before `now()` in
+// the claim's, with no margin to tune.
 async function makeDeliveryFor(
   tenant: bigint,
   channelId: bigint,
@@ -91,11 +81,10 @@ async function makeDeliveryFor(
   return row.id;
 }
 
-// `updated_at` carries `@updatedAt`, so Prisma overwrites any value handed to `update`. Raw SQL is
-// the only way to put a row's clock where a test needs it. Unlike `created_at` above, this one stays
-// on the HOST clock on purpose: the reap builds its cutoff from the injected `now()`, so both sides
-// of that comparison are host timestamps and crossing them with the database's would reintroduce
-// exactly the skew this file just removed.
+// `updated_at` carries `@updatedAt`, so Prisma overwrites any value handed to `update`; raw SQL is the
+// only way to put a row's clock where a test needs it. Unlike `created_at` above, this stays on the
+// HOST clock on purpose: the reap builds its cutoff from the injected `now()`, so both sides of that
+// comparison are host timestamps, and mixing in the database's clock would bring the skew back.
 async function setSending(id: bigint, updatedAt: Date): Promise<void> {
   await suDb.$executeRaw`
     UPDATE alert_deliveries
@@ -157,11 +146,10 @@ describe.skipIf(!dbUp)("alert worker", () => {
       fetchImpl: ok204,
       now: () => Date.now(),
     });
-    // NOTE: assert the CLAIM before the outcome. Every observed flake in this file has been the row
-    // not being picked up at all, and `status is PENDING, expected DELIVERED` does not say whether
-    // the claim missed it or the delivery failed — checking the summary first names the cause.
-    // Lower-bound, not exact: the claim is allowed to sweep up a sibling test's retry row (see the
-    // note at the top of the file), so pinning it to 1 would trade one flake for another.
+    // NOTE: Assert the CLAIM before the outcome: `status is PENDING, expected DELIVERED` does not say whether
+    // the claim missed the row or the delivery failed, and checking the summary first names the cause.
+    // Lower-bound, not exact: the claim may sweep up a sibling test's retry row (see the note at the top
+    // of the file).
     expect(batch.claimed).toBeGreaterThanOrEqual(1);
     const row = await suDb.alertDelivery.findUnique({ where: { id } });
     expect(row?.status).toBe("DELIVERED");
@@ -184,11 +172,10 @@ describe.skipIf(!dbUp)("alert worker", () => {
         status: url.includes("/retry") ? 500 : 204,
       })) as unknown as typeof fetch;
     const t = Date.now();
-    // NOTE: the backoff is FULL jitter, `floor(random() * 2000)` on the first retry, so 0 is a
-    // legitimate draw about 1 run in 2000 and asserting `> t` against a live `Math.random` would be
-    // a flake of exactly the kind this file is being cleaned of. Full jitter is the documented
-    // algorithm and an immediate retry is a valid outcome of it (the tick interval absorbs one), so
-    // the draw is pinned here rather than a floor being added to production for a test's benefit.
+    // NOTE: The backoff is FULL jitter, `floor(random() * 2000)` on the first retry, so 0 is a legitimate
+    // draw about 1 run in 2000 and asserting `> t` against a live `Math.random` would flake. An immediate
+    // retry is a valid outcome of the documented algorithm (the tick interval absorbs one), so the draw
+    // is pinned here rather than a floor being added to production for a test's benefit.
     const realRandom = Math.random;
     Math.random = () => 0.5;
     let batch: Awaited<ReturnType<typeof processAlertBatch>>;
@@ -207,15 +194,15 @@ describe.skipIf(!dbUp)("alert worker", () => {
     const row = await suDb.alertDelivery.findUnique({ where: { id } });
     expect(row?.status).toBe("PENDING");
     expect(row?.attempts).toBe(1);
-    // Strictly AFTER the tick's own clock, not merely set: a zeroed backoff still writes a
-    // timestamp, and `not.toBeNull()` accepted it. Backing off is the point of scheduling a retry,
-    // and without a floor the endpoint that just failed is hit again on the very next tick.
+    // NOTE: Strictly AFTER the tick's own clock, not merely set: a zeroed backoff still writes a timestamp,
+    // which `not.toBeNull()` would accept. Without a floor the endpoint that just failed is hit again on
+    // the very next tick.
     expect(row?.nextAttemptAt?.getTime()).toBeGreaterThan(t);
   });
 
-  // Issue #243. The transport error's own message is what lands in `last_error`, a `text` column
-  // that refuses a NUL outright, and the refusal takes the whole retry write with it: the row keeps
-  // its SENDING claim and its attempt count, so nothing re-drives it and nothing dead-letters it.
+  // NOTE: The transport error's own message is what lands in `last_error`, a `text` column that refuses a NUL
+  // outright, and the refusal takes the whole retry write with it: the row keeps its SENDING claim and
+  // its attempt count, so nothing re-drives it and nothing dead-letters it.
   test("retries a transport failure whose message carries a NUL", async () => {
     const ch = await createAlertChannel(
       ctx(tenantId),
@@ -290,9 +277,9 @@ describe.skipIf(!dbUp)("alert worker", () => {
     expect(row?.attempts).toBe(0);
   });
 
-  // The three below cover claim predicates that mutation found unguarded: removing each one left the
-  // WHOLE suite green. They assert on their OWN row rather than on `claimed`, because the claim is a
-  // batch and a sibling test's row may ride along (see the note at the top of the file).
+  // NOTE: The three below cover claim predicates nothing else in the suite guards. They assert on their OWN
+  // row rather than on `claimed`, because the claim is a batch and a sibling test's row may ride along
+  // (see the note at the top of the file).
 
   // Disabling a channel is the operator's off switch. With `c2.enabled` dropped from the claim, a
   // channel switched off keeps receiving alerts, and the only thing that told them it was off was
@@ -338,9 +325,8 @@ describe.skipIf(!dbUp)("alert worker", () => {
       where: { id: dead },
       data: { status: "DEAD", attempts: 5 },
     });
-    // Only this test's URL is counted. The claim is a batch and a sibling's row can ride along (a
-    // retry whose backoff came due mid-file did exactly that, 1 run in 20), so a global counter
-    // would assert on other tests' traffic.
+    // NOTE: Only this test's URL is counted. The claim is a batch and a sibling's row can ride along (a retry
+    // whose backoff comes due mid-file), so a global counter would assert on other tests' traffic.
     let posts = 0;
     const counting = (async (url: string) => {
       if (url.includes("/terminal")) posts += 1;

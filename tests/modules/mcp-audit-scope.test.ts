@@ -10,23 +10,14 @@ import { auditList } from "@/modules/mcp/read";
 import { buildMcpServer } from "@/modules/mcp/server";
 import { syntheticAction } from "../utils/audit-action";
 
-// THE SCOPE HAS TO SURVIVE THE TRANSPORT (#520, review round 1).
-//
-// `audit_list` is registered through `registerTenantTool`, whose whole job is to make a fleet-level
-// SUPER_ADMIN token name a target tenant before any per-tenant tool runs. That is right for every
-// other tool on that list and wrong for this one on two of its three scopes: `fleet` and `all` name
-// their own trail, so a tenant target is not merely unnecessary there, it is a value the read has
-// nowhere to put. Two independent gates enforced it anyway -- the selector in the tool's own schema
-// and `readGate`'s null-tenant check -- so the widest reader of the trail could reach the fleet rows
-// only by naming an unrelated tenant, and on a deployment with no tenants at all could not reach
-// them from MCP whatsoever. The REST surface has answered this correctly since the first commit of
-// this PR; the point of these tests is that the two doors agree.
-//
-// TWO BLOCKS, because the two gates sit on opposite sides of the DB line. `tests/setup.ts` points
-// `DATABASE_URL` at a database that does not exist, on purpose, so nothing reaches Postgres through
-// `basePrisma`: a call through the registered tool can therefore prove the WRAPPER let it past, and
-// never what the read returned. The rows are asserted one layer down, on `auditList` with an
-// injected client, which is the same function the wrapper calls.
+// THE SCOPE HAS TO SURVIVE THE TRANSPORT. `audit_list` goes through `registerTenantTool`, which makes
+// a fleet SUPER_ADMIN token name a target tenant before any per-tenant tool runs. `fleet` and `all`
+// name their own trail, so a tenant target is a value the read has nowhere to put, and demanding one
+// would let the widest reader reach the fleet rows only by naming an unrelated tenant. The REST
+// surface answers this too; these tests hold the two doors to agreeing. TWO BLOCKS, because the gates
+// sit on opposite sides of the DB line: `tests/setup.ts` points `DATABASE_URL` at a database that
+// does not exist, so a call through the registered tool proves only that the WRAPPER let it past. The
+// rows are asserted one layer down, on `auditList` with an injected client.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -229,10 +220,10 @@ describe.skipIf(!dbUp)("what a targetless audit_list actually reads", () => {
     expect(text).toContain(`${TAG}:mine`);
   });
 
-  // BOTH DOORS AGREE ON THE CURSOR TOO. The REST endpoint answers a pre-#530 cursor with a 400; this
-  // one has to refuse it as well, and for the same reason -- read as the new key it would continue
-  // the walk from somewhere else while the caller believes it is paging the same trail. An agent
-  // that stored a cursor is the likeliest holder of an old one.
+  // NOTE: BOTH DOORS AGREE ON THE CURSOR TOO. The REST endpoint answers a cursor of neither shape with a 400;
+  // this one refuses it as well, and for the same reason: read as the new key it would continue the
+  // walk from somewhere else while the caller believes it is paging the same trail. An agent that
+  // stored a cursor is the likeliest holder of an old one.
   test("a cursor that is neither shape is refused here too", async () => {
     for (const bad of [
       "abc",
@@ -250,14 +241,10 @@ describe.skipIf(!dbUp)("what a targetless audit_list actually reads", () => {
     }
   });
 
-  // AND A BARE ID IS REFUSED HERE TOO, SINCE #544. It was the cursor before #530 and was accepted
-  // for one release after it, read as that release's own `id <` bound so an agent holding one
-  // mid-walk kept walking across a rolling deploy. #530 shipped in v1.15.0, so no process can still
-  // be handing one out and both doors are back to one shape.
-  //
-  // The refusal is the RIGHT answer rather than a translation, and the service's own file measures
-  // why: read as the new key, a bare id resumes from a different place in the trail while the agent
-  // believes it is paging the same one.
+  // NOTE: AND A BARE ID IS REFUSED HERE TOO. A bare id is the cursor from before the keyset change, and both
+  // doors accept one shape. The refusal is the RIGHT answer rather than a translation: read as the new
+  // key, a bare id resumes from a different place in the trail while the agent believes it is paging
+  // the same one.
   test("a bare id from before the keyset change is refused", async () => {
     const p = principal();
     const first = (await auditList(
@@ -275,11 +262,10 @@ describe.skipIf(!dbUp)("what a targetless audit_list actually reads", () => {
     expect(JSON.stringify(r)).toContain("nextCursor` from a previous");
   });
 
-  // AND THE REFUSAL SAYS NOTHING ABOUT WHETHER THE ID EXISTS, which is the property that survived
-  // the removal rather than being made moot by it. The version before #530's follow-up RESOLVED a
-  // bare id, and resolving needs the trail predicate, which is exactly how such an endpoint turns
-  // into a way to ask whether some row is there. Refused at the parse, the answer is the same
-  // sentence for a real id from another trail, a real id from this one, and a number naming nothing.
+  // NOTE: AND THE REFUSAL SAYS NOTHING ABOUT WHETHER THE ID EXISTS. Resolving a bare id needs the trail
+  // predicate, which is how such an endpoint turns into a way to ask whether some row is there.
+  // Refused at the parse, the answer is the same sentence for a real id from another trail, a real id
+  // from this one, and a number naming nothing.
   test("a foreign id, a live id and a made-up one are all refused the same way", async () => {
     const p = principal();
     const mineRow = (await auditList(
@@ -306,15 +292,11 @@ describe.skipIf(!dbUp)("what a targetless audit_list actually reads", () => {
     expect(answers.size).toBe(1);
   });
 
-  // THE UNAUTHORIZED SCOPE IS STILL AN ORDINARY ANSWER, cursor or no cursor, and that is what this
-  // test has always been for: resolving a bare id needed the scope, which throws for a caller who
-  // may not ask for it, and it threw OUTSIDE the handler's `try`, so this one combination REJECTED
-  // the promise instead of answering with `isError` like every other refusal (round 9 of #537).
-  //
-  // What changed with #544 is which refusal wins, and it is worth pinning rather than leaving to
-  // chance: the cursor is refused at the parse, before the scope is looked at, so an unauthorized
-  // caller passing a bare id now hears about the cursor. Neither sentence describes the trail, so
-  // both are safe; a later edit that reorders them should be deliberate.
+  // NOTE: THE UNAUTHORIZED SCOPE IS STILL AN ORDINARY ANSWER, cursor or no cursor: a scope check that throws
+  // OUTSIDE the handler's `try` rejects the promise instead of answering with `isError` like every
+  // other refusal. Which refusal wins is pinned too: the cursor is refused at the parse, before the
+  // scope is looked at, so an unauthorized caller passing a bare id hears about the cursor. Neither
+  // sentence describes the trail, so both are safe; a reorder should be deliberate.
   test("an unauthorized scope answers, rather than rejecting, with a bare cursor and without", async () => {
     const tenantAdmin = principal({ tenantId: mine, role: "TENANT_ADMIN" });
     for (const scope of ["fleet", "all"]) {

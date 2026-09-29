@@ -132,9 +132,9 @@ describe("renderTranscript", () => {
     expect(t).toContain("Passando para lembrar do orçamento");
   });
 
-  // Issue #187. A human agent's reply rides as a HumanMessage (a system role never survives to the
-  // model), so without the marker branch this whole line renders as `cliente:` — and the attendance
-  // is remembered as a customer who quoted a price to themselves.
+  // NOTE: A human agent's reply rides as a HumanMessage (a system role never survives to the model), so
+  // without the marker branch this whole line would render as `cliente:`, and the attendance would be
+  // remembered as a customer who quoted a price to themselves.
   test("a human agent's reply is the attendant, not the customer", () => {
     const t = renderTranscript([
       new HumanMessage("quanto fica o plano anual?"),
@@ -152,10 +152,9 @@ describe("renderTranscript", () => {
     expect(t).not.toContain(HUMAN_AGENT_NOTE);
   });
 
-  // The hand-back note is the system telling the LIVE model that a stretch ended (issue #457). It is
-  // not dialogue and nobody said it, so the permanent memory of the attendance drops it — left in, it
-  // would render as `cliente:`, which is #187 again with the system's own words filed as the
-  // contact's.
+  // NOTE: The hand-back note is the system telling the LIVE model that a stretch ended. It is not dialogue
+  // and nobody said it, so the permanent memory of the attendance drops it; left in, it would render as
+  // `cliente:`, the system's own words filed as the contact's.
   test("the hand-back note is dropped, not attributed to anybody", () => {
     const t = renderTranscript([
       new HumanMessage("quanto fica o plano anual?"),
@@ -303,15 +302,12 @@ describe("summarizeAttendance", () => {
     expect(res.error).toBeTruthy();
   });
 
-  // The 60s ceiling belongs to the CALL, not to the wait in front of it. `runModelCall` takes a
-  // permit from the process-wide model semaphore before it invokes this, and invokes it a SECOND
-  // time when the provider returns an empty completion — so a signal made once, outside, would spend
-  // its budget queueing behind other turns and then hand the retry the remainder. On a fleet busy
-  // enough for the wait to approach the ceiling, every compaction would abort before its call began
-  // and dead-letter for a reason that has nothing to do with the provider.
-  //
-  // Two distinct, unaborted signals is the observable form of that: one made outside would be the
-  // same object twice.
+  // NOTE: The 60s ceiling belongs to the CALL, not to the wait in front of it. `runModelCall` takes a permit
+  // from the process-wide model semaphore before it invokes this, and invokes it a SECOND time when the
+  // provider returns an empty completion, so a signal made once, outside, would spend its budget
+  // queueing behind other turns and hand the retry the remainder; on a busy fleet every compaction
+  // would abort before its call began. Two distinct, unaborted signals is the observable form of that:
+  // one made outside would be the same object twice.
   test("each attempt gets its own timeout, started when the call is", async () => {
     const seen: Array<AbortSignal | undefined> = [];
     class TwoAttempts extends BaseChatModel {
@@ -346,19 +342,18 @@ describe("summarizeAttendance", () => {
     expect(seen[1]?.aborted).toBe(false);
   });
 
-  // The WIRING of the line above, which no cheap test can drive: making the real timeout fire costs
+  // NOTE: The WIRING of the line above, which no cheap test can drive: making the real timeout fire costs
   // sixty seconds, and shortening it means a parameter that exists only for the test. So this half is
-  // asserted over the source — and it is worth asserting, because without the argument the summariser
+  // asserted over the source, and it is worth asserting, because without the argument the summariser
   // still fails safely and merely reports "provider error" for a timeout, which nothing would notice.
-  // Where the signal is CREATED is not asserted here; that has an observable form, in
-  // tests/modules/memory-summarize.test.ts.
+  // Where the signal is CREATED has an observable form, asserted in the test above.
   test("the summariser decides a timeout from its own signal, not from the error", async () => {
     const src = await Bun.file("src/modules/memory/summarize.ts").text();
     expect(src).toContain(
       "providerFailure(err, attemptSignal?.aborted === true)",
     );
-    // And the signal read is the one `runModelCall` handed this attempt (issue #819), not a variable
-    // left unset: unset, every timeout reads as "provider error" again.
+    // NOTE: And the signal read is the one `runModelCall` handed this attempt, not a variable left unset:
+    // unset, every timeout reads as "provider error" again.
     expect(src).toContain("attemptSignal = signal;");
   });
 
@@ -386,10 +381,10 @@ describe("summarizeAttendance", () => {
   });
 });
 
-// The clip used to be a fixed 60k characters, which ignores what the operator declared about this
-// agent's model. An install on a small-context model sets `maxHistoryTokens` for its ordinary turns
-// to work at all; honouring it here is the difference between a compaction that succeeds and one
-// that fails on size and dead-letters after burning its retries, leaving the thread raw forever.
+// The clip honours what the operator declared about this agent's model, not a fixed size: an install
+// on a small-context model sets `maxHistoryTokens` for its ordinary turns to work at all, and honouring
+// it here is the difference between a compaction that succeeds and one that fails on size and
+// dead-letters after burning its retries, leaving the thread raw forever.
 describe("renderTranscript: the declared history ceiling", () => {
   const long = Array.from(
     { length: 400 },

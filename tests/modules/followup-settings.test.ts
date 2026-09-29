@@ -89,10 +89,9 @@ describe("readFollowUpConfig", () => {
     expect(cfg.steps[1]?.resolve).toBe(true);
   });
 
-  // The strip above takes `resolve` OFF a step, and everything else has to survive it. It used to
-  // rebuild the step field by field, which meant it listed what to keep — so a step field added
-  // later was dropped here, silently, and only in this one case: a mid-sequence step that happens
-  // to carry `resolve`. `ignoreAppointmentPause` (#103) is the first field that would have hit it.
+  // NOTE: The strip above takes `resolve` OFF a step, and everything else has to survive it. Rebuilding the
+  // step field by field would list what to keep, so a field added later (`ignoreAppointmentPause` is
+  // one) would be dropped silently, and only on a mid-sequence step that carries `resolve`.
   test("stripping resolve keeps every OTHER field of that step", () => {
     const cfg = readFollowUpConfig({
       followUp: {

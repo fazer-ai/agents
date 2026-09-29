@@ -192,8 +192,8 @@ describe.skipIf(!dbUp)("flowlog", () => {
     expect(after2[0]?.count).toBe(2);
   });
 
-  // Issue #610: the ledger row is what the worker posts, so the body has to be right THERE, not only
-  // in the function that builds it.
+  // NOTE: The ledger row is what the worker posts, so the body has to be right THERE, not only in the
+  // function that builds it.
   test("a delivery for a line with no error text carries why it was raised", async () => {
     const ch = await createAlertChannel(
       ctx(tenantB),

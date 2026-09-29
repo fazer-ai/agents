@@ -1,15 +1,10 @@
 // EVERY STAGE IN THE CLOSED VOCABULARY HAS A LABEL, AND THE FENCE THAT KEEPS IT THAT WAY.
 //
-// `FLOW_STAGES` is read by five places, and four of them derive their list from it directly (the
-// alert-channel validator, the /stages endpoint, the MCP enums, the channel picker) — adding a stage
-// reaches those for free. The fifth is `flowStageLabel`, which is a switch: a stage with no `case`
-// falls through to `default` and the Logs page renders the raw slug in the filter dropdown and on
-// every row. Nothing breaks, nothing is red, and the operator reads `contact_auth`.
-//
-// Measured on `main` while adding the `command` stage for issue #317: 11 labels for 14 stages —
-// `vision`, `guardrail` and `memory` were each added by a round that reached the four derived
-// readers and not this one. This is the per-call-site shape from the process skill: fixing only the
-// stage of the day guarantees the next one is born unlabelled, so the criterion is the sweep.
+// `FLOW_STAGES` is read by five places, and four derive their list from it directly (the
+// alert-channel validator, the /stages endpoint, the MCP enums, the channel picker), so a new stage
+// reaches them for free. The fifth is `flowStageLabel`, a switch: a stage with no `case` falls through
+// to `default` and the Logs page renders the raw slug (`contact_auth`) with nothing red. Fixing only
+// the stage of the day leaves the next one unlabelled, so the criterion is the sweep.
 import { describe, expect, test } from "bun:test";
 import { FLOW_STAGES } from "@/modules/flowlog/stages";
 

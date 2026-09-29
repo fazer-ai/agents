@@ -192,9 +192,8 @@ describe.skipIf(!dbUp)("mcp oauth access tokens", () => {
     );
   });
 
-  // Issue #756: the token was issued for ONE tenant, and the role it carries is the one held there.
-  // Leaving that tenant invalidates it even while the person keeps a membership elsewhere with the
-  // same role.
+  // NOTE: The token was issued for ONE tenant, and the role it carries is the one held there. Leaving that
+  // tenant invalidates it even while the person keeps a membership elsewhere with the same role.
   test("leaving the token's tenant invalidates it, whatever the person holds elsewhere", async () => {
     const other = await suDb.tenant.create({
       data: { name: "McpT2", slug: `mcp2-${process.pid}` },

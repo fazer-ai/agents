@@ -25,19 +25,14 @@ import { getJobHandler } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
-// NOTE: Guardrails da cadeia "follow-up em conversa resolvida" (post da comunidade "Followup indo como
-// conversa privada", 2026-08-06). O incidente: espelho local preso em `pending` (resolve perdido /
-// entrega fora de ordem) → sweep enfileira FOLLOWUP para conversas que o Chatwoot real já resolveu
-// → nudge posta o texto como nota privada (fora da janela de 24h sem template), em massa, para a
-// base histórica. Cada teste aqui trava uma das defesas:
-//   (1) mirror: só um message_created INCOMING reabre resolved/snoozed (message_updated e
-//       não-incoming carregam snapshot congelado e não regridem; reaberturas legítimas seguem);
-//   (2) live gate: o handler verifica o estado REAL no Chatwoot antes de postar e reconcilia o
-//       espelho stale (fail-closed quando não dá para verificar);
+// Guardrails da cadeia "follow-up em conversa resolvida": um espelho preso em `pending` (resolve
+// perdido, entrega fora de ordem) faria o sweep postar nudges como nota privada, em massa, em
+// conversas que o Chatwoot já resolveu. Cada teste trava uma defesa:
+//   (1) mirror: só um message_created INCOMING reabre resolved/snoozed;
+//   (2) live gate: o handler verifica o estado REAL antes de postar e reconcilia o espelho;
 //   (3) watermark de ativação: o sweep só inicia sequência para episódios pós-arm;
-//   (4) nota fora-da-janela explicada + encerra a sequência (sem auto-resolve);
-//   (5) transições OFF→ON do estado efetivo (qualquer modo) armam Agent.followUpArmedAt no
-//       service; promover test→production re-arma.
+//   (4) nota fora da janela explicada, e a sequência encerra (sem auto-resolve);
+//   (5) OFF→ON do estado efetivo arma Agent.followUpArmedAt; promover test→production re-arma.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -72,9 +67,8 @@ let inboxAId = 0n;
 let agentBId = 0n;
 let inboxBId = 0n;
 
-// O `id` de um ClaimedJob fabricado é QUEIMADO da sequência real, nunca escrito como literal. Veja
-// `jobFor` para o que um literal custou, e tests/utils/scheduler.ts para a queima em si, hoje
-// compartilhada com os outros sete arquivos que fabricavam job (#500).
+// O `id` de um ClaimedJob fabricado é QUEIMADO da sequência real, nunca escrito como literal: veja
+// `jobFor` para o porquê, e tests/utils/scheduler.ts para a queima em si.
 let phantomJobId = 0n;
 
 const INBOX_A = 71;
@@ -90,18 +84,13 @@ function threadOf(convId: number) {
   return `${tenantId}:${instanceId}:${convId}`;
 }
 
-// NOTE: `id` sai de `phantomJobId`, e o literal `1n` que estava aqui era uma armadilha de ordem.
-// Um ClaimedJob daqui é FIXTURE, não linha: o handler só o LÊ de volta (`jobRetired` procura a
-// lápide por id), então a fixture depende de que nenhuma linha tenha esse id. Só que `1` é um número
-// que `scheduler_jobs_id_seq` distribui de verdade — e distribui para ESTE arquivo, no primeiro
-// `schedulerJob.create` dele, sempre que ele for o primeiro do processo a inserir um job. Dois testes
-// abaixo aposentam essa linha (`retireJobsByDedupeKey` faz `claim_seq + 1`), e a partir daí todo
-// `jobFor()` lê uma lápide alheia: o handler recua sem postar, e o arquivo derruba a si mesmo.
-//
-// Medido: com `TRUNCATE scheduler_jobs RESTART IDENTITY`, o arquivo sozinho dava 5 falhas — as
-// mesmas cinco que a CI mostrou num shard e que nenhuma rodada local reproduzia, porque o banco de
-// desenvolvimento tem a sequência quente. Queimar um id da sequência torna a fixture inalcançável
-// por qualquer insert, em qualquer ordem.
+// `id` sai de `phantomJobId`, nunca de um literal. Um ClaimedJob daqui é FIXTURE, não linha: o
+// handler só o LÊ de volta (`jobRetired` procura a lápide por id), então nenhuma linha pode ter esse
+// id. Um literal como `1` é um número que `scheduler_jobs_id_seq` distribui de verdade, a este
+// arquivo inclusive quando ele é o primeiro do processo a inserir um job; dois testes abaixo aposentam
+// essa linha, e daí em diante todo `jobFor()` leria uma lápide alheia e o handler recuaria sem postar.
+// Isso só aparece com a sequência reiniciada (a de desenvolvimento está quente). Queimar um id torna a
+// fixture inalcançável por qualquer insert, em qualquer ordem.
 function jobFor(convId: number): ClaimedJob {
   return {
     id: phantomJobId,
@@ -197,22 +186,21 @@ async function seedConversation(
   over: {
     status?: string;
     lastEventAt: Date;
-    // NULO é um estado real, não uma folga do fixture: a linha que o espelho cria a partir de um
-    // evento que não é mensagem nunca recebeu instante de entrada (issue #750).
+    // NOTE: NULO é um estado real, não uma folga do fixture: a linha que o espelho cria a partir de um evento
+    // que não é mensagem nunca recebeu instante de entrada.
     lastInboundAt: Date | null;
     lastFollowUpAt?: Date | null;
     // O que o ESPELHO diz sobre quem detém a conversa. Default: ninguém.
     assigneeType?: string | null;
     assigneeId?: number | null;
-    // Quem já falou aqui (issue #652). O default é o agente já ter respondido uma vez, porque é o
-    // estado normal de uma conversa que chega a merecer follow-up; os dois nulos são o caso que a
-    // #652 descreve e se pedem explicitamente.
+    // NOTE: Quem já falou aqui. O default é o agente já ter respondido uma vez, o estado normal de uma conversa
+    // que chega a merecer follow-up; os dois nulos (ninguém do nosso lado falou) se pedem explicitamente.
     lastRepliedMessageId?: number | null;
     chatwootFirstReplyAt?: Date | null;
-    // QUANDO o nosso lado falou (issue #750). Default nulo: é o estado de toda linha anterior à
-    // coluna, e é nele que a cerca tem de continuar caindo em `lastInboundAt`.
+    // NOTE: QUANDO o nosso lado falou. Default nulo: é o estado de toda linha anterior à coluna, e é nele que a
+    // cerca tem de continuar caindo em `lastInboundAt`.
     lastRepliedAt?: Date | null;
-    // Um envio PROATIVO que chegou ao cliente (issue #816). Default nulo, que é toda linha anterior.
+    // NOTE: Um envio PROATIVO que chegou ao cliente. Default nulo, que é toda linha anterior.
     lastProactiveAt?: Date | null;
   },
 ) {
@@ -399,8 +387,8 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     });
     expect((await mirroredConv(CONV)).status).toBe("resolved");
 
-    // Retry atrasado da despedida (payload congelado no enqueue: status "pending", MESMO segundo do
-    // resolve). Antes do fix isto regredia o espelho para pending — o gatilho do incidente.
+    // NOTE: Retry atrasado da despedida (payload congelado no enqueue: status "pending", MESMO segundo do
+    // resolve). Se regredisse o espelho para pending, abriria a cadeia inteira de nudges.
     await mirror({
       event: "message_created",
       id: 9002,
@@ -716,11 +704,11 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect((await mirroredConv(CONV)).assigneeType).toBe("User");
   });
 
-  // Issue #214: o espelho dizendo que OUTRO Agent Bot detém a conversa NÃO derruba o job antes da
-  // sonda. O assignee é justamente o campo que o `syncConversationState` conserta a partir do live
-  // (uma atribuição perdida ou entregue fora de ordem deixa o espelho apontando para o bot errado),
-  // então decidir posse pelo espelho aqui trocaria um countdown errado na tela por uma mensagem que
-  // o cliente nunca recebe. Quem decide é a sonda, e ela diz que o bot da inbox continua com ela.
+  // NOTE: O espelho dizendo que OUTRO Agent Bot detém a conversa NÃO derruba o job antes da sonda. O
+  // assignee é justamente o campo que o `syncConversationState` conserta a partir do live (uma
+  // atribuição perdida ou fora de ordem deixa o espelho apontando para o bot errado), então decidir
+  // posse pelo espelho trocaria um countdown errado na tela por uma mensagem que o cliente nunca
+  // recebe. Quem decide é a sonda, e ela diz que o bot da inbox continua com a conversa.
   test("(2h) live gate: espelho stale em OUTRO bot + live diz que é nosso → envia", async () => {
     const CONV = 4311;
     await seedConversation(CONV, inboxAId, {
@@ -777,9 +765,9 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect(commits).toBe(0);
   });
 
-  // O outro lado: um passo que carimbou `last_follow_up_at` gastou o passo, e a execução diz isso ao
-  // runtime. Passado o prazo, é o que faz o próximo passo ser gravado em vez de a retentativa do passo
-  // 0 ler o carimbo como episódio já tratado e encerrar a sequência (issue #811).
+  // NOTE: O outro lado: um passo que carimbou `last_follow_up_at` gastou o passo, e a execução diz isso ao
+  // runtime. Passado o prazo, é o que faz o próximo passo ser gravado, em vez de a retentativa do passo
+  // 0 ler o carimbo como episódio já tratado e encerrar a sequência.
   test("(2j) o prazo do job (issue #811): um passo que carimbou marca a execução como comprometida", async () => {
     const CONV = 4313;
     await seedConversation(CONV, inboxAId, {
@@ -842,7 +830,7 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     const s = stubClient(() => {
       throw new Error("chatwoot indisponível");
     });
-    // Um job que já tinha sido adiado pela cadência carrega a versão da configuração (issue #796).
+    // NOTE: Um job que já tinha sido adiado pela cadência carrega a versão da configuração.
     const job = jobFor(CONV);
     job.payload = { ...job.payload, deferredUnder: "1:0" };
     const result = await followUpHandler(job, appDb, handlerDeps(s));
@@ -907,10 +895,10 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     });
     const result = await followUpHandler(jobFor(CONV), appDb, handlerDeps(s));
     expect(gets).toBeGreaterThan(0);
-    // O live diz resolved → nada sai (o fluxo reativo atende a reabertura), mas o espelho mais novo
-    // NÃO é sobrescrito pelo snapshot velho. E como o espelho segue `pending`, a varredura
-    // selecionaria a conversa de novo no minuto seguinte: a linha fica estacionada por uma hora em
-    // vez de terminar (issue #796). A resposta do cliente que reabriu cancela a linha pendente.
+    // NOTE: O live diz resolved: nada sai (o fluxo reativo atende a reabertura), mas o espelho mais novo NÃO é
+    // sobrescrito pelo snapshot velho. E como o espelho segue `pending`, a varredura selecionaria a
+    // conversa de novo no minuto seguinte, então a linha fica estacionada por uma hora em vez de
+    // terminar. A resposta do cliente que reabriu cancela a linha pendente.
     expect(result).toMatchObject({ outcome: "reschedule" });
     const runAt = (result as { runAt?: Date }).runAt?.getTime() ?? 0;
     expect(runAt).toBeGreaterThan(Date.now() + 55 * 60_000);
@@ -957,22 +945,16 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect(threads).not.toContain(threadOf(PRE));
   });
 
-  // (4b) Issue #750. A cerca de (4) pergunta "este episódio começou depois do arme?" e responde
-  // datando o episódio pela última fala do CLIENTE. Para a conversa que o agente acabou de
-  // responder, essa é a pergunta errada: o silêncio que o follow-up cobra é o que NÓS abrimos ao
-  // pedir um dado, e ele começa na nossa resposta.
-  //
-  // Medido em produção em 20/09/2026, numa caixa de e-mail: 19 conversas antigas religadas por
-  // `conversation_reengage`, 13 delas deixadas em `pending` segurando um pedido de documento, e
-  // nenhuma entrou na varredura — o inbound delas é de antes do arme, como o de PRE acima.
-  //
-  // O eixo do EPISÓDIO não muda junto, e isso é de propósito: `isNewFollowUpEpisode` encerra o
-  // episódio quando o cliente fala, e trocá-lo pela nossa fala faria a própria cutucada encerrar a
-  // escada no degrau seguinte.
+  // NOTE: (4b) A cerca de (4) pergunta "este episódio começou depois do arme?". Datar o episódio pela última
+  // fala do CLIENTE é a pergunta errada para a conversa que o agente acabou de responder: o silêncio que
+  // o follow-up cobra é o que NÓS abrimos ao pedir um dado, e começa na nossa resposta (uma conversa
+  // religada por `conversation_reengage` tem o inbound de antes do arme, como PRE acima). O eixo do
+  // EPISÓDIO não muda junto, de propósito: `isNewFollowUpEpisode` encerra o episódio quando o cliente
+  // fala, e trocá-lo pela nossa fala faria a própria cutucada encerrar a escada no degrau seguinte.
   test("(4b) a conversa que o agente respondeu DEPOIS do arm entra, mesmo com o inbound anterior", async () => {
     const RELIGADA = 4390;
     await seedConversation(RELIGADA, inboxAId, {
-      // Igual a PRE: o cliente falou antes do arm, e é só isso que a cerca de hoje enxerga.
+      // NOTE: Igual a PRE: o cliente falou antes do arm, e é só isso que a cerca pela fala do cliente enxerga.
       lastEventAt: new Date(Date.now() - 4 * HOUR),
       lastInboundAt: new Date(Date.now() - 4 * HOUR),
       // O que PRE não tem: nós respondemos depois do arm, que é o que torna esta conversa viva.
@@ -1041,16 +1023,12 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect(row.lastInboundAt).toBeNull();
   });
 
-  // (4d) O SEGUNDO portão, que a varredura não cobre. Enfileirada é meio caminho: o handler do passo
-  // 0 refaz a cerca antes de postar, e se ele continuar datando o silêncio pela fala do cliente a
-  // conversa recuperada é descartada aqui, calada, depois de ter passado no SQL. Os dois leem o
-  // mesmo eixo ou discordam sobre a conversa que motivou a issue.
-  //
-  // O que sai é uma NOTA, e não porque a cerca hesitou: a inbox A é WhatsApp oficial, e sem instante
-  // de entrada a janela de 24h não pode ser provada aberta, então o nudge cai no ramo conservador
-  // (free-form fora da janela o provedor recusa). Na inbox de e-mail que motivou a issue não há
-  // janela de serviço nenhuma e o mesmo caminho manda a mensagem. O que este teste mede é o portão:
-  // recusar teria postado ZERO artefatos.
+  // NOTE: (4d) O SEGUNDO portão, que a varredura não cobre: o handler do passo 0 refaz a cerca antes de
+  // postar, e se datasse o silêncio pela fala do cliente descartaria calado a conversa que passou no
+  // SQL. Os dois leem o mesmo eixo. O que sai é uma NOTA, e não porque a cerca hesitou: a inbox A é
+  // WhatsApp oficial, e sem instante de entrada a janela de 24h não pode ser provada aberta, então o
+  // nudge cai no ramo conservador; numa inbox de e-mail o mesmo caminho manda a mensagem. O que este
+  // teste mede é o portão: recusar teria postado ZERO artefatos.
   test("(4d) o handler do passo 0 atende a conversa cuja única data é a nossa resposta", async () => {
     const CONV = 4392;
     await seedConversation(CONV, inboxAId, {
@@ -1064,9 +1042,9 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect(s.notes.length).toBe(1);
   });
 
-  // (4h) Issue #816: a conversa em que só um envio proativo falou passa pelo portão do HANDLER, e
-  // não só pela varredura. É o handler que decide se o passo sai, lendo o mesmo predicado; se ele não
-  // lesse a coluna, a varredura enfileiraria e o passo cairia aqui sem postar nada.
+  // NOTE: (4h) A conversa em que só um envio proativo falou passa pelo portão do HANDLER, e não só pela
+  // varredura. É o handler que decide se o passo sai, lendo o mesmo predicado; se ele não lesse a
+  // coluna, a varredura enfileiraria e o passo cairia aqui sem postar nada.
   test("(4h) o handler do passo 0 atende a conversa em que só um envio proativo falou", async () => {
     const CONV = 4397;
     await seedConversation(CONV, inboxAId, {
@@ -1156,14 +1134,13 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect((runAt as Date).getTime()).toBeGreaterThan(Date.now() + 55 * 60_000);
   });
 
-  // (4i) Issue #816, review round 1: um envio PROATIVO que acabou de chegar também é movimento. Um
-  // lembrete numa conversa com `lastEventAt` antigo (o webhook da nossa mensagem ainda não voltou)
-  // não pode ser lido como dias de silêncio, nem na varredura nem no handler, ou o passo 0 sai logo
-  // atrás dele.
+  // NOTE: (4i) Um envio PROATIVO que acabou de chegar também é movimento. Um lembrete numa conversa com
+  // `lastEventAt` antigo (o webhook da nossa mensagem ainda não voltou) não pode ser lido como dias de
+  // silêncio, nem na varredura nem no handler, ou o passo 0 sai logo atrás dele.
   test("(4i) a varredura não pega a conversa em que um envio proativo acabou de chegar", async () => {
     const CONV = 4398;
-    // Silêncio de 2h: depois do arm (a cerca da #750 deixa passar) e além do passo de 60 min, de
-    // modo que só o piso de atividade separa "já é hora" de "acabamos de falar".
+    // NOTE: Silêncio de 2h: depois do arm (a cerca do arme deixa passar) e além do passo de 60 min, de modo
+    // que só o piso de atividade separa "já é hora" de "acabamos de falar".
     await seedConversation(CONV, inboxAId, {
       lastEventAt: new Date(Date.now() - 2 * HOUR),
       lastInboundAt: new Date(Date.now() - 2 * HOUR),
@@ -1195,8 +1172,8 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
 
   test("(4j) o handler do passo 0 remarca em vez de cobrar logo atrás de um envio proativo", async () => {
     const CONV = 4399;
-    // Silêncio de 2h: depois do arm (a cerca da #750 deixa passar) e além do passo de 60 min, de
-    // modo que só o piso de atividade separa "já é hora" de "acabamos de falar".
+    // NOTE: Silêncio de 2h: depois do arm (a cerca do arme deixa passar) e além do passo de 60 min, de modo
+    // que só o piso de atividade separa "já é hora" de "acabamos de falar".
     await seedConversation(CONV, inboxAId, {
       lastEventAt: new Date(Date.now() - 2 * HOUR),
       lastInboundAt: new Date(Date.now() - 2 * HOUR),
@@ -1210,11 +1187,10 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     expect(s.notes).toEqual([]);
   });
 
-  // (7) Issue #652: o relato da comunidade. Um agente que decide, corretamente, não responder (um
-  // relatório DMARC, uma notificação de pagamento, uma newsletter) chama `skip_reply`, que encerra o
-  // turno e deixa a conversa exatamente como a varredura a seleciona: pending, do bot, silenciosa.
-  // Dias depois a escada abre a mesma conversa e escreve uma cutucada comercial nela. Medido pelo
-  // relator numa inbox de produção em 45 dias: 19 de 245 conversas, todas sem nada enviado.
+  // NOTE: (7) Um agente que decide, corretamente, não responder (um relatório DMARC, uma notificação de
+  // pagamento, uma newsletter) chama `skip_reply`, que encerra o turno e deixa a conversa exatamente
+  // como a varredura a seleciona: pending, do bot, silenciosa. Sem esta cláusula, dias depois a escada
+  // abriria a mesma conversa com uma cutucada comercial.
   //
   // As três abaixo são elegíveis por TODO o resto (mesma inbox, mesmo agente, pós-arm, mesmo
   // silêncio): a única coisa que as separa é quem já falou.
@@ -1246,8 +1222,8 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
       chatwootFirstReplyAt: new Date(Date.now() - 3 * HOUR),
     });
 
-    // Só um envio proativo falou aqui (issue #816): um lembrete ou um `agent_nudge` que chegou ao
-    // cliente, sem nenhuma resposta nossa e sem humano. Nenhuma das duas marcas acima o vê.
+    // NOTE: Só um envio proativo falou aqui: um lembrete ou um `agent_nudge` que chegou ao cliente, sem
+    // nenhuma resposta nossa e sem humano. Nenhuma das duas marcas acima o vê.
     await seedConversation(NUDGE_SPOKE, inboxAId, {
       ...quiet,
       lastRepliedMessageId: null,
@@ -1297,7 +1273,7 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
 
     // Sequência de 2 steps ENCERRADA no primeiro: done, não reschedule para o step 2.
     expect(result).toEqual({ outcome: "done" });
-    // Nada foi ao cliente; a nota única sai EXPLICADA (o "amarelo" agora se explica sozinho).
+    // NOTE: Nada foi ao cliente; a nota única sai EXPLICADA.
     expect(s.sent).toEqual([]);
     expect(s.notes.length).toBe(1);
     expect(s.notes[0]?.[1].startsWith(OUTSIDE_WINDOW_NOTE_PREFIX)).toBe(true);

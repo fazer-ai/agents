@@ -16,15 +16,11 @@ import { flowLogRows } from "../utils/flowlog";
 import { guardrailModel, UsageReportingModel } from "../utils/scripted-models";
 
 // `docs/logs.md` promises that `execution_logs.detail` carries allowlisted ids, counts and enums and
-// NEVER message text or PII. The column is served by the Logs page and by `GET /v1/logs`, so the
-// promise is what makes those two exportable. Nothing checked it, and the turn path was writing two
-// things it forbids (issue #141).
-//
-// This file is the check, and it is deliberately written as an INVARIANT over the whole turn rather
-// than as an assertion per stage: a new `detail:` added anywhere in the pipeline has to pass it
-// without anyone remembering this file exists. Every marker below is a nonsense word seeded into one
-// specific customer-authored place, so finding it in a row is evidence about that place and never a
-// coincidence of wording.
+// NEVER message text or PII; the Logs page and `GET /v1/logs` serve it, so the promise is what makes
+// them exportable. This file is the check, written as an INVARIANT over the whole turn rather than an
+// assertion per stage, so a new `detail:` anywhere in the pipeline has to pass it without anyone
+// remembering this file. Every marker is a nonsense word seeded into one customer-authored place, so
+// finding it in a row is evidence about that place and never a coincidence of wording.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -60,8 +56,7 @@ const PHONE = "+5511987650001"; // → {{telefone_contato}}
 const ATTR = "processo-xilofonte-7788"; // → the attribute context block appended to the prompt
 const ASKED = "meu processo e o xilofonte-7788"; // → the customer's own message this turn
 // → the agent's OWN reply, which is customer content too: it repeats the name, the number and the
-// case back at them. No marker covered it until issue #763 tried to log it on the `tts` line and
-// this harness stayed green, so the promise was asserted against every channel but the loudest.
+// case back at them, so it is the loudest channel of all.
 const REPLIED = "sapiencia-do-agente-4412";
 
 const BOT = 31;
@@ -97,7 +92,7 @@ function stub(sent: Array<[number, string]> = []) {
     },
     sendPrivateNote: async () => ({}),
     // The audio reply needs a door of its own: without it the voice path throws and falls back to
-    // text, and the `tts` line this file now reads would never be written.
+    // text, and the `tts` line this file reads would never be written.
     sendAudioMessage: async () => ({ id: 96061 }),
   } as unknown as ChatwootClient;
   return async () => client;
@@ -280,7 +275,7 @@ describe.skipIf(!dbUp)(
             contactAuth: {
               enabled: true,
               url: "https://203.0.113.9:9443/check",
-              // POST + includeMessageText: the harshest shape, because the request now CARRIES the
+              // NOTE: POST + includeMessageText: the harshest shape, because the request CARRIES the
               // message the customer typed, and none of it may come back out through the log.
               method: "POST",
               includeMessageText: true,
@@ -351,10 +346,10 @@ describe.skipIf(!dbUp)(
       await appDb.$disconnect();
     });
 
-    // The `generate` line records the system prompt the agent received this turn, so the operator can
-    // inspect it (docs item 15). What it recorded was the RESOLVED prompt: `{{nome_contato}}` already
-    // replaced by the contact's real name, and the attribute-context block (whose own source calls
-    // its values "ultimately customer-authored") appended to the end.
+    // NOTE: The `generate` line records the system prompt the agent received this turn, so the operator can
+    // inspect it (docs item 15). The prompt the agent receives is RESOLVED: `{{nome_contato}}` replaced by
+    // the contact's real name, and the attribute-context block (whose own source calls its values
+    // "ultimately customer-authored") appended to the end. Neither value may reach the row.
     test("the recorded system prompt carries no contact value and no attribute value", async () => {
       await seedConv(9601);
       const sent: Array<[number, string]> = [];
@@ -403,8 +398,8 @@ describe.skipIf(!dbUp)(
       expect(prompt).toContain("numero_processo");
     });
 
-    // The guardrail's `rationale` is one model-written sentence explaining what in the message violated
-    // the policy, so it quotes the message by construction. It was written to `detail` verbatim.
+    // NOTE: The guardrail's `rationale` is one model-written sentence explaining what in the message violated
+    // the policy, so it quotes the message by construction.
     test("a guardrail verdict records its categories and action, never its rationale", async () => {
       await seedConv(9602);
       const sent: Array<[number, string]> = [];
@@ -445,10 +440,10 @@ describe.skipIf(!dbUp)(
       expect(detail?.categories).toEqual(["toxicity"]);
     });
 
-    // `categories` is the other field the model fills in, and it is model-written too: the prompt
-    // asks for policy keys, nothing holds the model to that, and a model answering in prose ("o
-    // cliente citou o processo ...") wrote that straight into a column the docs describe as enums.
-    // Dropping `rationale` alone would have left the same door open one field over.
+    // NOTE: `categories` is the other field the model fills in: the prompt asks for policy keys, nothing holds
+    // the model to that, and a model answering in prose ("o cliente citou o processo ...") would put the
+    // customer's words in a column the docs describe as enums. Dropping `rationale` alone leaves the same
+    // door open one field over.
     test("a category outside the policy vocabulary is dropped, not logged", async () => {
       await seedConv(9603);
       const sent: Array<[number, string]> = [];
@@ -576,16 +571,12 @@ describe.skipIf(!dbUp)(
       ).toBeUndefined();
     });
 
-    // The invariant's blind spot until now: every scenario above is a turn that SUCCEEDS, so
-    // `errorMessage` is null in each row they read, and the half of the promise that column carries
-    // was asserted against nothing. It is the half with the wider door, too. `detail` is assembled
-    // by us key by key, while an error message is written by whoever threw — and the request the
-    // model call answers carries the entire conversation, so a refusal that quotes its input is the
-    // customer's own words arriving in a column `docs/logs.md` says never holds them.
-    //
-    // Both surfaces are asserted because the row is not the worst of the two: `emitFlowEvent` hands
-    // the same event to the alert fan-out, whose ledger is documented "no PII" and whose body is
-    // POSTed to a URL the operator configured, so this is the one that LEAVES the installation.
+    // NOTE: Every scenario above is a turn that SUCCEEDS, so `errorMessage` is null in each row they read. It
+    // is the half with the wider door: `detail` is assembled by us key by key, while an error message is
+    // written by whoever threw, and a refusal quoting the model request is the customer's own words.
+    // Both surfaces are asserted: `emitFlowEvent` hands the same event to the alert fan-out, whose ledger
+    // is documented "no PII" and whose body is POSTed to a URL the operator configured, so it LEAVES the
+    // installation.
     test("a provider refusal that quotes the request reaches neither the row nor the alert", async () => {
       await seedConv(9605);
       const channel = await suDb.alertChannel.create({
@@ -632,8 +623,8 @@ describe.skipIf(!dbUp)(
           },
         }),
       ).rejects.toThrow();
-      // Waited for by the line that carries the failure: the turn also closes on a `generate` line of
-      // its own (issue #855), and the writes are not awaited, so either can land first.
+      // NOTE: Waited for by the line that carries the failure: the turn also closes on a `generate` line of its
+      // own, and the writes are not awaited, so either can land first.
       let rows = await turnRows(9605, ["generate"]);
       for (let i = 0; i < 200 && !rows.some((r) => r.errorMessage); i++) {
         await new Promise((r) => setTimeout(r, 20));
@@ -654,10 +645,9 @@ describe.skipIf(!dbUp)(
       expect(leaked).toEqual([]);
     });
 
-    // AND THE AUDIO PATH, which this harness never walked. Every scenario above ends in a TEXT
-    // reply, so the `tts` line was never written and the promise was never read on it — which is how
-    // issue #763 came within one review of shipping the whole reply into `detail`, with this file
-    // green. The reply is the widest channel of all: it says the customer's name and number back.
+    // NOTE: AND THE AUDIO PATH. Every scenario above ends in a TEXT reply, so the `tts` line is never written
+    // there and the promise is never read on it. The reply is the widest channel of all: it says the
+    // customer's name and number back.
     test("an AUDIO reply writes a tts line that carries no message text either", async () => {
       await seedConv(9606);
       await suDb.contact.update({

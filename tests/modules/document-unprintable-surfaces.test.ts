@@ -11,17 +11,12 @@ import {
   parseDocumentValues,
 } from "@/modules/documents/validate";
 
-// Every surface whose text reaches the PAGE, in one place.
+// Every surface whose text reaches the PAGE, in one place: a row per surface, so adding a surface
+// means adding a row rather than remembering that a rule exists.
 //
-// Three review rounds in a row found this same question answered in some places and not others: the
-// text of a block, then a row nested inside one, then the number prefix, the template name, the
-// currency symbol. Patching the site the round happened to name is what produced the next round, so
-// the family is written down here instead — a row per surface, and adding a surface means adding a
-// row rather than remembering that a rule exists.
-//
-// A surface is either GATED (the write refuses unprintable text, naming it) or SAFE BY
-// CONSTRUCTION (nothing unprintable can reach it — a closed enum, digits, a formatter that falls
-// back). Nothing may be neither, which is what "silently drawn as a different character" was.
+// A surface is either GATED (the write refuses unprintable text, naming it) or SAFE BY CONSTRUCTION
+// (nothing unprintable can reach it: a closed enum, digits, a formatter that falls back). Nothing may
+// be neither, which is text silently drawn as a different character.
 
 const FIELDS = [
   { name: "cliente", label: "Cliente", type: "text" as const },
@@ -100,11 +95,10 @@ describe("every surface that prints refuses what cannot be printed", () => {
   }
 });
 
-// …and the WRITE PATHS that reach those surfaces, which is a different question from whether the
-// validator has the rule. A decision table over `parseAuthoredTemplate` proves the FUNCTION; it does
-// not prove that the paths a caller actually uses ask it. Both holes found in review were exactly
-// that: `blockText` (the console's ordinary save) and a partial `style` patch each leave their
-// authored-half flag FALSE, so the rule they pass through never looked at what the caller typed.
+// ...and the WRITE PATHS that reach those surfaces, which is a different question from whether the
+// validator has the rule. `blockText` (the console's ordinary save) and a partial `style` patch each
+// leave their authored-half flag FALSE, so a path that never asks the rule lets what the caller typed
+// through; a decision table over `parseAuthoredTemplate` cannot show that.
 describe("the write paths ask, not just the validator", () => {
   const bad = "😀";
 

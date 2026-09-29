@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { loggableCategories } from "@/modules/guardrails/log-categories";
 import { GUARDRAIL_CATEGORY_KEYS } from "@/modules/guardrails/prompts";
 
-// Decision table for what a verdict's `categories` may leave in `execution_logs.detail` (issue
-// #141). The field reads like an enum and is model-written, so the rule has to answer two questions
-// at once: keep nothing the model invented, and still say that it invented something, because a
-// violation of the operator's `customPolicy` legitimately has no key to be named by.
+// Decision table for what a verdict's `categories` may leave in `execution_logs.detail`. The field
+// reads like an enum and is model-written, so the rule has to answer two questions at once: keep
+// nothing the model invented, and still say that it invented something, because a violation of the
+// operator's `customPolicy` legitimately has no key to be named by.
 
 describe("loggableCategories", () => {
   test("the vocabulary is the keys the prompt actually asks for", () => {

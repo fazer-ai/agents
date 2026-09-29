@@ -13,13 +13,12 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRow } from "../utils/flowlog";
 import { UsageReportingModel } from "../utils/scripted-models";
 
-// Issue #58 END TO END, at the effect the operator complained about: "I cannot see the whole prompt
-// on the Logs page." The unit tests next door prove the reader and the ceiling; this one runs a real
-// turn and reads the row, because that is the only place the complaint lives.
+// End to end, at the effect: the whole system prompt visible on the Logs page. The unit tests next
+// door prove the reader and the ceiling; this one runs a real turn and reads the row.
 //
 // The agent's own prompt is deliberately longer than the 2,000-character cut, with a marker in its
-// last sentence. Whether that marker is IN THE ROW is the whole assertion, and it is the same
-// question three times: with the mode off, with it armed, and with a window that has closed.
+// last sentence. Whether that marker is IN THE ROW is the whole assertion, asked three times: with
+// the mode off, with it armed, and with a window that has closed.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -229,7 +228,7 @@ describe.skipIf(!dbUp)("the log debug mode, on a real turn", () => {
     contactId = contact.id;
   });
 
-  // The complaint, reproduced: the operator's last rule is not in the row.
+  // NOTE: Mode off: the operator's last rule is not in the row.
   test("with the mode off, the operator's own prompt stops at the cut", async () => {
     await setWindow(null);
     const prompt = await runTurn(9701);
@@ -238,7 +237,7 @@ describe.skipIf(!dbUp)("the log debug mode, on a real turn", () => {
     expect(prompt).not.toContain(TAIL);
   });
 
-  // The fix, at the same place: same agent, same prompt, one setting.
+  // NOTE: Same agent, same prompt, one setting.
   test("with the mode armed, the whole prompt is in the row", async () => {
     await setWindow(new Date(Date.now() + 3_600_000));
     const prompt = await runTurn(9702);
@@ -247,9 +246,8 @@ describe.skipIf(!dbUp)("the log debug mode, on a real turn", () => {
     expect(prompt).not.toContain("[truncated]");
   });
 
-  // A raised SIZE ceiling is not a raised PII ceiling. The audit's mask is what keeps the contact's
-  // name out of the column, and lifting the cut must not reach it — the two axes were kept apart on
-  // purpose, and this is where that separation is measured rather than asserted in a comment.
+  // NOTE: A raised SIZE ceiling is not a raised PII ceiling. The audit's mask keeps the contact's name out
+  // of the column, and lifting the cut must not reach it: the two axes are kept apart on purpose.
   test("the whole prompt still carries no contact value", async () => {
     const prompt = await runTurn(9703);
     expect(prompt).not.toContain(NAME);

@@ -26,8 +26,8 @@ function principal(over: Partial<VerifiedToken>): VerifiedToken {
 }
 
 describe("MCP conversation-control gate (no DB)", () => {
-  // A mesma afirmação de sempre, noutra tool: a #655 removeu conversation_reply, que era a única
-  // cobertura deste portão neste arquivo.
+  // NOTE: A mesma afirmação de sempre, noutra tool: conversation_status é a cobertura deste portão neste
+  // arquivo.
   test("conversation_status without mcp:write → insufficient_scope", async () => {
     const r = await conversationStatus(principal({ scopes: ["mcp:read"] }), {
       conversation_id: "1",
@@ -145,8 +145,8 @@ describe.skipIf(!dbUp)("MCP conversation-control tools (DB)", () => {
     }
   });
 
-  // Idem: a cerca entre tenants numa APLICAÇÃO de verdade (dry_run false) só era exercitada pelo
-  // reply. `status` é a vizinha que também escreve no Chatwoot.
+  // NOTE: Idem: a cerca entre tenants numa APLICAÇÃO de verdade (dry_run false). `status` também escreve no
+  // Chatwoot.
   test("conversation_status cross-tenant → not found", async () => {
     const r = await conversationStatus(
       principal({ tenantId: tenantB }),

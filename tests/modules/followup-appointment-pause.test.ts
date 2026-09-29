@@ -7,10 +7,10 @@ import {
 } from "@/modules/followups/settings";
 
 // The decision table for the pair that decides whether a live appointment holds a follow-up back:
-// the agent-wide flag and the step about to fire (issue #103). Three sites consult this — the
-// sweep's enqueue decision, the handler's gate, and the console's indicator — and they reach it by
-// completely different routes, so what makes them agree is that there is one function rather than
-// three conditions. A table here is what makes the function's answer reviewable without a database.
+// the agent-wide flag and the step about to fire. Three sites consult it (the sweep's enqueue
+// decision, the handler's gate, the console's indicator) by completely different routes, so what
+// makes them agree is one function rather than three conditions. The table makes its answer
+// reviewable without a database.
 
 function cfg(pause: boolean, steps: FollowUpStep[] = []): FollowUpConfig {
   return {
@@ -60,10 +60,9 @@ describe("appointmentPauseApplies", () => {
     });
   }
 
-  // `false` is the ONLY value that turns the agent-wide pause off, and it has to be the boolean.
-  // A stored string "false" reads as ON, because the reader's test is `!== false`. Pinned here
-  // because the sweep used to ask this in SQL, where `->>` renders the string and the boolean
-  // identically and the fence lifted itself on a spelling.
+  // NOTE: `false` is the ONLY value that turns the agent-wide pause off, and it has to be the boolean: a
+  // stored string "false" reads as ON, because the reader's test is `!== false`. Asking it in SQL would
+  // be wrong, because `->>` renders the string and the boolean identically.
   test.each([
     [undefined, true],
     [true, true],

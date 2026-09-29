@@ -8,26 +8,13 @@ import {
 import { emitFlowEvent } from "@/modules/flowlog/service";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
-// ── EMPTYING THE TABLE IS NOT THE SAME AS IT STAYING EMPTY (issue #375) ──
-//
-// `emitFlowEvent` is fire-and-forget by design (src/modules/flowlog/service.ts): the hot WhatsApp
-// path must not pay write latency for six log lines. The reader-scope ledger
-// (tests/modules/flowlog-reader-scope.test.ts) names two obligations that fall out of it, SCOPE and
-// WAIT, and fences the first. This file is about the third one, which that ledger did not name:
-//
-//   CLEAR  a test that empties `execution_logs` between cases empties it of the rows that EXIST.
-//          A write the previous case only scheduled lands afterwards, into a table the current case
-//          believes it owns, and `orderBy: { id: "asc" }` hands it back FIRST.
-//
-// Measured on this branch, 8 full-suite runs on the base: one failure, and it was
-// `a requeue that arrives as the worker is dying reads the count it died at`
-// (tests/modules/webhooks-outbound-deliveries.test.ts) reading `{ attempts: 9, … }` — the death line
-// of the case directly above it, verbatim. In isolation that file passes 3 of 3, because the write
-// only loses the race when the machine is loaded.
-//
-// The cases below use a base whose transaction is deliberately slow, so the race is not a race: a
-// 300ms write against an immediate DELETE has one possible order. Nothing here polls for a timeout
-// to expire, which is what makes them evidence rather than another flake.
+// EMPTYING THE TABLE IS NOT THE SAME AS IT STAYING EMPTY. `emitFlowEvent` is fire-and-forget
+// (src/modules/flowlog/service.ts), so a test that empties `execution_logs` between cases empties it
+// of the rows that EXIST: a write the previous case only scheduled lands afterwards, into a table the
+// current case believes it owns, and `orderBy: { id: "asc" }` hands it back FIRST. It loses the race
+// only under load, so a file can pass alone and fail in the full suite. The cases use a base whose
+// transaction is deliberately slow, so a 300ms write against an immediate DELETE has one possible
+// order, and nothing waits on a timeout: they are evidence, not another flake.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -139,7 +126,7 @@ describe.skipIf(!dbUp)(
       await suDb.$executeRaw`DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`;
       const { ctx, ev } = event(crypto.randomUUID());
       emitFlowEvent({ ...ctx, base: slowBase(suDb, 300) }, ev);
-      // The clear as every one of these files writes it today.
+      // NOTE: A raw clear, the shape `clearFlowLog` replaces.
       await suDb.$executeRaw`DELETE FROM execution_logs WHERE tenant_id = ${tenantId}`;
       await settleFlowEvents();
       // The table was emptied twice and still holds a row: this is the defect, stated as a fact so

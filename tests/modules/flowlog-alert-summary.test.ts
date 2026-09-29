@@ -8,9 +8,9 @@ import type { FlowEvent } from "@/modules/flowlog/service";
 import type { FlowLevel } from "@/modules/flowlog/stages";
 import { spendCeilingFlowEvent } from "@/modules/spend-ceiling/service";
 
-// The alert body, issue #610. The first three events are the ones a production Discord channel
-// received as `[observe via openai] skipped`, `[delivery] ok` and `[delivery] error (×23)`, with the
-// detail each row carried, so the expected bodies are what those alerts should have said.
+// The alert body. The first three events are shaped like production lines that alerted as
+// `[observe via openai] skipped`, `[delivery] ok` and `[delivery] error (×23)`, with the detail each
+// row carried, so the expected bodies are what those alerts should say.
 
 type AlertEvent = FlowEvent & { level: FlowLevel };
 
@@ -205,9 +205,8 @@ describe("alertSummary", () => {
     expect(body.toLowerCase()).not.toContain("zebrafina");
   });
 
-  // Issue #842: the lines a production Discord channel received as `[generate] ok` and nothing else,
-  // with the detail each row carried. Both values of `resolveDiscarded` arrived, and they are the two
-  // different outcomes the operator has to tell apart.
+  // NOTE: Lines that alert as `[generate] ok` and nothing else unless the body prints their key. Both values
+  // of `resolveDiscarded` are real, and they are two outcomes the operator has to tell apart.
   test("a turn that ended in silence says so, and whether the conversation was closed", () => {
     for (const resolveDiscarded of [true, false]) {
       expect(
@@ -269,22 +268,20 @@ describe("alertSummary", () => {
   });
 });
 
-// THE FENCE issue #842 asked for. A warn or error line with no `errorMessage` is explained by its
-// `detail` alone, and the alert prints only the keys it knows, so a line naming none of them alerts as
-// its bare status: `[generate] ok`, which is what the unexplained-silence line did for as long as
-// nobody listed its key. Read off the source, so the next such line fails here instead of in an
-// operator's channel. A line that is legitimately explained some other way is listed below, with why.
+// THE FENCE. A warn or error line with no `errorMessage` is explained by its `detail` alone, and the
+// alert prints only the keys it knows, so a line naming none of them alerts as its bare status
+// (`[generate] ok`). Read off the source, so the next such line fails here instead of in an
+// operator's channel. A line legitimately explained some other way is listed below, with why.
 const EXPLAINED_ELSEWHERE: Record<string, string> = {
   // Its detail is spread from the drop, which always carries a `reason` (`CommandDrop`).
   "src/modules/flowlog/command.ts": "reason arrives through ...args.drop",
 };
 
 // The keys such a line carries that the alert does NOT print, each with why it may stay out of the
-// body. The line's cause is printed from another key; these are context for the Logs page (ids,
-// counts, measurements, the verdict an `outcome` already summarises). A key that is on no list fails
-// the fence below even when the line also carries a printed key, which is the shape the verifier
-// used to break the first version of this fence: a new cause added BESIDE `silenceUnexplained`
-// would have shipped silent, because "names at least one printed key" was already true.
+// body: the cause is printed from another key, and these are context for the Logs page (ids, counts,
+// measurements, the verdict an `outcome` already summarises). A key on no list fails the fence even
+// when the line also carries a printed key: otherwise a new cause added BESIDE `silenceUnexplained`
+// would ship silent, because "names at least one printed key" is already true.
 const NOT_A_CAUSE: Record<string, string> = {
   attempt: "tts_check: which try this was; `outcome` says what was done",
   codeRead:

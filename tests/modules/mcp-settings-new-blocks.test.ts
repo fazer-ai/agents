@@ -4,10 +4,9 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsGet, agentSettingsSet } from "@/modules/mcp/write";
 
-// Issue #402, end to end: the five blocks that MCP could not reach are WRITTEN through it and read
-// back. Asserted against the stored bag and against agent_settings_get, not against the return value
-// of the write — a set that answers ok and stores nothing is exactly the failure this is about, and
-// it looks identical from the caller's side.
+// The blocks MCP writes, end to end: WRITTEN through it and read back. Asserted against the stored
+// bag and against agent_settings_get, not against the write's return value: a set that answers ok
+// and stores nothing looks identical from the caller's side.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -106,14 +105,11 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     });
   });
 
-  // THE THIRD SCOPE ITEM OF #402, which asks to VERIFY rather than to build: `guardrails.credentialRef`
-  // is already in SETTINGS_CREDENTIAL_PATHS, so the MCP's name ↔ `vault:<id>` translation should need
-  // no change for the block this PR publishes. Reading the constant proves the path is listed; it does
-  // not prove the translation runs for this block, which is what the issue asked. Both directions,
-  // through the same functions the transport calls.
-  //
-  // The failure it rules out is specific and silent: the write stores the NAME verbatim, and the
-  // guardrails model then resolves a credential that does not exist — at turn time, on the reply path.
+  // NOTE: `guardrails.credentialRef` is in SETTINGS_CREDENTIAL_PATHS, so the MCP's name ↔ `vault:<id>`
+  // translation should need no change for this block. Reading the constant proves the path is listed,
+  // not that the translation runs for this block, so both directions go through the functions the
+  // transport calls. The failure it rules out is silent: the write stores the NAME verbatim, and the
+  // guardrails model then resolves a credential that does not exist, at turn time, on the reply path.
   test("guardrails.credentialRef travels as a NAME and is stored as a ref", async () => {
     const keyId = (
       await suDb.vaultEntry.create({
@@ -145,8 +141,8 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     ).settings as Record<string, Record<string, unknown>>;
     expect(stored.guardrails?.credentialRef).toBe(`vault:${keyId}`);
 
-    // And back out as the NAME, which is the half the issue's own history is about: the read handing
-    // back an id where it promises a name is what the credential-paths guard was written for.
+    // NOTE: And back out as the NAME: a read handing back an id where it promises a name is what the
+    // credential-paths guard exists for.
     const got = await agentSettingsGet(
       principal(),
       { agent_id: String(agentId) } as never,
@@ -177,8 +173,8 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
   });
 
   test("a precondition on a tool name the runtime cannot guard is REFUSED, not stored", async () => {
-    // The write boundary of #378 restricts these keys to the native catalog, and MCP must not be the
-    // way around it: a rule on an MCP-namespaced name reads as protection and guards nothing.
+    // NOTE: The write boundary restricts these keys to the native catalog, and MCP must not be the way around
+    // it: a rule on an MCP-namespaced name reads as protection and guards nothing.
     const r = await agentSettingsSet(
       principal(),
       {
@@ -232,10 +228,9 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     expect(after).toEqual(before);
   });
 
-  // ROUND 1 OF PR #404. A blank key passes the schema (`z.string()` accepts " ") and
-  // parseToolPrecondition then returns null, so before the fix the merge stored the reader's
-  // filtered output over a working rule: the API answered ok and the guard was gone. Refused now on
-  // the PATCH, before the merge, like the three sibling assertions beside it.
+  // NOTE: A blank key passes the schema (`z.string()` accepts " ") and parseToolPrecondition returns null,
+  // so a merge would store the reader's filtered output over a working rule: ok answered, guard gone.
+  // Refused on the PATCH, before the merge, like the three sibling assertions beside it.
   test("a precondition that cannot parse is refused, and the working rule survives", async () => {
     const before = (
       await suDb.agent.findUniqueOrThrow({
@@ -273,9 +268,9 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     );
   });
 
-  // ROUND 2: the tombstone e2e below only ever covered toolGuidance, whose value was already
-  // nullable — so it passed while toolPreconditions refused the same shape at the schema boundary.
-  // This is the half that was missing, end to end and against the stored bag.
+  // NOTE: The tombstone e2e below covers toolGuidance, whose value is nullable anyway, so it cannot show
+  // toolPreconditions accepting the same shape at the schema boundary. This is that half, end to end
+  // and against the stored bag.
   test("a precondition is REMOVED by its tombstone, and its siblings stay", async () => {
     await agentSettingsSet(
       principal(),
@@ -318,11 +313,9 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     expect(stored.toolPreconditions?.private_note).toBeDefined();
   });
 
-  // The mutation battery found the boundary check on the MCP path surviving its removal: with the
-  // merge no longer destructive, a bad entry now reaches updateAgent, which refuses it. What that
-  // does NOT cover is the DRY RUN — it never calls updateAgent, so without the check the preview
-  // would happily describe a write the apply refuses. A preview that promises what the apply denies
-  // is worse than no preview.
+  // NOTE: The boundary check on the MCP path is not redundant with updateAgent's refusal: the DRY RUN never
+  // calls updateAgent, so without the check the preview would describe a write the apply refuses. A
+  // preview that promises what the apply denies is worse than no preview.
   test("a dry run REFUSES an unparseable precondition instead of previewing it", async () => {
     const r = await agentSettingsSet(
       principal(),
@@ -341,10 +334,9 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     expect(r.ok).toBe(false);
   });
 
-  // ROUND 5, and the reason the read and the write had to move together: a caller reads the config,
-  // changes one thing, writes it back. If the read returns a field the write refuses, that caller
-  // gets a 400 having changed nothing — a broken round trip is worse than the silent no-op it
-  // replaced. This is the whole loop, against a real database.
+  // NOTE: The read and the write move together: a caller reads the config, changes one thing, writes it
+  // back. If the read returns a field the write refuses, that caller gets a 400 having changed nothing.
+  // This is the whole loop, against a real database.
   test("what agent_settings_get returns can be written straight back", async () => {
     const got = await agentSettingsGet(
       principal(),
@@ -400,9 +392,9 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     expect(Object.keys(g.output)).toContain("generationPrompt");
   });
 
-  // ROUND 7. Round 6 forbade TEXT on handoff_to_human/kanban_move_card, reading prepare.ts as if the
-  // grouped note always won. It wins only when it is NON-EMPTY — so the flat value is live while the
-  // grouped one is blank, and forbidding it broke the get→set round trip for any agent that had one.
+  // NOTE: A flat guidance on handoff_to_human/kanban_move_card is live: prepare.ts lets the grouped note win
+  // only when it is NON-EMPTY, so the flat value applies while the grouped one is blank, and forbidding
+  // it would break the get→set round trip for any agent that has one.
   test("a legacy guidance on a shadowed name survives a read-modify-write", async () => {
     await suDb.agent.update({
       where: { id: agentId },
@@ -445,9 +437,8 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     expect(back.ok).toBe(true);
   });
 
-  // ROUND 8. The read was projected in round 5 and the DIFF was not — the same question in a third
-  // place. A dry run exists to be reused, so a preview whose `after` carries fields the write refuses
-  // hands the caller a document the apply rejects.
+  // NOTE: The DIFF is projected like the read: a dry run exists to be reused, so a preview whose `after`
+  // carries fields the write refuses hands the caller a document the apply rejects.
   test("the dry run's own preview can be written straight back", async () => {
     const preview = await agentSettingsSet(
       principal(),
@@ -468,10 +459,9 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     ).diff;
     const after = diff?.guardrails?.after;
     expect(after).toBeDefined();
-    // The preview must carry the WRITABLE shape. Asserted with the probe PROVEN to have arrived
-    // first: `input?.checks ?? {}` is satisfied by `input` being undefined, and the first version of
-    // this check passed against a mutation that removed the projection entirely, for exactly that
-    // reason.
+    // NOTE: The preview must carry the WRITABLE shape. Asserted with the probe PROVEN to have arrived first:
+    // `input?.checks ?? {}` is satisfied by `input` being undefined, so a check without the probe passes
+    // against a mutation that removes the projection entirely.
     const input = (after as { input?: { checks?: Record<string, unknown> } })
       ?.input;
     expect(input).toBeDefined();
@@ -489,10 +479,9 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     expect(applied.ok).toBe(true);
   });
 
-  // The apply has its own two projections — the diff's `before` and the applied `after` — and the
-  // battery found both uncovered after the preview one was fixed. All three emit the settings shape
-  // to a caller, so all three have to emit the WRITABLE one; a client reverting from `before` or
-  // re-sending `after` hits the same refusal the read was fixed for.
+  // NOTE: The apply has its own two projections, the diff's `before` and the applied `after`. All three
+  // emit the settings shape to a caller, so all three emit the WRITABLE one; a client reverting from
+  // `before` or re-sending `after` would otherwise hit the refusal the read avoids.
   test("the apply's before and after are writable too", async () => {
     const applied = await agentSettingsSet(
       principal(),
@@ -525,10 +514,9 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     }
   });
 
-  // ROUND 10, and it is a regression round 9 introduced: refusing an empty tool map to catch a
-  // transport-lost key also refused the DOCUMENTED round trip, because a default agent returns both
-  // maps empty from agent_settings_get. Echoing the config back for an unrelated edit is the most
-  // ordinary thing a client does.
+  // NOTE: A default agent returns both tool maps empty from agent_settings_get, so refusing an empty map (to
+  // catch a transport-lost key) would refuse the DOCUMENTED round trip. Echoing the config back for an
+  // unrelated edit is the most ordinary thing a client does.
   test("a default agent's own config can be echoed back, empty maps and all", async () => {
     const fresh = await suDb.agent.create({
       data: { tenantId, name: "Fresh", systemPrompt: "p" },
@@ -595,11 +583,10 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     expect(stored.toolGuidance?.private_note).toBe("keep me");
   });
 
-  // MCP IS A SECOND DOOR TO THE SAME BAG, and the retired taxonomy keys were refused only at the
-  // first one. `mergeBehaviorSettings` normalizes each touched block through its reader, and the
-  // reader no longer knows these keys — so by the time `updateAgent` sees the bag the groups are
-  // gone and both the dry run and the apply answer ok for configuration that does nothing. That is
-  // the precise silence issue #568 set out to end, reached through the other entrance (round 12).
+  // NOTE: MCP IS A SECOND DOOR TO THE SAME BAG, so the retired taxonomy keys are refused at both.
+  // `mergeBehaviorSettings` normalizes each touched block through its reader, which no longer knows
+  // these keys, so by the time `updateAgent` sees the bag the groups are gone; without the refusal both
+  // the dry run and the apply would answer ok for configuration that does nothing.
   test("the retired taxonomy keys are refused over MCP too, dry run included", async () => {
     for (const dry of [true, false]) {
       const r = await agentSettingsSet(

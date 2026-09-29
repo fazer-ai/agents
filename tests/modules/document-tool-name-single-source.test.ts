@@ -3,15 +3,12 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { documentToolName } from "@/modules/documents/slug";
 
-// ONE PLACE SPELLS THE TOOL NAME.
+// ONE PLACE SPELLS THE TOOL NAME. `send_<slug>` is what the model is offered, what the grants editor
+// shows the operator, and what the template modal previews while they type a name; a call site that
+// writes it by hand drifts from the name the runtime builds.
 //
-// `send_<slug>` is what the model is offered, what the grants editor shows the operator, and what
-// the template modal previews while they type a name. It had been written out by hand in three of
-// those, and the fourth reader is always the one that ends up disagreeing — the console showed a
-// tool name derived one way while the runtime built another.
-//
-// So this reads the source rather than the behaviour: a decision table proves the FUNCTION, and the
-// thing that keeps going wrong is a call site not using it.
+// This reads the source rather than the behaviour: a decision table proves the FUNCTION, and the
+// failure it guards is a call site not using it.
 
 const ROOT = join(import.meta.dir, "..", "..", "src");
 const ALLOWED = join("modules", "documents", "slug.ts");

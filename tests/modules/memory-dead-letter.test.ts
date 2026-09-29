@@ -24,13 +24,11 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
 // A compaction that will never happen has to SAY SO, in the trail the operator already reads by
-// conversation (issue #196).
+// conversation.
 //
-// The gap this file closes is specific to the summariser having its own provider, model, credential
-// and endpoint: before that, compaction could only fail because the AGENT's model was broken, and a
-// broken agent model fails every reply too, loudly. A configuration that fails only compaction is
-// silent by construction — replies keep going out, and what stops is the memory, which is read on
-// every later turn with that contact and is never rewritten.
+// The summariser has its own provider, model, credential and endpoint, so a configuration can fail
+// only compaction, and that is silent by construction: replies keep going out, and what stops is the
+// memory, which is read on every later turn with that contact and is never rewritten.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -422,11 +420,10 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
     expect(lines[0]?.conversationId).toBe(convDbId);
   });
 
-  // The re-arm race, which the sibling announcement (issue #71) hit first: this row's dedupeKey is the
-  // THREAD, reused by every attendance the contact ever has, so `armCompaction` upserts the very row
-  // that just died back to PENDING — and the turns this job failed to cut are still raw on the
-  // thread, so the new arm can still summarise them. Announcing over it would page an operator about
-  // work that is queued.
+  // NOTE: The re-arm race, the same one the failure note has: this row's dedupeKey is the THREAD, reused by
+  // every attendance the contact ever has, so `armCompaction` upserts the very row that just died back
+  // to PENDING, and the turns this job failed to cut are still raw on the thread, so the new arm can
+  // still summarise them. Announcing over it would page an operator about work that is queued.
   test("a job re-armed before the line is written is a live compaction, not a lost one", async () => {
     const ci = 6005;
     await seedConversation(868);
@@ -612,22 +609,20 @@ describe.skipIf(!dbUp)("a compaction that will never happen", () => {
 
 // ── The family, swept ──────────────────────────────────────────────────────────────────────────
 // Every reaper is a road to DEAD, and a lane that reaps its own kind and does not announce retires
-// that kind's work in silence — which is exactly how this shipped: the scheduler tick announced, the
-// compaction lane did not, and with both running which one announced was decided by whichever won
-// the atomic UPDATE. A fourth lane will be written by copying a third, so the rule is asserted over
-// the SOURCE rather than left for the next reviewer to notice.
+// that kind's work in silence; with two lanes racing for the atomic UPDATE, whether a death is
+// announced would depend on which one won. A new lane will be written by copying an old one, so the
+// rule is asserted over the SOURCE rather than left for the next reviewer to notice.
 test("every reaper announces the rows it dead-letters", async () => {
   const { Glob } = await import("bun");
   const offenders: string[] = [];
   for await (const file of new Glob("src/**/*.ts").scan(".")) {
-    // Through the scan, so prose naming the shape is not counted as one (#424).
+    // NOTE: Through the scan, so prose naming the shape is not counted as one.
     const src = codeOnly(await Bun.file(file).text());
     // The definition itself, not a call site.
     if (file.endsWith("scheduler/service.ts")) continue;
     if (!/\breapStaleJobs\b/.test(src)) continue;
-    // The CALL, not the identifier: an import alone satisfies `\bannounceReaped\b`, so a file that
-    // kept the import and dropped the call read as compliant. Measured — that is the exact mutation
-    // this sweep failed to kill on its first draft.
+    // NOTE: The CALL, not the identifier: an import alone satisfies `\bannounceReaped\b`, so a file that kept
+    // the import and dropped the call would read as compliant.
     if (!/\bannounceReaped\(/.test(src)) offenders.push(file);
   }
   expect(offenders).toEqual([]);

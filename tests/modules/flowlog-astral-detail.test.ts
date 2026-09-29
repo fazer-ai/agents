@@ -4,21 +4,13 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { emitFlowEvent, type FlowContext } from "@/modules/flowlog/service";
 import { clearFlowLog, flowLogRow } from "@/tests/utils/flowlog";
 
-// THE EFFECT THE ISSUE NAMES: the stage line is not there.
-//
-// `execution_logs.detail` is a `jsonb` column, and Postgres refuses an unpaired surrogate inside one
-// outright ("Unicode low surrogate must follow a high surrogate", SQLSTATE 22P02). `emitFlowEvent` is
-// fire-and-forget with a catch, so the refusal never reaches the turn: the write is dropped, a warn
-// goes to the process log, and the line the operator later goes looking for simply does not exist.
-//
-// Two ways in, and the second is why fixing the cut alone would not have been enough:
-//   1. a `detail` string long enough to be truncated, cut between the halves of an emoji;
-//   2. a `detail` string that ALREADY holds an orphan half, no truncation involved — any JSON source
-//      that spells one out (`"\ud800"`) hands `JSON.parse` one directly, which is an ordinary thing
-//      for an HTTP tool's response body to do.
-//
-// Asserted at the row, not at the redactor, because "the redactor returns a clean string" is a proxy
-// for the thing that was actually broken.
+// `execution_logs.detail` is `jsonb`, and Postgres refuses an unpaired surrogate inside one (SQLSTATE
+// 22P02). `emitFlowEvent` is fire-and-forget with a catch, so the write is dropped, a warn goes to
+// the process log, and the stage line the operator looks for does not exist. Two ways in, which is
+// why repairing the cut alone is not enough: a long `detail` string truncated between the halves of an
+// emoji, and a string that ALREADY holds an orphan half (any JSON source spelling `"\ud800"`, an
+// ordinary thing for an HTTP tool's response body). Asserted at the row, not at the redactor, because
+// "the redactor returns a clean string" is a proxy for the effect.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -128,8 +120,8 @@ describe.skipIf(!dbUp)("execution_logs.detail survives bad characters", () => {
     expect(loneSurrogates(Object.keys(detail ?? {})[0] ?? "")).toBe(0);
   });
 
-  // ── the other two things the column refuses, and the one that CORRUPTS (#241) ──
-  // Same destination, same walker, and neither is covered by the surrogate repair above.
+  // NOTE: The other two things the column refuses, and the one that CORRUPTS. Same destination, same walker,
+  // and neither is covered by the surrogate repair above.
 
   test("a NUL in a detail value still produces a row", async () => {
     // A JSON body spells out a NUL as readily as an orphan half, and `jsonb` refuses it just as
@@ -153,17 +145,11 @@ describe.skipIf(!dbUp)("execution_logs.detail survives bad characters", () => {
   });
 
   test("a `__proto__` key does not put a field nobody wrote into the record", async () => {
-    // The one case that is not a loss. `JSON.parse` yields `__proto__` as an ordinary own
-    // property, and assignment on that key invokes the legacy prototype setter instead of
-    // creating a field. Prisma's serialization then enumerates INHERITED properties, so the
-    // contents were written as top-level fields: measured before the fix, this row stored
-    // {"keep":"x","leaked":1}, a field nobody wrote in a record that reads as authoritative.
-    //
-    // What is asserted is the ABSENCE of `leaked`, not the presence of `__proto__`. Keeping it an
-    // own property is what this fixes, and Prisma drops that key on the way to the column either
-    // way (measured: the column holds `{"keep": "x"}`). Trading a corrupted record for a record
-    // missing one field is the whole of the win, and asserting the key would pin behaviour that
-    // belongs to the driver rather than to us.
+    // NOTE: The one case that is not a loss. `JSON.parse` yields `__proto__` as an own property, and assignment
+    // on that key invokes the legacy prototype setter instead of creating a field; Prisma serialises
+    // INHERITED properties, so the contents would land as top-level fields ({"keep":"x","leaked":1}).
+    // Asserted is the ABSENCE of `leaked`, not the presence of `__proto__`: Prisma drops that key on the
+    // way to the column either way, and asserting it would pin the driver's behaviour, not ours.
     const parsed = JSON.parse('{"__proto__":{"leaked":1},"keep":"x"}');
     emitFlowEvent(flow("proto-key"), { stage: "tool", detail: parsed });
     const detail = (await rowFor("proto-key")) as Record<

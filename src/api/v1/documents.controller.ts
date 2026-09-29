@@ -22,7 +22,6 @@ import {
 // here for the i18n extractor (keepRemoved: false). They belong to the documents module, but the api
 // extractor only scans `src/api/**`, and a missing key silently falls back to English. Keep the
 // defaults in sync with src/api/locales/*.json.
-// comment-waiver: i18n extractor anchors, one line per key.
 // translate('errors.documentTemplateNotFound', 'Document template not found')
 // translate('errors.documentNotFound', 'Document not found')
 // translate('errors.documentTemplateDisabled', 'This document template is disabled')

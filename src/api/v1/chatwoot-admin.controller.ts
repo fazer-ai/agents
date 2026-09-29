@@ -41,7 +41,6 @@ import {
 // src/api/locales/*.json from these lines and prunes anything nothing references, and
 // `ErrorTranslationKey` (src/lib/errors.ts) makes a key that is missing here a type error at the
 // throw site rather than an English sentence on a pt-BR caller's screen.
-// comment-waiver: i18n extractor anchors, one line per key.
 // translate('errors.chatwootAccountDisconnected', 'This account is disconnected. Reconnect it before assigning an agent.')
 // translate('errors.chatwootAccountTaken', 'This Chatwoot account is already connected to another tenant; one account belongs to a single tenant.')
 // NOTE: the bind and the rebind refuse differently, and so do the two confirmations: one key per

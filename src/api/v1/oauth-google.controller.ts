@@ -42,7 +42,6 @@ import { replaceVaultSecret, vaultRefWhere } from "@/modules/vault/service";
 
 // These translationKeys are localized centrally in `onError`; declared here for the i18n extractor
 // (keepRemoved: false). Keep in sync with src/api/locales/*.json.
-// comment-waiver: i18n extractor anchors, one line per key.
 // translate('errors.googleOAuthInvalidScope', 'Invalid Google OAuth scope: {{scope}}')
 // translate('errors.googleOAuthTooManyScopes', 'Too many Google OAuth scopes (at most {{max}})')
 // translate('errors.googleOAuthTokenExchangeFailed', 'Failed to exchange the Google authorization code')

@@ -51,7 +51,6 @@ import {
 
 // NOTE: these AppError translationKeys are localized centrally in `onError`; declared here for the
 // i18n extractor (keepRemoved: false). Keep in sync with src/api/locales/*.json.
-// comment-waiver: i18n extractor anchors, one line per key.
 // translate('errors.mcpOAuthDiscoveryFailed', 'Could not read the MCP server OAuth configuration: {{url}} answered {{status}}')
 // translate('errors.mcpOAuthNoAuthorizationServer', 'The MCP server metadata names no authorization server, so there is nothing to connect to')
 // translate('errors.mcpOAuthMetadataIncomplete', 'The MCP authorization server metadata is missing the authorization or token endpoint')

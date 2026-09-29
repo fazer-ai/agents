@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatResult } from "@langchain/core/outputs";
@@ -7,6 +7,7 @@ import { MemorySaver } from "@langchain/langgraph";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
+import logger from "@/api/lib/logger";
 import { DATA_FENCE, nudgeOccasionKey, renderNudge } from "@/graph/nudge";
 import { NUDGE_RETRY_LIMIT } from "@/graph/nudge-retry";
 import { recordAppointment } from "@/modules/appointments/record";
@@ -911,6 +912,100 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
 
     expect(s.sent.length).toBe(1);
     expect(commits).toBe(1);
+  });
+
+  // The agent resolving right after the booking is the ordinary close, so a reminder has to reach a
+  // conversation our side resolved and stay a note in one a person resolved.
+  async function withResolvedBy<T>(
+    resolvedBy: string | null,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const where = {
+      tenantId_chatwootInstanceId_chatwootConversationId: {
+        tenantId,
+        chatwootInstanceId: instanceId,
+        chatwootConversationId: CONV_ID,
+      },
+    };
+    await suDb.conversation.update({
+      where,
+      data: { status: "resolved", resolvedBy },
+    });
+    try {
+      return await fn();
+    } finally {
+      await suDb.conversation.update({
+        where,
+        data: { status: "pending", resolvedBy: null },
+      });
+    }
+  }
+
+  const runReminder = async (dedupeKey: string) => {
+    const job = await armed(dedupeKey, {
+      isLast: true,
+      startISO: new Date(Date.now() + 3_600_000).toISOString(),
+    });
+    const s = stubClient();
+    const notes: string[] = [];
+    const makeClient = async () => {
+      const c = await s.makeClient();
+      (c as { sendPrivateNote: unknown }).sendPrivateNote = async (
+        _c: number,
+        t: string,
+      ) => {
+        notes.push(t);
+        return {};
+      };
+      return c;
+    };
+    await appointmentReminderHandler(job, appDb, {
+      makeModel: () => new FakeListChatModel({ responses: ["Lembrete!"] }),
+      makeClient,
+      checkpointer: new MemorySaver(),
+      persistUsage: async () => {},
+    });
+    return { sent: s.sent, notes };
+  };
+
+  test("a conversation the agent resolved still gets the reminder", async () => {
+    const out = await withResolvedBy("agent", () =>
+      runReminder("reminder:evt-resolved-agent:60"),
+    );
+    expect(out.sent.map(([c]) => c)).toEqual([CONV_ID]);
+    expect(out.notes).toEqual([]);
+  });
+
+  test("a reminder that reaches nobody says so in the log", async () => {
+    const info = spyOn(logger, "info");
+    try {
+      const job = await armed("reminder:evt-silent:60", {
+        isLast: true,
+        startISO: new Date(Date.now() + 3_600_000).toISOString(),
+      });
+      const s = stubClient();
+      await appointmentReminderHandler(job, appDb, {
+        makeModel: () => new FakeListChatModel({ responses: [""] }),
+        makeClient: s.makeClient,
+        checkpointer: new MemorySaver(),
+        persistUsage: async () => {},
+      });
+      expect(s.sent).toEqual([]);
+      const lines = info.mock.calls.map((c) => String(c[0]));
+      expect(
+        lines.some((l) => l.includes("nothing reached the conversation")),
+      ).toBe(true);
+    } finally {
+      info.mockRestore();
+    }
+  });
+
+  test("a conversation a person resolved gets a note, never a message", async () => {
+    const out = await withResolvedBy("console", () =>
+      runReminder("reminder:evt-resolved-console:60"),
+    );
+    expect(out.sent).toEqual([]);
+    expect(out.notes.length).toBe(1);
   });
 
   // (#352, round 8) Two operator systems may both answer with `42` — that is why the record and the

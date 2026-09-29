@@ -79,7 +79,8 @@ describe("the audit action vocabulary", () => {
     ).toEqual([]);
   });
 
-  // EXTRA: a producer is deleted or renamed and its name stays on the list. NO TYPE CAN CHECK
+  // EXTRA: a producer is deleted or renamed and its name stays on the list, so an operator picks a
+  // value that can never match and reads the empty page as "nothing happened". NO TYPE CAN CHECK
   // THIS: a union member nobody constructs is not an error anywhere. Asked as PRESENCE, not by
   // parsing producers: parsing `action:` sites misses a name written through a ternary or passed to
   // a helper (`auditConsentDecision`), and presence does not depend on the shape.

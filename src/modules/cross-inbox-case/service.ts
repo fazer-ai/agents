@@ -130,23 +130,62 @@ export function normalizeEmail(raw: string): string | null {
   return EMAIL_RE.test(v) ? v : null;
 }
 
-// The customer's own messages on the latest page of the conversation. An address the tool writes on
-// the contact has to be one the CUSTOMER typed here: the model paraphrasing, guessing or completing
-// one is exactly how a case ends up in a stranger's mailbox.
+// The customer's own messages on one page of the conversation. An address the tool writes on the
+// contact has to be one the CUSTOMER typed here: the model paraphrasing, guessing or completing one
+// is exactly how a case ends up in a stranger's mailbox.
 function incomingTexts(page: unknown): string[] {
+  const out: string[] = [];
+  for (const msg of pageRows(page)) {
+    if (msg.message_type !== 0 && msg.message_type !== "incoming") continue;
+    if (typeof msg.content === "string") out.push(msg.content);
+  }
+  return out;
+}
+
+function pageRows(page: unknown): Record<string, unknown>[] {
   const payload =
     page && typeof page === "object"
       ? (page as { payload?: unknown }).payload
       : undefined;
   if (!Array.isArray(payload)) return [];
-  const out: string[] = [];
-  for (const m of payload) {
-    if (!m || typeof m !== "object") continue;
-    const msg = m as Record<string, unknown>;
-    if (msg.message_type !== 0 && msg.message_type !== "incoming") continue;
-    if (typeof msg.content === "string") out.push(msg.content);
+  return payload.filter(
+    (m): m is Record<string, unknown> => !!m && typeof m === "object",
+  );
+}
+
+// Chatwoot answers the messages of a conversation 20 at a time, newest first, and `before` asks for
+// the page older than a message id.
+const MESSAGES_PAGE = 20;
+// How far back the walk goes: a thousand messages, far past any conversation that ends in a case.
+const TYPED_EMAIL_MAX_PAGES = 50;
+
+// Whether the customer typed the address anywhere in the conversation, walking back from the newest
+// page. The newest page alone is not enough: the address very often comes in the first message (a
+// website form), and a conversation that reaches a case is usually longer than one page. Stops at
+// the page that has it, at the first message, or at a page that does not move the cursor back.
+async function customerTypedInConversation(
+  client: CaseClient,
+  conversationId: number,
+  email: string,
+): Promise<boolean> {
+  let before: number | undefined;
+  for (let pages = 0; pages < TYPED_EMAIL_MAX_PAGES; pages += 1) {
+    const page = await client.getMessages(
+      conversationId,
+      before == null ? undefined : { before },
+    );
+    if (customerTyped(incomingTexts(page), email)) return true;
+    const rows = pageRows(page);
+    if (rows.length < MESSAGES_PAGE) return false;
+    const ids = rows
+      .map((m) => Number(m.id))
+      .filter((id) => Number.isFinite(id));
+    if (ids.length === 0) return false;
+    const oldest = Math.min(...ids);
+    if (before != null && oldest >= before) return false;
+    before = oldest;
   }
-  return out;
+  return false;
 }
 
 // Every complete address in a text: a run with no separator around one "@", minus the sentence
@@ -411,8 +450,7 @@ async function run(
         const email = normalizeEmail(input.email);
         if (!email) return { kind: "rejected_email", why: "invalid" };
         step = "read_messages";
-        const texts = incomingTexts(await client.getMessages(origin));
-        if (!customerTyped(texts, email)) {
+        if (!(await customerTypedInConversation(client, origin, email))) {
           return { kind: "rejected_email", why: "not_in_conversation" };
         }
         pendingEmail = email;

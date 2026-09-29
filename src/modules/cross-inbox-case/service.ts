@@ -18,6 +18,7 @@ import {
   type CrossInboxCaseConfig,
   destinationIdentity,
   openingAsksMessage,
+  renderCaseAddition,
   renderCaseNote,
   renderCaseOpening,
 } from "./settings";
@@ -91,13 +92,15 @@ export interface OpenCaseInput {
 
 export type OpenCaseResult =
   | {
-      kind: "opened" | "continued" | "already_open";
+      // `appended`: the contact already had a case open in the destination, opened from another
+      // conversation, so the note went there and this conversation was linked to it.
+      kind: "opened" | "continued" | "already_open" | "appended";
       caseId: number;
       caseUrl: string;
       // How the address that reached the destination was settled, when one had to be.
       identity: "held" | "written" | "merged" | "other_contact" | null;
       // Writes after the case existed that did not land. The case is open either way. On an
-      // already-open case, only the owner writes (`case_assignee`, `case_team`) can appear.
+      // already-open case, only the owner writes (`case_assignee`, `case_team`) and the note can appear.
       partial: string[];
       // The opening message the output guardrail refused, so it was not sent.
       openingBlocked?: boolean;
@@ -417,6 +420,21 @@ async function run(
           input.caseTeamId ?? null,
           partial,
         );
+        // NOTE: what the model passed now is what the customer added since the case opened, and the case
+        // is where the team reads it.
+        if (!input.stillWanted || (await input.stillWanted())) {
+          try {
+            await client.sendMessageAsAdmin(
+              known,
+              renderCaseAddition(input.reason, client.conversationUrl(origin)),
+              { private: true },
+            );
+          } catch {
+            partial.push("destination_note");
+          }
+        } else {
+          partial.push("called_off");
+        }
         return {
           kind: "already_open",
           caseId: known,
@@ -539,23 +557,43 @@ async function run(
         listed.filter((c) => c.inboxId === target).map((c) => c.id),
       );
       const newestBefore = listed.reduce((m, c) => Math.max(m, c.id), 0);
+      // A case this contact already has open in the destination, opened by this tool from another
+      // conversation (the channel opens a new one when the customer writes after the origin was
+      // resolved). The addition goes to that case rather than to a second one.
+      const openCase = listed
+        .filter(
+          (c) =>
+            c.inboxId === target &&
+            c.status !== "resolved" &&
+            c.customAttributes?.[CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE] != null,
+        )
+        .reduce<(typeof listed)[number] | null>(
+          (best, c) => (best === null || c.id > best.id ? c : best),
+          null,
+        );
       // ASKED AGAIN, after the last wait and right before the write nothing undoes: the ask above sat
       // before the screening and this read, and a `/reset` or a withdrawal inside either of them must
       // not still open a case and send its opening.
       if (input.stillWanted && !(await input.stillWanted())) {
         return { kind: "called_off" };
       }
-      step = "create_conversation";
-      const created = await client.createConversation({
-        inboxId: target,
-        contactId: caseContactId,
-        // Open, not pending: the case lands in the team's queue, and an agent bound to the destination
-        // inbox does not pick it up and triage it again (shouldBotHandle needs `pending`).
-        status: "open",
-        customAttributes: { [CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE]: origin },
-        ...(subject ? { additionalAttributes: { mail_subject: subject } } : {}),
-      });
+      step = openCase ? "append_to_case" : "create_conversation";
+      const created =
+        openCase ??
+        (await client.createConversation({
+          inboxId: target,
+          contactId: caseContactId,
+          // Open, not pending: the case lands in the team's queue, and an agent bound to the destination
+          // inbox does not pick it up and triage it again (shouldBotHandle needs `pending`).
+          status: "open",
+          customAttributes: { [CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE]: origin },
+          ...(subject
+            ? { additionalAttributes: { mail_subject: subject } }
+            : {}),
+        }));
       const caseId = created.id;
+      const appended = openCase !== null;
+      // The case found in the listing is in `before`, so an addition reads as continued too.
       const continued = before.has(caseId) || caseId <= newestBefore;
       const caseUrl = client.conversationUrl(caseId);
       const originUrl = client.conversationUrl(origin);
@@ -666,11 +704,13 @@ async function run(
       await attempt("destination_note", () =>
         client.sendMessageAsAdmin(
           caseId,
-          renderCaseNote(
-            config.noteTemplate ?? null,
-            { subject, reason: input.reason, originUrl },
-            interpolate,
-          ),
+          appended
+            ? renderCaseAddition(input.reason, originUrl)
+            : renderCaseNote(
+                config.noteTemplate ?? null,
+                { subject, reason: input.reason, originUrl },
+                interpolate,
+              ),
           { private: true },
         ),
       );
@@ -731,7 +771,7 @@ async function run(
         );
       }
       return {
-        kind: continued ? "continued" : "opened",
+        kind: appended ? "appended" : continued ? "continued" : "opened",
         caseId,
         caseUrl,
         identity,

@@ -185,7 +185,12 @@ function fakeChatwoot(
         .filter((c) => c.contactId === contactId)
         .sort((a, b) => b.id - a.id)
         .slice(0, opts.listNewest ?? Number.MAX_SAFE_INTEGER)
-        .map((c) => ({ id: c.id, inboxId: c.inboxId, status: c.status }));
+        .map((c) => ({
+          id: c.id,
+          inboxId: c.inboxId,
+          status: c.status,
+          customAttributes: { ...c.attrs },
+        }));
       if (opts.listDelayMs) {
         await new Promise((res) => setTimeout(res, opts.listDelayMs));
       }
@@ -611,9 +616,73 @@ describe("openCaseInInbox", () => {
     });
     const r = await openCaseInInbox(f.client, input());
     expect(r).toMatchObject({ kind: "already_open", caseId: 55 });
-    // Nothing is opened or sent. The one write is the case's owner: with no person on it,
-    // whatever bot may hold it is cleared, and that is idempotent.
-    expect(writesOf(f.calls)).toEqual(["unassignConversation"]);
+    // Nothing is opened or sent to the customer. The case's owner is settled (with no person on it,
+    // whatever bot may hold it is cleared, and that is idempotent), and the reason goes to the case
+    // as a note, since it is what the customer added since the case opened.
+    expect(writesOf(f.calls)).toEqual([
+      "unassignConversation",
+      "sendMessageAsAdmin",
+    ]);
+    const note = f.calls.find((c) => c.fn === "sendMessageAsAdmin");
+    expect(note?.args[0]).toBe(55);
+    expect(note?.args[1]).toContain("cliente pediu atendente humano");
+    expect(note?.args[1]).toContain("**Informação adicional do cliente**");
+    expect(note?.args[2]).toEqual({ private: true });
+  });
+
+  test("the note on a remembered case carries the addition literally", async () => {
+    const f = fakeChatwoot({
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: { case_conversation_id: 55 },
+          labels: [],
+        },
+        {
+          id: 55,
+          inboxId: 40,
+          contactId: 5,
+          status: "open",
+          attrs: {},
+          labels: [],
+        },
+      ],
+    });
+    await openCaseInInbox(f.client, input({ reason: "valor {{ total }}" }));
+    const note = f.calls.find((c) => c.fn === "sendMessageAsAdmin");
+    expect(note?.args[1]).toContain("valor {{ '{{' }} total }}");
+  });
+
+  test("withdrawn before the note on a remembered case: the note is not written", async () => {
+    const f = fakeChatwoot({
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: { case_conversation_id: 55 },
+          labels: [],
+        },
+        {
+          id: 55,
+          inboxId: 40,
+          contactId: 5,
+          status: "open",
+          attrs: {},
+          labels: [],
+        },
+      ],
+    });
+    const r = await openCaseInInbox(
+      f.client,
+      input({ stillWanted: async () => false }),
+    );
+    expect(r).toMatchObject({ kind: "already_open", partial: ["called_off"] });
+    expect(f.calls.some((c) => c.fn === "sendMessageAsAdmin")).toBe(false);
   });
 
   test("a remembered case that went pending or snoozed is reopened before it is reported open", async () => {
@@ -849,7 +918,8 @@ describe("openCaseInInbox", () => {
       openCaseInInbox(f.client, input({ originConversationId: 7 })),
       openCaseInInbox(f.client, input({ originConversationId: 8 })),
     ]);
-    expect([a.kind, b.kind].sort()).toEqual(["continued", "opened"]);
+    // The second lists after the first created, and finds the case it opened.
+    expect([a.kind, b.kind].sort()).toEqual(["appended", "opened"]);
     const openings = f.calls.filter(
       (c) =>
         c.fn === "sendMessageAsAdmin" &&
@@ -978,6 +1048,154 @@ describe("openCaseInInbox", () => {
       ],
     });
     expect((await openCaseInInbox(f.client, input())).kind).toBe("opened");
+  });
+
+  describe("the contact's case opened from another conversation", () => {
+    // The origin was resolved with the case open, and the customer wrote again: the channel opened
+    // conversation 8, which knows nothing about case 60.
+    const withCase = (status: string, over: Partial<Conv> = {}) =>
+      fakeChatwoot({
+        convs: [
+          {
+            id: 7,
+            inboxId: 10,
+            contactId: 5,
+            status: "resolved",
+            attrs: { case_conversation_id: 60 },
+            labels: [],
+          },
+          {
+            id: 8,
+            inboxId: 10,
+            contactId: 5,
+            status: "pending",
+            attrs: {},
+            labels: [],
+          },
+          {
+            id: 60,
+            inboxId: 40,
+            contactId: 5,
+            status,
+            attrs: { origin_conversation_id: 7 },
+            labels: [],
+            ...over,
+          },
+        ],
+      });
+
+    test("the addition goes to that case as a note, and the new conversation is linked to it", async () => {
+      const f = withCase("open");
+      const r = await openCaseInInbox(
+        f.client,
+        input({
+          originConversationId: 8,
+          reason: "cliente mandou o print do erro",
+          customerMessage: "Olá! Abrimos seu atendimento.",
+        }),
+      );
+      expect(r).toMatchObject({ kind: "appended", caseId: 60 });
+      expect(f.calls.some((c) => c.fn === "createConversation")).toBe(false);
+      expect(f.convs).toHaveLength(3);
+      const toCase = f.calls.filter(
+        (c) => c.fn === "sendMessageAsAdmin" && c.args[0] === 60,
+      );
+      // One private note, and nothing to the customer there: the case already has its opening.
+      expect(toCase).toHaveLength(1);
+      expect(toCase[0]?.args[2]).toEqual({ private: true });
+      expect(toCase[0]?.args[1]).toContain("cliente mandou o print do erro");
+      expect(toCase[0]?.args[1]).toContain("/conversations/8");
+      // An addition, not a case being opened: its own header, and not the operator's note layout.
+      expect(toCase[0]?.args[1]).toContain(
+        "**Informação adicional do cliente**",
+      );
+      expect(toCase[0]?.args[1]).not.toContain("Caso aberto");
+      expect(f.convs.find((c) => c.id === 8)?.attrs).toEqual({
+        case_conversation_id: 60,
+      });
+      expect(
+        f.calls.find((c) => c.fn === "sendPrivateNote")?.args,
+      ).toMatchObject([8, expect.stringContaining("/conversations/60")]);
+    });
+
+    test("the operator's note layout is for opening a case, and the addition goes in literally", async () => {
+      const f = withCase("open");
+      await openCaseInInbox(
+        f.client,
+        input({
+          originConversationId: 8,
+          reason: "valor {{ total }}",
+          config: {
+            ...CROSS_INBOX_CASE_DEFAULTS,
+            targetInboxId: 40,
+            noteTemplate: "NOVO CASO: {{motivo}}",
+          },
+        }),
+      );
+      const note = String(
+        f.calls.find((c) => c.fn === "sendMessageAsAdmin" && c.args[0] === 60)
+          ?.args[1],
+      );
+      expect(note).not.toContain("NOVO CASO");
+      expect(note).toContain("valor {{ '{{' }} total }}");
+    });
+
+    test("a case that went pending is reopened before the addition is reported", async () => {
+      const f = withCase("pending");
+      const r = await openCaseInInbox(
+        f.client,
+        input({ originConversationId: 8 }),
+      );
+      expect(r).toMatchObject({ kind: "appended", caseId: 60 });
+      expect(f.convs.find((c) => c.id === 60)?.status).toBe("open");
+    });
+
+    test("a resolved case, a case in another inbox, or a conversation this tool did not open gets a new case", async () => {
+      for (const [status, over] of [
+        ["resolved", {}],
+        ["open", { inboxId: 41 }],
+        ["open", { attrs: {} }],
+      ] as const) {
+        const f = withCase(status, over);
+        const r = await openCaseInInbox(
+          f.client,
+          input({ originConversationId: 8 }),
+        );
+        expect(r.kind).toBe("opened");
+        expect(f.calls.some((c) => c.fn === "createConversation")).toBe(true);
+      }
+    });
+
+    test("the newest of two open cases is the one appended to", async () => {
+      const f = withCase("open");
+      f.convs.push({
+        id: 61,
+        inboxId: 40,
+        contactId: 5,
+        status: "open",
+        attrs: { origin_conversation_id: 3 },
+        labels: [],
+      });
+      const r = await openCaseInInbox(
+        f.client,
+        input({ originConversationId: 8 }),
+      );
+      expect(r).toMatchObject({ kind: "appended", caseId: 61 });
+    });
+
+    test("withdrawn before the addition is written: nothing is", async () => {
+      const f = withCase("open");
+      let asks = 0;
+      const r = await openCaseInInbox(
+        f.client,
+        input({
+          originConversationId: 8,
+          stillWanted: async () => ++asks < 2,
+        }),
+      );
+      expect(r.kind).toBe("called_off");
+      expect(writesOf(f.calls)).toEqual([]);
+    });
   });
 
   test("the inbox continues the contact's open case: no second conversation, no second opening email, labels kept", async () => {
@@ -1979,6 +2197,74 @@ describe("the tool", () => {
     ]);
   });
 
+  test("appended: the model is told the addition reached the open case, and the description says when to call again", async () => {
+    const f = fakeChatwoot({
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels: [],
+        },
+        {
+          id: 60,
+          inboxId: 40,
+          contactId: 5,
+          status: "open",
+          attrs: { origin_conversation_id: 3 },
+          labels: [],
+        },
+      ],
+    });
+    const { t } = toolFor(f);
+    const out = String(await t.invoke({ reason: "o print do erro" }));
+    expect(out).toContain("already has an open case with the team");
+    expect(out).toContain("#60");
+    expect(out).toContain("added to that case as an internal note");
+    expect(out).not.toContain("Case opened");
+    expect(t.description).toContain(
+      "When the customer adds something after their case was opened",
+    );
+  });
+
+  test("appended: a note that did not land reaches the flow log", async () => {
+    const f = fakeChatwoot({
+      failOn: new Set(["sendMessageAsAdmin"]),
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels: [],
+        },
+        {
+          id: 60,
+          inboxId: 40,
+          contactId: 5,
+          status: "open",
+          attrs: { origin_conversation_id: 3 },
+          labels: [],
+        },
+      ],
+    });
+    const seen: Array<{ phase: string; detail: unknown }> = [];
+    const { t } = toolFor(f, {
+      onSideEffectError: (e: { phase: string; detail: unknown }) => {
+        seen.push({ phase: e.phase, detail: e.detail });
+      },
+    });
+    const out = String(await t.invoke({ reason: "x" }));
+    expect(out).toContain("Some writes did not land (destination_note)");
+    expect(seen).toContainEqual({
+      phase: "follow_up_writes",
+      detail: { caseId: 60, failed: ["destination_note"] },
+    });
+  });
+
   test("opened: the model is told to tell the customer, and that the origin is not closed", async () => {
     const { t, toggles } = toolFor(fakeChatwoot());
     const out = String(await t.invoke({ reason: "x" }));
@@ -2037,6 +2323,34 @@ describe("the tool", () => {
       expect(t.description).toContain("closed after your reply");
       // The origin's status is left to the runtime, which closes after delivery.
       expect(f.convs.find((c) => c.id === 7)?.status).toBe("pending");
+    });
+
+    test("on, and the addition went to the contact's open case: the close is still scheduled", async () => {
+      const f = fakeChatwoot({
+        convs: [
+          {
+            id: 7,
+            inboxId: 10,
+            contactId: 5,
+            status: "pending",
+            attrs: {},
+            labels: [],
+          },
+          {
+            id: 60,
+            inboxId: 40,
+            contactId: 5,
+            status: "open",
+            attrs: { origin_conversation_id: 3 },
+            labels: [],
+          },
+        ],
+      });
+      const turnState = turn();
+      const t = withClose(f, true, { turnState });
+      const out = String(await t.invoke({ reason: "x" }));
+      expect(turnState.resolveRequested).toBe(true);
+      expect(out).toContain("marked resolved after your reply");
     });
 
     test("on, and the case was already open: the close is still scheduled", async () => {
@@ -2847,7 +3161,8 @@ describe("who holds the case (issue #908)", () => {
       partial: [],
       caseOwnerUnread: "before_clear",
     });
-    expect(writesOf(f.calls)).toEqual([]);
+    // NOTE: no owner write; the one write is the reason's note, which does not depend on the owner.
+    expect(writesOf(f.calls)).toEqual(["sendMessageAsAdmin"]);
   });
 
   describe("the tool", () => {
@@ -2981,7 +3296,7 @@ describe("who holds the case (issue #908)", () => {
       ]);
       expect(messages[0]).toContain("could not be read");
       expect(messages[0]).toContain("nothing was written");
-      expect(writesOf(f.calls)).toEqual([]);
+      expect(writesOf(f.calls)).toEqual(["sendMessageAsAdmin"]);
     });
   });
 });

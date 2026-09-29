@@ -178,10 +178,13 @@ export interface CoalesceTurnContext {
   // Whether this caller is the operator's own re-engage, the only one entitled to answer over a
   // silence something chose deliberately.
   initiatedBy: "automatic" | "operator";
-  // Extract the attachments nobody has read yet before the turn's text is built (arrival-time
-  // extraction never ran for messages from before the agent watched the inbox). Opt-in: on the flush,
-  // which runs after the eager pass, a meta-less attachment already failed once.
-  fillMissingMedia?: boolean;
+  // Extract the attachments nobody has read yet before the turn's text is built. "all" opens every
+  // one without a reading (the re-engage: messages from before the agent watched the inbox, or a
+  // file that failed once and is worth one more attempt a person asked for). "untried" skips what the
+  // arrival pass already tried, which it leaves as a count of unread files in the stash: the flush
+  // runs seconds after that pass, and the attachments it still finds unread are the ones attached
+  // AFTER the message was created (issue #952), which the arrival pass never saw.
+  fillMissingMedia?: "all" | "untried";
   // The Chatwoot id of this tenant's agent bot, so the post gate can tell OUR outgoing message from
   // everybody else's. Null when the caller has no bot to name, and then every outgoing message on the
   // page counts as somebody else's.
@@ -307,6 +310,7 @@ export async function selectAnswerableBurst(
     // de estágio `vision` sai órfã, e a rota do operador para o rastro de um turno
     // (/logs?conversationId=) não mostra o anexo que falhou.
     fillMedia?: {
+      mode: "all" | "untried";
       turnId: string;
       convDbId: bigint;
       agentId: bigint;
@@ -444,6 +448,7 @@ async function fillMissingVisuals(args: {
   messages: ChatwootMessageRow[];
   pending: ChatwootMessageRow[];
   fill: {
+    mode: "all" | "untried";
     turnId: string;
     convDbId: bigint;
     agentId: bigint;
@@ -468,7 +473,9 @@ async function fillMissingVisuals(args: {
       hasUnextractedVisual(m.visuals) &&
       ((m.bodyImages ?? 0) > 0
         ? !m.bodyRead
-        : !m.imageDescription && !m.extractedText),
+        : !m.imageDescription && !m.extractedText) &&
+      // The arrival pass's count of unread files is the mark that it tried: see `fillMissingMedia`.
+      (args.fill.mode === "all" || !m.attachmentsUnread),
   );
   if (alvos.length === 0) return false;
   // NOTE: Media the contact authorization refused stays unread even when the gate now says yes
@@ -603,6 +610,7 @@ export async function coalesceAndRunTurn(
       ...(ctx.fillMissingMedia
         ? {
             fillMedia: {
+              mode: ctx.fillMissingMedia,
               turnId,
               convDbId,
               agentId: loaded.agentId,
@@ -2210,6 +2218,9 @@ export async function flushDebounceJob(
         // else settled them while the model was running.
         claimHandledCeiling: (target) => target - 1,
         initiatedBy: "automatic",
+        // Some transports attach the file after creating the message (issue #952): the arrival pass
+        // saw nothing to read, and this is the last read before the turn renders the file as unread.
+        fillMissingMedia: "untried",
         managedBotId: ctx.loaded.agentBotId,
         whatsappProvider: ctx.loaded.whatsappProvider,
         onClaimLost: (reason) => {

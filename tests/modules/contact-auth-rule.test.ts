@@ -27,13 +27,12 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsGet, agentSettingsSet } from "@/modules/mcp/write";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// ── A VERDICT FROM DATA WE ALREADY HOLD (issue #646) ──
+// ── A VERDICT FROM DATA WE ALREADY HOLD ──
 //
-// The gate had one way to decide: POST the identity to an operator-hosted endpoint. For a pilot list
-// of five numbers, or "serve the contacts whose plan is active", that endpoint is an availability
-// dependency with nothing to add. A local rule decides from the mirror instead, under the same
-// fail-closed contract, and with it the endpoint is never asked. The endpoint double below counts
-// its own calls, so "never asked" is a number.
+// A local rule (a list of numbers, a contact attribute) decides from the mirror instead of POSTing
+// the identity to an operator-hosted endpoint, under the same fail-closed contract, and with it the
+// endpoint is never asked: for a pilot list, an endpoint is an availability dependency with nothing
+// to add. The endpoint double below counts its own calls, so "never asked" is a number.
 
 describe("parsing a rule", () => {
   test("an allowlist keeps phones as digits and identifiers as typed, deduplicated", () => {

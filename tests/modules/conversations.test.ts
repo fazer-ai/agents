@@ -166,8 +166,8 @@ describe.skipIf(!dbUp)("listConversations", () => {
     expect(first.nextCursor).toBe(first.items[0]?.id ?? null);
     const second = await listConversations(
       ctx(tenantA),
-      // `nextCursor` crosses the wire as a string; the caller parses it back, which is what the
-      // REST route now does with `parseQueryId` instead of handing the raw value to the service.
+      // NOTE: `nextCursor` crosses the wire as a string; the caller parses it back, as the REST
+      // route does with `parseQueryId` instead of handing the raw value to the service.
       {
         limit: 1,
         cursor: first.nextCursor ? BigInt(first.nextCursor) : undefined,
@@ -190,9 +190,8 @@ describe.skipIf(!dbUp)("listConversations", () => {
   });
 
   test("an unknown status is REFUSED, not ignored", async () => {
-    // Changed in issue #372. The old contract dropped it and returned every conversation, which
-    // answers a request narrowed to one status with the tenant's whole list — and the caller has
-    // no way to tell that from a status that genuinely matches everything.
+    // NOTE: dropping an unknown status would answer a request narrowed to one status with the
+    // tenant's whole list, and the caller could not tell that from a status matching everything.
     let err: unknown = null;
     try {
       await listConversations(ctx(tenantA), { status: "bogus" }, appDb);

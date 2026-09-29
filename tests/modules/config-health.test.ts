@@ -53,13 +53,11 @@ describe("computeConfigIssues", () => {
     expect(issues).toEqual([]);
   });
 
-  // CAN THIS MODEL BE BUILT — the whole question, as a table, because three review rounds arrived at
-  // it one leg at a time (no provider, then no endpoint, then a bag no schema had validated). Each
-  // row is a class of stored value rather than an example: what a write boundary lets through, what
-  // an import carries in, and what the runtime then does with it.
-  //
-  // `expected` is what the primary-model checks say, and nothing else — the credential check is
-  // held constant with a live ref so a row can only fail for the reason it is about.
+  // NOTE: CAN THIS MODEL BE BUILT, the whole question as a table, because it has three legs (no
+  // provider, no endpoint, a bag no schema validated). Each row is a class of stored value rather than
+  // an example: what a write boundary lets through, what an import carries in, and what the runtime
+  // then does with it. `expected` is what the primary-model checks say, and nothing else: the
+  // credential check is held constant with a live ref so a row can only fail for the reason it is about.
   const RUNNABILITY: {
     label: string;
     bag: Record<string, unknown>;
@@ -113,8 +111,8 @@ describe("computeConfigIssues", () => {
       expected: ["modelNoEndpoint"],
     },
     {
-      // The schema does NOT catch this: `z.string().url()` accepts `llama:8080`, a valid URI with a
-      // `llama:` scheme (measured). So the bag stores, and every request goes nowhere.
+      // NOTE: The schema does NOT catch this: `z.string().url()` accepts `llama:8080`, a valid URI with a
+      // `llama:` scheme. So the bag stores, and every request goes nowhere.
       label: "openai-compatible pointed at something no client can dial",
       bag: { provider: "openai-compatible", model: "", baseURL: "llama:8080" },
       provider: "openai-compatible",
@@ -141,9 +139,9 @@ describe("computeConfigIssues", () => {
       expected: [],
     },
     {
-      // The other four providers never read `baseURL` (`createChatModel`, measured), so a bad value
-      // there breaks nothing — and a warning about a field with no reader is a warning that teaches
-      // the operator to ignore the panel.
+      // NOTE: The other four providers never read `baseURL` (`createChatModel`), so a bad value there
+      // breaks nothing, and a warning about a field with no reader teaches the operator to ignore the
+      // panel.
       label: "a provider that ignores the endpoint, with a bad one",
       bag: { provider: "anthropic", model: "claude-sonnet-5" },
       provider: "anthropic",
@@ -183,11 +181,10 @@ describe("computeConfigIssues", () => {
     });
   }
 
-  // The wait covers the INVALID verdict too, which is the half I had backwards for a round: the
-  // credential's base URL wins over the typed field, so a credential still unread is precisely what
-  // would replace an undialable string with a working host. The editor passes
-  // `credentialBaseUrl ?? model.baseURL`, so while the vault is unread the typed value is what
-  // arrives here — and a failed vault load leaves it that way indefinitely.
+  // NOTE: The wait covers the INVALID verdict too: the credential's base URL wins over the typed
+  // field, so a credential still unread is precisely what would replace an undialable string with a
+  // working host. The editor passes `credentialBaseUrl ?? model.baseURL`, so while the vault is unread
+  // the typed value is what arrives here, and a failed vault load leaves it that way indefinitely.
   test("waits for the vault on an undialable endpoint too, not just a missing one", () => {
     const unread = {
       ...base,
@@ -454,10 +451,9 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       ).toEqual([]);
     });
 
-    // The endpoint the runtime will actually use comes off the CREDENTIAL when it carries one
-    // (`loadAgentConfig` reads it from the vault), and it outranks whatever the bag holds. A check
-    // that resolves without it calls a summariser that runs perfectly well broken, the moment the
-    // vault answers. Found by review, on the fix for the previous round.
+    // NOTE: The endpoint the runtime uses comes off the CREDENTIAL when it carries one (`loadAgentConfig`
+    // reads it from the vault), and it outranks whatever the bag holds. A check that resolves without it
+    // calls a summariser that runs perfectly well broken, the moment the vault answers.
     test("an endpoint carried by the credential is not reported as missing", () => {
       expect(
         computeConfigIssues({
@@ -536,10 +532,9 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
     });
   });
 
-  // The fallback provider is the one override whose whole purpose is to work on the day the primary
-  // does not, so a fallback that cannot be built is worth less than none: it looks configured and it
-  // is asked for exactly when nobody is watching a console. Review found it absent from here after
-  // the runtime half was already written and tested (#143, round 4).
+  // NOTE: The fallback provider is the one override whose whole purpose is to work on the day the
+  // primary does not, so a fallback that cannot be built is worth less than none: it looks configured
+  // and it is asked for exactly when nobody is watching a console.
   describe("fallback provider", () => {
     const fb = (over: Record<string, unknown>) => ({
       ...base,
@@ -653,11 +648,11 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
       ).toEqual([]);
     });
 
-    // ...but the wait is about a credential that could CARRY that endpoint, and the agent's cannot
-    // once the override names a different vendor. Written as "either credential is unread", this
-    // reported nothing at all for a fallback that is definitely unrunnable, for as long as the vault
-    // was unavailable. The same three lines guarded the speech rewrite and the summariser, so the
-    // rule is one function now and the two rows below are the two halves of it.
+    // NOTE: ...but the wait is about a credential that could CARRY that endpoint, and the agent's cannot
+    // once the override names a different vendor. Written as "either credential is unread", it would
+    // report nothing for a definitely unrunnable fallback for as long as the vault is unavailable. The
+    // speech rewrite and the summariser share the same rule, one function, and the two rows below are its
+    // two halves.
     test("a SWITCHED provider with no address is reported even while the vault is silent", () => {
       expect(
         computeConfigIssues({
@@ -971,7 +966,7 @@ describe("computeConfigIssues — redirect enabled but incomplete", () => {
 // informational), and `PATCH /v1/agents/:id` stores whatever ref it is handed, name or id. The
 // runtime is where it lands: the agent's own model logs "cannot reply until it is fixed", and
 // STT/vision/TTS/the speech rewrite skip with a warn line nobody is watching for. Which makes this
-// panel the one place it can be caught before the next customer message, and it stayed green.
+// panel the one place it can be caught before the next customer message.
 describe("computeConfigIssues — a credential whose vault entry is gone", () => {
   const linked = {
     key: "model",
@@ -1147,7 +1142,7 @@ describe("computeConfigIssues — noncanonical ref spellings", () => {
 // it before it looks at the provider, and returns null for the whole agent when it cannot, so the
 // agent goes silent on every message.
 describe("computeConfigIssues — an openai-compatible model with a ref of its own", () => {
-  // WITH an endpoint, because this block is about the CREDENTIAL and the endpoint is now its own
+  // NOTE: WITH an endpoint, because this block is about the CREDENTIAL and the endpoint is its own
   // check: `createChatModel` throws on an openai-compatible bag with nowhere to dial, so a fixture
   // without one would raise `modelNoEndpoint` on every case here and stop isolating what it means to.
   const compat = {
@@ -1245,10 +1240,10 @@ describe("computeConfigIssues — the guardrails credential", () => {
 });
 
 // The half of "unscreened" that configuration cannot see. A retired model id, a parameter the vendor
-// rejects on every call (#130 was a live instance) and a chronic timeout are all valid configuration
-// right up to the moment the call is made, and the analysis is fail-open, so every one of them
-// delivers messages as if they had been reviewed. What the screen actually DID is read back from the
-// execution log and handed to the panel as a count.
+// rejects on every call and a chronic timeout are all valid configuration right up to the moment the
+// call is made, and the analysis is fail-open, so every one of them delivers messages as if they had
+// been reviewed. What the screen actually DID is read back from the execution log and handed to the
+// panel as a count.
 describe("computeConfigIssues — a guardrail that could not run", () => {
   const guarded = {
     ...base,
@@ -1312,12 +1307,11 @@ describe("computeConfigIssues — a guardrail that could not run", () => {
   });
 });
 
-// Found by sweeping the panel's own inputs rather than by a review round: the rewrite's endpoint can
-// live on its CREDENTIAL, and the browser learns credential endpoints from the same vault list that
-// arrives a request after the first paint. Judged before that answer exists, an endpoint that is
-// merely unread reads as absent, and the panel announces that a runnable rewrite cannot run — the
-// same false alarm the null-until-loaded rule exists to prevent, arriving through the endpoint
-// instead of through the ref.
+// The rewrite's endpoint can live on its CREDENTIAL, and the browser learns credential endpoints from
+// the same vault list that arrives a request after the first paint. Judged before that answer exists,
+// an endpoint that is merely unread reads as absent, and the panel announces that a runnable rewrite
+// cannot run: the false alarm the null-until-loaded rule exists to prevent, through the endpoint
+// instead of the ref.
 describe("computeConfigIssues — the rewrite endpoint while the vault is unknown", () => {
   const compatRewrite = {
     ...base,
@@ -1450,17 +1444,17 @@ describe("computeConfigIssues — which endpoint refusals wait for the vault", (
   });
 });
 
-// Text stored over its cap is cut on the way to the model and nowhere else, so the editor is the
-// only place it can surface. It has to surface from OUTSIDE the field: the boundary deliberately
-// lets an untouched legacy value save, and the field itself may not be on screen — several of these
-// notes have no control in the editor at all, and the sections that do only render when switched on.
-// Issue #166. The one check here that is not about a feature failing to run: both features run, and
-// it is the customer who gets the wrong experience. The list of inboxes comes from the server (a live
-// Chatwoot read), so everything below is about what the panel DOES with it.
+// Text stored over its cap is cut on the way to the model and nowhere else, so the editor is the only
+// place it can surface, and from OUTSIDE the field: the boundary lets an untouched legacy value save,
+// and several of these notes have no control in the editor, or one that renders only when on.
+
+// The one check here that is not about a feature failing to run: both features run, and the customer
+// gets the wrong experience. The inbox list comes from the server (a live Chatwoot read), so
+// everything below is about what the panel DOES with it.
 describe("computeConfigIssues — Chatwoot already answers out of hours", () => {
   const ONE = [{ id: "5", name: "WhatsApp Vendas" }];
-  // A schedule that actually closes. Without one the reactive gate never silences the agent, so its
-  // away message never goes out however the block is configured — which is review round 1's finding.
+  // NOTE: A schedule that actually closes. Without one the reactive gate never silences the agent, so
+  // its away message never goes out however the block is configured.
   const CLOSES = {
     windows: [{ day: 1, start: "09:00", end: "17:00" }],
     exceptions: [],
@@ -1535,10 +1529,10 @@ describe("computeConfigIssues — Chatwoot already answers out of hours", () => 
     });
   }
 
-  // Review round 1. The away message rides the SAME gate that silences replies, so an agent that
-  // never closes sends nothing out of hours with the switch on and the copy written. Claiming the
-  // duplicate there describes two messages where the customer gets a closure notice and then normal
-  // service — the contradiction, and the worse of the two.
+  // NOTE: The away message rides the SAME gate that silences replies, so an agent that never closes
+  // sends nothing out of hours with the switch on and the copy written. Claiming the duplicate there
+  // describes two messages where the customer gets a closure notice and then normal service: the
+  // contradiction, and the worse of the two.
   const NEVER_CLOSES: Array<[string, unknown]> = [
     ["no schedule at all (always on)", null],
     ["a schedule with no windows", { ...CLOSES, windows: [] }],
@@ -1566,11 +1560,10 @@ describe("computeConfigIssues — Chatwoot already answers out of hours", () => 
     expect(issues.map((i) => i.key)).toEqual(["outOfHoursChatwoot"]);
   });
 
-  // Review round 2. A disabled agent says nothing to the customer at all — the runtime gates the away
-  // message on it and refuses the turn a few lines later — so Chatwoot's message is the only one that
-  // arrives and NEITHER spelling is true. This is the one line in this panel that claims something
-  // about what the customer receives rather than about the configuration, which is why it is also the
-  // only one that has to care.
+  // NOTE: A disabled agent says nothing to the customer at all (the runtime gates the away message on
+  // it and refuses the turn), so Chatwoot's message is the only one that arrives and NEITHER spelling
+  // is true. This is the one line in this panel that claims something about what the customer receives
+  // rather than about the configuration, which is why it is also the only one that has to care.
   for (const [label, settings] of [
     ["with its away message on", AWAY_ON],
     ["with nothing of its own to say", {}],
@@ -1829,8 +1822,8 @@ describe("issueHasAction", () => {
       ]);
     });
 
-    // Issue #646: a local rule is the other way to reach a verdict, and with one the endpoint is
-    // never asked, so neither the missing URL nor the endpoint-only switches are a problem.
+    // NOTE: A local rule is the other way to reach a verdict, and with one the endpoint is never asked,
+    // so neither the missing URL nor the endpoint-only switches are a problem.
     test("a local rule answers instead, so a missing URL is not flagged", () => {
       expect(
         computeConfigIssues({

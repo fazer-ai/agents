@@ -71,7 +71,7 @@ interface Case {
 }
 
 const CASES: Case[] = [
-  // The issue itself: the tail of a handoff burst carries the pre-handoff snapshot.
+  // The tail of a handoff burst carries the pre-handoff snapshot.
   {
     name: "a message snapshot writes no status and no assignee, however recent it is",
     payload: messageEvent({
@@ -106,14 +106,14 @@ const CASES: Case[] = [
     row: storedRow({ assigneeType: "User" }),
     want: { status: "open", assignee: false },
   },
-  // A reopen is faithful AT ITS OWN INSTANT, and every payload here is a snapshot of an earlier one:
+  // A reopen is faithful AT ITS OWN INSTANT, and every payload is a snapshot of an earlier one:
   // Chatwoot freezes its own at enqueue, and a delivery recovery rebuilds one from reads made a
-  // moment before (#295). Unordered, the exception says a message may reopen whenever it arrives,
-  // and a message serialized before an operator's resolve walks the status back to `open` after it.
+  // moment before. Unordered, a message serialized before an operator's resolve would walk the status
+  // back to `open` after it.
   {
-    // The row is built so the ONLY thing that can refuse this is the new rule: the payload is ahead
-    // of the row's activity, so it is not stale, and its status mark sits a whole hour later —
-    // which is what a resolve does, since a resolve moves `updated_at` and never `last_activity_at`.
+    // Only the status mark can refuse this: the payload is ahead of the row's activity (not
+    // stale), and its status mark sits an hour later, as a resolve leaves it (a resolve moves
+    // `updated_at` and never `last_activity_at`).
     name: "a reopen from a second BEHIND the status mark does not walk it back",
     payload: messageEvent({
       reopensConversation: true,
@@ -127,10 +127,9 @@ const CASES: Case[] = [
     want: { status: null },
   },
   {
-    // The other side, and the one that keeps issue #61's burst working: the mark carries a fraction
-    // (`updated_at`) and the message carries whole seconds (`last_activity_at`), so within one burst
-    // the mark is always a little ahead of the message it accompanies. Compared raw, every
-    // same-second reopen would lose to its own companion.
+    // The mark carries a fraction (`updated_at`) and the message whole seconds
+    // (`last_activity_at`), so within one burst the mark is a little ahead of the message it
+    // accompanies. Compared raw, every same-second reopen would lose to its own companion.
     name: "a reopen in the SAME second as the status mark still wins",
     payload: messageEvent({
       reopensConversation: true,
@@ -218,7 +217,7 @@ const CASES: Case[] = [
     want: { assignee: true },
   },
 
-  // The degraded payload of issue #27, which is why there are two marks.
+  // A degraded payload (no assignee stated) is why there are two marks.
   {
     name: "a degraded payload writes the status and does not wipe the stored assignee",
     payload: conversationEvent({ assigneeStated: false, assigneeType: null }),
@@ -246,7 +245,7 @@ const CASES: Case[] = [
     want: { statusAt: null, assigneeAt: null },
   },
 
-  // Fallback for a Chatwoot too old to send a version: the monotonic guard, as before.
+  // Fallback for a Chatwoot too old to send a version: the monotonic guard.
   {
     name: "an unversioned conversation event behind on last_activity_at is stale",
     payload: conversationEvent({ version: null, activityAt: EARLIER }),
@@ -293,8 +292,8 @@ const CASES: Case[] = [
     want: { status: null, statusAt: null, assigneeAt: V_NEW },
   },
 
-  // The redirect pairing (#222), on its own mark. The consumer of this field messages AND resolves
-  // the conversation it names, so a value that regresses to a previous episode's origin acts
+  // The redirect pairing, on its own mark. The consumer of this field messages AND resolves the
+  // conversation it names, so a value that regresses to a previous episode's origin acts
   // destructively on the wrong WhatsApp thread.
   {
     name: "a payload that names no origin writes none and stamps nothing",
@@ -368,7 +367,7 @@ const CASES: Case[] = [
     row: storedRow({ redirectOriginAt: null }),
     want: { stale: true, redirectOrigin: false, redirectOriginAt: null },
   },
-  // No version to order by (Chatwoot < 4.0.2): the pre-fence behaviour, stated rather than implied.
+  // No version to order by (Chatwoot < 4.0.2): the pairing is written and no mark is stamped.
   {
     name: "a versionless payload writes the pairing and stamps no mark",
     payload: messageEvent({ version: null, redirectOriginStated: true }),
@@ -382,12 +381,9 @@ const CASES: Case[] = [
     want: { redirectOrigin: true, redirectOriginAt: V_NEW },
   },
 
-  // ── THE LOCAL CLAIM (issue #436) ──
-  //
-  // A status this side wrote that the source has not versioned. It is the one ordering input here
-  // that does not come from Chatwoot, and it exists because no reading of `updated_at` can separate a
-  // snapshot taken before that write from one taken after it: a customer message advances the
-  // conversation's version on its own account. ../../src/modules/chatwoot/status-claim.ts.
+  // THE LOCAL CLAIM: a status this side wrote that the source has not versioned. No reading of
+  // `updated_at` separates a snapshot taken before that write from one taken after it, because a
+  // customer message advances the version on its own account. ../../src/modules/chatwoot/status-claim.ts.
   {
     // The takeover writes `open` over `pending` and then calls Chatwoot. The customer message
     // Chatwoot serialized before it committed the toggle still says `pending`, and the reopen
@@ -411,9 +407,8 @@ const CASES: Case[] = [
     want: { status: null, statusAt: null, statusClaimRefusedAt: V_NEW },
   },
   {
-    // The other way in, and it needs no exception: a delayed or companion `conversation_*` event
-    // carrying the same pre-takeover `pending` wins on the ordinary ordered path, because the claim
-    // advanced no mark for it to lose to.
+    // Without the claim, a delayed or companion `conversation_*` event carrying the pre-takeover
+    // `pending` would win on the ordinary ordered path: the claim advanced no mark for it to lose to.
     name: "a live claim refuses the status it is replacing, carried by a conversation event",
     payload: conversationEvent({ version: V_NEW, status: "pending" }),
     row: storedRow({
@@ -475,11 +470,9 @@ const CASES: Case[] = [
     want: { status: null, statusAt: null },
   },
   {
-    // ...and that is asked of the REOPEN route too, which is the one place a message can move the
-    // status. A hand-back whose conversation event was delayed or lost leaves the next customer
-    // message carrying the new `pending` with a version of its own, and refusing it on the stored
-    // status alone leaves the mirror closed to the bot while Chatwoot has the conversation waiting
-    // for it — the message acknowledged, and nobody answering the customer (issue #468, round 7).
+    // The REOPEN route asks the same question. When a hand-back's conversation event is delayed
+    // or lost, the next customer message carries the new `pending` with a version of its own; refusing
+    // it on the stored status alone leaves the mirror closed to the bot while Chatwoot waits for it.
     name: "a message newer than the stamped transition moves the status it restates",
     payload: messageEvent({
       reopensConversation: true,
@@ -512,12 +505,10 @@ const CASES: Case[] = [
     want: { status: "resolved", statusAt: V_NEW },
   },
   {
-    // The one exception, keyed on the status the ROW holds and not on the one the payload carries:
-    // `reopen_conversation` acts on a resolved or snoozed conversation and does nothing at all to an
-    // open or pending one, so on a row we believe is resolved the payload is evidence of a change
-    // made AFTER our write. Measured on the fork, where that same act produces `pending` rather than
-    // `open` on an inbox with an active bot — which is why the rule cannot be written around the
-    // status it produces.
+    // Keyed on the status the ROW holds, not the payload's: `reopen_conversation` acts only on a
+    // resolved or snoozed conversation, so on a row we believe resolved it is evidence of a change made
+    // AFTER our write. On the fork that act yields `pending` rather than `open` on an inbox with an
+    // active bot, which is why the rule cannot key on the status it produces.
     name: "a live claim does not refuse the source's own reopen of a resolved conversation",
     payload: messageEvent({
       reopensConversation: true,
@@ -532,8 +523,8 @@ const CASES: Case[] = [
     want: { status: "open" },
   },
   {
-    // Same act, on a row nothing can reopen: the payload is carrying the conversation's status
-    // because every message payload embeds a snapshot, which is the whole of issue #61.
+    // Same act, on a row nothing can reopen: the status is only the snapshot every message
+    // payload embeds.
     name: "the reopen exception does not rescue a payload on a row that cannot be reopened",
     payload: messageEvent({
       reopensConversation: true,
@@ -548,10 +539,9 @@ const CASES: Case[] = [
     want: { status: null },
   },
   {
-    // A MARK THAT MOVED IS NOT A STAMP, which is the reading three rounds of review broke in three
-    // ways (issue #468). Whatever moved the status mark here — a delivery for another field, an
-    // operator's own change — says nothing about whether the SOURCE has decided our transition, so
-    // the gap is still open and a payload restating the replaced status is still unplaceable.
+    // A MARK THAT MOVED IS NOT A STAMP. Whatever moved the status mark (a delivery for another
+    // field, an operator's change) says nothing about whether the SOURCE decided our transition, so the
+    // gap is still open and a payload restating the replaced status is still unplaceable.
     name: "a live claim refuses a payload on a mark that moved without a stamp",
     payload: conversationEvent({ version: V_NEW, status: "pending" }),
     row: storedRow({
@@ -563,11 +553,10 @@ const CASES: Case[] = [
     want: { status: null, statusAt: null, statusClaimRefusedAt: V_NEW },
   },
   {
-    // ...and a stamped claim still fences the reopen exception, which is the whole reason the claim
-    // does not simply retire at the reconcile: that route compares WHOLE SECONDS against the mark, so
-    // a message frozen in the same second as the toggle wins the ordering it is judged on. What it
-    // cannot do is beat the stamp, because the toggle wrote AFTER the message did — measured live, on
-    // a toggle and a customer message that landed in the same second.
+    // A stamped claim still fences the reopen exception, which is why the claim does not retire at
+    // the reconcile: that route compares WHOLE SECONDS against the mark, so a message frozen in the same
+    // second as the toggle wins that comparison. It cannot beat the stamp, because the toggle wrote after
+    // the message did.
     name: "a stamped transition still fences a message frozen before it",
     payload: messageEvent({
       reopensConversation: true,
@@ -586,8 +575,7 @@ const CASES: Case[] = [
   },
   {
     // A claim is a deadline, not a flag: the pair is left where the writer put it, so a claim that
-    // ran out and no claim at all are the same answer. Past it, the behaviour is the one this rule
-    // replaced.
+    // ran out and no claim at all are the same answer, ordinary ordering.
     name: "an expired claim refuses nothing",
     payload: conversationEvent({ version: V_NEW, status: "pending" }),
     row: storedRow({

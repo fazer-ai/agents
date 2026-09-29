@@ -12,9 +12,9 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
 import { HandoffThenReplyModel } from "../utils/scripted-models";
 
-// Issue #811, the half of a job's deadline that reaches the flush. The scheduler ends the RUN at the
-// deadline whatever the handler does; what the flush owes is to stop the WORK: the job's signal goes
-// into the turn, reaches the model call even where #809's own deadline hands the call a signal of
+// The half of a job's deadline that reaches the flush. The scheduler ends the RUN at the deadline
+// whatever the handler does; what the flush owes is to stop the WORK: the job's signal goes into
+// the turn, reaches the model call even where the model call's own deadline hands it a signal of
 // its own, and a turn that gets past its model call anyway sends nothing, because the run it
 // belonged to was already failed and its retry answers the burst. Real flush, real graph, a fake
 // model and a Chatwoot stub.

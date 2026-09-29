@@ -66,9 +66,9 @@ describe("readContactAuthConfig", () => {
     ).toBe(5000);
   });
 
-  // The reuse mode (issue #189). Anything that is not the one alternative spelling reads as the
-  // default, for the reason the `enabled` switch is strict: a malformed write may only ever leave
-  // the gate asking MORE often, never less.
+  // The reuse mode. Anything that is not the one alternative spelling reads as the default, for the
+  // reason the `enabled` switch is strict: a malformed write may only ever leave the gate asking
+  // MORE often, never less.
   test("the mode is perMessage unless the bag says exactly `once`", () => {
     expect(readContactAuthConfig({ contactAuth: {} }).mode).toBe("perMessage");
     expect(readContactAuthConfig({ contactAuth: { mode: "once" } }).mode).toBe(
@@ -125,8 +125,8 @@ describe("readContactAuthConfig", () => {
     );
   });
 
-  // A stored `method` is a leftover from when the request could be a GET. It is not a setting any
-  // more, and reading it back as one would resurrect a choice the operator can no longer make.
+  // A stored bag can still carry a `method`, but the request is always a POST and there is no
+  // `method` setting: reading it back would resurrect a choice the operator cannot make.
   test("a leftover method in the bag is ignored, not carried forward", () => {
     const cfg = readContactAuthConfig({
       contactAuth: { method: "GET", includeMessageText: true },

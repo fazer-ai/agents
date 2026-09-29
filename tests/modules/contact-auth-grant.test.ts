@@ -27,26 +27,10 @@ import {
 import { clearContactAuthState } from "@/modules/contact-auth/state";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// ── REUSING A POSITIVE VERDICT ACROSS MESSAGES, AND GETTING BACK OUT OF IT (issue #189) ──
-//
-// The gate asks the operator's endpoint on EVERY incoming message, which is the right default and
-// the reason `docs/contact-auth.md` can promise that a revocation lands on the contact's next
-// message. Two operators asked for the other shape: an endpoint that is expensive or rate-limited
-// (a burst of five WhatsApp messages is five identical lookups against a core banking API), and a
-// gate that is an UNLOCK rather than a lookup (the customer sends an access code once and should
-// stay served afterwards, without the endpoint having to remember them).
-//
-// `mode: "once"` stores the positive verdict per contact and reuses it. Everything below is about
-// the way back out, because stored state with no exit is the failure mode this feature could have:
-//
-//   TTL       the grant expires, and the policy's current TTL is part of what it was granted under.
-//   IDENTITY  the mirror's phone/email/identifier is what the endpoint answered ABOUT.
-//   POLICY    url, credential, the unlock opt-in and the TTL decide who answered and what was asked.
-//             A MATCH rule, not a revocation: nudging a field and putting it back clears nothing,
-//             which is asserted below rather than left to be discovered.
-//   DENIAL    a fresh refusal drops whatever was stored, so a re-ask can only ever un-grant. Under
-//             EVERY mode, which is not symmetry for its own sake: grants outlive a switch to
-//             `perMessage`, so a refusal arriving while the switch is off has to reach them.
+// Reusing a positive verdict across messages (`mode: "once"`), and every way back out of it: TTL,
+// identity, policy (a match rule, not a revocation) and a fresh denial (under every mode, because
+// grants outlive a switch to `perMessage`). The rules are in docs/contact-auth.md, "Reusing a
+// verdict (`mode: "once"`)"; these tests pin each exit.
 //
 // Nothing here polls or sleeps for a verdict: the endpoint double counts its own calls, so "the
 // endpoint was not asked" is a number rather than a timing.
@@ -121,18 +105,12 @@ const allowed = (context?: Record<string, unknown>) =>
 const denied = () => new Response('{"authorized":false}', { status: 200 });
 const broken = () => new Response("boom", { status: 500 });
 
-// A client whose GRANT statements misbehave and whose every other statement works: the transient
-// database trouble that separates "nobody stored a verdict" from "we could not find out", and the
-// saturated pool that separates a slow gate from a slow endpoint. The seam is `params.base`, which
-// `runScopedOn` turns into `$extends(...).$transaction(...)`, so the wrapper has to follow it down to
-// the transaction client the module actually calls. Binding to `target` rather than forwarding the
-// proxy as the receiver keeps Prisma's own accessors (several are getters closing over the client)
-// working.
-//
-// The hook is handed the REAL delegate, and a hook that wants the statement to happen must call it:
-// forwarding to the outer client instead runs unscoped, and under RLS an unscoped statement matches
-// ZERO rows — a "slow delete" that deletes nothing and a read that always comes back empty, both of
-// which make a test pass while measuring the opposite of what it says.
+// A client whose GRANT statements misbehave and whose every other statement works (transient
+// database trouble, a saturated pool). The seam is `params.base`, which `runScopedOn` turns into
+// `$extends(...).$transaction(...)`, so the wrapper follows it down to the transaction client;
+// binding to `target` keeps Prisma's getter accessors working. The hook gets the REAL delegate and
+// must call it to run the statement: forwarding to the outer client runs unscoped, and under RLS an
+// unscoped statement matches ZERO rows, which makes a test pass while measuring the opposite.
 function baseWithGrantHook(
   real: PrismaClient,
   hook: (
@@ -540,10 +518,8 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     const held = new Promise<void>((r) => {
       release = r;
     });
-    // Resolved from INSIDE the slow request, so the refusal below is started at a point the first
-    // check has provably already reached its endpoint. Ordering by timing instead is how a race test
-    // comes to pass for the wrong reason — measured on this very case, which flipped order under the
-    // full file and held under `-t`.
+    // NOTE: resolved from INSIDE the slow request, so the refusal below starts once the first check
+    // has provably reached its endpoint; ordering by timing lets a race test pass for the wrong reason.
     const reached = new Promise<void>((r) => {
       entered = r;
     });
@@ -669,8 +645,8 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
 
     // The allow is in flight first, so its check started before the refusal's.
     const allowInFlight = ask({ cfg: cfg(), fetchImpl: slowAllow });
-    // The refusal's DELETE is entered and held there: the window where the row is already doomed and
-    // the database has not been told yet. Nothing about the refusal has "landed" in the old sense.
+    // NOTE: the refusal's DELETE is entered and held there: the row is already doomed and the
+    // database has not been told yet.
     const denial = ask({
       cfg: cfg({ mode: "perMessage" }),
       fetchImpl: ep.fetchImpl,
@@ -900,19 +876,11 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
 
   test("the overflow a refusal spike leaves behind drains on its own", async () => {
     setMaxTrackedContactsForTest(1);
-    // THE WINDOW HAS TO OUTLAST THE SETUP, NOT JUST THE ASSERTION.
-    //
-    // The loop below is what fills the map AND what arms the sweep, so the protection window has to
-    // cover the whole of it: the first drop arms a timer for `refusedAt + window`, and every later
-    // drop is a database write. At 60ms this held only while the machine was idle. Under
-    // `bun test --parallel` four writes can take longer than that, the timer fires BETWEEN two of
-    // them, and the map is back at its cap before the precondition below ever reads it: measured at
-    // `--parallel=18`, `Expected: > 1, Received: 1`, on a test that was failing for being on a busy
-    // machine rather than for anything about eviction.
-    //
-    // 2s is not a fix for slowness, the same way the 30s in tests/tooling/stale-base-guard.test.ts is
-    // not: it is the window sized to the work that has to fit inside it. The wait below is sized past
-    // it so the drain still has room to happen after.
+    // NOTE: the protection window has to outlast the SETUP, not just the assertion. The loop below
+    // fills the map and arms the sweep (the first drop arms a timer for `refusedAt + window`, every
+    // later drop is a database write), so a window shorter than the loop lets the timer drain the
+    // map before the precondition reads it on a loaded `bun test --parallel` run. 2s is the window
+    // sized to that work; the wait below is sized past it so the drain still has room after.
     setRefusalProtectionForTest(2000);
     // Every marker young enough to be protected, so eviction cannot take any of them and the map is
     // over its cap. Nothing else is coming: a spike that stops refusing is exactly the case where no

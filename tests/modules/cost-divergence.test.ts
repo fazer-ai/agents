@@ -8,9 +8,9 @@ import {
   snapshotBase,
 } from "@/modules/analytics/cost-divergence";
 
-// Issue #868: the local price table's cost per model checked against Langfuse's. A model is flagged
-// only when the two part by more than a fifth of the larger AND by at least a dollar; a model with a
-// call the local table could not price is neither flagged nor passed; and a name only one side has is
+// The local price table's cost per model checked against Langfuse's. A model is flagged only when
+// the two part by more than a fifth of the larger AND by at least a dollar; a model with a call the
+// local table could not price is neither flagged nor passed; and a name only one side has is
 // reported as such, never as a divergence.
 
 describe("the thresholds", () => {
@@ -166,9 +166,8 @@ describe("compareModelCosts", () => {
     expect(check.models[0]?.status).toBe("match");
   });
 
-  // Review of #868: calls configured with both an alias and its dated snapshot can all reach
-  // Langfuse under the snapshot's name, so that name's figure cannot be handed to either ledger
-  // model alone.
+  // Calls configured with both an alias and its dated snapshot can all reach Langfuse under the
+  // snapshot's name, so that name's figure cannot be handed to either ledger model alone.
   test("an alias and its dated snapshot both in the ledger are compared as one group", () => {
     const check = compareModelCosts(
       [

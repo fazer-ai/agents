@@ -3,17 +3,13 @@ import en from "@/client/locales/en.json";
 import ptBR from "@/client/locales/pt-BR.json";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 
-// Every ConfigIssueKey the editor can render needs copy under `editor.configIssue.*`, in every
-// locale. The lookup is dynamic (`t(\`editor.configIssue.${issue.key}\`)`), so a key with no entry
-// fails nothing: it silently falls back to "This feature is enabled but has no credential set",
-// which for several of these is not even true — the gate contradictions and the missing-endpoint
-// warning have nothing to do with credentials. And since the keys reach the extractor through magic
-// comments, forgetting one is invisible twice over: `bun i18n:extract` DELETES the hand-written
-// entry as orphaned, and `bun check` stays green while the operator reads the wrong sentence. That
-// is exactly how contactAuthNoUrl shipped wrong, which is why this file exists.
-//
-// Keys with a branch of their own in `issueMessage` are listed rather than pattern-matched, so a
-// key that stops having one fails here until somebody writes its copy.
+// Every ConfigIssueKey the editor can render needs copy under `editor.configIssue.*`, in every locale.
+// The lookup is dynamic (`t(\`editor.configIssue.${issue.key}\`)`), so a missing entry fails nothing:
+// it falls back to "This feature is enabled but has no credential set", untrue for the gate
+// contradictions and the missing-endpoint warning. The keys reach the extractor through magic
+// comments, so `bun i18n:extract` DELETES a forgotten one as orphaned while `bun check` stays green.
+// Keys with a branch of their own in `issueMessage` are listed rather than pattern-matched, so a key
+// that stops having one fails here until somebody writes its copy.
 const HANDLED_ELSEWHERE = new Set([
   "textCap", // editor.configIssueTextCap / …NoField, interpolated
   "knowledge", // editor.configIssueKnowledge, interpolated
@@ -105,15 +101,11 @@ describe("config issue copy", () => {
     }
   });
 
-  // The keys the RENDERER names literally, read out of its source. The two lists above excuse a
-  // handful of issue keys from `editor.configIssue.*` because they read a key of their own instead,
-  // and nothing checked that those keys exist — the excuse was the whole assertion.
-  //
-  // It is not hypothetical. `configIssueMessage` moved out of `src/client` so the API could answer
-  // with the same sentences (#467), and `i18next-parser` deletes as orphaned every key it cannot see
-  // a call for: five interpolated keys vanished from BOTH catalogs in the same commit, with every
-  // test here still green, because each one falls back to the English default the call site passes.
-  // A pt-BR reader would have silently started reading English.
+  // NOTE: The keys the RENDERER names literally, read out of its source. The two lists above excuse a
+  // handful of issue keys from `editor.configIssue.*` because they read a key of their own, so those
+  // keys must exist. `i18next-parser` deletes as orphaned every key it cannot see a call for, and each
+  // falls back to the English default the call site passes, so a missing one leaves a pt-BR reader
+  // reading English with every other test here green.
   test("every catalog key the renderer names exists in both locales", () => {
     const renderer = Bun.file(
       new URL(
@@ -150,9 +142,9 @@ describe("config issue copy", () => {
     });
   });
 
-  // Both lists above are subtracted from a key set READ OUT OF `config-health.ts`, so appending to
-  // either one silences a key that has no copy, and nothing here would notice. Pinned at the size
-  // each was argued into: tests/utils/ledger.ts, issue #293.
+  // NOTE: Both lists above are subtracted from a key set READ OUT OF `config-health.ts`, so appending to
+  // either one silences a key that has no copy, and nothing here would notice. Each is pinned at its
+  // size and may only shrink (tests/utils/ledger.ts).
   test("the ledgers this file waives with may only shrink", () => {
     expectWaiverLedger("HANDLED_ELSEWHERE", HANDLED_ELSEWHERE, 5);
     expectWaiverLedger("CREDENTIAL_STATES_ONLY", CREDENTIAL_STATES_ONLY, 1);

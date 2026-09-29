@@ -17,11 +17,11 @@ import {
   enqueueJob,
 } from "@/modules/scheduler/service";
 
-// Issue #810: the debounce lane is cross-tenant, and it used to hand out its slots oldest-first, so
-// one tenant's burst took every slot and every other tenant's flush waited for one to free. The
-// claim now shares the slots: each due row ranks by what its tenant already has in flight plus its
-// place in that tenant's own queue, and ties go to the older row. A tenant alone still gets every
-// slot. Real Postgres, the production claim, fenced to this file's tenants.
+// The debounce lane is cross-tenant, and its claim shares the slots: each due row ranks by what its
+// tenant already has in flight plus its place in that tenant's own queue, and ties go to the older
+// row. Plain oldest-first would let one tenant's burst take every slot while every other tenant's
+// flush waits. A tenant alone still gets every slot. Real Postgres, the production claim, fenced to
+// this file's tenants.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -157,9 +157,9 @@ describe.skipIf(!dbUp)(
     });
 
     test("a row of another lane in the exclusion list is not counted against its tenant's share", async () => {
-      // The claim's exclusion list also carries every row whose handler still runs in this process
-      // (issue #811), which includes other lanes' kinds. A tenant's FOLLOWUP running on the shared
-      // tick holds none of this lane's slots.
+      // NOTE: the claim's exclusion list also carries every row whose handler still runs in this
+      // process, which includes other lanes' kinds. A tenant's FOLLOWUP running on the shared tick
+      // holds none of this lane's slots.
       await enqueueJob({
         base: appDb,
         tenantId: tenantA,

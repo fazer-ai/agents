@@ -18,18 +18,13 @@ import { agentUpdate } from "@/modules/mcp/write-agents";
 import { updateEmbeddingSettings } from "@/modules/tenant-settings/service";
 import { tryResolveApiKeyEntry } from "@/modules/vault/service";
 
-// A credential reference names an entry that EXISTS; nothing asked whether that entry can produce
-// what the field reading it needs. Issue #471.
-//
-// The two shapes a vault entry can hold are declared in the catalog and neither is a string: a kind
-// with `fields` (google_oauth, langfuse) holds a multi-field object, and one with `managedBlob`
-// (mcp_oauth) holds a server-managed JSON blob. A third kind of mismatch is not about shape at all:
-// `neverOutbound` entries (mcp_env, langfuse) hold a perfectly good string that the catalog says
-// must never travel in an outbound request, and an API-key field sends exactly that.
-//
-// Measured on the base before this change: the REST write returned 200, the MCP write echoed the
-// diff, `readAgentConfigHealth` answered `healthy: true` with zero issues, and `loadAgentConfig`
-// handed `{ clientId, clientSecret }` down as `cfg.apiKey`, typed `string`.
+// A credential reference names an entry that EXISTS, and that entry also has to produce what the
+// field reading it needs. The two shapes a vault entry can hold are declared in the catalog and
+// neither is a string: a kind with `fields` (google_oauth, langfuse) holds a multi-field object, and
+// one with `managedBlob` (mcp_oauth) holds a server-managed JSON blob. A third mismatch is not about
+// shape: `neverOutbound` entries (mcp_env, langfuse) hold a good string the catalog says must never
+// travel in an outbound request, and an API-key field sends exactly that. The REST write, the MCP
+// write, config-health and `loadAgentConfig` all have to refuse the same pairings.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -202,8 +197,8 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
           agentId,
           { settings: { tts: { enabled: true, credentialRef: oauthRef } } },
           appDb,
-          // The seeded row carries an `stt` block, and this bag replaces the column: said out loud
-          // since #614, so what answers here is the credential rule and not the drop rule.
+          // NOTE: the seeded row carries an `stt` block and this bag replaces the column, stated
+          // explicitly so what answers here is the credential rule and not the drop rule.
           { settingsMode: "replace" },
         ),
       );
@@ -211,9 +206,9 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
       expect(r?.field).toBe("settings.tts.credentialRef");
     });
 
-    // The finding that made this section grow: the boundary asked the KIND and the runtime asked the
-    // kind AND the value, so there was a configuration the write accepted, config-health called
-    // healthy, and the turn then dropped. Three surfaces, one question.
+    // The boundary asks the KIND and the VALUE, as the runtime does: asking only the kind leaves a
+    // configuration the write accepts, config-health calls healthy, and the turn then drops. Three
+    // surfaces, one question.
     test("a kind that should hold a string, holding something else, is refused", async () => {
       const r = await refused(() =>
         updateAgent(
@@ -426,7 +421,7 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
     ).toBe(oauthRef);
   });
 
-  // The resolver every API-key field now goes through, and both halves of its check. They look
+  // The resolver every API-key field goes through, and both halves of its check. They look
   // redundant and are not: the KIND is what the catalog declares, the VALUE is what is actually
   // stored, and each catches a case the other lets through.
   describe("the runtime resolver", () => {
@@ -469,7 +464,7 @@ describe.skipIf(!dbUp)("a credential whose kind cannot serve the field", () => {
 
     // The write boundary calls an active row holding `""` unfit, so a runtime that only asked
     // `typeof === "string"` would refuse it on the way IN and hand it to the provider as a blank key
-    // on the way OUT. Both readings come from `secretValueFitsKind` now.
+    // on the way OUT. Both readings come from `secretValueFitsKind`.
     test("an active row holding an empty string is unusable, not ok", async () => {
       const blank = formatVaultRef(
         String(

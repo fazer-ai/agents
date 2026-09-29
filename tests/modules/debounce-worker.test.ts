@@ -139,8 +139,8 @@ describe("runDebounceTick", () => {
     expect(calls).toBe(0);
   });
 
-  // The test issue #807 asks for: one job whose run never settles, a second one that comes due after
-  // it, and the second is claimed and run on the next tick.
+  // NOTE: one job whose run never settles, a second one that comes due after it, and the second is
+  // claimed and run on the next tick.
   test("a job that never settles does not hold the next due job", async () => {
     const q = dueQueue([1]);
     const ran: bigint[] = [];
@@ -251,8 +251,8 @@ describe("startDebounceWorker", () => {
 
   test("without an explicit slot count the lane is sized by the model semaphore", async () => {
     const saved = config.agent.modelConcurrency;
-    // Not 20: the lane used to hard-code 20, which is also the semaphore's default, and a test on
-    // the default would pass with the old constant.
+    // NOTE: not 20, which is also the semaphore's default: a test on the default would pass with a
+    // lane that hard-codes it.
     config.agent.modelConcurrency = 3;
     try {
       const q = dueQueue([1, 2, 3, 4, 5, 6]);

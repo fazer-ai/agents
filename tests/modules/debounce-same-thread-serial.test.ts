@@ -18,15 +18,13 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
-// Two flushes on ONE conversation, which is the shape issue #588 is about and the one
-// debounce-parallelism.test.ts deliberately does not cover: that file proves DIFFERENT conversations
-// overlap, which is the feature. Overlapping on the SAME thread is the defect.
-//
-// The second flush is not contrived. `armDebounce` says so itself: a live PENDING row is the burst a
-// message joins, and "anything else (no row, DONE, DEAD, or A CLAIM IN FLIGHT) means the previous
-// flush is finished business and this message opens a NEW burst". So a customer who writes while the
-// agent is still answering arms a second flush by design, and it fires a debounce window later —
-// while the first turn is still in the model, in a tool, or paying out its split balloons.
+// Two flushes on ONE conversation, the shape debounce-parallelism.test.ts deliberately does not
+// cover: that file proves DIFFERENT conversations overlap, which is the feature. Overlapping on the
+// SAME thread is the defect.
+// The second flush is not contrived: `armDebounce` treats a claim in flight as finished business,
+// so a message arriving while the agent is still answering opens a NEW burst, which fires a
+// debounce window later while the first turn is still in the model, in a tool, or sending its split
+// balloons.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -254,7 +252,7 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
     await appDb.$disconnect();
   });
 
-  // Runs flush A, waits until it is actually inside the model, then runs flush B — which is when the
+  // Runs flush A, waits until it is actually inside the model, then runs flush B, which is when the
   // second flush arrives in production: `armDebounce` re-arms the same row while A's claim is in
   // flight, and the worker claims it again on a later tick.
   async function twoFlushes(convId: number, burstStartedAt: number) {
@@ -324,44 +322,37 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
       `  canal (${canal.length}): ${JSON.stringify(canal.map((m) => String(m.content).slice(0, 30)))}`,
     );
 
-    // The issue in one number: two invokes at once on one thread means the second loaded the channel
-    // before the first saved it, so neither answer can contain the other and each saves back what it
-    // loaded.
+    // NOTE: two invokes at once on one thread means the second loaded the channel before the first
+    // saved it, so neither answer can contain the other and each saves back what it loaded.
     expect(meter.max).toBe(1);
     expect(seen.length).toBe(1);
-    // Deferred, not failed — the distinction the scheduler acts on: a `fail` would spend an attempt,
-    // stamp last_error on the conversation and eventually dead-letter a burst whose only problem was
-    // arriving at a busy moment.
+    // NOTE: deferred, not failed, the distinction the scheduler acts on: a `fail` would spend an
+    // attempt, stamp last_error on the conversation and eventually dead-letter a burst whose only
+    // problem was arriving at a busy moment.
     expect(b.outcome).toBe("reschedule");
-    // And the burst is not written twice into the agent's permanent memory, which is what the two
-    // concurrent read-modify-writes produced before: measured on 4b35f318 as a channel of
-    // [burst, burst, answer].
+    // NOTE: and the burst is not written twice into the agent's permanent memory, which two
+    // concurrent read-modify-writes produce as a channel of [burst, burst, answer].
     const bursts = canal.filter((m) =>
       String(m.content).includes("quanto custa?"),
     );
     expect(bursts.length).toBe(1);
-    // AND the hold is invisible to everyone but the flush. The first version of this fix used
-    // `markTurnReserved`, which `isTurnInFlight` counts, and two subsystems ask exactly that before
-    // doing their own work: `undoRefusedTurn` refuses to roll back a superseded answer while it is
-    // true, and `claimIngestWrite` answers busy so `drainPendingIngest` reaches nothing. The message
-    // fetch runs while this flush holds the thread and before its turn has marked itself, so it is
-    // the one moment from which the two can be told apart.
-    // The FIRST reading only: the flush fetches twice by design, and the second one runs after the
-    // turn has marked itself, where `true` is the correct answer and says nothing about this.
+    // NOTE: AND the hold is invisible to everyone but the flush. A hold that `isTurnInFlight`
+    // counted (as `markTurnReserved` is) would make `undoRefusedTurn` refuse to roll back a
+    // superseded answer and `claimIngestWrite` answer busy, so `drainPendingIngest` reaches
+    // nothing. The message fetch runs after this flush holds the thread and before its turn marks
+    // itself, the one moment that tells the two apart. Only the FIRST reading counts: the second
+    // fetch runs after the turn has marked itself, where `true` is correct.
     expect(vistoAntesDoTurno.length).toBeGreaterThan(0);
     expect(vistoAntesDoTurno[0]).toBe(false);
   }, 30_000);
 
   test("past the ceiling it answers anyway rather than deferring forever", async () => {
-    // A burst that opened past the ceiling is one whose thread has been held longer than any
-    // legitimate turn. The ceiling is a DEADLINE anchored on burstStartedAt precisely so it can be
-    // driven this way: the two counters that would have been easier are both unusable,
-    // `rescheduleJob` zeroing `attempts` and `armDebounce` replacing the payload a counter lives in.
-    //
-    // SIX MINUTES IS A LITERAL ON PURPOSE, not DEFER_CEILING_MS + 1. Importing the constant would
-    // move this input with any change to it, so a ceiling widened to an hour would keep the test
-    // green while the customer waits an hour. Measured against the mutation: with the constant
-    // imported, a 1000x ceiling survived.
+    // NOTE: a burst that opened past the ceiling has held its thread longer than any legitimate
+    // turn. The ceiling is a DEADLINE on burstStartedAt because both counters are unusable:
+    // `rescheduleJob` zeroes `attempts` and `armDebounce` replaces the payload a counter would live
+    // in. SIX MINUTES IS A LITERAL ON PURPOSE, not DEFER_CEILING_MS + 1: importing the constant
+    // would move this input with any change to it, so a ceiling widened to an hour (or 1000x) would
+    // keep the test green.
     const { meter, seen, b } = await twoFlushes(
       CONV_CEILING,
       Date.now() - 6 * 60_000,
@@ -462,9 +453,9 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
   }, 30_000);
 
   test("the deferral deadline survives a re-arm while the flush is claimed", async () => {
-    // Found in review: a message arriving while the flush is CLAIMED opens a new burst by design and
-    // takes a fresh `burstStartedAt` with it, so a deadline anchored there was pushed forward by
-    // every arrival — a customer who kept typing at a wedged thread was never answered at all.
+    // NOTE: a message arriving while the flush is CLAIMED opens a new burst by design with a fresh
+    // `burstStartedAt`, so a deadline anchored there would be pushed forward by every arrival and a
+    // customer who kept typing at a wedged thread would never be answered.
     const thread = threadOf(4248);
     const cfg = {
       enabled: true,
@@ -515,15 +506,11 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
   }, 30_000);
 
   test("the first deferral's deadline lands even when the row was re-armed underneath it", async () => {
-    // The window review found on the third round: a message arriving while the FIRST deferring flush
-    // runs re-arms the row to PENDING with a fresh payload, and a `payloadPatch` on the reschedule is
-    // then discarded, because that CAS requires the row to still be CLAIMED. Every arrival in that
-    // window restarted the five-minute deadline, which is the customer-never-answered case the
-    // deadline exists to prevent.
-    //
-    // Driven by putting the row in the state the re-arm leaves it in (PENDING, no stamp) and holding
-    // the thread directly, rather than by racing two writers: the assertion is about which write
-    // mechanism survives that state, and a race would only reach it sometimes.
+    // NOTE: a message arriving while the FIRST deferring flush runs re-arms the row to PENDING with
+    // a fresh payload, and a `payloadPatch` on the reschedule is then discarded, because that CAS
+    // requires a CLAIMED row. The deadline must survive that window, or every arrival restarts it.
+    // Driven by putting the row in the state the re-arm leaves (PENDING, no stamp) and holding the
+    // thread directly, not by racing two writers: a race would reach that state only sometimes.
     await seedConversation(CONV_CARIMBO);
     const thread = threadOf(CONV_CARIMBO);
     const key = debounceDedupeKey(thread);
@@ -572,11 +559,11 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
   }, 30_000);
 
   test("the stamp is dropped once the flush actually runs, so it cannot outlive its burst", async () => {
-    // The mirror of the bug above, found one review round later. A deferred flush eventually runs; a
-    // message arriving during its delivery re-arms the row and carries the stamp into the NEW burst,
-    // and completion cannot clear it because that CAS needs a CLAIMED row. Aged past the ceiling, the
-    // carried stamp makes every later flush skip the busy-thread check outright — the protection
-    // switching itself off, which is worse than the defect it was built for.
+    // NOTE: the mirror of the case above. A deferred flush eventually runs; a message arriving
+    // during its delivery re-arms the row and carries the stamp into the NEW burst, and completion
+    // cannot clear it because that CAS needs a CLAIMED row. Aged past the ceiling, a carried stamp
+    // would make every later flush skip the busy-thread check outright: the protection switching
+    // itself off.
     await seedConversation(CONV_LIMPEZA);
     const thread = threadOf(CONV_LIMPEZA);
     const key = debounceDedupeKey(thread);
@@ -634,10 +621,10 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
   }, 30_000);
 
   test("a turn that throws releases the hold instead of wedging the thread", async () => {
-    // A hold that leaks is worse than no hold: it survives the process, and every later burst on this
-    // graph thread then waits out its five-minute ceiling before anyone is answered. Round 5 of the
-    // review found one such path -- a cleanup write above the try/finally -- and this fences the
-    // class rather than that one line.
+    // NOTE: a hold that leaks is worse than no hold: it survives the process, and every later burst
+    // on this graph thread waits out its five-minute ceiling before anyone is answered. This fences
+    // the class of paths that throw before the release, such as a cleanup write above the
+    // try/finally.
     await seedConversation(CONV_VAZAMENTO);
     const thread = threadOf(CONV_VAZAMENTO);
     const explode = () =>

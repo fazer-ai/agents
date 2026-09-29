@@ -5,10 +5,9 @@ import {
 } from "@/modules/chatwoot/console-write-order";
 import { parseLiveConversation } from "@/modules/chatwoot/normalize";
 
-// The decision this whole issue turns on, as a table (issue #469). Two coordinates, and the pair of
-// nulls is not one case: a missing mark and a missing trigger are different facts that both have to
-// answer "do not refuse", and a single null-check would collapse them into one branch that a
-// mutation cannot tell apart.
+// Whether a console write landed after a trigger, as a table. The pair of nulls is not one case: a
+// missing mark and a missing trigger are different facts that both answer "do not refuse", and a
+// single null-check would collapse them into one branch a mutation cannot tell apart.
 describe("consoleWriteLandedAfter", () => {
   const CASES: {
     name: string;
@@ -90,8 +89,8 @@ describe("consoleWriteMark", () => {
   });
 });
 
-// The other half: the mark is only as good as what the parser reads off a real payload. The shapes
-// below are the ones the fork's `_conversation.json.jbuilder` renders, measured on 4.17.0.
+// The mark is only as good as what the parser reads off a real payload. The shapes below are the
+// ones the fork's `_conversation.json.jbuilder` renders (4.17.0).
 describe("parseLiveConversation reads the source's message sequence", () => {
   const conv = (extra: Record<string, unknown>) => ({
     id: 7,

@@ -9,11 +9,10 @@ import {
 import { getConversationDetail } from "@/modules/conversations/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Regression guard for the follow-up "next step" estimate in getConversationDetail. The estimate's
-// eligibility MUST match the sweep/handler's "fresh episode" predicate (isNewFollowUpEpisode): a
-// follow-up that already fired does NOT end the indicator if the customer has since replied (a reply
-// restarts the sequence at step 0 and the sweep re-arms it). The earlier bug used `lastFollowUpAt ===
-// null`, so after the first send the indicator wrongly read "complete" while a follow-up was pending.
+// Guards the follow-up "next step" estimate in getConversationDetail. Its eligibility matches the
+// sweep/handler's fresh-episode predicate (isNewFollowUpEpisode): a follow-up that already fired
+// does not end the indicator once the customer has replied, since a reply restarts the sequence at
+// step 0 and the sweep re-arms it.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -90,14 +89,14 @@ function ctx(t: bigint): TenantContext {
   return { tenantId: t, userId: null, role: "TENANT_ADMIN" };
 }
 
-// Mirrors conv 21761 from the investigation: a 2-minute single-step follow-up already fired at 23:06,
-// the customer replied at 23:18, the last activity (the bot's reply) is 23:18:45.
+// A 2-minute single-step follow-up fired at 23:06, the customer replied at 23:18, and the last
+// activity (the bot's reply) is at 23:18:45.
 const FOLLOW_UP_AT = new Date("2026-06-18T23:06:59Z");
 const REPLY_AT = new Date("2026-06-18T23:18:25Z");
 const LAST_EVENT_AT = new Date("2026-06-18T23:18:45Z");
 
-// Business-hours estimate: a daily 09:00–10:00 UTC window. A follow-up coming due at 20:02 UTC (well
-// outside it) must be estimated at the NEXT open window — the following day at 09:00 UTC.
+// Business-hours estimate: a daily 09:00 to 10:00 UTC window. A follow-up coming due at 20:02 UTC
+// (well outside it) is estimated at the NEXT open window: the following day at 09:00 UTC.
 const BH_WINDOWS = Array.from({ length: 7 }, (_, day) => ({
   day,
   start: "09:00",
@@ -112,10 +111,10 @@ const BH_EXPECTED_RUN_AT = "2026-06-16T09:00:00.000Z";
 const OUR_BOT_ID = 4001;
 const FOREIGN_BOT_ID = 4002;
 
-// A step-1 job armed two days out — the window in which the ground can shift under it.
+// A step-1 job armed two days out: the window in which the ground can shift under it.
 const ARMED_STEP1_RUN_AT = new Date("2026-06-20T23:18:45Z");
-// O passo 0 reagendado para longe pelo próprio worker: mais tarde que o piso da cadência
-// (LAST_EVENT_AT + 2 min), que é o que separa "a tela mostra o job" de "a tela recalculou".
+// Step 0 rescheduled far out by the worker itself: later than the cadence floor (LAST_EVENT_AT + 2
+// min), which is what tells "the screen shows the job" from "the screen recomputed".
 const STEP0_FAR_RUN_AT = new Date("2026-06-25T10:00:00Z");
 
 describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
@@ -243,11 +242,10 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     });
     convBusinessHours = c3.id;
 
-    // Same business-hours agent, but a PENDING FOLLOWUP job already exists with runAt OUTSIDE the
-    // window — exactly what the sweep leaves behind (it enqueues step 0 with runAt=now and re-arms it
-    // every pass) before the worker claims and reschedules. The estimate must STILL be pushed to the
-    // next open window: the old code surfaced job.runAt raw, so the indicator dropped the business-hours
-    // calculation between each sweep and the worker's reschedule.
+    // NOTE: Same business-hours agent, with a PENDING FOLLOWUP job whose runAt is outside the
+    // window: what the sweep leaves behind (it enqueues step 0 with runAt=now and re-arms it every
+    // pass) until the worker claims and reschedules it. The estimate is still pushed to the next
+    // open window, never the job's raw runAt.
     const c4 = await suDb.conversation.create({
       data: {
         tenantId: tenant,
@@ -516,8 +514,8 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       startISO: new Date(Date.now() + 2 * 3_600_000).toISOString(),
     });
 
-    // A third persona whose opt-out is PER STEP (issue #103): step 0 fires through an appointment
-    // (a payment-deadline chase), step 1 does not (ordinary re-engagement). The agent-wide
+    // NOTE: A third persona whose opt-out is PER STEP: step 0 fires through an appointment (a
+    // payment-deadline chase), step 1 does not (ordinary re-engagement). The agent-wide
     // `pauseWhileAppointment` stays ON, which is the whole point.
     const stepOptOutAgent = await suDb.agent.create({
       data: {
@@ -558,11 +556,10 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       stepOptOutInbox.id,
       { startISO: new Date(Date.now() + 2 * 3_600_000).toISOString() },
     );
-    // MESMO episódio (o cliente não falou desde o último follow-up), que é onde a pausa decide de
-    // verdade: o job de passo tardio vai rodar, e o que o adia é o compromisso. Com episódio NOVO
-    // este mesmo estado responde outra coisa, medida na #752 — a varredura sobrescreve o job condenado
-    // com o passo 0 —, então o eixo do #103 (a pausa se lê pelo PASSO, não pelo agente) precisa do
-    // episódio parado para continuar sendo sobre o que era.
+    // NOTE: SAME episode (the customer has not spoken since the last follow-up), where the pause
+    // really decides: the late-step job will run and only the appointment defers it. In a NEW
+    // episode the sweep overwrites the doomed job with step 0, so the per-step pause needs a still
+    // episode to stay the question.
     convStepOptOutArmedStep1 = await seedAppointmentConv(
       331,
       stepOptOutInbox.id,
@@ -583,11 +580,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       },
     });
 
-    // Review round 2: an operator who SHORTENS a sequence leaves a pending job for a step that no
-    // longer exists. The handler answers `done` on its first look, so the console has to reach the
-    // same terminal answer — before this it counted down to a step that will never fire and, once
-    // the step decides the pause, reported the conversation as appointment-paused over a job that
-    // is about to end. stepIndex 4 on a two-step sequence.
+    // NOTE: An operator who SHORTENS a sequence leaves a pending job for a step that no longer
+    // exists (stepIndex 4 on a two-step sequence). The handler answers `done` on its first look, so
+    // the console must not count down to it nor call the conversation appointment-paused over it.
     convStepOptOutStepGone = await seedAppointmentConv(
       332,
       stepOptOutInbox.id,
@@ -605,11 +600,10 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       },
     });
 
-    // Issue #750: o episódio novo aberto pela NOSSA resposta. Até ela, quem abria episódio era o
-    // cliente, e o webhook de entrada cancela o job pendente no mesmo movimento — o estado abaixo era
-    // inalcançável. Uma resposta nossa (um religamento, por exemplo) não cancela nada, então o job do
-    // passo tardio continua pendente enquanto o handler já o descarta por episódio novo. O console
-    // tem que chegar na mesma resposta, senão conta o tempo de um passo que não vai acontecer.
+    // NOTE: A new episode opened by OUR reply. The inbound webhook cancels the pending job when the
+    // customer opens an episode, but our reply (a re-enable, for example) cancels nothing, so the
+    // late-step job stays pending while the handler already drops it as a new episode. The console
+    // has to reach the same answer.
     const c750 = await suDb.conversation.create({
       data: {
         tenantId: tenant,
@@ -620,7 +614,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         assigneeType: null,
         threadId: `${tenant}:${inst}:333`,
         lastRepliedMessageId: 1,
-        // O cliente falou ANTES da cobrança, e não voltou: só a nossa fala é posterior a ela.
+        // NOTE: The customer spoke BEFORE the follow-up and not since: only our reply is newer.
         lastInboundAt: new Date(FOLLOW_UP_AT.getTime() - 3_600_000),
         lastFollowUpAt: FOLLOW_UP_AT,
         lastRepliedAt: new Date(FOLLOW_UP_AT.getTime() + 5 * 60_000),
@@ -639,10 +633,10 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       },
     });
 
-    // Issue #750, o outro lado: a contagem tem que sair da NOSSA fala quando ela é mais nova que o
-    // evento espelhado. `lastEventAt` vem do Chatwoot e só avança quando o webhook da mensagem que
-    // mandamos volta; a conversa recuperada do backlog tem esse campo com dias de idade, e um console
-    // que mede por ele mostra um follow-up vencido enquanto o cliente acabou de ser respondido.
+    // NOTE: The countdown starts from OUR reply when it is newer than the mirrored event.
+    // `lastEventAt` comes from Chatwoot and only advances when our message's webhook returns; a
+    // conversation recovered from the backlog has it days old, and a console measuring from it
+    // shows an overdue follow-up to a customer who was just answered.
     const RESPONDIDA_AS = new Date("2026-06-18T23:30:00Z");
     const c334 = await suDb.conversation.create({
       data: {
@@ -655,7 +649,8 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         threadId: `${tenant}:${inst}:334`,
         lastRepliedMessageId: 1,
         lastInboundAt: new Date("2026-06-10T10:00:00Z"),
-        // Oito dias mais velho que a resposta: é o estado de quem foi religada antes de o webhook voltar.
+        // NOTE: Eight days older than the reply: a conversation re-enabled before the webhook came
+        // back.
         lastEventAt: new Date("2026-06-10T10:00:05Z"),
         lastRepliedAt: RESPONDIDA_AS,
         lastFollowUpAt: null,
@@ -666,9 +661,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       RESPONDIDA_AS.getTime() + 2 * 60_000,
     ).toISOString();
 
-    // Issue #816, rodada 1: o mesmo piso para um envio PROATIVO. Um lembrete que acabou de chegar
-    // (e cujo webhook ainda não voltou) é a última coisa que aconteceu na conversa, e a contagem do
-    // console tem que sair dele, como a do handler e a da varredura.
+    // NOTE: The same floor for a PROACTIVE send. A reminder that just went out (whose webhook has
+    // not returned) is the latest thing in the conversation, and the console counts from it, as the
+    // handler and the sweep do.
     const PROATIVO_AS = new Date("2026-06-18T23:30:00Z");
     const c3816 = await suDb.conversation.create({
       data: {
@@ -692,10 +687,10 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       PROATIVO_AS.getTime() + 2 * 60_000,
     ).toISOString();
 
-    // Issue #750, rodada 4: os dois estados juntos. O operador encurtou a sequência (o job pendente
-    // aponta para um passo que não existe mais) E a nossa resposta abriu episódio novo. O ramo do
-    // passo inexistente responde "nada agendado", que é a resposta certa para o job velho e a errada
-    // para a conversa: a varredura vai recomeçar do passo 0 e o console tem que dizer isso.
+    // NOTE: Both states at once: the operator shortened the sequence (the pending job points at a
+    // step that no longer exists) AND our reply opened a new episode. "Nothing scheduled" is right
+    // for the old job and wrong for the conversation: the sweep restarts from step 0 and the
+    // console says so.
     const c335 = await suDb.conversation.create({
       data: {
         tenantId: tenant,
@@ -720,13 +715,13 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         dedupeKey: `followup:${tenant}:${inst}:335`,
         status: "PENDING",
         runAt: ARMED_STEP1_RUN_AT,
-        // Passo 4 numa sequência de dois: o que sobra de um encurtamento.
+        // NOTE: Step 4 of a two-step sequence: what a shortening leaves behind.
         payload: { threadId: `${tenant}:${inst}:335`, stepIndex: 4 },
       },
     });
 
-    // ── A PENDING job the handler will drop at claim time (issue #72). A multi-step sequence leaves
-    //    one armed between steps with runAt days out, and nothing cancels it when the ground shifts.
+    // NOTE: A PENDING job the handler drops at claim time. A multi-step sequence leaves one armed
+    // between steps with runAt days out, and nothing cancels it when the ground shifts.
     const twoStepSettings = {
       followUp: {
         enabled: true,
@@ -948,11 +943,10 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       assigneeType: "AgentBot",
       assigneeId: FOREIGN_BOT_ID,
     });
-    // Issue #752, o lado que NÃO muda: um passo tardio pendente no MESMO episódio. O cliente não
-    // falou desde o último follow-up (`lastInboundAt` anterior a ele), então o handler vai rodar esse
-    // passo, e a contagem dele é legítima — com o `run_at` do próprio job, que já é a hora que vai
-    // disparar. Sem esta fixture, uma supressão que esquecesse de perguntar pelo episódio suprimiria
-    // TODO job de passo tardio e nada reprovaria.
+    // NOTE: A late-step job pending in the SAME episode: the customer has not spoken since the last
+    // follow-up (`lastInboundAt` before it), so the handler runs that step and its countdown, at
+    // the job's own `run_at`, is legitimate. Without this fixture a suppression that skipped the
+    // episode check would hide every late-step job and nothing would fail.
     convSameEpisodeLaterStep = await suDb.conversation
       .create({
         data: {
@@ -981,10 +975,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         payload: { threadId: `${tenant}:${inst}:352`, stepIndex: 1 },
       },
     });
-    // Issue #752, o outro lado que não muda: o job de passo 0 já armado, com `run_at` mais tarde que
-    // o piso da cadência. Quem responde por ele é o braço do job armado, e a hora que a tela mostra é
-    // a DELE; uma supressão que alcançasse o passo 0 devolveria o mesmo número por outro caminho (o
-    // estimador) e com outra hora, que é a diferença que esta fixture torna visível.
+    // NOTE: Step 0 already armed, with `run_at` later than the cadence floor. The armed-job branch
+    // answers for it, at the job's own time; a suppression that reached step 0 would return the
+    // same step through the estimator at another time, which this fixture makes visible.
     convStep0JobFarOut = await suDb.conversation
       .create({
         data: {
@@ -1013,10 +1006,10 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         payload: { threadId: `${tenant}:${inst}:353` },
       },
     });
-    // Issue #752: episódio NOVO, job de passo tardio pendente e compromisso vivo, numa persona cujo
-    // passo 0 é isento da pausa. A varredura não pula conversa com job pendente e o `upsertJobRow`
-    // reescreve a linha PENDING, então o que vai acontecer é o passo 0 sobrescrever o passo tardio e
-    // disparar através do compromisso. A tela conta o passo 1.
+    // NOTE: NEW episode, pending late-step job and a live appointment, on a persona whose step 0 is
+    // exempt from the pause. The sweep does not skip a conversation with a pending job and
+    // `upsertJobRow` rewrites the PENDING row, so step 0 overwrites the late step and fires through
+    // the appointment. The screen counts step 1.
     convDoomedJobUnfencedStep0 = await seedAppointmentConv(
       354,
       stepOptOutInbox.id,
@@ -1033,12 +1026,11 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         payload: { threadId: `${tenant}:${inst}:354`, stepIndex: 1 },
       },
     });
-    // Issue #752, o complemento: o mesmo estado numa persona cujo passo 0 NÃO é isento. Aí a
-    // varredura é cercada pelo compromisso (o `unfencedAgentIds` dela é
-    // `!appointmentPauseApplies(cfg, cfg.steps[0])`), e o handler ADIA o job de hora em hora enquanto
-    // o compromisso viver — só descarta depois, quando o portão do episódio finalmente é alcançado.
-    // Medido ao vivo: nenhuma passada da varredura tocou a linha. Nos dois casos nada entra no lugar,
-    // e a tela diz a pausa, que é a pausa do passo que ia rodar.
+    // NOTE: The same state on a persona whose step 0 is NOT exempt. The sweep is fenced by the
+    // appointment (its `unfencedAgentIds` is `!appointmentPauseApplies(cfg, cfg.steps[0])`), so no
+    // pass touches the row, and the handler defers the job hourly while the appointment lives,
+    // dropping it only once the episode gate is reached. Nothing takes its place, and the screen
+    // shows the pause of the step that would run.
     convDoomedJobFencedStep0 = await seedAppointmentConv(
       355,
       armedInbox.id,
@@ -1055,10 +1047,10 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         payload: { threadId: `${tenant}:${inst}:355`, stepIndex: 1 },
       },
     });
-    // Issue #752: a cerca de ativação do ESTIMADOR, que é o braço em que a supressão do job condenado
-    // deságua. A persona foi armada depois do último movimento desta conversa, então a varredura nunca
-    // vai enfileirar nada aqui e a tela não pode prometer. Sem esta fixture, tirar a cerca não reprovava
-    // nada (mutante 8 da bateria), e com a #752 o braço passou a responder por mais conversas.
+    // NOTE: The ESTIMATOR's activation fence, the branch where suppressing the doomed job lands.
+    // The persona was armed after this conversation's last movement, so the sweep never enqueues
+    // anything here and the screen cannot promise a step. Without this fixture, removing the fence
+    // fails nothing.
     const lateArmedAgent = await suDb.agent.create({
       data: {
         tenantId: tenant,
@@ -1096,11 +1088,11 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         },
       })
       .then((c) => c.id);
-    // Issue #752, achado do verificador: o operador RE-ARMOU o follow-up depois de o cliente ter
-    // respondido, e sobrou um job de passo tardio. O episódio é novo, então a supressão apaga a
-    // contagem dele; a cerca de ativação barra o passo 0 do episódio novo, então nada entra no lugar.
-    // Fica um job PENDING que o handler vai descartar e nada agendado — e é exatamente o estado em que
-    // a tela escrevia "sequência de follow-up concluída", porque `abandoned` só olhava a liveness.
+    // NOTE: The operator RE-ARMED the follow-up after the customer replied, leaving a late-step
+    // job. The episode is new, so suppression hides its countdown; the activation fence bars the
+    // new episode's step 0, so nothing replaces it. A PENDING job the handler will drop, with
+    // nothing scheduled, is not a completed sequence, which is why `abandoned` does not look at
+    // liveness alone.
     convRearmedWithDoomedJob = await suDb.conversation
       .create({
         data: {
@@ -1136,9 +1128,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       assigneeType: "AgentBot",
       assigneeId: OUR_BOT_ID,
     });
-    // Issue #652. Byte a byte a mesma semente de `convOurBotEstimate` — mesma inbox, mesmo agente,
-    // mesmo dono, mesmos instantes — menos quem já falou. Só esse par responde se é a marca que
-    // decide, e não alguma outra diferença de fixture.
+    // NOTE: Byte for byte the same seed as `convOurBotEstimate` (same inbox, agent, owner and
+    // instants) except who has spoken. Only this pair shows that the mark is what decides, and not
+    // some other fixture difference.
     convNobodySpoke = await seedEstimateConv(340, {
       assigneeType: "AgentBot",
       assigneeId: OUR_BOT_ID,
@@ -1153,8 +1145,8 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
   });
 
   // A live appointment is the sweep's own fence (followUp.pauseWhileAppointment, on by default): it
-  // skips the conversation, and the handler reschedules an already-armed job. The indicator has to
-  // agree, or the operator reads a countdown for a follow-up that never fires (issue #60).
+  // skips the conversation, and the handler reschedules an already-armed job. The indicator agrees,
+  // or the operator reads a countdown for a follow-up that never fires.
   async function seedAppointmentConv(
     chatwootId: number,
     inboxId: bigint,
@@ -1182,9 +1174,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       },
     });
     if (reminder) {
-      // The RECORD, not a reminder job: the indicator reads the same one predicate the sweep and the
-      // handler do (issue #376). Its reminder is deliberately left unwritten — an appointment whose
-      // last reminder already fired, or whose integration never armed one, still stands.
+      // NOTE: The RECORD, not a reminder job: the indicator reads the same predicate the sweep and
+      // the handler do. The reminder is deliberately left unwritten: an appointment whose last
+      // reminder already fired, or whose integration never armed one, still stands.
       await recordAppointment({
         tenantId: tenant,
         threadId: `${tenant}:${inst}:${chatwootId}`,
@@ -1263,7 +1255,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.nextStep).toBe(1);
     // dueAt = lastEventAt + 2min = 20:02 UTC, outside the 09:00–10:00 window → next open: next day 09:00.
     expect(d.followUp?.nextRunAt).toBe(BH_EXPECTED_RUN_AT);
-    // The cadence landed outside the window, so the estimate was deferred (item 3).
+    // NOTE: The cadence landed outside the window, so the estimate is deferred.
     expect(d.followUp?.nextRunAtDeferred).toBe(true);
   });
 
@@ -1419,12 +1411,10 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.nextStep).toBe(1);
   });
 
-  // ISSUE #103. The indicator changes no behaviour, only what the operator reads — which is exactly
-  // why it is the site that gets left behind: the suite stays green and the symptom shows up on the
-  // screen. Left out, the console says "paused by appointment" over a step that fires in two minutes.
-  //
-  // The pair is what proves it reads the RIGHT step rather than any step: same agent, same live
-  // appointment, and the answer flips with which step comes next.
+  // NOTE: The indicator changes no behaviour, only what the operator reads, so a regression here
+  // keeps the suite green and shows up on screen as "paused by appointment" over a step that fires
+  // in two minutes. The pair proves it reads the RIGHT step: same agent, same live appointment, and
+  // the answer flips with which step comes next.
   test("(#103) the step about to fire opted out → the console does not claim it is paused", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1445,23 +1435,17 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.pausedByAppointment).toBe(true);
     expect(d.followUp?.nextStep).toBeNull();
     expect(d.followUp?.nextRunAt).toBeNull();
-    // ...e PAUSADA não é ABANDONADA: as duas não têm nada agendado e só uma volta sozinha. O campo
-    // separa as duas de propósito, e a tela usa o par para escolher entre a frase da pausa e o
-    // silêncio do marcador de concluída.
+    // NOTE: PAUSED is not ABANDONED: neither has anything scheduled, and only one resumes on its
+    // own. The screen uses the pair to choose between the pause sentence and the completion
+    // marker's silence.
     expect(d.followUp?.abandoned).toBe(false);
   });
 
-  // Review round 2 da #103, e ele mediu o JOB: o handler resolve o passo antes de qualquer outra
-  // coisa e devolve `done` para um stepIndex fora da faixa, então a contagem daquele job é mentira e
-  // a palavra "pausado" sobre ele também. As duas afirmações continuam valendo e nenhuma delas é
-  // sobre a CONVERSA, que é o que esta tela responde: a fixture semeia o cliente falando depois do
-  // último follow-up, e para um episódio novo a #750 já decidiu que a contagem do episódio novo não
-  // se esconde atrás de um job do episódio velho — o job morre na primeira reivindicação, libera a
-  // chave de dedupe e a varredura arma o passo 0. A #752 estendeu essa decisão ao outro autor de
-  // episódio, que é o desta fixture, então o número aqui passou de `null` para o passo 1. O que
-  // NÃO mudou é a pausa: o passo 0 desta persona declara `ignoreAppointmentPause`, então ele fura o
-  // compromisso vivo de propósito e `pausedByAppointment` segue falso, agora porque o passo que vai
-  // rodar optou por furar, e não porque não havia passo nenhum.
+  // NOTE: The handler returns `done` for an out-of-range stepIndex, so that job's own countdown
+  // would be false. But the fixture's customer spoke after the last follow-up, a new episode: the
+  // stale job dies on its first claim, frees the dedupe key, and the sweep arms step 0, so the
+  // console counts step 1. There is still no pause, because this persona's step 0 declares
+  // `ignoreAppointmentPause` and fires through the live appointment.
   test("(#103) a job past the end of a shrunk sequence counts the new episode's step 1, and no pause", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1473,11 +1457,10 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.pausedByAppointment).toBe(false);
   });
 
-  // Issue #752 (review r1): o compromisso NÃO segura o job condenado, e foi isso que eu escrevi
-  // errado primeiro. A varredura não pula conversa com job pendente, e o `upsertJobRow` reescreve
-  // payload e `run_at` de uma linha PENDING — o comentário dele nomeia este caso —, então com o passo
-  // 0 isento da pausa o passo tardio é sobrescrito e dispara através do compromisso. A tela conta o
-  // passo 1, e não a pausa.
+  // NOTE: The appointment does NOT hold the doomed job. The sweep does not skip a conversation with
+  // a pending job, and `upsertJobRow` rewrites payload and `run_at` of a PENDING row, so with step
+  // 0 exempt from the pause the late step is overwritten and fires through the appointment. The
+  // screen counts step 1, not the pause.
   test("job condenado com compromisso vivo, passo 0 isento → a varredura sobrescreve, conta o passo 1", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1489,9 +1472,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.nextRunAt).not.toBe(ARMED_STEP1_RUN_AT.toISOString());
   });
 
-  // E o complemento, que é o que impede a leitura de virar "episódio novo sempre conta": com o passo
-  // 0 sujeito à pausa, a varredura é cercada pelo mesmo compromisso, o job condenado é descartado e
-  // nada entra no lugar. A tela diz a pausa — pela pergunta feita ao passo que ia rodar.
+  // NOTE: The complement, which keeps this from reading as "a new episode always counts": with step
+  // 0 subject to the pause, the sweep is fenced by the same appointment, the doomed job is dropped
+  // and nothing replaces it. The screen shows the pause, asked of the step that would run.
   test("job condenado com compromisso vivo, passo 0 sujeito à pausa → a pausa, e nada agendado", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1503,9 +1486,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.nextRunAt).toBeNull();
   });
 
-  // Issue #72: the pending-job branch reported whatever the row said, while the handler re-checks all
-  // of this at claim time and drops the job. The countdown told the operator the customer would be
-  // re-engaged when nobody was going to be.
+  // NOTE: The handler re-checks all of this at claim time and drops the job, so the pending-job
+  // branch cannot report whatever the row says: the countdown would promise a re-engagement nobody
+  // sends.
   test("a human took the conversation mid-sequence → no countdown for a job that will be dropped", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1522,9 +1505,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.abandoned).toBe(true);
   });
 
-  // Issue #750: a nossa resposta abriu episódio novo com um job de passo tardio ainda pendente. O
-  // handler descarta esse job (`else if (newEpisode) return done`) e a varredura recomeça do passo 0;
-  // o console mostra o passo 1 da sequência nova, e não o countdown do job condenado.
+  // NOTE: Our reply opened a new episode with a late-step job still pending. The handler drops that
+  // job (`else if (newEpisode) return done`) and the sweep restarts from step 0; the console shows
+  // the new sequence's step 1, not the doomed job's countdown.
   test("a nossa resposta reabriu o episódio com job de passo tardio armado → conta o passo 1, não o 2", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1535,8 +1518,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.nextRunAt).not.toBe(ARMED_STEP1_RUN_AT.toISOString());
   });
 
-  // Issue #750: o piso da cadência. Sem ele o console mede oito dias de silêncio numa conversa
-  // respondida há dois minutos, e mostra um follow-up vencido em vez do countdown real.
+  // NOTE: The cadence floor. Without it the console measures eight days of silence on a
+  // conversation answered two minutes ago, and shows an overdue follow-up instead of the real
+  // countdown.
   test("a contagem sai da nossa resposta, não do evento antigo do espelho", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1557,7 +1541,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.nextRunAt).toBe(proactiveFloorDueAt);
   });
 
-  // Issue #750: um job de passo inexistente não pode esconder o episódio que a nossa resposta abriu.
+  // NOTE: A job for a step that no longer exists cannot hide the episode our reply opened.
   test("passo encurtado E episódio novo pela nossa resposta → conta o passo 1", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1590,9 +1574,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.abandoned).toBe(true);
   });
 
-  // Issue #796, review round 3: a follow-up that died in this episode is not offered again by the
-  // sweep, so the console must not promise its step 1. One that died in an EARLIER episode does not
-  // count: the new one is estimated as before.
+  // NOTE: A follow-up that died in this episode is not offered again by the sweep, so the console
+  // does not promise its step 1. One that died in an EARLIER episode does not count: the new one is
+  // estimated as usual.
   test("a follow-up that died in this episode → no countdown; one that died before it → step 1", async () => {
     const { threadId } = await suDb.conversation.findUniqueOrThrow({
       where: { id: convNewEpisode },
@@ -1627,8 +1611,8 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         appDb,
       );
       expect(earlier.followUp?.nextStep).toBe(1);
-      // Review round 7: the episode written on the row decides over the death time. Marked with an
-      // older silence, a death just now is still an earlier episode's.
+      // NOTE: The episode written on the row decides over the death time: marked with an older
+      // silence, a death just now still belongs to an earlier episode.
       await suDb.$executeRaw`
         UPDATE scheduler_jobs
            SET updated_at = now(),
@@ -1653,10 +1637,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.nextStep).toBe(1);
   });
 
-  // Issue #214: with a second Agent Bot on the same Chatwoot account holding the conversation, the
-  // handler still reaches its live probe (`requireLiveBotOwnership`) and refuses to send there. The
-  // indicator has nothing after it, so a countdown here promises a re-engagement that is refused —
-  // the shape of #72, on the axis #72 left out.
+  // NOTE: With a second Agent Bot on the same Chatwoot account holding the conversation, the
+  // handler reaches its live probe (`requireLiveBotOwnership`) and refuses to send there. Nothing
+  // after the indicator corrects it, so a countdown here promises a re-engagement that is refused.
   test("another persona's bot holds it, job armed → no countdown", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1701,14 +1684,11 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.abandoned).toBe(true);
   });
 
-  // The other direction, and the reason the gate is the bot IDENTITY rather than "an AgentBot holds
-  // it": the conversation assigned to the inbox's OWN bot is the normal state of every bot-owned
-  // conversation, and suppressing the countdown there would silence the indicator for everyone.
-  //
-  // O NÚMERO mudou com a #752 e o eixo deste teste não: `seedArmedConv` semeia o cliente falando
-  // depois do último follow-up, que é episódio novo, e o job de passo tardio que ele semeia está
-  // condenado (`else if (newEpisode) return done` no handler). O que este teste guarda é que a
-  // contagem continua EXISTINDO para o nosso próprio bot; qual passo ela conta é a #752.
+  // NOTE: The gate is the bot IDENTITY, not "an AgentBot holds it": a conversation assigned to the
+  // inbox's OWN bot is the normal bot-owned state, and suppressing the countdown there would
+  // silence the indicator for everyone. This test keeps the countdown EXISTING for our own bot;
+  // which step it counts follows the new-episode rule (`seedArmedConv` seeds a customer reply after
+  // the last follow-up, so its late-step job is doomed).
   test("our own bot holds it, job armed → the countdown stands", async () => {
     const d = await getConversationDetail(ctx(tenant), convOurBotArmed, appDb);
     expect(d.followUp?.nextStep).toBe(1);
@@ -1716,25 +1696,21 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.abandoned).toBe(false);
   });
 
-  // Issue #752: o mesmo estado da #750 com o outro autor. O handler não pergunta QUEM falou — para
-  // `stepIndex > 0` ele é um `else if (newEpisode) return done` reto —, então o job de passo tardio
-  // morre nas duas formas de episódio novo, e o console tem que dar a mesma resposta nas duas. Sem
-  // isto, uma conversa cujo cliente respondeu ganhava a contagem de um passo que o worker descarta
-  // no instante em que reivindica: o cancelamento do webhook de entrada normalmente apaga o job no
-  // mesmo movimento, mas "normalmente" é sobre quanto tempo o estado dura, não sobre o console estar
-  // certo enquanto ele dura, e aqui não existe nada depois para corrigir a promessa.
+  // NOTE: The same state with the other author of a new episode. For `stepIndex > 0` the handler
+  // does not ask WHO spoke (`else if (newEpisode) return done`), so the late-step job dies in both
+  // shapes and the console gives one answer for both. The inbound webhook's cancel usually deletes
+  // the job at once, but nothing after the console corrects the promise while the state lasts.
   test("o cliente reabriu o episódio com job de passo tardio armado → conta o passo 1, não o 2", async () => {
     const d = await getConversationDetail(ctx(tenant), convOurBotArmed, appDb);
     expect(d.followUp?.nextStep).toBe(1);
-    // O passo 1 da sequência NOVA, contado do último movimento da conversa (23:18:45 + 2 min), e não
-    // o run_at do job condenado (dois dias depois). O valor verbatim é o que separa "suprimiu" de
-    // "suprimiu e recontou": um console que só apagasse a contagem diria `null` aqui.
+    // NOTE: Step 1 of the NEW sequence, counted from the last movement (23:18:45 + 2 min), not the
+    // doomed job's run_at two days later. The verbatim value tells "suppressed and recounted" from
+    // "suppressed" alone, which would read `null`.
     expect(d.followUp?.nextRunAt).toBe("2026-06-18T23:20:45.000Z");
   });
 
-  // Issue #752: e o estimador continua obedecendo a cerca de ativação. O episódio desta conversa
-  // começou antes de a persona ser armada, então a varredura não o enfileira nunca; prometer um
-  // passo aqui seria uma contagem para algo que não vai acontecer.
+  // NOTE: The estimator still obeys the activation fence: this episode began before the persona was
+  // armed, so the sweep never enqueues it and promising a step would count down to nothing.
   test("episódio anterior à ativação do follow-up → o estimador não promete passo nenhum", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1745,11 +1721,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.nextRunAt).toBeNull();
   });
 
-  // Issue #752 (verificador): job PENDENTE e nada agendado não é sequência concluída. O marcador da
-  // tela exige `abandoned !== true`, e `abandoned` olhava só a liveness — com o follow-up vivo e o
-  // episódio barrado pela cerca de ativação, a conversa aparecia como concluída com um passo na fila
-  // que vai ser descartado. O campo passou a perguntar o que a tela pergunta: há job e não há nada
-  // agendado.
+  // NOTE: A PENDING job with nothing scheduled is not a completed sequence. The screen's completion
+  // marker requires `abandoned !== true`, so `abandoned` asks what the screen asks (is there a job,
+  // and is nothing scheduled) rather than liveness alone.
   test("re-armado, job de passo tardio pendente e nada agendado → abandonada, não concluída", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1761,9 +1735,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.abandoned).toBe(true);
   });
 
-  // Issue #752: a contagem legítima do passo 2, que é o que a supressão NÃO pode alcançar. Mesmo
-  // episódio (o cliente não falou desde o último follow-up), job de passo tardio pendente: o handler
-  // vai rodá-lo, e a hora é a do próprio job.
+  // NOTE: The legitimate step-2 countdown the suppression must NOT reach. Same episode (the
+  // customer has not spoken since the last follow-up), late-step job pending: the handler runs it,
+  // at the job's own time.
   test("passo tardio pendente no MESMO episódio → conta o passo 2, com o run_at do job", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1775,8 +1749,8 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.abandoned).toBe(false);
   });
 
-  // Issue #752: e o passo 0 armado continua sendo respondido pelo braço do job, com a hora DELE. O
-  // número por si só não separa os dois caminhos (os dois dizem 1); a hora separa.
+  // NOTE: An armed step 0 is still answered by the armed-job branch, at ITS time. The step number
+  // alone does not separate the two paths (both say 1); the time does.
   test("job de passo 0 armado para mais tarde → a hora é a do job, não a do estimador", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1787,9 +1761,8 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.nextRunAt).toBe(STEP0_FAR_RUN_AT.toISOString());
   });
 
-  // E a simetria explícita, que é a afirmação da issue: os dois autores de episódio novo produzem a
-  // MESMA leitura. Uma correção que cobrisse só um dos lados passaria nos dois testes acima e
-  // falharia aqui.
+  // NOTE: The two authors of a new episode produce the SAME reading. A fix covering only one side
+  // passes the two tests above and fails here.
   test("episódio novo pela nossa resposta e pelo cliente → o console lê igual", async () => {
     const nosso = await getConversationDetail(
       ctx(tenant),
@@ -1815,21 +1788,20 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.nextRunAt).not.toBeNull();
   });
 
-  // Issue #652, no segundo leitor. A cláusula nova vive na varredura, que é SQL, e o indicador não a
-  // enxergaria: ele continuaria desenhando a contagem regressiva de um follow-up que não pode mais
-  // sair. É a #72 de novo, no eixo que a #72 não tinha — e é por isso que a regra mora no predicado
-  // compartilhado e não na consulta.
+  // NOTE: The sweep's clause lives in SQL, which the indicator cannot see; without the shared
+  // predicate the indicator would keep counting down to a follow-up that can no longer go out. That
+  // is why the rule lives in the shared predicate and not in the query.
   test("nobody on our side ever spoke → no countdown (the sweep will never pick it up)", async () => {
     const d = await getConversationDetail(ctx(tenant), convNobodySpoke, appDb);
     expect(d.followUp?.nextStep).toBeNull();
     expect(d.followUp?.nextRunAt).toBeNull();
-    // Não é a pausa de compromisso dizendo isso: é a conversa nunca ter tido uma primeira tentativa
-    // a continuar.
+    // NOTE: Not the appointment pause saying so: the conversation never had a first attempt to
+    // continue.
     expect(d.followUp?.pausedByAppointment).toBe(false);
   });
 
-  // A outra metade do OR, do lado do console: o operador respondeu à mão, o agente nunca falou, e a
-  // escada é dele.
+  // NOTE: The other half of the OR, on the console side: the operator replied by hand, the agent
+  // never spoke, and the thread is theirs.
   test("only a human ever spoke → the countdown stands", async () => {
     const d = await getConversationDetail(
       ctx(tenant),
@@ -1840,13 +1812,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     expect(d.followUp?.nextRunAt).not.toBeNull();
   });
 
-  // The distinction the flag exists for: a sequence whose last step is configured to resolve the
-  // conversation ends with the bot no longer owning it. That is a COMPLETED sequence, and the console
-  // still has to draw its completion marker — liveness alone cannot tell it from an abandoned one.
-  // Issue #261, at the reader the OPERATOR looks at. The gates in `webhook.ts` answer the episode's
-  // question, so on the unstamped half of an activated episode the agent replies — and this endpoint,
-  // asking the row, would still hand the console "awaiting /teste". A badge that contradicts what the
-  // operator can read in the conversation is worse than no badge.
+  // NOTE: The gates in `webhook.ts` answer the episode's question, so on the unstamped half of an
+  // activated episode the agent replies. This endpoint, asking the row, must not hand the console
+  // "awaiting /teste": a badge that contradicts the conversation is worse than no badge.
   test("the detail of an episode's unstamped half reports the activation", async () => {
     const agent = await suDb.agent.create({
       data: {
@@ -1925,6 +1893,9 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     }
   });
 
+  // NOTE: A sequence whose last step resolves the conversation ends with the bot no longer owning
+  // it. That is a COMPLETED sequence and the console still draws its completion marker: liveness
+  // alone cannot tell it from an abandoned one.
   test("a sequence that finished by resolving the conversation is complete, not abandoned", async () => {
     const d = await getConversationDetail(
       ctx(tenant),

@@ -22,9 +22,9 @@ import {
 import { lockToolNames } from "@/modules/tool-definitions/namespace";
 import { createToolDefinition } from "@/modules/tool-definitions/service";
 
-// The operator-authored code tool's service (issue #363): the row is the operator's, invalid code
-// SAVES with a warning, one name namespace with HTTP tools and natives, and the audit trail carries
-// the shape without the body.
+// The operator-authored code tool's service: the row is the operator's, invalid code SAVES with a
+// warning, one name namespace with HTTP tools and natives, and the audit trail carries the shape
+// without the body.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -217,8 +217,8 @@ describe.skipIf(!dbUp)("code tools service", () => {
     );
     expect(reverse?.translationKey).toBe("errors.documentToolNameTaken");
 
-    // The same question on the UPDATE door: a rename onto a slug whose tool name is taken. The
-    // create and the update reach the row through different code, and only one of them was asking.
+    // NOTE: The same question on the UPDATE door: a rename onto a slug whose tool name is taken. The
+    // create and the update reach the row through different code, so each has to ask.
     const free = await createDocumentTemplate(
       ctx(),
       {
@@ -296,16 +296,12 @@ describe.skipIf(!dbUp)("code tools service", () => {
   });
 
   test("every writer of a tool name queues behind one lock, the import included", async () => {
-    // The namespace spans two tables, so no unique index covers it: under READ COMMITTED both
-    // writes can read a free name and insert, and `dropDuplicateToolNames` then decides at assembly
-    // which tool the agent gets, with a flow-log line as the only trace. What makes that impossible
-    // is that both `assertNameFree`s take the same transaction lock first (namespace.ts).
-    //
-    // Measured rather than raced: two concurrent creates usually serialize on the pool and would
-    // pass with no lock at all. Here the first transaction takes the lock for the SAME name and
-    // holds it while it sleeps; the second's create can only get past its check once the first
-    // commits, so its own duration is the proof. Without the lock it finishes immediately and this
-    // fails on the elapsed time.
+    // NOTE: The namespace spans two tables, so no unique index covers it: under READ COMMITTED both writes
+    // can read a free name and insert, and `dropDuplicateToolNames` then picks the tool at assembly with a
+    // flow-log line as the only trace. Both `assertNameFree`s take the same transaction lock first
+    // (src/modules/tool-definitions/namespace.ts). Timed rather than raced, because two concurrent
+    // creates usually serialize on the pool and would pass with no lock: the first transaction holds the
+    // lock for the SAME name while it sleeps, so the second create's duration is the proof.
     const HELD_MS = 400;
     const name = "corrida_de_nome";
     let createMs = 0;
@@ -345,9 +341,9 @@ describe.skipIf(!dbUp)("code tools service", () => {
   });
 
   test("blank metadata and a reserved field name are refused where they are typed", async () => {
-    // `min(1)` counts characters, so a label of spaces used to store a row with no visible name and
-    // a description of spaces a tool with no instruction — and the description is the only thing
-    // that tells the model when to call it.
+    // NOTE: `min(1)` counts characters, so a label of spaces would store a row with no visible name and a
+    // description of spaces a tool with no instruction, and the description is the only thing that tells
+    // the model when to call it.
     for (const [field, patch] of [
       ["label", { label: "   " }],
       ["description", { description: "  " }],
@@ -414,9 +410,9 @@ describe.skipIf(!dbUp)("code tools service", () => {
   });
 
   test("a name that was legal before the newer rules can still be saved, as long as it does not move", async () => {
-    // The console sends the whole row on every save, and these rules arrived after rows existed:
-    // refusing an unchanged name would lock an operator out of editing a tool that was legal when
-    // they created it. Only a name that MOVES is asked the question.
+    // NOTE: The console sends the whole row on every save, and rows may predate these rules: refusing an
+    // unchanged name would lock an operator out of editing a tool that was legal when they created it.
+    // Only a name that MOVES is asked the question.
     const legacy = await suDb.codeToolDefinition.create({
       data: {
         tenantId,
@@ -515,8 +511,8 @@ describe.skipIf(!dbUp)("code tools service", () => {
     );
     expect(tool.name).toBe("checar_cpf");
 
-    // A row written before that rule (or past the service) still counts, by the name it reaches
-    // the model under.
+    // NOTE: A row stored in another spelling (legacy, or written past the service) still counts, by the
+    // name it reaches the model under.
     await suDb.toolDefinition.create({
       data: {
         tenantId,

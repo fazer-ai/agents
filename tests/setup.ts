@@ -142,7 +142,7 @@ process.env.JWT_SECRET = "test-secret-key-for-testing-only";
 // `/auth/google` regardless of the developer's local `.env` and so tests can
 // exercise the enabled-mode code path.
 process.env.GOOGLE_CLIENT_ID = "test-google-client.apps.googleusercontent.com";
-// NOTE: Force the rate-limit budgets, for the same reason as the line above. Two test files read
+// Force the rate-limit budgets, for the same reason as the line above. Two test files read
 // WHICH limiter answered from the ceiling it advertises, so a `.env` tuning one would fail a correct
 // app with the exact signature of a limiter collision. The GLOBAL budget is pinned HIGH, the one
 // non-production number here: `server.handle` has no socket, so every request any file sends falls

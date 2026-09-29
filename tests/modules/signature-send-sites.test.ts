@@ -1,17 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-// WHERE THE SIGNATURE IS ATTACHED, read off the sources, because the property that matters is a
-// PLACEMENT one and no unit test of `attachSignature` can see it (#616).
-//
-// Four call sites attach a signature. Three of them send ONE message — the handoff's farewell on
-// the proactive path, the proactive message itself, and both playground surfaces — and they say so
-// by passing a one-element array, which is what makes `all` and `once` indistinguishable there.
-// The fourth, `deliverReply`, is the only one that splits.
-//
-// A call site that grew a second element, or that started re-splitting its own text, would make a
-// follow-up arrive with the signature repeated inside one message: the operator's own preview
-// surface showing something the customer never receives, which is the divergence the playground
-// exists to avoid.
+// Where the signature is attached, read off the sources: the property is a PLACEMENT one, which no
+// unit test of `attachSignature` can see. Three call sites send ONE message (the handoff's farewell
+// on the proactive path, the proactive message itself, both playground surfaces) and pass a
+// one-element array, which makes `all` and `once` indistinguishable there; `deliverReply` is the
+// only one that splits. A second element, or a re-split of its own text, would repeat the signature
+// inside one message, and the playground would preview what the customer never receives.
 const SOURCES = {
   nudge: await Bun.file("src/graph/nudge.ts").text(),
   playground: await Bun.file("src/modules/playground/service.ts").text(),
@@ -64,8 +58,8 @@ describe("deliverReply is the only site that splits", () => {
     expect(found).toHaveLength(3);
     expect(found.some((c) => c.includes("rawChunks"))).toBe(true);
     expect(found.some((c) => c.includes("[owedRaw]"))).toBe(true);
-    // THE RETRY IS BUILT FROM THE RAW REMAINDER. Joining the signed chunks put the badge once per
-    // balloon inside a single message (review round 1 of #617).
+    // NOTE: the retry is built from the RAW remainder: joining the signed chunks would put the badge
+    // once per balloon inside a single message.
     expect(SOURCES.split).toContain("const owedRaw = rawChunks");
   });
 });

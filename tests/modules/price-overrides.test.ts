@@ -21,7 +21,7 @@ import {
   updatePriceOverrides,
 } from "@/modules/tenant-settings/service";
 
-// Issue #865: a tenant's own prices for model calls, consulted before the price table when a ledger
+// A tenant's own prices for model calls, consulted before the price table when a ledger
 // row is priced, and recorded in the row so a price corrected later can find the rows it wrote.
 
 const tokens = (promptTokens: number, completionTokens: number) => ({
@@ -104,7 +104,7 @@ describe("what prices a call", () => {
     ).toBeCloseTo(1, 12);
   });
 
-  // A cache rate the tenant left empty means no discount, never no price (verification of #865).
+  // NOTE: a cache rate the tenant left empty means no discount, never no price.
   test("a cache read or write on a tenant price with no cache rate is charged at its input rate", () => {
     const own = block([
       { provider: "openai", model: "gpt-4o-mini", input: 0.1, output: 0.3 },
@@ -396,7 +396,7 @@ describe.skipIf(!dbUp)("a saved price prices the next call", () => {
     ]);
   });
 
-  // The MCP tools read and write the same list, with the same validation (issue #865).
+  // NOTE: the MCP tools read and write the same list, with the same validation.
   test("over MCP: a preview writes nothing, an apply saves, the read returns it, and a bad list is refused alike", async () => {
     const token = (scopes: string[]): VerifiedToken => ({
       userId: null as unknown as bigint,

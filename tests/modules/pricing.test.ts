@@ -12,7 +12,7 @@ import {
   PRICE_TABLE_VERSION,
 } from "@/modules/pricing/version";
 
-// Issue #863: what a call cost, from the price table the ledger is written with. The table is
+// What a call cost, from the price table the ledger is written with. The table is
 // LiteLLM's, pinned; the rows below are held to what each VENDOR's own pricing page said on the day
 // the table was read, so a regenerated table that disagrees with the vendor on a default model is a
 // red test, not a quietly wrong figure on every turn.

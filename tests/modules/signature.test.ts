@@ -14,15 +14,10 @@ import {
   splitReplyParts,
 } from "@/modules/split/service";
 
-// Issue #599. A signature is operator policy, not content, and asking the model for it in the prompt
-// produced it unevenly: measured over three rounds of the same twelve real customer emails,
-// gpt-5.6-luna glued the closing to the last sentence in 2 of 10 replies and left it out of 3 of 3
-// handoffs, because `handoff_to_human`'s schema asks for "a brief reply to the customer" and the
-// schema wins over the system prompt.
-//
-// THE VOCABULARY IS CHATWOOT'S, and so are the bytes: `position` (top|bottom), `separator`
-// (blank|--) and the delimiters `\n\n` and `\n\n--\n\n` are what `appendSignature` in the fork's
-// reply box uses, so an operator who configures both meets the same thing twice.
+// A signature is operator policy, not content, injected outside the model (docs/signature.md). The
+// vocabulary is Chatwoot's, and so are the bytes: `position` (top|bottom), `separator` (blank|--)
+// and the delimiters `\n\n` and `\n\n--\n\n` are what `appendSignature` in the fork's reply box
+// uses, so an operator who configures both meets the same thing twice.
 
 const SIG = "— Bia, Café Exemplo";
 
@@ -244,7 +239,7 @@ describe("alreadySigned: a tail check across the whole reply, not containment", 
 });
 
 describe("signatureFor: on or off, and the variables", () => {
-  // `enabled: true` since #612: these cases are about what an ON signature renders.
+  // NOTE: `enabled: true`: these cases are about what an ON signature renders.
   const cfg = { ...SIGNATURE_DEFAULTS, enabled: true, text: SIG };
 
   test("one text, on every channel: the config carries no channel at all", () => {
@@ -439,7 +434,7 @@ describe("deliverReply: what the customer actually receives", () => {
 describe("dedupe asks the whole reply, not the chunks (review of #599)", () => {
   const MULTI = "— Bia\n\nCafé Exemplo";
 
-  // The split is LOSSY for this question in two independent ways, and each cost a review round.
+  // NOTE: the split is LOSSY for this question in two independent ways.
   test("a model signature that SPANS chunks is still caught", () => {
     const reply = `Resposta.\n\n${MULTI}`;
     const { chunks } = splitReplyParts(reply, SPLIT_DEFAULTS);
@@ -537,13 +532,9 @@ describe("the render options travel with the variables (review of #599)", () => 
   });
 });
 
-// A SIGNATURE IS A LINE, NOT A PREFIX.
-//
-// Round 12 of the review: `startsWith`/`endsWith` on the raw string reads any reply whose first
-// word merely BEGINS with the signature as already signed. "Ana" against "Analisei o seu pedido"
-// matches, and the customer gets a reply with no closing at all — the exact failure this feature
-// exists to prevent, caused by the guard meant to prevent its twin. A short signature is a first
-// name, which is the common case, so this is not an exotic input.
+// A signature is a LINE, not a prefix: `startsWith`/`endsWith` on the raw string would read "Ana"
+// against "Analisei o seu pedido" as already signed, and the customer would get no closing at all.
+// A short signature is a first name, the common case (docs/signature.md, "Idempotency").
 describe("the dedupe asks for a whole line, not a prefix", () => {
   const sign = (text: string, signature: string, position: SignaturePosition) =>
     attachSignature([text], signature, {
@@ -593,14 +584,11 @@ describe("the dedupe asks for a whole line, not a prefix", () => {
   });
 });
 
-// ===== #612: THE SWITCH =====
-//
-// Written against the ISSUE, before the fix, and before reading the sealed scenarios in detail.
-// Three properties the issue states, each of which loses operator data if it is wrong.
+// The switch: three properties, each of which loses operator data if it is wrong.
 describe("turning the signature off without deleting it (#612)", () => {
   const SIG = "Atenciosamente,\nAlex | Minha Empresa";
 
-  // THE POINT OF THE WHOLE ISSUE. Off has to be a state, not an erasure.
+  // NOTE: off has to be a state, not an erasure.
   test("off keeps the text, and on gives it back byte for byte", () => {
     const on = { ...SIGNATURE_DEFAULTS, enabled: true, text: SIG };
     const off = { ...on, enabled: false };
@@ -620,9 +608,9 @@ describe("turning the signature off without deleting it (#612)", () => {
     ).toBeNull();
   });
 
-  // THE MIGRATION PROPERTY, and the one that silently destroys work if it is wrong. Every agent
-  // configured under #599 has text and no flag, and meant ON. Reading the absence as off would
-  // unsign all of them on the next load, with nobody touching anything.
+  // NOTE: the migration property, the one that silently destroys work if it is wrong. An agent
+  // configured before the switch existed has text and no flag, and meant ON; reading the absence
+  // as off would unsign all of them on the next load.
   describe("a bag written before the switch existed", () => {
     test("text and no flag reads as on", () => {
       const cfg = readSignatureConfig({
@@ -682,16 +670,11 @@ describe("turning the signature off without deleting it (#612)", () => {
   });
 });
 
-// Issue #616. POSITION AND REPETITION ARE THE SAME DECISION SEEN FROM TWO SIDES, and #599 answered
-// only one of them. A signature at the BOTTOM is a farewell, said once; a signature at the TOP is a
-// badge, and the question it answers ("who is talking to me") comes back on every balloon, because
-// on WhatsApp each balloon is an independent message with its own notification and its own preview.
-// The first version offered `top` and then treated it as a farewell: on a three-balloon reply the
-// customer read the agent's name once and got two anonymous messages after it.
-//
-// The fork's own human signature already repeats — `appendSignature` runs in the reply box at SEND
-// time, so a human who sends three messages signs three — and an agent signing once per turn is
-// inconsistent with the person sitting next to it in the same conversation.
+// Position and repetition are the same decision seen from two sides (docs/signature.md). A signature
+// at the BOTTOM is a farewell, said once; at the TOP it is a badge, and "who is talking to me" comes
+// back on every balloon, since on WhatsApp each is an independent message with its own preview. The
+// fork's human signature already repeats (`appendSignature` runs at SEND time), and an agent signing
+// once per turn would be inconsistent with the person next to it in the same conversation.
 describe("frequency: every message of the turn, or one of them", () => {
   const THREE = [
     "Boa tarde, verifiquei aqui.",
@@ -727,8 +710,7 @@ describe("frequency: every message of the turn, or one of them", () => {
     ]);
   });
 
-  // The whole point of keeping the old value: an operator who wants the farewell keeps what #599
-  // shipped, byte for byte, and nothing about this change reaches them.
+  // NOTE: an operator who wants the farewell keeps the `once` behaviour byte for byte.
   test("once: byte-identical to what #599 delivers, in both positions", () => {
     expect(
       attachSignature(THREE, SIG, {
@@ -754,11 +736,10 @@ describe("frequency: every message of the turn, or one of them", () => {
     ]);
   });
 
-  // THE DEDUPE BECOMES A PER-BALLOON QUESTION, and it has to. `alreadySigned` asks about the reply
-  // as it AROSE, at both ends, which is the right question for `once` and the wrong shape for
-  // `all`: a model that signed itself at the end would suppress the badge on the other three
-  // balloons, which is the failure this feature exists to prevent, produced by the guard against
-  // its twin. Same rule as #599 otherwise, including the line boundary.
+  // NOTE: with `all` the dedupe is a per-balloon question. `alreadySigned` asks about the reply as
+  // it AROSE, at both ends, which is right for `once` and the wrong shape for `all`: a model that
+  // signed itself at the end would suppress the badge on the other balloons. The line boundary rule
+  // holds here too.
   test("all: the balloon the model signed keeps ONE, and the others still get theirs", () => {
     const fim = [...THREE.slice(0, 2), SIG];
     const out = attachSignature(fim, SIG, {
@@ -814,12 +795,10 @@ describe("frequency: every message of the turn, or one of them", () => {
     }
   });
 
-  // A SIGNATURE THAT SPANS A BLANK LINE is cut by the same paragraph rule the reply is, so the
-  // model's own copy of it occupies SEVERAL balloons and no single one holds all of it. The
-  // per-balloon check therefore recognises none of them, and every fragment would get a second
-  // signature glued to it. This is #599's split-boundary defect, reintroduced by the loop that
-  // replaced the index; review round 1 of #617 caught it. The whole-reply question still answers
-  // WHETHER there is a copy, and matching its paragraphs against the edge balloons answers WHICH.
+  // NOTE: a signature that spans a blank line is cut by the same paragraph rule the reply is, so
+  // the model's copy occupies SEVERAL balloons and a per-balloon check alone recognises none, gluing
+  // a second signature to every fragment. The whole-reply question answers WHETHER there is a copy,
+  // and matching its paragraphs against the edge balloons answers WHICH.
   test("all: the model's multi-paragraph copy is left whole, and the rest is signed", () => {
     const MULTI = "Alex\n\nMinha Empresa";
     const fim = ["Resposta.", "Alex", "Minha Empresa"];
@@ -862,12 +841,10 @@ describe("frequency: every message of the turn, or one of them", () => {
     ]);
   });
 
-  // A FRAGMENT DOES NOT HAVE TO OWN ITS WHOLE BALLOON. When the model glues its closing to the last
-  // line of prose, one balloon holds content AND half the signature while the next holds the other
-  // half alone. Requiring every fragment to be an entire balloon rejected the run and signed both;
-  // review round 2 of #617. The balloon that is ENTIRELY a fragment is left alone, and the one that
-  // carries content is still signed, because suppressing a signature on a balloon the customer
-  // reads as content is the failure this feature exists to prevent.
+  // NOTE: a fragment does not have to own its whole balloon. When the model glues its closing to
+  // the last line of prose, one balloon holds content AND half the signature while the next holds
+  // the other half alone (requiring whole balloons would sign both). The balloon that is ENTIRELY a
+  // fragment is left alone; the one that carries content is still signed.
   test("all: a balloon that is entirely a fragment is skipped, one with content is not", () => {
     const MULTI = "Alex\n\nMinha Empresa";
     const chunks = ["Resposta.\nAlex", "Minha Empresa"];
@@ -881,14 +858,11 @@ describe("frequency: every message of the turn, or one of them", () => {
     expect(out[0]).toBe(`Resposta.\nAlex\n\n${MULTI}`);
   });
 
-  // TWO SHORT LINES FLATTEN INTO TWO ORDINARY WORDS, and "more than one line" was never enough on
-  // its own: the signature "Alex\nSupport" collapses to "Alex Support", which is how an ordinary
-  // sentence starts. The balloon went out with no closing at all, which is the failure this feature
-  // exists to prevent, produced by the guard against its twin for the third time. Round 6.
-  //
-  // The flattened check keeps the LINE BOUNDARY the exact one has: the match must cover whole lines
-  // of the balloon. That is what the `maxChunks` merge preserves (it trims the paragraphs and keeps
-  // the newlines between them) and what prose in a single line does not have.
+  // NOTE: two short lines flatten into two ordinary words: "Alex\nSupport" collapses to "Alex
+  // Support", which is how an ordinary sentence starts, so "more than one line" is not enough on
+  // its own. The flattened check keeps the LINE BOUNDARY: the match must cover whole lines of the
+  // balloon, which the `maxChunks` merge preserves (it trims paragraphs and keeps the newlines
+  // between them) and prose in a single line does not have.
   test("all: a sentence that merely opens with the signature's words is prose", () => {
     const TWO_LINES = "Alex\nSupport";
     const chunks = ["Alex Support can help with that.", "Segue o retorno."];
@@ -932,13 +906,11 @@ describe("frequency: every message of the turn, or one of them", () => {
     expect(out[2]).toBe(`Mais uma coisa.\n\n${SIG}`);
   });
 
-  // THE SIGNATURE'S OWN LINE BREAKS ARE PART OF IT. Collapsing them equated the two-line signature
-  // "Alex\nSupport" with the single prose line "Alex Support", so a balloon listing teams went out
-  // bare whenever the model happened to sign somewhere else in the reply. Round 7, and the same
-  // failure direction as round 6 through a narrower door.
-  //
-  // The merge this comparison exists for TRIMS the paragraphs and keeps the newlines between them,
-  // so the normalisation may drop indentation and blank lines and must keep the line breaks.
+  // NOTE: the signature's own line breaks are part of it. Collapsing them would equate
+  // "Alex\nSupport" with the prose line "Alex Support", and a balloon listing teams would go out
+  // bare whenever the model signed elsewhere in the reply. The merge this comparison exists for
+  // TRIMS the paragraphs and keeps the newlines between them, so the normalisation may drop
+  // indentation and blank lines and must keep the line breaks.
   test("all: a prose line is not the two-line signature, even in a signed reply", () => {
     const TWO_LINES = "Alex\nSupport";
     const chunks = ["Available teams:\nAlex Support", TWO_LINES];
@@ -1016,11 +988,11 @@ describe("frequency: every message of the turn, or one of them", () => {
     ).toEqual([`Falei com Alex Minha Empresa ontem.\n\n${MULTI}`, MULTI]);
   });
 
-  // BOTH ENDS ARE WALKED, because `alreadySigned` asks about both and a model that opened and closed
-  // with the same closing wrote two copies, each of which the splitter may have cut. Round 5.
+  // NOTE: both ends are walked, because `alreadySigned` asks about both and a model that opened and
+  // closed with the same closing wrote two copies, each of which the splitter may have cut.
   test("all: a multi-balloon copy at EACH end is left whole, and only the body is signed", () => {
     const MULTI = "Alex\n\nMinha Empresa";
-    // Measured from `splitReplyParts` on `MULTI + "\n\nResposta.\n\n" + MULTI`.
+    // NOTE: what `splitReplyParts` returns on `MULTI + "\n\nResposta.\n\n" + MULTI`.
     const chunks = [
       "Alex",
       "Minha Empresa",
@@ -1044,15 +1016,15 @@ describe("frequency: every message of the turn, or one of them", () => {
     ]);
   });
 
-  // A WHOLE COPY CAN SHARE A BALLOON WITH PROSE, when the ceiling merges them, and then the balloon
-  // is neither a fragment nor an exact match: the merge trimmed the signature's indentation. The
-  // per-balloon question gets a whitespace-collapsed form too — but ONLY for a signature that spans
-  // more than one line. Collapsing turns the line boundary into a space, and for a one-line
-  // signature that is the round-12 hole of #599 coming back through the other door: "chame o Alex"
-  // would read as signed and the balloon would go out bare, which is worse than a second copy.
+  // NOTE: a whole copy can share a balloon with prose, when the ceiling merges them, and then the
+  // balloon is neither a fragment nor an exact match: the merge trimmed the signature's
+  // indentation. The per-balloon question gets a whitespace-collapsed form too — but ONLY for a
+  // signature that spans more than one line. Collapsing turns the line boundary into a space, and
+  // for a one-line signature that is the prefix hole again: "chame o Alex" would read as signed and
+  // the balloon would go out bare, which is worse than a second copy.
   test("all: a whole copy merged into a balloon with prose is recognised", () => {
     const INDENTED = "Alex\n\n  Minha Empresa";
-    // Measured from `splitReplyParts` at maxChunks 2.
+    // NOTE: what `splitReplyParts` returns at maxChunks 2.
     const chunks = ["Bom dia.", "Resposta.\n\nAlex\n\nMinha Empresa"];
     expect(
       attachSignature(
@@ -1095,16 +1067,14 @@ describe("frequency: every message of the turn, or one of them", () => {
     ).toEqual([SIG, `${SIG}\n\nResposta.`, SIG]);
   });
 
-  // THE SPLITTER MANGLES THE MODEL'S COPY IN MORE WAYS THAN ONE, and chasing them one at a time is
-  // how this module collected three near-identical defects. The rule below is one question asked of
-  // the whole family: with the reply's own ends saying a copy EXISTS, walk in from that end over
+  // NOTE: the splitter mangles the model's copy in more ways than one, so the rule is one question
+  // for the whole family: with the reply's own ends saying a copy EXISTS, walk in from that end over
   // balloons that are still a suffix (or prefix) of the signature with whitespace collapsed. Every
-  // way the splitter can cut, trim, merge or rejoin is a whitespace difference, so every one of
-  // them is the same question. Rounds 1, 3 and 4 of the review, in one place.
+  // way the splitter can cut, trim, merge or rejoin is a whitespace difference.
   test("all: a signature the splitter cut BY SENTENCE is recognised in both balloons", () => {
     const LONG =
       "Atenciosamente, Alex da Minha Empresa. Estamos aqui de segunda a sexta, das nove as seis.";
-    // What `splitReplyParts` returns for this reply at maxChars 80, measured.
+    // NOTE: what `splitReplyParts` returns for this reply at maxChars 80.
     const chunks = [
       "Atenciosamente, Alex da Minha Empresa.",
       "Estamos aqui de segunda a sexta, das nove as seis.",
@@ -1121,7 +1091,7 @@ describe("frequency: every message of the turn, or one of them", () => {
 
   test("all: a separator run the merge kept is still the same copy", () => {
     const WIDE = "Alex\n\n\n  Minha Empresa";
-    // Measured: the merge keeps the original "\n\n\n" and trims the indentation.
+    // NOTE: the merge keeps the original "\n\n\n" and trims the indentation.
     const chunks = ["Bom dia.", "Alex\n\n\nMinha Empresa"];
     expect(
       attachSignature(
@@ -1133,17 +1103,13 @@ describe("frequency: every message of the turn, or one of them", () => {
     ).toEqual([`Bom dia.\n\n${WIDE}`, "Alex\n\n\nMinha Empresa"]);
   });
 
-  // THE maxChunks CEILING MERGES the overflow into the last balloon, and the merge rejoins the
-  // paragraphs with a plain "\n\n" after trimming each one — so a signature with an INDENTED line
-  // comes back without the indentation and matches neither the signature nor its paragraphs. That
-  // is the same trimming invariant #599 hit twice; `once` survives it because it asks the original,
-  // and the per-balloon question cannot. Round 3 of the review.
-  //
-  // The answer is to compare like with like: the balloon holds what the splitter made of the
-  // signature, so the check asks about the signature put through the same normalisation.
+  // NOTE: the maxChunks ceiling merges the overflow into the last balloon, rejoining the paragraphs
+  // with a plain "\n\n" after trimming each, so a signature with an INDENTED line comes back without
+  // the indentation. `once` survives it because it asks the original; the per-balloon question
+  // cannot, so it compares like with like: the signature put through the same normalisation.
   test("all: a copy merged at the ceiling is recognised despite the lost indentation", () => {
     const INDENTED = "Alex\n\n  Minha Empresa";
-    // What `splitReplyParts` returns for this reply at maxChunks 2, measured.
+    // NOTE: what `splitReplyParts` returns for this reply at maxChunks 2.
     const chunks = ["Bom dia.", "Alex\n\nMinha Empresa"];
     expect(
       attachSignature(
@@ -1155,8 +1121,8 @@ describe("frequency: every message of the turn, or one of them", () => {
     ).toEqual([`Bom dia.\n\n${INDENTED}`, "Alex\n\nMinha Empresa"]);
   });
 
-  // THE ORIGINAL IS THE AUTHORITY, not the chunk array, which is the same rule the whole-reply
-  // dedupe is built on (#599): the split TRIMS and throws the separators away, so an array can
+  // NOTE: the original is the authority, not the chunk array, the same rule the whole-reply
+  // dedupe is built on: the split TRIMS and throws the separators away, so an array can
   // reassemble into something the model never wrote. Balloons that merely look like the signature's
   // paragraphs, in a reply the original says was never signed, are prose — and prose gets signed.
   test("all: balloons that reassemble into the signature are not a copy if the reply is not", () => {
@@ -1215,10 +1181,9 @@ describe("frequency: every message of the turn, or one of them", () => {
 });
 
 describe("readSignatureConfig: the frequency an old bag never wrote", () => {
-  // THE MIGRATION, and it is a behaviour change stated out loud rather than discovered: a bag
-  // written under #599/#612 with `position: "top"` starts signing every balloon on deploy. The
-  // position is where the operator's intent is already visible, so the default reads it instead of
-  // asking the same question twice.
+  // NOTE: with no frequency stored, a bag with `position: "top"` signs every balloon: the position
+  // is where the operator's intent is already visible, so the default reads it instead of asking
+  // the same question twice.
   test("no frequency: top means all, bottom means once", () => {
     expect(
       readSignatureConfig({ signature: { text: "Alex", position: "top" } })

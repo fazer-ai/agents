@@ -8,15 +8,11 @@ import { listConversations } from "@/modules/conversations/service";
 import { exportExecutionLogs } from "@/modules/flowlog/export";
 import { listExecutionLogs } from "@/modules/flowlog/read";
 
-// ── THE RANGE IS THE SERVICE'S, WHICH IS THE HALF REST CANNOT PROVE ──
-//
-// The query parser refuses a malformed count before any service runs, so an assertion driven over
-// HTTP passes with the service's own check deleted — measured: two mutations survived a green
-// 26-case HTTP matrix. MCP and the console's internal calls arrive HERE with a plain number and no
-// query string, so this is the layer that decides for them.
-//
+// The range is the service's, the half REST cannot prove: the query parser refuses a malformed
+// count before any service runs, so an HTTP assertion passes with the service's own check deleted.
+// MCP and the console's internal calls arrive HERE with a plain number and no query string.
 // No database: every one of these refuses before it reaches a query, and `base` is a witness to
-// that — a poisoned client that throws if anything touches it.
+// that, a poisoned client that throws if anything touches it.
 const poisoned = new Proxy(
   {},
   {

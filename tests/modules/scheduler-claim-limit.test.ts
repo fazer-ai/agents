@@ -3,25 +3,14 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@/../generated/prisma/client";
 import { claimSql, laneFilter } from "@/modules/scheduler/service";
 
-// ISSUE #627. Everything a lane budgets is that one `LIMIT`: the traffic share, the observe cap, the
-// batch itself. And for the shape the claim used to be written in, Postgres does not honour it.
-// `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED LIMIT n)` is a SEMI-JOIN, which keeps
-// the UPDATE's target on the OUTER side, so the subquery is the inner one; with no `Materialize`
-// above it the inner side is re-executed once per outer row, each re-execution SKIPs the rows the
-// previous one locked and returns a DIFFERENT n, and every row the outer scan reaches matches. A
-// claim of five came back with ten — measured on CI inside one transaction, where a plain
-// `SELECT ... LIMIT 5` on the same parameters returned 5.
-//
-// THE PLAN IS PINNED, not waited for. The planner picks the safe `Hash Semi Join` here and the
-// hazardous `Nested Loop Semi Join` on CI, off the same code and the same Postgres 17 — which is
-// exactly why the failure looked like a flake for four runs. The knobs below are the smallest set
-// that reproduced the CI plan locally, and they ride on the CONNECTION (libpq `options`) because the
-// statement runs inside a transaction this test does not open.
-//
-// It runs as the MIGRATION role, and that is part of the rig rather than laziness: under the fleet
-// role RLS adds its quals and the planner goes back to the safe plan, so the claim's own path cannot
-// be made to fail here at all. What is under test is the statement, and it is the statement
-// production runs, taken from the module instead of retyped.
+// Everything a lane budgets is the claim's one `LIMIT`. As `id IN (SELECT ... FOR UPDATE SKIP
+// LOCKED LIMIT n)` it is a semi-join whose inner side Postgres may re-execute per outer row, each
+// run skipping what the last locked, so the LIMIT is ignored (see `claimSql`). The plan is PINNED:
+// the planner may pick the safe `Hash Semi Join` on one machine and the hazardous `Nested Loop Semi
+// Join` on another, so the knobs below force the latter, on the CONNECTION (libpq `options`)
+// because the statement runs in a transaction this test does not open. It runs as the MIGRATION
+// role because the fleet role's RLS quals push the planner back to the safe plan. The statement is
+// production's own, taken from the module.
 const KNOBS = [
   "enable_sort=off",
   "enable_material=off",
@@ -98,9 +87,9 @@ describe.skipIf(!dbUp)("the claim hands back its limit and no more", () => {
     await pinned?.$disconnect();
   });
 
-  // Without this the two below could go green because the rig stopped working rather than because
-  // the statement is sound: an `options` string the driver silently dropped leaves them running on
-  // the same safe plan that hides the bug on this machine.
+  // NOTE: without this the two below could go green because the rig stopped working rather than
+  // because the statement is sound: an `options` string the driver silently dropped leaves them
+  // running on the same safe plan that hides the bug on this machine.
   test("the connection really carries the planner settings the rig depends on", async () => {
     for (const knob of ["enable_sort", "enable_material", "enable_hashjoin"]) {
       const [row] = await pinnedDb.$queryRawUnsafe<
@@ -110,7 +99,7 @@ describe.skipIf(!dbUp)("the claim hands back its limit and no more", () => {
     }
   });
 
-  // And the property the count below rests on, asserted where a reader can see it: the due set is
+  // NOTE: the property the count below rests on, asserted where a reader can see it: the due set is
   // computed ONCE, as its own node, instead of being a subquery the join may re-enter.
   test("the due set is evaluated once, as a CTE", async () => {
     const plan = await pinnedDb.$queryRaw<Array<Record<string, string>>>(

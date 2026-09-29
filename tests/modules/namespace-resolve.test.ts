@@ -1,12 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { resolveByModelName } from "@/modules/tool-definitions/namespace";
 
-// Round 29. `toolsUnderModelName` answers "is this name taken", where every match counts. Choosing
-// WHICH tool a grant binds to is a different question, and `[0]` off an unordered read answered it
-// by whatever the database listed first. A destination can hold `Foo` and `foo` side by side: the
-// old unique index was case-sensitive, so both were legal, and both derive `foo`. Binding the grant
-// to the wrong one calls a different endpoint with a different credential, and nothing on screen
-// says so.
+// `toolsUnderModelName` answers "is this name taken", where every match counts. Choosing WHICH tool
+// a grant binds to is a different question: `[0]` off an unordered read picks whatever the database
+// lists first. A destination can hold `Foo` and `foo` side by side (both derive `foo`), and binding
+// the grant to the wrong one silently calls a different endpoint with a different credential.
 describe("resolveByModelName", () => {
   const rows = [
     { id: 1n, name: "Foo" },

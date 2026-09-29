@@ -4,34 +4,22 @@ import { join, relative } from "node:path";
 import { JOB_DELETE_ON_DONE } from "@/modules/scheduler/lanes";
 import { codeOnly, withoutComments } from "@/tests/utils/source-text";
 
-// QUEM APAGA UMA MORTE DEVE O ANÚNCIO DELA, e a dívida é cobrada aqui (issue #737).
-//
-// `revokeJobsByKeyPrefixOn` deleta a linha de um kind `JOB_DELETE_ON_DONE`, inclusive a que já está
-// `DEAD`, porque ela guarda o corpo cifrado da mensagem e nada varre a tabela. Apagando-a, ela
-// destrói a única evidência de que aquela ingestão se perdeu: o anúncio genérico relê a linha do job
-// e uma linha ausente não é prova de perda nenhuma. Então o revoke devolve as mortes que apagou, e
-// quem chamou anuncia depois — depois, porque a transação do chamador pode desfazer a exclusão, e
-// uma linha de log não se retrata.
-//
-// A cerca é sobre o SEGUNDO chamador, não sobre o primeiro. `announceReaped` é o precedente exato:
-// o comentário dele diz "every caller of `reapStaleJobs` owes this call" desde que foi escrito, e
-// três lanes com reaper próprio foram adicionadas sem fazê-la, cada uma calando as mortes do seu
-// kind sem que nada acusasse. Uma obrigação escrita em comentário é uma obrigação que o próximo
-// chamador não lê.
-//
-// É uma varredura de FONTE e não uma checagem em execução porque o custo do esquecimento é o
-// silêncio: não há o que observar depois, que é a definição do estado terminal.
+// Quem apaga uma morte deve o anúncio dela. `revokeJobsByKeyPrefixOn` deleta a linha `DEAD` de um
+// kind `JOB_DELETE_ON_DONE` e devolve as mortes que apagou; quem chamou anuncia depois que a própria
+// transação é durável, porque ela pode desfazer a exclusão e uma linha de log não se retrata
+// (docs/logs.md). A cerca é sobre o PRÓXIMO chamador: uma obrigação escrita só em comentário, como a
+// de `announceReaped`, é uma que o próximo chamador não lê. É uma varredura de FONTE porque o custo
+// do esquecimento é o silêncio, e depois dele não há o que observar.
 
 const OWNER = "src/modules/scheduler/service.ts";
 const REVOKE = "revokeJobsByKeyPrefixOn";
 const ANNOUNCE = "announceErasedDeaths";
 
-// E A OUTRA METADE DA MESMA OBRIGAÇÃO: a linha que o revoke devolve é a GENÉRICA, e `emitDeadLetter`
-// diz de si que ela não é para kind que registrou hook próprio ("a richer, conversation-attached
-// line already exists for those, and a generic second one would be the same death reported twice in
-// two vocabularies"). O revoke não consegue perguntar ao registro sem ciclo de import (worker.ts já
-// importa service.ts), e hoje a pergunta não se coloca: nenhum dos dois kinds `JOB_DELETE_ON_DONE`
-// registra hook. É um fato sobre a árvore, não uma garantia, e um fato se cerca.
+// E a outra metade da mesma obrigação: a linha que o revoke devolve é a GENÉRICA, que
+// `emitDeadLetter` reserva a kinds sem hook próprio (senão a mesma morte sairia duas vezes). O
+// revoke não consegue perguntar ao registro sem ciclo de import (worker.ts já importa service.ts),
+// e nenhum kind `JOB_DELETE_ON_DONE` registra hook. É um fato sobre a árvore, não uma garantia, e
+// se cerca.
 const REGISTRA = /registerDeadLetterHandler\(\s*"([A-Z_]+)"/g;
 
 // Chama o revoke. O nome basta, e o import conta: um arquivo que só importa o símbolo e nunca o usa

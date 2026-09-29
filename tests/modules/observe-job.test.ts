@@ -24,7 +24,7 @@ import {
   UsageReportingModel,
 } from "../utils/scripted-models";
 
-// The OBSERVE job end to end (issue #477): a burst arms one row per conversation, the tick reads
+// The OBSERVE job end to end: a burst arms one row per conversation, the tick reads
 // Chatwoot, asks the model once, writes the label set deterministically, posts one private note
 // when a label moved, and writes one `observe` line — with no customer-facing call anywhere.
 
@@ -217,7 +217,7 @@ class LabellingModel {
   }
 }
 
-// A LABELLING MODEL THAT REMEMBERS WHAT IT WAS SENT, for the wrap-up wording (issue #629): the tick
+// A LABELLING MODEL THAT REMEMBERS WHAT IT WAS SENT, for the wrap-up wording: the tick
 // has no reply channel, so the instruction the budget adds must not tell it to answer a customer.
 class RecordingLabellingModel {
   calls = 0;
@@ -333,8 +333,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         name: "SAC",
       },
     });
-    // The binding the tick asks about: a watcher only reaches a conversation because it is on the
-    // inbox, and the job re-asks that at load and again before writing (issue #477 review, round 1).
+    // NOTE: the binding the tick asks about: a watcher only reaches a conversation because it is on
+    // the inbox, and the job re-asks that at load and again before writing.
     inboxRowId = inbox.id;
     await suDb.inboxObserver.create({
       data: { tenantId, inboxId: inbox.id, agentId },
@@ -496,7 +496,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(log.labelsWritten).toEqual([]);
     const last = (await observeLines()).at(-1);
     expect(last?.status).toBe("skipped");
-    // NOTE: nothing to classify yet pages nobody (issue #611).
+    // NOTE: nothing to classify yet pages nobody.
     expect(last?.level).toBe("info");
   });
 
@@ -692,9 +692,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // THE GATE SITS NEXT TO THE BILLED CALL, and that placement is what the line says. Asked at the top
-  // it answered for every exit before it, so a conversation with nothing from the customer read as a
-  // tenant out of budget and the real reason never reached the flow page (issue #477 review, round 1).
+  // NOTE: the gate sits next to the billed call, and that placement is what the line says: asked at
+  // the top it would answer for every exit before it, and a conversation with nothing from the
+  // customer would read as a tenant out of budget.
   test("over the ceiling, an exit that was never going to spend says its own reason", async () => {
     const monthStart = new Date(
       Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
@@ -759,8 +759,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // THE ONE SKIP THAT STAYS A WARN (issue #611). Every other reason is the world moving under the tick,
-  // and those went to `info`; an observation lost to the budget is the one an operator can act on.
+  // NOTE: the one skip that stays a warn. Every other reason is the world moving under the tick, at
+  // `info`; an observation lost to the budget is the one an operator can act on.
   test("over the ceiling, an observation that would have spent is skipped at warn", async () => {
     const monthStart = new Date(
       Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1),
@@ -892,7 +892,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // A PENDING RESOLVE IS NOT THE BURST THIS MESSAGE JOINS (issue #477 review, round 2). Read as one,
+  // NOTE: a pending resolve is not the burst this message joins. Read as one,
   // the new burst inherits the resolve's `burstStartedAt` — by then past the max window — and runs
   // immediately instead of waiting the window it was configured with.
   test("a customer who reopens after a pending resolve opens a new burst", async () => {
@@ -960,10 +960,10 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     });
   });
 
-  // ONE VERDICT PER RESOLUTION. Chatwoot emits both accepted resolve events, and on an inbox with two
-  // bindings each reaches its own route: four deliveries for one resolve. They fold while the row is
-  // PENDING, and once the first verdict is CLAIMED the next upsert put it back to PENDING and bought
-  // a second billed classification of the same resolution (issue #477 review, round 3).
+  // NOTE: one verdict per resolution. Chatwoot emits both accepted resolve events, and on an inbox
+  // with two bindings each reaches its own route: four deliveries for one resolve. They fold while
+  // the row is PENDING; once the first verdict is CLAIMED, an upsert putting it back to PENDING
+  // would buy a second billed classification of the same resolution.
   test("a resolve already armed for this version arms nothing again", async () => {
     const CONV_M = CONV + 21;
     const key = observeDedupeKey(
@@ -985,8 +985,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       expect(await arm(1700.5)).toBe("armed");
       // The second event type, and the observer's own route: same resolution, same version.
       expect(await arm(1700.5)).toBe("off");
-      // ...and it is still off once the first verdict has been claimed and finished, which is the
-      // case that used to buy a second model call.
+      // NOTE: ...and it is still off once the first verdict has been claimed and finished, the case
+      // that would buy a second model call.
       await suDb.schedulerJob.updateMany({
         where: { tenantId, kind: "OBSERVE", dedupeKey: key },
         data: { status: "DONE" },
@@ -1002,10 +1002,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
       ).toBe("DONE");
       // A LATER resolution has a newer version and arms.
       expect(await arm(1800.25)).toBe("armed");
-      // ...and an OLDER one does not (issue #477 review, round 22). Resolved, reopened, resolved
-      // again, with a delivery of the FIRST resolution still in flight: compared for equality it
-      // armed, overwrote the newer mark with the older, and bought the standing resolution a second
-      // billed classification while superseding the verdict already in flight for it.
+      // NOTE: ...and an OLDER one does not. Resolved, reopened, resolved again, with a delivery of
+      // the FIRST resolution still in flight: compared for equality it would arm, overwrite the
+      // newer mark with the older, and buy the standing resolution a second billed classification.
       expect(await arm(1700.5)).toBe("off");
       expect(
         (
@@ -1110,8 +1109,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(lines.at(-1)?.level).toBe("info");
   });
 
-  // A credential the vault cannot hand over is not an operator switching observation off, and the
-  // one-shot resolve verdict must not be discarded for it (issue #477 review, round 8).
+  // NOTE: a credential the vault cannot hand over is not an operator switching observation off, and
+  // the one-shot resolve verdict must not be discarded for it.
   test("a model configuration that cannot be built fails the tick", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
@@ -1125,7 +1124,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
         },
       },
     });
-    // The job must not be MOOT, or completing is the right answer for a different reason (round 20).
+    // NOTE: the job must not be MOOT, or completing is the right answer for a different reason.
     await suDb.conversation.update({
       where: { id: convRowId },
       data: { status: "resolved" },
@@ -1162,9 +1161,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // `/reset` clears the labels and the memory, but Chatwoot keeps every message, and this module
-  // reads Chatwoot. Without a boundary the next verdict reads the erased episode's demands, finds no
-  // labels standing, and writes the old classification straight back (issue #477 review, round 9).
+  // NOTE: `/reset` clears the labels and the memory, but Chatwoot keeps every message, and this
+  // module reads Chatwoot. Without a boundary the next verdict would read the erased episode's
+  // demands, find no labels standing, and write the old classification straight back.
   test("the transcript starts after the reset boundary", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
@@ -1222,8 +1221,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // Upstream Chatwoot 404s the attachment-meta write-back, so an eager transcription lives only in
-  // the in-process store. Both other read paths overlay it; this one did not (round 9).
+  // NOTE: upstream Chatwoot 404s the attachment-meta write-back, so an eager transcription lives
+  // only in the in-process store, and this read path overlays it as the other two do.
   test("a cached transcription reaches the observer's transcript", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
@@ -1275,8 +1274,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // Chatwoot delivers out of order, and this id is what the reset fence orders against: a delayed
-  // older delivery joining a burst must not push it backwards (issue #477 review, round 9).
+  // NOTE: Chatwoot delivers out of order, and this id is what the reset fence orders against: a
+  // delayed older delivery joining a burst must not push it backwards.
   test("a burst keeps the newest message id, not the last one to arrive", async () => {
     const CONV_M = CONV + 31;
     const key = observeDedupeKey(
@@ -1319,8 +1318,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // Enough ROWS is not enough CONTEXT: a reply inside the window can quote something on an older
-  // page, and a terse "sim" without its question is what the resolver exists for (round 11).
+  // NOTE: enough ROWS is not enough CONTEXT: a reply inside the window can quote something on an
+  // older page, and a terse "sim" without its question is what the resolver exists for.
   test("paging continues for a quote the window points at", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
@@ -1378,8 +1377,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(seen).toContain("boa tarde");
   });
 
-  // The row not having landed reads identical to a detach on the row alone, and completing was
-  // PERMANENT for a resolve: the mark suppresses every later delivery (issue #477 review, r13).
+  // NOTE: the row not having landed reads identical to a detach on the row alone, and completing
+  // is PERMANENT for a resolve: the mark suppresses every later delivery.
   test("a tick armed in the attach window retries instead of completing", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
@@ -1439,10 +1438,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // ...AND THE ROW SAYS IT ITSELF NOW (issue #540, window 5). `observeInbox` writes the row before
-  // Chatwoot is asked and stamps it after, so an unstamped row IS the attach window — the tick no
-  // longer needs the arm to have carried a flag, which is what a job armed before the flag existed
-  // (or by a delivery that could not tell) had to rely on.
+  // NOTE: ...and the row says it itself. `observeInbox` writes the row before Chatwoot is asked and
+  // stamps it after, so an unstamped row IS the attach window, whether or not the arm carried a
+  // flag (a job armed by a delivery that could not tell carries none).
   test("a tick against a row Chatwoot has not confirmed retries, flag or no flag", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
@@ -1482,9 +1480,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // The verdict was computed against the set the prompt showed; a person who moved one of OUR groups
-  // during the call is fresher information than a transcript that predates the move, and the
-  // commonest verdict (repeat what you were shown) reverted it silently (issue #477 review, r14).
+  // NOTE: the verdict was computed against the set the prompt showed; a person who moved one of OUR
+  // groups during the call is fresher information than a transcript that predates the move, and the
+  // commonest verdict (repeat what you were shown) would revert it silently.
   test("a group moved during the model call is left to the next tick", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
@@ -1534,9 +1532,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(labels).toEqual(["cancelamento", "vip"]);
   });
 
-  // A verdict is an answer to a DEFINITION — these values, accumulating or not. An additive group
-  // flipped to exclusive during the call makes `applyVerdict` sweep out a value the model was told
-  // could stand beside the one it chose (issue #477 review, round 18).
+  // NOTE: a verdict is an answer to a DEFINITION (these values, accumulating or not). An additive
+  // group flipped to exclusive during the call makes `applyVerdict` sweep out a value the model was
+  // told could stand beside the one it chose.
   test("a group whose definition changed during the call is left alone", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
@@ -1618,18 +1616,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // BOTH PROVIDERS DOWN LEAVES ONE ALARM, NOT TWO (issue #567 review, round 1). The `observe` stage
-  // emits its own error when the tick fails, and alert coalescing keys on (channel, stage, level):
-  // a second `observe`/`error` line for the same failure bumps one delivery to "×2", or sends two if
-  // it loses the coalesce window. The attribution line is `info` with `status: "error"` — it exists
-  // only to say WHICH model died, because the stage is labelled with the primary by construction.
-  // THE PER-TOOL LINE, which `buildCallbacks` does not carry. Without it a watcher whose tool fails
-  // finishes the graph normally and the tick reports `ok` with `acted: true`: a tool error with no
-  // line and no alert, and no second copy anywhere, since the observer's checkpoint is discarded.
-  // A SCHEDULER JOB THAT FAILS IS RETRIED, and this tick is stateless on purpose — its own thread,
-  // an in-memory checkpointer — so the retry re-runs the WHOLE turn from the top. Harmless while the
-  // tick was a classifier with one deterministic write; with the ordinary toolset a booking, an
-  // outbound POST or a charge can already have committed (review round 25).
+  // NOTE: a scheduler job that fails is retried, and this tick is stateless on purpose (its own
+  // thread, an in-memory checkpointer), so the retry re-runs the WHOLE turn from the top. With the
+  // ordinary toolset a booking, an outbound POST or a charge can already have committed.
   test("a failure AFTER a tool ran ends the tick instead of arming a retry", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     // Calls the tool on the first hop, then dies on the second — the shape of a provider blip, a
@@ -1693,9 +1682,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a failure after a READ-ONLY call still retries", async () => {
-    // A calculator and a knowledge search leave nothing behind, so there is nothing a retry would
-    // repeat — and refusing it there throws away the run for free, which for an `on_resolve`
-    // observer is its only chance (review round 27).
+    // NOTE: a calculator and a knowledge search leave nothing behind, so there is nothing a retry
+    // would repeat, and refusing it there throws away the run for free, which for an `on_resolve`
+    // observer is its only chance.
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     class CalculatesThenDies {
       async invoke(): Promise<AIMessage> {
@@ -1738,11 +1727,10 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a tenant tool wearing the search_knowledge name counts as an effect", async () => {
-    // The exemption is for the RAG SEARCH, and `search_knowledge` is not a name the assembly
-    // reserves (only natives are, #457) — RAG is assembled LAST, so a legacy tenant row carrying it
-    // wins the name and reaches the model in its place. Exempting by name would hand the exemption
-    // to whatever that row does, an HTTP POST included, and the retry would send it twice
-    // (review round 29).
+    // NOTE: the exemption is for the RAG SEARCH, and `search_knowledge` is not a name the assembly
+    // reserves (only natives are): RAG is assembled LAST, so a legacy tenant row carrying it wins
+    // the name. Exempting by name would hand the exemption to whatever that row does, an HTTP POST
+    // included, and the retry would send it twice.
     const td = await suDb.toolDefinition.create({
       data: {
         tenantId,
@@ -1895,10 +1883,10 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("skip_reply beside a read-only call does not burn the retry", async () => {
-    // `skip_reply` performs nothing: its RETURN is the whole tool. Alone it ends the turn, so the
-    // case only exists beside a companion — and then the turn goes on to another model round, which
-    // is where the transient lands. Counting the decision as an effect would discard the run for
-    // free (review round 29).
+    // NOTE: `skip_reply` performs nothing: its RETURN is the whole tool. Alone it ends the turn, so
+    // the case only exists beside a companion — and then the turn goes on to another model round,
+    // which is where the transient lands. Counting the decision as an effect would discard the run
+    // for free.
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     class SkipsThenDies {
       async invoke(): Promise<AIMessage> {
@@ -1947,10 +1935,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a call the precondition refused is not a commit", async () => {
-    // The counter increments BEFORE dispatching, because it has to exist when the invoke threw. A
-    // guarded call that was refused never reached the handler, so counting it as committed throws
-    // away a retry that was free — and for an `on_resolve` observer that is its only pass
-    // (review round 33).
+    // NOTE: the counter increments BEFORE dispatching, because it has to exist when the invoke
+    // threw. A guarded call that was refused never reached the handler, so counting it as committed
+    // would throw away a free retry, which for an `on_resolve` observer is its only pass.
     const before = await suDb.agent.findFirstOrThrow({
       where: { id: agentId },
       select: { settings: true },
@@ -2025,10 +2012,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a labels read that fails does not take the tick with it", async () => {
-    // A watcher does not have to be a classifier. One that only writes a private note has nothing to
-    // do with labels, and an uncaught throw on this read ended its tick before the graph was ever
-    // invoked — retried whole, and eventually dead-lettered, over a read it never needed
-    // (review round 33).
+    // NOTE: a watcher does not have to be a classifier. One that only writes a private note has
+    // nothing to do with labels, and an uncaught throw on this read would end its tick before the
+    // graph is invoked, retried whole and eventually dead-lettered over a read it never needed.
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const client = stubClient([message(1, "quero cancelar")], [], log);
     (
@@ -2081,11 +2067,10 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a fence that failed INSIDE the handler leaves the tick retryable", async () => {
-    // The handler asks the fence again after its own read and before its own write. When that ask
-    // is the one that fails, the tool returns without writing — but the dispatch was already
-    // counted, so the tick read itself as committed and completed, dropping an observation a retry
-    // would have recovered for free (review round 36). The counters are separate for this: the
-    // handler reports what it did NOT do.
+    // NOTE: the handler asks the fence again after its own read and before its own write. When that
+    // ask fails, the tool returns without writing, but the dispatch was already counted; the handler
+    // reports what it did NOT do on a separate counter, or the tick would read itself as committed
+    // and drop an observation a retry would recover for free.
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     let generating = false;
     let asks = 0;
@@ -2128,9 +2113,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a refused EFFECT-FREE tool does not cancel out a real write", async () => {
-    // The counter does not count an effect-free dispatch, so a report from one must not subtract:
-    // otherwise a guarded `calculator` refusing in the same turn as a real `set_labels` write reads
-    // as nothing committed, and the retry writes again (review round 37).
+    // NOTE: the counter does not count an effect-free dispatch, so a report from one must not
+    // subtract: otherwise a guarded `calculator` refusing in the same turn as a real `set_labels`
+    // write reads as nothing committed, and the retry writes again.
     const before = await suDb.agent.findFirstOrThrow({
       where: { id: agentId },
       select: { settings: true },
@@ -2206,8 +2191,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a label call that changed nothing leaves the tick retryable", async () => {
-    // No label moved, so no POST left: the dispatch was counted on the way in and the tick may
-    // safely run again (review round 37).
+    // NOTE: no label moved, so no POST left: the dispatch was counted on the way in and the tick may
+    // safely run again.
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     class SameLabelsThenDies {
       async invoke(): Promise<AIMessage> {
@@ -2290,6 +2275,10 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(log.labelsWritten).toEqual([]);
   });
 
+  // NOTE: the per-tool line, which `buildCallbacks` does not carry. Without it a watcher whose tool
+  // fails finishes the graph normally and the tick reports `ok` with `acted: true`: a tool error
+  // with no line and no alert, and no second copy anywhere, since the observer's checkpoint is
+  // discarded.
   test("a tool call writes its own flow line under the tick", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const model = new LabellingModel(["cancelamento"]);
@@ -2318,9 +2307,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     ).toBe(true);
   });
 
-  // A FALLBACK THAT CANNOT BE BUILT is indistinguishable from no fallback at all, and the primary
-  // answering fine is exactly when nobody finds out. Reported at build time for that reason; the
-  // verdict path used to and the graph build came up without the callback.
+  // NOTE: a fallback that cannot be built is indistinguishable from no fallback at all, and the
+  // primary answering fine is exactly when nobody finds out, so it is reported at build time.
   test("a fallback that cannot be built is reported even when the primary answers", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     await suDb.agent.update({
@@ -2368,6 +2356,10 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
+  // NOTE: both providers down leaves one alarm. The `observe` stage emits its own error when the
+  // tick fails, and alert coalescing keys on (channel, stage, level), so a second `observe`/`error`
+  // line would bump one delivery to "×2" or send two. The attribution line is `info` with
+  // `status: "error"`: it only says WHICH model died, since the stage carries the primary's label.
   test("when the fallback fails too, the attribution line does not raise a second alarm", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const calls = { n: 0 };
@@ -2438,11 +2430,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // ── the turn ───────────────────────────────────────────────────────────────
-  //
-  // A watcher runs the ordinary graph now (issue #568): the agent's own tools act on the
-  // conversation, and the classifier that used to live in this module — one call, a JSON verdict, a
-  // deterministic apply — is gone with the taxonomy it needed.
+  // NOTE: the turn. A watcher runs the ordinary graph: the agent's own tools act on the
+  // conversation, with no separate classifier or taxonomy.
 
   test("the tick runs the agent's turn, and its tool call is what writes", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
@@ -2547,11 +2536,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect((built as unknown as { mute: boolean }).mute).toBe(true);
   });
 
-  // ── the fences ─────────────────────────────────────────────────────────────
-  //
-  // They used to be asked once, between the verdict and the single write. A turn has as many writes
-  // as the model has tool calls, so they are asked at every tool HOP now — which is where a tool
-  // that would write is stopped, rather than after it already has.
+  // NOTE: the fences. A turn has as many writes as the model has tool calls, so they are asked at
+  // every tool HOP, where a tool that would write is stopped rather than after it already has.
 
   test("an agent flipped to answering while the tick was reading acts on nothing", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
@@ -2585,10 +2571,10 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(log.labelsWritten).toEqual([]);
   });
 
-  // WHAT "COMMITTED" MAY NOT INCLUDE. The count is taken at dispatch and is deliberately blind — a
-  // call that threw may have thrown after its write — but two exits are provably before the write,
-  // and counting them costs the retry: the tick completes, and for an `on_resolve` watcher the
-  // observation is never made (review round 39).
+  // NOTE: what "committed" may not include. The count is taken at dispatch and is deliberately
+  // blind (a call that threw may have thrown after its write), but two exits are provably before
+  // the write, and counting them costs the retry: the tick completes, and for an `on_resolve`
+  // watcher the observation is never made.
   test("a dispatch its own schema rejected does not count as a write", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     class BadArgsThenDown {
@@ -2698,11 +2684,10 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(last.toolCalls).toBe(0);
   });
 
-  // THE PAIR THAT COULD DISAGREE. `agentObservesNow` reads the switch and the mode; the read beside
-  // it reads the settings, a query later. An operator who turns the agent off in between leaves the
-  // second read looking straight at the new row — and it used to select `settings` alone, so it saw
-  // the change and said nothing, and the fence went on answering from the old pair (review round
-  // 38). The switch here is flipped for real, immediately before the query that observes it.
+  // NOTE: the pair that could disagree. `agentObservesNow` reads the switch and the mode; the read
+  // beside it reads the settings, a query later, and an operator who turns the agent off in between
+  // leaves it looking at the new row, so it selects the switch too rather than `settings` alone.
+  // The switch here is flipped for real, immediately before the query that observes it.
   test("an agent switched off between the fence's two reads acts on nothing", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     let generating = false;
@@ -2767,11 +2752,11 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(rows.at(-1)?.level).toBe("info");
   });
 
-  // A WITHDRAWAL COMPLETES THE TICK; A FENCE THAT COULD NOT BE READ RETRIES IT. The two answers are
-  // kept apart everywhere else in this module for the same reason they have to end differently
-  // here: nothing re-arms this row on its own, an `on_resolve` agent has no later burst and a
-  // resolve happens once, so a transient database blip that completes the job is a conversation
-  // that is never classified (issue #477 review, round 7).
+  // NOTE: a withdrawal completes the tick; a fence that could not be read retries it. The two
+  // answers are kept apart everywhere else in this module for the same reason they have to end
+  // differently here: nothing re-arms this row on its own, an `on_resolve` agent has no later burst
+  // and a resolve happens once, so a transient database blip that completes the job is a
+  // conversation that is never classified.
   test("a fence that could not be read fails the tick instead of completing it", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     let generating = false;
@@ -2818,15 +2803,11 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     );
   });
 
-  // A BINDING THAT HAS NOT LANDED IS NOT A DETACH, and the load-time check has said so since #540.
-  // The tool fence folded it into a permanent detach, which COMPLETES the job — and for an
-  // `on_resolve` watcher that is the classification lost for good, because the resolve mark
-  // suppresses every later delivery of the same resolution.
   test("an unreadable fence AFTER a write stops instead of retrying", async () => {
-    // The retryable refusals exist because nothing re-arms the row on its own — but the fence is
-    // asked at EVERY hop, so an unreadable one can arrive after a write has already left. A retry
-    // then repeats it, and for an HTTP POST or a booking that is the second charge. At-most-once for
-    // the effects wins here exactly as it does for a model failure (review round 30).
+    // NOTE: the retryable refusals exist because nothing re-arms the row on its own, but the fence
+    // is asked at EVERY hop, so an unreadable one can arrive after a write has already left. A
+    // retry then repeats it, and for an HTTP POST or a booking that is the second charge.
+    // At-most-once for the effects wins here exactly as it does for a model failure.
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     // Unreadable only ONCE THE FIRST WRITE LANDED, which is the whole point: the same read at load
     // time, or before any tool ran, is the case the two tests above already cover.
@@ -2899,6 +2880,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(rows.at(-1)?.level).toBe("warn");
   });
 
+  // NOTE: a binding that has not landed is not a detach, at the tool fence as at load. Folded into
+  // a permanent detach it would COMPLETE the job, and for an `on_resolve` watcher lose the
+  // classification for good, because the resolve mark suppresses every later delivery.
   test("a binding still attaching at the fence retries instead of completing", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const rows = await suDb.inboxObserver.findMany({
@@ -2943,16 +2927,11 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // ONE READ FOR THE PROMPT AND FOR THE TOOL'S BASELINE. `set_labels` diffs the model's list against
-  // what the model was SHOWN, so two reads are two claims about the same turn: a label the prompt
-  // advertises but the baseline lacks comes back as an ADDITION when the model repeats it to keep
-  // it, which puts back what somebody removed in between — the exact harm the diff exists to avoid.
-  // Retitled with #695: the prompt is a SNAPSHOT and the write is not computed from it. The block
-  // the model reads is built at turn prep; the write is applied to the read taken INSIDE the label
-  // queue, which is the only list still true at the moment of writing. Compute it from the prompt's
-  // snapshot instead and a label somebody removed mid-turn comes back — which is also why the tool
-  // description tells the model to name only what changes, and says that repeating a label to keep
-  // it is not harmless.
+  // NOTE: the prompt is a SNAPSHOT and the write is not computed from it. The block the model reads
+  // is built at turn prep; the write is applied to the read taken INSIDE the label queue, the only
+  // list still true at the moment of writing. Computed from the snapshot, a label somebody removed
+  // mid-turn would come back, which is also why the tool description tells the model to name only
+  // what changes (docs/chatwoot.md, "Labelling is a tool, and the model names a DELTA").
   test("the write is applied to the live read, not to the prompt's snapshot", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     let reads = 0;
@@ -2991,32 +2970,19 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(written).toEqual(["cancelamento"]);
   });
 
-  // THE GUARD HAS TO HOLD IN EVERY MODEL-FACING PLACE, not only in the tool's diff. `set_labels`
-  // filters guarded labels out of what it shows and out of what it accepts, but the observer's own
-  // prompt prints the conversation's labels in `<etiquetas-atuais>` from the SAME read — so without
-  // this the block advertised `agente-off` while the tool's description denied it existed, which is
-  // both a contradiction to reason from and the invitation the guard exists to withdraw (round 12).
-  // Retitled with #695: PROTECTING AND HIDING COME APART. Under the replace contract the two
-  // travelled together, because being shown a label was the first half of being able to delete it
-  // by omission, so the guard had to withdraw it from every model-facing place. Under the delta,
-  // being shown one puts it at no risk — only naming it in `remove` does, and that is refused.
-  //
-  // The two places that change are the ones the model acts FROM: the tool's description and
-  // `<etiquetas-atuais>`. Hiding the value there is what made a fenced agent invent `duvidas-evento`
-  // for a canonical value it could not see (measured 2026-09-11), and naming it is what stops that.
-  //
-  // The label-change HISTORY is deliberately NOT one of them, and this test pins that. That block
-  // narrates who moved what, which is not the model's business for a label it may not move, and the
-  // filter behind it (`namesGuardedTitle`) carries edge cases of its own: a guarded title first in
-  // the run, a locale that glues a particle to it, a line too long to scan and counted rather than
-  // shown. Relaxing it is a decision about narration, not about the fence, and it is not this
-  // issue's.
+  // NOTE: protecting and hiding come apart under the delta (docs/chatwoot.md, "Labelling is a
+  // tool"): being shown a guarded label puts it at no risk, only naming it in `remove` does, and
+  // that is refused. It is shown where the model acts FROM (the tool's description and
+  // `<etiquetas-atuais>`), since hiding a value there makes a fenced agent invent a synonym for it.
+  // The label-change HISTORY deliberately still drops it, and this test pins that: that block
+  // narrates who moved what, and its filter (`namesGuardedTitle`) has edge cases of its own (a
+  // guarded title first in the run, a locale gluing a particle to it, a line too long to scan).
   test("a guarded label is shown where the model acts, and still survives the write", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     __resetChatwootVocabCache();
-    // ISSUE #642, ROUND 1: the third model-facing place is the label HISTORY, and it is the one
-    // that would name the guarded label in Chatwoot's own sentence. The vocabulary knows
-    // `agente-off`, so a line about it is recognisable — and has to drop out all the same.
+    // NOTE: the third model-facing place is the label HISTORY, the one that would name the guarded
+    // label in Chatwoot's own sentence. The vocabulary knows `agente-off`, so a line about it is
+    // recognisable, and it has to drop out all the same.
     const client = stubClientWithVocab(
       [
         message(1, "quero cancelar"),
@@ -3116,10 +3082,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // THE OBSERVER RUNS THE ORDINARY TOOLSET NOW, so a tool whose URL carries `{{message_id}}` is as
-  // legal on a tick as on a reactive turn — and the tick was the only caller that never supplied it,
-  // so such a tool failed with a missing-placeholder error on EVERY observation. The burst knows the
-  // id (`atMessageId`); it just was not being passed (round 13).
+  // NOTE: the observer runs the ordinary toolset, so a tool whose URL carries `{{message_id}}` is as
+  // legal on a tick as on a reactive turn; the tick supplies the burst's `atMessageId`, or such a
+  // tool fails with a missing-placeholder error on EVERY observation.
   test("a burst hands its triggering message id to the tools", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const client = stubClient([message(1, "e o pedido?")], [], log);
@@ -3196,12 +3161,11 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // A WATCHER THAT TRANSFERRED AND THEN TRIED TO CLOSE (issue #671). An observation hands no
-  // `turnState` down, so `resolve_conversation` takes its immediate branch: the transfer had just
-  // put the conversation in the human queue and the close took it straight back out, with nothing
-  // said to the customer (a muted turn says nothing by construction). The tool can only see the
-  // transfer because this tick puts a `handoffState` in the toolset's context, and an observation
-  // is the only turn shape that proves that line.
+  // NOTE: a watcher that transferred and then tried to close. An observation hands no `turnState`
+  // down, so `resolve_conversation` takes its immediate branch and would take the conversation
+  // straight back out of the human queue, with nothing said to the customer. The tool sees the
+  // transfer only because this tick puts a `handoffState` in the toolset's context, and an
+  // observation is the only turn shape that proves that line.
   test("an observation that transferred does not then close the conversation", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     const statuses: string[] = [];
@@ -3406,11 +3370,11 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     const lines = await observeLines();
     expect(detailOf(lines, 0).skipped).toBe("superseded");
     // NOTE: the next tick reads the message that re-armed the row, so there is nothing to page
-    // anyone about: at `warn` this was every observe alert of the first production day (#611).
+    // anyone about; at `warn` it would be most of the observe alerts.
     expect(lines[0]?.level).toBe("info");
   });
 
-  // ISSUE #621 review, round 1. The shared tick claims several rounds of observations and runs them
+  // NOTE: the shared tick claims several rounds of observations and runs them
   // one provider bound at a time, so a claimed row can be re-armed while it WAITS for its permit.
   // That run is superseded before it starts, and the model must not be paid to find out at the tool
   // boundary.
@@ -3491,8 +3455,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(lines[0]?.level).toBe("info");
   });
 
-  // THE TWO WITHDRAWALS THE FENCE ANSWERS THAT NO OTHER TEST REACHED, and they are here for the level
-  // as much as for the refusal: each is the tick being right to stop, so each is `info` (issue #611).
+  // NOTE: the two withdrawals the fence answers that no other test reaches, here for the level as
+  // much as for the refusal: each is the tick being right to stop, so each is `info`.
   test("a resolve verdict whose conversation reopened while the model answered acts on nothing", async () => {
     await clearFlowLog(suDb, { tenantId });
     await suDb.conversation.update({
@@ -3619,8 +3583,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(lines.at(-1)?.level).toBe("info");
   });
 
-  // ISSUE #635. The line used to say `acted: true` and stop, so which label the observation applied,
-  // and which one it replaced, existed only in Chatwoot — which keeps no history of a label write.
+  // NOTE: the line says which label the observation applied and which one it replaced, since
+  // Chatwoot keeps no history of a label write.
   test("the line records what the observation wrote, naming the operator's own labels", async () => {
     await clearFlowLog(suDb, { tenantId });
     __resetChatwootVocabCache();
@@ -3681,8 +3645,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(detail.labels).toBeUndefined();
   });
 
-  // REVIEW ROUND 1 of issue #635. A label commits, and then the turn can still fail or be refused —
-  // neither of which is retried, so a line without the write is the write lost for good.
+  // NOTE: a label commits, and then the turn can still fail or be refused, neither of which is
+  // retried, so a line without the write is the write lost for good.
   test("a write kept by a refusal after it is still on the line", async () => {
     await clearFlowLog(suDb, { tenantId });
     __resetChatwootVocabCache();
@@ -3722,8 +3686,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
             log,
             ["compra-de-ingresso", "cancelamento", "duvidas-evento"],
           ),
-        // ROUND ONE WRITES, round two is refused: the fence is asked at every tool hop, so a
-        // supersession that lands after the first write still stops the turn — and the write stays.
+        // NOTE: the first model round writes, the second is refused: the fence is asked at every
+        // tool hop, so a supersession that lands after the first write still stops the turn, and
+        // the write stays.
         makeModel: () => {
           let n = 0;
           const rearm = async () => {
@@ -3833,7 +3798,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     ]);
   });
 
-  // ISSUE #629. At `maxToolCalls: 3` the wrap-up lands on the round right after the first tool call,
+  // NOTE: at `maxToolCalls: 3` the wrap-up lands on the round right after the first tool call,
   // which on an observation is every observation that writes.
   test("the budget's wrap-up tells the tick to finish with its tools, never to answer a customer", async () => {
     await suDb.agent.update({
@@ -3878,7 +3843,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // ISSUE #642. The label changes are activity rows, which the transcript drops on purpose; without
+  // NOTE: the label changes are activity rows, which the transcript drops on purpose; without
   // them the model cannot tell a label that never moved from one it has already flipped twice.
   test("the tick shows the model the label changes already recorded on the conversation", async () => {
     await clearFlowLog(suDb, { tenantId });
@@ -3959,7 +3924,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(prompt).toContain("quero cancelar");
   });
 
-  // ISSUE #642, ROUND 4. The account catalog and the conversation's tags are two different tables:
+  // NOTE: the account catalog and the conversation's tags are two different tables:
   // `/labels` answers from `Label`, which an operator fills in Settings, and a tag `set_labels`
   // attaches goes through acts_as_taggable_on without creating a row there. So a title the model
   // invented is in no catalog at any TTL, and the conversation carrying it is the only place its own
@@ -4024,9 +3989,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     );
   });
 
-  // ISSUE #642, ROUND 6. The cached vocabulary is two requests under one `Promise.all`: the labels
-  // and the custom attribute DEFINITIONS. An attribute endpoint that fails took a perfectly good
-  // label catalog down with it, and this block needs only the labels.
+  // NOTE: the cached vocabulary is two requests under one `Promise.all`: the labels and the custom
+  // attribute DEFINITIONS. An attribute endpoint that fails must not take a good label catalog down
+  // with it, since this block needs only the labels.
   test("an attribute endpoint that fails does not cost the label catalog", async () => {
     await clearFlowLog(suDb, { tenantId });
     __resetChatwootVocabCache();
@@ -4084,7 +4049,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(prompt).toContain("Classificador SAC adicionou cancelamento");
   });
 
-  // ISSUE #642, ROUND 8. Each list recognises changes the other cannot, so with one of them missing
+  // NOTE: each list recognises changes the other cannot, so with one of them missing
   // "nothing changed here" is the one sentence a stateless observer would take as licence to decide
   // again. It says it could not read instead.
   test("an empty window is only claimed when both label reads succeeded", async () => {
@@ -4137,7 +4102,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(prompt.match(/\(nenhuma nesta janela\)/g)?.length).toBe(1);
   });
 
-  // ISSUE #642, ROUND 20. The reset's boundary is the /reset MESSAGE's id, and the command clears
+  // NOTE: the reset's boundary is the /reset MESSAGE's id, and the command clears
   // the labels a dozen Chatwoot calls later, so the removal activity lands ABOVE it and survives the
   // filter the transcript is protected by. The next tick would read the erased episode's labels,
   // named, as a reason not to put them back.
@@ -4158,8 +4123,8 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
             message_type: 2,
             sender: null,
           }),
-          // The acknowledgement carries the name the command wrote into it, which is what says
-          // where the cleanup ended (round 21).
+          // NOTE: the acknowledgement carries the name the command wrote into it, which is what
+          // says where the cleanup ended.
           message(702, "🧪 Conversa limpa.", "outgoing", {
             content_attributes: { fazer_ai_send_id: "reset-ack:700" },
           }),
@@ -4217,7 +4182,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     }
   });
 
-  // ISSUE #642, ROUND 17. The mixed window: the catalog is down, so the reading is incomplete, but
+  // NOTE: the mixed window: the catalog is down, so the reading is incomplete, but
   // the conversation's own labels still recognise a change. Dropping the line costs the model the
   // change it CAN see; handing it over silently makes an incomplete list look complete, which is
   // the same licence to decide again. The block does both.
@@ -4281,9 +4246,9 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
     expect(prompt).toContain("não está completa");
   });
 
-  // The vocabulary is a REQUEST, and every exit above the turn is an exit that costs nothing today.
+  // NOTE: the vocabulary is a REQUEST, and every exit above the turn is an exit that costs nothing.
   // Reading it beside the notes would put a Chatwoot round trip on a cold cache in front of a tick
-  // that is about to throw the answer away (issue #642).
+  // that is about to throw the answer away.
   test("a tick that ends before the turn never reads the vocabulary", async () => {
     await clearFlowLog(suDb, { tenantId });
     __resetChatwootVocabCache();

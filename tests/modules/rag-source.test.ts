@@ -36,7 +36,7 @@ import {
 } from "@/modules/rag/source";
 import { insertChunks, searchChunks } from "@/modules/rag/sql";
 
-// Issue #794: a knowledge base mirrors a Chatwoot help center portal, keyed by article id, with the
+// A knowledge base mirrors a Chatwoot help center portal, keyed by article id, with the
 // link owned by the platform. The portal here is a fake `fetch` that answers the public listing the
 // way the real controller does (`per_page` capped at 100, `meta.articles_count`, published only).
 
@@ -290,7 +290,7 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     expect(after[2]).toMatchObject({ status: "READY" });
   });
 
-  // Issue #857: the title is part of every chunk's vector, so a title change re-embeds (the text,
+  // NOTE: the title is part of every chunk's vector, so a title change re-embeds (the text,
   // what the agent reads, stays as it was).
   test("a changed title alone updates the title and re-embeds", async () => {
     await configure();
@@ -708,7 +708,7 @@ describe.skipIf(!dbUp)("knowledge base source (issue #794)", () => {
     }
   });
 
-  // Issue #798: the console follows a sync through its batches, and the one thing that says a landed
+  // NOTE: the console follows a sync through its batches, and the one thing that says a landed
   // run is not the end is the next run being a continuation rather than the interval's.
   test("the source says when the next run continues the last one", async () => {
     await configure();
@@ -1222,7 +1222,7 @@ describe("knowledge source input (issue #794)", () => {
     ).rejects.toMatchObject({
       statusCode: 400,
       field: "baseUrl",
-      // A console caller reads this in its own language (issue #798); the English reason stays in
+      // NOTE: a console caller reads this in its own language; the English reason stays in
       // the message, which is the log line.
       translationKey: "errors.sourceUrlNotAllowed",
     });

@@ -31,9 +31,8 @@ describe("rebuildPlaygroundTurns", () => {
     ]);
   });
 
-  // Issue #454, review round 1. The live response sanitizes, but the CHECKPOINTER holds the model's
-  // raw turn, so reopening a session rebuilt the token and showed it to the operator again — the
-  // same defect one surface over.
+  // NOTE: the live response sanitizes, but the CHECKPOINTER holds the model's raw turn, so the
+  // reopened session has to sanitize too or it shows the operator the token again.
   test("a reloaded session renders a sentinel-carrying reply as written", () => {
     const turns = rebuildPlaygroundTurns([
       new HumanMessage("oi"),
@@ -41,7 +40,7 @@ describe("rebuildPlaygroundTurns", () => {
     ]);
     expect(turns.map((x) => [x.role, x.text])).toEqual([
       ["user", "oi"],
-      // Round 4: a reload shows what the model actually wrote. Only a turn that reduces ENTIRELY to
+      // NOTE: a reload shows what the model actually wrote. Only a turn that reduces ENTIRELY to
       // the token is silence; editing the token out of a real answer is the prohibited data loss.
       ["assistant", `${FOLLOWUP_SKIP_SENTINEL} Claro, posso ajudar.`],
     ]);
@@ -63,9 +62,9 @@ describe("rebuildPlaygroundTurns", () => {
     ]);
   });
 
-  // Round 9. A silent follow-up ends with an EMPTY ai message after the tool result, and an earlier
-  // tool-calling ai message in the same slice can carry text. Scanning past the empty one returned
-  // that text, so reopening the session showed a follow-up the live run had reported silent.
+  // NOTE: a silent follow-up ends with an EMPTY ai message after the tool result, and an earlier
+  // tool-calling ai message in the same slice can carry text. Scanning past the empty one would show
+  // on reopen a follow-up the live run reported silent.
   test("a turn ending in an empty ai message renders as silence, not as its earlier text", () => {
     const turns = rebuildPlaygroundTurns([
       new HumanMessage("oi"),
@@ -93,10 +92,9 @@ describe("rebuildPlaygroundTurns", () => {
     expect(turns[1]).toMatchObject({ role: "assistant", text: "Claro!" });
   });
 
-  // Round 22. The two rules are not interchangeable, and the rebuild used the reactive one for
-  // everything: a follow-up's reply went out through `proactiveReply`, which strips a stray token
-  // from a real answer, so reopening the session showed the operator a different reply from the one
-  // they were given — with the token back in it.
+  // NOTE: the two rules are not interchangeable. A follow-up's reply goes out through
+  // `proactiveReply`, which strips a stray token from a real answer, so rebuilding it with the
+  // reactive rule shows a different reply from the one the operator was given, token included.
   test("a reopened follow-up is sanitized by the rule that produced it", () => {
     const reply = `${FOLLOWUP_SKIP_SENTINEL} Ainda precisa de algo?`;
     // The legacy shape (a SystemMessage nudge)...
@@ -186,7 +184,7 @@ describe("rebuildPlaygroundTurns", () => {
   });
 });
 
-// Issue #136: the transcript and the agent's memory are two stores, and this is the fold. Tabled
+// The transcript and the agent's memory are two stores, and this is the fold. Tabled
 // rather than exercised through a turn, because placement is the decision and a DB-backed test
 // would only prove the wiring.
 describe("applyTurnNotes", () => {
@@ -265,11 +263,9 @@ describe("applyTurnNotes", () => {
     expect(shape(out).slice(0, 2)).toEqual(["user:bloqueada", "assistant:T"]);
   });
 
-  // Losing the turn entirely is the failure this exists to prevent, so an anchor that no longer
-  // resolves still renders rather than being dropped.
-  // The blocked turn goes through the SAME renderer as every other one, so the audio marker is
-  // unwrapped and the media id survives. Built by hand, it rendered "<mensagem-de-audio>…" as plain
-  // user text and had nothing for the recording to hang off.
+  // NOTE: an anchor that does not resolve still renders rather than dropping the turn. The blocked
+  // turn goes through the SAME renderer as every other one, so the audio marker is unwrapped and
+  // the media id survives instead of "<mensagem-de-audio>…" showing as plain user text.
   test("a blocked audio turn is unwrapped and keeps its message id", () => {
     const out = applyTurnNotes(
       [],
@@ -359,10 +355,9 @@ describe("applyTurnNotes", () => {
     expect(out[1]?.trace).toHaveLength(1);
   });
 
-  // The agent answering with nothing is what makes an override's own message id unusable: the
-  // rebuild drops an empty AI message, so the note keyed to it matched no turn and the verdict
-  // vanished on reload. Same question the anchor asks ("does the transcript still show this id?"),
-  // asked at the other end, which is why both go through one placement now.
+  // NOTE: the agent answering with nothing makes an override's own message id unusable: the rebuild
+  // drops an empty AI message, so a note keyed to it matches no turn. It is the anchor's question
+  // ("does the transcript still show this id?") asked at the other end, so both share one placement.
   test("a note whose reply the rebuild dropped renders after the message it judged", () => {
     const out = applyTurnNotes(
       [

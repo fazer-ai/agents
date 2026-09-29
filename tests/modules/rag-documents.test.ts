@@ -14,7 +14,7 @@ import { updateEmbeddingSettings } from "@/modules/tenant-settings/service";
 import { createVaultEntry } from "@/modules/vault/service";
 
 // The context these calls take: the tenant id came from a row this test created, so it carries
-// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+// TENANT_ADMIN, the role that tells `runScopedOn` the id never came from outside.
 const ctxOf = (tenantId: bigint): TenantContext => ({
   tenantId,
   userId: null,
@@ -231,7 +231,7 @@ describe.skipIf(!dbUp)("rag documents", () => {
     expect(doc.error).toBeNull();
   });
 
-  // Issue #339. A document's ingest job is keyed `doc:<id>`, so one row serves the document for as
+  // NOTE: a document's ingest job is keyed `doc:<id>`, so one row serves the document for as
   // long as it exists. FAILED is reached by EXHAUSTING the budget, which is precisely the state the
   // retry button is for: without a fresh budget the retry is worth one attempt, and every press
   // after the first dead-letters again on the first blip.

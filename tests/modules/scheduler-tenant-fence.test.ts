@@ -1,29 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { codeOnly } from "@/tests/utils/source-text";
 
-// A CROSS-TENANT DRAIN IN A TEST STEALS ROWS FROM WHATEVER ELSE SHARES THE DATABASE.
-//
-// The scheduler tick and the claims under it are cross-tenant BY DESIGN: production runs one leader
-// and a batch that stopped at a tenant boundary would starve every tenant after it. That design is
-// documented where it lives, on `TickOptions.tenantId` in src/modules/scheduler/worker.ts, together
-// with the fence it hands a test: pass your own tenant and drain only your own rows.
-//
-// The fence has no enforcement, and one call site had already lost it. `tests/db-name.ts` derives ONE
-// database per checkout and every DB-backed file shares it, so an unfenced drain reaches rows the
-// current file never created. Serially that is survivable by luck: the thief runs before or after its
-// victim and the stolen row was already spent. Under `bun test --parallel` the two run at the same
-// moment in different processes, and the row is gone before its owner looks.
-//
-// Measured, at `--parallel=12` on this suite: `runSchedulerTick(appDb, { staleMs, batchSize: 20 })` in
-// tests/modules/failure-note.test.ts claimed the WEBHOOK_RETRY that tests/modules/debounce.test.ts had
-// just enqueued for its own tenant, and `debounce > the scheduler claim excludes DEBOUNCE` failed with
-// `Expected: true, Received: false` in a file that had done nothing wrong. Two of six runs failed that
-// way, never the same test twice, which is the shape that costs a day to attribute: the failure never
-// names the file that caused it.
-//
-// So the rule is enforced here rather than remembered. It is a SOURCE sweep and not a runtime check
-// because the cost it prevents is paid by a DIFFERENT file than the one at fault, and a runtime check
-// can only fire in the victim.
+// A cross-tenant drain in a test steals rows from whatever else shares the database. The tick and
+// its claims are cross-tenant BY DESIGN (`TickOptions.tenantId` in src/modules/scheduler/worker.ts),
+// and a test passes its own tenant to drain only its own rows. `tests/db-name.ts` derives ONE
+// database per checkout, so under `bun test --parallel` an unfenced drain claims another file's
+// rows as they are enqueued, and the failure lands in that file without naming the one at fault.
+// So the rule is a SOURCE sweep rather than a runtime check, which could only fire in the victim.
 
 // Every entry point whose default reach is the whole database. Each is cross-tenant when its tenant
 // argument is absent, and each is reachable from a test.

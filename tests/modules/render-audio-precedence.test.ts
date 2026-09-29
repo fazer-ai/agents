@@ -15,19 +15,12 @@ function msg(over: Partial<RenderableMessage> = {}): RenderableMessage {
   return { text: "", attachmentTypes: ["audio"], ...over };
 }
 
-// O QUE O ÁUDIO ENGOLE, medido (issue #688). O ramo de áudio do renderizador é um `if/else if`, então
-// um áudio na mensagem decide o corpo sozinho: uma extração de documento, uma descrição de imagem ou
-// um pin de localização ao lado dele NÃO chegam ao texto que o agente lê.
-//
-// Este arquivo existe porque a #688 apostou o contrário. Uma versão do portão de posse perguntava
-// "esta mensagem já tem palavras a guardar?" e contava a extração e a descrição como palavras — o
-// que teria mandado para a ingestão uma mensagem cujo corpo renderizado é só o placeholder. A
-// medição corrigiu a pergunta e virou este teste: o fato não tinha nenhum, e ele decide o que um
-// leitor do render pode assumir.
-//
-// Que o áudio engula essas três é um DEFEITO do renderizador, não uma regra que se queira. Ele está
-// preso aqui como está, para que mudá-lo seja uma decisão com um teste vermelho na frente, e não uma
-// descoberta na próxima rodada que apostar nele.
+// O que o áudio engole. O ramo de áudio do renderizador é um `if/else if`, então um áudio na
+// mensagem decide o corpo sozinho: uma extração de documento, uma descrição de imagem ou um pin de
+// localização ao lado dele NÃO chegam ao texto que o agente lê. Um portão que contasse a extração e
+// a descrição como "palavras a guardar" mandaria para a ingestão um corpo que é só o placeholder.
+// Que o áudio engula essas três é um DEFEITO do renderizador, não uma regra que se queira: está
+// preso aqui como está para que mudá-lo seja uma decisão com um teste vermelho na frente.
 describe("o ramo de áudio do renderizador tem precedência sobre o resto", () => {
   const engolidos: Array<[string, RenderableMessage]> = [
     [
@@ -67,15 +60,12 @@ describe("o ramo de áudio do renderizador tem precedência sobre o resto", () =
   });
 });
 
-// E A PERGUNTA DO PORTÃO É PELO TIPO DO ARQUIVO (issue #688, review r9), nunca por "o STT consegue
-// rodar nisto". Um anexo cujo `data_url` ou id ainda não chegou não é transcritível AGORA e mesmo
-// assim alcança o grafo como placeholder — e a transcrição dele vem depois, sobre o mesmo id de
-// mensagem. Perguntando pela elegibilidade do STT, essa mensagem lê como "sem áudio nenhum", o
-// portão atua, a ingestão grava o id no dedup, e a transcrição é descartada como duplicata: a perda
-// que esta exceção existe para fechar, entrando pela porta dela.
-//
-// É a mesma armadilha que `turnHadTheWords` documenta do lado dele, e já custou uma rodada de review
-// lá (#576, round 9). Esta é a segunda vez.
+// E a pergunta do portão é pelo TIPO do arquivo, nunca por "o STT consegue rodar nisto". Um anexo
+// cujo `data_url` ou id ainda não chegou não é transcritível AGORA e mesmo assim alcança o grafo
+// como placeholder, e a transcrição dele vem depois, sobre o mesmo id de mensagem. Perguntando pela
+// elegibilidade do STT, a mensagem lê como "sem áudio", o portão atua, a ingestão grava o id no
+// dedup e a transcrição é descartada como duplicata. É a mesma armadilha que `turnHadTheWords`
+// documenta do lado dele.
 describe("awaitsTranscription pergunta pelo TIPO do anexo", () => {
   function evento(attachment: Record<string, unknown>) {
     return eventos(attachment);
@@ -137,7 +127,7 @@ describe("awaitsTranscription pergunta pelo TIPO do anexo", () => {
     expect(awaitsTranscription(n)).toBe(false);
   });
 
-  // COM DOIS ÁUDIOS, QUEM RESPONDE É O PRIMEIRO (issue #688, review r10). `firstAudioAttachment` e
+  // NOTE: com dois áudios, quem responde é o primeiro. `firstAudioAttachment` e
   // `runEagerMedia` selecionam esse mesmo, então é a transcrição DELE que ainda vem; uma transcrição
   // pendurada em outro anexo não diz nada sobre ela. Lido como "algum está transcrito", o portão
   // atuaria sobre a mensagem cuja transcrição está a caminho, que é exatamente a perda que esta

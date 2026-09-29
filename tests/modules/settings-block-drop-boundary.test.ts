@@ -5,8 +5,8 @@ import {
 } from "@/modules/agents/service";
 
 // A `settings` bag REPLACES the column (docs/graph.md), so every block the bag does not name is
-// deleted, and the call answers 200 saying nothing (#614). The contract stays; what changes is that
-// a write which would destroy configuration has to say it means it.
+// deleted. The contract stays, but a write which would destroy configuration has to say it means
+// it, rather than answering 200 and saying nothing.
 //
 // The question is asked of the STORED row, inside the same lock the write takes, like every other
 // rule in this family: what this bag would COST, not what it looks like on its own.

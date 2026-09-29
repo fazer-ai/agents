@@ -14,23 +14,12 @@ import {
 import { announceReaped } from "@/modules/scheduler/worker";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 
-// ── A MORTE QUE OUTRO APAGOU (issue #737) ──
-//
-// O anúncio genérico de dead-letter relê a linha do job antes de escrever e trata LINHA AUSENTE como
-// "o trabalho terminou". Para um kind `JOB_DELETE_ON_DONE` essa justificativa só vale se a conclusão
-// for a única coisa que apaga a linha, e para `INGEST_MESSAGE` não é: o `/reset` revoga a ingestão da
-// thread com um `deleteMany` que inclui `DEAD` de propósito — a linha guarda o corpo cifrado da
-// mensagem, e nada varre essa tabela, então deixá-la seria confirmar "memória apagada" sobre uma
-// cópia guardada da conversa.
-//
-// "Sem linha" tem portanto DUAS origens, e é o par de casos aqui que prova que ela não classifica
-// sozinha: o revoke apagou (perda real, muda) e o trabalho foi REFEITO e concluído (não é perda).
-// Um conserto que faça toda linha ausente anunciar troca um silêncio real por uma rajada de erros
-// que não aconteceram, e é por isso que os dois casos moram no mesmo arquivo.
-//
-// A janela é montada pelo seam PÚBLICO do caminho do reaper, sem tocar no código da entrega:
-// `reapStaleJobs` devolve o lote já `DEAD` e `announceReaped` roda depois, então o que couber entre
-// as duas chamadas cai exatamente dentro da janela.
+// A morte que outro apagou (docs/logs.md, "A missing job row cannot say whether its death was
+// announced"). Para `INGEST_MESSAGE` a linha ausente tem DUAS origens: o `/reset` a revogou com um
+// `deleteMany` que inclui `DEAD` (perda real) ou o trabalho foi REFEITO e concluído (não é perda).
+// Os dois casos moram no mesmo arquivo porque fazer toda linha ausente anunciar troca um silêncio
+// real por uma rajada de erros que não aconteceram. A janela é montada pelo seam PÚBLICO do reaper:
+// `reapStaleJobs` devolve o lote já `DEAD` e `announceReaped` roda depois.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -92,7 +81,7 @@ async function claimedAndStale(
 }
 
 // As duas metades do caminho do reaper, com um gancho no meio: o que `entre` fizer cai dentro da
-// janela que a issue descreve, entre a escrita do DEAD e a releitura do anúncio.
+// janela entre a escrita do DEAD e a releitura do anúncio.
 async function morreComoReaper(
   kind: "INGEST_MESSAGE" | "DELIVERY_RECOVERY",
   entre: () => Promise<void>,
@@ -214,7 +203,7 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
     expect(linhas[0]?.errorMessage ?? "").not.toBe("");
   });
 
-  // s2 — a issue. A linha some pelo revoke DENTRO da janela, e o operador tem que aprender a mesma
+  // NOTE: s2, a linha some pelo revoke DENTRO da janela, e o operador tem que aprender a mesma
   // coisa que aprendeu na s1: qual mensagem morreu e com qual erro.
   test("o revoke apagar a linha na janela não cala o anúncio", async () => {
     await limpa();
@@ -360,15 +349,12 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
     expect(entregas[0]?.summary.startsWith("[dead_letter]")).toBe(true);
   });
 
-  // s7 — a atribuição. Em produção o reaper varre `scheduler_jobs` cross-tenant, então duas mortes
-  // de tenants diferentes saem no mesmo lote e cada linha tem que ficar sob o dono do job que
-  // morreu.
-  //
-  // O reap aqui é CERCADO por tenant, um por vez, e as duas metades viram um lote só na hora de
-  // anunciar. Não é frouxidão: `scheduler-tenant-fence.test.ts` proíbe um reap sem tenant em teste,
-  // porque o banco é um por checkout e sob `--parallel` a varredura rouba a linha de outro arquivo,
-  // que falha sem nomear quem roubou. O que a s7 pergunta é de quem é cada linha, e isso o lote
-  // único do `announceReaped` responde inteiro.
+  // NOTE: s7, a atribuição. Em produção o reaper varre `scheduler_jobs` cross-tenant, então duas
+  // mortes de tenants diferentes saem no mesmo lote e cada linha fica sob o dono do job que morreu.
+  // O reap aqui é CERCADO por tenant, um por vez, e as duas metades viram um lote só no anúncio:
+  // `scheduler-tenant-fence.test.ts` proíbe um reap sem tenant em teste, porque sob `--parallel` a
+  // varredura rouba a linha de outro arquivo. O lote único do `announceReaped` responde de quem é
+  // cada linha.
   test("a linha anunciada é do tenant dono do job, e de mais ninguém", async () => {
     await limpa();
     await clearFlowLog(suDb, { tenantId: outroTenantId });
@@ -460,7 +446,7 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
     expect(restante.map((r) => r.dedupeKey)).toEqual(["ingest:txs10:1"]);
   });
 
-  // ACHADO DA RODADA 1 DE REVIEW. O carimbo não pode ser "existe uma marca": ele nomeia a CLAIM
+  // NOTE: o carimbo não pode ser "existe uma marca": ele nomeia a CLAIM
   // cuja morte foi anunciada. Um re-arm SEM payload preserva o payload (é o que `upsertJobRow`
   // promete, e três chamadores de produção não passam payload), então uma marca por presença
   // sobreviveria à ressurreição e calaria para sempre a SEGUNDA morte da mesma linha.
@@ -507,7 +493,7 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
     expect(await mortesAnunciadas()).toHaveLength(2);
   });
 
-  // O MESMO ACHADO pelo outro lado: o revoke tem que julgar o recibo contra a claim da linha que
+  // NOTE: a mesma regra pelo outro lado: o revoke tem que julgar o recibo contra a claim da linha que
   // ele está apagando, e não contra a mera existência da chave.
   test("o revoke anuncia a morte nova de uma linha que já carregava o recibo de uma antiga", async () => {
     await limpa();
@@ -527,7 +513,7 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
     expect(d.dedupeKey).toBe("ingest:t-s12:1");
   });
 
-  // SEGUNDO ACHADO DA RODADA 1. O revoke não escreve a linha: ele devolve a morte, e quem chamou
+  // NOTE: o revoke não escreve a linha: ele devolve a morte, e quem chamou
   // anuncia quando a própria escrita é durável. Sem isso, um /reset cuja transação desfaz o DELETE
   // já teria anunciado, a linha DEAD voltaria sem recibo, e o próximo anunciante escreveria a mesma
   // morte de novo — que é exatamente o que a s3 proíbe.
@@ -624,7 +610,7 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
     );
   });
 
-  // ACHADO DA RODADA 5. Ausência de linha prova que ALGUÉM apagou, não que foi ESTE revoke: um
+  // NOTE: ausência de linha prova que ALGUÉM apagou, não que foi ESTE revoke: um
   // /reset que desfez, com um segundo /reset apagando a linha restaurada e anunciando, deixa o
   // primeiro olhando para uma linha ausente e anunciando a mesma morte de novo. Quem responde isso
   // é o Postgres, sobre a transação em que o DELETE correu.
@@ -684,7 +670,7 @@ describe.skipIf(!dbUp)("uma morte que outro apagou na janela", () => {
     expect(await mortesAnunciadas()).toHaveLength(0);
   });
 
-  // ACHADO DO EXECUTOR DOS CENÁRIOS. `pg_xact_status` LEVANTA sobre um id no futuro, em vez de
+  // NOTE: `pg_xact_status` LEVANTA sobre um id no futuro, em vez de
   // responder nulo, então uma consulta só sobre o lote inteiro perde TODAS as mortes por causa da
   // única que não deu para ler, e o catch que impede o estrago de vazar para o chamador é o que
   // torna isso silencioso. Uma morte ilegível cala a si mesma, e mais ninguém.

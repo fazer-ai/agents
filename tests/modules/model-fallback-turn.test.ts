@@ -11,13 +11,10 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 import { FailingModel, UsageReportingModel } from "../utils/scripted-models";
 
-// WHAT THE CUSTOMER GETS WHEN THE AGENT'S PROVIDER CANNOT TAKE THE TURN (issue #143).
-//
-// The effect the issue names is the reply that never arrives, so that is what every test here reads:
-// the text a stub Chatwoot client received, not the return value of a function. The two rows behind
-// it are read from the real tables, because an answer the operator cannot account for is its own
-// defect — a fallback turn billed to the primary's name makes the cost break-down wrong, and one
-// with no line on the trail makes a provider that is down invisible on a turn that succeeded.
+// What the customer gets when the agent's provider cannot take the turn. Every test reads the text a
+// stub Chatwoot client received, not a function's return value. The usage and trail rows are read
+// from the real tables: a fallback turn billed to the primary's name breaks the cost break-down, and
+// one with no trail line hides a provider that is down on a turn that succeeded.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -53,7 +50,7 @@ let noFallbackAgentId = 0n;
 // shared name would let the wrong attribution pass.
 const PRIMARY_MODEL = "primary-mini";
 // A model the price table knows, on another provider than the primary, so the row's price shows
-// whose rates it was written at (issue #863).
+// whose rates it was written at.
 const FALLBACK_MODEL = "claude-haiku-4-5";
 const REPLY = "Claro, posso agendar.";
 
@@ -191,8 +188,8 @@ describe.skipIf(!dbUp)("a provider that cannot take the turn", () => {
       select: { id: true },
     });
     primaryAgentId = withFallback.id;
-    // The same agent minus the fallback block. It is what proves the fix buys something: the two
-    // differ in one setting and in nothing else.
+    // NOTE: the same agent minus the fallback block. The two differ in that one setting only, so the
+    // pair proves what the fallback buys.
     const without = await suDb.agent.create({
       data: {
         tenantId,
@@ -272,8 +269,8 @@ describe.skipIf(!dbUp)("a provider that cannot take the turn", () => {
     await appDb.$disconnect();
   });
 
-  // THE HALF THE ISSUE REPORTS. One setting apart from the test below it, and the difference is a
-  // customer who is answered versus one who is not.
+  // NOTE: one setting apart from the test below it; the difference is a customer who is answered
+  // versus one who is not.
   test("with nothing behind it, a 503 costs the customer the reply", async () => {
     await seedConversation(9401, noFallbackAgentId);
     const rec = { text: [] as string[] };

@@ -5,12 +5,10 @@ import { parseThreadOrigin } from "@/modules/rag/service";
 // Which row a stored thread key names, and when it names none.
 //
 // The key is written from a request body (`threadId` on the playground routes, carried into the
-// approval row by `createSuggestion`) and read back here when the pending list is rendered. That
-// round trip is what makes this a caller's id rather than an internal one: the `try`/`catch` this
-// replaced caught `BigInt("abc")` and did not catch `BigInt("99999999999999999999")`, which
-// converts — so one accepted suggestion could make every later read of the list answer 500. The
-// list is a decision table because the two shapes are told apart by ARITY and by one segment, and
-// a key that matches neither has to fall through rather than be guessed at. Issue #407.
+// approval row by `createSuggestion`), so it is a caller's id: a `try`/`catch` around `BigInt` is
+// not enough, since `BigInt("99999999999999999999")` converts and one accepted suggestion would make
+// every later read of the pending list answer 500. The two shapes are told apart by ARITY and by one
+// segment, and a key that matches neither falls through rather than being guessed at.
 describe("parseThreadOrigin", () => {
   test("a playground key carries the agent id", () => {
     expect(parseThreadOrigin("1:playground:7:abc-uuid")).toEqual({

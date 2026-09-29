@@ -24,27 +24,11 @@ import { transcribePlaygroundAudio } from "@/modules/stt/service";
 import { extractPlaygroundFile } from "@/modules/vision/service";
 import { withoutComments } from "@/tests/utils/source-text";
 
-// The playground was the one console surface that took the caller's tenant selector and handed it to
-// the database as an internally-trusted id, so the gate #223 put at `runScopedOn` never applied to
-// it. Every module rebuilt a context from the raw id (`sysCtx(tenantId)` -> role TENANT_ADMIN), and
-// the role IS the predicate: it is what separates an id that came from outside the process from one
-// this process read from a row.
-//
-// Measured before the change, against this database, with a selector naming a tenant that does not
-// exist. Five of the six entry points answered as though the tenant were real and merely empty:
-//
-//   listPlaygroundSessions   -> []          getPlaygroundMedia    -> null
-//   listThreadMedia          -> []          listThreadTurnNotes   -> []
-//   deletePlaygroundSession  -> undefined (a delete that "succeeded" on a tenant with no rows)
-//
-// while the same selector on any other route answered 404 `ActiveTenantNotFoundError`. The sixth,
-// getPlaygroundSessionTurns, did refuse, but for the wrong fact: its own session fence answered
-// "session not found", which tells the console nothing about the selector it is carrying and so
-// cannot trigger the recovery #265 added.
-//
-// The fix is to stop lying to the gate rather than to add a second one: the request's context goes
-// all the way down, so a TENANT_ADMIN operator still pays nothing (the role short-circuits the
-// check) and a fleet operator's dead selection is refused at the first scoped read. Issue #268.
+// The playground takes the caller's `TenantContext` all the way down, so the unknown-tenant check at
+// `runScopedOn` applies to it (docs/playground.md, docs/tenancy.md rule 5). A selector naming a
+// tenant that does not exist is refused with `ActiveTenantNotFoundError`, never answered as an empty
+// tenant ([] / null / a delete that "succeeds") nor as "session not found", which tells the console
+// nothing about its selector. A TENANT_ADMIN operator pays no extra statement.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -272,8 +256,7 @@ describe.skipIf(!dbUp)(
           appDb,
         ).catch((e: unknown) => e);
         expect(err instanceof ActiveTenantNotFoundError).toBe(true);
-        // And the transcript is still there. Before the fix this came back undefined: the refusal
-        // arrived, after the erase.
+        // NOTE: and the transcript is still there: the refusal comes before the erase, not after.
         expect(
           await cp.getTuple({ configurable: { thread_id: threadId } }),
         ).toBeDefined();
@@ -306,14 +289,10 @@ describe.skipIf(!dbUp)(
   },
 );
 
-// The half a decision table cannot cover. Everything above proves the FUNCTIONS refuse; it says
-// nothing about whether the next entry point added to this module rebuilds a context again, which
-// is exactly how the defect got in (#205). What is pinned here is that nowhere under
-// `src/modules/playground/` does a context get MADE: every one of them arrives from the caller.
-//
-// The predicate is extracted rather than inlined so the fence can be shown to catch something. A
-// sweep with no offender left in the tree passes whether or not it works (#266), so the fixture
-// below is the positive control: it is the exact shape that was in all four files.
+// Everything above proves the FUNCTIONS refuse; this pins that the next entry point cannot rebuild
+// a context: nowhere under `src/modules/playground/` does a context get MADE. The predicate is
+// extracted so the fence can be shown to catch something (a sweep with no offender in the tree
+// passes whether or not it works), and the fixture below is its positive control.
 export function buildsATenantContext(source: string): boolean {
   return /\brole:\s*"(?:TENANT_ADMIN|SUPER_ADMIN)"/.test(source);
 }
@@ -325,9 +304,8 @@ describe("no playground module builds a tenant context of its own", () => {
 
   test("the predicate catches the shape that was there", () => {
     expect(buildsATenantContext(OFFENDER)).toBe(true);
-    // …AND through the reader the sweep actually uses. Calling the predicate on raw text cannot see
-    // an adoption that strips the literal it matches on, which is how `codeOnly` silenced this sweep
-    // for a round (#424).
+    // NOTE: …AND through the reader the sweep actually uses. Calling the predicate on raw text
+    // cannot see a reader that strips the literal it matches on, as `codeOnly` does.
     expect(buildsATenantContext(withoutComments(OFFENDER))).toBe(true);
     // The prose the strip is there for: a comment naming the shape is not one.
     expect(
@@ -348,10 +326,9 @@ describe("no playground module builds a tenant context of its own", () => {
     for await (const rel of new Glob("**/*.ts").scan(
       "src/modules/playground",
     )) {
-      // `withoutComments`, not `codeOnly`: the predicate matches ON a literal (`role: "TENANT_ADMIN"`),
-      // so blanking string contents hides the offender instead of the prose. Adopting the wrong one
-      // here silenced the sweep, and its own control could not see that — it calls the predicate on
-      // unstripped text (found by review).
+      // NOTE: `withoutComments`, not `codeOnly`: the predicate matches ON a literal
+      // (`role: "TENANT_ADMIN"`), so blanking string contents would hide the offender and silence
+      // the sweep, which a control calling the predicate on unstripped text cannot see.
       const src = withoutComments(
         await Bun.file(`src/modules/playground/${rel}`).text(),
       );

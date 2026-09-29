@@ -12,20 +12,12 @@ import {
 } from "@/modules/scheduler/service";
 import { registerJobHandler, runClaimed } from "@/modules/scheduler/worker";
 
-// Issue #164. A scheduler row is re-armed IN PLACE — `enqueueJob` upserts the same physical row back
-// to PENDING — so "the row is CLAIMED" never said WHICH run holds the claim. Every write that
-// finishes a job CAS'd on (id, status = 'CLAIMED') and nothing more, which means a run that finished
-// after its row had been re-armed AND re-claimed landed on the newer claim: the arm was marked DONE
-// and the work it stood for was done by nobody.
-//
-// The ordering that produces it is entirely ordinary and needs one process: a handler runs long
-// enough for something to re-arm its key, and one tick later the row is claimed again. #163 is the
-// same shape with a customer-visible ending (an edit to a knowledge-base document, silently
-// discarded), fixed inside the RAG handler; this is the question asked once, for all ten kinds.
-//
-// What the tests below pin is the STALE side, because the live side is what the old code already
-// did. Each one drives a real row through a real claim, so the token under test is the one the claim
-// SQL actually issued rather than a number the test picked.
+// A scheduler row is re-armed IN PLACE (`enqueueJob` upserts the same physical row back to
+// PENDING), so "the row is CLAIMED" does not say WHICH run holds the claim. A finishing write keyed
+// on (id, status = 'CLAIMED') alone would let a run that ends after its row was re-armed AND
+// re-claimed land on the newer claim: the arm marked DONE and its work done by nobody. It needs one
+// process: a handler runs long enough for its key to be re-armed and claimed again. These pin the
+// STALE side for every kind, each through a real claim, so the token is the one the claim SQL issued.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -66,9 +58,9 @@ async function rowOf(id: bigint) {
   });
 }
 
-// The sequence the whole issue is about, set up once: a job is claimed, re-armed while that claim is
-// still notionally held, and claimed AGAIN. The first claim's token is now stale, and the row is
-// CLAIMED by someone else — which is precisely the state in which the old guard said yes.
+// The sequence under test, set up once: a job is claimed, re-armed while that claim is still
+// notionally held, and claimed AGAIN. The first claim's token is now stale, and the row is CLAIMED
+// by someone else, the state in which a guard on status alone says yes.
 async function staleAndCurrent(
   dedupeKey: string,
 ): Promise<{ id: bigint; stale: ClaimedJob; current: ClaimedJob }> {
@@ -129,15 +121,15 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
 
   test("a superseded run cannot complete the arm that replaced it", async () => {
     const { id, stale, current } = await staleAndCurrent("tok-complete");
-    // `applied` is the only thing the superseded run can learn. Refusing in silence would leave the
-    // ordering exactly as invisible as it was before the token, which is what #164 is about.
+    // NOTE: `applied` is the only thing the superseded run can learn; refusing in silence would
+    // leave the ordering invisible.
     expect(
       await completeJob(tenantId, id, stale.claimSeq, "FOLLOWUP", appDb),
     ).toEqual({
       applied: false,
     });
-    // Still CLAIMED: the arm belongs to the run that is working on it right now, and the work it
-    // stands for has not been done. Under the old guard this row read DONE and nothing ever ran it.
+    // NOTE: still CLAIMED: the arm belongs to the run that is working on it right now, and the work
+    // it stands for has not been done. DONE here would mean nothing ever runs it.
     expect((await rowOf(id)).status).toBe("CLAIMED");
 
     expect(
@@ -234,7 +226,7 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
   });
 
   test("a handler whose key is re-armed mid-run leaves the new arm runnable", async () => {
-    // The end the issue is about, through the worker rather than through the three writes directly:
+    // NOTE: the end to end case, through the worker rather than through the three writes directly:
     // the handler is what takes time, and the re-arm is what lands while it does. The observable
     // effect is that the arm is still there to be run afterwards, by anybody.
     let armedDuring = false;
@@ -268,10 +260,9 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
 
     await runClaimed(mine, appDb);
 
-    // DONE here would mean the re-arm was consumed by the run that never saw it. PENDING and not
-    // CLAIMED: the claim the handler makes mid-run no longer takes its own row back, because a row
-    // whose handler still runs in this process stays out of every claim here (issue #811), so the
-    // new arm waits for whoever claims it next.
+    // NOTE: DONE here would mean the re-arm was consumed by the run that never saw it. PENDING and
+    // not CLAIMED: a row whose handler still runs in this process stays out of every claim here, so
+    // the claim the handler makes mid-run does not take its own row back, and the new arm waits.
     expect((await rowOf(id)).status).toBe("PENDING");
   });
 });

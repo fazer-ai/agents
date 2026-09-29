@@ -7,7 +7,7 @@ import {
   enqueueJobUnlessClaimed,
 } from "@/modules/scheduler/service";
 
-// `enqueueJobUnlessClaimed`, estado por estado (issue #786): uma linha CLAIMED fica intocada, e todo
+// `enqueueJobUnlessClaimed`, estado por estado: uma linha CLAIMED fica intocada, e todo
 // outro estado se arma exatamente como `enqueueJob` arma, que é o contrato que a varredura do
 // follow-up sempre teve. A segunda metade é a que impede a guarda de ficar larga demais.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -130,7 +130,7 @@ describe.skipIf(!dbUp)("enqueueJobUnlessClaimed (issue #786)", () => {
     }
   });
 
-  // A corrida da issue na ordem que uma leitura seguida de escrita perderia: a varredura lê PENDING,
+  // NOTE: a corrida na ordem que uma leitura seguida de escrita perderia: a varredura lê PENDING,
   // a reivindicação comita, e só então o arme escreve. O arme espera o lock da linha e reavalia a
   // condição contra a versão reivindicada.
   test("a claim that commits while the arm waits on the row lock still wins", async () => {
@@ -163,7 +163,7 @@ describe.skipIf(!dbUp)("enqueueJobUnlessClaimed (issue #786)", () => {
     expect(r.payload).toEqual({ v: "running", stepIndex: 0 });
   });
 
-  // `leaveLaterRun` (issue #796): uma linha PENDING com `run_at` no futuro foi adiada pelo handler de
+  // NOTE: `leaveLaterRun`: uma linha PENDING com `run_at` no futuro foi adiada pelo handler de
   // propósito, e o arme da varredura não a puxa de volta nem troca o payload dela. Uma já vencida,
   // uma terminada e uma ausente se armam como antes, e uma adiada que o chamador não reconhece como
   // sua (o predicado recusa o payload) é substituída.

@@ -17,21 +17,18 @@ import {
 } from "@/modules/vault/service";
 
 // The context these calls take: the tenant id came from a row this test created, so it carries
-// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+// TENANT_ADMIN, the role that tells `runScopedOn` the id never came from outside.
 const ctxOf = (tenantId: bigint): TenantContext => ({
   tenantId,
   userId: null,
   role: "TENANT_ADMIN",
 });
 
-// Issue #80: a document uploaded before the embedding credential exists lands UNINDEXED, and the
-// console showed the same neutral badge whether it was waiting for a click or would never index
-// until a credential was sorted out. The job knows which of the three reasons applies.
-//
-// The reason is NOT stamped on the document. One embedding credential serves the whole workspace, so
-// the block belongs to the configuration, not to the row: a token written when the block happened
-// would still be telling the operator to fill a credential they have since filled, with nothing to
-// recompute it. `readEmbeddingBlock` answers the same question at the moment the console asks.
+// A document uploaded before the embedding credential exists lands UNINDEXED, and the console tells
+// a document waiting for a click from one that will never index until a credential is sorted out.
+// The reason is NOT stamped on the document: one embedding credential serves the whole workspace, so
+// the block belongs to the configuration, and a stored token would keep telling the operator to fill
+// a credential they have since filled. `readEmbeddingBlock` answers at the moment the console asks.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -181,9 +178,8 @@ describe.skipIf(!dbUp)(
       expect(block?.vaultId).toBe(entry.ref.slice("vault:".length));
     });
 
-    // Review finding, round 2: an ACTIVE row whose secret is a blank string also fails to resolve.
-    // Answering that with a second "does the row exist" query called it not_found, which is the one
-    // thing it is not — state and value now come from the same read.
+    // NOTE: an ACTIVE row whose secret is a blank string also fails to resolve. State and value come
+    // from the same read: a second "does the row exist" query would call it not_found.
     test("an active credential holding a blank secret reads as empty", async () => {
       const { id } = await seedTenant("blk-blank");
       const row = await suDb.vaultEntry.create({
@@ -200,10 +196,9 @@ describe.skipIf(!dbUp)(
         { credentialRef: `vault:${row.id}` },
         appDb,
       );
-      // Emptied AFTER it was wired, because that is the only way this state is reachable now: the
-      // write boundary refuses a ref whose value is not the shape its kind declares (issue #471), so
-      // a blank active secret can be arrived at but never chosen. What it does not change is what
-      // this test is about — the reader still has to tell `empty` from `pending` and from `gone`.
+      // NOTE: emptied AFTER it was wired, the only way to reach this state: the write boundary
+      // refuses a ref whose value is not the shape its kind declares. The reader still has to tell
+      // `empty` from `pending` and from `gone`.
       await suDb.vaultEntry.update({
         where: { id: row.id },
         data: { secret: encryptJson("") },
@@ -213,9 +208,8 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    // Review finding, round 2: `tryResolveVaultSecret` answers null for a DELETED entry exactly as it
-    // does for an unfilled one, so a dangling ref used to be reported as "pending" — telling the
-    // operator to fill a credential that is not there.
+    // NOTE: `tryResolveVaultSecret` answers null for a DELETED entry exactly as for an unfilled one,
+    // so reading only it would report a dangling ref as "pending", a credential that is not there.
     test("a ref whose credential was deleted is not reported as pending", async () => {
       const { id } = await seedTenant("blk-gone");
       const entry = await createPendingVaultEntry(
@@ -236,9 +230,9 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    // Review finding, round 3, and the reason the reason is not stored: after the operator fixes the
-    // credential the documents are still UNINDEXED (nothing re-indexes them on its own), so a
-    // remembered token would go on explaining a block that no longer exists.
+    // NOTE: why the reason is not stored: after the operator fixes the credential the documents are
+    // still UNINDEXED (nothing re-indexes them on its own), so a remembered token would go on
+    // explaining a block that is gone.
     test("filling the credential clears the block, with the documents untouched", async () => {
       const { id, kb } = await seedTenant("blk-fixed");
       const doc = await seedDoc(id, kb);
@@ -259,8 +253,8 @@ describe.skipIf(!dbUp)(
         appDb,
       );
       expect(await readEmbeddingBlock(ctxOf(id), appDb)).toBeNull();
-      // The document did not move — it is still waiting for someone to index it, which is exactly the
-      // state the badge must now describe instead of "blocked".
+      // NOTE: the document did not move: it is still waiting for someone to index it, which is the
+      // state the badge describes instead of "blocked".
       expect((await readDoc(id, doc.id))?.status).toBe("UNINDEXED");
     });
 
@@ -319,9 +313,9 @@ describe.skipIf(!dbUp)(
       expect(config.baseURL).toBeUndefined();
     });
 
-    // Review finding, round 4: this shape also rides on the documents list, which any authenticated
-    // role can read, while the reindex endpoint that needs the deeplink is TENANT_ADMIN. The ref is
-    // still resolved here — the controller is what drops it — so the split has to stay visible.
+    // NOTE: this shape also rides on the documents list, which any authenticated role can read,
+    // while the reindex endpoint that needs the deeplink is TENANT_ADMIN. The ref is still resolved
+    // here (the controller drops it), so the split has to stay visible.
     test("the block carries the vault ref for the admin path that needs it", async () => {
       const { id } = await seedTenant("blk-ref");
       const entry = await createPendingVaultEntry(

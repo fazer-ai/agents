@@ -208,22 +208,15 @@ import {
 } from "./signing";
 import type { NormalizedChatwootEvent } from "./types";
 
-// Dedicated Chatwoot Agent Bot webhook receiver. Resolve tenant+instance by the opaque
-// routeToken (constant-time hash probe) → verify the Agent Bot HMAC with the instance's stored
-// secret (auth AFTER tenant resolution) → record an idempotency ledger row keyed by the
-// X-Chatwoot-Delivery UUID → ack <5s. processChatwootDelivery runs detached and hands the
-// normalized event to the runtime seam. The ledger does NOT store the payload (it is
-// PII-bearing); the normalized event is passed in-memory to the detached processor.
+// Dedicated Chatwoot Agent Bot webhook receiver: resolve tenant and instance by the opaque routeToken
+// (constant-time hash probe), verify the HMAC with the bot's stored secret (auth AFTER resolution),
+// record an idempotency ledger row keyed by X-Chatwoot-Delivery, ack under 5s, then process detached.
+// The ledger never stores the payload (it carries PII); the normalized event travels in memory.
 
 // The context this file's writes run under: an inbound webhook, so there is no principal to name.
-//
-// `actorType: "system"` is load-bearing since #398, and it is the whole attribution answer for this
-// door. The conversation services record their own rows now, and one of them, the hand-back, is
-// called from here, by /reset. Left unset the row would default to `user` with a null actor, which
-// reads as a person who cannot be identified rather than as no person at all. There is no third
-// option: /reset is only recognized on an INCOMING message, so whoever typed it is the CONTACT, who
-// has no row in `users` and is not a principal of this system. What that person did is recorded as
-// the action (`conversation.reset`) and in the projection, never as the actor.
+// `actorType: "system"` is the attribution answer for this door: left unset, a row written from here
+// (the /reset hand-back) defaults to `user` with a null actor, an unidentifiable person. Whoever typed
+// /reset is the CONTACT, not a principal; that is recorded as the action and projection, never the actor.
 function sysCtx(tenantId: bigint): TenantContext {
   return {
     tenantId,
@@ -239,13 +232,10 @@ function isUniqueViolation(err: unknown): boolean {
   );
 }
 
-// Resolve the runtime knobs (enabled + mode) of the agent bound to a Chatwoot inbox (by its chatwoot
-// inbox id), or null when the inbox is unbound/unknown. Used to decide — BEFORE the mirror, and even
-// for a not-yet-mirrored conversation — whether a control command is "active" (commands /teste,/reset
-// only apply to a test-mode agent; in production they are ordinary customer text) AND whether eager
-// media analysis (STT/vision) should run on a message the agent may not reply to: that runs only for an
-// ENABLED + PRODUCTION agent (disabled → nothing; test → only on the answer path). Inbox config exists
-// long before any conversation, so this resolves correctly on a conversation's very first event.
+// The runtime knobs (enabled, mode) of the agent bound to a Chatwoot inbox, or null when unbound or
+// unknown. Decides, BEFORE the mirror and even for an unmirrored conversation, whether a control
+// command is active (test mode only; in production it is customer text) and whether eager media runs
+// (ENABLED + PRODUCTION only). Inbox config predates any conversation, so the first event resolves.
 async function inboxAgentRuntime(
   tenantId: bigint,
   instanceId: bigint,
@@ -253,9 +243,8 @@ async function inboxAgentRuntime(
   base: PrismaClient,
 ): Promise<{
   agentId: bigint;
-  // The Inbox DB row id, not the Chatwoot one the caller passed in: it is what ExecutionLog.inbox_id
-  // and every other local column mean by "inbox". Selected here because this query already reads the
-  // row — a caller that needs it otherwise pays for a second lookup of the same record.
+  // The Inbox DB row id (what ExecutionLog.inbox_id and every local column mean by "inbox"), selected
+  // here because this query already reads the row.
   inboxId: bigint;
   // The Chatwoot inbox id the row answers for. The payload path already holds it; the sparse path
   // (`conversationInboxRuntime`) recovers it from the stored row, and it is what the STT/vision
@@ -263,25 +252,20 @@ async function inboxAgentRuntime(
   chatwootInboxId: number;
   enabled: boolean;
   mode: string;
-  // The agent's raw settings JSON, carried through so a caller that already pays for this query can
-  // read the channel-redirect config (widgetInboxId, closingEnabled, …) WITHOUT a second one — used
-  // by the redirect follow-up arm (on a new incoming message) and the closing detection (on a
-  // resolve). Left as `unknown`: most callers (the test-mode/eager-media gate) never touch it, so
-  // parsing is deferred to readChannelRedirectConfig at the point of use.
+  // The raw settings JSON, carried so a caller can read the channel-redirect config without a second
+  // query. Left `unknown`: most callers never touch it, so parsing waits for readChannelRedirectConfig.
   settings: unknown;
   // The inbox's WhatsApp provider, mirrored from the inbox-list sync. Null for a non-WhatsApp inbox
   // or one that has not synced. Read here because the takeover's device leg cannot be decided from
   // the payload alone (see providerReservesEchoIds), and this query already reads the row.
   whatsappProvider: string | null;
-  // When THIS binding was made (issue #476 review, round 31). An observer beside a responder stands
-  // down for the responder's own delivery, which only exists when the binding predates the event —
-  // see `responderCoversMessage`. Null on a binding older than the column, read there as older than
-  // any delivery. Selected here because this query already reads the row.
+  // When THIS binding was made. An observer beside a responder stands down only for a binding that
+  // predates the event (see `responderCoversMessage`). Null on a binding older than the column, read
+  // there as older than any delivery.
   responderBoundAt: Date | null;
-  // HOW MANY TIMES WHO ROUTES THIS INBOX HAS CHANGED (issue #540), as this reading found it. It is
-  // meaningless on its own and only ever compared — against the generation the DELIVERY recorded at
-  // receipt — to ask whether this reading describes the world the message arrived in. Carried on the
-  // runtime because the row is already being read here.
+  // How many times the routing of this inbox has changed. Meaningless alone: only compared against the
+  // generation the DELIVERY recorded at receipt, to ask whether this reading is the world the message
+  // arrived in.
   bindingGeneration: number;
 } | null> {
   if (chatwootInboxId == null) return null;
@@ -324,25 +308,16 @@ async function inboxAgentRuntime(
 
 type InboxRuntime = NonNullable<Awaited<ReturnType<typeof inboxAgentRuntime>>>;
 
-// THE INBOX'S BINDING GENERATION, ON ITS OWN (issue #540). The resolvers above carry it for free
-// when they answer, and this exists for the two moments where nothing answered: the ledger INSERT,
-// which records the world the message arrived in, and a route resolution that resolved no runtime at
-// all — which is precisely the reading window 1 is about.
-//
-// NEVER THROWS. Both callers are past the point where a failure could be retried by anyone: the
-// insert path runs after the 200, and the resolution's own retries are about the runtimes. A read
-// that did not answer is null, which every reader treats as "this row cannot say" — the same word as
-// an inbox we do not mirror and a row an older build wrote.
-// The reading itself, on a client the caller already has open, so it can be taken inside the
-// transaction that writes the ledger row.
+// The inbox's binding generation, on its own, on a client the caller already has open, so it can be
+// read inside the transaction that writes the ledger row. Used where no resolver answered: the ledger
+// INSERT, and a route resolution that found no runtime at all.
 async function inboxBindingGenerationIn(
   db: ScopedDb,
   instanceId: bigint,
   at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
 ): Promise<number | null> {
-  // The payload's inbox when it names one, otherwise the conversation's mirrored inbox — the same
-  // fallback every resolver above makes, so the generation and the runtime cannot be read off two
-  // different rows.
+  // NOTE: The payload's inbox when it names one, else the conversation's mirrored inbox: the same
+  // fallback every resolver makes, so the generation and the runtime come from the same row.
   const where =
     at.chatwootInboxId != null
       ? { chatwootInstanceId: instanceId, chatwootInboxId: at.chatwootInboxId }
@@ -370,27 +345,19 @@ async function inboxBindingGenerationAt(
   at: { chatwootInboxId: number | null; chatwootConversationId: number | null },
   base: PrismaClient,
 ): Promise<number | null> {
-  // IT THROWS, and that is the point (PR review, round 9). This used to log and answer null, and a
-  // null here reads as "the generation cannot say" — which switches the window-1 refusal OFF, lets
-  // the CAS through and settles the delivery PROCESSED with no runtime having looked at it. A
-  // transient database failure would have silently produced the exact loss the refusal exists to
-  // prevent, on the one reading where it is the only thing standing in the way.
-  //
-  // The caller resolves the route inside a retry loop and rethrows when it is spent, which leaves
-  // the row PENDING and unclaimed for the sweep. Null is still a real answer from the query itself:
-  // an inbox this delivery cannot name.
+  // NOTE: This throws instead of answering null: null reads as "the generation cannot say", which
+  // switches the window-1 refusal OFF and settles the delivery PROCESSED with no runtime, so a transient
+  // DB failure would cause the exact loss the refusal prevents. The caller retries and then rethrows,
+  // leaving the row PENDING for the sweep. A null from the query itself is an inbox it cannot name.
   return runScopedOn(base, sysCtx(tenantId), (db) =>
     inboxBindingGenerationIn(db, instanceId, at),
   );
 }
 
 // The same runtime, resolved through the CONVERSATION's stored inbox when the payload named none.
-// A sparse payload used to leave `rt` null here, which downstream reads as "no agent bound": the
-// monitoring seam then let the delivery into the operator gates — which resolve the agent from the
-// stored inbox on their own and can post an away, authorization or redirect message — while
-// ingestion, gated on the same null, stayed off (issue #209 review). Asked only on that path, so
-// the common delivery pays no extra query; the shape mirrors `inboxAgentRuntime` so the two
-// readings cannot drift.
+// Without it a sparse payload reads as "no agent bound": the operator gates (which resolve the agent
+// on their own) could post while ingestion stayed off. Asked only on that path, so the common
+// delivery pays no extra query; the shape mirrors `inboxAgentRuntime` so the two cannot drift.
 async function conversationInboxRuntime(
   tenantId: bigint,
   instanceId: bigint,
@@ -441,35 +408,16 @@ async function conversationInboxRuntime(
   });
 }
 
-// WHAT THE RESPONDER'S OWN DELIVERY OF THIS MESSAGE DECIDED (issue #540, window 3).
-//
-// The stand-down above answers WHETHER the responder has this message. What the observer also needs
-// is what that delivery DOES with it, and until now that was answered by reading the responder
-// agent's mode and switch as they stand at the moment the observer asks. The two deliveries are
-// concurrent by construction — one message, two routes — so a switch flipped between them makes the
-// observer stay quiet about a message the responder never folded in (it had gone to test mode, or
-// off), or fold in a second copy of one it did.
-//
-// The sibling row states it, from the runtime ITS claim resolved, and the claim happens long before
-// either delivery finishes. Rows that have not claimed are skipped rather than read as `false`: they
-// say nothing yet, and the caller falls back to the mode reading, which is what every delivery did
-// before this column. That fallback is the window this does not close — narrowed to a sibling still
-// between its insert and its claim, rather than the whole of both deliveries.
-//
-// At most one row can match: Chatwoot fans one delivery per route, and the route is pinned to the
-// responder's bot here. `orderBy` is for determinism if that ever stops being true.
-// THE ROW'S STATUS AS IT STANDS, asked only where a refusal is about to be raised on the strength of
-// it. Null when the row cannot be read, which is not "PENDING" and therefore not a refusal.
+// The row's status as it stands, asked only where a refusal is about to be raised on it. Null when
+// the row cannot be read, which is not "PENDING" and therefore not a refusal.
 async function deliveryStatusOf(
   base: PrismaClient,
   tenantId: bigint,
   deliveryRowId: bigint,
 ): Promise<string | null> {
-  // NOT SWALLOWED (PR review, round 9). Read only where every other condition of the refusal already
-  // holds, so an unreadable status is the last thing between this delivery and a claim that settles
-  // it PROCESSED with no runtime. Answering null there would skip the refusal on a failure — an
-  // unknown state read as a settled one, which is the single inversion this fence cannot afford. The
-  // throw leaves the row PENDING and unclaimed, which is what the refusal itself would have done.
+  // NOTE: Not swallowed: read only where every other condition of the refusal holds, so answering null
+  // on a failure would read an unknown state as settled and let a claim settle PROCESSED with no
+  // runtime. The throw leaves the row PENDING and unclaimed, as the refusal itself would.
   const row = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.chatwootWebhookDelivery.findUnique({
       where: { id: deliveryRowId },
@@ -479,6 +427,11 @@ async function deliveryStatusOf(
   return row?.status ?? null;
 }
 
+// What the responder's own delivery of this message decided, read from the sibling row's claim
+// instead of the responder's mode now: the two deliveries are concurrent, so a switch flipped between
+// them would make the observer stay quiet about, or duplicate, what the responder did. Null when no
+// sibling has claimed; the caller then falls back to the mode reading, which stays open only while a
+// sibling sits between its insert and its claim. At most one row matches (one delivery per route).
 async function responderSiblingRemembers(
   tenantId: bigint,
   instanceId: bigint,
@@ -486,13 +439,10 @@ async function responderSiblingRemembers(
   responderBotId: number,
   conversationId: number | null,
   message: { id: number; column: "inbound" | "humanReply" } | null,
-  // THE EVENT THIS DELIVERY CARRIES, and the sibling has to be the responder's delivery of the SAME
-  // one (PR review, round 1). One customer message reaches the ledger twice — the `message_created`
-  // and, for a voice note, the `message_updated` that finally carried its transcription — and both
-  // name it through `inboundMessageId` (issue #478). Asked without the event, this query could
-  // answer about the responder's OTHER delivery, and where the mode moved between the two it would
-  // hand back the wrong decision: the observer then repeats a message the responder folded in, or
-  // stays quiet about one it did not.
+  // The event this delivery carries: the sibling must be the responder's delivery of the SAME event.
+  // One message reaches the ledger as `message_created` and, for a voice note, as the `message_updated`
+  // carrying its transcription, both under `inboundMessageId`; without the event the query could
+  // answer about the other one and hand back the wrong decision if the mode moved between them.
   event: string,
   base: PrismaClient,
 ): Promise<boolean | null> {
@@ -507,98 +457,42 @@ async function responderSiblingRemembers(
           : { humanReplyMessageId: message.id }),
         routeAgentBotId: responderBotId,
         event,
-        // A sibling is another row by definition — the same reason the coverage count says so: one
-        // bot serves every role its agent holds, so this delivery's own row can match the responder
-        // bot after a promotion.
+        // NOTE: One bot serves every role its agent holds, so this delivery's own row can match the
+        // responder bot after a promotion.
         id: { not: deliveryRowId },
       },
-      // ...AND ITS STATUS, because a `true` written by the CLAIM is an intent and not a completion
-      // (PR review, round 15). See the rule below for the one column where that difference decides
-      // anything.
+      // NOTE: The status too: a `true` written by the CLAIM is an intent, not a completion (rule below).
       select: { routeRemembers: true, status: true },
-      // THE NEWEST SIBLING, whatever it says — INCLUDING null (issue #540, PR review round 6). This
-      // query used to skip rows that had not stated a value, and skipping is what made it answer
-      // about the wrong fan-out: one message can emit several `message_updated` webhooks (a raw
-      // media write followed by the transcription's), each fanned out to responder and observer, and
-      // every one of those rows shares this conversation, message, route and event. With the newest
-      // sibling still unclaimed, the skip walked back to an OLDER update's answer and handed it back
-      // as this fan-out's — so a mode change between the two updates made the observer repeat a
-      // message the responder had folded in, or stay quiet about one it had not.
-      //
-      // Nothing on the row identifies its fan-out, so the honest reading is the latest one: null
-      // from it is "the responder has not decided yet", which is the caller's fallback to the
-      // responder's CURRENT mode — and that mode is what the responder's own claim is about to read
-      // anyway, which makes it the better guess than a settled answer to an older question.
+      // NOTE: The NEWEST sibling, INCLUDING null. One message can emit several `message_updated` webhooks,
+      // each fanned to both routes, and nothing on the row identifies its fan-out; skipping nulls would walk
+      // back to an OLDER update's answer. Null means "not decided yet", and the caller's fallback (the
+      // responder's current mode) is what the responder's own claim is about to read anyway.
       orderBy: { id: "desc" },
     }),
   );
   if (sibling === null) return null;
   if (sibling.routeRemembers !== true) return sibling.routeRemembers;
-  // A `true` THIS ROUTE HAS NOT FINISHED ACTING ON IS AN INTENT (PR review, round 15). The claim
-  // writes it from the runtime it resolved, and the ingestion it promises happens later in that same
-  // execution: a responder switched off in between, and then crashing or failing to enqueue, leaves
-  // a row saying it remembers a message it never folded in. The sweep cannot repair that one — a
-  // takeover recovery does not carry the reply body — so the message is gone from the only memory
-  // holding it, permanently, on the strength of this value.
-  //
-  // Asked ONLY of a colleague's REPLY, and the asymmetry is the whole reason the rule is narrow:
-  //
-  //   * on a reply, being wrong toward INGESTING costs an append the dedup window catches (the
-  //     responder folds replies in as `human_agent`, and `recentAgentMessageIds` is the same set this
-  //     route would write), while being wrong toward standing down costs the message;
-  //   * on an INBOUND message, being wrong toward ingesting can append one the responder's turn is
-  //     about to ANSWER — and a turn-handled id never enters the dedup window, so nothing catches
-  //     that. There the intent is the safer reading and stays authoritative.
-  //
-  // Settled means PROCESSED. A row still PROCESSING has not enqueued yet, and a DEAD one was given
-  // up on, which is the case this exists for.
-  //
-  // ANSWERED `false`, NOT null (PR review, round 17). Null would fall back to the responder's current
-  // mode, and that mode reads "remembers" for exactly the responder this is about — one that was on
-  // when it claimed and is still on now. The sibling crashing a moment later then leaves the reply in
-  // nobody's memory, permanently. `false` says the only thing that is actually known: this sibling has
-  // not folded it in yet. Where it goes on to, the two routes carry the SAME dedupe key
-  // (`ingest:<thread>:<message>`) and the same `recentAgentMessageIds` window, so the cost of being
-  // early is an append that is refused, and the cost of being late is the reply.
+  // NOTE: A `true` this route has not finished acting on is an intent: a responder switched off
+  // between claim and ingestion, then crashing, leaves a row that remembers a message it never folded
+  // in, and a takeover recovery cannot repair it (it lacks the reply body). Asked ONLY of a colleague's
+  // REPLY: there, ingesting early costs an append the dedup window refuses (same `ingest:<thread>:<message>`
+  // key, same `recentAgentMessageIds`), while standing down costs the message. On an INBOUND message the
+  // intent stays authoritative, since a turn-handled id never enters the dedup window. Answered `false`,
+  // not null: null falls back to the responder's mode, which reads "remembers" for exactly this case.
   if (message.column === "humanReply" && sibling.status !== "PROCESSED") {
     return false;
   }
   return true;
 }
 
-// WHETHER A TURN ALREADY COVERED THIS MESSAGE, asked of the ledger instead of inferred from who owns
-// the conversation now (issue #576).
-//
-// The gate that decides continuous ingestion is `(act && consumed) || !act`, and `act` is bot
-// ownership AT THE MOMENT OF THE READ. On a `message_created` that is the right question by accident
-// of timing: the decision to run a turn is taken on that same delivery, so "the bot owns it" and "a
-// turn will cover this" are one fact. On the `message_updated` that finally carries a voice note's
-// transcription they come apart, because the reading is taken after the decision it is asking about,
-// and it comes apart in BOTH directions:
-//
-//   * the write-back lands once the conversation changed hands (resolved, or a colleague took it in
-//     the seconds between our PATCH and the fork's re-dispatch). `!act` reads as "no turn is
-//     coming", and a second copy of what the turn already folded in is appended. The dedup window
-//     does not catch it: that window is written by the ingest job alone, so an id a TURN handled was
-//     never put in it.
-//   * a row stranded while a person held the conversation is replayed half an hour later, by which
-//     time the bot has it back. `act && !consumed` reads as "a turn will cover this", nothing is
-//     appended, and the row closes as recovered with the customer's words in nobody's memory.
-//
-// THE ANSWER IS ON THE CREATION'S ROW, not on this one. One customer message reaches the ledger
-// twice and only the first carries a turn's verdict, so this asks about the MESSAGE and not about
-// the event — which is the one way it differs from `responderSiblingRemembers` above, and the
-// difference is load-bearing: narrowed by event, it would find nothing every time.
-//
-// NOT NARROWED BY ROUTE either. `retireCoveredDeliveries` settles on the wide scope precisely
-// because a turn, a command or a gate answers the MESSAGE whichever route carried it, and the rows
-// it excludes there (an observer's, and one that owes words rather than an answer) are the ones that
-// never state a value here at all.
-//
-// Null is "no row can say", and the caller falls back to the ownership reading every delivery made
-// before this column: no row for the message has settled yet, or every one of them predates this
-// release. It narrows the window rather than closing it, and the residue is the creation's own row
-// dying before it settled — the one case where nothing anywhere recorded what was going to happen.
+// Whether a turn already covered this message, asked of the ledger instead of inferred from who owns
+// the conversation now. On the `message_updated` carrying a voice note's transcription, ownership is
+// read after the decision it asks about, and it errs both ways: a handover makes `!act` append a
+// second copy (the dedup window never holds turn-handled ids), and a replay after the bot took the
+// conversation back makes `act && !consumed` drop the words.
+// Asked of the MESSAGE, not the event (only the creation's row carries a turn's verdict), and not
+// narrowed by route (a turn answers the message whichever route carried it). Null means no row can
+// say, and the caller falls back to the ownership reading.
 async function turnCoveredMessage(
   tenantId: bigint,
   instanceId: bigint,
@@ -614,63 +508,25 @@ async function turnCoveredMessage(
         chatwootInstanceId: instanceId,
         conversationId,
         inboundMessageId: messageId,
-        // A sibling is another row by definition, and this one has not settled anything yet.
+        // NOTE: This row has not settled anything yet.
         id: { not: deliveryRowId },
-        // Only a row that STATED something. A null is the absence this function reports as null of
-        // its own, and letting one win the ordering would hide a settled sibling behind a row that
-        // has said nothing.
+        // NOTE: Only a row that STATED something, or a null would hide a settled sibling in the ordering.
         turnCovered: { not: null },
       },
       select: { turnCovered: true },
-      // ANY `true` WINS, and receipt order decides nothing (PR review, round 1). Several rows carry
-      // the same message — the two bot routes Chatwoot fans to, plus this message's own creation and
-      // update — and they do not all say the same thing: an observer settles its own row `consumed`
-      // (it answers nobody by design), as does a route that stood down because another bot held the
-      // conversation. Taking the newest row let that `false` land after the responder's `true` and
-      // hide it, on nothing better than which delivery was inserted last, and the message was then
-      // folded in a second time. A message cannot become UNANSWERED once a route has answered it, so
-      // `true` is the fact and `false` is only the absence of one; among rows that all say `false`,
-      // the newest is as good an answer as any.
+      // NOTE: ANY `true` wins, and receipt order decides nothing. An observer, or a route that stood down
+      // for another bot, settles its row `false` (`consumed` answers nobody), and newest-first let that hide
+      // the responder's `true`, folding the message in twice. Once a route answered, `true` is the fact.
       orderBy: [{ turnCovered: "desc" }, { id: "desc" }],
     }),
   );
   return sibling?.turnCovered ?? null;
 }
 
-// THE ROUTE'S AGENT, WHEN IT WATCHES THE INBOX RATHER THAN ANSWERING IT (issue #476). A delivery
-// arrives on one persona's route, and that persona may be bound to the payload's inbox as an
-// OBSERVER (`InboxObserver`, the fork's second binding) instead of as its responder. Then the
-// runtime that reads this delivery is the observer's — its switch, its settings, its memory — and
-// the reply path is nobody's on this route, whatever `Inbox.agentId` says: the responder, if there
-// is one, has its own delivery of the same event on its own route.
-//
-// WHAT MAKES A ROUTE AN OBSERVER'S is first of all the delivery itself: the fork delivers to a
-// bot's route only because that bot is the inbox's responder or one of its observers, so a
-// delivery on a route whose agent is NOT the inbox's responder was attached as an observer, row
-// or no row. The row (`InboxObserver`) is written only once Chatwoot agreed (`observeInbox`), so
-// the fork's first events can arrive before it, and an attach whose answer was lost never writes
-// it at all. Reading the route from the delivery closes both without a second state for the row.
-// What the row still decides is the agent that is NOT in monitoring: a monitoring agent on a
-// route that is not the responder's is an observer by construction (only a monitoring agent can
-// be attached as one); a production agent with a row is an observer whose promotion slipped into
-// the attach window, and its route still answers nothing; a production agent with no row on an
-// inbox it does not answer is a mirror that drifted from Chatwoot, and that route keeps the
-// responder path it had before this issue.
-//
-// Two reads, on the same path as `inboxAgentRuntime` for every message. Null when the route is the
-// responder's own, or drifted as above.
-// THE ROUTE'S AGENT AS A CLASSIFIER, which is a different question from the one above (issue #477
-// review, round 4). `observerRuntimeForRoute` answers "whose REPLY PATH is this route": when the
-// route's own bot still HOLDS the conversation and the inbox has a responder, it deliberately
-// answers null, because the reply is the responder's and reading it as an observer's would leave
-// the customer unanswered. Observation is not a reply path. An agent bound to the inbox as an
-// observer watches every conversation on it, including the ones its bot happens to hold from a
-// life before the rebind — and hung off the reply-route answer it watched none of them, on the
-// burst and on the final verdict alike.
-//
-// So this asks the BINDING and nothing else: a row in `InboxObserver` for this route's agent on
-// this inbox. No assignee, no mode inference, no attach window — a row is the one signal that is
-// true regardless of who holds the conversation, and it is the only one that is (see below).
+// The route's agent as a CLASSIFIER, asked of the binding alone: a row in `InboxObserver` for this
+// route's agent on this inbox. Unlike `observerRuntimeForRoute` (the reply path, which answers null
+// when the route's bot holds the conversation), observation covers every conversation on the inbox,
+// including ones the bot holds from before the rebind. No assignee, no mode, no attach window.
 async function boundObserverRuntime(
   tenantId: bigint,
   instanceId: bigint,
@@ -716,22 +572,17 @@ async function boundObserverRuntime(
         bindingGeneration: true,
         observers: {
           where: { agentId: bot.agentId },
-          // The STAMP as well as the row (issue #540, window 5): a row with none is an attach the
-          // fork has not confirmed, which counts as observing everywhere it gates a refusal and is
-          // reported as the attach window here.
+          // NOTE: The STAMP as well as the row: a row with none is an attach the fork has not confirmed,
+          // which counts as observing wherever it gates a refusal and is reported as the attach window here.
           select: { id: true, attachedAt: true },
         },
       },
     });
-    // THE ROW, AND ONLY THE ROW — the attach window is NOT inferable here (issue #477 review, round
-    // 15, correcting round 11). Round 11 read "a delivery on this route with no row" as proof that
-    // Chatwoot had just taken the attachment, on the grounds that `unobserveInbox` removes the
-    // binding before deleting the row. That misses how Chatwoot fans events: a bot that still OWNS
-    // an older conversation keeps receiving its events after being detached from the inbox, so
-    // "delivery, no row" is also the ordinary post-detach state — and reading it as an attachment
-    // armed a verdict for an agent nobody observes with, which then retried to DEAD on every
-    // message. The reply-route answer beside this one covers the attach window wherever the
-    // delivery is not explained by ownership, which is where it can be told apart.
+    // NOTE: The row, and only the row: the attach window is NOT inferable here. "A delivery on this
+    // route with no row" is also the ordinary post-detach state, because a bot that still OWNS an older
+    // conversation keeps receiving its events after the detach; reading it as an attachment would arm a
+    // verdict for an agent nobody observes with, retried to DEAD on every message. The reply-route
+    // answer covers the attach window where ownership does not explain the delivery.
     if (!row || row.observers.length === 0) return null;
     return {
       agentId: bot.agentId,
@@ -747,6 +598,12 @@ async function boundObserverRuntime(
   });
 }
 
+// The route's agent when it WATCHES the inbox rather than answering it: the observer's runtime
+// (switch, settings, memory) reads this delivery, and the reply path on this route is nobody's. The
+// delivery itself is the first signal (the fork delivers to a route only for the inbox's responder
+// or an observer), since the `InboxObserver` row can lag the attach or never land. A monitoring agent
+// on another's route is an observer by construction; a production agent with no row on an inbox it
+// does not answer is a drifted mirror and keeps the responder path. Null for the responder's route.
 async function observerRuntimeForRoute(
   tenantId: bigint,
   instanceId: bigint,
@@ -762,8 +619,8 @@ async function observerRuntimeForRoute(
     type: string | null | undefined;
     id: number | null | undefined;
   } | null,
-  // A REPLAY of a delivery the ledger records as an observer's: the role is the one it had when the
-  // message arrived, and the questions below are all about now. Undefined on every live delivery.
+  // A REPLAY of a delivery the ledger records as an observer's: the role it had when the message
+  // arrived, while the questions below are about now. False on every live delivery.
   recordedAsObserver: boolean,
   base: PrismaClient,
   // `attaching` says the answer came from the attach window rather than from a row, so a verdict
@@ -808,9 +665,8 @@ async function observerRuntimeForRoute(
         bindingGeneration: true,
         observers: {
           where: { agentId: bot.agentId },
-          // The STAMP as well as the row (issue #540, window 5): a row with none is an attach the
-          // fork has not confirmed, which counts as observing everywhere it gates a refusal and is
-          // reported as the attach window here.
+          // NOTE: The STAMP as well as the row: a row with none is an attach the fork has not confirmed,
+          // which counts as observing wherever it gates a refusal and is reported as the attach window here.
           select: { id: true, attachedAt: true },
         },
       },
@@ -818,8 +674,8 @@ async function observerRuntimeForRoute(
     if (!row) return null;
     if (recordedAsObserver)
       return {
-        // A REPLAY names a role it already had, so the row is the whole answer: an attach window is
-        // about a binding being written now, and this delivery's was written long ago.
+        // NOTE: A replay names a role it already had, so the row is the whole answer: the attach window is
+        // about a binding being written now.
         attaching: false,
         agentId: bot.agentId,
         inboxId: row.id,
@@ -828,17 +684,16 @@ async function observerRuntimeForRoute(
         mode: bot.agent.mode,
         settings: bot.agent.settings,
         whatsappProvider: row.provider,
-        // The INBOX's responder binding, carried on the observer's runtime too: same row, and it is
-        // the observer that asks how old it is (`responderCoversMessage`).
+        // NOTE: The inbox's responder binding, carried here too because the observer is who asks its age
+        // (`responderCoversMessage`).
         responderBoundAt: row.responderBoundAt,
         bindingGeneration: row.bindingGeneration,
       };
     if (row.agentId === bot.agentId) return null;
-    // The mirror answers for a payload that named no assignee: a conversation still assigned to a
-    // bot that USED to answer this inbox is that bot's route, and reading a degraded event as
-    // "nobody holds it" would hand the route to the observer's path and leave the customer
-    // unanswered — the new responder's own route stands down before a conversation another bot
-    // holds. Asked only when the payload is silent, which is also the shape of an unassigned one.
+    // NOTE: The mirror answers for a payload that named no assignee: a conversation still assigned to a
+    // bot that answered this inbox before is that bot's route. Read as "nobody holds it", it would go to
+    // the observer's path while the new responder stands down before another bot's conversation, and
+    // the customer is left unanswered.
     const held =
       assignee ??
       (at.chatwootConversationId != null
@@ -855,36 +710,25 @@ async function observerRuntimeForRoute(
               c === null ? null : { type: c.assigneeType, id: c.assigneeId },
             )
         : null);
-    // HOLDING IT ENDS THE QUESTION (issue #476 review, rounds 8 and 11), row or no row: the fork
-    // delivers to the conversation's assignee bot too, and an agent that used to answer this inbox
-    // keeps holding what it was assigned — after it becomes the watcher as well. That route is the
-    // assigned bot's, which the delivery path answers with the inbox's CURRENT responder; read as an
-    // observer's it would answer nothing, while the responder's own route stands down before a
-    // conversation another bot holds, and the customer would wait forever.
-    // ...but only where there IS a responder to answer through (round 16). With none bound, standing
-    // down hands the message to nobody: the observer's memory is the only one the inbox has, and the
-    // assigned bot's path would resolve no runtime at all.
+    // NOTE: Holding it ends the question, row or no row: the fork also delivers to the assignee bot, and
+    // that route is the assigned bot's, answered with the inbox's CURRENT responder. Read as an observer's
+    // it answers nothing while the responder's route stands down, and the customer waits forever. Only
+    // where there IS a responder: with none bound, the observer's memory is the only one the inbox has.
     if (
       held?.type === "AgentBot" &&
       held.id === routeAgentBotId &&
       row.agentId !== null
     )
       return null;
-    // The row, or — inside the attach window, before it is written — a monitoring agent on a route
-    // that is not the responder's. THIS is where the attach window can be told from a detach: the
-    // branch above already sent away the delivery a detached bot receives because it still OWNS the
-    // conversation, so what reaches here with no row arrived for the INBOX, which only an
-    // attachment explains (issue #477 review, round 15). Reported, so a verdict armed off it can
-    // tell "the row has not landed yet" from "the agent was detached" — those read identically to
-    // the tick's own binding fence, and completing on the second reading is permanent for a resolve.
+    // NOTE: The row, or (inside the attach window) a monitoring agent on a route that is not the
+    // responder's. Here the window can be told from a detach: the branch above already sent away the
+    // delivery a detached bot gets because it OWNS the conversation, so what arrives here with no row
+    // came for the INBOX. Reported, because completing a resolve on a detach reading is permanent.
     if (row.observers.length === 0 && !isMonitoring(bot.agent.mode))
       return null;
     return {
-      // ...OR A ROW THE FORK HAS NOT CONFIRMED (issue #540, window 5). Until this column the attach
-      // window had no fact of its own: the row was written only after Chatwoot agreed, so inside the
-      // window there was nothing but the MODE to go on — and a promotion committing in that same
-      // window took even that away, leaving the delivery read as the responder's or as nobody's.
-      // The row is now written before the call, so the window states itself.
+      // NOTE: ...or a row the fork has not confirmed: the row is written before the Chatwoot call, so the
+      // attach window states itself instead of leaning on the mode, which a concurrent promotion can move.
       attaching:
         row.observers.length === 0 ||
         row.observers.some((o) => o.attachedAt === null),
@@ -901,22 +745,13 @@ async function observerRuntimeForRoute(
   });
 }
 
-// The agent bound to a conversation's OWN (mirrored) inbox — its mode, and the two ids the same
-// query already reads — or null when nothing resolves. Deliberately keyed by the conversation rather
-// than by a payload inbox id: it is the
-// reading `maybeConsumeCommandOrGate` already uses for the test-mode gate, and it exists so the
-// question "is this command active?" and the gate that silences the conversation cannot be answered
-// by two different rows (issue #270).
-//
-// It answers about the AGENT and says nothing about the route, which is the split that keeps this
-// safe. Chatwoot fans one command out to the inbox's persona and to the conversation's assigned bot,
-// so more than one delivery can reach here with the same command; `commandRoute` downstream is
-// the single fence that picks which one runs it and consumes the rest. Answering the route question
-// here too would give the losing delivery `commandActive === false`, which does not defer to that
-// fence — it walks past it and hands the agent "/teste" as ordinary customer text.
-//
-// Only ever called on the path where the payload named no inbox, so the common delivery pays for no
-// extra query.
+// The agent bound to a conversation's OWN (mirrored) inbox, with the ids the same query reads, or
+// null. Keyed by the conversation, like the test-mode gate in `maybeConsumeCommandOrGate`, so "is
+// this command active?" and the gate that silences the conversation read the same row. It answers
+// about the AGENT, not the route: Chatwoot fans one command to the inbox persona and the assigned
+// bot, and `commandRoute` is the single fence that picks which one runs it. Answering the route here
+// would give the losing delivery `commandActive === false`, which walks past that fence and hands the
+// agent "/teste" as customer text. Called only when the payload named no inbox.
 async function conversationAgent(
   tenantId: bigint,
   instanceId: bigint,
@@ -946,9 +781,8 @@ async function conversationAgent(
       select: { mode: true },
     });
     if (!agent) return null;
-    // NOTE: the ids come back with the mode because this query already read them, and the caller needs
-    // them for the same reason it needs the mode: a sparse payload answered by this reading has an
-    // agent, and a line that reports the command without naming it is attributable to nothing.
+    // NOTE: The ids come with the mode because a command line that names no agent is attributable to
+    // nothing.
     return { agentId: inbox.agentId, inboxId: conv.inboxId, mode: agent.mode };
   });
 }
@@ -962,34 +796,24 @@ interface ResolvedChatwootBot {
   webhookSecret: string;
 }
 
-// Resolve the per-persona Agent Bot by its opaque route token (constant-time hash probe). The bot
-// carries its own HMAC secret and instance — the route token namespaces the bot, so multiple bots on
-// one instance (one per persona) never collide. Runs as super-admin: this is BEFORE tenant context.
+// Resolve the per-persona Agent Bot by its opaque route token (constant-time hash probe). The token
+// namespaces the bot, so several bots on one instance never collide. Super-admin: this runs BEFORE
+// tenant context.
 async function resolveBotByRouteToken(
   token: string,
   base: PrismaClient,
 ): Promise<ResolvedChatwootBot | null> {
   // Cached in process: see route-token-cache.ts for why the ack path cannot afford this query.
   const webhookRouteTokenHash = hashRouteToken(token);
-  // NOTE: A refresh already in flight means this entry is being questioned right now. Waiting on it costs a
-  // millisecond on a healthy database and is what keeps an outage from being acked: without it every
-  // request arriving before the refresh reports back would be served stale and lost, since Chatwoot
-  // does not redeliver a 2xx. The request that STARTED the refresh is still served stale, and that
-  // one event is the residual this design cannot close without a durable payload store (issue #228).
-  //
-  // BOUNDED, because a lookup that hangs is not a lookup that fails: an unbounded wait would put every
-  // later delivery for this token behind a promise that never answers, which is the whole bot rather
-  // than one event. Overrunning it throws, and the ack fails the same way rule three fails.
-  // TWICE, and the second pass is what makes the coalescing hold under a BURST. Deliveries that
-  // arrive together all find no refresh in flight and clear the wait as one; the first then registers
-  // the refresh, and the cache withholds a stale answer while a refresh decides — so every other one
-  // reads a miss and would fall through to open its own transaction. N deliveries, N-1 needless
-  // interactive transactions, at exactly the moment the pool is tightest, which is the burst this
-  // module exists to keep off Postgres. A miss that finds a refresh registered means somebody else
-  // asked between our wait and our read: wait for THAT one instead of starting another.
+  // NOTE: A refresh in flight means this entry is being questioned: waiting on it keeps an outage from
+  // being acked (Chatwoot does not redeliver a 2xx); only the request that STARTED the refresh is served
+  // stale, a residual that needs a durable payload store to close. Bounded, because a hung lookup would
+  // stall every later delivery for this token. Waited TWICE: a burst clears the first wait together,
+  // and the cache withholds stale answers while a refresh decides, so without a second look each would
+  // open its own transaction exactly when the pool is tightest.
   let cached = await servedFromCache(webhookRouteTokenHash, base);
-  // A miss can mean somebody registered a refresh between our wait and our read, so look once more.
-  // The second wait costs nothing when there is no refresh to wait on: it returns immediately.
+  // NOTE: A miss may mean a refresh was registered between our wait and our read; the second wait
+  // returns immediately when there is none.
   if (cached === undefined) {
     cached = await servedFromCache(webhookRouteTokenHash, base);
   }
@@ -1006,12 +830,10 @@ async function servedFromCache(
 ): Promise<RouteTokenCacheHit | undefined> {
   await awaitRouteTokenRefresh(webhookRouteTokenHash);
   const hit = readRouteTokenCache(webhookRouteTokenHash);
-  // NOTE: A STALE ENTRY IS ANSWERED FROM MEMORY AND REFRESHED BEHIND THE ACK. Expiring into a blocking
-  // query would put the lookup back inside the 5s budget on exactly the traffic that cannot
-  // afford it: an instance quiet for longer than the TTL is cold on EVERY message, so the
-  // first message of every conversation, the one that starts the turn, would pay for it.
-  // The cache only reports `stale` while the last lookup reached Postgres, so this never acks on
-  // the strength of a row the detached half will not be able to act on.
+  // NOTE: A stale entry is answered from memory and refreshed behind the ack: a blocking query would
+  // put the lookup inside the 5s budget on every first message of a quiet instance. The cache reports
+  // `stale` only while the last lookup reached Postgres, so this never acks a row the detached half
+  // cannot act on.
   if (hit?.stale) {
     void refreshRouteToken(webhookRouteTokenHash, base).catch((err) => {
       logger.warn("chatwoot: route token refresh failed: %s", errMsg(err));
@@ -1029,10 +851,9 @@ function readRouteTokenRow(webhookRouteTokenHash: string, base: PrismaClient) {
         tenantId: true,
         chatwootAgentBotId: true,
         webhookSecret: true,
-        // Ignore a soft-disconnected account: the bot's webhook route may still exist in Chatwoot
-        // until the unbind propagates, but we must stop handling its traffic (the rows are kept only
-        // for history). Read through the relation: as a second findUnique it was a second
-        // transaction on the one path that cannot afford one.
+        // NOTE: Ignore a soft-disconnected account: its webhook route may live in Chatwoot until the unbind
+        // propagates. Read through the relation, since a second findUnique is a second transaction on the
+        // ack path.
         instance: { select: { disconnectedAt: true } },
       },
     }),
@@ -1071,12 +892,9 @@ async function queryRouteToken(
   return bot;
 }
 
-// One refresh per token, and later arrivals wait on it rather than starting their own. THE FAILURE
-// TRAVELS WITH THE PROMISE, because the waiters resume into a cache the failure just closed: swallow
-// it here and each of them takes the blocking path and opens its own transaction, which is a burst
-// against the pool at the moment the pool is what is broken. Inheriting it costs them one shared
-// lookup and puts every one of their events on Chatwoot's retry ladder. The log belongs to the
-// detached starter, which is the one caller with nowhere to return the failure to.
+// One refresh per token; later arrivals wait on it. The failure travels with the promise: swallowed,
+// each waiter would take the blocking path and open its own transaction against a pool that is the
+// broken thing. The log belongs to the detached starter, the one caller with nowhere to return it.
 function refreshRouteToken(
   webhookRouteTokenHash: string,
   base: PrismaClient,
@@ -1088,14 +906,13 @@ function refreshRouteToken(
 
 export interface ReceiveChatwootResult {
   ack: true;
-  // NOTE: no "duplicate" here any more. Deduping is a property of PROCESSING, not of acking, and it
-  // now happens where the work does (recordAndProcessChatwootDelivery). Whether this exact delivery
-  // was seen before does not change the answer Chatwoot needs, which is only "received".
+  // NOTE: No "duplicate": deduping is a property of processing, done in
+  // recordAndProcessChatwootDelivery; Chatwoot only needs "received".
   outcome: "queued" | "ignored";
   tenantId?: bigint;
   instanceId?: bigint;
-  // The idempotency KEY (the X-Chatwoot-Delivery header, or a body digest when it is absent), not a
-  // row id: the ledger row is written on the detached path now.
+  // The idempotency KEY (the X-Chatwoot-Delivery header, or a body digest when absent), not a row id:
+  // the ledger row is written on the detached path.
   deliveryId?: string;
   agentBotId?: number | null;
   normalized?: NormalizedChatwootEvent;
@@ -1147,12 +964,9 @@ export async function receiveChatwootWebhook(
     headerDelivery ??
     `body:${createHash("sha256").update(params.rawBody).digest("hex")}`;
 
-  // NOTHING IS WRITTEN HERE. The ledger insert used to sit on this path, which made the ack wait on
-  // an interactive transaction and therefore on the health of a pool it shares with every turn,
-  // ingest and compaction in the process. Chatwoot escalates the conversation when the ack is slow,
-  // so a busy pool anywhere in the system could take the bot off a conversation it had nothing to do
-  // with. The insert moved to the detached path (`recordAndProcessChatwootDelivery`), where being
-  // slow costs latency instead of the turn.
+  // NOTE: Nothing is written here. A ledger insert on this path would make the ack wait on a pool
+  // shared with every turn, and Chatwoot escalates the conversation on a slow ack; the insert lives on
+  // the detached path (`recordAndProcessChatwootDelivery`), where slowness costs latency, not the turn.
   return {
     ack: true,
     outcome: "queued",
@@ -1174,16 +988,10 @@ export interface RecordAndProcessChatwootParams {
   deps?: RuntimeDeps;
 }
 
-// The detached half of a delivery: claim it in the ledger, then process it. Runs AFTER the ack, so
-// everything expensive or fragile belongs here rather than upstream of the 5s budget.
-//
-// A redelivery is not dropped on the strength of the ledger row alone. `recordDelivery` reports the
-// row as a duplicate the moment it exists, but the row existing is not the same as the work having
-// been done: this path is detached and a process that dies right after the insert (deploy, OOM,
-// restart) strands the row on PENDING with nothing running. Since Chatwoot already has its 200, that
-// message would never come back. So both branches go on to `processChatwootDelivery`, whose CAS on
-// `status: "PENDING"` is the real gate: a row already PROCESSING or PROCESSED matches nothing and the
-// call returns "skipped".
+// The detached half of a delivery: claim it in the ledger, then process it. A redelivery is not
+// dropped because the row exists: a process that dies after the insert strands it PENDING, and
+// Chatwoot, holding its 200, never resends. Both branches call `processChatwootDelivery`, whose CAS on
+// `status: "PENDING"` is the real gate.
 export async function recordAndProcessChatwootDelivery(
   params: RecordAndProcessChatwootParams,
 ): Promise<"processed" | "skipped"> {
@@ -1193,8 +1001,7 @@ export async function recordAndProcessChatwootDelivery(
     { tenantId: params.tenantId, instanceId: params.instanceId },
     params.deliveryId,
     ledgerFactsOf(params.normalized, params.agentBotId),
-    // Where to read the world this delivery arrived in — read INSIDE the transaction that writes the
-    // row, so the two commit together (issue #540, PR review round 1).
+    // NOTE: Read INSIDE the transaction that writes the row, so the two commit together.
     {
       chatwootInboxId: params.normalized.inboxId ?? null,
       chatwootConversationId: params.normalized.conversationId,
@@ -1206,52 +1013,33 @@ export async function recordAndProcessChatwootDelivery(
     deliveryRowId: rowId,
     agentBotId: params.agentBotId,
     normalized: params.normalized,
-    // THE ROW'S value, never the reading taken above (issue #540). They differ on exactly one path
-    // and it is the one that matters: a redelivery finds a row written under an EARLIER world, which
-    // is the world its message arrived in, while the fresh reading belongs to this attempt. The
-    // recovery passes the row's value for the same reason, so both callers say the same thing.
+    // NOTE: The ROW's value, never the fresh reading: a redelivery finds a row written under the world
+    // its message arrived in, while the reading belongs to this attempt. The recovery passes the row's
+    // value too.
     receiptBindingGeneration: rowGeneration,
     base,
     deps: params.deps,
   });
 }
 
-// THE 200 IS ALREADY OUT WHEN THIS RUNS, so a throw here is not a delivery that gets retried: it is
-// a message that never existed. Chatwoot was told we have the event, and the upstream retry ladder
-// that would otherwise redeliver it is spent. That makes the ledger claim the one step on this path
-// with nothing behind it, and the failure it actually meets is the one this whole design is about, a
-// pool momentarily full (`maxWait` is 2s). Retrying turns a blip into a delay instead of a lost turn.
-//
-// What this does NOT cover is the process dying between the ack and the claim, which takes the
-// in-memory payload with it. That is the durability the fast ack trades away, and closing it needs
-// the payload stored before the 200, not a longer retry here.
+// The 200 is already out when this runs, so a throw here loses the message: the ledger claim has
+// nothing behind it, and its real failure is a pool momentarily full (`maxWait` 2s), so it retries.
+// A process dying between ack and claim still loses the in-memory payload; closing that needs the
+// payload stored before the 200, not a longer retry.
 const LEDGER_CLAIM_ATTEMPTS = 4;
 const LEDGER_CLAIM_BACKOFF_MS = 300;
 
-// The observer's memory append, retried the way the ledger claim is and for the same failure — a
-// pool momentarily full (issue #209 review, round 24). Under an observer the append is the point of
-// the delivery, and for a COLLEAGUE's reply it is also the last chance: an outgoing message's body
-// is the one thing the sweep's recovery cannot rebuild (./recover-takeover.ts), so a blip here
-// would be that reply gone from memory for good. Production's continuous ingestion keeps its single
-// attempt: best-effort by design, with a turn's own coverage behind it.
+// The memory append's enqueue, retried like the ledger claim for the same full-pool blip, wherever no
+// turn will cover the message: `retryArm`'s cases and a colleague's reply. A colleague's reply whose
+// attempts are spent leaves the row to the sweep, which re-arms it by id (./recover-human-reply.ts).
+// Every other ingestion keeps one attempt.
 const INGEST_ARM_ATTEMPTS = 4;
 const INGEST_ARM_BACKOFF_MS = 300;
 
-// EVERYTHING THE LEDGER KEEPS ABOUT ONE DELIVERY, derived from the payload in one place so the
-// insert and the fill of a legacy row cannot answer differently. Ids and shapes only: what a person
-// wrote is never held here (issue #228).
-// The nullable ones, named once so the fill cannot be written against a shorter list than the
-// insert. Spelled out rather than derived from `LedgerFacts`, because `event` is the one field that
-// is never null and must never be filled: a row's event is what it is.
-//
-// `bindingGeneration` is the ONE nullable fact deliberately left out, and leaving it out is what
-// makes it true (issue #540). Every other column here answers about the EVENT, which a redelivery
-// carries unchanged however late it arrives. This one answers about the WORLD, read when the row was
-// first written; a redelivery reads a later world, and filling a legacy null with it would put a
-// present-day binding on a row that arrived under an older one — the single lie the column exists to
-// prevent. A row without it keeps saying it cannot answer, which is correct. It is also the only
-// field of `LedgerFacts` that `ledgerFactsOf` does not produce, for the same reason: it is read from
-// the database, inside the transaction that writes the row, rather than derived from the payload.
+// The nullable facts, named once so the fill cannot use a shorter list than the insert; `event` is
+// never null and never filled. `bindingGeneration` is left out on purpose: it describes the WORLD
+// when the row was first written, and filling a legacy null from a redelivery would stamp a later
+// binding on it. It is read inside the insert's transaction, not derived by `ledgerFactsOf`.
 const LEDGER_FILLABLE = [
   "conversationId",
   "inboundMessageId",
@@ -1260,6 +1048,8 @@ const LEDGER_FILLABLE = [
   "humanReplyMessageId",
 ] as const;
 
+// Everything the ledger keeps about one delivery, derived in one place so the insert and the fill of
+// a legacy row agree. Ids and shapes only: what a person wrote is never held here.
 interface LedgerFacts {
   event: string;
   conversationId: number | null;
@@ -1270,26 +1060,16 @@ interface LedgerFacts {
   bindingGeneration: number | null;
 }
 
-// The one late write to `inboundMessageId`, for the delivery whose words this process produced
-// rather than received (issue #478 review, round 3). Guarded on the column still being null, which
-// is the same rule the legacy fill uses and the reason a redelivery cannot move a value.
-//
-// Only for an UPDATE that now carries a transcription. A creation's id was decided at INSERT from
-// what a creation is, and filling one here could only write an id onto a row that was right to have
-// none.
-//
-// RETRIED like the ledger claim itself and against the same failure (issue #478 review, round 6): a
-// pool momentarily full. What this write buys is the ROW'S RECOVERABILITY, so a single attempt made
-// the crash story depend on a blip — the fill misses, the process dies before the arm, and the sweep
-// reads a `message_updated` naming nothing and closes it. Not thrown when the attempts run out: the
-// delivery is still doing its own work, and taking that away would turn a lost recovery into a lost
-// append. Said at `error` instead, because from there the row cannot be replayed.
+// The one late write to `inboundMessageId`, for an UPDATE whose words this process produced (a
+// creation's id is decided at INSERT). Guarded on the column being null, so a redelivery cannot move
+// it. Retried against a full pool, since a miss plus a crash leaves the sweep a `message_updated`
+// naming nothing; not thrown when spent (that would cost the append too), logged at `error` instead.
 export async function fillLedgerTranscribedMessage(
   tenantId: bigint,
   deliveryRowId: bigint | null,
   n: NormalizedChatwootEvent,
   base: PrismaClient,
-  // Injected by a test, so the retries cost no wall clock. Real callers pass none.
+  // Injected by a test so the retries cost no wall clock.
   sleep?: (ms: number) => Promise<void>,
 ): Promise<void> {
   const messageId = n.message?.id;
@@ -1333,50 +1113,33 @@ function ledgerFactsOf(
   n: NormalizedChatwootEvent,
   routeAgentBotId: number | null,
 ): Omit<LedgerFacts, "bindingGeneration"> {
-  // Asked ONCE and read twice below, because the two fields it decides are a pair: a row saying a
-  // takeover was owed while naming no message for it would leave the recovery's fence blank on the
-  // exact rows the fence exists for, and two calls are two chances to diverge.
+  // NOTE: Asked ONCE and read twice: the two fields are a pair, and a row saying a takeover was owed
+  // while naming no message would blank the recovery's fence on exactly the rows it exists for.
   const humanReplyShape = newHumanReplyShape(n);
   return {
     event: n.event,
     conversationId: n.conversationId,
     // NOTE: Which CUSTOMER MESSAGE this delivery was working, so the sweep can tell a delivery that lost
-    // one from a delivery that lost nothing (issue #228). The bot's own reply comes back as a
-    // `message_created` too, and it is not a customer's, so it stays null.
-    //
-    // AND THE TRANSCRIBED UPDATE, which is the same customer message arriving a second time
-    // (issue #478 review, round 1). Most `message_updated` deliveries are our own media write-back
-    // coming around and still write null here. This one is the write-back that CARRIES THE WORDS,
-    // and on a route where nothing ran the turn at creation it is the message's only readable form —
-    // so a process dying between the claim and the arm loses the transcription with nothing naming
-    // it. Written here, ./stranded-delivery.ts can see that the row owed something.
-    //
-    // The two together are also the DISCRIMINATOR that column has to carry: an id on a
-    // `message_updated` cannot come from an older build, because until this one the condition was
-    // `isNewIncomingMessage` alone and that requires a creation. Every legacy write-back keeps its
-    // null and is closed benign exactly as before.
+    // one from one that lost nothing; the bot's own reply stays null. Also the transcribed UPDATE: on a
+    // route where no turn ran at creation it is the message's only readable form, so ./stranded-delivery.ts
+    // must see that the row owed something. An id on a `message_updated` is also the discriminator from
+    // an older build's rows, which kept null there and close benign.
     inboundMessageId:
       isNewIncomingMessage(n) || inboundTranscriptionOnUpdate(n) !== null
         ? (n.message?.id ?? null)
         : null,
-    // THE OTHER HALF OF THE SAME QUESTION (issue #439): what this delivery OWED. The payload half of
-    // the human-reply route, written before anything has read an inbox, so a process that dies in
-    // the detached window still leaves behind the fact that a takeover was due. The provider half is
-    // re-decided by the recovery, against the inbox as it stands then.
+    // NOTE: What this delivery OWED: the payload half of the human-reply route, written before any inbox
+    // is read so a process death still leaves the owed takeover behind. The recovery re-decides the
+    // provider half against the inbox as it stands then.
     humanReplyShape,
-    // WHO the delivery was, which the payload cannot say and the recovery cannot re-derive. Chatwoot
-    // fans a message to up to two bot routes and only the one holding the conversation passes the
-    // gate, so a recovery that resolved the identity from the inbox would ask a stricter question
-    // than the delivery did — measured on the live path when this fence was written (#430), and the
-    // same refusal, reintroduced by the recovery, leaves the conversation the person answered with
-    // the bot still on it.
+    // NOTE: WHO the delivery was, which neither the payload nor the recovery can re-derive: Chatwoot fans
+    // a message to up to two bot routes and only the one holding the conversation passes the gate, so a
+    // recovery resolving the identity from the inbox asks a stricter question and leaves the bot on the
+    // conversation the person answered.
     routeAgentBotId,
-    // WHICH MESSAGE it was about, which is what the recovery's fence orders by (issue #469). The
-    // payload is never stored (issue #228) and `inboundMessageId` is null here by construction — a
-    // colleague's reply is outgoing — so without this the recovery has no coordinate to compare
-    // against a hand-back an operator made in the half hour it waits, and walks it back.
-    //
-    // Written under the same condition as the shape above, from the same answer.
+    // NOTE: WHICH message it was about, what the recovery's fence orders by. The payload is never stored
+    // and `inboundMessageId` is null for a colleague's outgoing reply, so without this the recovery could
+    // walk back a hand-back an operator made while it waited. Same condition and answer as the shape.
     humanReplyMessageId:
       humanReplyShape !== null ? (n.message?.id ?? null) : null,
   };
@@ -1427,25 +1190,16 @@ async function recordDelivery(
 ): Promise<{
   rowId: bigint;
   duplicate: boolean;
-  // THE ROW'S OWN generation, not the caller's reading (issue #540). On a redelivery the row was
-  // written under an earlier world and that is the one the delivery arrived in; the fresh reading
-  // the caller took belongs to this attempt and would date the message to the wrong world. Handed
-  // back from whichever branch answered, so the value the processing uses is always the stored one.
+  // The ROW's own generation, not the caller's reading: a redelivery's row was written under the world
+  // its message arrived in, and the fresh reading belongs to this attempt. Returned from either branch.
   bindingGeneration: number | null;
 }> {
   try {
     const row = await runScopedOn(base, sysCtx(scope.tenantId), async (db) => {
-      // THE WORLD THIS ROW ARRIVES IN, READ IN THE SAME TRANSACTION THAT WRITES IT (issue #540, PR
-      // review round 1). It used to be one read followed by one insert, and a binding committing
-      // between them put a world on the row that the message never arrived in — the single lie this
-      // column exists to prevent, in the one place it is written.
-      //
-      // AS EARLY AS THIS PATH RUNS, and no earlier. The review asked for the receive path instead;
-      // that path is deliberately read-free (issue #228, measured): the ack waits on the pool it
-      // shares with every turn and compaction in the process, and Chatwoot takes the bot off a
-      // conversation when the ack is slow. What is left uncovered is the hop between the ack and
-      // this task, which is strictly shorter than the hop between Chatwoot emitting the event and
-      // our receiving it — a window no column written on this side can ever cover.
+      // NOTE: Read in the SAME transaction that writes the row: a binding committing between a separate
+      // read and the insert would stamp a world the message never arrived in. Not on the receive path,
+      // which stays read-free so the ack never waits on the pool; the hop from ack to here is shorter than
+      // Chatwoot's own emit-to-receive hop, which no column on this side can cover.
       const bindingGeneration = await inboxBindingGenerationIn(
         db,
         scope.instanceId,
@@ -1457,11 +1211,9 @@ async function recordDelivery(
           chatwootInstanceId: scope.instanceId,
           deliveryId,
           status: "PENDING",
-          // What a recovery sweep needs if this delivery is stranded on PROCESSING by a process
-          // death (issue #228): which conversation to flush, which message that flush was supposed
-          // to answer, and what side effect the delivery owed (issue #439). Ids and shapes, and
-          // nothing else about the event — the flush re-reads the messages from Chatwoot, so no
-          // column here can hold what the customer wrote.
+          // NOTE: What a recovery sweep needs if this delivery strands: which conversation to flush, which
+          // message the flush should answer, and what side effect was owed. Ids and shapes only; the flush
+          // re-reads messages from Chatwoot, so no column holds what the customer wrote.
           ...facts,
           bindingGeneration,
         },
@@ -1478,29 +1230,17 @@ async function recordDelivery(
     const existing = await runScopedOn(base, sysCtx(scope.tenantId), (db) =>
       db.chatwootWebhookDelivery.findFirst({
         where: { chatwootInstanceId: scope.instanceId, deliveryId },
-        // Read here rather than after the fills below, and it makes no difference which: the fills
-        // deliberately leave `bindingGeneration` alone (see `LEDGER_FILLABLE`), so the stored value
-        // is the same before and after them.
+        // NOTE: Read before the fills, which is equivalent: they never touch `bindingGeneration`
+        // (see `LEDGER_FILLABLE`).
         select: { id: true, bindingGeneration: true },
       }),
     );
     if (!existing) throw err;
-    // Fill what the row is missing before handing it back. A row inserted by a build that predates
-    // these columns carries neither id, and the CAS that follows stamps `claimed_at` on it — which
-    // is precisely the signature the sweep reads as "this build wrote it, so its nulls mean what
-    // they say". Left empty, a redelivery of a legacy row turns a lost customer message into a row
-    // the sweep closes as carrying none (issue #228).
-    //
-    // Only ever fills, never overwrites: a row this build already wrote has the right values, and a
-    // redelivery of it must not be able to change them.
-    // Every nullable fact, by the same rule, so a column added later cannot be the one that gets
-    // left out of this list: each is filled only where the row still holds null.
-    //
-    // ONE STATEMENT PER FACT, and that is a correction rather than a style. Filling them together
-    // puts every column in one predicate, which asks for them ALL to be null — and a rollout
-    // produces exactly the row where that is false: the build before this one wrote the two ids and
-    // no shape, so a redelivery matched nothing and the shape stayed missing on precisely the rows
-    // the new column exists for. Each fact now answers only for itself.
+    // NOTE: Fill what a legacy row is missing before handing it back: the CAS stamps `claimed_at`, which
+    // the sweep reads as "this build wrote it, so its nulls mean what they say", and an empty id would
+    // close a lost customer message as carrying none. Only fills, never overwrites. ONE STATEMENT PER
+    // FACT: a single predicate asks for ALL to be null, and a row with the ids but no shape (written by
+    // the prior build) would then never get its shape.
     for (const key of LEDGER_FILLABLE) {
       const value = facts[key];
       if (value === null) continue;
@@ -1526,83 +1266,43 @@ export interface ProcessChatwootParams {
   agentBotId: number | null;
   normalized: NormalizedChatwootEvent;
   // Which state the opening CAS claims from. Omitted = "PENDING", a delivery arriving. "DEAD" is a
-  // recovery taking back a row the sweep gave up on (issue #295); see the CAS for why it is one
-  // statement and not two.
+  // recovery taking back a row the sweep gave up on; see the CAS for why it is one statement.
   claimFrom?: "PENDING" | "DEAD";
-  // The role the route had WHEN THE DELIVERY ARRIVED, replayed rather than re-derived (issue #476
-  // review, round 22). Only a recovery passes it, from the ledger's `routeObserved`: bindings move,
-  // and re-deriving would let a delivery that belonged to a watcher be replayed as the responder —
-  // which answers. A live delivery leaves it undefined and the route is read as it always is.
+  // The role the route had WHEN THE DELIVERY ARRIVED, from the ledger's `routeObserved`; only a
+  // recovery passes it. Bindings move, and re-deriving could replay a watcher's delivery as the
+  // responder, which answers. A live delivery leaves it undefined.
   routeObserved?: boolean;
-  // WHAT THE STRANDED PASS OWED (issue #725), from the ledger's `owesMemoryOnly`. Only a recovery
-  // passes it, and it is the one thing a replay cannot re-derive: the pass that stranded ran on a
-  // conversation a person was holding, or on a message a gate had already silenced, and both facts
-  // are about a moment that is gone. Re-derived here, the answer is about the conversation NOW —
-  // which can be back with the bot, half an hour later, with nobody having asked anything new.
-  //
-  // What it disarms is the TURN and nothing else: the pass still owes its append, and the row's
-  // settlement, the watermark and the takeover keep reading `act` exactly as they always did. The
-  // same shape the observer's route uses (`observing`), for the same reason — a fact that silences
-  // the reply must not be smuggled into the word that means "the bot holds this conversation".
+  // What the stranded pass owed, from the ledger's `owesMemoryOnly`; only a recovery passes it. The
+  // pass ran while a person held the conversation or a gate had silenced the message, facts about a
+  // moment that is gone: re-derived, it reflects the conversation NOW. It skips the command/gate pass
+  // and the turn, clears the ingestion's `act`, joins `settlesHere` and makes the settlement wait for
+  // the append. `act` itself stays as derived, so a fact that silences the reply never hides in the
+  // word meaning "the bot holds this conversation".
   owesMemoryOnly?: boolean;
-  // AND HOW WIDE THAT PASS WOULD HAVE SETTLED (issue #725, review round 2), from the ledger's
-  // `settleScopedToThisDelivery`. The column above disarms the reply; this one is the other half of
-  // the same "a moment that is gone" problem, because the settlement's scope is derived from WHO
-  // held the conversation: scoped to this delivery beside another AgentBot, widened to the whole
-  // conversation behind a person or a gate. Re-derived on a replay, a stand-down that happened
-  // beside another bot settles the conversation once ownership has come back to us, and that bot's
-  // own row for this message is marked consumed with neither recovery having answered.
-  //
-  // Undefined or null is "this row cannot say", which derives it now — the reading every delivery
-  // had before the column.
+  // How wide that pass would have settled, from the ledger's `settleScopedToThisDelivery`. The scope
+  // derives from who held the conversation (this delivery beside another AgentBot, the whole
+  // conversation behind a person or gate); re-derived on a replay after ownership came back, it would
+  // mark the other bot's row consumed with nobody answering. Undefined or null derives it now.
   settleScopedToThisDelivery?: boolean;
-  // THE INBOX'S BINDING GENERATION WHEN THIS DELIVERY WAS RECEIVED (issue #540), as the ledger row
-  // holds it. Both callers pass the ROW's value — the live path from the insert it just made or the
-  // duplicate it found, the recovery from the row it took back — because the question it answers is
-  // about the world the MESSAGE arrived in, and a reading taken now belongs to this attempt.
-  //
-  // Undefined or null is "this row cannot say": a sparse payload, an inbox we do not mirror, a read
-  // that failed, or a row an older build wrote. Never read as generation zero.
+  // The inbox's binding generation when this delivery was received, as the ledger row holds it (both
+  // callers pass the ROW's value; a reading now belongs to this attempt). Undefined or null means the
+  // row cannot say (sparse payload, unmirrored inbox, failed read, older build), never generation zero.
   receiptBindingGeneration?: number | null;
-  // What the DIRECT turn did, told to nobody who does not ask. The return union is a contract with
-  // every caller (`"processed" | "skipped"`), and widening it would silently change what the live
-  // delivery reads; this is opt-in, so only the caller for whom the distinction exists pays for it.
-  //
-  // The distinction is the recovery's (#295). For a live delivery `"processed"` is the honest word:
-  // it is about the ROW, a failed turn is surfaced on the conversation and announced inside
-  // Chatwoot, and a withheld reply means the NEWER message's own delivery is carrying it. A recovery
-  // exists to ANSWER, and closing the loss on a turn that answered nobody is the lie the whole
-  // subsystem is built against — twice measured, once with the model throwing and once with a newer
-  // message landing between the recovery's own freshness read and `shouldPost`.
-  //
-  // Not called at all when debounce armed instead, which is the case the recovery must NOT read as
-  // "nobody answered": the reply is the flush's, minutes from now.
-  //
-  // TAGGED, not distinguished by which key is present: TypeScript gives the absent sibling an
-  // implicit `?: undefined` on a union of object literals, so `r.error !== undefined` narrows
-  // nothing and the outcome side stops type-checking. The tag is the discriminant.
+  // What the DIRECT turn did, opt-in so the `"processed" | "skipped"` contract with every caller stays
+  // unchanged. The recovery needs it: `"processed"` is about the ROW, but a recovery exists to ANSWER,
+  // and closing a loss on a turn that answered nobody (the model threw, or a newer message won
+  // `shouldPost`) is the lie this subsystem is built against. Not called when debounce armed instead:
+  // that reply is the flush's. TAGGED, because on a union of object literals the absent key is an
+  // implicit `?: undefined`, so `r.error !== undefined` narrows nothing.
   onDirectTurn?: (
     r: { kind: "outcome"; outcome: string } | { kind: "error"; error: unknown },
   ) => void;
-  // WHAT CONTINUOUS INGESTION ANSWERED, for the caller whose whole work IS the ingestion
-  // (issue #478 review, round 7). Called only where the ingestion actually ran, so a caller can tell
-  // "the gate looked at this message and decided" from "no route ever asked" — an inbox unbound,
-  // switched off or flipped to test mode in the half hour a recovery waits reaches neither branch,
-  // and the delivery still returns `"processed"` because nothing failed. A transcription replay that
-  // read that as success would close the row with the words in nobody's memory.
-  //
-  // Opt-in like `onDirectTurn` and for the same reason: the return union is a contract with every
-  // caller, and only the one for whom this distinction exists should pay for it.
-  //
-  // "covered" is not one of the enqueue's own answers: it is a route that ingests standing down on
-  // purpose, because the responder already has the message or is about to consume it as a command
-  // (issue #478 review, round 8). A decision, like the gate's `"nothing"`, and it must not read as
-  // silence — an observer's replay beside a responder reaches it every time, and read as silence the
-  // recovery would put a settled row back on the worklist until it exhausted its attempts.
-  //
-  // "no-reader" is the other decision that is not an enqueue: a switched-on observer on an inbox
-  // with no responder of ours, whose route remembers nothing because nothing would read it (issue
-  // #620).
+  // What continuous ingestion answered, for a caller whose work IS the ingestion; opt-in like
+  // `onDirectTurn`. Called only where ingestion ran, so "decided" differs from "no route asked" (an
+  // inbox unbound, switched off or moved to test mode reaches neither branch and still returns
+  // `"processed"`). "covered" is a route standing down because the responder has the message or will
+  // consume it as a command: a decision, not silence, or a replay would requeue a settled row.
+  // "no-reader" is a switched-on observer on an inbox with no responder of ours: nothing would read it.
   onIngest?: (outcome: IngestOutcome | "covered" | "no-reader") => void;
   base?: PrismaClient;
   // Injectable runtime deps (tests): fake model/client/checkpointer + the contact-auth fetch.
@@ -1613,29 +1313,11 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-// A few Chatwoot transports persist the attachment only after creating the message. In that shape,
-// message_created arms the turn without media and message_updated is the first event that carries
-// the audio (the fork re-fires the update after a late audio attach). Analyze that late audio, but
-// never let the update drive debounce or a second turn. The STT write-back update is a no-op because
-// it carries `transcribed_text` in the payload. AUDIO ONLY on purpose: the vision write-back is not
-// serialized into webhook payloads (the fork's Attachment#push_event_data exposes no
-// image_description/extracted_text on any file type), so a visual leg here could not tell "never
-// analyzed" from "our own write-back" and would re-run vision on its own write-back event forever.
-// WHETHER A TURN RUNNING ON THIS MESSAGE WOULD HAVE ITS WORDS (issue #576, PR review round 8), which
-// is a narrower question than whether a turn ran over it.
-//
-// A voice note reaches the graph as a placeholder until STT writes back, and a flush armed by an
-// earlier message can legitimately invoke in that window (docs/stt.md, "Known limits"). That turn
-// folded the MESSAGE in and not the WORDS, so recording it as covered suppresses the very ingest the
-// write-back exists to arm — the late transcription is then in nobody's memory, which is the loss
-// this feature is about, reintroduced by its own record.
-//
-// Answered from what the turn's input actually carried: audio with no transcription is a placeholder,
-// and everything else — text, an image, an audio already transcribed — is the message itself.
-//
-// `hasAudio` is the FILE TYPE and never STT eligibility: an attachment whose id or url has not landed
-// yet cannot be transcribed and still reaches the graph as a placeholder, so a predicate that asked
-// "could STT run" would call it a text message and claim its words.
+// Whether a turn on this message would have its WORDS, narrower than whether a turn ran over it. A
+// voice note is a placeholder until STT writes back, and a flush can invoke in that window
+// (docs/stt.md, "Known limits"); recording that turn as covered would suppress the ingest the
+// write-back arms. `hasAudio` is the FILE TYPE, never STT eligibility: an attachment whose url has
+// not landed is still a placeholder, and "could STT run" would claim its words.
 export function turnHadTheWords(m: {
   hasAudio: boolean;
   transcribedText: string | null | undefined;
@@ -1643,6 +1325,11 @@ export function turnHadTheWords(m: {
   return !m.hasAudio || Boolean(m.transcribedText);
 }
 
+// Some transports attach the audio only after creating the message, so the first event carrying it
+// is a `message_updated` (the fork re-fires it). Analyze that audio, but never let the update drive
+// debounce or a second turn; the STT write-back is a no-op since it carries `transcribed_text`.
+// AUDIO ONLY: the vision write-back is not serialized into webhook payloads, so a visual leg could
+// not tell "never analyzed" from our own write-back and would re-run vision forever.
 export function hasPendingInboundMediaUpdate(
   n: NormalizedChatwootEvent,
 ): boolean {
@@ -1653,10 +1340,9 @@ export function hasPendingInboundMediaUpdate(
   );
 }
 
-// The EPISODE's /teste stamp, for the resolve-triggered closing gate. Its own read rather than the
-// boolean above, because the liveness predicate takes the stamp itself — and the episode's answer
-// rather than this row's, because what this gate protects is a message to the WhatsApp SIBLING
-// (`closeChat: false`), a conversation whose activation the widget row does not hold (issue #249).
+// The EPISODE's /teste stamp, for the resolve-triggered closing gate: the liveness predicate takes the
+// stamp itself, and the gate protects a message to the WhatsApp SIBLING (`closeChat: false`), whose
+// activation the widget row does not hold.
 async function episodeActivationForWidget(
   tenantId: bigint,
   instanceId: bigint,
@@ -1704,23 +1390,16 @@ export interface EagerMediaOwner {
   agentId: bigint | null;
   // Inbox DB row id, not `n.inboxId` (which is Chatwoot's).
   inboxId: bigint | null;
-  // The Chatwoot inbox id the STT/vision config resolves against, for the event that names none:
-  // a sparse payload reaches its agent through the mirrored conversation (`conversationInboxRuntime`,
-  // issue #209 review), and the media of a monitoring agent is analysed before any gate, so the
-  // inbox that runtime was read from has to reach the config lookup too. The payload's own inbox
-  // stays primary, for the reason the command fallback gives: an inbox the payload DID name is an
-  // answer, and the stored one may be where the conversation was before this event.
+  // The Chatwoot inbox id the STT/vision config resolves against, for an event that names none: a
+  // sparse payload reaches its agent through the mirrored conversation, and a monitoring agent's media
+  // is analysed before any gate. The payload's own inbox stays primary: the stored one may be where
+  // the conversation was before this event.
   chatwootInboxId: number | null;
-  // The ledger row this delivery is working, so the row can learn what the pass PRODUCED
-  // (issue #478 review, round 3). `ledgerFactsOf` runs before this and reads the wire: on the update
-  // that brings an audio nobody has transcribed yet, it writes no message id, correctly — there were
-  // no words. The pass then pays a provider for them and stashes them on the event, and from that
-  // instant the delivery owes an append that only this row could name. A death in between leaves a
-  // `message_updated` with a null id, which the sweep closes as carrying nothing.
-  //
-  // Null where the caller has no row to fill — nothing outside `processChatwootDelivery` does.
+  // The ledger row this delivery is working, so it can record what the pass PRODUCED: `ledgerFactsOf`
+  // saw no words on an untranscribed audio update, and once the pass stashes a transcription the
+  // delivery owes an append only this row can name. Null where there is no row to fill.
   deliveryRowId: bigint | null;
-  // Injected by a test, so the ledger fill's retries cost no wall clock. Real callers pass none.
+  // Injected by a test so the ledger fill's retries cost no wall clock.
   sleep?: (ms: number) => Promise<void>;
   // The delivery's injectable runtime deps (tests): the Chatwoot client and the providers' fetches.
   deps?: RuntimeDeps;
@@ -1866,27 +1545,20 @@ async function mediaAdmitted(
   }
 }
 
-// Eager media analysis: transcribe an incoming voice note (STT) and extract an incoming image/document
-// (vision) BEFORE arming/answering, writing the result back to Chatwoot and stashing it on the
-// in-memory event (the direct path reads it; the debounce flush re-reads from the attachment meta).
-// Idempotent and cheap on text: it only touches a field still unset, and only fetches config when the
-// relevant attachment is present. The CALLER decides WHETHER to run this (production+enabled always;
-// test only on the answer path; disabled never) — this function does not gate on the agent. Exported
-// for unit-testing the idempotency/reuse contract that makes the before-gate + answer-path double call
-// safe (no double transcription).
+// Eager media analysis: transcribe an incoming voice note and extract an incoming image or document
+// BEFORE arming or answering, writing back to Chatwoot and stashing it on the in-memory event.
+// Idempotent and cheap on text (touches only unset fields, fetches config only with an attachment),
+// so the before-gate and answer-path double call never transcribes twice. The CALLER decides whether
+// to run it (production+enabled always, test only on the answer path, disabled never).
 export async function runEagerMedia(
   tenantId: bigint,
   instanceId: bigint,
   n: NormalizedChatwootEvent,
   base: PrismaClient,
-  // Where this media belongs, in LOCAL ids, for the `stt`/`vision` flow lines below. Required
-  // rather than optional: an omitted field here writes a NULL column that reads exactly like "this
-  // line has no conversation", and the operator's only route into a turn's trail
-  // (/logs?conversationId=) then cannot show the voice note that failed. The caller already holds
-  // all three — the mirror wrote the conversation row before this runs, and `inboxAgentRuntime`
-  // resolved the agent and its inbox — so nothing here re-queries for them. Null members are for
-  // the case where the caller genuinely has no answer (no agent bound to the inbox), which is also
-  // the case where no config resolves and no line is written at all.
+  // Where this media belongs, in LOCAL ids, for the `stt`/`vision` flow lines. Required, because an
+  // omitted field writes a NULL that reads as "no conversation" and hides the failed voice note from
+  // /logs?conversationId=. The caller already holds all three; null only where no agent is bound,
+  // which is also where no config resolves and no line is written.
   owner: EagerMediaOwner,
 ): Promise<void> {
   const chatwootInboxId = n.inboxId ?? owner.chatwootInboxId;
@@ -1921,8 +1593,8 @@ export async function runEagerMedia(
     todos.length > 0 &&
     !n.message.imageDescription &&
     !n.message.extractedText &&
-    // Also a mark that this event has been through the pass: without it, a message whose every
-    // extraction failed pays the whole provider bill again at the second call site.
+    // NOTE: Also marks the event as through the pass: without it, a message whose every extraction
+    // failed pays the whole provider bill again at the second call site.
     !n.message.attachmentsUnread &&
     !n.message.bodyRead;
   // NOTE: Asked at most once, and only once a provider config resolved.
@@ -1957,7 +1629,7 @@ export async function runEagerMedia(
           instanceId,
           chatwootInboxId,
           base,
-          // The route's agent, which on an observer's route is not the inbox's (issue #476 review, round 3).
+          // NOTE: The route's agent, which on an observer's route is not the inbox's.
           { agentId: owner.agentId },
         );
         if (sttCfg && (await admitted())) {
@@ -1978,9 +1650,8 @@ export async function runEagerMedia(
           });
           if (text) {
             n.message.transcribedText = text;
-            // NOTE: FILL-ONLY, and immediately: the next statement can throw, and from here on the words
-            // exist nowhere durable but this row. Never an overwrite — a row that already names its
-            // message names the right one, and `ledgerFactsOf` is the only other writer.
+            // NOTE: FILL-ONLY, and immediately: the next statement can throw, and from here on the words exist
+            // nowhere durable but this row. Never an overwrite: a row that names its message names the right one.
             await fillLedgerTranscribedMessage(
               tenantId,
               owner.deliveryRowId,
@@ -1996,12 +1667,9 @@ export async function runEagerMedia(
     }
   }
 
-  // Vision (image/document → description/extracted text). Skip if already extracted this delivery.
-  //
-  // O QUE ESTE BLOCO FAZ com os anexos está em `extractMessageVisuals` (../vision/extract-message),
-  // porque desde a issue #757 ele tem dois chamadores: este, na chegada da mensagem, e o turno que
-  // relê uma thread cujos anexos nunca passaram por aqui. O que ficou deste lado é a DECISÃO de
-  // rodar (esta entrega já foi extraída?) e o destino do resultado (os campos do evento).
+  // NOTE: Vision (image/document to description/extracted text), skipped if already extracted this
+  // delivery. What happens to the attachments lives in `extractMessageVisuals` (../vision/extract-message),
+  // shared with the turn that re-reads a thread; this side keeps the decision to run and where results go.
   if (visionPending) {
     try {
       const visionCfg = await resolveVisionConfig(
@@ -2009,7 +1677,7 @@ export async function runEagerMedia(
         instanceId,
         chatwootInboxId,
         base,
-        // The route's agent, which on an observer's route is not the inbox's (issue #476 review, round 3).
+        // NOTE: The route's agent, which on an observer's route is not the inbox's.
         { agentId: owner.agentId },
       );
       // NOTE: Only a new extraction waits for the gate; metadata already on an attachment is reused. Email
@@ -2049,10 +1717,9 @@ export async function runEagerMedia(
             { attachmentsUnread: r.attachmentsUnread + recusados },
           );
         if (r) {
-          // The overflow is NAMED, never silently dropped: a model told "3 more files were not
-          // read" asks the customer to resend those three, while a model told nothing answers as
-          // if the message had three files fewer, which is the failure issue #692 was about.
-          // A COUNT, phrased by the renderer, because it has to survive the debounce re-fetch.
+          // NOTE: The overflow is NAMED, never dropped: a model told "3 more files were not read" asks the
+          // customer to resend them, while one told nothing answers as if the message had fewer files. A
+          // COUNT phrased by the renderer, because it has to survive the debounce re-fetch.
           if (r.attachmentsUnread + recusados > 0)
             n.message.attachmentsUnread = r.attachmentsUnread + recusados;
           if (r.unreadFiles.length > 0) n.message.unreadFiles = r.unreadFiles;
@@ -2068,20 +1735,9 @@ export async function runEagerMedia(
   }
 }
 
-// Continuous ingestion: fold into the agent's per-contact-inbox memory thread the messages a
-// turn did NOT handle, so the bot has full context when it resumes — a customer message it stayed
-// silent on (out of hours, a refused contact, or a human took over), and a HUMAN agent's reply sent
-// while it was silent.
-// Our own bot's outgoing reply is already in the thread (from the turn) and is skipped; so are
-// notes/activities/templates. The CALLER gates this on an ENABLED + PRODUCTION agent (test/disabled
-// never ingest — no cost), so a `consumed` incoming here is a message some gate silenced. Eager
-// media (run before the gate for production, and after it on its yes when the contact authorization
-// gate is on) means the rendered customer text carries its transcription/extraction; a
-// message that gate refused carries the markers instead. Best-effort: a failure never strands the delivery.
-// The contact-inbox the mirrored conversation is known by, for a payload that names none (issue
-// #209 review, round 14). Fails OPEN to null: an unreadable row is the state a payload without a
-// contact-inbox was always in, and the observer's path has already marked the message by now, so
-// the answer here decides only whether it is remembered as well.
+// The contact-inbox the mirrored conversation is known by, for a payload that names none. Fails OPEN
+// to null: the observer's path has already marked the message, so this only decides whether it is
+// also remembered.
 async function storedContactInboxId(
   tenantId: bigint,
   conversationRowId: bigint | null,
@@ -2106,32 +1762,36 @@ async function storedContactInboxId(
   }
 }
 
-// What the enqueue answered, for the one caller that marks on it: the observer's path (issue #209
-// review, round 19). "nothing" is a message with nothing to remember — no text, or not a message
-// this folds in; "no-thread" is a conversation with no contact-inbox to key memory by; "failed" is
-// an enqueue that threw, logged here and left to the caller to decide.
+// What the enqueue answered, for the observer's path, which marks on it. "nothing": nothing to
+// remember; "no-thread": no contact-inbox to key memory by; "failed": the enqueue threw, logged here
+// and left to the caller.
 type IngestOutcome = "queued" | "nothing" | "no-thread" | "failed";
 
+// Continuous ingestion: fold into the per-contact-inbox thread what no turn handled, so the bot has
+// full context when it resumes. The CALLER gates it (enabled production or monitoring), so a
+// `consumed` incoming here was silenced by a gate. A failed enqueue comes back as "failed" rather
+// than thrown, and the caller throws on it where the message has no other chance, leaving the row
+// PROCESSING for the sweep. See docs/graph.md, "Continuous ingestion".
 async function ingestUnhandledMessage(args: {
   tenantId: bigint;
   instanceId: bigint;
-  // THIS DELIVERY'S OWN ROW, so the coverage question below can exclude it from its own answer
-  // (issue #576). Nothing else here needs it.
+  // This delivery's own row, so the coverage question can exclude it from its own answer.
   deliveryRowId: bigint;
   n: NormalizedChatwootEvent;
   act: boolean;
   consumed: boolean;
-  // The inbox's agent, for arming memory compaction when this message opens a new attendance. The
-  // caller already resolved it (inboxAgentRuntime) to decide whether to ingest at all.
+  // The inbox's agent, for arming memory compaction when this message opens a new attendance: one can
+  // begin on a message the agent never answers, and deployments that never resolve conversations
+  // would otherwise hide that boundary until the next attendance.
   agentId: bigint;
   compactionEnabled: boolean;
   // The inbox's WhatsApp provider, for the human-reply predicate's device leg. Threaded rather than
   // re-read: the caller already holds it, and the two decisions (fold this in / step off the
   // conversation) must be made from the same answer.
   whatsappProvider: string | null;
-  // The contact-inbox the mirror knows the conversation by, for a payload that names none
-  // (issue #209 review, round 14): the observer's path marks the message handled before this runs,
-  // so giving up here would lose it for good. The payload's own stays primary.
+  // The contact-inbox the mirror knows the conversation by, for a payload that names none: the
+  // observer's path marks the message handled before this runs, so giving up would lose it. The
+  // payload's own stays primary.
   storedContactInboxId: number | null;
   // Whether the enqueue is retried before it is reported failed: yes under an observer, whose
   // memory the append is for (see INGEST_ARM_ATTEMPTS).
@@ -2153,65 +1813,22 @@ async function ingestUnhandledMessage(args: {
     contactInboxId,
   );
 
-  // A new attendance can begin on a message the agent never answers (out of hours, a human on the
-  // conversation, or the agent reaching out first). Without this arm, that boundary would be invisible
-  // to compaction until the attendance AFTER it, which is exactly the deployment that never resolves
-  // conversations — the population the whole feature exists for.
-  // WHAT gets folded in, and AS WHOM. Two disjoint cases:
-  //
-  //  - a customer incoming message the bot will NOT answer: silenced by a gate (act && consumed —
-  //    out of hours, or a contact the authorization gate refused) or not bot-handled (!act — a
-  //    human owns it, or it is not pending). An answered/debounced message is covered by its own
-  //    turn and is NOT re-ingested here. A refusal ingests for the same reason out-of-hours does,
-  //    and it is what makes the unlock flow read as one conversation: when the code finally lands
-  //    and the turn runs, the agent sees what the customer said while it was refused, instead of
-  //    answering a code out of nowhere.
-  //  - a HUMAN agent's reply to the customer, whatever the gate decided. No turn ever covers one:
-  //    the bot did not write it. On the most ordinary shape of a real deployment — the agent
-  //    qualifies a lead, a human takes over, the human closes the sale — this is the entire business
-  //    half of the attendance, and without it the memory of that attendance is a conversation in
-  //    which only the customer spoke (issue #187). BOTH routes a person can answer by: the Chatwoot
-  //    composer, and the phone paired to the number the inbox is connected to (issue #430) — the
-  //    second was the half #187 could not see, because the fork stores a device reply sender-less.
-  //  - THE SAME CUSTOMER MESSAGE, arriving a second time as the update that finally carries its
-  //    media (issue #478). Some transports emit `message_created` with no attachment and hang the
-  //    voice note on a `message_updated` a moment later: the creation renders to nothing (no text,
-  //    no attachment) and appends nothing, and the update — analysed by the eager pass a few lines
-  //    up, which stashes the transcription ON `n` — was refused here for not being a creation. The
-  //    provider was paid for a transcription that reached no memory at all.
-  //
-  //    TAKEN FROM THE ATTACHMENT TOO, not only from the event: `n.message.transcribedText` is set
-  //    by the eager pass alone, so it is there on the delivery that transcribed — but the fork also
-  //    re-fires the update once our write-back lands, and that second event carries the words in the
-  //    attachment while the message field is still null. Reading both means the words reach memory
-  //    on whichever of the two arrives, including the case where the first one's arm failed.
-  //
-  //    NOT PROTECTED BY THE DEDUP WINDOW, and that is why the gate below is the same one the
-  //    creation used rather than something looser: the window is written by the ingest job alone, so
-  //    a message a TURN answered is absent from it and a second append would stack a duplicate the
-  //    dedup cannot see. What makes that safe is that an answered message needs nothing from here —
-  //    the turn reads the conversation live from Chatwoot when it runs, so it sees the transcription
-  //    by its own route. The gap this closes is the message no turn ever covered.
-  //    AUDIO ONLY, for the reason `hasPendingInboundMediaUpdate` gives: the fork does not serialize
-  //    the vision write-back into webhook payloads, so an image's description exists here only on the
-  //    delivery that produced it — which is a creation, already covered by the clause above. A visual
-  //    leg would be a branch nothing can reach.
+  // NOTE: What gets folded in, and as whom (docs/graph.md, "Continuous ingestion"): a customer message
+  // the bot will NOT answer (`act && consumed` or `!act`), so an unlocked turn sees what was said while
+  // refused; a HUMAN reply by composer or paired phone, which no turn covers; and the late update that
+  // carries a voice note's transcription, read from the event or the attachment (the fork re-fires
+  // after our write-back). That third arm keeps the creation's gate because the dedup window never
+  // holds turn-handled ids. Audio only: see `hasPendingInboundMediaUpdate`.
   const lateTranscription = inboundTranscriptionOnUpdate(n);
-  // Hoisted so the renderer below reads it, the same assignment `runEagerMedia` makes at its top for
-  // the same reason: the transcription lives on the attachment, and every reader downstream asks the
-  // message.
+  // NOTE: Hoisted like the assignment in `runEagerMedia`: the words live on the attachment, and every
+  // downstream reader asks the message.
   if (lateTranscription && n.message && !n.message.transcribedText) {
     n.message.transcribedText = lateTranscription;
   }
   const lateMediaAnalyzed = lateTranscription !== null;
-  // WHAT DECIDES THE LATE-TRANSCRIPTION ARM IS THE LEDGER, NOT OWNERSHIP NOW (issue #576). `act` is
-  // read here, on a `message_updated`, about a decision taken on the creation's delivery — so it is
-  // right by accident on a creation and wrong in both directions on an update. `turnCoveredMessage`
-  // asks the creation's own row what actually happened to the message; a null there means no row can
-  // say, and the fallback is the reading every delivery made before this column.
-  //
-  // The creation arm keeps `act`, deliberately. There the two questions ARE the same fact, and the
-  // ledger has nothing to add: the row that would answer is this one, and it has not settled yet.
+  // NOTE: The late-transcription arm asks the LEDGER, not ownership now: `act` on a `message_updated`
+  // reads a decision taken on the creation's delivery and errs both ways; null falls back to it. The
+  // creation arm keeps `act`, where both questions are one fact and its own row has not settled.
   const covered = lateMediaAnalyzed
     ? await turnCoveredMessage(
         tenantId,
@@ -2234,13 +1851,9 @@ async function ingestUnhandledMessage(args: {
       ? "human_agent"
       : null;
   if (role === null) return "nothing";
-  // One renderer per direction (../chatwoot/render.ts). The customer's folds in transcription,
-  // vision and quoted context; the attendant's names the attachment and, for a voice
-  // note, the words it spoke (issue #763): the eager media pass never runs on an outgoing message,
-  // but an audio REPLY of ours carries its own transcription, and without it the marker alone said
-  // the attendant had sent a file and nothing about what they said — and every marker on the customer's side is
-  // written from the customer's point of view, so reusing it would tell the agent to ask its own
-  // colleague to retype the file they just sent.
+  // NOTE: One renderer per direction (../chatwoot/render.ts). The attendant's names the attachment and
+  // the words of an audio reply (eager media never runs on outgoing messages); the customer's markers
+  // speak from the customer's side, so reused they would have the agent ask its colleague to resend.
   const text =
     role === "human_agent"
       ? renderAttendantMessage({
@@ -2253,30 +1866,15 @@ async function ingestUnhandledMessage(args: {
             (n.message.attachments ?? []).find((a) => a.transcribedText)
               ?.transcribedText,
         })
-      : // ASKED OF `incomingRenderable`, not spelled here (issue #598). This was a second copy of
-        // the shape, and the email subject is what proved the copies drift: the renderer, the burst
-        // and the ceiling gate all learned to read a subject-only email while THIS reader, the one
-        // that folds in the message no turn ever covered, went on dropping it — so the customer who
-        // wrote outside business hours, or to a conversation a colleague had taken, vanished from
-        // the thread and the agent answered in the morning as if nobody had asked anything. One
-        // mapping from a normalized event to what the agent would read, and three callers of it.
+      : // NOTE: Asked of `incomingRenderable`, the one mapping every reader
+        // shares: a second copy drifts (it dropped subject-only emails).
         renderInboundMessage(incomingRenderable(n));
   if (!text.trim()) return "nothing";
-  // QUEUED, not appended. The append itself has to be able to say "not now" — a turn owning the
-  // channel erases anything written beside it — and an ack we must return in under five seconds is
-  // no place to wait for one (issue #194, ../../graph/ingest-job.ts). What the webhook still owns is
-  // the RENDERING above: it reads the eager media pass, which the job cannot re-derive later.
-  // ...E A RESPOSTA DE UM COLEGA É SEMPRE A ÚLTIMA CHANCE (issue #720), qualquer que seja a rota. O
-  // `retryArm` do chamador nomeia os casos em que uma mensagem DO CLIENTE não vai ser coberta por
-  // turno nenhum — sob observador, numa transcrição tardia, na parada do `/teste` — porque lá isso
-  // depende da rota. Aqui não depende: o bot não escreveu esta mensagem, então turno nenhum a lê, e
-  // é a mesma frase que justifica cada um daqueles três. Perguntado pelo PAPEL e não repetindo o
-  // predicado no chamador: duas grafias da mesma cláusula é como uma delas some.
-  //
-  // O que isto compra é o scheduler que pisca: com uma tentativa só, um segundo de indisponibilidade
-  // custava a metade da conversa em que o negócio foi fechado (#187), e a rota comum era justamente
-  // a que não tinha retry. O que NÃO compra é recuperação: esgotadas as tentativas a mensagem se
-  // perde, e o relato lá embaixo é o que sobra.
+  // NOTE: QUEUED, not appended: a turn owning the channel erases anything written beside it, and the
+  // append can say "not now" (../../graph/ingest-job.ts). The webhook keeps the RENDERING, which reads
+  // eager media the job cannot re-derive. No turn reads a colleague's reply, so it retries like
+  // `retryArm`'s cases, asked by ROLE rather than re-spelled at the caller. Spent attempts return
+  // "failed", reported below.
   const attempts =
     args.retryArm || role === "human_agent" ? INGEST_ARM_ATTEMPTS : 1;
   const sleep =
@@ -2299,10 +1897,8 @@ async function ingestUnhandledMessage(args: {
       });
       return "queued";
     } catch (err) {
-      // Only the ENQUEUE can fail here, and failing it must not fail the delivery on its own: the
-      // alternative is a webhook retry that re-runs the eager media pass (a second provider
-      // round-trip) to recover one memory append. Reported to the caller, which is what lets the
-      // one path where the append IS the point — an observer's — decide otherwise.
+      // NOTE: Reported rather than thrown: a delivery retry would re-run eager media (a second provider
+      // round trip) for one append, so the caller decides which outcomes leave the row for the sweep.
       logger.warn(
         "ingest arm (%s) attempt %d/%d failed (conv=%s): %s",
         role,
@@ -2319,15 +1915,10 @@ async function ingestUnhandledMessage(args: {
   return "failed";
 }
 
-// Reactive availability decision: the agent's business hours (the "Disponibilidade" schedule) gate
-// replies to the customer. Outside the configured window the agent stays SILENT; the operator gets a
-// one-shot private note (postNote true only the first time, mirroring the test-mode notice). No
-// schedule / empty windows → always on (never silenced). Pure (now injected) so it is unit-testable.
-//
-// The CUSTOMER-facing half of the same closure is a separate decision on a separate watermark
-// (awayMessageDue, src/modules/availability/away.ts): the two answer different questions on different
-// clocks, and a conversation whose note went out earlier today must still receive the message the
-// first time an operator writes one.
+// Reactive availability: outside the "Disponibilidade" schedule the agent stays SILENT and the
+// operator gets a one-shot private note. No schedule or empty windows means always on. Pure (now is
+// injected). The CUSTOMER-facing away message is a separate decision on its own watermark
+// (awayMessageDue, src/modules/availability/away.ts), so an earlier note does not suppress it.
 export function outOfHoursGate(
   hours: Schedule | null,
   now: Date,
@@ -2342,10 +1933,9 @@ export function outOfHoursGate(
   return { silence: true, postNote: !noticeAlreadySent };
 }
 
-// Claim the day's away message with a compare-and-swap on its watermark's exact previous value (null
-// included). The webhook dispatch is DETACHED, so a customer who writes twice in a row lands two
-// invocations that both read the same watermark before either writes it; without the claim both would
-// post and the customer would see the message twice. The loser skips: the winner is already posting.
+// Claim the day's away message with a CAS on its watermark's exact previous value (null included).
+// The dispatch is DETACHED, so two messages in a row both read the same watermark; without the claim
+// both post. The loser skips.
 export async function claimAwayMessage(params: {
   tenantId: bigint;
   conversationId: bigint;
@@ -2368,10 +1958,9 @@ export async function claimAwayMessage(params: {
   return claimed.count === 1;
 }
 
-// Give the day back when the message never left. The watermark means "the customer heard from us
-// today", and a claim that delivered nothing must not settle it, or the retry the next message would
-// have made is suppressed until tomorrow. Guarded on our own stamp, so a claim that has since moved on
-// is never clobbered. The operator note has its own watermark and is untouched either way.
+// Give the day back when the message never left: the watermark means "the customer heard from us
+// today", and settling it on a failed claim suppresses the retry until tomorrow. Guarded on our own
+// stamp; the operator note's watermark is untouched.
 export async function releaseAwayMessage(params: {
   tenantId: bigint;
   conversationId: bigint;
@@ -2414,14 +2003,8 @@ const CONTACT_AUTH_ERROR_LABELS: Record<string, string> = {
   unexpected_status: "status inesperado",
 };
 
-// Operator-facing note for a conversation the contact-authorization gate refused (pt-BR, the same
-// register as the one-shot test-mode / out-of-hours notices). Reasons are short codes by the time
-// they get here (the slug guard upstream drops prose), so the note can carry one without carrying
-// anything the customer wrote. This is also the ONE place the endpoint's own reason surfaces: the
-// note sits in the operator's Chatwoot, on the conversation it is about, unlike the execution log
-// that alert channels read.
-// What the CUSTOMER got on this refusal, which the note has to describe correctly. Only a `denied`
-// verdict can send a copy at all: `no_identity` and `error` are silent to the customer by design.
+// What the CUSTOMER got on this refusal. Only `denied` can send a copy; `no_identity` and `error`
+// are silent to the customer by design.
 export type ContactAuthCopyOutcome =
   // The refusal notice reached the customer.
   | "sent"
@@ -2433,6 +2016,9 @@ export type ContactAuthCopyOutcome =
   // ownership fence stood it down.
   | "failed";
 
+// Operator-facing note for a conversation the contact-authorization gate refused (pt-BR). Reasons are
+// short slugs by now, so the note carries one without anything the customer wrote; this is the ONE
+// place the endpoint's own reason surfaces, on the conversation, not in the execution log.
 export function contactAuthNoteText(
   verdict: {
     outcome: ContactAuthOutcome;
@@ -2456,36 +2042,22 @@ export function contactAuthNoteText(
   if (verdict.outcome === "denied") {
     const motivo = verdict.endpointReason ?? verdict.reason;
     const reason = motivo ? ` Motivo: ${motivo}.` : "";
-    // The note used to say "O agente não respondeu automaticamente" on every refusal, including the
-    // ones where the deny message HAD just been posted to the customer — a sentence the operator
-    // reads directly below that very message, which makes the note look broken and hides that the
-    // customer already knows.
-    //
-    // The note earns its space by carrying what is NOT on screen. When the copy went out, the
-    // operator can see it: saying so adds nothing, so the note stays quiet about it and keeps only
-    // the reason code, which is the part no one can see. The three cases where NOTHING reached the
-    // customer are the invisible ones, and each is a different thing for the operator to do: nobody
-    // configured a copy, the cooldown withheld it, or the send failed and should be chased.
+    // NOTE: The note carries what is NOT on screen. A copy that went out is visible right above, so the
+    // note keeps only the reason code; the three cases where nothing reached the customer each ask
+    // something different of the operator (configure a copy, cooldown, chase the failure).
     const copyLine = {
       sent: "",
       none: " Nenhum aviso foi enviado ao contato: não há mensagem de recusa configurada.",
-      // Says the window was TAKEN, not that a copy landed. A concurrent refusal on the same
-      // conversation claims the copy window BEFORE it sends, so a claim that fails means "another
-      // refusal holds it" — which covers both the one that already spoke and the one still in
-      // flight, and that one may yet fail and give the window back. Whether a copy is on screen is
-      // the operator's to see; what they cannot see is that THIS message produced none, and why.
+      // NOTE: Says the window was TAKEN, not that a copy landed: a concurrent refusal claims the window
+      // before it sends, and may still fail and give it back.
       suppressed:
         " O aviso de recusa não saiu nesta mensagem: a carência entre avisos já estava tomada por outra recusa.",
-      // Says the RESULT, not a cause. This branch is reached both by a send that failed and by the
-      // ownership fence standing the copy down (a human took the conversation, or the agent was
-      // switched off, between the mode read and the refusal): `postPublicMessage` returns the same
-      // false for both, and naming "delivery failure" here would send the operator chasing a
-      // problem that does not exist on the second one.
+      // NOTE: Says the RESULT, not a cause: `postPublicMessage` returns the same false for a failed send
+      // and for the ownership fence standing it down, so "delivery failure" would mislead on the second.
       failed: " O aviso de recusa NÃO chegou ao contato.",
     }[copy];
-    // A local rule refused (issue #646): no endpoint was asked, so "external check" would send the
-    // operator to a service that never saw this contact. The note names the rule instead, and says
-    // which of its two questions failed, in words, rather than our code.
+    // NOTE: A local rule refused: no endpoint was asked, so "external check" would point the operator at
+    // a service that never saw this contact. Name the rule and which of its two questions failed.
     const ruleLine =
       verdict.reason === RULE_NOT_LISTED
         ? "🔒 Contato não autorizado pela regra do agente: o telefone e o identificador do contato não estão na lista."
@@ -2504,12 +2076,10 @@ export function contactAuthNoteText(
   return `⚠️ A verificação de autorização do contato falhou (${cause}). O agente não respondeu automaticamente; a próxima mensagem tenta novamente.`;
 }
 
-// Test-mode gate + the /teste and /reset commands (item 1 + 2). Runs at the TOP of the actionable
-// branch, before eager STT / debounce / the agent turn. Returns true when the delivery is consumed
-// here — a command was handled, or a "test" agent must stay silent because this conversation hasn't
-// been activated with /teste yet — so the caller skips all agent processing (the mirror already ran).
-// Control commands ONLY apply to a test-mode agent (commandActive, resolved by the caller); for any
-// other agent /teste and /reset are ordinary customer text and fall through to normal processing.
+// Test-mode gate plus the /teste and /reset commands, at the TOP of the actionable branch (before
+// eager STT, debounce, the turn). True when consumed here (a command ran, or a test agent stays silent
+// until /teste), so the caller skips agent processing. Commands apply only to a test-mode agent
+// (commandActive); for any other they are customer text.
 async function maybeConsumeCommandOrGate(params: {
   tenantId: bigint;
   instanceId: bigint;
@@ -2525,11 +2095,9 @@ async function maybeConsumeCommandOrGate(params: {
   base: PrismaClient;
   // Injectable runtime deps (tests): the Chatwoot client factory and the contact-auth fetch.
   deps?: RuntimeDeps;
-  // Handed what the authorization endpoint said ABOUT the contact when this gate lets the delivery
-  // through, so the direct turn can put it in the prompt (issue #190). A callback rather than a
-  // second return value because the returns here are a plain "was this delivery consumed", written
-  // in two dozen places and in nested closures of their own; the verdict is a different question
-  // asked in exactly one of them.
+  // Handed what the authorization endpoint said ABOUT the contact when the gate lets the delivery
+  // through, so the direct turn can put it in the prompt. A callback because the returns here are a
+  // plain "consumed?" written in many places; the verdict is asked in exactly one.
   onAuthContext: (context: AuthContext | null) => void;
   // The gate's verdict for this message, so the media pass after it does not ask again.
   onAuthVerdict?: (allowed: boolean) => void;
@@ -2625,12 +2193,11 @@ async function maybeConsumeCommandOrGate(params: {
   });
   if (!ctx) return false;
 
-  // The persona bound to this conversation's inbox, resolved ONCE and used for both halves of every
-  // customer-visible post: the token it speaks with, and the id the conversation knows it by. They are
-  // deliberately the same lookup. Chatwoot also dispatches an event to the conversation's ASSIGNED
-  // agent bot (agent_bot_listener.rb), so the bot that RECEIVED this delivery is not always the one
-  // that would send the reply — and a fence that clears the recipient while the client sends as the
-  // inbox's persona posts one persona's message into another's conversation.
+  // NOTE: The persona bound to this conversation's inbox, resolved ONCE for both halves of every
+  // customer-visible post (the token and the id the conversation knows it by). Chatwoot also dispatches
+  // to the conversation's ASSIGNED bot (agent_bot_listener.rb), so the bot that received this delivery
+  // is not always the sender; a fence clearing the recipient while sending as the inbox persona would
+  // post into another persona's conversation.
   let personaOnce: Promise<AgentBotIdentity | null> | null = null;
   const persona = (): Promise<AgentBotIdentity | null> =>
     (personaOnce ??=
@@ -2638,10 +2205,9 @@ async function maybeConsumeCommandOrGate(params: {
         ? loadAgentBot(tenantId, instanceId, ctx.agentId, base)
         : Promise.resolve(null));
 
-  // A client that acts AS that persona. Every bot-token endpoint (send, private note, custom
-  // attributes) authenticates with it; admin-token ones (labels, kanban) ignore it. Building the
-  // client without resolving the bot yields an empty token, which Chatwoot rejects with 401 — issue
-  // #79, where /reset did exactly that and reported success anyway.
+  // NOTE: A client acting AS that persona: every bot-token endpoint (send, private note, custom
+  // attributes) authenticates with it. A client built without resolving the bot has an empty token,
+  // which Chatwoot rejects with 401.
   const personaClient = async (): Promise<ChatwootClient> =>
     loadChatwootClient(tenantId, instanceId, {
       base,
@@ -2649,27 +2215,13 @@ async function maybeConsumeCommandOrGate(params: {
       botToken: (await persona())?.accessToken,
     });
 
-  // NOTE: One command, one run. Chatwoot dispatches an incoming message to the conversation's
-  // ASSIGNED agent bot and to the inbox's (agent_bot_listener.rb), and those are two deliveries with
-  // two ids — so on a conversation assigned to another persona's bot, the gate that lets a command
-  // through regardless of ownership let BOTH routes execute it. Two resets, two acknowledgements,
-  // and the second one clearing state the first had just rebuilt.
-  //
-  // The inbox's persona is the one that runs it, because the command is about the agent bound to
-  // THIS inbox: it is that agent's memory being cleared and that agent the conversation goes back
-  // to. The other route consumes the delivery and does nothing — returning false there would hand
-  // "/reset" to its own agent as ordinary customer text.
-  // Fails CLOSED on an unresolvable identity, on either side. An inbox whose agent has no
-  // ChatwootAgentBot row cannot answer anywhere — every bot-token call it makes goes out with an
-  // empty token and comes back 401 (issue #79) — so treating "we have no id" as "this route is ours"
-  // let a command arriving on ANOTHER persona's route unassign that working bot and hand the
-  // conversation to one that cannot speak. The same for a delivery whose own route bot is unknown:
-  // an unattributed route is not evidence that this is the right one.
-  //
-  // The two closed answers are not the same fact, and `commandRoute` is where that distinction is
-  // made once: `other_route` leaves the command to a persona that will run it, `no_persona` means
-  // there is no such persona and NO route will. Asking the question as a boolean here and again for
-  // the line that reports it is the #270 shape — one fact, two readings that can disagree.
+  // NOTE: One command, one run. Chatwoot dispatches to the ASSIGNED bot and the inbox's
+  // (agent_bot_listener.rb), two deliveries, so both routes would execute it. The inbox's persona runs
+  // it (it is that agent's memory and that agent the conversation returns to); the other route consumes
+  // the delivery, since returning false would hand "/reset" to its agent as customer text. Fails CLOSED
+  // on an unresolvable identity on either side: a bot without a ChatwootAgentBot row speaks with an
+  // empty token, and an unknown route is no evidence. `commandRoute` decides once, `other_route` (a
+  // persona will run it) versus `no_persona` (no route will), so the report cannot disagree with it.
   const route: CommandRoute =
     command !== null && commandActive
       ? commandRoute(
@@ -2692,25 +2244,17 @@ async function maybeConsumeCommandOrGate(params: {
       inboxRowId: ctx.conv.inboxId,
       command,
       routeBot: params.agentBotId,
-      // The classifier's own answer, carried through: what the row says about the route is the
-      // value that decided it, never a second look at the same two ids.
+      // NOTE: The classifier's own answer, never a second look at the same two ids.
       drop: route,
       base,
     });
     return true;
   }
 
-  // Is the conversation still the bot's, RIGHT NOW? `act` upstream was decided from the payload
-  // Chatwoot sent, so a human who took the conversation between that event and this post is invisible
-  // to it — and on a re-delivered webhook that gap is not milliseconds. The mirror applies assignment
-  // events as they arrive, so a fresh read can see the handoff the payload could not. Same fence the
-  // runtime puts before its own reply; it needs one because a model call is slow, this path needs one
-  // because being fast is not being atomic.
-  //
-  // `closed` is the same reading every other gate reports, and it is null on exactly one
-  // branch: an unresolvable persona. That answer comes from OUR side, not from the row, so labelling
-  // it with the row's state would be the #225 conflation in a third costume — and the caller that
-  // writes a line skips it rather than guessing.
+  // NOTE: Is the conversation still the bot's RIGHT NOW? `act` came from the payload, which cannot see
+  // a human who took over since (on a redelivery that gap is long); the mirror applies assignment events
+  // as they arrive. Being fast is not being atomic. `closed` is null only for an unresolvable persona:
+  // that answer is ours, not the row's, so a caller writing a line skips it rather than guessing.
   const ownershipNow = async (): Promise<
     { ours: true } | { ours: false; closed: GateCloseDetail | null }
   > =>
@@ -2723,23 +2267,9 @@ async function maybeConsumeCommandOrGate(params: {
     });
   const stillOurs = async (): Promise<boolean> => (await ownershipNow()).ours;
 
-  // Why the agent would not answer in this conversation right now. Two independent reasons, and the
-  // three texts below have to name the right one: the conversation is not the agent's (a human or
-  // another persona holds it, or it is not `pending`), or the agent is switched OFF entirely.
-  //
-  // Kept apart from `stillOurs`, which answers ownership and nothing else. Folding "disabled" into it
-  // would invert /reset: that command returns the conversation precisely when the answer is "not
-  // ours", and a disabled agent would then be handed a conversation it will never answer in.
-  //
-  // `disabled` wins the tie because it is the reason /reset cannot help: the command returns a
-  // conversation, it does not switch an agent back on.
-  //
-  // Both halves are read FRESH, for the same reason `stillOurs` is: /reset asks this question after
-  // its cleanup, which is a dozen network calls long. `ctx.agentEnabled` came from the lookup at the
-  // top of this function, and pairing a fresh ownership read with a stale switch is how the
-  // hand-back would still reach an agent an operator turned off while the command ran. On a read
-  // that fails, the initial value stands — that is the answer this had before the re-read existed,
-  // and a transient failure must not decide it — but it is logged rather than swallowed.
+  // NOTE: Read FRESH like `stillOurs`: /reset asks after a cleanup a dozen network calls long, and a
+  // stale switch would hand the conversation back to an agent an operator turned off meanwhile. On a
+  // failed read the initial value stands (a transient failure must not decide it), logged.
   const agentStillEnabled = async (): Promise<boolean> => {
     const agentId = ctx.agentId;
     if (agentId === null) return ctx.agentEnabled;
@@ -2750,10 +2280,8 @@ async function maybeConsumeCommandOrGate(params: {
           select: { enabled: true },
         }),
       );
-      // NOTE: A row that is GONE is not an agent that can answer, so the hand-back is refused rather than
-      // falling back to what the lookup said before it was deleted. Only `findUnique` on a deleted
-      // row lands here, which is narrow — and it is the same harm this whole predicate exists to
-      // prevent, so the narrow case gets the same answer as the loud one.
+      // NOTE: A deleted row is not an agent that can answer, so the hand-back is refused rather than
+      // falling back to what the lookup said before.
       return row?.enabled === true;
     } catch (err) {
       logger.warn(
@@ -2765,18 +2293,10 @@ async function maybeConsumeCommandOrGate(params: {
     }
   };
 
-  // `stillOurs`, for the callers that must not throw. /reset asks about ownership AFTER its cleanup
-  // has run, so a rejection there loses the acknowledgement of work that DID happen and leaves the
-  // delivery mid-flight; /teste asks after the activation is committed.
-  //
-  // Unknown reads as OURS, and the two consumers want that for opposite-looking reasons that agree:
-  // the hand-back is the irreversible act, so an unknown answer must not trigger it, and the wrong
-  // text is cheaper in this direction too — "activated" on a conversation a human holds is a silence
-  // the operator retries out of, while "send /reset" on a conversation the agent already owns talks
-  // them into clearing an episode for nothing.
-  //
-  // `postPublicMessage` keeps its own catch with the OPPOSITE fallback on purpose: there the question
-  // is "may this text go to the customer", and an unreadable answer has to withhold it.
+  // NOTE: `stillOurs` for callers that must not throw (/reset after its cleanup, /teste after the
+  // activation commits). Unknown reads as OURS: the hand-back is the irreversible act, and the wrong
+  // text is cheaper this way ("activated" is a silence the operator retries; "send /reset" would clear
+  // an episode for nothing). `postPublicMessage` falls back the OPPOSITE way: unreadable withholds.
   const stillOursOrUnknown = async (): Promise<boolean> => {
     try {
       return await stillOurs();
@@ -2790,17 +2310,10 @@ async function maybeConsumeCommandOrGate(params: {
     }
   };
 
-  // Pulls the mirror level with Chatwoot and, crucially, the in-memory snapshot with the mirror:
-  // `ctx.conv` is what `holderAtStart` and the hand-back's baseline read, so reconciling the row and
-  // leaving the snapshot behind would move the fence without moving what it fences.
-  //
-  // `reconcileMirrorFromLive` and not a plain write: it is the VERSIONED path, so a webhook that
-  // landed with something newer wins instead of being overwritten by this GET, and it is the same
-  // probe `runAgentNudge` runs before ITS irreversible act, for the same reason.
-  //
-  // Best-effort, and never collected into `failed`. Failing to refresh leaves every decision exactly
-  // where it stood without this call; it is not a step of the reset that the operator can be told
-  // succeeded or not. `have` lets a caller that already built a client reuse it.
+  // NOTE: Pulls the mirror level with Chatwoot AND the in-memory snapshot with the mirror: `ctx.conv`
+  // is what `holderAtStart` and the hand-back's baseline read. Via the VERSIONED
+  // `reconcileMirrorFromLive`, so a newer webhook wins over this GET (the probe `runAgentNudge` runs
+  // too). Best-effort and never in `failed`: a failed refresh leaves every decision where it stood.
   const refreshFromLive = async (
     guarding: string,
     have: ChatwootClient | null,
@@ -2839,6 +2352,9 @@ async function maybeConsumeCommandOrGate(params: {
     }
   };
 
+  // NOTE: Why the agent would not answer here now: not its conversation, or switched OFF. Kept apart
+  // from `stillOurs`, since folding "disabled" in would make /reset hand a conversation to an agent that
+  // never answers. `disabled` wins the tie: /reset returns a conversation, it cannot switch an agent on.
   const answerBlocker = async (): Promise<"none" | "ownership" | "disabled"> =>
     !(await agentStillEnabled())
       ? "disabled"
@@ -2846,26 +2362,19 @@ async function maybeConsumeCommandOrGate(params: {
         ? "none"
         : "ownership";
 
-  // Returns whether the message actually left. Whoever records that it was sent has to read this: the
-  // away message would otherwise burn the day it just claimed, and the redirect gate would close its
-  // one-shot and spend a resend on a link nobody received. The two command acks ignore it on purpose —
-  // their effect (test mode on, memory cleared) is already committed and a lost ack undoes none of it.
-  //
-  // The fence lives HERE, not at the away branch, because all four customer-visible posts of this gate
-  // (test-mode notice, its reminder, the redirect link, the away message) ask the same question and
-  // none of them was asking it. Private notes are deliberately exempt: only the operator sees one, and
-  // a note that lands after a handoff explains the silence instead of talking over anybody.
+  // NOTE: Returns whether the message left: the away message would otherwise burn its claimed day, and
+  // the redirect gate its one-shot. The command acks ignore it (their effect is committed). The fence
+  // sits HERE because all four customer-visible posts of this gate ask it; private notes are exempt,
+  // since a note after a handoff explains the silence instead of talking over anybody.
   const postPublicMessage = async (
     text: string,
     sendId?: string,
   ): Promise<boolean> => {
-    // Inside the try, deliberately: a fence that cannot answer must report "not sent" like any other
-    // failure. Thrown, it would skip the away branch's release and burn the day it just claimed on a
-    // message the customer never got.
+    // NOTE: Inside the try: a fence that cannot answer reports "not sent", or the away branch skips its
+    // release and burns the day.
     try {
-      // BUILT BEFORE THE ASKS, not between them and the send (issue #209 review, round 7): resolving
-      // the persona and constructing the client is I/O of its own, and the rule every fence in this
-      // repository follows is no I/O between an ask and the write it guards.
+      // NOTE: Built BEFORE the asks: resolving the persona is I/O, and no fence here allows I/O between an
+      // ask and the write it guards.
       const client = await personaClient();
       if (!(await stillOurs())) {
         logger.info(
@@ -2874,10 +2383,9 @@ async function maybeConsumeCommandOrGate(params: {
         );
         return false;
       }
-      // And the operator's own silences, read at the send like everywhere else (issue #209 review,
-      // round 5): `ctx.mode` was read at the top of this gate, and the authorization round-trip
-      // sits between that read and the denial it may lead to. An agent flipped to monitoring, or
-      // switched off, inside that stretch posts none of these. Same fail-open as the turn's fence.
+      // NOTE: The operator's own silences, read at the send: the authorization round trip sits between
+      // `ctx.mode` and the denial, so an agent flipped to monitoring or off meanwhile posts none of these.
+      // Same fail-open as the turn's fence.
       if (
         ctx.agentId !== null &&
         !(await agentStillSpeaks(tenantId, ctx.agentId, base))
@@ -2900,15 +2408,10 @@ async function maybeConsumeCommandOrGate(params: {
     }
   };
 
-  // A command's answer, which must never vanish. `postPublicMessage` withholds anything the bot no
-  // longer owns, and that fence is right for the agent's own output ("never talk over a human") and
-  // wrong here: the operator typed this command IN this conversation, and on a human-held one the
-  // acknowledgement is precisely the text explaining why nothing else will happen. Withheld, they
-  // type /teste and get total silence, which is the symptom this whole change is about.
-  //
-  // The fallback is a PRIVATE note rather than a bypass: it reaches the operator, stays invisible to
-  // the customer, and does not put a bot message into a conversation a human is handling — the same
-  // trade the test-mode notice already makes.
+  // NOTE: A command's answer must never vanish. `postPublicMessage` withholds anything the bot no
+  // longer owns, which is right for the agent's own output and wrong here: on a human-held
+  // conversation the ack is what explains the silence. The fallback is a PRIVATE note, not a bypass:
+  // it reaches the operator without putting a bot message into a human's conversation.
   const postAcknowledgement = async (
     text: string,
     sendId?: string,
@@ -2917,12 +2420,9 @@ async function maybeConsumeCommandOrGate(params: {
     await postPrivateNote(text, sendId);
   };
 
-  // Private note (operator-only, invisible to the customer) posted as the persona bot. Used for the
-  // one-shot "agent is in test mode" and "agent is out of hours" notices on a silenced conversation.
-  // Returns whether it left, for the same reason the public post does: both notices are stamped once
-  // per conversation, and a stamp on a note that never arrived spends the only shot the operator gets.
-  // The fence does NOT apply here — a note that lands after a handoff explains the silence to whoever
-  // took over instead of talking over them.
+  // NOTE: Private note (operator-only) posted as the persona bot, for the one-shot test-mode and
+  // out-of-hours notices. Returns whether it left: both are stamped once per conversation, and a stamp
+  // on a lost note spends the only shot. No ownership fence: a note after a handoff explains the silence.
   const postPrivateNote = async (
     text: string,
     sendId?: string,
@@ -2941,16 +2441,14 @@ async function maybeConsumeCommandOrGate(params: {
     }
   };
 
-  // The shared unit above, bound to this gate's conversation, persona and fence. Kept as a local
-  // three-argument call so the sites below read the way they always did.
+  // NOTE: The shared unit, bound to this gate's conversation, persona and fence.
   const openConversationForHumans = async (
     gate: string,
     teamId: number | null,
     teamUsable?: (id: number) => Promise<boolean>,
   ): Promise<boolean> =>
-    // Collapsed to a boolean HERE and nowhere else. This gate does the same thing with a fence that
-    // stood down and a call that threw, so the distinction the unit now reports (issue #439, for the
-    // scheduler job that has to tell a verdict from an unknown) is one this caller has no use for.
+    // NOTE: Collapsed to a boolean here: this gate treats a fence that stood down and a call that threw
+    // the same, a distinction only the scheduler job needs.
     (await openForHumanQueue({
       gate,
       conversationId,
@@ -2995,19 +2493,10 @@ async function maybeConsumeCommandOrGate(params: {
     }
   }
 
-  // NOTE: The EPISODE's activation, not this row's, for every gate below (issue #261). `/teste` means "this
-  // is me, testing", and a redirect episode is two conversations of one person: the stamp lands on the
-  // row it was typed in, and the one bridge that copies it (above) runs ONCE, at link time, in one
-  // direction. Outside that instant the two halves disagree, and the gates below — `/reset` and the
-  // test-mode silence — judged by whichever row they happened to hold.
-  //
-  // Resolved into the field the gates already read, which is what the propagation directly above does
-  // too, so this adds a source of truth rather than a second question. Safe for `/teste` itself: that
-  // branch writes a fresh stamp without reading this value.
-  //
-  // Costs nothing on the ordinary path — `needsEpisodeLookup` is false for a production agent, for a
-  // row already stamped, and for any conversation outside a redirect episode — and this gate runs on
-  // every inbound message.
+  // NOTE: The EPISODE's activation, not this row's, for every gate below: a redirect episode is two
+  // conversations of one person, and the propagation above runs once, one way. Resolved into the field
+  // the gates already read, so it adds no second question; /teste writes a fresh stamp without reading
+  // it. Free on the ordinary path (`needsEpisodeLookup` is false outside a test-mode redirect episode).
   if (ctx.agentSettings != null) {
     ctx.conv.testActivatedAt = await episodeTestActivatedAt({
       tenantId,
@@ -3031,18 +2520,13 @@ async function maybeConsumeCommandOrGate(params: {
         where: { id: ctx.conv.id },
         data: {
           testActivatedAt: activatedAt,
-          // Clean engagement slate at activation: a message received while the agent was silenced
-          // (pre-activation) must not leave a follow-up pending NOR look like a completed sequence.
-          // Clearing both anchors yields the "none" indicator state (not "pending", not "complete");
-          // a genuine customer message AFTER activation re-opens a fresh episode. Mirrors /reset's
-          // anchor handling. lastInboundAt also anchors the 24h window — acceptable: the next customer
-          // message re-anchors it, and there is no proactive send pending at the instant of activation.
+          // NOTE: Clean engagement slate at activation: a message from while the agent was silenced must not
+          // leave a follow-up pending nor look complete, so both anchors clear to the "none" state, as /reset
+          // does. lastInboundAt also anchors the 24h window; the next customer message re-anchors it.
           lastInboundAt: null,
           lastFollowUpAt: null,
-          // The silence fence reads the LATER of the customer's word and ours (issue #750), so
-          // clearing only the customer's leaves ours standing and the sweep recreates the episode this
-          // command just ended — with nobody having spoken. Both axes go together or the slate is not
-          // clean.
+          // NOTE: The silence fence reads the LATER of the customer's word and ours, so clearing only the
+          // customer's lets the sweep recreate the episode this command ended.
           lastRepliedAt: null,
         },
       }),
@@ -3063,29 +2547,19 @@ async function maybeConsumeCommandOrGate(params: {
         errMsg(err),
       );
     }
-    // Activation is not the same as being able to answer. /teste only lifts the test-mode silence;
-    // the ownership gate is separate, and a conversation the agent does not hold stays silent with
-    // test mode fully on. Saying "activated" and nothing else is what made that read as a bug — so
-    // when the gate would still refuse, the acknowledgement says so and names the command that fixes
-    // it.
-    //
-    // `stillOurs()` and not the caller's `act`: that one was decided against the bot whose webhook
-    // route the delivery arrived on, and Chatwoot fans a message out to the conversation's assigned
-    // bot AND the inbox's — so on a conversation assigned to another persona's bot the two differ,
-    // and the plain "activated" would be posted about a conversation this inbox's agent cannot
-    // answer in. The wording names no holder for the same reason: a human, another persona's bot and
-    // an `open` status all reach here, and only "not with this agent" is true of all three.
-    //
-    // Diagnosed here, ACTED ON in /reset: silently pulling a conversation away from an agent who
-    // legitimately took it is a bigger surprise than a clear message.
+    // NOTE: Activation only lifts the test-mode silence; ownership is a separate gate, so when it would
+    // still refuse, the ack says so and names the fix. `stillOurs()`, not the caller's `act`, which was
+    // decided for the bot whose route carried the delivery (Chatwoot also fans to the assigned bot). No
+    // holder is named: a human, another persona's bot and an `open` status all land here. Only diagnosed
+    // here; /reset acts on it, since silently pulling a conversation away is a bigger surprise.
     const testeBlocker = await answerBlocker();
     await postAcknowledgement(
       testeBlocker === "none"
         ? "🧪 Modo teste ativado para esta conversa."
         : testeBlocker === "ownership"
           ? "🧪 Modo teste ativado para esta conversa. Mas ela não está com este agente, então ele ainda não vai responder. Envie /reset para devolvê-la ao agente."
-          : // No command is named: /reset returns a conversation and this agent is switched off, so
-            // it would be the same wrong instruction one variant up, one layer deeper.
+          : // NOTE: No command is named: /reset returns a conversation and this agent is
+            // switched off, so it would be the same wrong instruction.
             "🧪 Modo teste ativado para esta conversa. Mas este agente está desativado, então ele não vai responder.",
     );
     logger.info("chatwoot: /teste activated (conv=%s)", String(conversationId));
@@ -3096,33 +2570,15 @@ async function maybeConsumeCommandOrGate(params: {
   //    audio preference + this conversation's labels and custom attributes. Deliberately does NOT touch
   //    testActivatedAt (the conversation keeps answering). Every step is best-effort; consumed regardless.
   if (isReset && shouldRunReset(ctx.mode, ctx.conv.testActivatedAt)) {
-    // Each cleanup is independent and best-effort, so each gets its OWN try: sharing one meant the
-    // first failure skipped every step after it (the kanban card kept the previous episode's dates
-    // because the attributes call above it had thrown). `failed` collects the PT-BR name of whatever
-    // did not get cleared, so the confirmation below can stop claiming a full reset after a partial
-    // one. `label` is what the customer-visible ack names; `what` is the English log wording.
-    // NOTE: The handoff the command was ASKED about, captured before any cleanup runs. The hand-back
-    // exists to undo a handoff that was ALREADY in place when the operator typed /reset, so two
-    // facts have to survive the cleanup — a dozen network calls long — for it to fire: the
-    // conversation was not the bot's then, and the SAME party still holds it now. A conversation the
-    // bot owned at that moment has nothing for the command to undo, and a party who claimed it
-    // meanwhile claimed it after the command was typed. Either way the command would be stealing a
-    // conversation from someone who took it later, which is the round-1 harm pointing the other way.
-    //
-    // The ASSIGNEE is what is compared, not the whole row: status moves on its own (an inbound
-    // message reopens a resolved conversation) and that is not a takeover.
-    // Asked BEFORE the two facts below are read, because they are read from the mirror and the mirror
-    // lags Chatwoot by one webhook. The command's own delivery normally carries the assignee and
-    // reconciles it, but a sparse payload carries none, and then a missed or delayed assignment
-    // webhook leaves the mirror saying "the bot owns this" about a conversation a human is holding.
-    // Both facts are then wrong in the direction that does nothing: `notOursAtStart` false skips the
-    // hand-back entirely, and /reset acknowledges a clean slate on a conversation the agent still
-    // cannot answer in — which is issue #198 itself, one layer further in.
-    //
-    // One GET on a command an operator types by hand. The same ask is repeated before the hand-back
-    // rather than carried down, because everything between the two is I/O and the answer decays over
-    // exactly that stretch.
+    // NOTE: Refreshed BEFORE the start facts are read: the mirror lags Chatwoot by one webhook, and a
+    // sparse payload carries no assignee, so a missed assignment would make the mirror say "ours" about a
+    // human's conversation; the hand-back is skipped and /reset acks a slate the agent cannot answer in.
+    // Asked again before the hand-back, since the answer decays over the I/O between.
     await refreshFromLive("the command's own decisions", null);
+    // NOTE: The handoff the command was asked about, captured before the cleanup. The hand-back undoes
+    // only a handoff already in place when /reset was typed and still held by the SAME party; anything
+    // else would steal a conversation from someone who took it later. The ASSIGNEE is compared, not the
+    // status, which moves on its own (an inbound reopens a resolved conversation).
     const notOursAtStart = !(await stillOursOrUnknown());
     const holderAtStart = `${ctx.conv.assigneeType ?? ""}:${ctx.conv.assigneeId ?? ""}`;
     const heldBySameParty = async (): Promise<boolean> => {
@@ -3132,29 +2588,21 @@ async function maybeConsumeCommandOrGate(params: {
           select: { assigneeType: true, assigneeId: true },
         }),
       ).catch(() => null);
-      // Unreadable answers "unchanged", the same direction every other fence here falls: the
-      // irreversible act is the hand-back, and an unknown must not be the thing that triggers it —
-      // but here it is the START state that already said "not ours", so standing on it is standing
-      // on the answer the command was given.
+      // NOTE: Unreadable answers "unchanged": an unknown must not trigger the irreversible hand-back, and
+      // here the START state already said "not ours", so this stands on the answer the command was given.
       if (!now) return true;
-      // NOBODY IS NOT A NEW HOLDER. This fence exists to stop the hand-back unassigning somebody who
-      // arrived while the command ran; a conversation the original party RELEASED has no such person,
-      // and comparing holder strings reads that release as a change and refuses.
-      //
-      // Refusing there produces issue #198's own symptom, one layer further in: the holder is gone but
-      // the status is whatever they left it as, and `open` with no assignee is precisely the state the
-      // agent cannot answer in — the hand-back's remaining half, putting the conversation back to
-      // `pending`, is exactly what is needed and is the half that gets skipped. The acknowledgement
-      // then blames a takeover, because "not answerable by us" is what it reads to decide that
-      // sentence, and it names a person who has in fact left.
-      //
-      // Safe on the other side too: the hand-back is handed the START holder as its baseline, so with
-      // nobody there it finds nothing to remove and sends no unassign at all.
+      // NOTE: Nobody is not a new holder. A holder who RELEASED the conversation leaves it `open` with no
+      // assignee, the state the agent cannot answer in, and refusing would skip putting it back to
+      // `pending` while the ack blamed a takeover by someone who left. Safe: the hand-back's baseline is
+      // the START holder, so with nobody there it sends no unassign.
       if (now.assigneeType === null) return true;
       return (
         `${now.assigneeType ?? ""}:${now.assigneeId ?? ""}` === holderAtStart
       );
     };
+    // NOTE: Each cleanup gets its OWN try, so one failure never skips the rest. `failed` collects the
+    // PT-BR name of what did not clear, so the confirmation stops claiming a full reset; `label` is what
+    // the ack names, `what` the English log wording.
     const failed: string[] = [];
     const failedSteps: string[] = [];
     const step = async <T>(
@@ -3166,9 +2614,8 @@ async function maybeConsumeCommandOrGate(params: {
         return await run();
       } catch (err) {
         failed.push(label);
-        // NOTE: The same failure in the vocabulary the AUDIT row keeps. `label` is the customer-facing
-        // bucket, in PT-BR and deliberately coarse ("card do kanban" covers three calls); `what`
-        // names the step, which is what a reader of the trail is asking about a year later.
+        // NOTE: The same failure in the AUDIT row's vocabulary: `label` is the coarse PT-BR customer-facing
+        // bucket ("card do kanban" covers three calls); `what` names the step.
         failedSteps.push(what);
         logger.warn(
           "chatwoot: /reset %s failed (conv=%s): %s",
@@ -3180,57 +2627,14 @@ async function maybeConsumeCommandOrGate(params: {
       }
     };
 
-    // NOTE: Scoped to the conversation the command was typed on, which is the scoping it already
-    // uses for memory. The redirect funnel spans a PAIR — the entry conversation holds
-    // `redirectSentAt`/`redirectCount`, the widget one holds `redirectLinkedAt`/`redirectClosedAt`,
-    // and the ladder job is keyed by the widget thread — so a /reset typed on one side leaves the
-    // other side's anchors and ladder standing, and the funnel can be re-run but not re-closed. The
-    // operator resets the other side to finish the job.
-    //
-    // Reaching across needs to know WHICH widget chat opened from this entry, and that used to be
-    // underivable: the merge happens inside Chatwoot's token resolve and what comes back names the
-    // CONTACT, not the conversation the token was minted on, so every predicate over the mirrored
-    // rows was a guess — on a command that cancels appointment reminders. Issue #222 removed that:
-    // the widget row now records the entry conversation it opened from, so this direction is a
-    // lookup rather than an inference.
-    //
-    // The scoping stands anyway, and deliberately. Widening what a /reset erases is a change to what
-    // the operator asked for, on the command whose whole ordering above exists to bound what it
-    // touches; it is the operator's call, not a side effect of the pairing becoming available. What
-    // changed is that the reach is now implementable, not that it is wanted here.
-
-    // FIRST among the mutations, and the ordering is the whole fence. Two races pull in opposite
-    // directions and only this position settles both.
-    //
-    // Late is wrong because /reset is not atomic with the conversation: a message arriving during the
-    // cleanup runs a turn that can book, reschedule, or re-enter the funnel, and a retirement running
-    // after it kills work that belongs to the NEXT episode. Sparing that work by age does not
-    // discriminate — enqueueJob re-arms by upsert, so `created_at` stays put and `updated_at` moves on
-    // a claim (see cancelThreadAppointments). Retiring first needs no such test: the upsert
-    // that re-arms writes `status: PENDING` with a fresh payload, so anything armed afterwards revives
-    // its own row.
-    //
-    // Early is also what the watermarks need. Clearing the anchors first opens a gap in which a ladder
-    // the worker has ALREADY claimed still passes its own fence — nothing has stamped it yet — and
-    // runs to its closing, which re-sets `redirectClosedAt` on the row the command just cleared, on a
-    // conversation it also resolves. With the stamp landing here, anything in flight stands down, and
-    // whatever it may already have written is cleared by the steps below rather than after them.
-    //
-    // NOTE: All three per-conversation job kinds that can still post AT the customer. MEMORY_COMPACT is
-    // cancelled further down and is the one genuine exception: it writes memory rather than messages,
-    // and the advisory lock the clear takes is what serializes it.
-    //
-    // The inactivity follow-up was on `cancelPendingJob` and that was not enough, for the reason this
-    // whole block exists: a cancel reaches PENDING rows only. A follow-up already CLAIMED has passed
-    // its pre-send ownership probe and is inside the model call, and its second probe — the one that
-    // catches a takeover mid-run — asks whether the bot owns the conversation. The hand-back below
-    // ANSWERS YES, so a nudge from the episode the operator just erased lands right after the
-    // acknowledgement, carrying its labels and resolve with it.
-    //
-    // The ladder is retired by the key that ARMED it, which is the WIDGET side's thread — not this
-    // conversation's, unless this conversation is the widget one. Its stages message and resolve both
-    // sides of the pair, so a /reset on the entry conversation (the side the funnel is re-run from)
-    // was cancelling a key that had never been enqueued.
+    // NOTE: Every step is scoped to this conversation, as memory is: a redirect episode keeps its anchors
+    // and ladder per side, and widening /reset across sides is the operator's call. The retirements go
+    // FIRST: retired late, a message arriving mid-cleanup arms next-episode work that gets killed (the
+    // upsert re-arm keeps `created_at`, and `status: PENDING` revives any row armed after this); after
+    // the anchors clear, a claimed ladder re-sets `redirectClosedAt`. Retired, not cancelled: a cancel
+    // reaches PENDING rows only, and a claimed follow-up's second probe passes once the hand-back
+    // returns the conversation. MEMORY_COMPACT goes with the memory step. See docs/chatwoot.md, "`/reset`
+    // fences".
     await step("cancel follow-up", "follow-up pendente", () =>
       retireJobsByDedupeKey(
         tenantId,
@@ -3249,14 +2653,7 @@ async function maybeConsumeCommandOrGate(params: {
           base,
         ),
     );
-    // NOTE: Every side of the pair, for the same reason the ladder is retired by the widget's key: in a
-    // redirect episode the AI does not serve the entry conversation at all — the gate answers there
-    // with a fixed message and no model, and every turn (so every booking) happens in the widget
-    // (docs/channel-redirect.md). A /reset typed on the entry side would therefore cancel reminders
-    // on a thread that never booked anything, and the test appointment would go on nudging the
-    // customer about an episode the operator was told had been erased. Every widget chat of this
-    // entry and not just the live one, on the same reasoning as the ladder: what is being cancelled
-    // is SCHEDULED work, so the question is what is still armed, not which chat the lead is in.
+    // NOTE: This conversation only, like every step (see the NOTE above).
     for (const convId of [conversationId]) {
       await step(
         "cancel appointment reminders",
@@ -3268,17 +2665,10 @@ async function maybeConsumeCommandOrGate(params: {
             base,
           ),
       );
-      // The LAST per-conversation kind, and the one this command reached past for longest. A
-      // debounce flush is a queued TURN: it coalesces the burst that arrived before the command and
-      // invokes the graph, which recreates the thread this reset is about to clear — and the reply
-      // is the smaller half of that, since the invoke rewrites the checkpoint whether or not the
-      // watermark lets the message out. Retired here with the rest, and the handler asks before it
-      // invokes, because a flush already CLAIMED is past every cancel.
-      //
-      // Which completes the sweep: of the eleven scheduler kinds, five are per-conversation
-      // (FOLLOWUP, REDIRECT_FOLLOWUP, APPOINTMENT_REMINDER, MEMORY_COMPACT, INGEST_MESSAGE) and this
-      // is the sixth. The other five are fleet-wide sweeps and outbound retries that know nothing
-      // about a conversation.
+      // NOTE: A debounce flush is a queued TURN whose invoke recreates the thread this reset clears, reply
+      // or not. Retired here, and the handler asks again before it invokes, since a CLAIMED flush is past
+      // every cancel. NOTHING_TO_ANSWER is not retired here: the receiver retires it (best-effort) on the
+      // command's own incoming message, and its handler stands down when `resetLandedAfter` its trigger.
       await step("cancel pending debounce", "mensagens em espera", () =>
         retireJobsByDedupeKey(
           tenantId,
@@ -3287,8 +2677,8 @@ async function maybeConsumeCommandOrGate(params: {
           base,
         ),
       );
-      // The text a channel refused as audio, waiting to go out again (issue #587): it is a reply
-      // of the episode this command closes, and its body is a customer's words the reset forgets.
+      // NOTE: Text a channel refused as audio, waiting to go out again: a reply of the episode this command
+      // closes, carrying words the reset forgets.
       await step("forget media fallbacks", "respostas em texto pendentes", () =>
         forgetMediaFallbacks({
           tenantId,
@@ -3299,44 +2689,12 @@ async function maybeConsumeCommandOrGate(params: {
       );
     }
 
-    // IMMEDIATELY after the retirements, and that pairing is the point. The order between the two is
-    // fixed the other way round — clearing first opens a gap in which a ladder the worker has ALREADY
-    // claimed passes its own fence and runs to its closing, re-setting `redirectClosedAt` on the row
-    // the command just cleared — so the clear cannot lead. What it can do is follow immediately.
-    //
-    // It used to sit after the memory clear, the labels, the attributes and the kanban card: a dozen
-    // Chatwoot round trips. On a conversation the agent still OWNS the gate is open for every one of
-    // them (the hand-back below is what closes it, and there is nothing to hand back here), so a
-    // customer message arriving in that stretch runs a turn whose watermarks this update then wipes —
-    // a re-link posting its private note twice, or a fresh failure losing its banner. Adjacent to the
-    // retirement the window is two database writes wide instead.
-    //
-    // It does not CLOSE that race, and nothing here does: /reset is not atomic with a turn, by
-    // design. The remaining window is pinned as a named limit rather than papered over with a
-    // generation column through every writer (see .codex-review-waived).
-    //
-    // Clear the follow-up watermarks so the sweep does not immediately re-arm a follow-up: a reset is
-    // a clean slate, so no proactive nudge should fire until the CUSTOMER sends a genuine message
-    // again (which re-anchors lastInboundAt). Also clear the one-shot notice watermarks (test-mode +
-    // out-of-hours) so a fresh notice can be posted if this conversation is ever silenced again.
-    //
-    // The redirect anchors go with them, and used not to: same shape, same purpose (one-shot /
-    // cooldown), and skipping them meant the WhatsApp→chat redirect could not be tested twice — once
-    // it has fired, `redirectCount` is at its cap and the cooldown anchor is set, so the operator who
-    // resets to run the funnel again gets a conversation that will never redirect. Only the anchors
-    // on THIS conversation are cleared: each lives on one side of the pair (entry WhatsApp vs
-    // widget), which matches the scoping the command already uses for memory.
-    //
-    // And the previous run's failure. `lastError` self-heals on the next successful turn, but
-    // `failureNoticeSentAt` is the coalescing anchor for the "a human has to take over" note, so
-    // without clearing it a fresh failure after a reset cannot announce itself — the same reasoning
-    // that already clears `testNoticeSentAt`.
-    // The redirect anchors describe the EPISODE and happen to be stored one pair of columns per
-    // side, so clearing this row releases only the half the operator typed into: a /reset on the
-    // entry conversation leaves `redirectClosedAt` on the widget, and the funnel can be run again
-    // but not closed again until the widget side is reset too. Named in the acknowledgement's own
-    // scope rather than worked around — see the NOTE above the job cancellations.
-    // The command's own message, in Chatwoot's sequence: the boundary this episode ends at.
+    // NOTE: IMMEDIATELY after the retirements (never before them, see above): a turn on a still-owned
+    // conversation during the later Chatwoot calls would have its watermarks wiped, so adjacency narrows
+    // that race to two DB writes. Not closed: /reset is not atomic with a turn, a named limit. Clears the
+    // follow-up watermarks (no nudge until the customer writes again), the one-shot notices, this side's
+    // redirect anchors (or the funnel cannot be tested twice) and `failureNoticeSentAt` (or a fresh
+    // failure cannot announce itself). The command's message is the boundary this episode ends at.
     const commandMessageId = params.n.message?.id ?? null;
     const redirectAnchors = {
       redirectSentAt: null,
@@ -3347,30 +2705,12 @@ async function maybeConsumeCommandOrGate(params: {
     };
     await step("clear the conversation's watermarks", "marcadores", () =>
       runScopedOn(base, sysCtx(tenantId), async (db) => {
-        // THE EPISODE BOUNDARY: the message id the COMMAND itself carried, in Chatwoot's own order.
-        // Not a moment of ours — neither this write's, which happens after a live refresh, six job
-        // retirements and a dozen Chatwoot calls (a customer message landing in that stretch arrived
-        // AFTER the reset and is one the operator wants answered), nor the ledger row's, which is
-        // inserted on the detached path and therefore does not preserve the order two events arrived
-        // in (../../graph/reset-episode.ts).
-        //
-        // NEVER BACKWARDS, which is what makes it a statement of its own rather than another field
-        // in the update below. Two `/reset` deliveries are dispatched detached and nothing
-        // serializes them, so the older one can finish last; assigned, it would move the boundary
-        // back and let a turn from between the two commands run on a conversation the newer one
-        // cleared. `GREATEST` ignores a NULL, so the first reset writes its own value.
-        //
-        // A command with no message id is not reachable (it is parsed from the message's own text),
-        // and the guard is what keeps the column from holding a number that orders nothing.
-        //
-        // AND THE PREVIOUS RESET'S SET GOES WITH IT (issue #645, review round 3). The pair
-        // `(reset_at_message_id, reset_cleared_labels)` is read together by the observer, and the
-        // set below is written only when the clear SUCCEEDS — so a second `/reset` whose label
-        // cleanup fails would leave the new boundary beside the FIRST reset's set, and the observer
-        // would hide genuine removals of those titles instead of falling back to the order cut.
-        // Cleared in the same statement that moves the boundary, because every SET expression here
-        // reads the OLD row: a command that does not move it (an older delivery finishing last)
-        // leaves the set alone, and the one that does move it invalidates it.
+        // NOTE: The episode boundary is the COMMAND's message id in Chatwoot's order, not a moment of ours
+        // (a message landing during the cleanup came after the reset) nor the ledger's, whose detached inserts
+        // do not keep arrival order (../../graph/reset-episode.ts). Its own statement so it never moves
+        // backwards: two detached /reset deliveries can finish out of order (`GREATEST` ignores NULL). The
+        // previous reset's `reset_cleared_labels` is cleared in the same statement, since each SET reads the
+        // OLD row; a stale set beside a new boundary would hide real removals from the observer.
         if (commandMessageId !== null) {
           await db.$executeRaw`
             UPDATE conversations
@@ -3386,8 +2726,8 @@ async function maybeConsumeCommandOrGate(params: {
           data: {
             lastInboundAt: null,
             lastFollowUpAt: null,
-            // The other axis of the silence fence (issue #750): left standing, it reopens the gate on
-            // its own and the sweep revives the sequence /reset ended.
+            // NOTE: The other axis of the silence fence: left standing, the sweep revives the sequence /reset
+            // ended.
             lastRepliedAt: null,
             testNoticeSentAt: null,
             outOfHoursNoticeSentAt: null,
@@ -3401,43 +2741,17 @@ async function maybeConsumeCommandOrGate(params: {
       }),
     );
 
-    // Clear the agent's memory thread (per contact-inbox / channel), the AgentThread marker (the
-    // divider's last-conversation + the ingestion watermark) AND the compacted memory of past
-    // attendances, so a reset truly starts this channel's conversation over. Only THIS channel's memory is cleared (the contact's other channels keep
-    // their own threads), which matches where the operator typed /reset.
+    // NOTE: Clear this channel's memory: the thread, the AgentThread marker (divider and ingestion
+    // watermark) and the compacted past attendances. The contact's other channels keep their threads.
     if (ctx.conv.contactInboxId !== null) {
       const contactInboxId = ctx.conv.contactInboxId;
-      // Filled INSIDE the transaction below and drained after it, which is the whole point: see the
-      // revoke's call site for why an announcement may not be written from in there.
+      // NOTE: Filled INSIDE the transaction and drained after it: see the revoke below for why.
       const erasedDeaths: ErasedDeath[] = [];
-      // ALL THREE deletions under the lock a compaction takes, and in one step, because a reset that
-      // clears them in separate critical sections loses to a job already CLAIMED (past
-      // cancelPendingJob, provider call in flight):
-      //
-      //   - the summary rows and the AgentThread marker, or the job slips its row in between the two
-      //     and the next compaction renders memory this reset cleared;
-      //   - the CHECKPOINT itself, or the job's rewrite recreates the thread — with the memory head
-      //     in it — right after this deleted it, and nothing deletes it again. That one is the worst
-      //     of the three, because the operator sees the reset confirmed and the agent keeps
-      //     answering from the memory they just cleared.
-      //
-      // Inside the shared critical section the job either finished before this ran (and this deletes
-      // everything it wrote) or it finds the AgentThread row gone and drops the summary.
-      //
-      // THE ONLY MEMBER OF THIS FAMILY THAT STILL HOLDS A TRANSACTION ACROSS THE CHECKPOINTER, and
-      // deliberately. Everywhere else that hold was removed because it drained the pool (issue #225);
-      // here the transaction IS the safety net. `clearContactMemory` deletes the rows first and the
-      // checkpoint last precisely so a failed checkpoint delete rolls the rows back and leaves /reset
-      // a clean retry (../memory/reset.ts spells out why the reverse order is worse). Moving the
-      // checkpointer call outside would commit the rows and then possibly fail, leaving the operator
-      // told the memory was cleared while the thread still answers from it. This is an operator
-      // action, not a hot path, so the one held connection is not what starves anything.
-      //
-      // The queue is what keeps it exclusive with ingestion, the turn, the nudge and compaction now
-      // that they no longer take the advisory lock.
-      //
-      // The order the three deletions run in is load-bearing and lives with its reasoning in
-      // src/modules/memory/reset.ts.
+      // NOTE: All three deletions in one step, under the `ingest:` queue that makes it exclusive with
+      // ingestion, the turn, the nudge and compaction; a claimed compaction either finished or finds the
+      // marker gone. Deliberately the one transaction held across the checkpointer: `clearContactMemory`
+      // deletes the checkpoint last, so its failure rolls the rows back (../memory/reset.ts). An operator
+      // action, so the held connection starves nothing. See docs/chatwoot.md, "`/reset` fences".
       await step("clear agent memory", "memória", () =>
         withKeyedQueue(
           `ingest:${contactInboxThreadId(tenantId, instanceId, contactInboxId)}`,
@@ -3448,29 +2762,11 @@ async function maybeConsumeCommandOrGate(params: {
                 instanceId,
                 contactInboxId,
               );
-              // A TURN ALREADY INVOKING IS THE ONE THING THIS LOCK DOES NOT HOLD BACK. A graph invoke
-              // is a read-modify-write of the whole message channel — it saves what it LOADED plus
-              // its own messages — so a clear that lands mid-invoke is undone the moment that turn
-              // finishes, restoring the history it just deleted (src/graph/inflight.ts, measured in
-              // tests/modules/memory-compaction.test.ts). Compaction, the other rewriter of this
-              // channel, already defers on exactly this question, under exactly this lock.
-              //
-              // And clearing anyway is WORSE than not clearing: the turn's save restores the raw
-              // channel, but nothing restores the summary rows or the AgentThread marker this would
-              // have deleted, so the operator is left with a half-erased memory and an
-              // acknowledgement claiming a clean one. Refusing the step is the honest outcome — the
-              // ack already names what did not clear, and /reset is a command the operator can
-              // simply type again once the turn lands.
-              //
-              // Asked INSIDE the lock, which is what makes the two exclusive rather than merely
-              // staggered: the turn takes this same lock to mark itself, so this either runs entirely
-              // before the mark (and the turn then loads a cleared thread) or it sees the mark.
-              //
-              // On `db`, and taking the row: same reason as `revokeJobsByKeyPrefixOn` below. A helper
-              // that opened its own transaction would wait for a connection this one cannot release
-              // (measured under `DB_POOL_MAX=1`: 2047ms, then "Unable to start a transaction in the
-              // given time"), and reading without the lock would leave the answer stale the moment
-              // it returns, since a turn on another replica claims by updating this same row.
+              // NOTE: A turn already invoking saves what it LOADED, undoing a clear that lands mid-invoke
+              // (src/graph/inflight.ts), and would restore the raw channel but not the summaries or the marker. So
+              // the step refuses, and the ack names what did not clear. Asked INSIDE the lock the turn marks under,
+              // so the two are exclusive. On `db` with the row lock: a helper transaction would wait for a
+              // connection this one holds (`DB_POOL_MAX=1` is supported), and an unlocked read goes stale.
               if (
                 await threadBusyForResetOn(db, {
                   tenantId,
@@ -3483,46 +2779,12 @@ async function maybeConsumeCommandOrGate(params: {
                   `this thread (${graphThreadId}) is being written right now, by a turn or by an append; either would restore what this clears`,
                 );
               }
-              // QUEUED INGESTION IS REVOKED FIRST, AND FROM IN HERE (issue #194). Continuous
-              // ingestion is a scheduler job now, so at any moment this thread can owe an append
-              // carrying text from before the reset — pending, or CLAIMED and blocked on the very
-              // lock this step is holding. Left alone, it lands the instant this releases and
-              // rebuilds the AgentThread row and the checkpoint from the memory the operator was
-              // just told had been cleared.
-              //
-              // Inside the critical section, not as a step after it, because the window between
-              // leaving it and cancelling is exactly where a claimed job enters it. Retiring the
-              // rows is half; a run already in memory re-reads its own row inside the section and
-              // stands down (../../graph/ingest-job.ts, stillWanted).
-              // On `db`, the connection this step already holds. A helper that opened its own
-              // transaction would wait for a connection this one cannot release until it returns,
-              // and `DB_POOL_MAX=1` is a supported setting: the reset would time out and report a
-              // partial failure of the very step that had nothing wrong with it.
-              // The deaths this revoke ERASES come back rather than being announced here (issue
-              // #737): deleting a DEAD row destroys the only record that the ingestion of that
-              // message was lost. They are announced after this step returns, because THIS
-              // transaction is the reset's safety net — a failed checkpoint delete below rolls the
-              // deletion back, and a line written from in here would survive a rollback that put
-              // the DEAD row back unannounced, so the next announcer would write it a second time.
-              //
-              // UP TO THE COMMAND'S OWN MESSAGE (issue #736), and not past it. This step is early
-              // — before the Chatwoot client even exists — but it is not instant: the
-              // `withKeyedQueue` above waits behind whatever ingestion is in flight on this thread,
-              // and `armIngest` does not take that queue. A customer message landing in that stretch
-              // is AFTER the reset and is wanted; unqualified, this deleted it, and deleted it
-              // without trace.
-              //
-              // `commandMessageId` and not the conversation's `reset_at_message_id`: they agree here
-              // (the watermark step above writes GREATEST of the two, and this runs after it), and
-              // the command's own id is the one this call is entitled to act on. Undefined when the
-              // command named no message, which is the unqualified sweep this always was — see the
-              // parameter's own note for why that differs from the OBSERVE cancel below.
-              //
-              // AND COMO OS DOIS SE COMPÕEM, que é o que este rebase juntou e vale dito: a fronteira
-              // apaga MENOS linhas, então menos mortes voltam para anunciar. Uma linha DEAD ACIMA da
-              // fronteira sobrevive, e sobrevive DEVENDO o anúncio dela — que é o desfecho certo,
-              // porque a morte não foi apagada por ninguém e a oportunidade de relatá-la continua de
-              // pé. É exatamente o ramo que o par condicional do holdout desta issue mediu (s9).
+              // NOTE: Queued ingestion is revoked here, inside the section, or a pending or claimed append lands
+              // on release and rebuilds the cleared memory; a run already in memory re-checks (../../graph/ingest-job.ts,
+              // stillWanted). On `db` for the pool reason above. Only UP TO the command's message: a customer
+              // message queued behind this step came after the reset. Erased DEAD rows are returned, not announced
+              // here, so a rollback cannot leave a line for a death it put back; a DEAD row above the boundary
+              // survives and keeps its announcement owed.
               erasedDeaths.push(
                 ...(
                   await revokeJobsByKeyPrefixOn(
@@ -3533,30 +2795,10 @@ async function maybeConsumeCommandOrGate(params: {
                   )
                 ).erasedDeaths,
               );
-              // AND THE FACT THAT IT WORKED, written by the transaction that does it (issue #728,
-              // review r7/r8). `reset_at_message_id` above says the operator TYPED the command; it
-              // is committed by an earlier, independent statement and stays put when this step
-              // refuses — which it does by design, on the thread a turn is already writing, with the
-              // acknowledgement naming what did not clear. Four fences read that column as proof the
-              // memory was cleared (the direct turn's, the debounce watermark, the observe tick and
-              // the ingestion append), and an append refused on the strength of a clearing that did
-              // not happen is a colleague's reply dropped from a memory nobody ever emptied.
-              //
-              // So the append's fence reads THIS one, which cannot survive without the deletions
-              // beside it: same transaction, rolled back with them.
-              //
-              // BEFORE `clearContactMemory` AND NOT AFTER (review r12), which is not a style
-              // preference: that helper deletes the rows first and the CHECKPOINT last precisely so
-              // a failed checkpoint delete rolls the rows back, and the checkpoint goes through a
-              // SEPARATE pool that no rollback of ours reaches. A statement of ours after it can
-              // still fail — a concurrent update on this conversation holding the row until the
-              // scoped transaction times out is enough — and the rollback would then restore the
-              // thread and its summaries beside a checkpoint that is already gone, which is exactly
-              // the half-erased state the helper's ordering exists to prevent. Written here, a
-              // failed clear takes the boundary back with everything else.
-              //
-              // `GREATEST` for the reason the boundary above has it: two `/reset` deliveries are
-              // dispatched detached and the older one can finish last.
+              // NOTE: The proof the memory was cleared, written in the transaction that clears it, so a refused
+              // step leaves it unset and the append's fence never drops a reply against a clearing that did not
+              // happen. BEFORE `clearContactMemory`: the checkpoint goes through a separate pool, so a failure of
+              // a later statement would roll back the rows beside a checkpoint already gone. `GREATEST` as above.
               if (commandMessageId !== null) {
                 await db.$executeRaw`
                   UPDATE conversations
@@ -3575,25 +2817,13 @@ async function maybeConsumeCommandOrGate(params: {
             }),
         ),
       );
-      // ...AND THE DEATHS IT ERASED, now that the transaction is over. Unconditionally, and that is
-      // the point: `announceErasedDeaths` confirms each deletion against the row before writing
-      // anything, so a rollback suppresses the line by evidence rather than by this call site
-      // guessing from the absence of a throw. `step` returning null would be the obvious guard and
-      // it is not a sound one — a Postgres block already aborted accepts `COMMIT` and replies
-      // `ROLLBACK` without an error, so any `try/catch` added inside the callback later would make
-      // the guard lie. Asking twice would also put the two guards in front of each other, where
-      // neither can be tested.
-      //
-      // A crash between the commit and this line loses the announcement, which is the same exposure
-      // every fire-and-forget emit already carries and the cheaper of the two mistakes: a lost line
-      // leaves the death where the next reader finds it, a duplicated one cannot be retracted.
+      // NOTE: The erased deaths, now that the transaction is over, unconditionally: the announcer checks
+      // each deletion against the row, so a rollback suppresses the line by evidence. Guarding on `step`
+      // returning null is unsound (an aborted block replies ROLLBACK to COMMIT without an error). A crash
+      // before this loses the line, which beats a duplicate that cannot be retracted.
       await announceErasedDeaths(erasedDeaths, base);
-      // The compacted memory of past attendances lives in its own table, not in the thread, so
-      // deleting the thread alone would resurrect every one of them on the next compaction (the head
-      // is rendered from these rows). "Starts this channel's conversation over" has to include them,
-      // and the PENDING job that would write more of them: a compaction armed on a resolve waits out
-      // a grace window, so at any moment one can be sitting in the queue holding the conversation
-      // this reset is clearing.
+      // NOTE: The compacted memory lives in its own table, and the PENDING compaction (waiting out its
+      // grace window after a resolve) would write more of it, so it is cancelled too.
       await step("cancel pending compaction", "memória", () =>
         cancelPendingJob(
           tenantId,
@@ -3614,30 +2844,19 @@ async function maybeConsumeCommandOrGate(params: {
         ),
       );
     }
-    // Custom attributes and the kanban card are BOT-token calls, so this client must carry the
-    // persona's token; labels are admin-token and would work either way. Building it is itself a step:
-    // it reads the DB and resolves DNS through the SSRF guard, so during an outage it throws, and
-    // outside the boundary that would abandon the whole reset — including the local cleanups below
-    // and the acknowledgement — after the memory was already wiped.
+    // NOTE: Attributes and the kanban card are BOT-token calls, so this client carries the persona's
+    // token. Building it is a step because it reads the DB and resolves DNS through the SSRF guard: a
+    // throw outside the boundary would abandon the rest of the reset after the memory was wiped.
     const client = await step(
       "build the persona client",
       "etiquetas, atributos e card do kanban",
       personaClient,
     );
     if (client) {
-      // ...AND THE VERDICTS THAT WOULD PUT THEM BACK (issue #477 review, round 5). A watcher's tick
-      // is armed on a window that outlives this command, and it reads the conversation from Chatwoot
-      // rather than from memory — so a burst armed before the reset wakes up minutes later, reads
-      // the transcript this command did not touch (it clears OUR state, not the customer's
-      // messages), and writes the very labels that were just cleared. Retired by prefix because the
-      // key carries the classifier and a conversation can have two.
-      //
-      // UP TO THE EPISODE BOUNDARY, not everything under the prefix (issue #477 review, round 21).
-      // This step runs late — after the memory clear and a dozen Chatwoot calls — and a customer
-      // message landing in that stretch arrives after the reset and arms a burst that is wanted;
-      // unqualified, this marked it DONE and the new episode's first messages were never classified.
-      // A command that named no message writes no boundary either, and then there is nothing to
-      // order the rows against: the tick's own fence is what stands them down.
+      // NOTE: The watcher's pending verdicts, or a burst armed before the reset reads the untouched
+      // transcript and writes back the labels just cleared (by prefix: the key carries the classifier).
+      // Only UP TO the episode boundary: a message during the late cleanup armed a wanted burst. With no
+      // boundary there is nothing to order against, and the tick's own fence stands them down.
       if (commandMessageId !== null)
         await step("cancel pending verdicts", "etiquetas", () =>
           cancelPendingJobsByPrefixUpToMessage(
@@ -3651,20 +2870,11 @@ async function maybeConsumeCommandOrGate(params: {
           ),
         );
       await step("clear labels", "etiquetas", () =>
-        // In the conversation's label queue like every other writer, so a clear cannot land in the
-        // middle of somebody's read-modify-write (issue #477 review, round 3).
+        // NOTE: In the conversation's label queue, so a clear never lands inside another read-modify-write.
         withConversationLabels(params.tenantId, conversationId, async () => {
-          // WHAT THIS CLEAR REMOVES, READ INSIDE THE QUEUE (issue #645). The observer uses this set
-          // to tell the reset's own removal line from real history — a question about CONTENT,
-          // which is the only kind that still has an answer when Chatwoot's activity job lands
-          // after the acknowledgement. Read here and not before the queue because the answer has to
-          // be the set this very write replaces.
-          // BEST-EFFORT, AND IT IS NOT WHAT THIS STEP IS FOR (issue #645, review round 4). The step
-          // exists to CLEAR the labels, which is what the operator asked for; naming them is
-          // bookkeeping for a later reader. Awaited bare, a read that times out aborted the step
-          // and the labels stayed on the conversation, with the POST endpoint perfectly available.
-          // A read that failed leaves the column NULL, which the observer already answers with the
-          // order cut.
+          // NOTE: What this clear removes, read inside the queue so it is the set this write replaces; the
+          // observer uses it to tell the reset's own removal line from history. Best-effort: naming the labels
+          // is bookkeeping, and a failed read must not abort the clear. NULL falls back to the order cut.
           let before: string[] | null = null;
           try {
             before = await client.getConversationLabels(conversationId);
@@ -3675,21 +2885,15 @@ async function maybeConsumeCommandOrGate(params: {
               errMsg(err),
             );
           }
-          // As the ADMIN: /reset is a person peeling the episode's labels off, not the persona
-          // deciding something, and the activity line should say so (issue #493).
+          // NOTE: As the ADMIN: /reset is a person peeling the episode's labels off, not the persona deciding,
+          // and the activity line says so.
           await client.setConversationLabels(conversationId, [], {
             asAdmin: true,
           });
-          // WRITTEN ONLY AFTER THE CLEAR RETURNS, and only by the reset that still OWNS the
-          // boundary. A read that succeeded and a clear that threw leaves those labels standing,
-          // and naming them as removed would tell the observer to hide activity lines that describe
-          // the conversation's live state; the ambiguous case (the POST applied and the response
-          // was lost) leaves the column NULL and lets the removal line show, which is the direction
-          // this whole block fails in on purpose.
-          //
-          // The `WHERE` is the pair's own fence: `reset_at_message_id` moves forward with GREATEST
-          // and two `/reset` deliveries are not serialized, so an older command finishing last
-          // would otherwise pair a newer boundary with the set IT removed. Same row, one read.
+          // NOTE: Written only after the clear returns, and only by the reset that still OWNS the boundary. A
+          // clear that threw leaves the labels standing, so naming them would hide live state from the
+          // observer; a lost response leaves NULL and the removal line shows, the direction this fails in on
+          // purpose. The `WHERE` fences an older /reset finishing last from pairing its set with a newer boundary.
           if (before !== null)
             await runScopedOn(
               base,
@@ -3706,18 +2910,9 @@ async function maybeConsumeCommandOrGate(params: {
       await step("clear custom attributes", "atributos", () =>
         client.clearConversationCustomAttributes(conversationId),
       );
-      // Clear the linked kanban card's scheduled dates too (item 17): a reset is a clean slate, so a
-      // stale start/due date from the prior episode must not linger. Title/description/step are kept
-      // (they identify the card / hold operator notes). Best-effort — no card ⇒ skip.
-      //
-      // The card's ATTRIBUTES go with the dates, and used not to: `set_custom_attribute` writes to
-      // three scopes and this command cleared one, so the agent kept every structured fact it had
-      // extracted from the memory that was just wiped, and did not ask again. The card carries no
-      // tension here — it belongs to this conversation and the reset already edits it.
-      //
-      // Two steps, not one, for the reason every other cleanup here gets its own: they are
-      // independent endpoints, and sharing a try meant a failure on the dates skipped the attributes
-      // entirely — the exact shape of #79, where the first failure silently ended the reset.
+      // NOTE: The linked kanban card's scheduled dates and its ATTRIBUTES go too (`set_custom_attribute`
+      // writes three scopes, and the agent would keep facts from the wiped memory); title, description
+      // and step stay. Separate steps because the endpoints are independent. No card, no step.
       const taskId = await step(
         "resolve the kanban card",
         "card do kanban",
@@ -3732,120 +2927,32 @@ async function maybeConsumeCommandOrGate(params: {
         );
       }
     }
-    // The contact's Chatwoot attributes are deliberately NOT cleared, and the acknowledgement below
-    // says why without having to: it promises the attributes of THIS CONVERSATION. Contact
-    // attributes outlive the conversation, are shared with every other conversation of every other
-    // agent on the account, and nothing records who wrote one — the definitions are account-wide, so
-    // the narrowest set this command could name still includes an operator's CRM field and an
-    // integration's column. Deleting those is not undoable, and the cost of keeping them is that the
-    // agent may not re-ask something it already knows.
-    //
-    // `voiceReply` above is the contrast that draws the line: it is OUR column, written only by our
-    // own tool, so its provenance is total and clearing it is this command's business.
-    //
-    // NOTE: the agent still reads those attributes into its prompt after a reset, so a test run can
-    // start over and skip a question it already has an answer for. Wanting them cleared is
-    // legitimate; doing it safely needs provenance the schema does not carry today.
-    // LAST, and that ordering is the point. The state that decides whether the agent may speak AT
-    // ALL — `shouldBotHandle` needs both `status === "pending"` and an assignee that is not a human
-    // — is also the state that makes the NEXT delivery actionable. Returned first, a customer
-    // message arriving while the steps above are still running passes the gate and starts a turn on
-    // the very episode this command is in the middle of erasing: memory not yet cleared, attributes
-    // still set, the previous ladder still armed. Returned last, that window holds the human's
-    // ownership, which is the state the conversation was already in.
-    //
-    // The reason the rest of this command was useless after a handoff, and the reason it runs at
-    // all: the canonical test loop — activate with /teste, let the agent transfer to a human,
-    // resolve, start over — ended with a conversation that announces itself as active and then never
-    // answers, and the only thing that undid it was "Devolver para IA" in the console. That is
-    // behind a login, and the common case is an operator handing a test agent to a client who has
-    // Chatwoot and no console at all.
-    //
-    // `stillOurs()` rather than testing the assignee alone: an assignment to another persona's bot,
-    // or a conversation left `open`, silences it just as effectively — and it asks about the persona
-    // bound to THIS INBOX from a FRESH read, which is the same question the acknowledgement below
-    // asks. Skipped when the answer is already yes, so an ordinary reset does not spend two admin
-    // calls undoing nothing.
-    //
-    // `returnConversationToAgent` and not a local unassign+toggle: the ORDER is load-bearing and
-    // documented there, the two cannot collapse into one `toggle_status`, and it mirrors the write
-    // so the very next delivery passes the gate instead of waiting for a Chatwoot event.
-    //
-    // Only when the blocker is OWNERSHIP. A disabled agent is the one case where returning the
-    // conversation makes things worse than leaving them: the runtime refuses to run a disabled agent
-    // (the away-message branch says so in as many words), so an unassign would take the human off a
-    // conversation nothing is left to answer. The command still clears everything else — starting the
-    // episode over before switching the agent back on is a reasonable thing to want — and says what
-    // it did not do.
-    // Everything below decides from the MIRROR, and the mirror lags Chatwoot by one webhook. That is
-    // fine for the rest of the command — it acts on our own state — but the hand-back is the one act
-    // here that reaches a third party, taking a conversation away from whoever holds it. A human who
-    // took over during the cleanup (a dozen network calls long) may not have arrived in the mirror
-    // yet, and then `heldBySameParty` compares a stale holder against itself, answers "unchanged",
-    // and the command unassigns the very takeover the fence exists to protect.
-    //
-    // A REFRESH of the mirror, not a second read beside it: the four fences that follow
-    // (answerBlocker, heldBySameParty, and the ack's own recheck) all read that row, and answering
-    // one of them from a different source is how two fences come to disagree about who holds a
-    // conversation. reconcileMirrorFromLive is also the versioned path — a webhook that landed with
-    // something newer wins instead of being overwritten by this GET — and it is the same probe
-    // `runAgentNudge` runs before ITS irreversible act, for the same reason.
-    //
-    // Best-effort on purpose. Failing to refresh leaves the decision exactly where it stood before
-    // this line, which is where it stood for every round of this PR; it does not warrant telling the
-    // operator the assignment failed, so it is logged rather than collected into `failed`.
+    // NOTE: The contact's Chatwoot attributes are deliberately NOT cleared (the ack promises THIS
+    // CONVERSATION's): they are shared account-wide and nothing records who wrote one, so deleting them
+    // could destroy an operator's CRM field, irreversibly. `voiceReply` is ours alone, so it is cleared.
+    // Before the hand-back, the mirror is refreshed: it lags Chatwoot by a webhook, and a human who took
+    // over during the cleanup would let `heldBySameParty` compare a stale holder against itself. A
+    // refresh, not a side read, so every fence below reads the same row; best-effort and logged.
     if (notOursAtStart) await refreshFromLive("the hand-back", client);
     const resetBlocker = await answerBlocker();
-    // `undefined` = never attempted, which is a third answer and not a quieter version of the other
-    // two: the two guards below stand the hand-back down for reasons the acknowledgement has to
-    // report differently from a hand-back that ran and answered.
+    // NOTE: `undefined` = never attempted, a third answer the acknowledgement reports differently from
+    // a hand-back that ran.
     let handBack: ReturnToAgentOutcome | null | undefined;
-    // A TURN FROM BEFORE THE RESET IS STILL RUNNING, AND THE HAND-BACK IS WHAT WOULD LET IT SPEAK.
-    // The memory step above refuses on this same question for its own reason (the turn's save would
-    // restore what the clear deletes). This is the SECOND thing one in-flight turn breaks, and it
-    // breaks it in the opposite direction: that turn is carrying a reply composed BEFORE the operator
-    // asked for a clean slate, and the takeover is the only thing currently keeping it quiet. Its
-    // ownership recheck reads the mirror for exactly two fields (../../graph/runtime.ts, the
-    // `shouldBotHandle` recheck) — status `pending` and no assignee — which is precisely the state a
-    // successful hand-back writes. Returning the conversation therefore un-silences the stale reply
-    // and posts it over the human who had claimed the conversation.
-    //
-    // WHAT GETS HERE IS A RUN NOTHING CAN CALL OFF, and since issue #449 the direct webhook turn is
-    // no longer one of those: it carries the episode fence (../../graph/reset-episode.ts), which
-    // stands it down at every send and, now, at its tool boundary. A debounced flush is retired
-    // through its own job. What is left is the run with neither — a follow-up NUDGE, which claims the
-    // graph key while posting into this conversation and is asked nothing at all — and the takeover
-    // is the only thing keeping that one quiet.
-    //
-    // Checked in memory and outside the memory step's lock, which is enough for the harm named: a
-    // turn that starts AFTER this line loads the memory the reset just cleared, so it is not the
-    // stale turn this guards against.
-    //
-    // Standing down is the honest answer and not a lesser one — the conversation stays exactly where
-    // the operator found it, the acknowledgement says so and why, and `/reset` typed again once the
-    // turn lands finds nothing stale left to release.
-    //
-    // BOTH markers, because a turn sets two and they are not interchangeable. The per-conversation
-    // one is claimed at the top of the turn (../../graph/runtime.ts, at `status.started()`); the
-    // graph one only later, inside the ingest lock, after the checkpointer and the divider write. A
-    // turn caught between them is running and posting into this very conversation while the graph
-    // key still reads free. The conversation key also carries the case a contact-inbox id cannot:
-    // with `contactInboxId` null the graph thread IS the conversation thread, and a guard that gave
-    // up on the null asked nothing at all. And a follow-up nudge claims ONLY the graph key
-    // (../../graph/nudge.ts) while posting into the conversation, so neither key alone is the
-    // question. `resolveGraphThreadId` is the same resolution the turn marks with, rather than a
-    // second copy of the rule.
+    // NOTE: A turn from before the reset still running: the takeover is what keeps its stale reply quiet,
+    // and a hand-back writes exactly the state its ownership recheck accepts (`pending`, no assignee), so
+    // it would post over the human. The direct turn has the episode fence (../../graph/reset-episode.ts)
+    // and a flush is retired; a follow-up nudge has neither. Standing down leaves the conversation as
+    // found and /reset can be retried. BOTH markers: the conversation key is claimed first and covers a
+    // null contact inbox; the graph key later, and it is the only one a nudge claims (../../graph/nudge.ts).
     const graphKey = resolveGraphThreadId(
       tenantId,
       instanceId,
       conversationId,
       ctx.conv.contactInboxId,
     );
-    // The graph half is asked of the ROW when there is one to ask (issue #203): a turn running on
-    // another replica is invisible to this process's registry, and handing the conversation back
-    // under it is the case this guard exists for. With a null contact inbox the graph thread IS the
-    // conversation thread and has no row, so that key keeps the in-process answer, which is what the
-    // conversation key has anyway.
+    // NOTE: The graph half asks the ROW when there is one, since a turn on another replica is invisible
+    // to this process's registry. With a null contact inbox there is no row, and the in-process answer
+    // is what the conversation key has anyway.
     const turnStillRunning =
       isTurnInFlight(chatwootThreadId(tenantId, instanceId, conversationId)) ||
       (ctx.conv.contactInboxId != null
@@ -3859,6 +2966,11 @@ async function maybeConsumeCommandOrGate(params: {
             base,
           )
         : isTurnInFlight(graphKey));
+    // NOTE: The hand-back runs LAST: ownership is also what makes the next delivery actionable, so
+    // returned first, a message during the cleanup would start a turn on the half-erased episode. It
+    // undoes the test loop's handoff (without it only the console could), asked via `stillOurs()` from a
+    // fresh read, skipped when already ours, and only for OWNERSHIP: a disabled agent would take the
+    // human off a conversation nothing answers. `returnConversationToAgent` owns the call ORDER.
     if (
       notOursAtStart &&
       resetBlocker === "ownership" &&
@@ -3870,9 +2982,8 @@ async function maybeConsumeCommandOrGate(params: {
         "atribuição",
         () =>
           returnConversationToAgent(sysCtx(tenantId), ctx.conv.id, {}, base, {
-            // The holder the two guards above just agreed on, carried in rather than re-read there:
-            // a re-read inside the hand-back would answer about a moment AFTER `heldBySameParty`,
-            // and somebody arriving in between would become the baseline and be unassigned.
+            // NOTE: The holder the guards above agreed on, passed in: a re-read would answer about a later
+            // moment, and somebody arriving in between would be unassigned.
             assigneeType: ctx.conv.assigneeType,
             assigneeId: ctx.conv.assigneeId,
           }),
@@ -3882,22 +2993,10 @@ async function maybeConsumeCommandOrGate(params: {
     // typed /reset to get a clean slate, and acting on a conversation that is not clean is worse than
     // knowing what survived.
     const distinctFailed = [...new Set(failed)];
-    // The assignment is the one thing the operator can SEE not happening, so silence about it would
-    // read as the command failing. Only when it was actually withheld: a conversation the agent
-    // already owned has nothing to explain.
-    //
-    // TWO questions, because the operator is about to watch the agent not answer and there are two
-    // independent reasons for that. Ownership has four ways to arrive and each was silent in its own
-    // way — the hand-back ran and found a new holder, the holder changed before it could run, or the
-    // conversation was the bot's at the start and somebody claimed it during the cleanup — so that
-    // sentence is chosen from the state at the END, not from which guard fired.
-    //
-    // Being SWITCHED OFF is the other, and it is not a variety of the first: a disabled agent that
-    // still owns a pending conversation reads as a clean reset and answers nothing. Asking ownership
-    // first made this arm reachable only when somebody else held it, which is the one case where the
-    // agent being off is the LESS surprising half. The other two places that answer this question
-    // (the /teste acknowledgement and the activation notice) already keep the two apart; this was the
-    // third and it was the one that did not.
+    // NOTE: Say why the agent will not answer, from the state at the END (ownership has several ways to
+    // change during the cleanup), only when the hand-back was actually withheld. Being SWITCHED OFF is a
+    // separate reason, not a variety of ownership: a disabled agent that owns the conversation would
+    // otherwise read as a clean reset.
     const leftWithSomebodyElse = !(await stillOursOrUnknown());
     const heldBack =
       resetBlocker === "disabled"
@@ -3907,22 +3006,19 @@ async function maybeConsumeCommandOrGate(params: {
         : !leftWithSomebodyElse
           ? ""
           : turnStillRunning
-            ? // Never attempted, and for a reason the operator can act on. Distinct from the arm
-              // below because nobody arrived during the reset: the conversation is with the same
-              // person it started with, and the hand-back is a retry away rather than lost.
+            ? // NOTE: Never attempted, for a reason the operator can act on: the
+              // conversation is with the same person, and the hand-back is a retry away.
               " Uma resposta anterior ao reset ainda está sendo gerada, então a conversa continua com quem a atendia. Digite /reset de novo quando ela terminar."
             : handBack === null
-              ? // Attempted and threw. `failed` already names the assignment below, and explaining
-                // the same conversation twice reads as two separate problems.
+              ? // NOTE: Attempted and threw. `failed` already names the assignment,
+                // and explaining it twice reads as two problems.
                 ""
               : " Alguém assumiu a conversa durante o reset, então ela continua com essa pessoa.";
     await postAcknowledgement(
       distinctFailed.length === 0
         ? `🔄 Memória, preferência de áudio e etiquetas/atributos desta conversa foram limpos.${heldBack}`
         : `⚠️ Reset parcial: não consegui limpar ${distinctFailed.join(", ")}. O restante foi limpo.${heldBack}`,
-      // NAMED, because this row is where the command's cleanup ends and a later reader has no other
-      // way to find that point: the boundary it holds is the command's own message, and everything
-      // the cleanup wrote sits between the two (constants.ts).
+      // NOTE: Named, because this row marks where the command's cleanup ends (constants.ts).
       commandMessageId === null ? undefined : resetAckSendId(commandMessageId),
     );
     logger.info(
@@ -3930,28 +3026,16 @@ async function maybeConsumeCommandOrGate(params: {
       String(conversationId),
       distinctFailed.length === 0 ? "none" : distinctFailed.join("|"),
     );
-    // NOTE: THE ONE RECORD THAT AN EPISODE WAS ERASED (#398).
-    //
-    // NOTE: The family below this command records its own actions, and the hand-back is one of them, so
-    // without this row the trail would show a conversation being returned to the agent and nothing
-    // about the memory, the audio preference, the labels, the conversation attributes and the kanban
-    // card that were wiped in the same act. That is the destructive half, it is not reversible, and
-    // it was the only mutation in this file with no durable trace of any kind: not an audit row, and
-    // not a flow-log line either, which only ever gets one when the command does NOT run.
-    //
-    // NOTE: Written even for a partial reset, with the steps that failed named: "what survived" is the
-    // question the operator is left with, and the acknowledgement that answers it is a chat message
-    // in a conversation that can be deleted.
+    // NOTE: The one record that an episode was erased. The hand-back records its own row, and without this
+    // one the trail shows a return to the agent and nothing about the irreversible wipe. Written even for
+    // a partial reset, naming the failed steps: the ack answering "what survived" can be deleted.
     await recordConversationAction(sysCtx(tenantId), base, ctx.conv.id, {
       action: "conversation.reset",
       after: {
         complete: distinctFailed.length === 0,
         failed: [...new Set(failedSteps)],
-        // NOTE: THREE outcomes, spelled, because the variable carries three states and two of them are
-        // absences: `undefined` when nothing was attempted (the agent already owned the conversation,
-        // or a guard withheld the hand-back) and `null` when the call threw. Written raw, the first
-        // does not reach the row at all: Prisma drops an undefined property on the way into the jsonb
-        // column, so the field the other rows carry would simply be missing from the common case.
+        // NOTE: Three outcomes, spelled, since two are absences: `undefined` (not attempted) and `null`
+        // (threw). Raw, Prisma drops an undefined property on the way into jsonb.
         handBack:
           handBack === undefined
             ? "not-attempted"
@@ -3962,11 +3046,8 @@ async function maybeConsumeCommandOrGate(params: {
     });
     return true;
   }
-  // A /reset typed while test mode is NOT yet active for this conversation (no /teste) must not wipe
-  // memory — and must NOT return out of this function, or the caller would run the turn and the agent
-  // would answer pre-activation. Do nothing here and fall through to the test-mode gate below (which
-  // silences the conversation and posts the one-shot activation notice). BUG FIX: this case used to
-  // `return false`, which let the agent respond before /teste.
+  // NOTE: A /reset before /teste must not wipe memory and must NOT return: returning false would let
+  // the caller run the turn and answer pre-activation. Fall through to the test-mode gate below.
   if (isReset) {
     logger.info(
       "chatwoot: /reset with test mode not active — deferring to the test-mode gate (conv=%s)",
@@ -3985,11 +3066,8 @@ async function maybeConsumeCommandOrGate(params: {
         noticeBlocker === "none"
           ? "🧪 Este agente está em modo teste. Ele não responde automaticamente nesta conversa. Envie /teste para ativar as respostas aqui."
           : noticeBlocker === "ownership"
-            ? // This notice fires ONLY while the conversation has never been activated, and `/reset`
-              // needs `testActivatedAt` to run (shouldRunReset) — so pointing at it alone would send
-              // the operator down the same no-op path, and the one-shot watermark would then suppress
-              // any further guidance. Both commands, in the order that works: /teste lifts the
-              // test-mode silence, /reset returns the conversation to the agent.
+            ? // NOTE: /reset needs `testActivatedAt`, so pointing at it alone is a no-op
+              // path the one-shot watermark then locks in: both commands, in working order.
               "🧪 Este agente está em modo teste e esta conversa não está com ele, então ele não vai responder. Envie /teste para ativar as respostas aqui e, em seguida, /reset para devolver a conversa ao agente."
             : "🧪 Este agente está desativado, então ele não vai responder nesta conversa.",
       ))
@@ -4056,10 +3134,8 @@ async function maybeConsumeCommandOrGate(params: {
     ctx.conv.outOfHoursNoticeSentAt !== null,
   );
   if (availability.silence) {
-    // ── The CUSTOMER-facing half (#153), on its own watermark and its own cadence. A DISABLED agent
-    //    still tells the operator why it is quiet — that note is pre-existing behavior nobody but the
-    //    operator sees — but it acquires no voice toward the customer: switching an agent off switches
-    //    off everything it says to them, which is why the runtime refuses to run it a few lines later.
+    // NOTE: The CUSTOMER-facing half, on its own watermark and cadence. A DISABLED agent still tells the
+    // operator why it is quiet, but says nothing to the customer (the runtime refuses to run it).
     const awayCfg = readAvailabilityConfig(ctx.agentSettings);
     const away =
       ctx.agentEnabled &&
@@ -4134,45 +3210,23 @@ async function maybeConsumeCommandOrGate(params: {
     return true;
   }
 
-  // ── Spend ceiling: the tenant's own token budget for the calendar month (issue #146). BEFORE the
-  //    authorization gate below, and that ordering is the point: past this line the turn is not going
-  //    to run, so asking somebody else's endpoint whether the contact may be served would be spending
-  //    a stranger's network call on a question whose answer changes nothing. It is also the cheapest
-  //    gate here, one indexed local read (measured: 1.3ms median over a 1M-row ledger spread across
-  //    200 tenants, see `tokensUsedSince`).
-  //
-  //    Over the ceiling ⇒ the operator's configured sentence to the customer, then a handoff so a
-  //    human can pick the conversation up, then a private note saying why the agent went quiet.
-  //    That sequence, its order and its cooldown live in the spend-ceiling module rather than here,
-  //    because the debounce flush owes the customer exactly the same three things when the ceiling
-  //    is crossed inside the debounce window. What stays local is what only this caller can supply:
-  //    the fenced primitives above, which know that a conversation a human took is one the bot no
-  //    longer speaks in. ──
+  // NOTE: Spend ceiling, the tenant's monthly USD budget for the inbox. BEFORE the authorization gate:
+  // past it no turn runs, so asking another's endpoint about the contact would be a wasted call, and
+  // this is the cheapest gate (local reads only: the ceiling config and the polled spend snapshot,
+  // `readSpendSnapshot`). Over the ceiling: the operator's sentence, a handoff and a private note, in
+  // an order the spend-ceiling module owns because the debounce flush owes the same three; this caller
+  // supplies the fenced primitives above.
   if (ctx.agentId !== null && ctx.agentEnabled && isNewIncomingMessage(n)) {
     const ceiling = await spendCeilingVerdict({
       tenantId,
       source: "inbox",
       base,
     });
-    // ALREADY ANSWERED ⇒ NOTHING TO REFUSE, and nothing to report either. The same fan-out this
-    // gate's occasion key is about sends one message down two routes, and the two read the ledger at
-    // different instants: the first can be under the ceiling, run its turn, and commit the usage
-    // that puts the tenant over before the second gets here. The second would then tell a customer
-    // the agent cannot answer, open the conversation for humans, and write an `error` line saying a
-    // turn was skipped for budget — about a message that was answered.
-    //
-    // The ANSWERED FLOOR is what says it was — max(watermark, reply claim) — and the claim is the
-    // half that matters here: the post gate takes it immediately before the send, while the
-    // watermark is written only after the turn returns (issue #452). Reading the watermark alone,
-    // this guard would go blind for the whole of that stretch and refuse a message the other route
-    // was already sending a reply for. Read only on the `over` branch, so the ordinary message pays
-    // nothing for it, and read BEFORE the announcement so a refusal that did not happen leaves no
-    // record of having happened.
-    //
-    // It does not close the whole race. A delivery landing inside the window between the other
-    // route's usage write and its claim sees neither, and that narrow interleaving is left to the
-    // claim's own CAS, which is what keeps the ANSWER single. What this closes is the wide half: a
-    // second delivery arriving after the first has claimed, which needs no coincidence at all.
+    // NOTE: Already answered, so nothing to refuse or report. Two routes read the ledger at different
+    // instants, and the first may commit the usage that puts the tenant over. The ANSWERED FLOOR is
+    // max(watermark, reply claim), and the claim matters: the post gate takes it right before the send,
+    // the watermark only after the turn. Read only on `over`, before the announcement. The narrow window
+    // between the other route's usage write and its claim is left to the claim's CAS.
     if (ceiling.state === "over") {
       const handled = await readAnsweredFloor({
         tenantId,
@@ -4188,22 +3242,9 @@ async function maybeConsumeCommandOrGate(params: {
         );
         return true;
       }
-      // AND THE AGENT HAS TO BE RUNNABLE FOR THE BUDGET TO BE WHAT STOPPED IT. `ctx.agentEnabled`
-      // is the operator's switch and not the whole question: `loadAgentConfig` also returns null
-      // when the agent row is gone, and when the model `credentialRef` no longer resolves (deleted
-      // from the vault, or a NAME stored where a `vault:<id>` belongs). In both cases `runAgentTurn`
-      // returns `agent-unavailable` before a model is built, so the same message under a ceiling
-      // with room is already unanswered — refusing here would tell the customer and the operator
-      // that a budget silenced an agent that could not have spoken anyway, and send them to raise a
-      // number that changes nothing.
-      //
-      // NOTHING TO ANSWER ⇒ NOTHING TO REFUSE, on the direct path as on the flush's. A message that
-      // renders to nothing for the agent — blank content, an attachment type we do not recognise, a
-      // reaction — makes `runAgentTurn` return `skipped` before any billed call, so under a ceiling
-      // with room this customer is already unanswered and in silence. Refusing it would send them
-      // the operator's sentence, put the conversation in a human's queue and write an `error` line,
-      // all about a message no model was ever going to see. Asked with `incomingRenderable`, the
-      // same shape the turn renders from, so the two cannot drift.
+      // NOTE: Nothing to answer, nothing to refuse: a message that renders to nothing makes `runAgentTurn`
+      // return `skipped` before any billed call, so refusing would send the sentence, queue a human and
+      // log an `error` about a message no model would see. Asked with `incomingRenderable`, like the turn.
       if (!renderInboundMessage(incomingRenderable(n))) {
         logger.info(
           "chatwoot: spend ceiling reached (conv=%s) — but the message renders to nothing, so there is no turn to refuse",
@@ -4211,18 +3252,10 @@ async function maybeConsumeCommandOrGate(params: {
         );
         return false;
       }
-      // Read only on the refusing branch, so the ordinary message pays nothing for it, and asked of
-      // the SAME function the turn asks rather than a second copy of its rules.
-      // `skipExperiment` because resolving an A/B variant INSERTS the thread's assignment: a probe
-      // must not enrol a turn that is not going to run.
-      //
-      // A PROBE THAT COULD NOT ANSWER IS NOT AN AGENT THAT CANNOT RUN, and the two must not collapse
-      // into one. The ceiling fails OPEN when the ceiling itself is unreadable — a customer must not
-      // be silenced by our own database hiccup — but here the verdict is read and says `over`, and
-      // this probe is only the escape hatch from it. An unreadable escape hatch does not open: the
-      // pool that refused this read has nothing to do with the budget the operator capped, and
-      // treating the error as "not runnable" would let the turn run and SPEND past the ceiling,
-      // which is the one outcome this gate exists to prevent.
+      // NOTE: The agent must be RUNNABLE for the budget to be what stopped it: `loadAgentConfig` also
+      // returns null for a deleted agent or an unresolvable `credentialRef`. Asked of the turn's own
+      // function, only here; `skipExperiment` so the probe enrols no A/B variant. An unreadable probe does
+      // not open the escape hatch: the ceiling was read as `over`, and running would SPEND past it.
       const probe = await runScopedOn(base, sysCtx(tenantId), (db) =>
         loadAgentConfig(
           db,
@@ -4268,17 +3301,10 @@ async function maybeConsumeCommandOrGate(params: {
       ceiling,
       "inbox",
       tenantId,
-      // ONE REFUSED MESSAGE, ONE LINE, which is what this gate promises and could not keep on its
-      // own. Chatwoot fans an incoming message to the conversation's assigned agent bot AND to the
-      // inbox's, and the two deliveries run concurrently under two ids, so an unkeyed announcement
-      // put two `over` rows and two alert bumps on the Logs page for one customer. The sequence
-      // below is already single-flighted per conversation; this is the same fan-out reaching the
-      // line thirty lines above it. Keyed by the message the delivery carries, so nothing about a
-      // DIFFERENT message can be swallowed with it.
-      // The INSTANCE is part of the message's identity: Chatwoot message ids are account-local, so
-      // a tenant connected to two Chatwoot instances has two different messages numbered the same,
-      // and a key without it would hand the second one the first's window — one refused customer
-      // losing their row and their alert, which is the exact invariant this key exists to keep.
+      // NOTE: One refused message, one line: Chatwoot fans a message to the assigned bot and the inbox's,
+      // two concurrent deliveries, so an unkeyed announcement doubles the Logs row and the alert. Keyed by
+      // the message, so nothing about a DIFFERENT message is swallowed, and by the INSTANCE, because
+      // Chatwoot message ids are account-local and two instances can number two messages the same.
       n.message?.id == null
         ? undefined
         : {
@@ -4290,9 +3316,8 @@ async function maybeConsumeCommandOrGate(params: {
       await announceSpendCeilingOnConversation({
         tenantId,
         conversationRowId: ctx.conv.id,
-        // The message is the refusal, so two deliveries of it coalesce and two messages do not.
-        // Without an id (an event shape that carries none) the delivery names itself, which
-        // coalesces nothing and is the safe direction: saying it twice beats not saying it.
+        // NOTE: Two deliveries of one message coalesce, two messages do not. Without an id the delivery
+        // names itself: saying it twice beats not saying it.
         occasion: `message:${n.message?.id ?? crypto.randomUUID()}`,
         cfg: ceiling.cfg,
         verdict: ceiling,
@@ -4310,33 +3335,19 @@ async function maybeConsumeCommandOrGate(params: {
     }
   }
 
-  // ── Contact authorization gate: an agent that may only serve contacts a system outside the
-  //    console knows about (docs/contact-auth.md) asks it before spending a turn. Last of the gates
-  //    on purpose: a conversation an earlier gate already silenced costs no authorization call. The
-  //    identity is what Chatwoot mirrored for the contact (phone, email, the operator's own
-  //    identifier), never anything the customer typed; under POST with includeMessageText the
-  //    triggering text rides along too, in its own `message` field, so the endpoint can accept an
-  //    unlock code. EVERY message is re-checked (no verdict outlives its request), so a revocation
-  //    or an unlock on the endpoint's side takes effect on the very next message. Denied ⇒ the
-  //    operator's fixed copy + a handoff to humans; cannot-tell (an endpoint failure, a contact
-  //    with no identifiers) ⇒ fail-closed silence toward the customer, with a private note telling
-  //    the operator why. Copy and note sit behind a cooldown (noticeCooldownSeconds), the verdict
-  //    never does: a refused burst is re-checked every time but voiced once per window. ──
+  // NOTE: Contact authorization gate (docs/contact-auth.md), last on purpose so a silenced
+  // conversation costs no call. The identity is what Chatwoot mirrored, never customer text (under
+  // POST with includeMessageText the text rides in `message`, for unlock codes). EVERY message is
+  // re-checked. Denied: the operator's copy plus a handoff; cannot-tell: fail-closed silence plus a
+  // private note. Copy and note sit behind a cooldown (noticeCooldownSeconds), the verdict never does.
   if (ctx.agentId !== null && ctx.agentEnabled && isNewIncomingMessage(n)) {
     const authCfg = readContactAuthConfig(ctx.agentSettings);
     if (authCfg.enabled) {
       const agentId = ctx.agentId;
-      // Opens the conversation for the human queue (the handoff_to_human mechanics: status `open`
-      // ends the bot's attribution, the optional team assignment routes it). Best-effort the same
-      // way the tool is: the open is what matters, an assignment failure never undoes it.
-      // A Chatwoot team id belongs to ONE account, so the stored number is only meaningful in the
-      // account it was picked from. The editor records that account alongside it and stops offering
-      // a target once the agent serves several — but a value can still arrive through REST, MCP or
-      // an import, and an agent MOVED between accounts keeps a number the editor has no reason to
-      // question: there is one account again, just not the one the id came from. So the recorded
-      // account is what decides, and counting accounts is only the fallback for a value stored
-      // before the field existed. Asked only when a target is configured, and only on a refusal,
-      // which is rare and already spending two API calls.
+      // NOTE: Opens the conversation for the human queue (status `open` ends the bot's attribution; the
+      // team routes it); an assignment failure never undoes the open. A Chatwoot team id belongs to ONE
+      // account, and a value can arrive via REST, MCP, import or an agent moved between accounts, so the
+      // account recorded with it decides; counting accounts is only the fallback for an older value.
       const teamTargetUsable = async (teamId: number): Promise<boolean> => {
         const pinnedTo = authCfg.handoffTeamInstanceId;
         if (pinnedTo !== null) {
@@ -4408,19 +3419,11 @@ async function maybeConsumeCommandOrGate(params: {
       }
       if (verdict.outcome !== "allowed") {
         await recordMediaRefusal(tenantId, ctx.conv.id, n.message?.id, base);
-        // Coalescing the QUESTION is not coalescing the ANSWER's consequences. The single-flight
-        // asks the endpoint once about a contact, which is right; the copy, the handoff and the
-        // note belong to a CONVERSATION, and one contact can have two open ones. Gating these on
-        // `!verdict.shared` meant the follower's conversation got no copy, no note and above all no
-        // handoff — opening the leader's does not open the follower's, so a refused contact sat
-        // there unanswered. What stops two deliveries of the SAME conversation from both speaking
-        // is the notice claim below, which is per conversation and synchronous.
-        //
-        // Actions in this order: customer copy first (after the open the conversation is no longer
-        // the bot's and the fence would rightly withhold it), then the handoff, then the note, so
-        // the note can say what actually happened. An ERROR hands nothing off: it is transient by
-        // contract (the next message retries), and escalating every blip of the endpoint would page
-        // humans for conversations the next message answers.
+        // NOTE: Coalescing the QUESTION is not coalescing the consequences: the single-flight asks once per
+        // contact, but copy, handoff and note belong to a CONVERSATION, and one contact can have two; the
+        // per-conversation notice claim below stops a double. Order: copy (after the open the fence would
+        // withhold it), handoff, note (so it says what happened). An ERROR hands nothing off: it is
+        // transient by contract, and escalating every blip would page humans the next message answers.
         {
           const cooldownMs = authCfg.noticeCooldownSeconds * 1000;
           const claim = (notice: ContactAuthNotice) =>
@@ -4428,9 +3431,8 @@ async function maybeConsumeCommandOrGate(params: {
               contactAuthNoticeKey(tenantId, agentId, ctx.conv.id, notice),
               cooldownMs,
             );
-          // The copy's window is claimed only when a copy is actually going out. Sharing one claim
-          // with the note let an ERROR, which speaks to nobody, spend the customer's window and
-          // silence the denial that followed it.
+          // NOTE: The copy's window is claimed only when a copy goes out: a shared claim let an ERROR, which
+          // speaks to nobody, silence the denial after it.
           const denyMessage =
             verdict.outcome === "denied" ? authCfg.denyMessage : null;
           const copyClaim = denyMessage ? claim("copy") : false;
@@ -4442,9 +3444,8 @@ async function maybeConsumeCommandOrGate(params: {
               : "suppressed"
             : "none";
           if (denyMessage && copyClaim) {
-            // The window is claimed before the send, because two settled deliveries racing must not
-            // both speak — so a send that does not land has to give it back. Kept, it would silence
-            // the next refusal for the whole window over a message the customer never received.
+            // NOTE: Claimed before the send so two racing deliveries do not both speak, so a send that did not
+            // land gives the window back instead of silencing the next refusal.
             if (await postPublicMessage(denyMessage)) {
               copyOutcome = "sent";
             } else {
@@ -4477,20 +3478,14 @@ async function maybeConsumeCommandOrGate(params: {
         );
         return true;
       }
-      // Allowed, and up to ten seconds may have gone by inside somebody else's endpoint. The
-      // attribution gate that let this delivery through ran BEFORE that wait, and `runAgentTurn`
-      // re-checks ownership only AFTER the model has answered — which withholds the reply and
-      // nothing else, so a human who took the conversation during the round-trip would find the
-      // agent's tools writing on it: a label, a Kanban card, a custom attribute, an outbound HTTP
-      // call. The turn's own build-and-invoke is slow too and this does not pretend to fence that
-      // (it is the runtime's window, and every agent has it); what it does is not WIDEN it by the
-      // length of an operator's network call. Asked against the mirror, the same source the first
-      // gate read.
+      // NOTE: Allowed, but up to ten seconds went by inside someone else's endpoint, and `runAgentTurn`
+      // re-checks ownership only after the model answers (withholding the reply, not the tools). A human
+      // who took over meanwhile would find the agent's tools writing on the conversation. This does not
+      // fence the turn's own window, only avoids widening it by the operator's network call.
       const now = await ownershipNow();
       if (!now.ours) {
-        // NOTE: the same exit as the gate on the way in, so it leaves the same line. This is the one
-        // `stillOurs` caller where a customer message that WOULD have been answered stops being
-        // answered; the others guard a command or a handoff action, which have their own trail.
+        // NOTE: The same exit as the gate on the way in, so it leaves the same line: the one `stillOurs`
+        // caller where a message that WOULD have been answered stops being answered.
         if (now.closed !== null) {
           emitFlowEvent(
             {
@@ -4523,17 +3518,10 @@ export async function processChatwootDelivery(
 ): Promise<"processed" | "skipped"> {
   const base = params.base ?? basePrisma;
 
-  // RESOLVED BEFORE THE CLAIM (issue #476 review, round 39), which is the whole point: the route's
-  // ROLE is written by the claim itself, in one statement, instead of by an update after it. Written
-  // after, that update is its own failure path — it rejects inside a detached task, long after the
-  // webhook answered 200, and the row it leaves says nothing about its role; the sweep then moves it
-  // to DEAD and the recovery refuses a row whose route bot is not the responder's and that names no
-  // role, so the retry this module promises never runs and the observed message is gone from memory
-  // for good. Claimed and stated together, a row that is PROCESSING has said what it is, and the only
-  // null left is the one an older build wrote.
-  //
-  // The reads this costs are paid before the CAS, so a duplicate delivery that loses the claim pays
-  // for them too. Two scoped reads against a race that is already the uncommon case.
+  // NOTE: Resolved BEFORE the claim, so the route's ROLE is written by the claim itself. A separate
+  // update after it could fail in a detached task after the 200, leaving a row with no role that the
+  // sweep moves to DEAD and the recovery refuses, losing the observed message; a PROCESSING row has
+  // always said what it is. The reads cost a losing duplicate too, which is the rare case.
   const n = params.normalized;
 
   // Only message_created drives commands, debounce and the agent turn. A message_updated can still
@@ -4541,66 +3529,24 @@ export async function processChatwootDelivery(
   const isNewIncoming = isNewIncomingMessage(n);
   const hasLateMedia = hasPendingInboundMediaUpdate(n);
 
-  // A human agent's reply is folded into the contact's memory too (ingestUnhandledMessage), and it
-  // ends the agent's attendance on the conversation (the takeover below). The inbox's agent is what
-  // says whether to do either. BOTH routes a person can answer by — see isDeviceAttendantMessage.
-  //
-  // The SUPERSET here, deliberately: the device leg also asks about the inbox's WhatsApp provider,
-  // and that answer lives in the very row this flag decides whether to read.
+  // NOTE: A human agent's reply is folded into memory too and ends the agent's attendance (the
+  // takeover below), both decided by the inbox's agent; both routes a person answers by, see
+  // isDeviceAttendantMessage. The SUPERSET, because the device leg reads the provider off the very
+  // row this flag decides whether to read.
   const mayBeHumanReply = mayBeNewHumanReply(n);
 
-  // Resolve the bound agent for a new message (from either side) or a late-media update. The latter
-  // never drives a turn.
-  //
-  // WIDENING THIS IS THE RISKY HALF of issue #187: `rt` turning non-null for a class of event it was
-  // always null for can wake code that was unreachable, not just the code the change is for. Every
-  // other reader of `rt` was checked against an outgoing message and none of them moves — the
-  // eager-media and test-mode gates require isNewIncoming or hasLateMedia, `commandActive` reads a
-  // `command` that is null off anything but a new incoming message, and the channel-redirect
-  // follow-up arm sits inside `if (act && isNewIncoming)`. The only branches this reaches are the
-  // takeover and the ingestion, both at the bottom of this function.
-  //
-  // Issue #430 widened the predicate itself, not this condition: the class of event is the same one
-  // (`message_created`, outgoing, a person wrote it), reached by a second route. The sweep above was
-  // re-run against it and the answer did not change.
-  // ...AND THE WRITE-BACK UPDATE (issue #478), which is the fourth class and the one this predicate
-  // refused for as long as it existed. Without it the transcription of a voice note nobody answers
-  // reaches no memory at all: the creation had no attachment and rendered to nothing, the delivery
-  // that transcribed armed the append, and if that arm failed there was no second chance — and on a
-  // fork that transcribes elsewhere, no first one either.
-  //
-  // THE SWEEP THE PARAGRAPH ABOVE DEMANDS, re-run against this class rather than inherited:
-  //  - `command` is `isNewIncoming ? controlCommand(n) : null`, so every command branch stays inert;
-  //  - the eager-media pass and `activatedTestLateMedia` both require `isNewIncoming || hasLateMedia`,
-  //    so nothing re-analyses and no provider is called twice;
-  //  - the debounce arm, the follow-up cancel and the channel-redirect arm all sit inside
-  //    `isNewIncoming`;
-  //  - the takeover reads `mayBeHumanReply`, which is false on an incoming message;
-  //  - the mirror and the resolve branches never depended on `rt` being null and run either way.
-  // What is left is the ingestion, which is the point.
-  //
-  // AND IT CANNOT DOUBLE-APPEND: `armIngest` keys the job by (thread, message) with `rearm:
-  // "same-work"`, so the write-back's arm and the transcribing delivery's arm are the same row, and
-  // once the job has run the id is in the dedup window and the second verdict is `duplicate`.
-  // NOTE: THE WIRE'S ANSWER, which is the right one for the two decisions made here: whether the event
-  // reaches the runtime at all, and which message the responder-coverage check is about. Both run
-  // before anything has looked at the audio. The eager pass can produce a transcription later, and
-  // the readers that care about THAT ask again below (`carriesTranscription`) — asked once, at the
-  // top, they would stand down on exactly the delivery that paid for the words.
+  // NOTE: Resolve the bound agent for a new message (either side), a late-media update, or the
+  // write-back update carrying a transcription, which never drives a turn. A non-null `rt` on new
+  // event classes can wake unreachable code, so every reader was checked: commands, eager media,
+  // debounce, follow-up cancel and redirect arm all need `isNewIncoming` (or `hasLateMedia`); the
+  // takeover needs a human reply; what is left is the ingestion, which `armIngest` dedupes by
+  // (thread, message). The wire's answer is right here; later readers re-ask (`carriesTranscription`).
   const transcriptionOnTheWire = inboundTranscriptionOnUpdate(n) !== null;
   const wantsRuntime =
     isNewIncoming || hasLateMedia || mayBeHumanReply || transcriptionOnTheWire;
-  // RETRIED, because this pair now stands BEFORE the claim (issue #476 review, round 44). Moving the
-  // role onto the claim closed the hole where a second write could fail; what it opened is this one:
-  // a transient pool or database error here rejects with the row still PENDING and its role unsaid,
-  // the webhook long since acknowledged, and no caller left to ask again — Chatwoot's own retry is
-  // spent on the ack, not on this task. The sweep does see that row and reports it, so the message is
-  // not lost quietly; it is simply lost, since the recovery refuses a role nothing stated on a route
-  // that is not the responder's. A handful of attempts is what separates "the pool was briefly
-  // exhausted" from that, and it costs nothing on the path that does not fail.
-  //
-  // The same attempts and backoff the ingest arm uses, and the same injected sleep, so a test does
-  // not wait on real time.
+  // NOTE: RETRIED, because this pair runs BEFORE the claim: a transient error rejects with the row
+  // PENDING and its role unsaid, after Chatwoot's retry was spent on the ack, and the recovery refuses
+  // an unstated role on a non-responder route. Same attempts, backoff and injected sleep as the ingest arm.
   const resolveRoute = async () => {
     const responder = wantsRuntime
       ? n.inboxId != null
@@ -4617,9 +3563,8 @@ export async function processChatwootDelivery(
             base,
           )
       : null;
-    // The route's own agent when it OBSERVES this inbox (issue #476): on that route the runtime is
-    // the observer's, and the responder — bound or not — is reached by its own delivery. A sparse
-    // payload is answered the way the responder's is, through the conversation's stored inbox.
+    // NOTE: The route's own agent when it OBSERVES this inbox: the runtime is the observer's, and the
+    // responder is reached by its own delivery. A sparse payload resolves through the stored inbox.
     const watcher = wantsRuntime
       ? await observerRuntimeForRoute(
           params.tenantId,
@@ -4639,9 +3584,8 @@ export async function processChatwootDelivery(
           base,
         )
       : null;
-    // THE GENERATION THIS RESOLUTION READ. Free when either runtime answered — the same row, read in
-    // the same query — and paid for only where neither did, which is the one reading window 1 is
-    // about: a delivery that arrived on a bot route and now resolves nothing at all.
+    // NOTE: The generation this resolution read: free when either runtime answered (same row), paid only
+    // when neither did, the one reading window 1 is about.
     const generation = wantsRuntime
       ? ((watcher ?? responder)?.bindingGeneration ??
         (await inboxBindingGenerationAt(
@@ -4681,56 +3625,22 @@ export async function processChatwootDelivery(
   const responderRt = resolved?.responder ?? null;
   const observer = resolved?.watcher ?? null;
   const rt = observer ?? responderRt;
-  // Whether the WATCHER answer came from the attach window rather than from a row (round 15). Only
-  // that answer can: the binding read IS the row, and a detached bot still owning an older
-  // conversation keeps receiving its events, so "no row" there is the post-detach state too.
+  // NOTE: Whether the watcher answer came from the attach window rather than a row. Only that answer
+  // can: "no row" on the binding read is also the post-detach state of a bot owning an old conversation.
   const observerAttaching = observer?.attaching === true;
 
-  // tx1: CAS <claimFrom>→PROCESSING. A re-entry (duplicate POST that found a stranded PENDING) sees
-  // 0 rows and skips.
-  //
-  // The claim is STAMPED, because the winner of this CAS is not always the first attempt: a
-  // redelivery is deliberately allowed through to here on a row stranded on PENDING, and that claim
-  // can land long after the row was received. `claimed_at` is the clock the stranded-delivery sweep
-  // measures a PROCESSING row by; without it the sweep dates this live attempt to the original
-  // receipt, calls it abandoned the instant it starts, and reports a lost message while the process
-  // answering it is still running (issue #228).
-  //
-  // WHICH state it claims FROM is the caller's, and there are exactly two answers because there are
-  // exactly two ways a delivery reaches this function.
-  //
-  //   "PENDING"  a delivery arriving, or a redelivery of one that never started. The row was just
-  //              inserted, or was left where an insert put it.
-  //   "DEAD"     a recovery of a delivery a process death stranded and the sweep gave up on (issue
-  //              #295). `DEAD` is the sweep's verdict, reached by INFERENCE — nothing has moved this
-  //              row — and a recovery that runs the turn is direct evidence that outranks it, the
-  //              same way a turn already corrects a `DEAD` row it ran over (retireCoveredDeliveries).
-  //
-  // ONE CAS with two predicates, rather than a reclaim step followed by the ordinary claim. The
-  // difference is a window: reclaiming first would leave the row PROCESSING with nothing holding it
-  // if the process died between the two statements, which is the exact state this whole subsystem
-  // exists to make impossible to reach silently. Here the winner of the single statement owns the
-  // row, and a second recovery for the same row matches nothing and skips.
-  //
-  // `attempts` is incremented, and this is its first reader: it was carried unused since the ledger
-  // was introduced, and the caller bounds a retry on it. A live delivery does not touch it — its
-  // claim is not an attempt at recovery, it is the first attempt at all.
+  // NOTE: tx1: CAS <claimFrom> to PROCESSING; a duplicate that finds nothing to claim skips. Stamped
+  // with `claimed_at`, the clock the sweep measures an attempt by. "PENDING" is a delivery arriving;
+  // "DEAD" is a recovery, whose running turn outranks the sweep's inferred verdict. ONE CAS rather
+  // than reclaim-then-claim, so a death between two statements cannot strand a PROCESSING row; a
+  // second recovery matches nothing. `attempts` counts recoveries only. See docs/chatwoot.md,
+  // "Webhook receiver".
   const claimFrom = params.claimFrom ?? "PENDING";
-  // A RECORDED OBSERVER ROLE IS NEVER DOWNGRADED BY ITS OWN REPLAY (issue #476 review, round 53).
-  // The recovery validates the observer's bot before it dispatches, and this resolution runs after
-  // that: a bot reprovisioned or deleted in between leaves `observer` null on a row the ledger says
-  // was a watcher's. Restating the role from THIS reading would write `false` over that `true`, and
-  // the row would then take the inbox's own derivation — on a human-owned conversation, the
-  // responder path settles it PROCESSED without observer ingestion ever running, and the message is
-  // gone from the only memory that was holding it, permanently, because the role that would have
-  // sent it back has been overwritten.
-  //
-  // So the replay does not run at all: no claim, no write, the row stays DEAD on the worklist with
-  // its role and its attempts intact, which is the same answer the recovery gives a delivery naming
-  // a bot nothing carries any more. `ensureAgentBot` provisioning the persona again is what makes it
-  // recoverable; until then the sweep's line is what names it. Reported at `warn` — an `error` here
-  // would page for a bot an operator may have deleted on purpose, and silence would hide the one
-  // case where the row cannot make progress on its own.
+  // NOTE: A recorded observer role is never downgraded by its own replay: a bot reprovisioned or
+  // deleted after the recovery validated it leaves `observer` null, and restating the role would write
+  // `false`, let the responder path settle the row PROCESSED and lose the observed message. So the
+  // replay does not run; the row stays DEAD with its role until `ensureAgentBot` re-provisions the
+  // persona. `warn`, not `error`: the bot may have been deleted on purpose.
   if (params.routeObserved === true && observer === null) {
     logger.warn(
       "chatwoot: a stranded observer delivery names a route that resolves no observer runtime any more (conv=%s, bot=%s); left DEAD rather than replayed as the responder",
@@ -4739,50 +3649,11 @@ export async function processChatwootDelivery(
     );
     return "skipped";
   }
-  // THE WORLD MOVED UNDER THIS DELIVERY, AND WHAT IT MOVED TO CANNOT ANSWER (issue #540, window 1).
-  //
-  // The route's role is read from the binding as it stands NOW, and an administrative write —
-  // an unobserve, a promotion, an unbind — can land between Chatwoot emitting the event and this
-  // resolution. Where it does, and the reading it leaves resolves NO runtime at all, the delivery
-  // settles PROCESSED having looked at nothing: on an observer-only inbox that is the observer's
-  // memory losing a customer message silently, which is the one outcome this subsystem exists to
-  // make impossible.
-  //
-  // The row records the generation it was RECEIVED under, so this is not a guess about clocks: equal
-  // means nothing about who routes this inbox has moved since the message arrived and the empty
-  // reading is simply the truth (an inbox nothing of ours answers, a bot that still owns an old
-  // conversation); different means the reading describes a world the message never arrived in.
-  //
-  // AND IT REFUSES RATHER THAN RE-RESOLVING, because there is nothing better to resolve to. The role
-  // is a fact about receipt time and both readings available here are about now — re-reading would
-  // only produce a newer wrong answer. So the row is left where it is, PENDING and unclaimed, which
-  // is the state the sweep already reads and reports (./stranded-delivery.ts): a customer message
-  // becomes `lost` and is armed for recovery, a colleague's reply becomes `role-unstated`. By then
-  // the binding has usually settled, and the recovery re-asks every gate against it.
-  //
-  // NOT ON A REPLAY. A recovery arrives with the generation gap already true and by construction
-  // wider, and throwing there would spend the row's attempts re-reporting what the sweep's own line
-  // already says.
-  // NOTE: WHAT THIS ROUTE DOES WITH A MESSAGE IT DOES NOT ANSWER (issue #540, window 3), resolved
-  // here so the claim below can state it. A responder's route folds it into memory while it is
-  // switched on and ingests continuously.
-  //
-  // An observer's route folds it in ONLY FOR A RESPONDER OF OURS BOUND TO THE INBOX (issue #620).
-  // The contact-inbox thread has exactly one kind of reader, a responder's turn, and the observer's
-  // own work is the OBSERVE tick, which reads the conversation from Chatwoot on a throwaway thread
-  // of its own. On an inbox a person or a bot outside this system answers, the append was a job per
-  // message and a compaction per attendance for a memory nobody would open, claimed from the same
-  // lane share the observations wait on. Beside a responder the thread is that responder's, and the
-  // stand-down below decides whether this route fills the message in for it. A responder bound LATER
-  // starts from its binding, and the watermark this route still keeps is what stops it answering the
-  // observed backlog.
-  //
-  // A ROW-BACKED observer decides this whatever its mode says (issue #476 review, round 19): the row
-  // is written without re-asking the mode, and the receiver honours the row over the mode everywhere
-  // else. Only its switch is asked.
-  //
-  // Named here and reused by `routeIngests` far below, so the fact this delivery RECORDS and the
-  // fact it ACTS on cannot drift apart.
+  // NOTE: What this route does with a message it does not answer, resolved here so the claim states
+  // it. A responder's route folds it in while switched on and ingesting continuously; an observer's
+  // only beside a responder of ours (the thread's only reader is a responder's turn; the observer
+  // reads Chatwoot). A row-backed observer decides this whatever its mode; only its switch is asked.
+  // Reused by `routeIngests` below, so what the delivery RECORDS and what it DOES cannot drift.
   const routeRemembers =
     rt === null
       ? false
@@ -4790,6 +3661,11 @@ export async function processChatwootDelivery(
         (observer !== null
           ? responderRt !== null
           : ingestsContinuously(rt.mode));
+  // NOTE: Window 1: the binding moved between receipt and this resolution, and the new reading
+  // resolves NO runtime, so claiming would settle PROCESSED having looked at nothing. The row's receipt
+  // generation makes this exact. Refuse instead of re-resolving (both readings are about now): the row
+  // stays PENDING for the sweep (./stranded-delivery.ts), whose recovery re-asks every gate. Not on a
+  // replay, which would only spend attempts. See docs/chatwoot.md, "Observer binding".
   const receiptGeneration = params.receiptBindingGeneration ?? null;
   const resolvedGeneration = resolved?.generation ?? null;
   if (
@@ -4800,15 +3676,9 @@ export async function processChatwootDelivery(
     receiptGeneration !== null &&
     resolvedGeneration !== null &&
     resolvedGeneration !== receiptGeneration &&
-    // ...AND THE ROW IS STILL THERE TO LEAVE (PR review, round 6). `claimFrom` is what this call
-    // EXPECTS the status to be, not what it is: a repost of an event already settled arrives with
-    // `claimFrom === "PENDING"` all the same, and the CAS below is what turns it into the `skipped`
-    // an idempotent duplicate deserves. Thrown ahead of that CAS, an ordinary duplicate became an
-    // async dispatch failure whose message promised the sweep would pick the row up — and a settled
-    // row is on no sweep worklist, so the promise was false as well as noisy.
-    //
-    // One read, on the refusal path only. A row that settles between this read and the throw costs
-    // a log line and nothing else, which is the same price the race had before the column existed.
+    // NOTE: ...and the row is still there to leave: `claimFrom` is what the call EXPECTS, so a repost of
+    // a settled event must reach the CAS and skip, not throw a false promise that the sweep will pick
+    // it up. One read, on the refusal path only.
     (await deliveryStatusOf(base, params.tenantId, params.deliveryRowId)) ===
       "PENDING"
   ) {
@@ -4822,12 +3692,10 @@ export async function processChatwootDelivery(
       data: {
         status: "PROCESSING",
         claimedAt: new Date(),
-        // The route's role, stated by the claim itself — see the note above the resolution.
+        // NOTE: The route's role, stated by the claim itself (see the note above the resolution).
         routeObserved: observer !== null,
-        // ...and what that route DOES with a message it does not answer (issue #540, window 3).
-        // Stated by the same statement and for the same reason: the observer beside this route
-        // stands down on the strength of it, and asking the responder's mode when the question comes
-        // up answers about a switch that may have been flipped since.
+        // NOTE: ...and what it does with an unanswered message, in the same statement: the observer beside
+        // it stands down on this, and the responder's mode may have been flipped since.
         routeRemembers,
         ...(claimFrom === "DEAD" ? { attempts: { increment: 1 } } : {}),
       },
@@ -4835,58 +3703,28 @@ export async function processChatwootDelivery(
   );
   if (claimed.count === 0) return "skipped";
 
-  // The route's ROLE was stated by the claim above, and the two being one statement is the point
-  // (issue #476 review, rounds 21, 26 and 39). The recovery of a stranded observer delivery has to
-  // know it was one and nothing after the fact can tell: the observer row follows Chatwoot's
-  // agreement, so a delivery inside the attach window has none, and a binding that moved since
-  // answers about a different moment.
-  //
-  // BOTH ROLES, never best-effort, and never a second statement. Leaving a responder's row null made
-  // the column a two-state answer to a three-state question — null meant "the responder's" and
-  // "nobody decided yet" at once — and a row stranded before the role was stated was replayed as the
-  // responder: on an observer-only inbox that loses the observation silently, on a shared one it
-  // hands the responder a message its own route already answered. A SEPARATE write had the same hole
-  // one step further in: it rejects inside a detached task long after the webhook answered 200, and
-  // the row it leaves says nothing, so the sweep moves it to DEAD and the recovery refuses it —
-  // the promised retry never runs. Claimed and stated together, a row that is PROCESSING has said
-  // what it is, and the only null left is the one an older build wrote.
   const command = isNewIncoming ? controlCommand(n) : null;
-  // NOTE: A control command is "active" only for a test-mode agent, and issue #270 is what happens when
-  // that question is answered by a different row than the one that acts on it: `rt` resolves the
-  // agent from the inbox id the PAYLOAD carries, while the test-mode gate downstream resolves it
-  // from the inbox id STORED on the mirrored conversation. Disagree, and the operator sends /teste
-  // and gets back the private note asking them to send /teste — a dead end with no way out from
-  // inside the conversation, and nothing anywhere naming the command as the thing that was dropped.
-  //
-  // The payload stays PRIMARY, so an ordinary delivery is answered by exactly the query it always
-  // was and pays for nothing extra. The stored row is consulted only when the payload names no
-  // INBOX at all AND a command was actually typed, which is the miss path that used to dead-end.
-  // The fallback can only ever turn a dropped command into an honoured one; it can never make an
-  // active command inactive, so no delivery that works today changes.
+  // NOTE: A command is active only for a test-mode agent, and the question must be answered by the
+  // row that acts on it: `rt` reads the PAYLOAD's inbox, the test-mode gate the conversation's STORED
+  // inbox, and a disagreement dead-ends /teste. The payload stays primary; the stored row is read only
+  // when the payload names no inbox and a command was typed, so it can only honour a dropped command.
   let commandMode: string | null = null;
-  // The agent the command was decided against, from whichever of the two readings answered. Named
-  // once and used by the line that reports a dropped one: `rt` is null on the sparse-payload path
-  // even though the stored conversation names an agent there, and reading only `rt` writes a row
-  // attributed to no agent and no inbox, on the one path where the ids cost nothing to keep.
+  // NOTE: The agent the command was decided against, from whichever reading answered, so a dropped
+  // command's line names an agent even on the sparse-payload path where `rt` is null.
   let commandAgent: { agentId: bigint; inboxId: bigint } | null =
     rt !== null ? { agentId: rt.agentId, inboxId: rt.inboxId } : null;
   if (command !== null) {
-    // THE RESPONDER'S MODE decides a command, even on an observer's route (issue #476 review, round
-    // 13): the command is the responder's, and reading the observer's mode here would call an ACTIVE
-    // command inactive — which mirrors it as ordinary customer engagement (the inbound watermark
-    // moves) and writes a dropped-command line about a command that was not dropped.
+    // NOTE: The RESPONDER's mode decides a command even on an observer's route: the observer's would
+    // call an active command inactive, mirror it as customer engagement and report a false drop.
     const commandRt =
       observer !== null && responderRt !== null ? responderRt : rt;
     if (commandRt !== null) {
       commandMode = commandRt.mode;
       commandAgent = { agentId: commandRt.agentId, inboxId: commandRt.inboxId };
     } else if (n.inboxId == null) {
-      // NOTE: ONLY when the payload named no inbox at all. An inbox it DID name that resolves to no agent
-      // is an answer, not a gap: falling back there would decide the command against whatever inbox
-      // the conversation pointed at BEFORE this event, and the mirror is about to move it to the one
-      // that just arrived. The command would then be active for an agent the delivery never reached,
-      // the route check would find no persona to match, and it would be consumed without running and
-      // without an acknowledgement — a worse silence than the one this fixes.
+      // NOTE: ONLY when the payload named no inbox. A named inbox resolving to no agent is an answer:
+      // falling back would decide the command against the inbox the conversation pointed at BEFORE this
+      // event, and the command would be consumed without running or acknowledging, a worse silence.
       const stored = await conversationAgent(
         params.tenantId,
         params.instanceId,
@@ -4899,18 +3737,11 @@ export async function processChatwootDelivery(
     }
   }
   const commandActive = command !== null && commandMode === "test";
-  // HOISTED ABOVE THE MIRROR (issue #476 review, round 38), because the mirror's inbound
-  // watermark depends on the answer: a control command suppresses `lastInboundAt`, and on an
-  // observer's route a command the responder never received is ordinary customer text, whose
-  // timestamp the follow-up episode gate and the 24h service window both read. Left below, the
-  // suppression fired on a command nothing would consume and the mark stayed stale.
-  // ...and only while that responder HAS A ROUTE (issue #476 review, round 4). `responderRt` says
-  // the inbox names an agent, not that the fork can reach it: the persona bot deleted out-of-band
-  // on Chatwoot leaves the binding standing and the route dead, which is the state the console
-  // shows as "missing" with a Reconnect beside it. Standing down for a delivery that never comes
-  // would drop the message from memory entirely. The bot row is the local half of that question
-  // and the one this path can afford to ask; a bot row naming an id Chatwoot no longer has is not
-  // visible from here, and there the responder loses the same message anyway, until Reconnect.
+  // NOTE: The command is decided above the mirror because the mirror's inbound watermark depends on it
+  // (see `suppressInboundWatermark`). The responder counts only while it HAS A ROUTE: a persona bot
+  // deleted on Chatwoot leaves the binding and kills the route ("missing", with Reconnect), and
+  // standing down for a delivery that never comes drops the message from memory. The bot row is the
+  // local half this path can afford; a row naming an id Chatwoot lost is invisible here.
   const responderBotId =
     observer !== null && responderRt !== null
       ? ((
@@ -4929,30 +3760,13 @@ export async function processChatwootDelivery(
   const responderHasRoute = responderBotId !== null;
   const watchingBesideResponder =
     observer !== null && responderRt !== null && responderHasRoute;
-  // ...and only while that responder's route WILL remember, and MAY answer (issue #476 review,
-  // round 1). Its route folds a message in only when the agent is switched on and ingests
-  // continuously (production, or a monitoring agent bound as the responder); a test agent answers
-  // what it is activated for and folds nothing else in, and a switched-off one does nothing until
-  // its switch. Beside those, nobody would remember the message, so this route does. The watermark
-  // follows the answering half instead: a switched-off responder answers nothing until its switch,
-  // and what the observer saw meanwhile is the past by then (the reading #209 gives a flip back to
-  // production), so the mark moves; a test responder may still answer this very message in a
-  // conversation somebody typed /teste into, so the mark stays its own to move. Such a conversation
-  // can then hold an answered message twice (the turn's append and this route's); that is the test
-  // mode's price, bounded to the conversations it was activated for.
-  //
-  // ...and, ABOVE ALL OF THEM, only while that responder ACTUALLY HAS this message (issue #476
-  // review, rounds 31 and 33). Every answer above is about the responder's route as it stands NOW;
-  // whether Chatwoot fanned THIS message to it is a question about the moment of emission, and
-  // `responderCoversMessage` is where it is asked. Asked ONCE, on `watchingBesideResponder` itself,
-  // because EVERY stand-down beside a responder rests on the same premise: the memory below, the
-  // media pass, and the control command. Hung off the memory alone (round 31) it left the other two
-  // standing down for a delivery that does not exist — the audio nobody transcribes, the `/reset`
-  // nobody consumes — which is the same loss by another door. The read is paid only by a delivery on
-  // an observer's route beside a responder with a route, which is the only shape that can use it.
-  // WHICH MESSAGE the sibling would be named by, spelled once because two questions are asked about
-  // it below and answering them against different messages would be a defect nothing else could
-  // catch.
+  // NOTE: The responder's route remembers only while switched on and ingesting continuously; beside a
+  // test or switched-off responder this route remembers. The watermark follows the answering half: a
+  // switched-off responder's mark moves, a test responder keeps its own (an activated conversation
+  // may then hold an answered message twice, the test mode's price). Above all, the responder must
+  // ACTUALLY HAVE this message (`responderCoversMessage`, asked of the moment of emission), asked once
+  // because every stand-down (memory, media pass, command) rests on it. `coveredMessage` names the
+  // message both sibling questions ask about.
   const coveredMessage =
     n.message?.id == null
       ? null
@@ -4971,26 +3785,17 @@ export async function processChatwootDelivery(
       responderRt?.responderBoundAt ?? null,
       responderBotId,
       n.conversationId,
-      // A customer message is named by the inbound column; a colleague's reply, which is outgoing,
-      // by the one the takeover recovery reads.
-      // NOTE: AN UPDATE OF A CUSTOMER MESSAGE NAMES THAT SAME MESSAGE (issue #478 review, rounds 1 and 3).
-      // It is not a creation, so without this clause the sibling could not be named and the check
-      // answered "not covered" without looking. Both shapes an update comes in are the same message
-      // by the same customer, and both cost something when the observer does not stand down: the
-      // TRANSCRIBED one ingests a message the responder's own `message_created` delivery already
-      // handled, which the dedup window cannot catch because a turn-handled id never enters it; the
-      // RAW one sends the audio to STT a second time, so the same voice note is paid for twice and
-      // two write-backs race over the same annotation. Same message, same column, same question.
+      // NOTE: A customer message is named by the inbound column, a colleague's reply by the one the
+      // takeover recovery reads. An UPDATE of a customer message names that same message, or a transcribed
+      // update would ingest what the responder's turn handled and a raw one would pay STT twice.
       coveredMessage,
       // The START of that second, because the field is only ever epoch seconds and reading it early
       // errs toward asking the ledger for evidence rather than toward assuming coverage.
       n.lastActivityAt == null ? null : new Date(n.lastActivityAt * 1000),
       base,
     ));
-  // ...AND WHAT THAT SIBLING DOES WITH IT (issue #540, window 3), read here beside the coverage
-  // answer rather than where it is used, so the two questions about one sibling are one pair of
-  // adjacent reads. Asked only where the answer can change anything: with no coverage there is no
-  // stand-down to decide.
+  // NOTE: ...and what that sibling does with it, read beside the coverage answer so both questions
+  // about one sibling are adjacent. Asked only with coverage, where it can change anything.
   const siblingRemembers =
     responderCovers && responderBotId !== null
       ? await responderSiblingRemembers(
@@ -5013,10 +3818,9 @@ export async function processChatwootDelivery(
     n,
     base,
     {
-      // ...but never for a command THIS delivery's route will not consume (round 38). On an
-      // observer's route beside a responder that never received it, the text is an ordinary
-      // customer message here, and suppressing the mark for it leaves the follow-up episode gate
-      // and the 24h service window reading the previous inbound.
+      // NOTE: ...but never for a command THIS route will not consume: beside a responder that never
+      // received it, the text is customer text, and suppressing the mark would leave the follow-up episode
+      // gate and the 24h service window reading the previous inbound.
       suppressInboundWatermark:
         commandActive && (observer === null || responderCovers),
       // Which ladder goes with the episode, if this event turns out to move the pairing. Computed
@@ -5036,11 +3840,9 @@ export async function processChatwootDelivery(
     },
   );
 
-  // A REPLY THE CHANNEL REFUSED (issue #587), reported on a `message_updated` for the route's own
-  // outgoing message. Below the mirror so the line hangs off the conversation row; nothing else in
-  // this function reads such an event (it is outgoing and not a person's reply), so it runs no turn,
-  // arms no debounce and calls no model. Best-effort: a failure here is logged and the delivery goes
-  // on, because it is a report about a message already gone, not a message to answer.
+  // NOTE: A reply the channel refused, reported on a `message_updated` for the route's own outgoing
+  // message. Below the mirror so the line hangs off the conversation row; it runs no turn, no debounce,
+  // no model. Best-effort: it reports a message already gone.
   const channelFailure = channelFailureOf(n, params.agentBotId);
   if (channelFailure && params.agentBotId !== null) {
     try {
@@ -5068,34 +3870,16 @@ export async function processChatwootDelivery(
     }
   }
 
-  // NOTE: A command that will not run is otherwise indistinguishable from ordinary customer text, in the
-  // logs and in the conversation alike — which is what left issue #270 undiagnosable from the
-  // outside. This is the only place that knows all three values the diagnosis needs, and past it
-  // the command is simply gone: `isTeste`/`isReset` are both false, so every later line describes a
-  // plain message. `mode=unresolved` means no inbox on either reading named an agent at all.
-  //
-  // BELOW the mirror, and that is the whole reason it sits here rather than where the values are
-  // computed: the row hangs off the conversation, and the conversation row is what the mirror just
-  // created (issue #317). The process line moved with it so one place still knows the fact.
+  // NOTE: A command that will not run is otherwise indistinguishable from customer text, and past this
+  // point `isTeste`/`isReset` are false. This is the only place holding all three values the
+  // diagnosis needs. `mode=unresolved` means no reading named an agent. Below the mirror, because the
+  // row hangs off the conversation row the mirror creates.
   if (command !== null && !commandActive) {
-    // WHO SPEAKS FOR THE COMMAND, asked here too and by the same rule the fence downstream uses for
-    // an active one. Chatwoot fans a message out to the conversation's assigned bot AND the inbox's
-    // (`agent_bots_for`), and both deliveries reach this line: measured live, one `/teste` on a
-    // production agent produced two identical drops, one per route. They are not the same fact —
-    // the inbox's persona is the one the command was about, and the other route only deferred to
-    // it — so each delivery reports what IT did and the pair reads as one command.
-    //
-    // With no persona to compare against (no agent bound, or one with no `ChatwootAgentBot` row)
-    // nothing here separates two deliveries, and both report the mode: a row twice is the lesser
-    // failure than a command nobody reports, and that state already has #318's `route` line per
-    // delivery for the same reason.
-    //
-    // BEST-EFFORT, and the id ONLY: this reading exists to report the delivery, and the mirror has
-    // already committed by the time it runs. A rejection escaping here would leave the ledger row on
-    // PROCESSING with nothing running, skip the gate and the turn, and never be retried — Chatwoot
-    // was handed its 200 long before. A line about a dropped command must not be able to drop the
-    // message it is describing, so an unreadable persona degrades to `no_persona`, which reports the
-    // mode and loses only the route distinction.
+    // NOTE: Who speaks for the command, by the fence's own rule: Chatwoot fans the message to the assigned
+    // bot and the inbox's (`agent_bots_for`), so each delivery reports what IT did and the pair reads as
+    // one command. With no persona both report the mode: a row twice beats a command nobody reports.
+    // Best-effort and the id only: the mirror has committed and Chatwoot has its 200, so a throw here
+    // would strand the row PROCESSING; an unreadable persona degrades to `no_persona`.
     const personaBot =
       commandAgent !== null
         ? await agentBotChatwootId(
@@ -5151,25 +3935,16 @@ export async function processChatwootDelivery(
     });
   }
 
-  // Gate, then the agent runtime — all network OUTSIDE the transaction.
-  // NOTE: The payload wins when it spoke (explicit null = a real unassign); when it said nothing
-  // (no meta), fall back to the mirror's EFFECTIVE state — it preserves the stored trio now, so a
-  // degraded event on a human-owned conversation must not read as bot-owned.
+  // NOTE: Gate, then the agent runtime, all network OUTSIDE the transaction. The payload wins when it
+  // spoke (explicit null is a real unassign); silent (no meta), the mirror's EFFECTIVE state answers,
+  // so a degraded event on a human-owned conversation does not read as bot-owned.
   const assigneeKnown = n.assigneeType !== undefined;
-  // NOTE: Named once, asked twice: by the gate, and — when the gate closes — by the line that says
-  // which of the two events closed it. Re-deriving it at the second question is how the two answers
-  // drift apart, and the second is the one an operator reads afterwards.
-  //
-  // NOTE: only the assignee is lifted, and the literals below stay literals on purpose: the
-  // per-call-site sweep for issue #210 reads the argument as written, so a call handed a named
-  // object no longer shows it the `assigneeId` that makes the gate strict.
-  //
-  // WHICHEVER WITNESS SAYS THE CONVERSATION IS HELD, and the rule for that is `effectiveAssignee`
-  // in ../chatwoot/normalize.ts, where the reasoning and its decision table live. The gate used to
-  // prefer the payload wherever it spoke, and the payload always speaks: a rebuilt one states the
-  // trio it read a moment earlier (#295), and Chatwoot's own is frozen at enqueue. A message may
-  // never write the assignee (../chatwoot/state-order.ts), so a human taking the conversation left
-  // the mirror correctly human-owned and the gate answering anyway. MEASURED on the recovery.
+  // NOTE: Named once and asked twice (the gate, and the line saying which event closed it), so the two
+  // answers cannot drift. Only the assignee is lifted: the literals stay literal so the per-call-site
+  // sweep still sees the `assigneeId` that makes the gate strict. Whichever witness says the
+  // conversation is held wins, by `effectiveAssignee` (../chatwoot/normalize.ts, with its decision
+  // table): every payload is an earlier snapshot, and a message never writes the assignee
+  // (../chatwoot/state-order.ts).
   const effective = effectiveAssignee(
     {
       stated: assigneeKnown,
@@ -5181,23 +3956,10 @@ export async function processChatwootDelivery(
   );
   const effectiveAssigneeType = effective.assigneeType;
   const effectiveAssigneeId = effective.assigneeId;
-  // THE STATUS THE MIRROR SETTLED ON, not the one the payload proposed. `mirror` is the row AFTER
-  // this event was written, so it already holds whichever of the two won: a new incoming message
-  // that reopened a resolved conversation reads `pending` here exactly as Chatwoot does, and a
-  // status the ordering refused reads the one that outranked it.
-  //
-  // The payload is only a proposal, and every payload here is a snapshot of an earlier instant:
-  // Chatwoot freezes its own at enqueue, and a delivery recovery rebuilds one from reads made a
-  // moment before (#295). MEASURED there — an operator resolving the conversation between the
-  // rebuild and this line, the mirror correctly refusing the reopen, and the gate answering anyway
-  // because it read the proposal instead of the outcome.
-  //
-  // NOT `mirror.applied`: that says the event won the ordering OVERALL, and the status is decided on
-  // an axis of its own — a payload can be applied and still have its status refused, which is the
-  // case measured above.
-  //
-  // The same shape as the assignee beside it, which already prefers what the mirror holds whenever
-  // the payload is not the better witness.
+  // NOTE: The status the MIRROR settled on, not the one the payload proposed: `mirror` is the row after
+  // this event, holding whichever won (a reopening message reads `pending`, a refused status reads the
+  // one that outranked it). Every payload is a snapshot of an earlier instant. Not `mirror.applied`:
+  // that is the event overall, while status is ordered on its own axis.
   const effectiveStatus = mirror.status ?? n.status;
   const act = shouldBotHandle(
     {
@@ -5207,84 +3969,45 @@ export async function processChatwootDelivery(
     },
     { ourAgentBotId: params.agentBotId },
   );
-  // A MONITORING agent owns the reply path nowhere (issue #209), and neither does any agent on an
-  // OBSERVER's route (issue #476). `act` still says what it always said — the bot holds the
-  // conversation — and that answer keeps its other readers (the takeover, the settlement scope);
-  // what changes is that holding it arms nothing: no gate, no command, no debounce, no turn. Every
-  // message is then one no turn handled, which is the shape ingestion already folds into memory,
-  // and the watermark advances the way it does for a human-owned conversation, so the day the mode
-  // flips to production the backlog observed is not answered.
-  // ENABLED as well, on the responder's half (issue #209 review, round 11): a switched-off agent is
-  // asked nothing, and ingestion refuses it, so an agent both off and in monitoring must not take
-  // the observer's path — that path marks the message handled, and nothing would remember it. Off,
-  // it takes the path a switched-off agent takes: no turn loads, and the message waits for the
-  // switch, unmarked. An observer's ROUTE stays the observer's whatever its switch says: nothing on
-  // it answers, and the watermark is not this route's to move (`watchingBesideResponder`).
+  // NOTE: A MONITORING agent owns the reply path nowhere, nor does any agent on an OBSERVER's route.
+  // `act` keeps meaning "the bot holds it" for its other readers, but arms nothing: no gate, command,
+  // debounce or turn; the message is ingested and the watermark advances, so a later flip to
+  // production does not answer the backlog. ENABLED too on the responder's half: an agent off and in
+  // monitoring takes the switched-off path, unmarked. An observer's ROUTE stays the observer's.
   const observing =
     observer !== null || (rt?.enabled === true && rt.mode === "monitoring");
-  // AN OBSERVER BESIDE A RESPONDER OF OURS (issue #476): the responder's own delivery of this
-  // message is the one that answers or deliberately skips it, and the responder's memory is the
-  // one that keeps it. The thread is keyed by contact-inbox, not by agent, so the two routes write
-  // the SAME thread: the responder's turn appends what it answers and its continuous ingestion
-  // folds in what it skips and what a colleague replied. An observer folding the same message in
-  // once more doubled every answered customer message in the checkpoint — the invariant
-  // `graph/runtime.ts` states ("a message a turn answers is never ingested"), broken from a second
-  // route. So beside a responder this route neither moves the watermark (below) nor appends. With
-  // no responder nothing reads that memory, and this route keeps only the watermark
-  // (`routeRemembers`).
-  //
-  // ...AND WHAT IT REMEMBERS IS READ FROM THE SIBLING'S OWN STATEMENT WHERE THERE IS ONE (issue #540,
-  // window 3). The mode reading below is about the responder as it stands NOW, and the two
-  // deliveries are concurrent by construction: a switch flipped between them makes this route stay
-  // quiet about a message the responder never folded in, or fold in a second copy of one it did.
-  // The sibling recorded what its own claim resolved. Null is a sibling that has not claimed yet or
-  // a row an older build wrote, and there the mode reading stands, exactly as it always did.
+  // NOTE: An observer beside a responder of ours: the thread is keyed by contact-inbox, so both routes
+  // write the SAME thread, and appending again would double every answered message (a message a turn
+  // answers is never ingested). So beside a responder this route neither moves the mark nor appends;
+  // alone, it keeps only the watermark (`routeRemembers`). What the responder remembers comes from the
+  // sibling's own statement when present (a switch may flip between the concurrent deliveries); null
+  // falls back to the mode.
   const responderRemembers =
     responderCovers &&
     (siblingRemembers ??
       (responderRt?.enabled === true && ingestsContinuously(responderRt.mode)));
-  // THE MARK STAYS THE RESPONDER'S WHENEVER THERE IS ONE (issue #476 review, round 37), and this is
-  // deliberately NOT asked of `responderCovers`. An absent sibling row is not proof that none is
-  // coming: it is also what a sibling still in transit looks like, and the emission clock is only
-  // second-granular, so a binding made just before the message can read as newer than it. Moving
-  // the mark on that reading puts the message BEHIND the watermark, and the responder's own
-  // delivery — arriving a moment later — is then suppressed and the customer goes unanswered. The
-  // coverage answer is allowed to cost a duplicate line in memory (`responderRemembers` above);
-  // it is not allowed to cost an answer. So the mark is held for the answering half whenever one
-  // exists with a route, exactly as it was before the coverage check existed.
-  //
-  // ...ON THE LIVE PATH. A REPLAY is the other case, and there the absence IS evidence (issue #476
-  // review, round 48): the delivery reaches this function again only after the sweep gave up on it,
-  // which is half an hour of a threshold, so a sibling that was ever coming has long since arrived
-  // and been recorded. Holding the mark there withholds it from a responder bound in the meantime —
-  // which then flushes from a watermark that predates the whole observed backlog and answers, or
-  // duplicates, conversation the watcher already read. On a replay the coverage answer is the
-  // settled one, so it decides the mark too.
+  // NOTE: The mark stays the responder's whenever there is one, deliberately NOT asked of
+  // `responderCovers`: an absent sibling may be in transit (the emission clock is second-granular),
+  // and moving the mark would suppress its reply. Coverage may cost a duplicate memory line, never an
+  // answer. On a REPLAY absence is evidence (the sweep waited half an hour), and holding the mark
+  // would make a newly bound responder answer the observed backlog, so coverage decides there.
   const responderMayAnswer =
     (params.claimFrom === "DEAD" ? responderCovers : watchingBesideResponder) &&
     responderRt?.enabled === true;
-  // Set by the direct turn below when it stood down under an agent that observes NOW: the message
-  // is then the observer's to remember, not the turn's (issue #209 review, round 6).
+  // NOTE: Set by the direct turn when it stood down under an agent that observes NOW: the message is
+  // then the observer's to remember.
   let handedToObserver = false;
-  // The stand-down's observer read failed (round 20): thrown AFTER the turn's own catch, which
-  // would otherwise swallow it as a turn that failed and ask once more.
+  // NOTE: The stand-down's observer read failed: thrown AFTER the turn's own catch, which would
+  // otherwise swallow it as a failed turn.
   let standDownUnreadable = false;
-  // O TURNO PAROU ANTES DO INVOKE porque uma pessoa assumiu a conversa enquanto ele esperava o
-  // thread (issue #688). Nada leu a mensagem do cliente, então ela continua DEVIDA: esta linha é o
-  // que impede o gate de liquidá-la aqui e o que tira o `act` da ingestão lá embaixo, do mesmo jeito
-  // que o observador faz. Sem isso, a mensagem some — a marca passa, a entrega fecha como consumida
-  // e a ingestão a pula, que é exatamente o que fez a tentativa anterior ser revertida.
+  // NOTE: O turno parou antes do invoke porque uma pessoa assumiu a conversa enquanto ele esperava o
+  // thread. Nada leu a mensagem, então ela continua DEVIDA: isto impede o gate de liquidá-la e tira o
+  // `act` da ingestão, como faz o observador; sem isso a mensagem some.
   let stoodDownUnread = false;
-  // Who is holding it, when somebody else is. A HUMAN taking a conversation is a statement about the
-  // message: they will answer it, whichever bot route carried it here. ANOTHER BOT is not — its own
-  // delivery of this same message may be running right now, and Chatwoot fans a message to two
-  // routes whenever a conversation's assignee bot differs from the inbox's (`agent_bots_for`). The
-  // settlement at the gate tail is scoped by this, and by nothing else about the gate.
-  //
-  // Asked of `heldByAnotherParty`, the same predicate the gate itself uses, rather than of `act`.
-  // `act` is false for a second reason — a status that is not `pending` — so `assigneeType is
-  // AgentBot && !act` calls OUR OWN bot another bot on every open or resolved conversation, and then
-  // scopes away the sibling settlement on the most ordinary gate exit there is.
+  // NOTE: Who holds it, when somebody else does. A HUMAN will answer the message whichever route
+  // carried it; ANOTHER BOT's own delivery may be running now (Chatwoot fans to two routes). Scopes the
+  // gate tail's settlement. Asked of `heldByAnotherParty`, not `!act`, which is also false for a
+  // non-pending status and would call OUR bot another on every open or resolved conversation.
   const heldByAnotherBot =
     effectiveAssigneeType === "AgentBot" &&
     heldByAnotherParty(
@@ -5294,53 +4017,19 @@ export async function processChatwootDelivery(
       },
       { ourAgentBotId: params.agentBotId },
     );
-  // O ESCOPO DA LIQUIDAÇÃO DESTA PASSADA, decidido UMA vez (issue #725, review r2/r3). Ele é lido
-  // pela liquidação e gravado na linha, e as duas coisas têm que ser a mesma expressão: enquanto
-  // eram duas, o replay lia o valor gravado (certo) e por baixo regravava a derivação de agora
-  // (errado), então uma segunda falha de arme devolvia a linha para `DEAD` com o escopo já
-  // corrompido e a retentativa seguinte liquidava a conversa inteira — o defeito original, um nível
-  // acima.
-  //
-  // `params.settleScopedToThisDelivery` primeiro porque, quando ele existe, esta passada é o replay
-  // de uma linha que já respondeu esta pergunta no instante em que a resposta era verdade. Undefined
-  // é a entrega ao vivo, e aí quem responde é a conversa como ela está agora, que é o instante certo
-  // para ela.
+  // NOTE: O escopo da liquidação desta passada, decidido UMA vez: é lido pela liquidação e gravado na
+  // linha, e as duas coisas têm que ser a mesma expressão, ou o replay regrava a derivação de agora e
+  // uma segunda falha devolve a linha a `DEAD` com o escopo corrompido. O parâmetro vem primeiro: no
+  // replay ele é a resposta dada quando era verdade; undefined é a entrega ao vivo.
   const settleScopedHere =
     params.settleScopedToThisDelivery ??
     (heldByAnotherBot || observer !== null);
   const convLabel = n.conversationId === null ? "?" : String(n.conversationId);
 
-  // ── A conversation this agent manages just transitioned TO resolved (by anyone: the agent's own
-  //    resolve tool, an operator in our console, or a human resolving directly in Chatwoot). Two
-  //    independent consequences hang off the same transition: memory compaction for EVERY agent, and
-  //    the WhatsApp→chat redirect handling for a widget inbox.
-  //
-  // ── WhatsApp→chat redirect: the WIDGET conversation this agent manages just transitioned TO resolved
-  //    (by anyone — the agent's own resolve tool, an operator in our console, or a human resolving
-  //    directly in Chatwoot). Two things happen: (1) cancel any pending follow-up ladder job — a
-  //    resolved conversation must not be chased; (2) if closing is on, post the closing message on the
-  //    WhatsApp sibling. deliverRedirectClosing CAS-guards the per-conversation watermark, so this is
-  //    idempotent under a re-delivered webhook AND against the ladder's own timed "closing" stage (only
-  //    one of them delivers). Detected off the mirror's fresh prevStatus→status transition. Applies to
-  //    ANY event carrying a status, not just message_created. `inboxAgentRuntime` is reused (a resolve is
-  //    never a message, so not gated on isNewIncoming). Best-effort: a failure must not strand the
-  //    delivery. ──
-  // THE WATCHER'S FINAL VERDICT (issue #477), armed off the resolve EVENT on the route it arrives
-  // on, and not off the mirror's transition below. With an observer beside a responder the same
-  // resolve reaches each bot on its own route, and the transition is applied by whichever route
-  // mirrors it first — the other reads a conversation already resolved and would arm nothing. The
-  // row is one per conversation, so the second arm folds into the first; Chatwoot's two resolve
-  // events fold the same way. For the responder when it is the one monitoring, and for the route's
-  // own observer when there is one. Best-effort, like the compaction below.
-  //
-  // ...but only while the conversation IS resolved, which is the mirror's answer and not the
-  // payload's (issue #477 review, round 2). Arming off the event is what lets the second route arm
-  // at all, and it also trusts a payload the mirror REJECTED as out of order: a delayed `resolved`
-  // landing after a newer event reopened the conversation would pull the verdict forward and let an
-  // `on_resolve` agent relabel a live conversation. The mirror's status is the effective one in both
-  // cases — applied by this delivery, or already applied by the other route — so it separates the
-  // second route from a stale event, which `mirror.applied` alone cannot. `effectiveStatus` falls back
-  // to the payload where the mirror read nothing, so a status nothing could store still arms.
+  // NOTE: The watcher's final verdict, armed off the resolve EVENT on each route (the mirror's
+  // transition is applied only by the first route to mirror it; the per-conversation row folds the
+  // arms). Only while the MIRROR says resolved, so a delayed `resolved` the mirror rejected cannot
+  // relabel a live conversation; `effectiveStatus` falls back to the payload when nothing was stored.
   if (
     n.conversationId !== null &&
     n.status === "resolved" &&
@@ -5349,12 +4038,9 @@ export async function processChatwootDelivery(
       n.event === "conversation_resolved")
   ) {
     const conversationId = n.conversationId;
-    // BEST-EFFORT AS A WHOLE (issue #477 review, round 2). The two runtime reads below are database
-    // calls on a delivery that is already CLAIMED, and a status-only event carries no
-    // `inboundMessageId` — so nothing recovers it: the sweep needs a customer message id to anchor
-    // on. A transient pool error thrown from here escaped past the compaction and the redirect
-    // closing that follow, on conversations that have no observer at all. A label that is late is
-    // not a message that is lost; a closing message that never goes out is.
+    // NOTE: Best-effort as a whole: a status-only event carries no `inboundMessageId`, so the sweep
+    // cannot recover it, and a throw here would skip the compaction and redirect closing below. A late
+    // label is not a lost message; a closing that never goes out is.
     try {
       let closingInboxId = n.inboxId;
       if (closingInboxId === null) {
@@ -5405,9 +4091,8 @@ export async function processChatwootDelivery(
         params.routeObserved === true,
         base,
       );
-      // ...and the BOUND observer, asked of the binding rather than of the reply route, for the
-      // reason the burst arm names: a watcher whose bot still holds the conversation resolves to no
-      // reply route and would otherwise miss its own final verdict (issue #477 review, round 4).
+      // NOTE: ...and the BOUND observer, from the binding: a watcher whose bot still holds the
+      // conversation resolves to no reply route and would miss its final verdict.
       const boundRt = await boundObserverRuntime(
         params.tenantId,
         params.instanceId,
@@ -5434,12 +4119,11 @@ export async function processChatwootDelivery(
             agentId: watcher.agentId,
             reason: "resolved",
             cfg: readMonitoringConfig(watcher.settings),
-            // The conversation's own version (`updated_at.to_f`) names this RESOLUTION, so the four deliveries one
-            // resolve produces (two event types × two routes) buy one verdict between them.
+            // NOTE: The conversation's own version (`updated_at.to_f`) names this RESOLUTION, so the four
+            // deliveries one resolve produces (two event types by two routes) buy one verdict.
             mark: n.conversationUpdatedAt,
-            // Only the REPLY-ROUTE answer can be an attach-window one (round 15), and here it
-            // matters most: the mark above suppresses every later delivery of this resolution, so a
-            // tick that completed on a row that had not landed yet lost the final verdict for good.
+            // NOTE: Only the reply-route answer can come from the attach window, and here it matters most: the
+            // mark suppresses every later delivery of this resolution, so a lost verdict is lost for good.
             attaching: watcher === observerRt && observerRt.attaching === true,
             base,
           });
@@ -5453,6 +4137,10 @@ export async function processChatwootDelivery(
       );
     }
   }
+  // NOTE: A conversation this agent manages just transitioned TO resolved, by anyone (the agent's
+  // tool, our console, Chatwoot). Two independent consequences: memory compaction for every agent, and
+  // the redirect handling for a widget inbox. Detected off the mirror's fresh prevStatus to status
+  // transition, on any event carrying a status.
   if (
     mirror.applied &&
     mirror.prevStatus !== null &&
@@ -5461,20 +4149,10 @@ export async function processChatwootDelivery(
     n.conversationId !== null
   ) {
     const conversationId = n.conversationId;
-    // Both ids FROM THE MIRROR when the event does not carry them. A conversation_* payload can
-    // arrive without `inbox` and without `contact_inbox` — the mirror handles that shape explicitly,
-    // preserving the stored ids rather than nulling them — and gating on the event alone would skip
-    // compaction for a resolve that is otherwise complete. Nothing comes back for it either: if the
-    // customer returns on the same conversation there is no new-attendance boundary, so that history
-    // stays raw indefinitely, on exactly the resolve trigger that exists to make the return turn
-    // cheap.
-    //
-    // In its OWN best-effort boundary, ahead of everything else. The redirect handling below is a
-    // different feature that happens to key off the same transition, and it is the one with a
-    // deadline: it cancels the follow-up chase and posts the closing message. A transient failure in
-    // this lookup would otherwise land in the shared catch, skip both of those, and still mark the
-    // delivery processed — losing the closing sequence for good, for a conversation that will never
-    // resolve again.
+    // NOTE: Both ids FROM THE MIRROR when the event lacks them (a conversation_* payload can omit
+    // `inbox` and `contact_inbox`), or compaction is skipped and a returning customer's history stays
+    // raw. In its OWN best-effort boundary: a failure here must not reach the shared catch and skip the
+    // redirect's chase cancel and closing message, which a conversation that resolves once never gets back.
     let storedInboxId: number | null = null;
     let storedContactInboxId: number | null = null;
     if (n.inboxId === null || n.contactInboxId === null) {
@@ -5507,8 +4185,8 @@ export async function processChatwootDelivery(
     const closingInboxId = n.inboxId ?? storedInboxId;
     const closingContactInboxId = n.contactInboxId ?? storedContactInboxId;
     try {
-      // NOTE: The responder's alone. An observer's route remembers nothing on an inbox without one
-      // (`routeRemembers`, issue #620), so there is no memory of its own to compact.
+      // NOTE: The responder's alone: an observer's route keeps no memory on an inbox without one
+      // (`routeRemembers`).
       const responderClosingRt = await inboxAgentRuntime(
         params.tenantId,
         params.instanceId,
@@ -5516,12 +4194,9 @@ export async function processChatwootDelivery(
         base,
       );
       if (responderClosingRt) {
-        // Memory compaction: an attendance that ended is an attendance that can become a summary.
-        // Armed here, with a grace period, so the thread is already compacted BEFORE the customer
-        // comes back — measurement says the resumption turn is the one billed fresh (cache rate
-        // ~0% past 24h), so compacting only when they return would miss the expensive turn. The
-        // job re-checks the status at execution, because a resolve can be undone. Unlike the
-        // redirect handling below, this applies to every agent, not only a widget inbox.
+        // NOTE: Memory compaction, armed at resolve with a grace period so the thread is compacted BEFORE
+        // the customer returns: the resumption turn is the one billed without cache, so compacting on
+        // return would miss it. The job re-checks the status, since a resolve can be undone.
         if (closingContactInboxId !== null) {
           try {
             await armCompaction({
@@ -5543,11 +4218,11 @@ export async function processChatwootDelivery(
             );
           }
         }
-        // THE REDIRECT IS THE RESPONDER'S, never the watcher's (issue #476 review, round 25). This
-        // block ends in customer-facing text on the WhatsApp sibling, and an observer answers
-        // nothing whatever its mode says. Read off the responder alone, so the guarantee is
-        // structural here rather than left to the fences downstream, and so the configuration that
-        // decides it belongs to the agent that would send.
+        // NOTE: The redirect is the RESPONDER's, never the watcher's: it ends in customer-facing text on
+        // the WhatsApp sibling, so reading it off the responder makes that structural. On a widget
+        // conversation resolving: stop the ladder, and post the closing on the sibling, where
+        // `deliverRedirectClosing` CAS-guards the watermark (idempotent under redelivery and against the
+        // ladder's own closing stage).
         const redirectCfg = readChannelRedirectConfig(
           responderClosingRt?.settings,
         );
@@ -5573,25 +4248,18 @@ export async function processChatwootDelivery(
             ),
             base,
           );
-          // (2) Closing message on the WhatsApp sibling (at most once, CAS-guarded). Chatwoot is
-          //     already resolving the widget conversation, so resolveWidget:false.
-          //
-          //     Gated on the agent being live, the same question the ladder's own closing stage asks
-          //     (issue #219). This is the OTHER way that goodbye reaches the customer — a resolve on
-          //     the widget conversation, from anyone — and it sends fixed text with no nudge behind
-          //     it, so nothing else on this path would ask. The cancel above stays ungated: standing
-          //     the chase down is not a send, and a switched-off agent wants it stopped either way.
+          // NOTE: (2) Closing message on the WhatsApp sibling (at most once, CAS-guarded); Chatwoot is already
+          // resolving the widget, so resolveWidget:false. Gated on the agent being live, as the ladder's own
+          // closing stage is: this fixed-text send has no nudge behind it to ask. The cancel above stays
+          // ungated: standing the chase down is not a send.
           const closingLive =
             redirectCfg.closingEnabled &&
             redirectCfg.entryInboxId !== null &&
             isRedirectFollowUpLive({
               agentEnabled: responderClosingRt.enabled,
               agentMode: responderClosingRt.mode,
-              // Only a test agent's liveness depends on the stamp, and this read is paid on a path
-              // whose failure is permanent: the surrounding best-effort catch sits AFTER the ladder
-              // was cancelled, the delivery is marked PROCESSED, and a conversation resolves once —
-              // so a transient error here would lose the closing for good. A production agent has
-              // nothing to look up.
+              // NOTE: Only a test agent's liveness needs the stamp, and a failure here is permanent (the ladder is
+              // already cancelled and a conversation resolves once), so a production agent skips the read.
               testActivatedAt:
                 responderClosingRt.mode === "test"
                   ? await episodeActivationForWidget(
@@ -5606,11 +4274,9 @@ export async function processChatwootDelivery(
             });
           if (closingLive && redirectCfg.entryInboxId !== null) {
             const outcome = await deliverRedirectClosing({
-              // The gate above is older than the sibling lookup, the client build and this
-              // function's own reads, and this path has no job to ask about — so the switch is
-              // re-asked from inside, at the same points the ladder asks (issue #246). One read, and
-              // it fails OPEN: a conversation resolves once, so a transient error must not cost the
-              // closing. A production agent needs no stamp lookup at all.
+              // NOTE: The gate above predates the sibling lookup and client build, and this path has no job to
+              // ask, so the switch is re-asked from inside at the ladder's points. One read, failing OPEN: a
+              // transient error must not cost the closing.
               fence: async () => {
                 const rt = await inboxAgentRuntime(
                   params.tenantId,
@@ -5625,13 +4291,9 @@ export async function processChatwootDelivery(
                 if (!rt.enabled) return "stood-down" as const;
                 if (isMonitoring(rt.mode)) return "stood-down" as const;
                 if (rt.mode !== "test") return "go" as const;
-                // NOTE: A test agent's answer takes a second read, and the two do not share a
-                // snapshot: the switch could flip inside it. Left as a residual rather than closed,
-                // because closing
-                // it needs the agent and the stamp in ONE statement and `Inbox` has no `agent`
-                // relation to select through — so it would take raw SQL or a schema change, for a
-                // window one query wide on a test agent, on the path where the operator has just
-                // resolved the conversation by hand.
+                // NOTE: A test agent's answer takes a second read, not in the same snapshot as the switch. Left as
+                // a residual: closing it needs agent and stamp in ONE statement, and `Inbox` has no `agent` relation
+                // to select through (raw SQL or a schema change for a one-query window on a test agent).
                 const testActivatedAt = await episodeActivationForWidget(
                   params.tenantId,
                   params.instanceId,
@@ -5675,12 +4337,10 @@ export async function processChatwootDelivery(
     }
   }
 
-  // Production analyzes every new incoming message. Some transports attach the audio just after
-  // message_created, so the first useful attachment arrives on message_updated; analyze that update
-  // without arming debounce or a second turn. Test mode keeps its cost fence and only analyzes a late
-  // attachment on an activated EPISODE (issue #261) — the unit the other two gates use. Asked of the
-  // row alone, an episode activated on the WhatsApp side got no transcription on the widget side, and
-  // the agent then answered a message it never heard.
+  // NOTE: Production analyzes every new incoming message, and a late attachment on message_updated
+  // without arming debounce or a second turn. Test mode keeps its cost fence and analyzes a late
+  // attachment only on an activated EPISODE, the unit the other gates use; asked of the row alone, a
+  // WhatsApp-side activation would leave the widget side's audio unheard.
   const activatedTestLateMedia =
     hasLateMedia &&
     rt?.enabled === true &&
@@ -5695,18 +4355,15 @@ export async function processChatwootDelivery(
       rt.mode,
       base,
     )) !== null;
-  // A TEST responder analyses media too, on the answer path, in a conversation somebody activated
-  // (issue #476 review, round 13) — so the observer stands down there as well, for the same reason
-  // it stands down beside a continuously ingesting one. Asked only where it can be true: an observer
-  // route beside a test responder.
+  // NOTE: A TEST responder analyses media too, on the answer path of an activated conversation, so the
+  // observer stands down there as well. Asked only on an observer route beside a test responder.
   const responderAnalysesMedia =
     responderRemembers ||
     (responderCovers &&
       responderRt?.enabled === true &&
       responderRt.mode === "test" &&
-      // ...and only where that route would REACH its answer path (round 17): a conversation a human
-      // owns, or one its bot does not hold, is one the responder never answers and never analyses,
-      // so suppressing the pass here would leave the audio unread by everyone.
+      // NOTE: ...and only where that route would REACH its answer path: on a conversation a human owns or
+      // its bot does not hold, the responder never analyses, and standing down leaves the audio unread.
       shouldBotHandle(
         {
           assigneeType: effectiveAssigneeType,
@@ -5724,15 +4381,10 @@ export async function processChatwootDelivery(
         responderRt.mode,
         base,
       )) !== null);
-  // NOT from an observer's route beside a responder that remembers (issue #476 review, round 5):
-  // both routes receive the same audio, and both would transcribe it — twice the provider bill, and
-  // two writes racing into the same attachment's stash, so the loser's text is what the other route
-  // then reads back as context. The pass follows the memory: this route runs it exactly when it is
-  // the one that will remember the message (`responderAnalysesMedia` is false on the responder's own
-  // route, and beside a switched-off responder, which transcribes nothing here).
-  // A ROW-BACKED observer analyses media whatever its mode says, for the reason its ingestion does
-  // (issue #476 review, round 20): the row is written without re-asking the mode, and a watcher that
-  // remembers an audio as an attachment marker instead of its transcription remembers nothing of it.
+  // NOTE: Not from an observer's route beside a responder that remembers: both would transcribe the
+  // same audio (twice the bill, and racing writes into one attachment's stash). The pass follows the
+  // memory. A ROW-BACKED observer analyses whatever its mode, as its ingestion does: a watcher that
+  // remembers an audio as a marker remembers nothing of it.
   const watcherReads = observer !== null;
   // NOTE: When the contact authorization gate runs on this message, the media pass waits for its verdict.
   const gateAsksNext =
@@ -5768,49 +4420,13 @@ export async function processChatwootDelivery(
     }
   }
 
-  // First-class on-reply reset: a new customer message makes any pending inactivity follow-up moot.
-  // Cancel it regardless of the bot gate (a reply while a human handles it should still stop the
-  // bot's queued follow-up). Best-effort — a failure here must never strand the delivery.
-  //
-  // RETIRED, NOT CANCELLED, and the difference is the whole of issue #760: a cancel reaches PENDING
-  // rows only, so a follow-up the worker had already claimed ran to completion and the reminder went
-  // out AFTER the customer had written. Everything the job does between the claim and the send is
-  // window — the entry gates, the thread claim, the model call, moderation, the Chatwoot round trips
-  // — and #741 widened it by up to 305 s, at the worst possible moment: that wait fires precisely
-  // when a reactive turn holds the thread, which is to say precisely when a customer message just
-  // arrived and is being answered.
-  //
-  // The tombstone is what the claimed run can see: `stillWanted` in ../followups/handlers.ts is
-  // `!jobRetired(job)`, asked before the invoke and again strictly before the send, and the claim
-  // token is bumped with it so a handler that reads past both still writes nothing. This is the same
-  // retirement /reset already does on this same key and for this same reason — the two halves of one
-  // rule finally agreeing.
-  //
-  // A re-arm clears it: `enqueueJob`'s upsert replaces the payload wholesale, so the sweep arming
-  // the next episode's silence starts from a clean row rather than from a permanent gravestone that
-  // would silence every future follow-up on this conversation.
-  //
-  // UNCONDITIONAL, AND FOUR REVIEW ROUNDS WENT INTO THAT WORD. A recovery re-runs this line for a
-  // message up to `MAX_RECOVERY_AGE_MS` (6h) old, and by then the ladder it retires can be the one
-  // that same message STARTED — step 0 fired, step 1 claimed, nobody spoke since — which the sweep
-  // will not re-arm, because its selection asks `GREATEST(last_inbound_at, last_replied_at) >
-  // last_follow_up_at`. So a fence was written for it, and every ordering available to this line was
-  // tried as its axis: the message's own timestamp (Chatwoot's clock against the database's), the
-  // delivery's `received_at` (our clock, but a live reply crossing a reminder in flight reads as
-  // old), and the `DEAD` retake that would bound it (a delivery can die BEFORE handling the message,
-  // so a retake is not evidence the reply was ever answered). Each version left a hole of the same
-  // shape: a customer who just wrote, getting the next reminder, and the final step RESOLVING the
-  // conversation on them.
-  //
-  // What the fence was protecting turns out to be nearly free to lose. A recovery that answers the
-  // message advances `last_replied_at`, which opens a NEW episode by the same predicate, so the
-  // sweep arms a fresh ladder at the next silence and the old one is redundant. The dead ladder only
-  // costs something when the recovered pass does NOT answer — and a conversation holding an
-  // unanswered customer message is not one a "still there?" reminder should be walking down; it
-  // belongs to the stranded-delivery sweep, which is the alarm written for exactly that.
-  //
-  // So the asymmetry decides, as it does in `feedback_prioridade_zero_limbo`: retire, and lose a
-  // ladder that would mostly have been replaced anyway, rather than speak over somebody who wrote.
+  // NOTE: A new customer message makes a pending inactivity follow-up moot, so it is cancelled
+  // regardless of the bot gate, best-effort. RETIRED, not cancelled: a cancel reaches PENDING rows,
+  // and a claimed run would still send; the tombstone is what `stillWanted` (../followups/handlers.ts)
+  // asks before the invoke and the send, with the claim token bumped. A re-arm's upsert clears it.
+  // UNCONDITIONAL even on a recovery, where the ladder may be one this message started: no ordering
+  // (message time, `received_at`, the DEAD retake) tells that from a customer who just wrote. Losing
+  // it is cheap: an answered recovery opens a new episode, an unanswered one is the sweep's.
   if (isNewIncoming && n.conversationId !== null) {
     const threadId = chatwootThreadId(
       params.tenantId,
@@ -5831,11 +4447,9 @@ export async function processChatwootDelivery(
         err instanceof Error ? err.message : String(err),
       );
     }
-    // And the delayed nothing-to-answer judgement (issue #895): the customer wrote again, so what
-    // it was armed to judge is no longer the conversation. A new blank message re-arms it from its
-    // own flush. A /reset is a new incoming message too (`command` is only read off one), so this
-    // is also what retires it on a reset. Only by a message newer than the one it judged: another
-    // route's delivery of that same message must not cancel it.
+    // NOTE: The delayed nothing-to-answer judgement goes too: the customer wrote again (a /reset is an
+    // incoming message too), and a blank message re-arms it from its own flush. Only by a NEWER message:
+    // another route's delivery of the judged message must not cancel it.
     try {
       await retireNothingToAnswer({
         tenantId: params.tenantId,
@@ -5852,47 +4466,22 @@ export async function processChatwootDelivery(
     }
   }
 
-  // Hoisted so the ingestion pass below can tell an out-of-hours-silenced incoming (consumed) from an
-  // answered one. Stays false on every path that never runs the gate.
-  // Say on the LEDGER that this delivery settled the message it carries — something ran over it, or
-  // a gate decided deliberately that nothing would — AT THE MOMENT it is decided, never later.
-  //
-  // Later is the whole point. tx2 is the natural place and it is much too late: the error clearing,
-  // the follow-up arming, the redirect re-arm, the ingestion pass and the watermark tail all sit in
-  // between, each taking its own time, and a process that dies anywhere in that stretch leaves the
-  // row PROCESSING for a message whose fate was already sealed. The stranded-delivery sweep would
-  // then report it as a customer nobody answered and page somebody about it (issue #228).
-  //
-  // One body, called from each branch that decides, rather than one call reading a flag set by
-  // them: the decision and the record have to be adjacent, and a flag is exactly the thing that
-  // lets them drift apart again.
-  //
-  // "Settled" is not "answered", which is why the caller says which. What the ledger has to hold is
-  // whether a message was lost to a PROCESS DEATH, and one a gate consumed or a turn answered with
-  // silence was not lost. A delivery that armed a flush settles NOTHING here: the flush is what
-  // will, and it retires the rows itself when it runs.
-  // `scope` is which rows this settlement speaks for, and it is not always the conversation's.
-  //
-  //   "conversation"  every row for this message, whichever bot route received it. What a TURN can
-  //                   say: it ran over the message and answered or deliberately did not, and that is
-  //                   true of the message rather than of one delivery of it. It is also what rescues
-  //                   a row an earlier attempt stranded.
-  //   "this-delivery" only the row this process is working. What a gate taken because ANOTHER PARTY
-  //                   holds the conversation can say. Chatwoot fans a message to up to two bot
-  //                   routes (`agent_bots_for`: the assignee bot and the inbox bot, each with its
-  //                   own delivery id), so the other party may be a bot whose own delivery is in
-  //                   flight right now. Retiring its row would take a live loss out of the list.
+  // NOTE: Say on the LEDGER that this delivery settled its message (something ran over it, or a gate
+  // decided nothing would) at the moment it is decided: by tx2 a process death would leave the row
+  // PROCESSING for a sealed message, and the sweep would page about it. Called from each deciding
+  // branch, never via a flag. "Settled" is not "answered"; an armed flush settles nothing here.
+  // `scope`: "conversation" (every row for the message, whichever route; what a turn can say) or
+  // "this-delivery" (only this row; what a gate for ANOTHER PARTY can say, since that party may be a
+  // bot whose own delivery of the message is in flight).
   const settleDelivery = async (
     messageId: number,
     settlement: "answered" | "consumed",
-    // Whether a turn folded the message into the thread — a different question from the settlement,
-    // and only the caller knows (issue #576). Ignored on the `this-delivery` scope, which speaks for
-    // one route rather than for the message.
+    // NOTE: Whether a turn folded the message into the thread, which only the caller knows. Ignored on
+    // the `this-delivery` scope.
     covered: boolean,
     scope: "conversation" | "this-delivery" = "conversation",
   ): Promise<void> => {
-    // Narrows for the call below, which takes a number. Every caller is already inside a branch that
-    // needs a conversation, so nothing reaches here without one and removing this kills no test.
+    // NOTE: Narrows for the call below; every caller is already inside a branch with a conversation.
     if (n.conversationId === null) return;
     try {
       await retireCoveredDeliveries({
@@ -5901,9 +4490,8 @@ export async function processChatwootDelivery(
         conversationId: n.conversationId,
         conversationRowId: mirror.conversationRowId,
         settlement,
-        // `covered` rides the wide scope only: a single-row settlement is this route reporting about
-        // ITSELF, and "I am not handling this" says nothing about the route that is (issue #576, PR
-        // review round 4). The union in ../chatwoot/delivery-sweep.ts is what enforces it.
+        // NOTE: `covered` rides the wide scope only: a single-row settlement speaks for this route, not the
+        // message (the union in ../chatwoot/delivery-sweep.ts enforces it).
         ...(scope === "this-delivery"
           ? { deliveryRowId: params.deliveryRowId }
           : { messageIds: [messageId], covered }),
@@ -5917,6 +4505,8 @@ export async function processChatwootDelivery(
       );
     }
   };
+  // NOTE: Hoisted so the ingestion pass can tell a gate-silenced incoming (consumed) from an answered
+  // one; false on every path that never runs the gate.
   let consumed = false;
   // What the contact-authorization gate below learned about this contact, for the direct turn's
   // prompt. Null when the gate is off, or when the delivery never reaches a turn.
@@ -5927,30 +4517,18 @@ export async function processChatwootDelivery(
   // NOTE: A verdict from the gate is final; without one the pass asks for itself.
   const admissionFromGate = (): EagerMediaOwner["admission"] =>
     gate.verdict ?? "unverified";
-  // NOTE: `act || commandActive`, and the second half is the whole point: a control command is the
-  // OPERATOR driving the tooling, not the agent speaking, so bot ownership is not its business. The
-  // conversation a human took over is exactly where /reset has to work, and it is the state `act`
-  // refuses — measured, not assumed: with a `User` assignee neither /teste nor /reset produced a
-  // single Chatwoot call, on `open` and on `resolved` alike. The operator typed a command into a
-  // silent conversation and got silence back.
-  //
-  // Same shape as the follow-up cancel below, which already runs regardless of this gate for the
-  // same reason. The fence stays `commandActive` (`command !== null && mode === "test"`): for any
-  // other agent these are ordinary customer text and never reach here.
+  // NOTE: `act || commandActive`: a control command is the OPERATOR driving the tooling, so bot
+  // ownership is not its business, and a human-held conversation is exactly where /reset must work
+  // (with a `User` assignee, `act` alone refuses both commands). The fence stays `commandActive`: for
+  // any other agent these are customer text.
 
   if (
     (act || commandActive) &&
     isNewIncoming &&
     !observing &&
-    // THE REPLAY OF A PASS THAT OWED MEMORY ONLY DOES NOT SPEAK (issue #725). Nothing about this
-    // conversation as it stands now can tell that the message was already attended to by a person,
-    // or silenced by a gate, half an hour ago; the row is the only witness, and the receiver reads
-    // it here rather than re-deciding from ownership that has moved since.
-    //
-    // It is NOT redundant with the replay's own `replayPosts`, although both read the same column:
-    // that one decides which page the recovery reads and whether the freshness fence is asked, and
-    // the POST is made here, by the re-execution. MEASURED on this round, by a mutant that removes
-    // this term alone: the reply goes out.
+    // NOTE: The replay of a pass that owed memory only does not speak: only the row witnesses that a
+    // person or a gate attended the message then. Not redundant with the replay's `replayPosts`, which
+    // picks the recovery's page and freshness fence; the POST happens here.
     params.owesMemoryOnly !== true
   ) {
     // Test-mode gate + /teste and /reset commands — may consume the delivery (skip all agent work).
@@ -5984,15 +4562,10 @@ export async function processChatwootDelivery(
       });
     }
     if (!consumed) {
-      // Eager media (STT/vision) so the debounce re-fetch (and the direct path) get text instead of an
-      // empty audio/image message. For a production agent this already ran before the gate; the call
-      // is idempotent, so here it only does real work for a test-mode agent that just passed the gate
-      // (activated with /teste). Best-effort — a failure leaves a "please send text" marker.
-      // `rt` is null when nothing on the payload's inbox names an agent — either none is bound, or
-      // the payload named no inbox at all — and then no STT/vision config resolves and no line is
-      // written, so the nulls never reach a row. The second half of that reaches here only through
-      // a control command that the conversation's own agent made active (issue #270); the state
-      // itself is not new, since `act` never depended on `rt`.
+      // NOTE: Eager media, so the debounce re-fetch and the direct path get text. Idempotent: for a
+      // production agent it already ran, so real work happens only for a test agent that just passed the
+      // gate. Best-effort (a failure leaves a "please send text" marker). With `rt` null no config
+      // resolves and no line is written.
       await runEagerMedia(params.tenantId, params.instanceId, n, base, {
         conversationId: mirror.conversationRowId,
         agentId: rt?.agentId ?? null,
@@ -6064,39 +4637,21 @@ export async function processChatwootDelivery(
       // inboxes with no Agent configured.
       if (!armed) {
         try {
-          // REPORTED FROM THE TURN'S OWN SETTLEMENT, never from the enclosing catch, and the two
-          // are not interchangeable. This `try` also wraps the bookkeeping that follows — settling
-          // the ledger, the unrouted line, clearing a surfaced error — and a caller reading
-          // `{ kind: "error" }` cannot tell "the turn failed" from "the turn ANSWERED and a write
-          // after it failed". The recovery (#295) acts on that difference: an error there puts the
-          // row back to DEAD and the scheduler runs the whole turn again, so the customer is
-          // answered twice and every side-effecting tool the turn called runs a second time.
-          //
-          // Today none of those three can throw — each swallows its own failure, and the flow-log
-          // write is fire-and-forget. That is the point: the contract must not rest on a property of
-          // three unrelated call sites that any of them could drop. Bound to the turn here, it
-          // cannot.
-          // WHETHER THE MESSAGE ENDED UP IN THE THREAD, reported by the runtime and WRITTEN THERE
-          // (issue #576). Not carried to the settlement below: a TTS or a send that fails after the
-          // invoke jumps to the catch, tx2 closes the row anyway, and the fact would be lost on a row
-          // that really does hold the message. Same rule as `settleDelivery` itself — record the
-          // decision where it is made, never later.
+          // NOTE: Whether the message ended up in the thread, reported by the runtime and written there, not
+          // carried to the settlement: a TTS or send failing after the invoke jumps to the catch, tx2 closes
+          // the row anyway, and the fact would be lost. Record the decision where it is made.
           let turnFoldedIn = false;
           const onFoldedIn = async (): Promise<void> => {
-            // ONLY THE MESSAGE WHOSE WORDS THE TURN HAD, and the flag says the same (issue #576, PR
-            // review round 8). A voice note still waiting on STT reaches the graph as a placeholder,
-            // and claiming it — here or at the settlement below, which reads this flag — suppresses
-            // the very ingest the write-back exists to arm.
+            // NOTE: Only the message whose WORDS the turn had: a voice note awaiting STT reaches the graph as a
+            // placeholder, and claiming it (here or at the settlement, which reads this flag) suppresses the
+            // ingest the write-back arms.
             if (
               n.message?.id == null ||
               n.conversationId === null ||
               !turnHadTheWords({
-                // FROM THE FILE TYPES, not from `firstAudioAttachment` (PR review, round 9). That
-                // one answers whether STT could RUN — it requires a usable id and data_url — and an
-                // audio whose url has not landed yet fails it while still reaching the graph as a
-                // placeholder. Asked that way, the message read as "no audio", coverage was claimed,
-                // and the transcription that followed was suppressed. The debounce path was already
-                // asking the file types; this makes the two the same question.
+                // NOTE: From the FILE TYPES, not `firstAudioAttachment`, which asks whether STT could RUN: an audio
+                // whose url has not landed would read as "no audio" and its words would be claimed. The debounce
+                // path asks the same question.
                 hasAudio: (n.message?.attachments ?? []).some(
                   (a) => a.fileType === "audio",
                 ),
@@ -6105,9 +4660,8 @@ export async function processChatwootDelivery(
             )
               return;
             turnFoldedIn = true;
-            // COVERAGE ONLY, and never the settlement: settling here would close the row mid-turn,
-            // and a closed row is a delivery the sweep can no longer see. The settlement below is
-            // what says whether a reply reached the customer.
+            // NOTE: Coverage only, never the settlement: a row closed mid-turn is one the sweep can no longer
+            // see.
             await recordTurnCoverage({
               tenantId: params.tenantId,
               instanceId: params.instanceId,
@@ -6117,6 +4671,10 @@ export async function processChatwootDelivery(
               base,
             });
           };
+          // NOTE: The direct turn is reported from its OWN settlement, never the enclosing catch, which also
+          // wraps the bookkeeping after it: a recovery reading "error" puts the row back to DEAD and reruns
+          // the whole turn, answering twice and repeating every side-effecting tool. None of that bookkeeping
+          // throws today, but the contract must not rest on three unrelated call sites.
           const outcome = await runAgentTurn({
             onFoldedIn,
             tenantId: params.tenantId,
@@ -6143,50 +4701,11 @@ export async function processChatwootDelivery(
             outcome,
             mirror.applied ? "applied" : "skipped",
           );
-          // The turn RAN over this message, so nothing is owed on it — EVERY outcome, where the
-          // flush keeps two of them open. The rule belongs to the call site, because the same two
-          // words mean different things on each side:
-          //
-          //   superseded  On the flush it means the burst is handed to a re-armed flush that will
-          //               answer it and retire these same rows, so retiring them now would close a
-          //               message before the run that covers it exists. Nothing is re-armed here:
-          //               the graph already ran over this message (the thread state, reply included,
-          //               is written before `shouldPost` is consulted), and it is the NEWER
-          //               message's own delivery that carries the reply. Left open, the row is
-          //               reported as a lost customer message every time the process dies in the
-          //               tail after a deliberate supersede — which is the one thing separating this
-          //               outcome from every other one on this path, since all of them close here.
-          //   stale       The operator's /reset withdrew the episode under this turn
-          //               (../../graph/reset-episode.ts). It settles like the rest, and the reason
-          //               is what leaving it open would buy: the sweep would run the delivery path
-          //               again half an hour later, into the conversation the command cleared, with
-          //               the message from before it — the defect that fence exists to close,
-          //               arriving through the recovery instead. "Consumed" is also the honest word
-          //               here, the same one the gate's own rows carry: a command withdrew it.
-          //               Asserted in tests/modules/chatwoot-reset-stale-turn.test.ts.
-          //
-          // NOTE: no `isNewIncoming` here, because the whole block is already inside it — an
-          // incoming `message_updated` (our own media write-back coming around) never reaches this
-          // line, which matters: it carries the same message id as the `message_created` whose row
-          // may be stranded, and nothing about it answered anybody. Asserted from the outside in
-          // tests/modules/delivery-sweep.test.ts, since a guard that is absorbed cannot be mutated.
-          //
-          // The null check below is absorbed by that same enclosing guard: an event that is a new
-          // incoming message HAS an id. It answers the compiler, not the runtime, which is why
-          // removing it kills no test — a survivor that is a narrowing rather than a rule.
-          // THE TURN STOOD DOWN BECAUSE THE OPERATOR SILENCED IT while it ran (issue #209 review,
-          // round 6): the config it loaded said production, the send fence read otherwise, and the
-          // rolled-back turn left the message in nobody's memory with the watermark already past
-          // it. Read the agent again: an OBSERVER gets the message the way it gets every message
-          // it does not answer — through the ingestion at the bottom of this function, which the
-          // `act` this delivery was decided with would otherwise skip. A switched-off agent keeps
-          // the silence it asked for.
-          //
-          // Asked BEFORE the settlement below, and the observer's message is not settled here
-          // (round 20): its row closes at the bottom, once the ingestion has the message, because
-          // a row already terminal is one the sweep can no longer recover when that enqueue fails.
-          // An answer nobody got fails the delivery the same way: the row stays on PROCESSING, and
-          // the sweep's recovery runs the path again.
+          // NOTE: The turn stood down because the operator silenced it while it ran (loaded as production,
+          // fenced at send, rolled back). Read the agent again: an OBSERVER gets the message through the
+          // ingestion at the bottom, which this delivery's `act` would skip; a switched-off agent keeps its
+          // silence. Not settled here: the row closes at the bottom once ingestion has the message, since a
+          // terminal row cannot be recovered if the enqueue fails.
           const observes =
             outcome === "agent-unavailable" && rt !== null
               ? await agentObservesNow(params.tenantId, rt.agentId, base)
@@ -6196,21 +4715,12 @@ export async function processChatwootDelivery(
           } else if (observes === "yes") {
             handedToObserver = true;
           } else if (outcome === "taken-over-unread") {
-            // MESMO CAMINHO DO OBSERVADOR, por um motivo próprio (issue #688). Ali a mensagem é do
-            // observador para lembrar; aqui ela não é de ninguém ainda — o turno parou antes do
-            // invoke, então nenhum canal a tem. Liquidar aqui a tiraria da lista de perdas sem que
-            // nada a tivesse lido. A linha fecha lá embaixo, depois que a ingestão a pegou.
+            // NOTE: Mesmo caminho do observador, por motivo próprio: o turno parou antes do invoke, então
+            // nenhum canal tem a mensagem, e liquidar aqui a tiraria da lista de perdas. Fecha lá embaixo.
             stoodDownUnread = true;
-            // E O FATO DA COBERTURA É ESCRITO AQUI (review r5), separado da liquidação. Quem o
-            // escrevia era o `settleDelivery` logo abaixo, que esta parada deliberadamente não
-            // chama; sem ele a coluna fica NULA, e null é "nenhuma linha sabe" — a ingestão de uma
-            // transcrição tardia cai então no fallback de POSSE ATUAL, e com a conversa já devolvida
-            // ao bot ela lê "um turno vai cobrir isto" e descarta a transcrição.
-            //
-            // `covered: false` é monotônico (a escrita só move `false` para `true`, nunca o
-            // contrário), então dizê-lo aqui não pode apagar a cobertura de ninguém. Best-effort,
-            // como a do `onFoldedIn`: o que esta entrega deve é a mensagem, e falhar em reportar um
-            // fato lateral não é motivo para não entregá-la.
+            // NOTE: A cobertura é escrita aqui, já que esta parada não chama `settleDelivery`: com a coluna
+            // NULA a transcrição tardia cairia no fallback de posse atual e seria descartada. `covered: false` é
+            // monotônico (só vira `true`), então não apaga cobertura de ninguém. Best-effort, como `onFoldedIn`.
             if (n.message?.id != null && n.conversationId !== null) {
               await recordTurnCoverage({
                 tenantId: params.tenantId,
@@ -6228,36 +4738,26 @@ export async function processChatwootDelivery(
               });
             }
           } else if (n.message?.id != null) {
-            // `posted-partial` answers too: part of the reply IS with the customer, and calling
-            // that "consumed" would tell the stranded-delivery sweep nothing ever replied here.
+            // NOTE: The turn RAN over this message, so nothing is owed on it, whatever the outcome (unlike the
+            // flush). `superseded`: the NEWER message's delivery carries the reply, and left open the row would
+            // read as lost after any tail crash. `stale`: a /reset withdrew the episode, and left open the sweep
+            // would replay pre-reset text into the cleared conversation. `posted-partial` answers: part of the
+            // reply is with the customer. No `isNewIncoming` check: the enclosing block requires it.
             await settleDelivery(
               n.message.id,
               outcome === "posted" || outcome === "posted-partial"
                 ? "answered"
                 : "consumed",
-              // NOT the same reading as the word beside it: `graph.invoke` persists the channel, so
-              // a turn that ran and stayed silent left the message in memory while settling
-              // `consumed` (issue #576). Reported by the runtime rather than read off the outcome,
-              // which straddles the invoke in both directions: the input guardrail's replacement
-              // answers `posted` before it, the output guardrail's suppression `blocked` after it.
-              // The runtime's own answer, kept rather than hardcoded `false` (PR review, round 6).
-              // `onFoldedIn` already wrote it, but that write is best-effort: a transient failure
-              // there followed by an unconditional `false` here would put the LIE on the row, where
-              // repeating the true answer leaves the null the reader falls back on at worst.
+              // NOTE: Not the same reading as the outcome: `graph.invoke` persists the channel, so a silent turn
+              // still folded the message in, and guardrails straddle the invoke both ways. The runtime's own
+              // answer, repeated because `onFoldedIn`'s write is best-effort and a hardcoded `false` would lie.
               turnFoldedIn,
             );
           }
-          // NOTE: The turn had nowhere to go: no agent is bound to this inbox (issue #318). One line
-          // per customer message that nothing will answer — `runAgentTurn` only reaches this outcome
-          // for a new incoming message with text — which is the same unit as the gate's line below.
-          //
-          // The outcome is the WHOLE condition on purpose. `no-agent` used to also cover a binding
-          // that exists and could not load (a switched-off agent, which is deliberate and gets no
-          // line), and this branch first excluded that by re-reading the binding here. Re-reading is
-          // what the second reading cost: the turn runs gates, mirroring and media in between, so a
-          // rebind landing inside it answered about a different moment. `runAgentTurn` now
-          // classifies the two from the same scoped read that decides them, and `agent-unavailable`
-          // is the one this line stays silent about.
+          // NOTE: The turn had nowhere to go: no agent is bound to this inbox. One line per customer message
+          // nothing will answer, the same unit as the gate's line below. The outcome is the WHOLE condition:
+          // `runAgentTurn` classifies `no-agent` versus `agent-unavailable` (switched off, deliberate, no line)
+          // from one scoped read, while a re-read here could answer about a later rebind.
           if (outcome === "no-agent" && mirror.conversationRowId !== null) {
             emitUnroutedMessage({
               tenantId: params.tenantId,
@@ -6267,7 +4767,7 @@ export async function processChatwootDelivery(
               base,
             });
           }
-          // Recovered: a successful answer clears any previously surfaced turn error (item 6).
+          // NOTE: Recovered: a successful answer clears any previously surfaced turn error.
           if (outcome === "posted" && n.conversationId !== null) {
             await clearConversationError({
               tenantId: params.tenantId,
@@ -6282,7 +4782,7 @@ export async function processChatwootDelivery(
             convLabel,
             err instanceof Error ? err.message : String(err),
           );
-          // Surface the failure to the operator (sanitized) so they can re-engage (item 6).
+          // NOTE: Surface the failure to the operator (sanitized) so they can re-engage.
           if (n.conversationId !== null) {
             await recordConversationError({
               tenantId: params.tenantId,
@@ -6291,11 +4791,8 @@ export async function processChatwootDelivery(
               error: err,
               base,
             });
-            // And, when nothing else is coming, say so INSIDE Chatwoot (issue #71). There is no
-            // retry on this path, so the only thing that can still answer is a newer message's own
-            // turn — the same fence the success path applies at `shouldPost`. Read by the announcer,
-            // not here: the answer has to describe the moment of the note, not the moment of the
-            // failure.
+            // NOTE: When nothing else is coming, say so INSIDE Chatwoot: there is no retry here, so only a newer
+            // message's turn can still answer. Read by the announcer, so it describes the moment of the note.
             const conversationId = n.conversationId;
             const triggerId = n.message?.id ?? null;
             await announceFailedTurn({
@@ -6316,11 +4813,9 @@ export async function processChatwootDelivery(
               base,
             });
           }
-          // A turn that THREW after the flip leaves through here, not through the outcome above,
-          // and the message is the observer's just the same (issue #209 review, round 8). Asked
-          // here so the ingestion and the watermark at the bottom treat it as an observed one —
-          // after the operator has been told, and an answer nobody got fails the delivery for the
-          // sweep (round 20), as it does on the stand-down above.
+          // NOTE: A turn that THREW after the flip leaves through here, and the message is the observer's just
+          // the same; asked here so the ingestion and watermark treat it as observed. An answer nobody got
+          // fails the delivery for the sweep, as on the stand-down above.
           if (rt !== null) {
             const observes = await agentObservesNow(
               params.tenantId,
@@ -6342,17 +4837,11 @@ export async function processChatwootDelivery(
         }
       }
 
-      // ── WhatsApp→chat redirect: (re)arm the cross-channel follow-up now that the turn for this
-      //    message has been dispatched (debounced or direct), but ONLY when this message landed on
-      //    the WIDGET conversation a channelRedirect-enabled agent manages (its
-      //    channelRedirect.widgetInboxId — NOT the WhatsApp entry inbox, which never gets this job).
-      //    `rt` (inboxAgentRuntime, above) already resolved this inbox's bound agent + settings for
-      //    the eager-media/test-mode gates, so this reuses it rather than adding a query. Re-arming
-      //    on every message doubles as cancel-on-reply (see armRedirectChatFollowUp's doc) — no
-      //    separate cancel call is needed here, unlike the generic FOLLOWUP job above. Best-effort. ──
-      //    NOT for a message handed to the observer inside the turn (issue #209 review, round 22):
-      //    nothing is owed to a lead the observer now remembers, and the ladder is retired at the
-      //    bottom instead. ──
+      // NOTE: Redirect follow-up: (re)arm the cross-channel ladder now that this message's turn was
+      // dispatched, ONLY for a message on the WIDGET conversation of a channelRedirect agent (its
+      // widgetInboxId, never the WhatsApp entry inbox). Reuses `rt`. Re-arming on every message is the
+      // cancel-on-reply (armRedirectChatFollowUp). Not for a message handed to the observer: nothing is
+      // owed, and the ladder is retired at the bottom instead. Best-effort.
       if (
         rt &&
         !handedToObserver &&
@@ -6372,10 +4861,8 @@ export async function processChatwootDelivery(
               ),
               agentId: rt.agentId,
               entryInboxId: redirectCfg.entryInboxId,
-              // From the EVENT, not from the mirrored row: a mirror write whose ladder retirement
-              // was rejected holds the pairing back, and this same delivery still arms. Reading the
-              // row there would stamp the episode being left behind, and the payload that finally
-              // applies the pairing would retire the ladder it had just armed.
+              // NOTE: From the EVENT, not the mirrored row: a mirror write whose ladder retirement was rejected
+              // holds the pairing back, and reading the row would stamp the episode being left behind.
               originDisplayId: n.redirectOriginDisplayId,
               cfg: redirectCfg,
               base,
@@ -6400,13 +4887,9 @@ export async function processChatwootDelivery(
       n.event,
     );
   } else {
-    // THE SAME TWO READINGS THE GATE DECIDED ON, and that is the whole rule of this file: a line
-    // that explains a decision has to name the values the decision was made from. `describeClosedGate`
-    // says as much where it lives — the status rides along instead of being re-read, because a second
-    // query would answer about a different moment — and a payload's own proposal is a different
-    // moment just as surely. Reported from `n.status`, a conversation the mirror had already resolved
-    // was recorded as `ownership_lost` at `pending`, sending an investigation after a missing
-    // assignee when the answer was the status all along.
+    // NOTE: The same two readings the gate decided on: a line explaining a decision names its inputs.
+    // `n.status` is the payload's proposal, a different moment, and would report a status-closed gate as
+    // `ownership_lost` at `pending`.
     const closed = describeClosedGate({
       assigneeType: effectiveAssigneeType,
       status: effectiveStatus,
@@ -6419,13 +4902,10 @@ export async function processChatwootDelivery(
       closed.outcome,
       effectiveStatus ?? "unknown",
     );
-    // NOTE: The operator's own trail, and it is deliberately narrower than this branch: ONE line
-    // per customer message the bot did not answer, never one per webhook event. This gate is the
-    // only one those messages reach — a refused event arms no flush and starts no turn — so without
-    // the line the silence an operator is investigating has nothing behind it (issue #271). The
-    // narrowing is what keeps it readable: `message_updated` here is usually our own media
-    // write-back coming back around, and a switched-off agent was never going to answer, so a line
-    // there would explain the silence with the wrong reason.
+    // NOTE: The operator's trail, narrower than this branch: ONE line per customer message the bot did
+    // not answer, never per event. Refused messages reach only this gate, so without it the silence has
+    // nothing behind it. A `message_updated` is usually our own write-back, and a switched-off agent was
+    // never going to answer, so lines there would give the wrong reason.
     if (
       isNewIncoming &&
       rt?.enabled &&
@@ -6446,22 +4926,11 @@ export async function processChatwootDelivery(
     }
   }
 
-  // A new inbound message the bot deliberately leaves unanswered — the conversation is human-owned
-  // (!act) or a command/test-mode gate consumed it — still advances the handled watermark: it is
-  // context, not a pending task. Left behind, these pile up below the watermark and the first flush
-  // after a human returns the conversation re-answers the whole human-era backlog, handoff reason
-  // included (issue #8). When a turn WILL run (act && !consumed), the turn/flush owns the advance.
-  // Best-effort: a miss only widens a later re-coalesce.
-  // A CONSUMED pre-turn exit under a flip (issue #209 review, round 17): a TEST agent's gate can
-  // consume the delivery — the conversation was never activated, or a command was typed — and
-  // `rt` was read before the gate ran. Flipped to monitoring inside it, the message would be
-  // marked handled below and refused by the ingestion gate, which reads the mode `rt` carries.
-  // A PRODUCTION agent's gate consumes too (round 21) — the authorization denial, the availability
-  // window — and its ingestion is continuous either way, but the mark is not: read as production,
-  // the message would be marked and settled ahead of the ingestion, and an enqueue failing after
-  // that is swallowed where the observer's is a retry. Asked fresh on every consumed exit, so the
-  // ingestion and the mark treat it as an observed one. A human-held message is not asked: nothing
-  // of it is consumed, and production's continuous ingestion of it is best-effort by design.
+  // NOTE: A new inbound message the bot deliberately leaves unanswered (human-owned, or consumed by a
+  // gate) still advances the handled watermark: it is context, not a pending task, or the first flush
+  // after a hand-back re-answers the human-era backlog. When a turn WILL run, the turn owns the advance.
+  // A consumed exit asks the mode fresh (`rt` predates the gate): flipped to monitoring, the message
+  // must wait for the observer's ingestion instead of being marked and settled ahead of it.
   if (consumed && !handedToObserver && isNewIncoming && rt !== null) {
     const observes = await agentObservesNow(params.tenantId, rt.agentId, base);
     if (observes === "unreadable") {
@@ -6471,17 +4940,10 @@ export async function processChatwootDelivery(
     }
     if (observes === "yes") handedToObserver = true;
   }
-  // THE EAGER MEDIA PASS for a consumed message newly handed to the observer (round 22). The pass
-  // runs ahead of the gate for an agent that ingests continuously, and on the answer path for a
-  // test agent; a test agent's gate that consumed the message ran neither, so the ingestion below
-  // would remember an audio as its attachment marker and never its transcription. Idempotent — a
-  // text already stashed on the event is never re-transcribed — and asked only where no pass ran.
-  //
-  // E O REPLAY SÓ-MEMÓRIA ENTRA AQUI PELA MESMA PORTA (issue #725, review r7). Ele suprime o turno de
-  // propósito, e a passada de mídia de um agente em modo teste mora justamente lá dentro (a de cima
-  // roda só para quem ingere continuamente). Sem isto o replay enfileira a ingestão de um áudio sem
-  // a transcrição que a mensagem já carrega, e a memória guarda o marcador "áudio não audível" —
-  // com a entrega fechando como recuperada, que é a perda silenciosa com outra roupa.
+  // NOTE: The eager media pass for a consumed message newly handed to the observer: a test agent's
+  // consuming gate ran neither pass, so the ingestion would remember an audio as a marker. The
+  // memory-only replay enters the same way (it suppresses the turn, where a test agent's pass lives).
+  // Idempotent, and asked only where no pass ran.
   if (
     rt !== null &&
     !(rt.enabled && ingestsContinuously(rt.mode)) &&
@@ -6495,39 +4957,20 @@ export async function processChatwootDelivery(
       deliveryRowId: params.deliveryRowId,
       sleep: params.deps?.sleep,
       deps: params.deps,
-      // A consumption whose cause this line does not know (the refusal among them), and a replay
-      // that asked no gate at all.
+      // NOTE: A consumption whose cause this line does not know, or a replay that asked no gate.
       admission: admissionFromGate(),
     });
   }
-  // THE OBSERVER'S OWN REASON TO MARK is its ingestion having the message (issue #209 review,
-  // rounds 18 and 19), so it is decided AFTER the ingestion below, from what the enqueue answered:
-  // queued, or nothing to queue. Marked ahead of it, the message would be absent from every memory
-  // for good on either failure the enqueue can meet — no contact-inbox thread to remember it on
-  // (the payload names none and neither does the mirrored row), or a scheduler write that did not
-  // land — since a monitoring agent arms no flush that could read it later, and the next observed
-  // message moves the watermark past it. So a message with no thread is left unmarked and its
-  // delivery unsettled, as the flush leaves such a burst (round 8); and an enqueue that FAILED fails
-  // the delivery: the row stays PROCESSING, the sweep declares it stranded, and its recovery re-runs
-  // this path (./recover-delivery.ts) — the same retry the flush gets from the scheduler (round 17),
-  // at the price the ingestion's own note names, one eager media pass run again. The two OTHER
-  // reasons to mark stand on their own and mark here, ahead of the ingestion, as they always did: a
-  // human-held message is context whichever mode the agent is in, and re-answering the human era
-  // after the hand-back is the loss issue #8 closed; a consumed one was silenced on purpose. UNDER
-  // AN OBSERVER they wait for the ingestion too (round 20): the settlement closes the delivery's
-  // own row, and a row already terminal is one the sweep can no longer recover when the enqueue
-  // then fails — so every mark on an observed message follows the enqueue's answer.
+  // NOTE: The observer marks only after its ingestion has the message (queued, or nothing to queue):
+  // marked ahead, a missing thread or a failed enqueue loses it for good. No thread: unmarked and
+  // unsettled; a FAILED enqueue fails the delivery for the sweep's recovery (./recover-delivery.ts).
+  // The other two reasons (human-held context, a deliberate consume) mark ahead of the ingestion,
+  // except under an observer, where every mark follows the enqueue's answer.
   const observerHolds = (observing || handedToObserver) && isNewIncoming;
-  // A WATCHED reply on the widget conversation still retires the redirect ladder (issue #209
-  // review, round 13). The ladder's cancel-on-reply is the re-arm inside the dispatch above, which
-  // an observing agent never reaches; left armed, the ladder waits out the mode — its own fence
-  // stands it down while the agent observes — and the first flip back to production would send a
-  // template to a lead who had already answered. Retired, not re-armed: nothing is owed here.
-  // Compared against the inbox the RUNTIME was read from, not the payload's field: a sparse payload
-  // names none, and the runtime was recovered through the mirrored conversation (round 14).
-  // Asked HERE, once the hand-over is known (round 22): a delivery handed to the observer inside
-  // its gate or its turn had passed the mode read as production or test, and its dispatch either
-  // re-armed the ladder (the re-arm now steps aside for a hand-over) or left one armed.
+  // NOTE: A watched reply on the widget conversation still retires the redirect ladder: an observer
+  // never reaches the re-arm that doubles as cancel-on-reply, and a later flip to production would
+  // send a template to a lead who answered. Compared against the RUNTIME's inbox (a sparse payload
+  // names none), and asked once the hand-over is known.
   if (observerHolds && rt !== null && n.conversationId !== null) {
     const redirectCfg = readChannelRedirectConfig(rt.settings);
     if (
@@ -6554,71 +4997,30 @@ export async function processChatwootDelivery(
     }
   }
   const markHandledAndSettle = async (opts: {
-    // What a watermark advance that FAILED means for the settlement below. "settle" is the standing
-    // rule for the two marks that never depended on ingestion: a miss only widens a later
-    // re-coalesce. Under an observer the mark IS the hand-over's closing write (round 21): settled
-    // with the watermark still below the message, the row is terminal and a flush after a flip
-    // back to production answers a message that was watched — so the settlement waits, the row
-    // stays on PROCESSING, and the sweep's recovery runs the path again (the ingestion already
-    // queued is idempotent by message id).
+    // NOTE: What a FAILED watermark advance means for the settlement. "settle" for the marks that never
+    // depended on ingestion (a miss only widens a re-coalesce). Under an observer the mark IS the
+    // hand-over's closing write, so the settlement waits and the sweep reruns the path (the queued
+    // ingestion is idempotent by message id).
     onWatermarkFailure: "settle" | "leave-for-sweep";
   }): Promise<void> => {
     const messageId = n.message?.id;
     const conversationRowId = mirror.conversationRowId;
     if (messageId == null || conversationRowId === null) return;
-    // The same fact the watermark records here, on the ledger: a human owns the conversation, or a
-    // command or a gate consumed the message. Nothing further is coming for it, deliberately, so it
-    // is not a message a crash lost — and a gate is silence by construction, never an answer.
-    //
-    // SCOPED to this delivery in exactly one case: another BOT holds the conversation. Then the
-    // silence is about US, and the row this message also has on that bot's route belongs to a
-    // delivery that may be working right now — retiring it takes a live loss out of the list. A
-    // human holding the conversation is the opposite: they answer the message, whichever route
-    // carried it, and so is a command or a test-mode gate consuming it. Both keep the wider scope,
-    // which is also what rescues a strand an earlier attempt left behind.
-    // THE WATERMARK FIRST, and the order is chosen by which way the pair fails.
-    //
-    // They are two writes and not a transaction, so a process dying between them leaves one of two
-    // states. Settle first and the row is terminal while the watermark still sits below this
-    // message: the sweep can no longer see it, and a flush after the conversation comes back to the
-    // bot re-coalesces from that watermark and ANSWERS the message a gate deliberately suppressed —
-    // a reply the product decided not to send, with nothing anywhere reporting it. Watermark first
-    // and the row is left in the worklist for a message something did handle: a line in the loss
-    // list that is wrong and VISIBLE, and correctable by the next turn that runs over it.
-    //
-    // Wrong and visible over quiet and wrong is the rule this whole change is built on.
-    //
-    // THE WATERMARK BELONGS TO THE REPLY PATH (issue #476). On an observer's route, with a
-    // responder of ours bound to the same inbox, the responder's own delivery of this message is
-    // the one that answers or deliberately skips it, and an observer advancing the shared mark
-    // would take the message out of that flush. With no responder, the observer is the only thing
-    // keeping the mark, and keeping it is what stops a responder bound later from answering the
-    // whole observed backlog as one burst. Its settlement is scoped the same way another bot's
-    // is: this row only, never the responder's.
-    // ...E A MARCA TAMBÉM NÃO É DESTA PASSADA QUANDO A LINHA DIZ QUE O ESCOPO ERA ESTREITO (issue
-    // #725, review r4). Preservar a LINHA da outra rota e ainda assim andar com a marca entrega meia
-    // garantia: a marca é da conversa, e este ramo a move escrevendo um `dispensed` que nomeia a
-    // mensagem, então o turno daquela rota é recusado pelo `claimReplyBurst` depois. A linha fica em
-    // `PROCESSING`, parecendo viva, e o cliente não é respondido por ninguém — que é a perda que o
-    // escopo estreito existe para impedir, chegando pela porta do lado.
-    //
-    // Perguntado de `params.settleScopedToThisDelivery` e NÃO de `settleScopedHere`, e a diferença é
-    // o que mantém este conserto do tamanho do defeito. `settleScopedHere` é estreito também quando
-    // há um observador, e ali quem decide a marca é `responderMayAnswer`, que é uma regra afinada em
-    // várias rodadas da #476 sobre outra pergunta (quem, entre as NOSSAS rotas, ainda pode
-    // responder). Só o valor vindo da linha é novo: ele diz que esta passada é o replay de uma parada
-    // que aconteceu ao lado de outro bot, e aí a marca é da rota dele pela mesma regra que o
-    // observador já segue — a marca fica com quem pode responder.
+    // NOTE: The fact the watermark records, on the ledger: a human owns the conversation or a gate
+    // consumed the message, so a crash did not lose it. Scoped to this delivery when another BOT holds
+    // it (that bot's row may be live), wider otherwise. THE WATERMARK FIRST: two writes, no transaction,
+    // and settled first a crash leaves a terminal row below the mark, so a later flush ANSWERS a message
+    // a gate suppressed, silently; mark first leaves a wrong but VISIBLE loss line. Wrong and visible
+    // beats quiet and wrong. The mark belongs to the reply path: beside a responder, or on the replay of
+    // a stand-down beside another bot (`settleScopedToThisDelivery`), moving it would get that route's
+    // turn refused by `claimReplyBurst`. Alone, the observer keeps it so a later responder skips the backlog.
     if (!responderMayAnswer && params.settleScopedToThisDelivery !== true) {
       try {
         await advanceHandledWatermark({
           tenantId: params.tenantId,
           conversationDbId: conversationRowId,
           toMessageId: messageId,
-          // ONE MESSAGE, BY ID (issue #690). A webhook delivery carries exactly one, so this exit
-          // knows its member and has no span to approximate: an observer with no responder beside it
-          // is keeping the mark for a message nothing is going to reply to, which is a dispensal and
-          // says so by name.
+          // NOTE: One message, by id: a webhook delivery carries exactly one, so this exit names its dispensal.
           dispensed: { kind: "messages", messageIds: [messageId] },
           base,
         });
@@ -6638,123 +5040,39 @@ export async function processChatwootDelivery(
     await settleDelivery(
       messageId,
       "consumed",
-      // This whole path is the one no turn takes: the gate closed, a person or another bot holds the
-      // conversation, or the observer owes the memory instead. Nothing invoked a graph.
+      // NOTE: No turn takes this path, so nothing invoked a graph.
       false,
-      // PREFERRED FROM THE ROW WHEN THE ROW SAYS IT (issue #725, review round 2). Both terms below
-      // are read from the conversation as it stands NOW, which is the right answer for a live
-      // delivery and the wrong one for a replay: the stand-down this row is being replayed for may
-      // have happened beside another AgentBot, and by now the conversation can be back with us. The
-      // wider scope would then retire that bot's own row for this message without either recovery
-      // having answered — which is exactly the loss the scoping exists to avoid.
+      // NOTE: From the row when it says so: on a replay, the stand-down may have happened beside another
+      // AgentBot, and the wider scope now would retire that bot's own row with nobody having answered.
       settleScopedHere ? "this-delivery" : "conversation",
     );
   };
-  // ...E QUANDO A INGESTÃO É QUEM VAI GUARDAR A MENSAGEM, A LIQUIDAÇÃO ESPERA POR ELA (issue #719).
-  // Esta linha liquida a entrega e avança a marca uns duzentos comandos ANTES de a ingestão contínua
-  // rodar, e era a única coisa entre o cliente e o silêncio: com o enfileiramento falhando, nada
-  // lançava, a linha fechava PROCESSED — que é o estado que a varredura não revisita — e a marca já
-  // estava por cima da mensagem. Nenhum turno depois a lê, porque o caminho direto folha a mensagem
-  // DO EVENTO e o flush coalesce a partir da marca. Medido: `err=null`, linha `PROCESSED`, marca no
-  // id da própria mensagem.
-  //
-  // Os vizinhos já tinham a cerca — a parada do observador, a transcrição tardia e a parada por
-  // posse da #688 lançam quando o enfileiramento delas falha. Esta é a mesma regra aplicada ao
-  // caminho COMUM: uma pessoa é dona da conversa, turno nenhum roda, e quem guarda a mensagem é a
-  // ingestão.
-  //
-  // SÃO DOIS SITES E HOJE O ADIAMENTO COBRE OS DOIS (issue #725). A condição deste bloco é
-  // `!act || consumed`, e as duas metades chegam à MESMA ingestão contínua: a mensagem que o bot não
-  // responde porque uma pessoa tem a conversa (`!act`) e a que ele não responde porque um portão a
-  // silenciou (`act && consumed`: fora do horário, ou o contato que o gate de autorização recusou).
-  // O site irmão perdia a mensagem exatamente igual — medido pelo gate de autorização recusando o
-  // contato: `err=null`, linha `PROCESSED`, marca no id da própria mensagem.
-  //
-  // A #719 deixou o site irmão de fora por um motivo que era verdadeiro na época: a saída é mandar a
-  // entrega para a varredura, e a varredura REPLICA A ENTREGA PELOS PORTÕES (docs/chatwoot.md: "a
-  // recovery answers through the gates"). Sem nada na linha dizendo "um portão já consumiu esta
-  // mensagem", o desfecho seria o cliente recebendo o aviso de fora do horário e, meia hora depois,
-  // a resposta do bot para a mesma mensagem. Perder a mensagem da memória é ruim; responder duas
-  // vezes uma que o operador silenciou é pior.
-  //
-  // `owes_memory_only` é exatamente essa intenção persistida, e é o que desarmou aquele motivo — por
-  // isso as duas metades entram aqui agora. As DUAS ESCRITAS, porém, deixaram de andar juntas: a
-  // liquidação da linha espera a ingestão, e a marca (com o `dispensed` que nomeia a mensagem) NÃO
-  // pode esperar na metade do portão, porque ali a conversa continua sendo do bot e o flush que roda
-  // quando o expediente abre coalesce a partir dela. Isso está logo abaixo, no `else if
-  // (settlesHere && consumed)`.
-  //
-  // O adiamento é ESTREITO no resto: `observerHolds` já estava fora daqui, com a liquidação dele lá
-  // embaixo pelo mesmo motivo (round 20 da #209), e `routeRemembers` é o termo de `routeIngests` que
-  // vale aqui (`handedToObserver` implica `observerHolds`, e `stoodDownUnread` só existe com `act`
-  // verdadeiro). Sem ele, TODA entrega deste ramo esperaria uma ingestão que nem é tentada — agente
-  // em `test`, agente desligado, rota sem runtime —, e cada uma viraria entrega presa, depois `DEAD`,
-  // depois uma recuperação que replica o nada.
-  //
-  // O `!observerHolds` fica, e é o termo que mantém as duas paradas disjuntas: a do observador vem
-  // logo abaixo desta, com a regra de marca que só ela tem (um observador desligado não marca, issue
-  // #476). Sem o termo, uma conversa em posse humana sob observador seria liquidada aqui antes de
-  // aquele bloco decidir, e o erro diria a parada errada.
-  // ...E O REPLAY QUE SÓ DEVE MEMÓRIA ENTRA POR `!act` (issue #725, rodada 1 de review). A pergunta
-  // deste termo é "nenhum turno atendeu esta mensagem nesta passada", e no replay isso é verdade por
-  // decisão gravada na linha em vez de por posse: o gate do turno lá em cima já o calou. Fora daqui,
-  // a marca não avança e a linha fecha assim mesmo — e aí, com o debounce ligado, a rajada seguinte
-  // coalesce esta mensagem e o turno a responde, que é o defeito desta issue voltando por outra
-  // porta. MEDIDO: `last_handled_message_id` ficava nulo com a linha em `PROCESSED`.
+  // NOTE: When the ingestion is what will hold the message, the settlement waits for it: this code
+  // runs long before the continuous ingestion, and a failed enqueue behind a closed row and an advanced
+  // mark leaves the message in no memory and in no later turn. Both halves (`!act` and a gate's
+  // `consumed`) wait, since `owes_memory_only` keeps a replay from answering over the gate. A replay
+  // that owes memory only enters as `!act` would, or the next burst answers it. `!observerHolds` keeps
+  // this disjoint from the observer's stop below. See docs/graph.md, "Continuous ingestion".
   const settlesHere =
     isNewIncoming &&
     (!act || consumed || params.owesMemoryOnly === true) &&
     !observerHolds;
-  // E ELA ESPERA A INGESTÃO NAS DUAS METADES (issue #725). O `!consumed` que estava aqui era o que
-  // deixava a metade do PORTÃO fora da varredura: fora de horário, ou com o contato recusado, a
-  // linha fechava como `PROCESSED` mesmo com o arme falhando, e `PROCESSED` é o estado que nada
-  // revisita — então a coluna `owes_memory_only` era gravada e nunca lida, e a mensagem do cliente
-  // sumia exatamente como o corpo da issue mede. A #719 já tinha a saída certa para a metade dela
-  // (adiar a liquidação e lançar quando o arme falha, deixando a linha em `PROCESSING`), e o que
-  // impedia de usá-la aqui era o risco do replay responder duas vezes — que é justamente o que a
-  // coluna desta PR remove. Com ele removido, a saída passa a valer nas duas.
-  // E ELA ESPERA PELO DEVER TAMBÉM, não só pela rota (review r5, site irmão). `routeRemembers`
-  // responde "esta rota vai ingerir", e desde o parágrafo acima o portão da ingestão também abre
-  // pelo dever gravado na linha — então numa rota que não lembra continuamente (modo teste) o replay
-  // passava a enfileirar o append e a liquidação NÃO esperava por ele: com o arme falhando também no
-  // replay, a linha fechava terminal com a marca por cima de uma mensagem que memória nenhuma tem,
-  // que é o trio que o corpo da issue mede, de volta por outra porta. Medido antes do conserto.
-  //
-  // Só o replay muda: na passada original `params.owesMemoryOnly` é `undefined`.
+  // NOTE: Waits in both halves, and for the recorded duty too (`owesMemoryOnly`, replay only), not just
+  // `routeRemembers`: otherwise a test-mode route's replay would enqueue the append without the row
+  // waiting for it. Narrow otherwise: a route that never attempts ingestion (test, off, no runtime)
+  // settles at once, or every such delivery would strand and go DEAD.
   const settleAwaitsIngest =
     settlesHere && (routeRemembers || params.owesMemoryOnly === true);
-  // WHAT THIS PASS OWES, RECORDED WHERE IT IS DECIDED AND BEFORE THE ARM THAT CAN FAIL (issue #725).
-  //
-  // `settlesHere` is already this file's own answer to "no turn ran on this delivery": a person
-  // holds the conversation (`!act`) or a gate silenced the message (`act && consumed`). Where it is
-  // true the only thing this delivery owes is an append — and where arming that append throws, the
-  // row is left for the sweep with nothing on it saying so. The replay then rebuilds ownership from
-  // the conversation as it stands half an hour later, finds the bot back on it, and posts a reply
-  // nobody is owed.
-  //
-  // HERE AND NOT BESIDE THE ARM, and the reason is the arm itself. A write below it only runs when
-  // the arm was reached and returned — and the arm is guarded (`routeIngests`: no runtime, switched
-  // off, a test agent with nobody watching) and can FAIL. The passes where this column is ever READ
-  // are exactly the ones where it failed, so a write down there would be null in every case that
-  // matters. (An earlier version of this comment blamed an early return for the gate's half; there
-  // is none — no `return` sits between this block and `ingestUnhandledMessage`, and an out-of-hours
-  // delivery does reach the arm, measured. The positional argument stands on the failure.)
-  //
-  // BOTH HALVES, and since #725 both are also left for the sweep: `settleAwaitsIngest` no longer
-  // asks `!consumed`. The column is what made that possible — it is the fact that stops a replay
-  // from answering over a gate the operator closed — and until it existed the gate's half had to
-  // settle in its own pass, which is the same as losing the message when the arm failed.
-  //
-  // Best-effort and not thrown, like the `routeRemembers` correction below: the delivery's own work
-  // is the ingestion, and taking that away to record an intention would trade a reply nobody asked
-  // for against a memory nobody has. A row that misses this write reads null, which is the reading
-  // every delivery had before the column.
+  // NOTE: What this pass owes, recorded where it is decided and BEFORE the arm that can fail: the
+  // column is read only on passes where the arm failed, so a write beside the arm would be null
+  // exactly when it matters. Without it the replay rebuilds ownership half an hour later, finds the
+  // bot back, and posts a reply nobody is owed. Best-effort: a missed write reads null, as before.
   if (settlesHere) {
     await runScopedOn(base, sysCtx(params.tenantId), (db) =>
       db.chatwootWebhookDelivery.updateMany({
         where: { id: params.deliveryRowId },
-        // THE TWO FACTS AT THE ONE INSTANT BOTH ARE TRUE, and the scope from the very expression
-        // `markHandledAndSettle` settles with, not from a second reading of it.
+        // NOTE: Both facts at the one instant both are true, with the scope from the expression
+        // `markHandledAndSettle` settles with.
         data: {
           owesMemoryOnly: true,
           settleScopedToThisDelivery: settleScopedHere,
@@ -6771,22 +5089,11 @@ export async function processChatwootDelivery(
   if (settlesHere && !settleAwaitsIngest) {
     await markHandledAndSettle({ onWatermarkFailure: "settle" });
   } else if (settlesHere && consumed) {
-    // A RECUSA DE RESPOSTA SAI AGORA, SÓ A LINHA ESPERA (issue #725, review r6). Na metade do PORTÃO
-    // a conversa continua sendo do BOT: quando o expediente abre, ou o gate passa a autorizar, um
-    // flush do debounce coalesce a partir da marca e responde tudo que está acima dela. A marca
-    // carrega o `dispensed` que nomeia esta mensagem, e é ele que a tira daquela rajada — adiá-lo
-    // junto com a liquidação punha a mensagem que o portão calou de volta na fila de resposta, que é
-    // a resposta dupla desta issue chegando pela porta do debounce.
-    //
-    // NÃO vale para a outra metade (`!act`), e a diferença é quem tem a conversa: atrás de uma
-    // PESSOA nenhum flush roda, e ali a marca esperar a ingestão é a escolha medida da #719 — uma
-    // marca acima de uma mensagem que memória nenhuma tem, numa linha que o sweep já não revisita,
-    // é a perda silenciosa. Aqui a linha CONTINUA não terminal, então a memória segue devida e
-    // visível: o que a marca afirma é só que resposta não se deve, e isso é verdade desde o instante
-    // em que o portão consumiu a mensagem.
-    // As duas leituras que a escrita exige, e ela é pulada sem nenhuma delas: sem a linha do espelho
-    // não há conversa para dispensar, e sem id não há mensagem — as mesmas guardas que
-    // `markHandledAndSettle` faz no topo dele.
+    // NOTE: A recusa de resposta sai agora, só a linha espera: na metade do PORTÃO a conversa segue do
+    // bot, e o flush que roda quando o portão abre coalesce a partir da marca; o `dispensed` é o que
+    // tira esta mensagem daquela rajada. Não vale para `!act`: atrás de uma pessoa nenhum flush roda.
+    // A linha continua não terminal, então a memória segue devida e visível. Sem linha do espelho ou
+    // sem id não há o que dispensar (as guardas de `markHandledAndSettle`).
     const dispensaConv = mirror.conversationRowId;
     const dispensaMsg = n.message?.id;
     await (dispensaConv === null || dispensaMsg == null
@@ -6798,10 +5105,9 @@ export async function processChatwootDelivery(
           base,
         })
     ).catch((err) => {
-      // Best-effort e não lançado, como as outras escritas de intenção desta passada: o trabalho da
-      // entrega é a ingestão, e trocá-la por um registro de recusa deixaria a mensagem sem memória.
-      // Uma dispensa que falha devolve a exposição que a base já tinha — o flush do expediente
-      // respondendo a mensagem calada —, e a linha não terminal continua sendo o que cobra a memória.
+      // NOTE: Best-effort e não lançado: o trabalho da entrega é a ingestão. Uma dispensa que falha só
+      // devolve a exposição de o flush responder a mensagem calada; a linha não terminal segue cobrando a
+      // memória.
       logger.warn(
         "chatwoot: could not record that a gate refused a reply to this message (conv=%s): %s; a later burst may answer it",
         convLabel,
@@ -6810,49 +5116,12 @@ export async function processChatwootDelivery(
     });
   }
 
-  // ── A PERSON ANSWERED THE CUSTOMER: end the agent's attendance on this conversation ──
-  //
-  // The conversation leaves `pending` for the human queue, which is the transition the platform
-  // already spells "a human is on this" — so the webhook gate (shouldBotHandle, above), the debounce
-  // flush and the follow-up ladder (followups/eligibility) all go quiet on it with no new state and
-  // no new predicate in any of them. Handing it back is what it always was: the console's "Return to
-  // AI" button, the REST endpoint behind it, or the MCP tool. NOT `/reset`, which reads as a command
-  // only for a TEST-mode agent and is ordinary customer text everywhere else.
-  //
-  // MEASURED, on a live fork, and it is the reason this exists at all: neither route moves the status
-  // by itself. A composer reply on a `pending`, bot-owned conversation leaves it `pending` with no
-  // assignee even under `enable_auto_assignment`, and so does a reply typed on the paired phone —
-  // the fork hard-returns `false` from `captain_pending_conversation?`, so Chatwoot's own
-  // `mark_pending_conversation_as_open_for_human_response` never fires. The next customer message
-  // then drives a full turn, with the agent speaking into a thread a colleague is already holding.
-  //
-  // `act` is the FIRST half of the fence and not the whole of it. It says the bot still owned the
-  // conversation when this event was mirrored; the second half is a versioned compare-and-swap on the
-  // mirrored row, asked and applied as one statement by the shared unit's fence, because everything
-  // between the two is time a person can claim, resolve or reassign the conversation in — and one of
-  // the steps is a network round trip, since building the client resolves the base URL's host.
-  // Without the re-check an unconditional toggle would overwrite a resolve somebody had just done
-  // with `open`; without the version it would overwrite a hand-back, which writes `pending` and so
-  // looks exactly like the state this decision was made about.
-  //
-  // Not idempotent by bookkeeping but by the gate: a re-delivered webhook finds the conversation no
-  // longer `pending`, `act` is false, and nothing is written or logged a second time.
-  //
-  // Production only, and NOT "enabled only", which is where this first landed. A takeover is a fact
-  // about the CONVERSATION — a person is on it — and the switch is a fact about the agent, so
-  // reading the switch here answers the wrong question. Two ways it went wrong: the post-model
-  // recheck in ../../graph/runtime rechecks OWNERSHIP and not the switch, so a turn already running
-  // when the agent was switched off still answers, over a colleague this block would have stepped
-  // aside for; and the conversation stays `pending`, so switching the agent back on hands it every
-  // conversation a person picked up while it was off, silently.
-  //
-  // A TEST-mode agent is a different case and stays excluded: it lives in a conversation an operator
-  // activated with /teste, and an operator answering from the composer mid-test would otherwise
-  // silence the very agent they are testing, with the way back (/reset) a command they now have to
-  // know about.
-  //
-  // Best-effort in both directions: a failed toggle leaves the previous behaviour rather than
-  // stranding the delivery, and it is logged rather than swallowed.
+  // NOTE: A person answered the customer: end the agent's attendance by moving the conversation to the
+  // human queue, since Chatwoot itself leaves it `pending` (docs/chatwoot.md, "A person answering the
+  // customer ends the attendance"). `act` is only the fence's first half; the shared unit's versioned
+  // CAS on the mirrored row is the second, or the toggle could overwrite a fresh resolve or hand-back.
+  // Idempotent by the gate. Production only, not "enabled only": a takeover is a fact about the
+  // conversation. Test agents are excluded (an operator mid-test would silence it). Best-effort.
   const humanReplyBy = newHumanReplyRoute(n, {
     whatsappProvider: rt?.whatsappProvider ?? null,
   });
@@ -6869,17 +5138,10 @@ export async function processChatwootDelivery(
       instanceId: params.instanceId,
       conversationId,
       route: humanReplyBy,
-      // THE ROUTE's bot, which is the identity `act` asked about, and asking a different one turns
-      // the fence into a second, stricter gate. Measured: Chatwoot fans a message to the
-      // conversation's assigned bot AND the inbox's, so on a conversation held by another persona's
-      // bot the assigned-bot delivery passes `act` and a fence asked about the inbox persona would
-      // reject it, while the inbox-bot delivery never passes `act` at all. Neither takes over, and
-      // the conversation a person just answered stays `pending`.
-      //
-      // The TOKEN the unit speaks with stays the inbox persona's, and the two are not in conflict
-      // because they answer different questions: the fence asks whether THIS DELIVERY may still act,
-      // and the token asks who we are on this instance. The write is a conversation's state, not a
-      // persona's utterance.
+      // NOTE: The ROUTE's bot, the identity `act` asked about: asking the inbox persona instead makes a
+      // stricter second gate that neither fanned delivery passes, leaving the answered conversation
+      // `pending`. The token stays the inbox persona's: the fence asks whether THIS DELIVERY may act, the
+      // token who we are on this instance.
       ourAgentBotId: params.agentBotId,
       agentId: rt.agentId,
       decidedAtVersion: n.conversationUpdatedAt ?? null,
@@ -6891,97 +5153,43 @@ export async function processChatwootDelivery(
     });
   }
 
-  // Continuous ingestion (production or monitoring, enabled only): fold the messages no turn handled
-  // into the agent's memory thread (a customer message it stayed silent on, a human agent's reply).
-  // Disabled / test agents never ingest (no cost / no silent-period capture). Best-effort.
-  //
-  // A monitoring agent holds the conversation and handles nothing, so `act` is handed over as
-  // false: the predicate inside reads it as "would a turn have covered this", and no turn ever does.
-  // OR handed to the observer by the turn above (issue #209 review, round 12): `rt` is the runtime
-  // this delivery was decided with, and a TEST agent — which ingests only on its answer path —
-  // flipped to monitoring inside its turn would otherwise have its message marked handled by the
-  // stand-down and refused here. `agentObservesNow` already read the switch and the mode fresh.
-  //
-  // NOT from an observer's route beside a responder of ours: that responder's route remembers the
-  // message (`responderRemembers` above), and a second append from here is the duplicate.
-  // NOR A CONTROL COMMAND THE RESPONDER WILL HANDLE (issue #476 review, rounds 9 and 10): `/teste`
-  // and `/reset` are the responder's, and this route reads them as ordinary text because the mode it
-  // decides with is the observer's. Folded in, the command becomes a line of the shared thread — and
-  // an ingestion racing the responder's `/reset` would append it back after the reset emptied the
-  // memory. Only where that responder REALLY handles it, though: a command is active for a test
-  // agent alone, and only on a route the fork can reach — outside that, "/reset" is ordinary text
-  // somebody typed, and dropping it here would lose it from every memory.
-  // NOT gated on the responder being switched ON: a command is active on its mode alone, and the
-  // responder's gate is entered by `act || commandActive`, so a disabled test agent still consumes
-  // its `/reset` (issue #476 review, round 13). Requiring `enabled` here would have this route fold
-  // that `/reset` in as ordinary text, after the reset emptied the thread.
+  // NOTE: Continuous ingestion (enabled production or monitoring) folds what no turn handled into the
+  // memory thread. A monitoring agent, or a message handed to the observer inside the turn, passes
+  // `act` as false (no turn covers it). Not beside a responder of ours that remembers it (the
+  // duplicate), nor a control command that responder handles: folded in, a racing /reset could be
+  // appended back after the reset. Only where the responder REALLY handles it (test mode, a route,
+  // switch not required since a disabled test agent still consumes /reset); otherwise it is text.
   const responderCommand =
     command !== null &&
     observer !== null &&
     responderRt !== null &&
     responderRt.mode === "test" &&
     responderHasRoute &&
-    // ...and only for a command that responder's route actually RECEIVED (round 33): bound after
-    // the emission, it never got the `/reset`, and dropping it here loses it from every memory.
+    // NOTE: ...and only if that responder's route actually RECEIVED it (not bound after emission).
     responderCovers;
-  // NOTE: ASKED AGAIN, AFTER THE ANALYSIS (issue #478 review, round 4). The value read at the top of this
-  // function is the WIRE's answer, and it is the right one there: it decides whether the event
-  // reaches the runtime at all, before anything has looked at the audio. By here the eager pass may
-  // have produced the words itself — a `message_updated` that arrived carrying raw audio — and from
-  // that moment this delivery owes the append and everything that protects it. Read from the top's
-  // value, the retry and the failure guard below would both stand down on exactly the delivery that
-  // paid a provider for the transcription.
+  // NOTE: Asked again, after the analysis: the top's value is the wire's, and the eager pass may have
+  // produced the words since. Read from the top, the retry and failure guard below would stand down
+  // on the very delivery that paid for the transcription.
   const carriesTranscription = inboundTranscriptionOnUpdate(n) !== null;
   let ingested: IngestOutcome = "nothing";
-  // NOTE: WHETHER THIS ROUTE INGESTS AT ALL, hoisted out of the condition below so the two halves can
-  // be told apart (issue #478 review, round 8). A route that cannot — no runtime, switched off, a
-  // test agent with nobody watching — reaches no branch and says nothing, and that silence is what a
-  // memory-only recovery reads as "nobody looked". A route that CAN and stands down for the
-  // responder is the opposite, and has to say so.
-  //
-  // TWO HALVES, and only the first is a fact about this route: `routeRemembers` was resolved before
-  // the claim and WRITTEN there (issue #540, window 3), so the sibling observer reads what this
-  // delivery decided rather than a switch as it stands later. The second is this delivery handing
-  // the message to a watcher, decided here — and where it happens it CORRECTS the recorded fact,
-  // below, because the claim's `false` stops being true the moment this delivery ingests anyway.
-  // `stoodDownUnread` É A TERCEIRA (issue #688, review r1), e ela entra pelo mesmo motivo que a
-  // segunda: as duas primeiras perguntam se a ROTA ingere CONTINUAMENTE, e esta parada não é uma
-  // ingestão contínua, é a ÚLTIMA CHANCE daquela mensagem. Sem ela um agente em `test` numa conversa
-  // ativada com `/teste` alcança o portão novo, não ingere (`ingestsContinuously("test")` é falso),
-  // e a mensagem do cliente não vai a lugar nenhum — o que é pior que a base, onde o invoke ao menos
-  // a punha no canal antes de a re-checagem pós-geração recusar o envio.
-  //
-  // E `params.owesMemoryOnly` É A QUARTA (issue #725, review r5), pelo motivo que as outras três já
-  // estabelecem e que só aparece no REPLAY. A parada por posse entra aqui porque um agente em `test`
-  // numa conversa ativada não ingere continuamente, e sem a força a mensagem do cliente não iria a
-  // lugar nenhum — mas no replay o turno é deliberadamente suprimido (é o conserto desta issue),
-  // então `stoodDownUnread` nunca vale ali e esta expressão caía para `routeRemembers`, falso nessa
-  // exata rota. A linha dizia que devia um append e o replay não tinha por onde pagar: nada era
-  // enfileirado, e a recuperação voltava a declarar a perda até gastar o orçamento de retentativa.
-  // A coluna NÃO é uma dica sobre a rota, é o DEVER daquela passada, então ela abre este portão
-  // pelo mesmo direito que a parada que a gravou.
+  // NOTE: Whether this route ingests at all, hoisted so a route that cannot (silent, which a
+  // memory-only recovery reads as "nobody looked") differs from one that stands down for the responder
+  // (which must say so). `routeRemembers` is the recorded fact; `handedToObserver` corrects it below;
+  // `stoodDownUnread` is a message's last chance on a test agent that does not ingest continuously; and
+  // `owesMemoryOnly` is the recorded duty of the pass a replay repeats, whose turn is suppressed.
   const routeIngests =
     rt !== null &&
     (routeRemembers ||
       handedToObserver ||
       stoodDownUnread ||
-      // `rt.enabled` SOBREVIVE AO DEVER (review r7). `routeRemembers` carrega duas coisas — a chave
-      // do agente e o modo que ingere continuamente — e o dever gravado só dispensa a SEGUNDA. Se o
-      // operador desliga o agente entre a falha e a varredura, enfileirar assim mesmo é a entrega
-      // declarando sucesso contra a chave que ele acabou de virar: nem o arme nem o worker leem essa
-      // chave. Sem isto a linha fica recuperável até o agente voltar, que é o desfecho certo.
+      // NOTE: `rt.enabled` survives the duty: the recorded duty only waives the continuous mode, and
+      // enqueueing against a switch just turned off would declare success over it; the row stays
+      // recoverable until the agent is back.
       (rt.enabled && params.owesMemoryOnly === true));
-  // THE RECORD FOLLOWS THE HAND-OVER (issue #540, PR review round 4). A responder whose runtime was
-  // in test mode at the claim records `false`, and a flip to monitoring discovered mid-delivery
-  // (`handedToObserver`) makes that same delivery fold the message in after all. Left at `false`,
-  // the row tells the observer beside it that nobody remembered — and the observer, which trusts
-  // the recorded fact over the current mode, appends the same message to the same contact-inbox
-  // thread a second time.
-  //
-  // Guarded on the value it corrects, so it can only ever move `false` to `true`: a redelivery, a
-  // replay and a concurrent reader all leave a row that already says `true` alone. Best-effort and
-  // not thrown: the delivery's own work is the ingestion below, and taking that away to report a
-  // stale sibling fact would trade a duplicate line in memory for a missing one.
+  // NOTE: The record follows the hand-over: a claim that recorded `false` and then handed the message
+  // to a watcher must say `true`, or the observer beside it, trusting the record, appends a duplicate.
+  // Guarded on the value it corrects (only `false` to `true`); best-effort, since failing the delivery
+  // would trade a duplicate line for a missing one.
   if (routeIngests && !routeRemembers) {
     await runScopedOn(base, sysCtx(params.tenantId), (db) =>
       db.chatwootWebhookDelivery.updateMany({
@@ -6996,17 +5204,12 @@ export async function processChatwootDelivery(
       );
     });
   }
-  // `rt !== null` again, and it is the type checker's rather than the logic's: `routeIngests`
-  // already implies it, but the narrowing does not survive the const.
+  // NOTE: For the type checker: the narrowing from `routeIngests` does not survive the const.
   if (rt !== null && routeIngests && !responderRemembers && !responderCommand) {
-    // WHOSE MEMORY THE APPEND IS FILED UNDER (issue #742). The thread is keyed by contact-inbox, so an
-    // observer beside a responder writes the responder's thread, and the append's agent decides one
-    // thing: whose compaction settings summarise the attendance it closes. An observer's route still
-    // appends a colleague's reply whenever the responder's own delivery has not finished (see
-    // `responderSiblingRemembers`), so both routes can arm the same job, and the later arm replaces the
-    // payload. Filed under the responder whenever it received the message and remembers continuously,
-    // both arms carry the same agent and the race decides nothing. Otherwise the route's own agent, as
-    // before: a responder in `test`, switched off, or bound after the message does not hold this memory.
+    // NOTE: Whose memory the append is filed under, which decides whose compaction settings summarise
+    // the attendance. Both routes can arm the same job (the observer appends a colleague's reply until
+    // the responder's delivery finishes) and the later arm wins, so it is the responder whenever it
+    // received the message and remembers continuously; otherwise the route's own agent.
     const memoryOwner =
       observer !== null &&
       responderRt !== null &&
@@ -7020,17 +5223,9 @@ export async function processChatwootDelivery(
       instanceId: params.instanceId,
       deliveryRowId: params.deliveryRowId,
       n,
-      // `stoodDownUnread` entra pela mesma porta que o observador (issue #688): `act` é o que diz à
-      // ingestão "um turno cobriu isto", e aqui nenhum cobriu.
-      //
-      // E O REPLAY QUE SÓ DEVE MEMÓRIA ENTRA PELA MESMA PORTA (issue #725, rodada 1 de review), que é
-      // a razão de esta subtração existir e não uma cortesia. O gate do turno lá em cima já o calou,
-      // mas `act` continua verdadeiro, e daqui em diante `act` quer dizer "um turno cobriu esta
-      // mensagem" — o que é falso. Sem isto `unhandledByOwnership` recusa a mensagem, a ingestão
-      // devolve "nothing", e o replay fecha a linha como recuperada sem ter enfileirado append
-      // nenhum: a mensagem sai da lista de perdas e não está em memória nenhuma. MEDIDO: zero jobs
-      // `INGEST_MESSAGE` na conversa, com o desfecho dizendo `recovered`. Trocar a resposta duplicada
-      // por uma perda silenciosa é o pior dos dois (issue #228).
+      // NOTE: `act` means "a turn covered this" from here on, and for `stoodDownUnread` and a memory-only
+      // replay none did (the replay's turn gate silenced it). Left true, the ingestion returns "nothing"
+      // and the replay closes the row as recovered with nothing enqueued, a silent loss.
       act:
         act &&
         !observing &&
@@ -7042,9 +5237,8 @@ export async function processChatwootDelivery(
       compactionEnabled: readMemoryConfig(memoryOwner.settings).compaction
         .enabled,
       whatsappProvider: rt.whatsappProvider,
-      // Read only when the payload names none, and only from the row the mirror just wrote: the
-      // common delivery pays no extra query, and a read that fails leaves the message where a
-      // payload without a contact-inbox always left it.
+      // NOTE: Read only when the payload names none, from the row the mirror just wrote; a failed read
+      // leaves the message where a payload without a contact-inbox always did.
       storedContactInboxId:
         n.contactInboxId ??
         (await storedContactInboxId(
@@ -7052,15 +5246,13 @@ export async function processChatwootDelivery(
           mirror.conversationRowId,
           base,
         )),
-      // NOTE: ...and for a LATE TRANSCRIPTION on any route (issue #478 review, round 2), for the reason the
-      // observer's is retried: the append is the last chance. The words come around once, on the
-      // write-back, and no later event carries them — production's continuous ingestion is
-      // best-effort because a turn covers what it misses, and here no turn ever will.
+      // NOTE: ...and a LATE TRANSCRIPTION on any route: the words come around once, on the write-back,
+      // and no turn will cover them.
       retryArm:
         observing ||
         handedToObserver ||
         carriesTranscription ||
-        // O append é a última chance aqui também (issue #688): nenhum turno vai cobrir esta mensagem.
+        // NOTE: The append is the last chance here too: no turn will cover it.
         stoodDownUnread,
       sleep: params.deps?.sleep,
       base,
@@ -7068,24 +5260,10 @@ export async function processChatwootDelivery(
     // NOTE: Inside the branch, so silence means the ingestion never ran rather than that it ran and
     // found nothing. That is the distinction the recovery reads (see `onIngest`).
     params.onIngest?.(ingested);
-    // ...AND THE RECORD FOLLOWS THE OUTCOME, not only the intent (PR review, round 16). The claim
-    // wrote `routeRemembers` from the runtime it resolved, and this is where that promise is either
-    // kept or not: `failed` and `no-thread` are the two ways it ends unkept, and the delivery still
-    // settles PROCESSED either way — `no-thread` does; `failed` now leaves the row for the sweep, a
-    // few lines below, and the correction here is what that sweep reads. Left saying `true`, the row
-    // tells the observer beside it that this message is remembered, and the recovery armed on the
-    // strand would then be reading a row that says the append already happened.
-    //
-    // "Nothing else will ever fold it in" is what stood here, and issue #728 is exactly what made it
-    // false: the ledger names the reply, the message is read back by id and the append is armed
-    // again (./recover-human-reply.ts). The correction matters MORE for it, not less.
-    //
-    // `nothing` is NOT one of them: there was nothing to fold in, which is not a promise broken.
-    //
-    // Guarded on the value it corrects, so it only ever moves `true` to `false`, and best-effort for
-    // the same reason its twin above is: this delivery's own work is done, and failing it here to
-    // report a stale sibling fact would trade a message the observer can still save for one nobody
-    // does.
+    // NOTE: The record follows the OUTCOME: `failed` and `no-thread` break the promise the claim wrote,
+    // and left `true` the row would tell the observer beside it, and the recovery of a strand
+    // (./recover-human-reply.ts re-arms the append), that the append happened. `nothing` breaks no
+    // promise. Guarded to move only `true` to `false`; best-effort like its twin above.
     if (ingested === "failed" || ingested === "no-thread") {
       await runScopedOn(base, sysCtx(params.tenantId), (db) =>
         db.chatwootWebhookDelivery.updateMany({
@@ -7101,70 +5279,23 @@ export async function processChatwootDelivery(
       });
     }
   } else if (routeIngests) {
-    // NOTE: A route that INGESTS, standing down on purpose: the responder already has this message,
-    // or is about to consume it as a command. Reported, because the recovery's question is "did
-    // anything look at this message", and a deliberate stand-down is an answer (round 8). Silent, an
-    // observer's replay beside a responder would be put back on the worklist until its attempts ran
-    // out, over a message that was handled.
+    // NOTE: A route that INGESTS, standing down on purpose (the responder has the message or will
+    // consume it as a command). Reported: a deliberate stand-down answers the recovery's "did anything
+    // look at this message", and silence would requeue a handled row until its attempts ran out.
     params.onIngest?.("covered");
   } else if (observer?.enabled === true && responderRt === null) {
-    // NOTE: A SWITCHED-ON OBSERVER WITH NO RESPONDER TO REMEMBER FOR (issue #620): a decision
-    // about the message, like the stand-down above, and reported for the same reason. Silent, every
-    // replay of a stranded observer delivery would read as "no route asked" and go back to DEAD
-    // until its attempts ran out, although the watermark and the verdict it owes are this same
-    // delivery's work below. A switched-off observer stays silent: the message waits for its switch.
+    // NOTE: A switched-on observer with no responder to remember for: a decision, reported for the same
+    // reason, or every replay would read "no route asked" and return to DEAD. A switched-off observer
+    // stays silent: the message waits for its switch.
     params.onIngest?.("no-reader");
   }
-  // A COLLEAGUE'S REPLY nobody could remember, its retries spent (round 24). The loss is reported
-  // where an operator reads: an error line on the conversation, not a process warning.
-  //
-  // "There is no recovery to leave the row for" is the reason this line once gave for being the
-  // whole answer, and issue #728 made it false fifty lines below: the row IS left for the sweep now,
-  // and the sweep arms a recovery that reads the reply back by id. The line stays, and it is no
-  // longer the end of the story — it is the record that the loss happened, which an operator still
-  // needs whether or not the second chance lands.
-  //
-  // ON EVERY ROUTE, and not only a watcher's (issue #720). The report was gated on
-  // `(observing || handedToObserver)`, which is the route that INSPIRED it and not the route that
-  // needs it: an observer is the rarer deployment by far, and on the ordinary one — the agent
-  // qualifies the lead, a person takes over and closes the sale (#187) — the same reply vanished from
-  // memory with nothing said anywhere. The gate was measured, not argued: with the enqueue refused on
-  // a conversation a person owns, the delivery returned no error, the row settled PROCESSED, memory
-  // held nothing and `execution_logs` was empty.
-  //
-  // `humanReplyBy !== null` IS WHAT REPLACES IT — the RESOLVED route and not the payload's shape,
-  // which is the same answer `ingestUnhandledMessage` decides the `human_agent` role by
-  // (`isNewHumanReplyToCustomer` is `newHumanReplyRoute(...) !== null`, the function this value came
-  // from). One spelling, so the line that reports the loss cannot disagree with the pass that
-  // suffered it, and disjoint from a customer's message, which keeps the customer's own failed
-  // ingestion (#719, #725) out of a report that names a colleague.
-  //
-  // THE SHAPE WOULD NOT DO, and the difference is a real false alarm rather than a nicety (review
-  // r1). `mayBeNewHumanReply` deliberately includes the `device` leg before the provider has been
-  // asked, and on a provider that does not reserve its echo ids that shape is OUR OWN reply coming
-  // back around. It cannot reach `"failed"` — the role is null, so the ingestion answers `"nothing"`
-  // — but `"no-thread"` is returned BEFORE the role is computed, so an echo on a conversation
-  // neither the payload nor the mirror names a contact-inbox for would page an operator about a
-  // colleague's reply that no person ever wrote.
-  //
-  // `!observerHolds` left with the gate, already dead here rather than load-bearing: it requires
-  // `isNewIncoming`, and an outgoing reply never is.
-  //
-  // THE LEVEL STAYS `error`, AND THAT IS A DECISION rather than what fell out of removing an `&&`:
-  // `writeFlowEvent` dispatches an alert for `warn` and `error` on an `inbox` source, so until now
-  // only a deployment with an observer could be paged by this line and from here any deployment
-  // where a person answers can. Kept at `error` for what the line is about on this route — retries
-  // spent, no replay to rebuild the body, the words gone for good — since a `warn` would file the
-  // permanent loss of the business half of an attendance (#187) below the threshold an operator
-  // reads, which is the silence this report exists to remove. The widening is the point.
-  //
-  // "no-thread" IS THE SAME LOSS BY A DIFFERENT ROUTE (issue #476 review, round 37), and it is the
-  // permanent one: a conversation whose contact-inbox neither the payload nor the mirror names has
-  // nowhere to hold the reply, so there is nothing to retry and no later attempt that would find
-  // one. Left out of this report it settled silently — `observerHolds` is inbound-only, so the mark
-  // block below never sees an outgoing reply, and the row went PROCESSED with the reply in nobody's
-  // memory and no line anywhere. Reported at the same level and on the same conversation; the
-  // reason names which of the two happened.
+  // NOTE: A colleague's reply nobody could remember (`failed`: retries spent; `no-thread`: nowhere to
+  // hold it, permanent) is reported as an `error` line on the conversation, on EVERY route: this is the
+  // business half of a handed-off attendance, and `warn` would file its loss below what an operator
+  // reads. The record stands even though the sweep may still recover it. Keyed on the RESOLVED
+  // `humanReplyBy`, the role the ingestion uses, not the payload's shape: on a provider that does not
+  // reserve echo ids that shape includes our own reply echoing back, which reaches `no-thread` before
+  // the role is computed and would page about a reply no person wrote.
   if (
     (ingested === "failed" || ingested === "no-thread") &&
     humanReplyBy !== null &&
@@ -7201,27 +5332,10 @@ export async function processChatwootDelivery(
       },
     );
   }
-  // E A LINHA FICA PARA A VARREDURA (issue #728), que é a metade que a #720 decidiu ao contrário.
-  // Ela liquidava aqui de propósito, e disse por quê: "para a resposta de um colega não compra
-  // nada", porque `owed-takeover` só re-rodava a transição de posse e `observer-strand` só relatava.
-  // Nenhum dos dois re-armava ingestão, então prender a linha custava um job redundante e um veredito
-  // no fim sem salvar uma palavra. A premissa caiu: `human_reply_message_id` está na linha desde a
-  // #469, a mensagem é relida por id e a varredura arma a recuperação dela (./recover-human-reply.ts).
-  //
-  // POR QUE LANÇAR EM VEZ DE ARMAR AQUI MESMO. O arme usaria o mesmo enfileiramento que acabou de
-  // falhar quatro vezes, que é a única coisa que se sabe do ambiente neste ponto. A varredura é a
-  // segunda chance porque ela roda meia hora depois, quando o blip passou; o lançamento é só o que
-  // mantém a linha não-terminal até lá, e é o mesmo par que a transcrição tardia usa logo abaixo.
-  //
-  // `no-thread` NÃO ENTRA, e é a mesma fronteira que a transcrição traça: uma conversa que nem o
-  // payload nem o espelho sabem nomear um contact-inbox não tem onde guardar a resposta, e a
-  // releitura acharia o mesmo nada. Prender a linha ali trocaria uma perda permanente RELATADA — o
-  // bloco acima, com a razão que a nomeia — por um limbo que a varredura re-arma sem fim.
-  //
-  // O QUE O REPLAY NÃO FAZ, e é o que separa este lançamento do da #719: a recuperação armada é só
-  // de memória e nunca reexecuta esta entrega, então ela não pode postar (a exposição da #725) nem
-  // tirar o bot de uma conversa que já voltou a ser dele. A transição de posse já aconteceu, bem
-  // acima, antes da ingestão.
+  // NOTE: E a linha fica para a varredura, que arma a recuperação por id da resposta
+  // (./recover-human-reply.ts). Lança em vez de re-armar aqui porque o enfileiramento acabou de falhar
+  // quatro vezes; a varredura roda meia hora depois. `no-thread` não entra: a releitura acharia o
+  // mesmo nada, e a perda já foi relatada acima. A recuperação é só de memória: não posta nem mexe na posse.
   if (
     ingested === "failed" &&
     humanReplyBy !== null &&
@@ -7232,74 +5346,32 @@ export async function processChatwootDelivery(
       `chatwoot: a colleague's reply could not be remembered (conv=${convLabel}); leaving the delivery for the sweep`,
     );
   }
-  // NOTE: A LATE TRANSCRIPTION HOLDS THE DELIVERY THE SAME WAY, on every route (issue #478 review,
-  // round 2). `observerHolds` is inbound-only — a `message_updated` is not `isNewIncoming` — so on
-  // its own it settles this delivery PROCESSED whatever the enqueue answered, and a scheduler blip
-  // then discards the transcription for good: the sweep sees a terminal row, and the row is the only
-  // thing that knew.
-  //
-  // ASKED OF EVERY ROUTE and not only the watcher's, because what makes production's continuous
-  // ingestion best-effort is a turn covering what it misses, and there is no turn here by
-  // construction — the words arrive on an update, and an update drives none. Where a turn DID answer
-  // the message, the gate inside the ingestion refuses it and the answer is `"nothing"`, so this
-  // never fires for the ordinary write-back.
-  //
-  // The throw and the one below are the two exits of this function that leave the row on PROCESSING
-  // deliberately: the route logs it, the sweep declares it `owed-transcription`, and the replay
-  // re-runs this path.
+  // NOTE: A late transcription holds the delivery the same way, on every route: `observerHolds` is
+  // inbound-only, so a failed enqueue would settle the row PROCESSED and lose the words for good.
+  // There is no turn here by construction (an update drives none); where a turn did answer, the
+  // ingestion returns "nothing". The throws here leave the row PROCESSING on purpose: the sweep
+  // declares it `owed-transcription` and the replay re-runs this path.
   if (carriesTranscription && ingested === "failed") {
     throw new Error(
       `chatwoot: the late transcription could not be armed for ingestion (conv=${convLabel}); leaving the delivery for the sweep`,
     );
   }
-  // NOTE: "no-thread" IS NOT THAT, and it is left to settle: a conversation neither the payload nor the
-  // mirror can name a contact-inbox for has nowhere to hold the words, and the replay would find the
-  // same nothing. Said at `warn`, which is where the observer's inbound branch says it too.
+  // NOTE: "no-thread" is left to settle: with no contact-inbox the words have nowhere to go and a
+  // replay would find the same nothing. Logged at `warn`, like the observer's inbound branch.
   if (carriesTranscription && ingested === "no-thread") {
     logger.warn(
       "chatwoot: a late transcription arrived (conv=%s) but the conversation names no contact-inbox thread to hold it",
       convLabel,
     );
   }
-  // The observer's verdict, from the enqueue (see the note above the mark). The throw is the other
-  // exit of this function that leaves the row on PROCESSING deliberately: the route logs it, and
-  // the sweep's recovery re-runs the delivery.
-  // E A LIQUIDAÇÃO QUE ESPEROU A INGESTÃO ACONTECE AQUI (issue #719), com a mesma lista positiva da
-  // parada por posse: a linha fecha com a ingestão SEGURANDO a mensagem, e o enfileiramento que falha
-  // lança, deixando a linha em PROCESSING para a varredura. `"nothing"` liquida — é a ingestão tendo
-  // corrido e não havendo o que lembrar, que é o caso de uma reação, de uma nota privada e da nossa
-  // própria mensagem de saída —, e o `"no-thread"` também, porque uma conversa sem contact-inbox não
-  // tem onde guardar e a repetição diria o mesmo.
-  // O QUE ESTE THROW COMPRA, E O QUE ELE CUSTA (review r4, e o custo é real).
-  //
-  // Compra: a linha fica em `PROCESSING`, que é o estado que a varredura revisita, então a mensagem
-  // tem caminho de volta em vez de sumir com a linha liquidada.
-  //
-  // Custa: a varredura REPLICA A ENTREGA, e o replay chama este mesmo receptor de novo, com a posse
-  // lida AGORA. Se no meio a pessoa respondeu o cliente e devolveu a conversa ao bot, e nenhuma
-  // mensagem nova chegou (o freshness check passa), o turno roda sobre a mensagem da era humana e
-  // POSTA — nada na linha diz "esta mensagem já foi atendida por gente", e a marca, que é o que
-  // faria `shouldPost` recusar, é justamente o que este caminho não avança.
-  //
-  // Fica assim de propósito, e a conta é esta: hoje a mensagem se perde SEMPRE e em silêncio; com o
-  // conserto ela se recupera na maioria dos casos e, numa conjunção (enfileiramento falhando, a
-  // pessoa respondendo, a conversa voltando ao bot, nenhuma mensagem nova, tudo dentro da janela da
-  // varredura), o bot responde uma vez a mais numa conversa que já é dele de novo. A mesma exposição
-  // existe desde a #711 na parada por posse logo abaixo, pelo mesmo motivo e com a mesma saída.
-  //
-  // FECHADO NA #725, e a forma é a que este parágrafo previa: uma intenção "só memória" gravada na
-  // linha (`owes_memory_only`) e honrada pelo replay. A coluna sozinha não bastava — o `replayPosts`
-  // do recover-delivery decide a leitura da página, não o POST, que quem faz é este receptor sendo
-  // reexecutado —, então ela chega aqui como `params.owesMemoryOnly` e desarma três coisas: o turno,
-  // o `act` que a ingestão lê como "um turno cobriu isto", e a metade de `settlesHere` que faz a
-  // marca andar. Os três foram medidos na rodada: sem o segundo a linha fecha sem append nenhum, e
-  // sem o terceiro a rajada seguinte coalesce a mensagem e o turno a responde.
+  // NOTE: A liquidação que esperou a ingestão acontece aqui: fecha com a ingestão segurando a mensagem,
+  // ou com `"nothing"` (nada a lembrar) e `"no-thread"` (sem onde guardar); um enfileiramento que
+  // falha lança e deixa a linha em PROCESSING para a varredura. O replay não responde de novo porque
+  // `owesMemoryOnly` desarma o turno, o `act` da ingestão e o avanço da marca.
   if (settleAwaitsIngest) {
     if (ingested === "failed") {
-      // A CAUSA VAI NA LINHA porque as duas metades chegam aqui, e o operador que lê a entrega
-      // falhada precisa saber qual delas é: uma pessoa na conversa, ou um portão que calou a
-      // mensagem (fora de horário, contato recusado). Sem isso a mensagem descreve um estado que em
-      // metade dos casos não é o que aconteceu.
+      // NOTE: A causa vai na mensagem: as duas metades chegam aqui (uma pessoa na conversa, ou um portão
+      // que calou a mensagem), e o operador precisa saber qual.
       throw new Error(
         `chatwoot: ${
           consumed
@@ -7310,68 +5382,18 @@ export async function processChatwootDelivery(
     }
     await markHandledAndSettle({ onWatermarkFailure: "leave-for-sweep" });
   }
-  // O MESMO DE NOVO, PARA A PARADA DA #688 (review r1). O guarda abaixo é do observador, e esta
-  // parada caía fora dele: nada lançava, a tx2 fechava a linha como PROCESSED — que é o estado que
-  // nada revisita — e a mensagem do cliente sumia exatamente como sumia antes do conserto. Escrito
-  // aqui, ANTES do bloco do observador, porque os dois podem valer ao mesmo tempo e a mensagem a
-  // recuperar é uma só; e como um throw, porque é isso que deixa a linha em PROCESSING, onde a
-  // varredura a encontra.
-  // ...E TAMBÉM QUANDO INGESTÃO NENHUMA CORREU (review r12). `routeIngests` é falso sempre que a
-  // rota não resolveu runtime (`rt === null`), e essa parada alcança isso: quem decide se o turno
-  // roda é `act`, uma pergunta sobre a POSSE da conversa, e o turno carrega a configuração dele
-  // sozinho, muito depois de `resolveRoute` ter lido a vinculação. Uma vinculação feita entre as
-  // duas leituras deixa `rt` nulo com o turno rodando — a corrida que a #540 mediu e que a
-  // `bindingGeneration` nomeia. O throw que existe para ela cobre só o caminho vivo COM recibo
-  // (exige `claimFrom === "PENDING"` e uma geração gravada); um replay da varredura não satisfaz
-  // nenhum dos dois. Sem isto, a liquidação da marca passava por cima de uma mensagem que memória
-  // nenhuma tem, que é o defeito desta issue voltando pela terceira porta que o conserto abriu.
-  //
-  // UMA PERGUNTA SÓ, e a lista é positiva (review r14): a linha só fecha com a ingestão SEGURANDO a
-  // mensagem. Todo o resto — o enfileiramento que falha, a ingestão que nem correu, e o
-  // `"no-thread"` — é a mensagem sem dono, e a linha fica para a varredura.
-  //
-  // `"nothing"` não está na lista porque não chega aqui, e o argumento é de duas pontas. O papel
-  // nunca é nulo nesta parada: `act` é entregue FALSO à ingestão (é o que a faz guardar a mensagem),
-  // então `unhandledByOwnership` vale e a mensagem é sempre `customer`. E a outra ponta, a renderação
-  // vazia, não alcança o portão: uma mensagem sem texto e sem anexo faz o turno devolver `skipped`
-  // antes dele, o que está medido em tests/modules/chatwoot-monitoring-seam.test.ts. Se um dia
-  // chegar, o desfecho é uma varredura que replica o turno até o teto e uma linha de perda visível —
-  // que é o lado certo para errar.
-  //
-  // O `"no-thread"` levou duas rodadas porque o argumento errado é convincente: a marca não passa
-  // por cima da mensagem, então parecia que ela ficava guardada. Não fica. A marca é lida pelo
-  // FLUSH do debounce, e este é o caminho DIRETO, que só existe com o debounce desligado: nenhum
-  // turno seguinte relê a conversa a partir dela, e a ingestão contínua folha a mensagem DO
-  // EVENTO, não um atraso acima da marca. Com a linha liquidada, ninguém revisita nada.
-  //
-  // E do lado desta parada, `"no-thread"` só pode ser desacordo entre duas leituras do mesmo fato:
-  // o portão mora dentro de `if (loaded.contactInboxId != null)`, então o runtime resolveu um
-  // contact-inbox para poder parar o turno, e o receptor lendo null ali é a leitura DELE tendo
-  // falhado (`storedContactInboxId` engole o erro) ou a linha do espelho não existir nesta passada.
-  // As duas são transitórias, que é exatamente o que a varredura existe para retentar.
-  // `"queued"` é a ÚNICA saída em que alguma coisa ficou com a mensagem, e por ser a única ela
-  // também responde "a ingestão chegou a correr": o valor inicial de `ingested` é `"nothing"`, e só
-  // a chamada escreve `"queued"`. Uma bandeira separada dizendo o mesmo foi o que a rodada 12 pôs
-  // aqui e a mutação mostrou ser redundante — duas derivações do mesmo fato, que é o padrão de onde
-  // este buraco veio.
+  // NOTE: A parada por posse (uma pessoa assumiu enquanto o turno esperava) só fecha com a ingestão
+  // SEGURANDO a mensagem: `"queued"` é a única saída assim, e a única que prova que a ingestão correu.
+  // Todo o resto fica para a varredura: enfileiramento que falhou; ingestão que nem correu (uma
+  // vinculação entre as duas leituras deixa `rt` nulo, e o throw da janela 1 não cobre replay); e
+  // `"no-thread"`, aqui um desacordo transitório entre leituras, já que no caminho direto nenhuma
+  // marca guarda a mensagem. `"nothing"` não chega aqui: `act` vai falso e o papel é `customer`.
   const standDownKept = ingested === "queued";
   if (stoodDownUnread && !standDownKept) {
-    // O QUE ESTA PASSADA DEVIA, GRAVADO ANTES DO THROW QUE A DEIXA PARA A VARREDURA (issue #725,
-    // bateria cega, cenário s2). Este é o TERCEIRO dos três sites que o corpo da issue enumera, e o
-    // bloco `settlesHere` lá acima não o alcança: uma pessoa que assume DURANTE o turno deixa `act`
-    // verdadeiro e `consumed` falso, então nenhuma das três metades daquela condição vale e a linha
-    // ia para a varredura com a coluna nula.
-    //
-    // O que isso custava, medido pelo verificador contra este head: o replay re-derivava a posse de
-    // agora, achava o bot de volta na conversa e rodava o TURNO INTEIRO (uma linha de `generate`
-    // nova). Ele não postou, e é aí que estava a ilusão de que o site estava coberto: quem o parou
-    // foi a #703, que viu a resposta do colega na página e devolveu `answered-elsewhere`. Medida a
-    // MESMA parada sem essa resposta — uma pessoa que assume e ainda não escreveu nada — o replay
-    // posta. O cliente era poupado por outro conserto, não por este.
-    //
-    // Best-effort e não `await` num throw: a linha vai para a varredura de qualquer forma, e uma
-    // falha aqui devolve a leitura que toda entrega tinha antes da coluna. A largura sai da mesma
-    // expressão que a liquidação usa, para os dois fatos serem do mesmo instante.
+    // NOTE: O que esta passada devia, gravado antes do throw: uma pessoa que assume DURANTE o turno
+    // deixa `settlesHere` falso, e sem a coluna o replay re-derivaria a posse, acharia o bot de volta e
+    // rodaria o turno inteiro, postando. Best-effort (o throw leva a linha à varredura de todo modo), com
+    // a largura da mesma expressão da liquidação.
     await runScopedOn(base, sysCtx(params.tenantId), (db) =>
       db.chatwootWebhookDelivery.updateMany({
         where: { id: params.deliveryRowId },
@@ -7397,24 +5419,18 @@ export async function processChatwootDelivery(
       }; leaving the delivery for the sweep`,
     );
   }
+  // NOTE: The observer's settlement follows the enqueue (see the note above the mark); a failed one
+  // throws and leaves the row PROCESSING for the sweep's recovery.
   if (observerHolds) {
     if (ingested === "failed") {
       throw new Error(
         `chatwoot: the observer's ingestion could not be armed (conv=${convLabel}); leaving the delivery for the sweep`,
       );
     }
-    // A SWITCHED-OFF observer marks nothing (issue #476 review, round 5). Its route is still the
-    // observer's — nothing on it answers — but ingestion refuses a disabled agent, so the mark would
-    // put the message behind the watermark with no memory holding it. Left unmarked, the message
-    // stays ABOVE the watermark, which is the one place that says a stretch of the conversation was
-    // never read: the flush after a flip to production reads above it (`promotedToProduction`), and
-    // an operator reading the mark sees where the silence began.
-    //
-    // WHAT IT IS NOT (round 6): a replay. Turning a monitoring agent back on arms nothing, so what
-    // arrived while it was off does not enter memory by itself — the observer's memory has that gap
-    // until a flip to production, and the watcher's own read of the conversation (the OBSERVE job)
-    // reads Chatwoot rather than the checkpoint. The alternative is the one this replaced, marking
-    // the message handled: that loses it just as thoroughly and leaves no trace that it was lost.
+    // NOTE: A SWITCHED-OFF observer marks nothing: its ingestion refuses, so a mark would hide the
+    // message behind the watermark with no memory. Unmarked, it stays ABOVE the watermark, where the
+    // flush after a flip to production reads (`promotedToProduction`) and where an operator sees the
+    // silence began. Re-enabling monitoring arms nothing, so that gap stays until such a flip.
     if (observer !== null && !observer.enabled && !responderRemembers) {
       logger.warn(
         "chatwoot: the observer is switched off (conv=%s); the message is neither remembered nor marked",
@@ -7429,46 +5445,19 @@ export async function processChatwootDelivery(
       await markHandledAndSettle({ onWatermarkFailure: "leave-for-sweep" });
     }
   }
-  // E A PARADA DA #688 FECHA A CONTABILIDADE PELO MESMO CAMINHO (review r10), depois que a ingestão
-  // pegou a mensagem e nunca antes. A marca ficar parada era certo enquanto nada tinha lido a
-  // mensagem; com a ingestão tendo funcionado, ela ESTÁ na memória e o que falta é dizer isso — como
-  // o `agent-unavailable` sob um observador diz logo acima, e como o takeover comum sempre disse.
-  //
-  // Sem esta escrita a mensagem fica ACIMA da marca com a memória já contendo-a, e a conversa
-  // voltando para o bot o flush seguinte a seleciona de novo: a mesma pergunta duas vezes no prompt,
-  // uma vinda da memória e outra da rajada.
-  //
-  // `leave-for-sweep` pela mesma razão do observador: a marca É a escrita que fecha esta parada, e
-  // liquidar a linha com ela ainda abaixo da mensagem deixaria um registro terminal sobre uma
-  // mensagem que o resto do sistema continua tratando como não lida.
-  // Sem termo nenhum além da parada: o throw acima já deixou passar só o caso em que a mensagem
-  // está guardada, e uma segunda condição repetindo a mesma pergunta seria um ramo que nada alcança.
+  // NOTE: A parada por posse fecha a contabilidade depois que a ingestão pegou a mensagem: sem a marca
+  // ela fica ACIMA dela já estando na memória, e o próximo flush a selecionaria de novo. Com
+  // `leave-for-sweep` como o observador: a marca é a escrita que fecha esta parada. O throw acima já
+  // garantiu que a mensagem está guardada.
   if (stoodDownUnread) {
     await markHandledAndSettle({ onWatermarkFailure: "leave-for-sweep" });
   }
-  // THE WATCHER'S VERDICT (issue #477): a customer message on a conversation the agent observes arms
-  // the OBSERVE row, which reads the conversation from Chatwoot when its window closes. After the
-  // marks and best-effort, like compaction: the memory append above is what this delivery owes, and
-  // a label that is late is not a message that is lost — the next burst arms the same row again.
-  //
-  // ...and only while the watcher is SWITCHED ON (issue #477 review, round 2). `observing` is a
-  // statement about the route, not about the agent: a disabled observer still owns the route, its
-  // ingestion refuses (`ingested` stays `"nothing"`, deliberately, so the message stays above the
-  // watermark for the flush after a flip), and arming here would leave a verdict pending on a
-  // message the agent was explicitly off for. Re-enabled before the window closes, the tick would
-  // then classify and relabel it.
-  //
-  // WHO CLASSIFIES IS ASKED SEPARATELY FROM WHO ANSWERS (issue #477 review, round 4). `rt` is the
-  // reply route's runtime, and that answer is null for a bound observer whose bot still HOLDS the
-  // conversation on an inbox that has a responder — correctly, since the reply is the responder's.
-  // Observation is not a reply, and an observer watches every conversation on its inbox including
-  // the ones its bot happens to hold. So the binding is asked directly, and the two answers are
-  // deduplicated by agent: on the ordinary observer route they are the same runtime.
-  //
-  // ...and NOT for a control command (issue #477 review, round 5). `/teste` and `/reset` are an
-  // operator talking to the runtime, not a customer talking to the business: the responder consumes
-  // them, and a verdict armed on one would classify the conversation off an operator's instruction —
-  // and, in `/reset`'s case, wake up after the command cleared the labels and put them back.
+  // NOTE: The watcher's verdict: a customer message on an observed conversation arms the OBSERVE row,
+  // best-effort (a late label is not a lost message). Only while the watcher is SWITCHED ON, or a
+  // disabled observer's message gets relabelled once re-enabled. Who classifies is asked of the
+  // BINDING, separately from who answers (`rt` is null for an observer whose bot holds the
+  // conversation), deduplicated by agent. Not for a control command: it is the operator talking, and
+  // after /reset the verdict would put the cleared labels back.
   if (
     isNewIncoming &&
     !commandActive &&
@@ -7493,31 +5482,22 @@ export async function processChatwootDelivery(
       );
       return null;
     });
-    // THE HAND-OVER ANSWER, NOT THE SNAPSHOT'S `enabled` (issue #477 review, round 20). `observing`
-    // was derived from `rt` and agrees with it; `handedToObserver` comes from a FRESH read that
-    // already established enabled AND monitoring, so gating it on the loaded `rt.enabled` rejects
-    // exactly the agent that was switched on inside this delivery — while ingestion and the
-    // watermark have already treated the message as observed, and `bound` is null because a
-    // responder holds no observer row. The message would then wait for another trigger.
+    // NOTE: The hand-over answer, not the snapshot's `enabled`: `handedToObserver` comes from a FRESH read
+    // (enabled and monitoring), and gating it on the loaded `rt.enabled` would reject an agent switched
+    // on inside this delivery, which `bound` cannot cover (a responder holds no observer row).
     const watchers =
       rt !== null && (handedToObserver || (rt.enabled && observing))
         ? [rt]
         : [];
     if (bound?.enabled && !watchers.some((w) => w.agentId === bound.agentId))
       watchers.push(bound);
-    // Only the REPLY-ROUTE answer can be an attach-window one (round 15): `bound` IS the row, and a
-    // detached bot that still owns an older conversation keeps receiving its events, so "no row"
-    // there is the post-detach state as often as the pre-commit one.
+    // NOTE: Only the reply-route answer can be an attach-window one: `bound` IS the row, and "no row"
+    // there is as often the post-detach state.
     const attachingAgentId =
       observerHolds && rt !== null && observerAttaching ? rt.agentId : null;
-    // A HAND-OVER MEANS THE SNAPSHOT IS OLD (issue #477 review, round 12). `observing` was read off
-    // `rt` and agrees with it; `handedToObserver` is the opposite case — the runtime was loaded as a
-    // responder and a FRESH read found it monitoring, so the flip landed inside this delivery and
-    // `rt.settings` predates it. The edit that flips the mode is usually the edit that adds the label
-    // groups, so arming off the old bag answers `off` and the message is remembered and never
-    // classified. `boundObserverRuntime` cannot cover it either: that agent is the inbox's responder,
-    // so it holds no observer row. One read, on a path that only runs when a mode flip raced a
-    // delivery; an unreadable answer keeps the snapshot, since a stale taxonomy is better than none.
+    // NOTE: A hand-over means `rt.settings` predates the flip, and the edit that flips the mode usually
+    // adds the label groups, so the old bag would answer `off`. `boundObserverRuntime` cannot cover it
+    // (a responder holds no observer row). One read on a rare path; unreadable keeps the snapshot.
     const freshSettings =
       handedToObserver && !observing && rt !== null
         ? await runScopedOn(base, sysCtx(params.tenantId), (db) =>
@@ -7557,20 +5537,11 @@ export async function processChatwootDelivery(
     }
   }
 
-  // tx2: mark processed. NOTE: a crash between tx1 and tx2 still strands the row in PROCESSING —
-  // nothing here can close that window, because the process is gone. What closes it is the
-  // stranded-delivery sweep (./delivery-sweep.ts): it does not replay the event, it REPORTS the row
-  // and arms a recovery, so the payload never had to be stored. The recovery rebuilds a body from
-  // the mirror plus one REST read and comes back through THIS function with `claimFrom: "DEAD"`
-  // (issue #295, ./recover-delivery.ts).
-  //
-  // NOTE: By ID and with no CAS, which matters for one race and is the right side of it. A turn that
-  // outlives the sweep's staleness threshold (nothing bounds a model call or a tool here) has its
-  // row judged abandoned and marked DEAD while this process is still working, and then reaches this
-  // line. Winning here is what leaves the row TRUE — the delivery did complete, late — so the
-  // correction outlives the sweep's verdict. What cannot be taken back is the alert the sweep
-  // already dispatched, which is why the threshold is generous; the residue is one false alert on a
-  // pathological turn, against a row that ends up saying the right thing.
+  // tx2: mark processed. NOTE: a crash between tx1 and tx2 strands the row in PROCESSING; the stranded
+  // delivery sweep (./delivery-sweep.ts) reports it and arms a recovery, which comes back through this
+  // function with `claimFrom: "DEAD"` (./recover-delivery.ts), so the payload is never stored. By ID
+  // with no CAS on purpose: a turn outliving the sweep's threshold finds its row DEAD, and winning here
+  // leaves it true. See docs/chatwoot.md, "Webhook receiver" (the two windows left open).
   await runScopedOn(base, sysCtx(params.tenantId), (db) =>
     db.chatwootWebhookDelivery.update({
       where: { id: params.deliveryRowId },

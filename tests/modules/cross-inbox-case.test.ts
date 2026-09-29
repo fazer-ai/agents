@@ -2529,6 +2529,80 @@ describe("the tool", () => {
       expect((turnState as { caseClosing?: boolean }).caseClosing).toBe(false);
     });
 
+    test("on: an addition that failed earlier in the turn keeps a later successful one from scheduling the close", async () => {
+      const failOn = new Set<string>(["sendMessageAsAdmin"]);
+      const f = fakeChatwoot({
+        failOn,
+        convs: [
+          {
+            id: 7,
+            inboxId: 10,
+            contactId: 5,
+            status: "pending",
+            attrs: { case_conversation_id: 55 },
+            labels: [],
+          },
+          {
+            id: 55,
+            inboxId: 40,
+            contactId: 5,
+            status: "open",
+            attrs: {},
+            labels: [],
+          },
+        ],
+      });
+      const turnState = turn();
+      const t = withClose(f, true, { turnState });
+      await t.invoke({ reason: "primeiro" });
+      failOn.delete("sendMessageAsAdmin");
+      const out = String(await t.invoke({ reason: "segundo" }));
+      expect(out).toContain("was added to that case");
+      expect(turnState.resolveRequested).toBe(false);
+      expect(out).toContain("NOT closed");
+    });
+
+    test("on: withdrawing the case's close keeps a close the model asked for after it", async () => {
+      const failOn = new Set<string>();
+      const f = fakeChatwoot({
+        failOn,
+        convs: [
+          {
+            id: 7,
+            inboxId: 10,
+            contactId: 5,
+            status: "pending",
+            attrs: {},
+            labels: [],
+          },
+        ],
+      });
+      const turnState: ReturnType<typeof turn> & {
+        resolveByModel?: boolean;
+        caseClosing?: boolean;
+      } = turn();
+      const t = withClose(f, true, { turnState });
+      const [resolve] = buildNativeTools(
+        {
+          client: {
+            ...f.client,
+            muted: false,
+          } as unknown as ChatwootClient,
+          conversationId: 7,
+          turnState,
+        },
+        ["resolve_conversation"],
+      );
+      if (!resolve) throw new Error("resolve_conversation not built");
+      await t.invoke({ reason: "primeiro" });
+      // The model closes the conversation itself after the case opened.
+      await resolve.invoke({});
+      failOn.add("sendMessageAsAdmin");
+      await t.invoke({ reason: "segundo" });
+      expect(turnState.resolveRequested).toBe(true);
+      expect(turnState.caseClosing).toBe(false);
+    });
+
     test("on: a failed addition leaves a close the model asked for with resolve_conversation alone", async () => {
       const f = fakeChatwoot({
         failOn: new Set(["sendMessageAsAdmin"]),

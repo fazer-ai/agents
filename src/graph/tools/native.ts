@@ -149,6 +149,11 @@ export interface TurnState {
   // The case inbox the deferred close checks before writing them (graph/resolve-labels.ts).
   resolveCaseHold?: CaseInbox | null;
   caseClosing?: boolean;
+  // resolve_conversation asked for the close: a close the case scheduled and then withdrew leaves it.
+  resolveByModel?: boolean;
+  // An addition of this turn did not reach its case, so the case schedules no close for the rest of
+  // the turn: the origin is the only place those words are.
+  caseAdditionLost?: boolean;
   // A message this turn put in front of the customer from OUTSIDE the reply path, and the one thing
   // here that has already LEFT: the slow-tool acknowledgement ("só um instante"), which `emitAck`
   // (prepare.ts) sends straight through the Chatwoot client. It counts no balloon and queues no
@@ -1514,6 +1519,7 @@ function resolveConversationTool(ctx: ToolCtx) {
         // wording stays conditional on purpose — the intent is discarded on takeover/supersede,
         // and a flat "resolved" would be a false claim in the checkpointed thread history.
         ts.resolveRequested = true;
+        ts.resolveByModel = true;
         ts.resolveLabels = ctx.resolveLabels ?? [];
         ts.resolveCaseHold = ctx.resolveCaseHold ?? null;
         return "Resolve scheduled: the conversation will be marked resolved after your final reply in this turn is delivered.";
@@ -2362,27 +2368,28 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         // first. Only with a turn to defer to; a proactive turn has none, and closing immediately
         // there would take the conversation away before anything was said in it.
         let closing: "scheduled" | "not_here" | null = null;
-        // NOTE: an addition the case did not get keeps this conversation open: closing it would take the
-        // customer's words off the only place they are.
-        if (caseOpen && !additionLost(result)) {
+        if (caseOpen) {
+          if (additionLost(result) && ctx.turnState) {
+            ctx.turnState.caseAdditionLost = true;
+          }
           if (
             cic.config.resolveOrigin &&
             ctx.turnState &&
-            !ctx.handoffState?.completed
+            !ctx.handoffState?.completed &&
+            !ctx.turnState.caseAdditionLost
           ) {
             ctx.turnState.resolveRequested = true;
             ctx.turnState.caseClosing = true;
             closing = "scheduled";
           } else {
             closing = "not_here";
-          }
-        } else if (caseOpen) {
-          closing = "not_here";
-          // NOTE: a close an earlier call of this turn scheduled for the case is withdrawn too; one the
-          // model asked for with resolve_conversation is not this tool's to take back.
-          if (ctx.turnState?.caseClosing) {
-            ctx.turnState.resolveRequested = false;
-            ctx.turnState.caseClosing = false;
+            // NOTE: a close an earlier call of this turn scheduled for the case is withdrawn, and one the
+            // model asked for with resolve_conversation stands.
+            if (ctx.turnState?.caseClosing) {
+              ctx.turnState.resolveRequested =
+                ctx.turnState.resolveByModel === true;
+              ctx.turnState.caseClosing = false;
+            }
           }
         }
         return openCaseOutcomeText(result, closing);

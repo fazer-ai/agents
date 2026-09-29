@@ -220,3 +220,46 @@ export function raisedEntries(
         `${path}: [${counts}] is above the ledger's [${ledger[path] ?? [0, 0]}]`,
     );
 }
+
+// The ledger file's text: plain entries, then each edition's entries inside that edition's markers,
+// so a derived tree lists only files it has.
+export function renderLedger(
+  counted: Array<[string, FileCounts]>,
+  fullOnly: Set<string>,
+  masterOnly: Set<string>,
+): string {
+  const entry = ([path, [p, l]]: [string, FileCounts]) =>
+    `  ${JSON.stringify(path)}: [${p}, ${l}],`;
+  const section = (marker: string, rows: Array<[string, FileCounts]>) =>
+    rows.length === 0
+      ? []
+      : [`  // @${marker}`, ...rows.map(entry), `  // @${marker}-end`];
+  const body = [
+    ...counted
+      .filter(([p]) => !fullOnly.has(p) && !masterOnly.has(p))
+      .map(entry),
+    ...section(
+      "full-only",
+      counted.filter(([p]) => fullOnly.has(p)),
+    ),
+    ...section(
+      "master-only",
+      counted.filter(([p]) => masterOnly.has(p)),
+    ),
+  ];
+  return [
+    "// Comment blocks each file may still carry, as [provenance, over the line ceiling]. Written by",
+    "// `bun run comments:ledger`; see tests/lib/comment-sweep.test.ts for what counts.",
+    'import type { FileCounts } from "@/tests/utils/comment-blocks";',
+    "",
+    // NOTE: the formatter prints an empty object as `{}`, and `bun check` holds the ledger to it.
+    ...(body.length > 0
+      ? [
+          "export const COMMENT_LEDGER: Record<string, FileCounts> = {",
+          ...body,
+          "};",
+        ]
+      : ["export const COMMENT_LEDGER: Record<string, FileCounts> = {};"]),
+    "",
+  ].join("\n");
+}

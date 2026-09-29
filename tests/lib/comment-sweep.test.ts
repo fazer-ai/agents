@@ -8,6 +8,7 @@ import {
   overCeiling,
   overLedger,
   raisedEntries,
+  renderLedger,
   staleEntries,
   sweptFiles,
 } from "@/tests/utils/comment-blocks";
@@ -229,6 +230,35 @@ describe("the ledger", () => {
       1,
     );
     expect(raisedEntries([["new.ts", [1, 0]]], {})).toHaveLength(1);
+  });
+
+  test("the rewrite prints an empty ledger the way the formatter prints an empty object", () => {
+    const empty = renderLedger([], new Set(), new Set());
+    expect(empty).toContain("Record<string, FileCounts> = {};\n");
+    expect(empty).not.toContain("= {\n};");
+    const full = renderLedger(
+      [
+        ["a.ts", [1, 0]],
+        ["pro.ts", [0, 2]],
+        ["master.ts", [3, 1]],
+      ],
+      new Set(["pro.ts"]),
+      new Set(["master.ts"]),
+    );
+    expect(full).toContain(
+      [
+        "Record<string, FileCounts> = {",
+        '  "a.ts": [1, 0],',
+        "  // @full-only",
+        '  "pro.ts": [0, 2],',
+        "  // @full-only-end",
+        "  // @master-only",
+        '  "master.ts": [3, 1],',
+        "  // @master-only-end",
+        "};",
+        "",
+      ].join("\n"),
+    );
   });
 
   test("an entry above the file's count, or for a missing file, is stale", () => {

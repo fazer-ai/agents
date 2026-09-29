@@ -1,5 +1,9 @@
 import { clipText } from "@/lib/text";
-import { composeForChatwoot, markValue } from "@/modules/chatwoot/liquid";
+import {
+  composeForChatwoot,
+  markValue,
+  replaceInOperatorText,
+} from "@/modules/chatwoot/liquid";
 
 // Per-agent config for the `open_case_in_inbox` native tool, read from `agent.settings.crossInboxCase`.
 // WHERE the case goes lives here, never in a tool argument, which the customer's words could steer
@@ -101,7 +105,8 @@ export function openingAsksMessage(template: string | null): boolean {
 }
 
 // Context variables first, then the case number and the model's message in ONE pass, so text the
-// model wrote is never interpolated. `interpolate` fences the values it fills in (`markValue`), the
+// model wrote is never interpolated, and the placeholders are filled in the operator's text only, never
+// inside a value already filled in. `interpolate` fences the values it fills in (`markValue`), the
 // model's message is fenced here, and `composeForChatwoot` escapes every fenced value for Chatwoot's
 // Liquid while the operator's own keeps rendering: the result is the wire. Empty ⇒ null, nothing sent.
 export function renderCaseOpening(
@@ -111,10 +116,13 @@ export function renderCaseOpening(
   interpolate: (template: string) => string,
 ): string | null {
   const text = composeForChatwoot(
-    interpolate(template).replace(OPENING_PLACEHOLDERS, (_, key: string) =>
-      key === "mensagem" || key === "message"
-        ? markValue(message ?? "")
-        : String(caseNumber),
+    replaceInOperatorText(
+      interpolate(template),
+      OPENING_PLACEHOLDERS,
+      (_, key) =>
+        key === "mensagem" || key === "message"
+          ? markValue(message ?? "")
+          : String(caseNumber),
     ),
   ).trim();
   return text || null;
@@ -138,11 +146,15 @@ export function renderCaseNote(
     );
   }
   return composeForChatwoot(
-    interpolate(template).replace(NOTE_PLACEHOLDERS, (_, key: string) => {
-      if (key === "assunto" || key === "subject") return subject;
-      if (key === "motivo" || key === "reason") return reason;
-      return parts.originUrl;
-    }),
+    replaceInOperatorText(
+      interpolate(template),
+      NOTE_PLACEHOLDERS,
+      (_, key) => {
+        if (key === "assunto" || key === "subject") return subject;
+        if (key === "motivo" || key === "reason") return reason;
+        return parts.originUrl;
+      },
+    ),
   ).trim();
 }
 

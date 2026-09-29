@@ -4,6 +4,7 @@ import {
   composeForChatwoot,
   literalForChatwoot,
   markValue,
+  replaceInOperatorText,
 } from "@/modules/chatwoot/liquid";
 import { attachSignature } from "@/modules/signature/service";
 
@@ -112,9 +113,24 @@ describe("composeForChatwoot", () => {
       `Nota: ${markValue("a{`b`")}`,
       "Nota: a{{ '{' }}{{ '%60' | url_decode }}b{{ '%60' | url_decode }}",
     ],
+    // An operator's own raw block around a value would print its tags: replayed like a code span.
+    [
+      `Dica: {% raw %}${markValue("Use {{foo}}")}{% endraw %} e {{contact.email}}`,
+      "Dica: Use {{ '{{' }}foo}} e {{contact.email}}",
+    ],
     // Nothing in the value to escape: the operator's text goes out as written, code span included.
     [`\`{{contact.email}}\` ${markValue("Ana")}`, "`{{contact.email}}` Ana"],
   ])("%p", (fenced, wire) => {
     expect(composeForChatwoot(fenced)).toBe(wire);
+  });
+});
+
+describe("replaceInOperatorText", () => {
+  // A placeholder a customer wrote into their own name is theirs: it is not filled.
+  test("fills the operator's text and leaves a fenced value alone", () => {
+    const fenced = `Olá ${markValue("Ana {{mensagem}}")}: {{mensagem}}`;
+    expect(
+      replaceInOperatorText(fenced, /\{\{mensagem\}\}/g, () => markValue("Ok")),
+    ).toBe(`Olá ${markValue("Ana {{mensagem}}")}: ${markValue("Ok")}`);
   });
 });

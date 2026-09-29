@@ -35,6 +35,21 @@ export function markValue(value: string): string {
   return `${VALUE_OPEN}${value.replace(FENCES, "")}${VALUE_CLOSE}`;
 }
 
+// A `String.replace` over the operator's text only: a fenced value is opaque, so a placeholder a
+// customer wrote into their own name is left as they wrote it, not filled.
+export function replaceInOperatorText(
+  fenced: string,
+  pattern: RegExp,
+  fill: (match: string, ...groups: string[]) => string,
+): string {
+  return fenced
+    .split(/(\uE000[^\uE001]*\uE001)/)
+    .map((part, i) =>
+      i % 2 === 1 ? part : part.replace(pattern, fill as never),
+    )
+    .join("");
+}
+
 // Values are escaped whole, like `literalForChatwoot`. The operator's backticks are printed by tags
 // too once any value is escaped, since a code span of theirs around a value would otherwise keep the
 // value's tags from rendering; Chatwoot's pairing of those backticks is replayed here instead, and a
@@ -59,29 +74,57 @@ export function composeForChatwoot(fenced: string): string {
   // Chatwoot pairs backticks left to right (`/`(.*?)`/m`); the values' own are printed by tags, so
   // only the operator's pair.
   const inCode: boolean[] = new Array(chars.length).fill(false);
+  // An operator's own `{% raw %}` block would print a value's tags as they are, so it is replayed the
+  // same way: its two tags are dropped and what they held is printed literally.
+  const dropped: boolean[] = new Array(chars.length).fill(false);
+  const text = chars.join("");
+  const charAt: number[] = [];
+  let offset = 0;
+  chars.forEach((c, i) => {
+    charAt[offset] = i;
+    offset += c.length;
+  });
+  let rawOpen: [number, number] | null = null;
+  for (const m of text.matchAll(/\{%\s*(end)?raw\s*%\}/g)) {
+    const from = charAt[m.index] as number;
+    const to = charAt[m.index + m[0].length] ?? chars.length;
+    if (fromValue.slice(from, to).some(Boolean)) continue;
+    if (!rawOpen && !m[1]) rawOpen = [from, to];
+    else if (rawOpen && m[1]) {
+      for (let j = rawOpen[0]; j < to; j++) {
+        dropped[j] = j < rawOpen[1] || j >= from;
+        inCode[j] = true;
+      }
+      rawOpen = null;
+    }
+  }
   let open = -1;
   chars.forEach((c, i) => {
-    if (c !== "`" || fromValue[i]) return;
+    if (c !== "`" || fromValue[i] || inCode[i]) return;
     if (open < 0) open = i;
     else {
       for (let j = open + 1; j < i; j++) inCode[j] = true;
       open = -1;
     }
   });
+  const keep = (_: unknown, i: number) => !dropped[i];
+  const cs = chars.filter(keep);
+  const val = fromValue.filter(keep);
+  const code = inCode.filter(keep);
   const out: { tag: boolean; text: string }[] = [];
-  for (let i = 0; i < chars.length; i++) {
-    const c = chars[i] as string;
-    const next = chars[i + 1];
+  for (let i = 0; i < cs.length; i++) {
+    const c = cs[i] as string;
+    const next = cs[i + 1];
     const opens = c === "{" && (next === "{" || next === "%");
     if (c === "`") out.push({ tag: true, text: "{{ '%60' | url_decode }}" });
     else if (
       opens &&
-      fromValue[i] === fromValue[i + 1] &&
-      (fromValue[i] || inCode[i])
+      val[i] === val[i + 1] &&
+      (val[i] || (code[i] && code[i + 1]))
     ) {
       out.push({ tag: true, text: `{{ '{${next}' }}` });
       i++;
-    } else if (opens && fromValue[i] !== fromValue[i + 1]) {
+    } else if (opens && (val[i] !== val[i + 1] || code[i] !== code[i + 1])) {
       // A delimiter split between a value and the operator's text belongs to neither: its `{` is
       // printed alone, so the operator's own `{{` right after it still opens their tag.
       out.push({ tag: true, text: "{{ '{' }}" });

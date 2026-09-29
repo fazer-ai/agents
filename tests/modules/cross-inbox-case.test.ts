@@ -2985,13 +2985,15 @@ describe("the operator's opening and the case note (issue #923)", () => {
             interpolate: (t) =>
               interpolatePromptVars(
                 t,
-                { primeiro_nome: "{{contact.email}}" },
+                { primeiro_nome: "{{contact.email}}{{mensagem}}" },
                 { wrap: markValue },
               ),
           },
         ),
       );
-      expect(sends(f, false)).toEqual(["Olá, {{ '{{' }}contact.email}}! Ok."]);
+      expect(sends(f, false)).toEqual([
+        "Olá, {{ '{{' }}contact.email}}{{ '{{' }}mensagem}}! Ok.",
+      ]);
       expect(sends(f, true)).toContain(
         "Motivo: {{ '%60' | url_decode }}pediu {{ '{{' }}foo}}{{ '%60' | url_decode }}",
       );

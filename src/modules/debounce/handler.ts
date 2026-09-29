@@ -510,6 +510,7 @@ async function fillMissingVisuals(args: {
         messageId: m.id,
         visuals: m.visuals,
         cfg,
+        signal: args.fill.signal,
         stillAllowed: async () => {
           const agora = await refusalMarkOrClosed(args);
           return agora === null || m.id > agora;

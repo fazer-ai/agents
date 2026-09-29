@@ -119,6 +119,8 @@ export async function extractWithRetry(args: {
   // battery that cannot move the clock cannot tell a budget read before the wait from one read
   // after it.
   now?: () => number;
+  // The caller's deadline: past it, no further attempt is started.
+  signal?: AbortSignal;
 }): Promise<VisionResult> {
   const { kind } = args.req;
   // NOTE: A `baseURL` means the operator chose the endpoint, so the latency is their hardware's and
@@ -159,6 +161,7 @@ export async function extractWithRetry(args: {
       customEndpoint,
     });
     if (budgetMs === null) break;
+    if (args.signal?.aborted) break;
     try {
       return await withFlowStage(
         args.flow,
@@ -183,10 +186,12 @@ export async function extractWithRetry(args: {
       lastErr = err;
     }
   }
-  // NOTE: Reached when the attempts or the budget ran out, and by the loop's own bound — so
-  // stopping never depends only on a rule that lives elsewhere. `lastErr` is always set here:
-  // attempt 1 is asked at zero elapsed, so it always gets a budget and either returns or fills it.
-  throw lastErr;
+  // NOTE: Reached when the attempts, the budget or the caller's deadline ran out, and by the loop's
+  // own bound, so stopping never depends only on a rule that lives elsewhere. `lastErr` is unset
+  // only when the deadline had already passed before attempt 1, which always gets a budget.
+  throw (
+    lastErr ?? new Error("vision: the deadline passed before the first attempt")
+  );
 }
 
 export interface ExtractInboundParams {
@@ -212,6 +217,8 @@ export interface ExtractInboundParams {
   // webhook passes FALSE and stashes ONE aggregate after the loop: the store is keyed by MESSAGE, so
   // a per-file write mid-flight would overlay a partial result over the complete meta.
   stashAnnotation?: boolean;
+  // The caller's deadline, handed to the provider attempts.
+  signal?: AbortSignal;
 }
 
 export interface ExtractResult {
@@ -516,6 +523,7 @@ async function extractInboundOnce(
       model: cfg.model || provider.defaultModel,
       flow: params.flow,
       sleep: params.deps?.sleep,
+      signal: params.signal,
       req: {
         bytes: converted.bytes,
         mimeType:

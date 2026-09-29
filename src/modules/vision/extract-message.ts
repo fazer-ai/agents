@@ -115,6 +115,8 @@ export async function extractMessageVisuals(params: {
   convLabel?: string;
   // Asked before each later batch of email body images: false stops the reading there.
   stillAllowed?: () => Promise<boolean>;
+  // The caller's deadline: past it, no later batch and no further provider attempt starts.
+  signal?: AbortSignal;
 }): Promise<MessageVisuals | null> {
   const { visuals: todos, tenantId, instanceId, messageId } = params;
   if (todos.length === 0) return null;
@@ -148,6 +150,7 @@ export async function extractMessageVisuals(params: {
       deps: params.deps,
       // O agregado é stashado uma vez depois do laço; ver a nota lá embaixo.
       stashAnnotation: false,
+      signal: params.signal,
     };
     return visual.id === null
       ? extractBodyImage(comum)
@@ -201,7 +204,10 @@ export async function extractMessageVisuals(params: {
   vagas = primeiroLote.filter((e) => e.r === BODY_IMAGE_IGNORED).length;
   let parou = false;
   while (corpo.length > 0 && vagas > 0 && orcamento > 0) {
-    if (params.stillAllowed && !(await params.stillAllowed())) {
+    if (
+      params.signal?.aborted ||
+      (params.stillAllowed && !(await params.stillAllowed()))
+    ) {
       parou = true;
       break;
     }

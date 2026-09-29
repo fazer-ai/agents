@@ -821,6 +821,88 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     expect(downloads.length).toBe(8);
   });
 
+  test("a passed deadline stops the body images that were still to be read", async () => {
+    await setVision(true);
+    const icons = Array.from({ length: 40 }, (_, i) =>
+      blob(560 + i, `d${i}.png`),
+    );
+    const downloads: string[] = [];
+    const deadline = new AbortController();
+    deadline.abort();
+    await extractMessageVisuals({
+      tenantId,
+      instanceId,
+      conversationId: 1048,
+      messageId: 1,
+      visuals: icons.map((dataUrl, i) => ({
+        id: null,
+        dataUrl,
+        name: `d${i}.png`,
+        imageDescription: null,
+        extractedText: null,
+      })),
+      cfg: {
+        enabled: true,
+        provider: "openai",
+        credentialRef: `vault:${visionKeyId}`,
+      } as never,
+      base: appDb,
+      deps: {
+        makeClient: stub({
+          page: [],
+          sizes: Object.fromEntries(
+            icons.map((u) => [u, [144, 144] as [number, number]]),
+          ),
+          downloads,
+          metaWrites: [],
+        }),
+        fetchImpl: visionFetch(["não deveria ler"]),
+      },
+      signal: deadline.signal,
+    });
+    expect(downloads.length).toBe(8);
+  });
+
+  test("a passed deadline starts no provider call for an attachment", async () => {
+    await setVision(true);
+    const url = blob(600, "foto.png");
+    const deadline = new AbortController();
+    deadline.abort();
+    const r = await extractMessageVisuals({
+      tenantId,
+      instanceId,
+      conversationId: 1049,
+      messageId: 1,
+      visuals: [
+        {
+          id: 600,
+          dataUrl: url,
+          name: "foto.png",
+          imageDescription: null,
+          extractedText: null,
+        },
+      ],
+      cfg: {
+        enabled: true,
+        provider: "openai",
+        credentialRef: `vault:${visionKeyId}`,
+      } as never,
+      base: appDb,
+      deps: {
+        makeClient: stub({
+          page: [],
+          sizes: { [url]: [800, 600] },
+          downloads: [],
+          metaWrites: [],
+        }),
+        fetchImpl: visionFetch(["não deveria ler"]),
+      },
+      signal: deadline.signal,
+    });
+    expect(provider.calls).toBe(0);
+    expect(r?.attachmentsUnread).toBe(1);
+  });
+
   test("a file whose read failed is read again by the next delivery that asks", async () => {
     await setVision(true);
     const url = blob(530, "p.jpeg");

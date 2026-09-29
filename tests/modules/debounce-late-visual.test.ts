@@ -51,6 +51,19 @@ const suDb = su as PrismaClient;
 let tenantId = 0n;
 let instanceId = 0n;
 let inboxDbId = 0n;
+let agentId = 0n;
+let visionKeyId = 0n;
+
+// A PNG header declaring its size, which is all the download path reads before the provider.
+function png(): ArrayBuffer {
+  const b = Buffer.alloc(33);
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(b, 0);
+  b.writeUInt32BE(13, 8);
+  b.write("IHDR", 12, "ascii");
+  b.writeUInt32BE(800, 16);
+  b.writeUInt32BE(600, 20);
+  return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+}
 
 const REPLY = "Recebi a imagem.";
 const fakeModel = () => new FakeListChatModel({ responses: [REPLY] });
@@ -75,9 +88,18 @@ function page(msgs: Array<{ id: number; content: string; anexos?: number[] }>) {
   };
 }
 
-function makeStub(opts: { page: unknown; sent: Array<[number, string]> }) {
+function makeStub(opts: {
+  page: unknown;
+  sent: Array<[number, string]>;
+  onDownload?: () => void;
+}) {
   const client = {
     getMessages: async () => opts.page,
+    downloadAttachment: async () => {
+      opts.onDownload?.();
+      return { bytes: png(), contentType: "image/png" };
+    },
+    updateAttachmentMeta: async () => ({}),
     sendMessage: async (conversationId: number, content: string) => {
       opts.sent.push([conversationId, content]);
       return {};
@@ -105,7 +127,11 @@ async function seedConversation(convId: number): Promise<bigint> {
 async function flush(
   convId: number,
   pg: unknown,
-  opts: { abortOnRead?: AbortController } = {},
+  opts: {
+    abortOnRead?: AbortController;
+    abortOnDownload?: AbortController;
+    visionFetch?: typeof fetch;
+  } = {},
 ) {
   const thread = `${tenantId}:${instanceId}:${convId}`;
   const row = await suDb.schedulerJob.create({
@@ -120,7 +146,11 @@ async function flush(
     select: { id: true, claimSeq: true, payload: true },
   });
   const sent: Array<[number, string]> = [];
-  const stub = makeStub({ page: pg, sent });
+  const stub = makeStub({
+    page: pg,
+    sent,
+    onDownload: () => opts.abortOnDownload?.abort(),
+  });
   const makeClient = opts.abortOnRead
     ? async () => {
         const client = await stub();
@@ -143,10 +173,12 @@ async function flush(
     },
     base: appDb,
     ...(opts.abortOnRead ? { signal: opts.abortOnRead.signal } : {}),
+    ...(opts.abortOnDownload ? { signal: opts.abortOnDownload.signal } : {}),
     deps: {
       makeModel: fakeModel,
       makeClient,
       checkpointer: new MemorySaver(),
+      ...(opts.visionFetch ? { visionFetch: opts.visionFetch } : {}),
     },
   });
   return { out, sent };
@@ -180,6 +212,15 @@ describe.skipIf(!dbUp)(
         data: { tenantId, name: "llm-key", secret: encryptJson("sk-test") },
         select: { id: true },
       });
+      const visionKey = await suDb.vaultEntry.create({
+        data: {
+          tenantId,
+          name: "vision-key",
+          secret: encryptJson("sk-vision"),
+        },
+        select: { id: true },
+      });
+      visionKeyId = visionKey.id;
       const agent = await suDb.agent.create({
         data: {
           tenantId,
@@ -193,6 +234,7 @@ describe.skipIf(!dbUp)(
           settings: { vision: { enabled: true, provider: "openai" } },
         },
       });
+      agentId = agent.id;
       await suDb.chatwootAgentBot.create({
         data: {
           tenantId,
@@ -304,6 +346,44 @@ describe.skipIf(!dbUp)(
 
       expect(deadline.signal.aborted).toBe(true);
       expect((await visionLines(id)).length).toBe(0);
+    });
+
+    test("the flush starts no provider call when the deadline passes during the download", async () => {
+      await suDb.agent.update({
+        where: { id: agentId },
+        data: {
+          settings: {
+            vision: {
+              enabled: true,
+              provider: "openai",
+              credentialRef: `vault:${visionKeyId}`,
+            },
+          },
+        },
+      });
+      try {
+        await seedConversation(9526);
+        const deadline = new AbortController();
+        let providerCalls = 0;
+        await flush(9526, page([{ id: 1, content: "", anexos: [11] }]), {
+          abortOnDownload: deadline,
+          visionFetch: (async () => {
+            providerCalls++;
+            return new Response(
+              JSON.stringify({ choices: [{ message: { content: "lida" } }] }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            );
+          }) as unknown as typeof fetch,
+        });
+
+        expect(deadline.signal.aborted).toBe(true);
+        expect(providerCalls).toBe(0);
+      } finally {
+        await suDb.agent.update({
+          where: { id: agentId },
+          data: { settings: { vision: { enabled: true, provider: "openai" } } },
+        });
+      }
     });
 
     // The operator's re-engage keeps its own reading: a person asked for the tail to be answered, so a

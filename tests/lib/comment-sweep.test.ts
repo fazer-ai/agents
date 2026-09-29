@@ -55,6 +55,8 @@ describe("what the sweep reads as provenance", () => {
       "// This PR moves the check to the boundary.",
       "// Nesta PR a regra mudou.",
       "// Caso real: o turno travou.",
+      "// The flag this\n// used to carry.",
+      "// Found during a pass, and flagged\n// by Codex.",
     ]) {
       expect(citesProvenance(block(text))).toBe(true);
     }

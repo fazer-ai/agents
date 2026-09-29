@@ -114,12 +114,15 @@ const waived = (block: CommentBlock) => WAIVER.test(prose(block.text));
 // `FIXME:` line may name the issue that tracks the work it owes.
 export function citesProvenance(block: CommentBlock): boolean {
   if (waived(block)) return false;
-  return block.text
+  const lines = prose(block.text)
     .split("\n")
-    .some(
-      (line) =>
-        (PROVENANCE.test(line) || HISTORY.test(line)) && !OWED_WORK.test(line),
-    );
+    .filter((line) => !OWED_WORK.test(line));
+  // NOTE: history phrases are matched on the joined prose, so a phrase wrapped across two comment
+  // lines is still one phrase; a citation is one token and stays per line.
+  return (
+    lines.some((line) => PROVENANCE.test(line)) ||
+    HISTORY.test(lines.join(" ").replace(/\s+/g, " "))
+  );
 }
 
 export function overCeiling(block: CommentBlock): boolean {

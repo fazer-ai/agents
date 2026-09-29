@@ -570,10 +570,9 @@ describe.skipIf(!dbUp)("memory compaction: arming from the webhook", () => {
     expect(boundaryPayload.reason).toBe("new_attendance");
     expect(boundaryPayload.conversationId).toBe(501);
 
-    // A third attendance whose turn never produces a reply: the boundary must survive anyway. It
-    // used to advance the marker and depend on the invoke to write the divider, so a guardrail that
-    // answered before the model — or a throw, as here — left an attendance nothing could ever find
-    // the boundary of again.
+    // NOTE: a third attendance whose turn never produces a reply: the boundary must survive anyway.
+    // Advancing the marker and leaving the divider to the invoke would let a guardrail that answers
+    // before the model, or a throw as here, leave an attendance whose boundary nothing can find.
     await suDb.conversation.create({
       data: {
         tenantId,

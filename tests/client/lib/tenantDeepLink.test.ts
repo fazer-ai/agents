@@ -4,14 +4,12 @@ import {
   tenantDeepLinkAction,
 } from "@/client/lib/tenantDeepLink";
 
-// Decision table for what a `?switchTenant=<id>` on the URL means (issue #151). Switching is a full
-// reload, so a wrong answer here either loops the browser or drops the operator on a tenant that is
-// not the one the link was built for, with nothing on screen saying so.
+// Decision table for what a `?switchTenant=<id>` on the URL means. Switching is a full reload, so a
+// wrong answer here either loops the browser or silently drops the operator on the wrong tenant.
 //
-// The axis this table exists to pin is not "can it switch" but "does it KNOW". Three of the rows
-// below are states where the answer is not available, and each one is a different obligation: wait
-// for it, say we could not get it, or answer from the session's own tenant because there is nothing
-// to wait for. Collapsing any of them into a definite answer is the bug this table keeps catching.
+// The axis pinned is "does it KNOW". Three rows are states where the answer is not available, each
+// a different obligation: wait for it, say we could not get it, or answer from the session's own
+// tenant because there is nothing to wait for. None may collapse into a definite answer.
 
 const A = "10";
 const B = "20";
@@ -77,25 +75,24 @@ describe("tenantDeepLinkAction", () => {
       expected: { kind: "unavailable", tenantId: B },
     },
     {
-      // "pending", NOT "none": the caller cleans the parameter off the URL on "none", and doing that
-      // mid-flight removes the input the pending fetch was going to be judged against, so the switch
-      // never happens and the link behaves exactly like the tenant-less one it replaced.
+      // NOTE: "pending", NOT "none": the caller cleans the parameter off the URL on "none", and
+      // doing that mid-flight removes the input the pending fetch was going to be judged against,
+      // so the switch would never happen.
       name: "the accessible list has not arrived: nothing is decided yet, and the parameter must survive",
       input: { requested: B, active: A, scope: { kind: "loading" } },
       expected: { kind: "pending" },
     },
     {
-      // The finding this row was written for: the failure used to become the EMPTY LIST, which is
-      // the claim "you can open no tenant" — a claim nothing supports — and which then opened the
-      // gate on tenant A's live controls under a URL naming B.
+      // NOTE: a failure is not the EMPTY LIST: that would claim "you can open no tenant", which
+      // nothing supports, and open the gate on tenant A's live controls under a URL naming B.
       name: "the accessible list could not be READ: that is not the same claim as an empty one",
       input: { requested: B, active: A, scope: { kind: "unknown" } },
       expected: { kind: "unverified", tenantId: B },
     },
     {
-      // Load-bearing ordering: this is the state every switch lands in after its reload. Deciding it
-      // from a list that may be unreadable would strand the operator on the very tenant they asked
-      // for, every time the tenants endpoint happens to be down.
+      // NOTE: load-bearing ordering: this is the state every switch lands in after its reload.
+      // Deciding it from a list that may be unreadable would strand the operator on the very tenant
+      // they asked for, every time the tenants endpoint happens to be down.
       name: "already on the requested tenant, with the list unreadable: still nothing to do",
       input: { requested: A, active: A, scope: { kind: "unknown" } },
       expected: { kind: "none" },
@@ -110,9 +107,9 @@ describe("tenantDeepLinkAction", () => {
       expected: { kind: "none" },
     },
     {
-      // The other finding. `createAt`/`configureAt` name a route and carry no id, so there is no
-      // lookup that could miss: staying silent here puts the operator on their own tenant's page
-      // believing they followed the link, and what they create is created in the wrong tenant.
+      // NOTE: `createAt`/`configureAt` name a route and carry no id, so there is no lookup that
+      // could miss: staying silent here puts the operator on their own tenant's page believing they
+      // followed the link, and what they create is created in the wrong tenant.
       name: "a tenant-scoped session, link for ANOTHER tenant: say so, do not pretend the link applies here",
       input: {
         requested: B,

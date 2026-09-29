@@ -7,8 +7,8 @@ import {
   setActiveTenantId,
 } from "@/client/lib/activeTenant";
 
-// Issue #756: with a person able to belong to several tenants, choosing one in one tab must not move
-// the others. The selection lives in the TAB (sessionStorage); the last choice is only the starting
+// With a person able to belong to several tenants, choosing one in one tab must not move the
+// others. The selection lives in the TAB (sessionStorage); the last choice is only the starting
 // point of a new tab (localStorage), and a tab keeps what it started with.
 
 const KEY = "@app:active-tenant";
@@ -50,9 +50,9 @@ describe("the selected tenant is the tab's", () => {
     expect(getActiveTenantId()).toBeNull();
   });
 
-  // Review round 1: a member's first tab runs under the default membership with nothing stored, and
-  // until it holds that id it would inherit whatever another tab chooses next. The session pins it to
-  // the tab, and only to the tab: it is not a choice, so it is not the next tab's default.
+  // NOTE: a member's first tab runs under the default membership with nothing stored, and until it
+  // holds that id it would inherit whatever another tab chooses next. The session pins it to the
+  // tab, and only to the tab: it is not a choice, so it is not the next tab's default.
   test("the tenant the session resolved is pinned to the tab, and to the tab only", () => {
     pinTabTenantId("6");
     expect(sessionStorage.getItem(KEY)).toBe("6");

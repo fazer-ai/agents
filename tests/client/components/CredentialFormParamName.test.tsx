@@ -19,13 +19,11 @@ import {
 import { CredentialForm } from "@/client/components/CredentialForm";
 import { ToastProvider } from "@/client/components/Toast";
 
-// The write refuses a param name on a kind that declares none (issue #488), and the argument for
-// that refusal being safe is that the CONSOLE can never send one: the input is drawn only under
-// `needsParamName`, and every payload gates on the same flag. That is a claim about REACHABILITY,
-// and reachability is measured, not read — so this drives the one path where the two can disagree.
-// A param name typed while the type was `header` survives in form state after the operator switches
-// the type to `generic`, and if the payload carried it, the save would come back 400 naming a field
-// the form no longer renders: a refusal with no door.
+// The write refuses a param name on a kind that declares none, which is safe only because the
+// CONSOLE never sends one: the input is drawn only under `needsParamName`, and every payload gates
+// on the same flag. This drives the one path where the two can disagree: a param name typed under
+// `header` survives in form state after a switch to `generic`, and sending it would come back 400
+// naming a field the form no longer renders.
 
 describe("CredentialForm never sends a param name a kind cannot use", () => {
   const realFetch = globalThis.fetch;
@@ -115,8 +113,7 @@ describe("CredentialForm never sends a param name a kind cannot use", () => {
     await pickType("Generic");
     // NOTE: by LABEL, not by placeholder: the placeholder is derived from the kind ("X-API-Key" for
     // header, "api_key" otherwise), so a form that kept drawing the field for `generic` would still
-    // satisfy a query for the header one. Measured — that mutation survived until this line asked
-    // by the name the field actually carries.
+    // satisfy a query for the header one.
     expect(screen.queryByText("Parameter name")).toBeNull();
 
     fireEvent.change(screen.getByPlaceholderText("my-api-key"), {

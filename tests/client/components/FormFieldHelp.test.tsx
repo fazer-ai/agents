@@ -13,35 +13,19 @@ import {
 // the box before it goes away.
 const CLOSE_WAIT_MS = 400;
 
-// NO real i18n instance here, and that is a decision with a measurement behind it. This file used
-// to import `@/client/lib/i18n` so the accessible name would be translated rather than a raw
-// "Help about {{subject}}" template. That reason died when `HelpPopover` started COMPOSING the name
-// instead of interpolating it: the fallback `t` react-i18next hands out with no provider returns
-// the default string, which is exactly what these assertions want.
-//
-// The cost was not local. `bun test` shares one worker across files, so initialising i18n here
-// charged every file that ran afterwards: `KnowledgeApprovals` went from 3.9s to 6.2s and blew the
-// 5s per-test budget, in a test that touches none of this. Measured by moving this one file out and
-// re-running the folder. Anything imported at a test file's top level is a global side effect.
+// NO real i18n instance here: `HelpPopover` COMPOSES the accessible name, so the fallback `t`
+// react-i18next hands out with no provider returns the default string these assertions want. And
+// `bun test` shares one worker across files, so initialising i18n here would slow every file that
+// runs afterwards past its per-test budget: a top-level import is a global side effect.
 const { FormField } = await import("@/client/components/FormField");
 const { Input } = await import("@/client/components/Input");
 const { Select } = await import("@/client/components/Select");
 
-// The `?` that opens a field's long-form help (issue #411).
-//
-// It is asserted through a CLICK reaching rendered text, and not by looking for the button or for a
-// prop, because the two ways this affordance dies are both invisible to a shallower check.
-//
-// The first is measured, not imagined: the trigger shipped with an `onClick` that called
-// `preventDefault`, added to stop the wrapping <label> from forwarding the click to the control,
-// and Radix composes the trigger's handler with `checkForDefaultPrevented`, so cancelling the event
-// cancelled its own `onOpenToggle`. The button rendered, the aria wiring was right, and nothing
-// opened. (The guard was also unnecessary: a label's activation behaviour does nothing for an event
-// targeted at an interactive descendant, and a <button> is one.)
-//
-// The second is the reason this is a Popover and not a Tooltip at all: a Radix tooltip cannot be
-// opened by touch (three handlers close every route in, measured in the note on Popover.tsx) and
-// the console has a mobile drawer. A test that only hovered would pass on a component no phone can
+// The `?` that opens a field's long-form help, asserted through a CLICK reaching rendered text
+// rather than by finding the button or a prop. Radix composes the trigger's handler with
+// `checkForDefaultPrevented`, so a trigger `onClick` that calls `preventDefault` renders fine and
+// never opens. And it is a Popover, not a Tooltip, because a Radix tooltip cannot be opened by
+// touch (docs/ui.md, Where help goes): a test that only hovered would pass on what no phone can
 // open.
 
 describe("FormField help", () => {
@@ -114,10 +98,9 @@ describe("FormField help", () => {
     );
     expect(screen.getByText(/empty means no ceiling/i)).toBeTruthy();
   });
-  // Escape means dismiss, and it used to mean the opposite here. Radix reports the trigger's own
-  // click, Escape and an outside click through one `onOpenChange(false)`, and the branch that
-  // exists so a click can PIN a hover-opened box was taking all three: Escape on a box the pointer
-  // had merely hovered open pinned it and left it on screen.
+  // NOTE: Radix reports the trigger's own click, Escape and an outside click through one
+  // `onOpenChange(false)`, so the branch that lets a click PIN a hover-opened box must not take
+  // Escape too: Escape on a hover-opened box dismisses it.
   test("Escape dismisses a popover that hover opened", () => {
     render(
       <FormField label="History ceiling" help="Why this field exists.">
@@ -151,9 +134,9 @@ describe("FormField help", () => {
     expect(named?.querySelector("[role='button']")).toBeNull();
   });
 
-  // The context carried `required` and `invalid` from the first version and nothing read them, so
-  // a field declared required was not announced as required and a field-level refusal did not mark
-  // the box it was about. A bare native child is wired the same way through `wireNativeControl`.
+  // NOTE: the field's `required` and `invalid` must reach the control, or a required field is not
+  // announced as required and a field-level refusal does not mark its box. A bare native child is
+  // wired the same way through `wireNativeControl`.
   test("required and invalid reach the control the field wraps", () => {
     render(
       <FormField label="History ceiling" required error="Too large.">
@@ -164,11 +147,9 @@ describe("FormField help", () => {
     expect(input.hasAttribute("required")).toBe(true);
     expect(input.getAttribute("aria-invalid")).toBeTruthy();
   });
-  // Measured, not reasoned, and it is why the label points at the control instead of wrapping it: a
-  // <label> forwards a click on any NON-INTERACTIVE descendant to the control it labels, and ARIA
-  // makes a `<span role="button">` operable without making it *interactive content* in the HTML
-  // sense. With the old wrapping label this click toggled the checkbox, so asking for help mutated
-  // the form. A checkbox is the shape that makes it visible; on an input it merely stole focus.
+  // NOTE: why the label points at the control instead of wrapping it: a <label> forwards a click on
+  // any NON-INTERACTIVE descendant to its control, and a `<span role="button">` is not interactive
+  // content in the HTML sense, so a wrapping label would let this click toggle the checkbox.
   test("clicking the `?` does not operate the control beside it", () => {
     render(
       <FormField label="Active" help="Why this field exists.">
@@ -182,10 +163,9 @@ describe("FormField help", () => {
     expect(screen.getByText(/why this field exists/i)).toBeTruthy();
   });
 
-  // The other half of the same association: the title still NAMES the control, so a browser focuses
-  // it on click. Asserted as the association and not as focus, because happy-dom implements a
-  // wrapping label's activation behaviour (which is how the checkbox above is measured) but not
-  // `htmlFor`'s: a focus assertion here would be testing the DOM stub, not the component.
+  // NOTE: the title still NAMES the control, so a browser focuses it on click. Asserted as the
+  // association and not as focus, because happy-dom implements a wrapping label's activation (which
+  // the checkbox above relies on) but not `htmlFor`'s: a focus assertion would test the DOM stub.
   test("the title names the control it sits above", () => {
     render(
       <FormField label="History ceiling" help="Why this field exists.">
@@ -198,10 +178,8 @@ describe("FormField help", () => {
     expect(label.htmlFor).toBe(input.id);
     expect(input.id.length > 0).toBe(true);
   });
-  // `group` exists for a field whose children are NOT one focusable control, and there the heading
-  // belongs to the WRAPPER. Handing it down as well renamed every child after the group, because
-  // `aria-labelledby` beats a control's own `aria-label`: a row of three inputs announced the same
-  // words three times, and the one thing that told them apart was gone.
+  // NOTE: under `group` the heading belongs to the WRAPPER. Handing it down would rename every
+  // child after the group, because `aria-labelledby` beats a control's own `aria-label`.
   test("a group's heading does not rename the controls inside it", () => {
     render(
       <FormField label="Reminders" group>
@@ -222,16 +200,10 @@ describe("FormField help", () => {
       );
     expect(names).toEqual(["Reminder 1", "Reminder 2"]);
   });
-  // WHAT THIS PROVES AND WHAT IT DOES NOT. It asserts the observable contract: a box that opened
-  // because the pointer passed over closes on its own and leaves focus where it was. It does NOT
-  // exercise the guard that makes that true in a browser: Radix's non-modal close calls
-  // `triggerRef.focus()` unless `onCloseAutoFocus` is defaulted away, and removing that guard here
-  // changes nothing, because happy-dom does not run that path. Measured, not assumed: with the
-  // guard deleted, focus still stayed on the input.
-  //
-  // So the guard rests on reading `@radix-ui/react-popover`'s source, and this test rests on the
-  // behaviour around it. Kept apart on purpose, because a test that cannot fail for the reason it
-  // names is worse than no test: it reads as coverage.
+  // NOTE: this asserts the observable contract only. It does NOT exercise the guard that makes it
+  // true in a browser (Radix's non-modal close calls `triggerRef.focus()` unless `onCloseAutoFocus`
+  // is defaulted away): happy-dom never runs that path, so deleting the guard leaves this test
+  // green.
   test("a hover-opened popover closes on its own and leaves focus alone", async () => {
     render(
       <FormField label="History ceiling" help="Why this field exists.">
@@ -254,10 +226,9 @@ describe("FormField help", () => {
     expect(document.activeElement === input).toBe(true);
   });
 
-  // `aria-describedby` takes a LIST, and a control that already describes itself sits inside a
-  // field that describes it too. The component computed the merge and then spread the caller's
-  // props over it, so declaring a description on the control silently dropped the field's message,
-  // which is how a validation message goes unannounced.
+  // NOTE: `aria-describedby` takes a LIST, and a control that describes itself sits inside a field
+  // that describes it too. Spreading the caller's props over the merge would drop the field's
+  // message, which is how a validation message goes unannounced.
   test("a control's own description does not drop the field's", () => {
     render(
       <FormField label="History ceiling" error="Too large.">
@@ -274,10 +245,9 @@ describe("FormField help", () => {
     // and the field's own message is still named alongside it
     expect(ids.length > 1).toBe(true);
   });
-  // A caller that already knows its control is invalid (BusinessHoursForm marks an overlapping
-  // window) must keep saying so. The round that put `{...props}` first to protect the described-by
-  // merge broke this in the same stroke: the computed `aria-invalid` then won over the caller's,
-  // and the computation did not look at it.
+  // NOTE: a caller that already knows its control is invalid (BusinessHoursForm marks an
+  // overlapping window) must keep saying so: with `{...props}` spread first, the computed
+  // `aria-invalid` has to read the caller's own value or it wins over it.
   test("a control keeps the invalid state its caller declared", () => {
     render(
       <FormField label="Opens at">
@@ -289,11 +259,9 @@ describe("FormField help", () => {
     ).toBeTruthy();
   });
 
-  // The announcement and the drawing have to agree. `aria-invalid` folded the field's refusal in
-  // while the border read only the control's own prop, so a `FormField error=` around a <Select>
-  // (ToolEditModal's method and transport, IntegrationEditModal's) turned every neighbouring
-  // <Input> red and left the dropdown looking untouched: a screen reader was told which control
-  // the sentence was about and a sighted operator was not.
+  // NOTE: the announcement and the drawing have to agree: a `FormField error=` around a <Select>
+  // (ToolEditModal's method and transport) must paint the select's border too, not only set its
+  // `aria-invalid`.
   test("a field-level refusal marks the select it is about, not just announces it", () => {
     render(
       <FormField label="Method" error="Not allowed for this transport.">
@@ -307,10 +275,9 @@ describe("FormField help", () => {
     expect(select.className).toContain("border-error");
   });
 
-  // A group's error is a statement about the COMPOSITE. Propagating it painted every control
-  // inside red over one refusal about the whole thing (ToolEditModal's AI fields, the alert
-  // channel's signing secret, McpEditModal's credential), while a bare <input> in the same group
-  // stayed normal because nothing wires it: one error drawn as many, inconsistently.
+  // NOTE: a group's error is a statement about the COMPOSITE. Propagating it would paint every
+  // control inside red over one refusal (ToolEditModal's AI fields), while a bare <input> in the
+  // same group stays normal because nothing wires it.
   test("a group's error marks the group, not every control inside it", () => {
     render(
       <FormField label="AI fields" group error="Two fields share a name.">
@@ -357,11 +324,9 @@ describe("FormField help", () => {
     expect(screen.getByRole("textbox").id).toBe("email-field");
   });
 
-  // Radix arms `FocusScope`'s Tab handler with a hard-coded `loop: true` even on the non-modal
-  // branch, and our help is prose, so the scope has nothing tabbable to land on and focuses its own
-  // container. From there it cancels every Tab and every Shift+Tab: whoever opened the help with
-  // Enter is inside it until they guess Escape. The trigger keeps focus instead, so Tab carries on
-  // through the form.
+  // NOTE: Radix arms `FocusScope`'s Tab handler with a hard-coded `loop: true` even when non-modal,
+  // and our help is prose, so a focused box would cancel every Tab and Shift+Tab until Escape. The
+  // trigger keeps focus instead, so Tab carries on through the form.
   test("opening the help with the keyboard leaves focus on the trigger", () => {
     render(
       <FormField label="History ceiling" help="Why this field exists.">
@@ -375,10 +340,9 @@ describe("FormField help", () => {
     expect(document.activeElement === trigger).toBe(true);
   });
 
-  // The BOX is a `role="dialog"` and Radix names it nothing, so without this every help on a page
-  // is announced as the same anonymous dialog. Naming the trigger does not fix it: `aria-controls`
-  // points at the box, it does not name it, and a reader who tabs into an open one, or comes back
-  // to it, hears "dialog" and has to read the body to work out which field it belongs to.
+  // NOTE: the BOX is a `role="dialog"` Radix names nothing, so without this every help on a page is
+  // the same anonymous dialog. Naming the trigger does not fix it: `aria-controls` points at the
+  // box, it does not name it.
   test("the open help box is named after the field", () => {
     render(
       <FormField label="History ceiling" help="Why this field exists.">
@@ -391,11 +355,9 @@ describe("FormField help", () => {
     ).toBeTruthy();
   });
 
-  // Pinning had to DISARM the close a preceding `pointerleave` scheduled. The path is real: tab to
-  // the `?`, hover it (the box opens), move the pointer off (140ms armed), press Enter inside that
-  // window. The box pinned and then vanished under the operator, and the wreckage outlived it,
-  // because `pinned` stayed true on a closed box and the next hover then opened one that
-  // `closeOnLeave` refused to close.
+  // NOTE: pinning must DISARM the close a preceding `pointerleave` scheduled (hover the `?`, move
+  // off, press Enter within 140ms). Otherwise the pinned box vanishes, and `pinned` stays true on a
+  // closed box so the next hover opens one that `closeOnLeave` refuses to close.
   test("pinning a hover-opened popover survives the close it interrupted", async () => {
     render(
       <FormField label="History ceiling" help="Why this field exists.">

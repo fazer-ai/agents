@@ -21,13 +21,12 @@ import {
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 
-// Demoting a FLEET administrator from the console (#534). Their row has no tenant, and the row that
-// would replace it cannot exist without one, so the click is a question and not a write: the page
-// has to ask which tenant before it PATCHes anything. Driven through the real page, because the
-// claim is about the BRANCH — a handler that always PATCHes looks right in isolation and is what
-// produced the 500 the issue reports.
+// Demoting a FLEET administrator from the console. Their row has no tenant, and the row that would
+// replace it cannot exist without one, so the click is a question and not a write: the page asks
+// which tenant before it PATCHes anything. Driven through the real page, because the claim is about
+// the BRANCH: a handler that always PATCHes looks right in isolation and answers 500.
 //
-// NOTE: every assertion reduces to a string, number or boolean BEFORE expect. A failing expectation
+// Every assertion reduces to a string, number or boolean BEFORE expect: a failing expectation
 // holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 mock.module("@/client/contexts/AuthContext", () => ({
   useAuth: () => ({
@@ -168,8 +167,8 @@ describe("demoting from the users tab", () => {
     );
   });
 
-  // One click, and the write names the membership this row IS: a person holds a role per tenant
-  // (issue #756), so the fleet view re-roles the one on screen and not whichever the server guesses.
+  // NOTE: one click, and the write names the membership this row IS: a person holds a role per
+  // tenant, so the fleet view re-roles the one on screen and not whichever the server guesses.
   test("a tenant administrator is demoted in one click, naming the membership on the row", async () => {
     mount();
     await clickDemote("boss@acme.test");

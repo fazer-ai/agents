@@ -23,12 +23,11 @@ import clientEn from "@/client/locales/en.json";
 import clientPt from "@/client/locales/pt-BR.json";
 import { createTestI18n, withI18n } from "@/tests/utils/i18n";
 
-// Issue #80, review finding of round 5: the embedding block is a READ-TIME answer about the
-// workspace's configuration, and the documents modal holds it as a snapshot taken when the list was
-// fetched. While that modal stays open, another tab or another administrator can fill, delete or
-// change the embedding credential — and the worker events that follow carry no reason of their own
-// (deliberately: the reason belongs to the configuration, not to the row), so the badge would go on
-// naming a block that was resolved, or stay silent about one that just appeared.
+// The embedding block is a READ-TIME answer about the workspace's configuration, and the documents
+// modal holds a snapshot taken when the list was fetched. While it stays open, another tab can
+// fill, delete or change the embedding credential, and the worker events that follow carry no
+// reason of their own (the reason belongs to the configuration, not to the row), so the modal has
+// to ask again.
 
 interface DocsPayload {
   documents: Record<string, unknown>[];
@@ -110,9 +109,8 @@ mock.module("@/client/hooks/useTenantEvents", () => ({
 }));
 
 // The api module is NOT mocked: `mock.module` is global to the process and leaks into every other
-// file sharing the worker, which is how this file first broke `vaultCache` in CI while passing
-// locally. The Eden treaty calls `globalThis.fetch`, so stubbing that reaches the same code with no
-// spill (the same reasoning, and the same shape, as tests/client/lib/vaultCache.test.ts).
+// file sharing the worker. The Eden treaty calls `globalThis.fetch`, so stubbing that reaches the
+// same code with no spill (the same shape as tests/client/lib/vaultCache.test.ts).
 const realFetch = globalThis.fetch;
 
 function installFetchStub() {
@@ -149,16 +147,10 @@ function json(body: unknown): Response {
 
 // THE REAL CATALOGS, because this file's subject is whether a key RESOLVES.
 //
-// `t` has to answer the catalog entry where there is one and the call site's default only where
-// there is not. Something that always answered the default would render correctly for a key the
-// catalog does not have, and that is precisely the failure issue #256 is about: an unresolvable key
-// is invisible at runtime. With the catalogs loaded, a test asserting the CATALOG's sentence goes
-// red when the key stops resolving.
-//
-// That used to be a hand-written `t` doing its own lookup, installed into the module registry. It
-// answered the same thing and it answered for the whole process: the `i18n` beside it froze
-// `language` at whatever this file last assigned, for every file that ran afterwards. Real i18next,
-// held here and delivered by context, is the same behaviour with none of the reach.
+// `t` answers the catalog entry where there is one and the call site's default only where there is
+// not, so a test asserting the CATALOG's sentence goes red when a key stops resolving (which is
+// invisible at runtime). Real i18next, delivered by context rather than a stub in the module
+// registry, which would reach every file that runs afterwards.
 const CATALOGS: Record<string, Record<string, unknown>> = {
   en: clientEn as Record<string, unknown>,
   "pt-BR": clientPt as Record<string, unknown>,
@@ -335,9 +327,9 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     await waitFor(() => expect(shows(PENDING_TEXT)).toBe(true));
   });
 
-  // Review finding, round 6: retrying ONE document goes PENDING → PROCESSING → READY and never comes
-  // back UNINDEXED, so an UNINDEXED-only trigger left the remaining rows and the banner explaining a
-  // block that was already resolved.
+  // NOTE: retrying ONE document goes PENDING → PROCESSING → READY and never comes back UNINDEXED,
+  // so an UNINDEXED-only trigger would leave the banner explaining a block that was already
+  // resolved.
   test("a document that starts indexing lifts the block it was showing", async () => {
     docsQueue = [
       {
@@ -355,16 +347,15 @@ describe("knowledge documents modal — the embedding block is never stale", () 
       status: "PROCESSING",
     });
 
-    // The second row is still UNINDEXED, so the banner is still there — now saying the ordinary
-    // thing instead of naming a credential.
+    // NOTE: the second row is still UNINDEXED, so the banner is still there, now saying the
+    // ordinary thing instead of naming a credential.
     await waitFor(() => expect(shows(NEUTRAL_TEXT)).toBe(true));
     expect(shows(PENDING_TEXT)).toBe(false);
   });
 
-  // Review findings, rounds 9 and 10, and the reason PROCESSING is a question too: it describes the
-  // configuration the job RESOLVED, and an administrator can have replaced it since. Treating it as
-  // the last word would silence a real block with nothing to bring it back — the direction that
-  // hurts, because the operator is never told they have to act.
+  // NOTE: PROCESSING is a question too: it describes the configuration the job RESOLVED, and an
+  // administrator can have replaced it since. Treating it as the last word would silence a real
+  // block with nothing to bring it back, and the operator is never told they have to act.
   test("a document that starts indexing cannot silence a newer block", async () => {
     docsQueue = [
       {
@@ -383,9 +374,9 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     await waitFor(() => expect(shows(NOT_CONFIGURED_TEXT)).toBe(true));
   });
 
-  // Review finding, round 10: a guard keyed on the block CURRENTLY RENDERED is blind to the one a
-  // read has already fetched and is about to commit. There is no such guard now — every event asks —
-  // so the case is covered by construction, and this pins it.
+  // NOTE: a guard keyed on the block CURRENTLY RENDERED would be blind to the one a read has
+  // already fetched and is about to commit. Every event asks, so the case is covered by
+  // construction, and this pins it.
   test("an event still asks while the screen shows no block", async () => {
     docsQueue = [
       {
@@ -408,9 +399,8 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     await waitFor(() => expect(shows(EMPTY_TEXT)).toBe(true));
   });
 
-  // Review finding, round 6: the reindex toast had its own two-branch wording, so the third reason
-  // was announced as the second — the operator would be told to fill a credential that IS filled,
-  // with a blank secret, while the banner two lines up said the right thing.
+  // NOTE: the reindex toast names the reason the server gave, like the banner; a two-branch wording
+  // would tell the operator to fill a credential that IS filled, with a blank secret.
   test("a blocked reindex names the reason the server actually gave", async () => {
     docsQueue = [{ documents: [doc()], embeddingBlock: null }];
     reindexResponse = { blocked: { reason: "credential_empty" } };
@@ -420,10 +410,10 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     expect(shows(PENDING_TEXT)).toBe(false);
   });
 
-  // Review findings, rounds 7 and 8: two reads can be open at once (a burst re-arms the window while
-  // an earlier one is still travelling), and the older one landing last would undo the newer answer,
-  // with nothing afterwards to correct it. The ticket only orders them if it is taken BEFORE the
-  // request — taken on arrival, the late response is by definition the newest and wins.
+  // NOTE: two reads can be open at once (a burst re-arms the window while an earlier one travels),
+  // and the older one landing last would undo the newer answer. The ticket orders them only if
+  // taken BEFORE the request: taken on arrival, the late response is by definition the newest and
+  // wins.
   test("a read that resolves after a newer answer does not undo it", async () => {
     docsQueue = [
       {
@@ -494,9 +484,9 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     expect(blockCalls).toBe(1);
   });
 
-  // Review finding, round 12: this read runs on a timer, so a failure is not a one-off. An offline
-  // browser makes Eden reject, and an unhandled rejection would repeat every 30s for as long as the
-  // modal is open — while the banner is the one thing that must not start guessing.
+  // NOTE: this read runs on a timer, so a failure is not a one-off. An offline browser makes Eden
+  // reject, and an unhandled rejection would repeat every 30s for as long as the modal is open,
+  // while the banner must not start guessing.
   test("a failed read keeps the last answer instead of throwing", async () => {
     docsQueue = [
       {
@@ -520,10 +510,9 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     expect(shows("Doc")).toBe(true);
   });
 
-  // Review finding, round 13: a read that FAILS answers nothing, so it must not disqualify a good
-  // response that was already travelling when it started. Comparing against the newest request
-  // STARTED did exactly that, and the catch then kept the older state — the list's answer thrown
-  // away because a later recheck happened to fail.
+  // NOTE: a read that FAILS answers nothing, so it must not disqualify a good response already
+  // travelling when it started. Comparing against the newest request STARTED would, and the catch
+  // would keep the older state: the list's answer thrown away because a later recheck failed.
   test("a failed read does not discard a good answer already in flight", async () => {
     docsQueue = [
       {
@@ -557,8 +546,8 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     expect(shows(PENDING_TEXT)).toBe(true);
   });
 
-  // Review finding, round 14: a response issued for a session the operator has already closed must
-  // not land in the next one. `blockCommitted` alone cannot see that — it only knows what arrived,
+  // NOTE: a response issued for a session the operator has already closed must not land in the
+  // next one. `blockCommitted` alone cannot see that: it only knows what arrived,
   // so an old response that arrives BEFORE the new session's own is the newest thing yet and paints
   // the closed screen's block onto the open one.
   test("a response for a closed session does not land in the next one", async () => {
@@ -593,8 +582,8 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     fireEvent.click(screen.getByRole("button", { name: "open" }));
     await waitFor(() => expect(docsCalls).toBe(2));
 
-    // The closed session answers first, and must be ignored on its way in — neither its block nor
-    // its rows.
+    // NOTE: the closed session answers first, and must be ignored on its way in: neither its block
+    // nor its rows.
     releaseDocs(1);
     await waitFor(() => expect(blockCalls).toBe(0));
     expect(shows("DocAntigo")).toBe(false);
@@ -606,10 +595,9 @@ describe("knowledge documents modal — the embedding block is never stale", () 
     expect(shows(PENDING_TEXT)).toBe(false);
   });
 
-  // Review finding, round 15, and a defect the previous round introduced: the rows and the block
-  // arrive together but do not share a clock. The block can be superseded by a dedicated read that
-  // is faster than the list; tying `setDocs` to that same check meant a list response could be
-  // refused entirely, leaving the modal on its skeleton with no way out.
+  // NOTE: the rows and the block arrive together but do not share a clock. The block can be
+  // superseded by a faster dedicated read; tying `setDocs` to that same check would refuse the list
+  // response entirely, leaving the modal on its skeleton with no way out.
   test("rows still render when a faster recheck outran their block", async () => {
     docsQueue = [
       {
@@ -661,11 +649,9 @@ describe("knowledge documents modal — the embedding block is never stale", () 
   });
 });
 
-// Issue #247. The API refusal names the field and the offending code point, which is the whole
-// difference between an answer an operator can act on and a 500. The console used to collapse every
-// 4xx into "Could not add document", so the reported scenario (someone uploads a file, gets nothing
-// they can act on) survived the API being fixed. What is asserted here is the SERVER's sentence on
-// screen, not a status the client re-phrased.
+// The API refusal names the field and the offending code point, which is what an operator can act
+// on; collapsing every 4xx into "Could not add document" would throw that away. What is asserted
+// here is the SERVER's sentence on screen, not a status the client re-phrased.
 describe("knowledge: a refusal the server phrased reaches the operator", () => {
   beforeEach(() => {
     docsCalls = 0;
@@ -685,11 +671,9 @@ describe("knowledge: a refusal the server phrased reaches the operator", () => {
     cleanup();
   });
 
-  // This describe reinstalls the stub in its own beforeEach, AFTER the describe above already
-  // handed `fetch` back in its afterAll. Without this, the last case leaves both the stub and a 415
-  // `addDocResponse` installed for whatever else shares this Bun worker, and a POST whose URL
-  // happens to contain `/documents` is answered by a test that already finished. The failure would
-  // land in another file and depend on execution order (review round 4).
+  // NOTE: this describe reinstalls the stub in its own beforeEach, AFTER the describe above handed
+  // `fetch` back. Without this, the stub and a 415 `addDocResponse` stay installed for whatever
+  // else shares this Bun worker, failing another file depending on execution order.
   afterAll(() => {
     globalThis.fetch = realFetch;
     addDocResponse = null;
@@ -720,8 +704,8 @@ describe("knowledge: a refusal the server phrased reaches the operator", () => {
     await waitFor(() => expect(shows(/Could not add document/i)).toBe(true));
   });
 
-  // The other road to the same column, and the one the issue actually reported: a file, refused
-  // per-row rather than by a toast. The three statuses this screen phrases better than the API can
+  // NOTE: the other road to the same column: a file, refused per-row rather than by a toast. The
+  // three statuses this screen phrases better than the API can
   // (unsupported type, too large, nothing extractable) still win; everything else the API already
   // phrased in this operator's language.
   async function uploadFile(body: unknown, status: number) {
@@ -761,10 +745,9 @@ describe("knowledge: a refusal the server phrased reaches the operator", () => {
   });
 
   // The dialog has two tabs and the text box belongs to one of them. The tabs stay live while the
-  // POST is out, so the operator can be looking at the file tab when the refusal lands — and a
+  // POST is out, so the operator can be looking at the file tab when the refusal lands, and a
   // refusal naming `text` would then be marked onto a control that is not rendered, with `capture`
-  // reporting it placed and the toast staying quiet. Nothing on screen, on a dialog whose Add button
-  // had just spun.
+  // reporting it placed and the toast staying quiet.
   test("a text refusal answered on the file tab still reaches the operator", async () => {
     addDocResponse = null;
     await openModal();
@@ -796,16 +779,10 @@ describe("knowledge: a refusal the server phrased reaches the operator", () => {
 
 // THE SENTENCE ON SCREEN, IN THE LANGUAGE THE OPERATOR PICKED.
 //
-// Everything else about issue #256 is checked against data: the server's token matches the client's
-// map, the key exists in both catalogs, the two languages differ. None of that proves the sentence
-// reaches a reader, and the failure mode being fixed is exactly one that leaves no trace — i18next
-// answers an unresolvable key with the call site's default, so a broken key renders ENGLISH to a
-// pt-BR operator and nothing anywhere says so.
-//
-// This mounts the real component and reads the tooltip out of the DOM, in both languages, asserting
-// the CATALOG's sentence rather than the call site's default. The stub `t` above falls back to that
-// default when a key does not resolve, exactly as i18next does, which is what gives these
-// assertions their teeth: break the key and the default renders, and the pt-BR case goes red.
+// i18next answers an unresolvable key with the call site's default, so a broken key renders ENGLISH
+// to a pt-BR operator and nothing says so; checks against data cannot catch that. This mounts the
+// real component and reads the tooltip out of the DOM in both languages, asserting the CATALOG's
+// sentence: break the key and the default renders, and the pt-BR case goes red.
 describe("a failed document's reason, rendered", () => {
   beforeEach(() => {
     docsCalls = 0;
@@ -932,8 +909,8 @@ describe("a failed document's reason, rendered", () => {
     expect(seen[0]).not.toBe(seen[1]);
   });
 
-  // The stored column, in the shape a row written before issue #256 carries. Same render path, same
-  // tooltip — the alias only matters if it survives to the screen.
+  // NOTE: the stored column in its legacy token shape. Same render path, same tooltip: the alias
+  // only matters if it survives to the screen.
   test("a row written before the rename renders the pt-BR sentence too", async () => {
     setLanguage("pt-BR");
     docsQueue = [

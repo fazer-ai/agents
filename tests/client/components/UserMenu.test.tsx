@@ -42,9 +42,9 @@ mock.module("@/client/contexts/ThemeContext", () => ({
   ThemeProvider: ({ children }: { children: ReactNode }) => children,
 }));
 
-// A REAL i18next instance, held here so the language radio's effect can be read off it. See
-// tests/utils/i18n.tsx: a registry stub of `react-i18next` used to live here, and the `i18n` it
-// handed back was a literal `{ language: "en" }` that every file running afterwards imported.
+// A REAL i18next instance, held here so the language radio's effect can be read off it. Not a
+// registry stub of `react-i18next`: that leaks into every file the worker runs afterwards (see
+// tests/utils/i18n.tsx).
 const i18n = createTestI18n();
 const changeLanguage = spyOn(i18n, "changeLanguage");
 
@@ -144,10 +144,9 @@ describe("UserMenu", () => {
     expect(screen.getByText("LOGIN_PAGE_MARKER")).toBeInTheDocument();
   });
 
-  // IT USED TO NAVIGATE WHATEVER HAPPENED, and that is the finding this replaces (#566, round 15).
-  // The cookie is HttpOnly, so a logout the server did not answer leaves the operator signed in:
-  // `/login` bounces a signed-in visitor to `redirectTo`, so the old behaviour cost them the route
-  // they were on and said nothing about why.
+  // NOTE: the cookie is HttpOnly, so a logout the server did not answer leaves the operator signed
+  // in, and `/login` bounces a signed-in visitor to `redirectTo`: navigating anyway would cost them
+  // the route they were on and say nothing about why.
   test("stays put and says so when the session did not end", async () => {
     mockLogout.mockImplementationOnce(async () => false);
     renderMenu();

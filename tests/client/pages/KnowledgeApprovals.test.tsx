@@ -21,12 +21,10 @@ import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
 import { withI18n } from "@/tests/utils/i18n";
 
-// Issue #81: the approval card offered exactly two actions, Approve and Reject. An operator facing a
-// suggestion the agent hedged ("solicita-se validação da informação") could only approve the hedge
-// into the knowledge base or reject and lose the finding. Editing existed everywhere else —
-// `editApprovalItem`, `PATCH /v1/knowledge/approvals/:id`, the `knowledge_edit` MCP tool — and the
-// `EDITED` status was in the enum with a badge rendered for it, but the console could never produce
-// it. These tests drive the affordance from the card, through the same PATCH.
+// With only Approve and Reject, an operator facing a suggestion the agent hedged ("solicita-se
+// validação da informação") could only approve the hedge or lose the finding. These tests drive the
+// card's Edit, through the same `PATCH /v1/knowledge/approvals/:id` the `knowledge_edit` MCP tool
+// uses, to the `EDITED` status.
 
 interface PatchCall {
   id: string;
@@ -42,10 +40,8 @@ let patchResult = "updated";
 let patchGate: Promise<void> | null = null;
 
 // The api module is NOT mocked: `mock.module` is global to the process and leaks into every other
-// file sharing the worker — this file broke `vaultCache` in CI while passing locally, because that
-// suite stubs `globalThis.fetch` and our module mock meant its code never reached it. The Eden
-// treaty calls fetch, so stubbing that reaches the same paths with no spill (same shape as
-// tests/client/lib/vaultCache.test.ts).
+// file sharing the worker (a suite that stubs `globalThis.fetch`, like vaultCache's, would never be
+// reached). The Eden treaty calls fetch, so stubbing that reaches the same paths with no spill.
 const realFetch = globalThis.fetch;
 
 function json(body: unknown): Response {
@@ -188,15 +184,10 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
     expect(patchCalls.length).toBe(0);
   });
 
-  // Review finding: the endpoint reports a lost race inside a 200. Checking only `error` left the
-  // card marked EDITED and reported success over a revision that was never stored.
-  //
-  // The explicit budget is not decoration. This test asserts a BEHAVIOUR (the card leaves the queue)
-  // and asserts nothing about how fast it happens, but the default 5s was being spent on something
-  // else entirely: instrumenting the component showed the awaited PATCH taking 1.2s to 5.2s here
-  // while the same call in the neighbouring tests of this file returns in 1-4ms, and the figure
-  // moves that much between identical runs of identical code. It has been over the line on CI and
-  // under it locally on the same commit. A budget that a rerun can flip is not measuring the code.
+  // NOTE: the endpoint reports a lost race inside a 200, so checking only `error` would mark the
+  // card EDITED over a revision that was never stored. The explicit budget: the test asserts a
+  // BEHAVIOUR, not a speed, and the awaited PATCH here swings across the default 5s between
+  // identical runs.
   test("a suggestion reviewed elsewhere meanwhile leaves the queue instead of claiming EDITED", async () => {
     patchResult = "not-pending";
     renderQueue();
@@ -210,8 +201,8 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
     expect(screen.queryByText(HEDGED)).toBeNull();
   }, 20000);
 
-  // Review finding: the draft is single, so a second Edit would replace it and the first card's
-  // unsaved rewrite would vanish with no warning.
+  // NOTE: the draft is single, so a second Edit would replace it and the first card's unsaved
+  // rewrite would vanish with no warning.
   test("with an editor open, the other cards cannot start one", async () => {
     approvalsPayload = [
       { ...approvalsPayload[0], id: "7" },
@@ -228,8 +219,8 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
     expect(stillOffered.length).toBe(0);
   });
 
-  // Review finding: the draft was captured when Save was clicked, so anything typed while the
-  // request was in flight would be dropped by the response that closes the editor.
+  // NOTE: the draft is captured when Save is clicked, so anything typed while the request is in
+  // flight would be dropped by the response that closes the editor.
   test("the fields are locked while the save is in flight", async () => {
     let release: () => void = () => undefined;
     patchGate = new Promise<void>((r) => {
@@ -248,10 +239,9 @@ describe("KnowledgeApprovals — reviewing before approving", () => {
     await waitFor(() => expect(patchCalls.length).toBe(1));
   });
 
-  // Review finding, round 3: `busyId` holds ONE id, so a per-card `busyId === a.id` guard leaves
-  // every other card live. Approving a second card mid-save hands the token over, the first card's
-  // editor unlocks with its PATCH still open, and the response that lands later overwrites whatever
-  // was typed or cancelled in between.
+  // NOTE: `busyId` holds ONE id, so a per-card `busyId === a.id` guard would leave every other card
+  // live: approving a second card mid-save hands the token over, the first card's editor unlocks
+  // with its PATCH still open, and the response that lands later overwrites whatever was typed.
   test("a save in flight locks the other cards' actions too", async () => {
     approvalsPayload = [
       { ...approvalsPayload[0], id: "7" },

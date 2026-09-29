@@ -153,20 +153,18 @@ describe("vaultCache", () => {
   });
 });
 
-// A credential's endpoint has to be readable by the PAGE, not only by the picker that displays it.
-// The agent editor renders one tab at a time and judges the whole configuration on every one of
-// them: while it read this off a CredentialPicker's callback, an editor opened straight on Behavior
-// never mounted General, so the model credential's endpoint did not exist as far as the page was
-// concerned and the speech rewrite was declared endpoint-less on a configuration that runs.
+// A credential's endpoint has to be readable by the PAGE, not only by the picker that displays it:
+// the agent editor renders one tab at a time and judges the whole configuration on every one, so an
+// editor opened straight on Behavior never mounts General's picker.
 describe("useVaultBaseUrls", () => {
   test("resolves a ref's endpoint with no picker mounted", async () => {
     entriesToReturn = [
       {
         id: "7",
         name: "llama",
-        // NOTE: `openai_compatible` and not `openai`, since #504: this hook answers with the base URL
-        // the runtime will DIAL, and a base stored on a kind whose form never offered the field is no
-        // longer one. `llama` behind an OpenAI-compatible endpoint is what this fixture always meant.
+        // NOTE: `openai_compatible` and not `openai`: this hook answers with the base URL the
+        // runtime will DIAL, and a base stored on a kind whose form never offers the field is not
+        // one.
         kind: "openai_compatible",
         baseUrl: "http://llama:8080/v1",
       },
@@ -193,9 +191,9 @@ describe("useVaultBaseUrls", () => {
       {
         id: "7",
         name: "llama",
-        // NOTE: `openai_compatible` and not `openai`, since #504: this hook answers with the base URL
-        // the runtime will DIAL, and a base stored on a kind whose form never offered the field is no
-        // longer one. `llama` behind an OpenAI-compatible endpoint is what this fixture always meant.
+        // NOTE: `openai_compatible` and not `openai`: this hook answers with the base URL the
+        // runtime will DIAL, and a base stored on a kind whose form never offers the field is not
+        // one.
         kind: "openai_compatible",
         baseUrl: "http://llama:8080/v1",
       },
@@ -288,9 +286,9 @@ describe("useVaultBaseUrls with a noncanonical ref", () => {
       {
         id: "7",
         name: "llama",
-        // NOTE: `openai_compatible` and not `openai`, since #504: this hook answers with the base URL
-        // the runtime will DIAL, and a base stored on a kind whose form never offered the field is no
-        // longer one. `llama` behind an OpenAI-compatible endpoint is what this fixture always meant.
+        // NOTE: `openai_compatible` and not `openai`: this hook answers with the base URL the
+        // runtime will DIAL, and a base stored on a kind whose form never offers the field is not
+        // one.
         kind: "openai_compatible",
         baseUrl: "http://llama:8080/v1",
       },
@@ -308,8 +306,8 @@ describe("useVaultBaseUrls with a noncanonical ref", () => {
 
 // A refresh that fails leaves the listeners holding a list the cache no longer has, and the caller
 // has usually just CHANGED the vault (created or filled a credential) and pointed a field at the
-// result. Staying quiet there means the editor keeps answering from a list that predates the change
-// — a credential created a moment ago reading as deleted.
+// result. Staying quiet there means the editor keeps answering from a list that predates the
+// change, with a credential created a moment ago reading as deleted.
 describe("a failed refreshVault", () => {
   test("sends listeners back to the vault, which heals a transient failure", async () => {
     entriesToReturn = [{ id: "3", name: "openai", kind: "openai" }];
@@ -343,8 +341,7 @@ describe("a failed refreshVault", () => {
     await act(async () => {
       await refreshVault().catch(() => undefined);
     });
-    // Not the stale list, which is what silence would have left behind: a credential the operator
-    // just created reading as deleted.
+    // NOTE: not the stale list, where a credential the operator just created reads as deleted.
     await waitFor(() => expect(result.current.known).toBeNull());
     failAll = false;
     cleanup();
@@ -353,7 +350,7 @@ describe("a failed refreshVault", () => {
 
 // Every vault mutation in the app funnels through `invalidateVault` or `refreshVault`, and both
 // announce it. From the announcement until the replacement list lands, the list in hand is known to
-// predate the change — and the caller has usually just created the credential a field now points
+// predate the change, and the caller has usually just created the credential a field now points
 // at. Answering "the vault does not hold this ref" from that list is how a credential created a
 // second ago reads as deleted, so the answer is withheld for the length of the request.
 describe("useVaultRefs across a vault change", () => {
@@ -421,7 +418,7 @@ describe("a load overtaken by a vault change", () => {
 // matters: an overtaken read that succeeds settles only once its replacement lands (it hands the
 // caller that newer answer), while a rejection is immediate and lands mid-flight. Clearing the map
 // there would evict the entry of the read still on the wire, and the next caller to arrive would
-// fire a third request for a list already coming — the whole reason this cache exists.
+// fire a third request for a list already coming, which is what this cache exists to prevent.
 describe("the in-flight entry while a superseded load fails", () => {
   test("survives the failure of the read it replaced", async () => {
     entriesToReturn = [{ id: "3", name: "openai", kind: "openai" }];
@@ -452,8 +449,8 @@ describe("the in-flight entry while a superseded load fails", () => {
   });
 });
 
-// The two orderings a refresh can take, and both used to end with the panel answering from
-// something that is not the current vault.
+// The two orderings a refresh can take; in both, the panel must never answer from something that is
+// not the current vault.
 describe("refreshVault while listeners are watching", () => {
   test("tells them the moment it drops the list, not when the new one lands", async () => {
     entriesToReturn = [{ id: "3", name: "openai", kind: "openai" }];
@@ -486,9 +483,8 @@ describe("refreshVault while listeners are watching", () => {
 });
 
 // A superseded read is irrelevant whether it succeeded or FAILED: its 500 says nothing about the
-// vault the caller is asking about. Reported as the caller's own failure, it drove the listener to
-// not-loaded on top of the fresh list that had already arrived, and nothing would come along to put
-// it back — the panel silent about pending and dangling credentials until the next reload.
+// vault the caller is asking about. Reported as the caller's own failure, it would drive the
+// listener to not-loaded on top of the fresh list, and nothing would come along to put it back.
 describe("a superseded read that fails after the fresh one landed", () => {
   test("does not erase the answer that replaced it", async () => {
     entriesToReturn = [{ id: "3", name: "openai", kind: "openai" }];

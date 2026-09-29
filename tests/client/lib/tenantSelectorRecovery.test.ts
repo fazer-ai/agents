@@ -9,16 +9,13 @@ import { api } from "@/client/lib/api";
 import { mediaFetch } from "@/client/lib/media";
 import { REJECTED_TENANT_SELECTOR_HEADER } from "@/lib/console-params";
 
-// The recovery at both of its call sites, because a decision nothing calls changes nothing.
+// The recovery at both of its call sites, because a decision nothing calls changes nothing. Two
+// things send the tenant selector: the Eden client, on every API call, and `mediaFetch`, on the raw
+// fetches for media bytes, PDFs and previews. Both must act on a dead selector. A missed
+// `mediaFetch` stays broken longest: its callers are one-shot loaders that report their own 404 and
+// stop, so the console would sit on a dead selection until some treaty call happened to be refused.
 //
-// Two things in the console send the tenant selector — the Eden client, on every API call, and
-// `mediaFetch`, on the raw fetches that carry media bytes, PDFs and previews — and until this both
-// of them could be told their selector was dead and do nothing about it. The `mediaFetch` half is
-// the one that stays broken longest when it is missed: every caller there is a one-shot loader that
-// reports its own 404 and stops, so the console would sit on a dead selection until some unrelated
-// treaty call happened to be refused. Issue #252.
-//
-// NOTE: every assertion reduces to a string, number or boolean BEFORE expect. A failing expectation
+// Every assertion reduces to a string, number or boolean BEFORE expect: a failing expectation
 // holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 let responder: () => Response = () => new Response(null, { status: 204 });

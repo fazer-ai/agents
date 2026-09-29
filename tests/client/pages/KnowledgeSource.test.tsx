@@ -16,9 +16,9 @@ import clientEn from "@/client/locales/en.json";
 import clientPt from "@/client/locales/pt-BR.json";
 import { createTestI18n, withI18n } from "@/tests/utils/i18n";
 
-// Issue #798: a knowledge base's help center source, in the console. #794 exposed it over REST and
-// MCP only, so an operator could not see that a base mirrors a portal, when it last ran or whether
-// the run failed, could not set one up, and met a synced document's read-only rule as a 409 on click.
+// A knowledge base's help center source, in the console: the operator sees that a base mirrors a
+// portal, when it last ran and whether the run failed, can set one up, and meets a synced
+// document's read-only rule before a 409 on click.
 // The api module is not mocked (its mock would leak into every file sharing the worker); the Eden
 // treaty calls `globalThis.fetch`, which is what these tests answer.
 

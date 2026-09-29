@@ -5,10 +5,8 @@ import { formatDuration, readableDuration } from "@/client/lib/duration";
 // Which unit a duration is READ in, as a table. The rule is the whole module, so the table is the
 // whole test: every threshold, both sides, plus the inputs that are not durations at all.
 //
-// The last group is the one this KPI exists for. A first-response median that cannot be computed
-// must come back as `null` and never as a zero. The dashboard reading "0" where it means "nothing
-// to report" is the defect issue #283 is about, and a formatter that answers "0 s" would put it
-// back one layer down.
+// The last group matters most: a first-response median that cannot be computed must come back as
+// `null` and never as a zero, or the dashboard reads "0" where it means "nothing to report".
 
 describe("readableDuration", () => {
   const rows: [

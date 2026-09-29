@@ -5,8 +5,8 @@ import { ThemeProvider } from "@/client/contexts/ThemeContext";
 import { DashboardPage } from "@/client/pages/DashboardPage";
 import { withI18n } from "@/tests/utils/i18n";
 
-// Issue #868: the cost check compares this app's costs with Langfuse's, so without Langfuse it
-// cannot run, and the screen has to say so rather than read as a check that passed.
+// The cost check compares this app's costs with Langfuse's, so without Langfuse it cannot run, and
+// the screen has to say so rather than read as a check that passed.
 
 const realFetch = globalThis.fetch;
 let costs: Record<string, unknown> = { status: "disabled" };
@@ -112,8 +112,8 @@ test("with Langfuse unreachable the card says so, and does not claim the check i
   expect(screen.queryByTestId("cost-check-unavailable")).toBeNull();
 });
 
-// Review of #868: Langfuse answering with no models while the ledger has usage is itself a finding,
-// the models only this app recorded, and the card has to carry it rather than vanish.
+// Langfuse answering with no models while the ledger has usage is itself a finding, the models only
+// this app recorded, and the card has to carry it rather than vanish.
 test("with Langfuse answering no models, the models only this app recorded are still shown", async () => {
   costs = {
     status: "ok",

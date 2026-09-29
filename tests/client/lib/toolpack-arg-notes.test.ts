@@ -7,10 +7,9 @@ import {
 import { getToolpackToolViews } from "@/modules/integrations/toolpacks";
 import "@/modules/integrations/toolpacks/google-calendar";
 
-// Issue #118. A toolpack argument's `.describe()` is read by two audiences with opposite needs: the
-// model, on every turn the tool is bound, and the operator, once, in the console's argument list.
-// The `calendarId` sentence about when the argument appears belonged only to the second one, and was
-// being paid for by the first.
+// A toolpack argument's `.describe()` is read by two audiences with opposite needs: the model, on
+// every turn the tool is bound, and the operator, once, in the console's argument list. A sentence
+// about when the argument appears belongs only to the operator's note, not to the model's tokens.
 
 // The console passes i18next's `t`, which falls back to the default string when a key is missing.
 const t = ((_key: string, fallback: string) =>
@@ -37,12 +36,10 @@ const APPEARANCE_PHRASES = [
 ];
 
 describe("the calendarId argument's two audiences", () => {
-  // NOTE: the tautology, stated as a property rather than as a string match on the old sentence: the
-  // model can only ever READ this text in the case where the condition it describes is already true,
-  // because calendarArgSchema removes the argument whenever the integration has one calendar.
-  // Asked of EVERY argument, not just calendarId: the second conditional schema (slotDurationArgSchema)
-  // arrived with the same sentence on a different argument, and a test naming one argument would have
-  // let it through.
+  // NOTE: the model can only READ this text when the condition it describes is already true,
+  // because calendarArgSchema removes the argument whenever the integration has one calendar. Asked
+  // of EVERY argument, not just calendarId: a second conditional schema (slotDurationArgSchema)
+  // exists, and a test naming one argument would miss the other.
   test("no calendar tool's schema explains when an argument appears", () => {
     const views = getToolpackToolViews("GOOGLE_CALENDAR");
     expect(views.length).toBeGreaterThan(0);
@@ -56,8 +53,8 @@ describe("the calendarId argument's two audiences", () => {
     }
   });
 
-  // The other half of #118: every argument a conditional schema can REMOVE needs the note, or the
-  // operator sees an argument in the console that their agent never receives and cannot find out why.
+  // NOTE: every argument a conditional schema can REMOVE needs the note, or the operator sees an
+  // argument in the console that their agent never receives and cannot find out why.
   test("every argument a conditional schema removes carries an operator note", () => {
     for (const [tool, arg] of [
       ["calendar_check_availability", "calendarId"],

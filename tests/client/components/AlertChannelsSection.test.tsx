@@ -20,17 +20,14 @@ import { AlertChannelsSection } from "@/client/components/alerts/AlertChannelsSe
 import { ToastProvider } from "@/client/components/Toast";
 import { invalidateVault } from "@/client/lib/vaultCache";
 
-// `secretRef` is three-valued on the wire — absent leaves it, null clears it, a value sets it — and
-// the edit modal used to be able to spell only two of those: it sent the key on EVERY save, holding
-// whatever the picker had, and the picker was blanked on open. So opening a signed channel and
-// pressing Save was not a no-op, it unsigned the channel, and nothing on screen said so (#435).
+// `secretRef` is three-valued on the wire (absent leaves it, null clears it, a value sets it), and
+// an untouched save of a signed channel must leave it signed. All three states are driven here, the
+// clear through the picker's own menu, because "leave it" and "clear it" differ by one comparison
+// in the component and a test that only asserts omission is satisfied by a form that can no longer
+// clear.
 //
-// All three states are driven here, the clear through the picker's own menu rather than around it,
-// because "leave it" and "clear it" differ by one comparison in the component and a test that only
-// ever asserts omission is satisfied by a form that can no longer clear anything.
-//
-// NOTE: every assertion reduces to a boolean or a string BEFORE expect. A failing expectation that
-// holds a DOM node serializes a cyclic happy-dom tree and stalls the runner.
+// Every assertion reduces to a boolean or a string BEFORE expect: a failing expectation that holds
+// a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 const VAULT_ENTRY = {
   id: "7",
@@ -41,7 +38,7 @@ const VAULT_ENTRY = {
   status: "active",
 };
 
-// The tenant's agents, for the exclusion chips (issue #843).
+// The tenant's agents, for the exclusion chips.
 const ROSTER = [
   { id: "11", name: "Battery agent" },
   { id: "12", name: "Production agent" },
@@ -67,11 +64,11 @@ function channel(over: Record<string, unknown> = {}) {
 }
 
 describe("AlertChannelsSection", () => {
-  // Stubbing `globalThis.fetch` rather than the api module: `mock.module` is global to the process
-  // and leaks into whatever else shares the worker. The stub is process-global too, in a different
-  // way, so every call is recorded WITH its url and the assertions look up the one the form is
-  // responsible for — a stray request from elsewhere lands in `calls` where it can be named instead
-  // of overwriting the answer (the lesson `BusinessHoursForm.test.tsx` carries).
+  // NOTE: stubbing `globalThis.fetch` rather than the api module: `mock.module` is global to the
+  // process and leaks into whatever else shares the worker. The stub is process-global too, so
+  // every call is recorded WITH its url and the assertions look up the one the form is responsible
+  // for: a stray request from elsewhere lands in `calls` where it can be named instead of
+  // overwriting the answer.
   const realFetch = globalThis.fetch;
   const calls: { method: string; url: string; body: unknown }[] = [];
   let channels: ReturnType<typeof channel>[] = [];
@@ -161,9 +158,9 @@ describe("AlertChannelsSection", () => {
   };
 
   const save = async () => {
-    // `hidden: true` because an open Radix menu takes the rest of the dialog out of the accessibility
-    // tree, and two of these tests press Save with the credential menu still on screen — which is what
-    // an operator does.
+    // NOTE: `hidden: true` because an open Radix menu takes the rest of the dialog out of the
+    // accessibility tree, and two of these tests press Save with the credential menu still on
+    // screen, which is what an operator does.
     screen
       .getByRole("button", { name: /^(Save|Salvar)$/, hidden: true })
       .click();
@@ -173,11 +170,10 @@ describe("AlertChannelsSection", () => {
 
   // ── what the LIST says the channel does ──
   //
-  // Three things have to line up for a delivery to carry an HMAC: type `webhook`, a secret
-  // configured, and a ref that names a vault entry. The badge reported only the middle one, and both
-  // other cases are reachable — a channel switched to Discord keeps its ref because the editor omits
-  // an untouched picker, and a ref stored before #126 may name nothing. Both read as "Signed" while
-  // the worker sent no signature.
+  // NOTE: a delivery carries an HMAC only when three things line up: type `webhook`, a secret
+  // configured, and a ref that names a vault entry. The other cases are reachable: a channel
+  // switched to Discord keeps its ref (the editor omits an untouched picker), and a legacy ref may
+  // name nothing.
   const listShows = async (over: Record<string, unknown>) => {
     channels = [channel(over)];
     render(
@@ -191,11 +187,9 @@ describe("AlertChannelsSection", () => {
     return (document.body.textContent ?? "").toString();
   };
 
-  // The rule itself moved to the server with issue #724: three of its four cases can be read off the
-  // row, the fourth needs the vault, and a client rebuilding it from `type` + `hasSecret` +
-  // `secretRef` could only ever get three right. What is left to check here is that every state the
-  // projection can send renders as its own sentence — a state the switch does not know falls through
-  // to the empty string, which is silence exactly where the operator is looking for an answer.
+  // NOTE: the server computes `signingState` (one of its four cases needs the vault, so the client
+  // cannot rebuild it from the row). What is checked here is that every state renders as its own
+  // sentence: a state the switch does not know falls through to the empty string, which is silence.
   test("only a resolvable ref on a webhook is called Signed", async () => {
     const text = await listShows({});
     expect(text.includes("Signed")).toBe(true);
@@ -220,8 +214,8 @@ describe("AlertChannelsSection", () => {
     expect(/·\s*Signed\b/.test(text)).toBe(false);
   });
 
-  // The two the screen could not see before, and they are separate lines because they are separate
-  // errands: recreate a credential that is gone, or fill in one that is empty.
+  // NOTE: separate lines because they are separate errands: recreate a credential that is gone, or
+  // fill in one that is empty.
   test("a deleted credential says so, and says it was deleted", async () => {
     const text = await listShows({ signingState: "missing" });
     expect(text.includes("was deleted")).toBe(true);
@@ -249,19 +243,17 @@ describe("AlertChannelsSection", () => {
   test("a save that changed nothing does not mention the secret at all", async () => {
     await openEditor();
     const body = await save();
-    // The whole defect in one line: the key was always present, and `null` is the service's spelling
-    // of "clear it". Omitted is the spelling of "leave it", and it is the one that does not depend on
-    // the stored value being re-writable.
+    // NOTE: `null` is the service's spelling of "clear it"; omitted is "leave it", and it is the
+    // one that does not depend on the stored value being re-writable.
     expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(false);
-    // …and the rest of the form is still sent, so this is an omission and not a save that gave up.
+    // NOTE: the rest of the form is still sent, so this is an omission and not a save that gave up.
     expect(String(body?.name)).toBe("Ops webhook");
   });
 
   test("an unshowable secret can still be taken away on purpose", async () => {
-    // The trap in comparing VALUES instead of tracking the interaction. This channel arrives as
-    // `hasSecret` with no ref to show, so the picker opens empty and choosing "None" moves nothing —
-    // a value comparison calls that unchanged and the operator can never clear a secret the list is
-    // calling Signed.
+    // NOTE: the interaction is tracked, not the VALUE. This channel arrives as `hasSecret` with no
+    // ref to show, so the picker opens empty and choosing "None" moves nothing: a value comparison
+    // calls that unchanged and the operator could never clear the secret.
     channels = [channel({ hasSecret: true, secretRef: null })];
     await openEditor();
     fireEvent.pointerDown(
@@ -271,9 +263,9 @@ describe("AlertChannelsSection", () => {
         pointerType: "mouse",
       },
     );
-    // Inside the MENU, never `screen`: the trigger renders "None" as its own label when nothing is
-    // selected, so a bare text query clicks the button that opened the menu and the picker never
-    // hears an onChange — which reads exactly like the fix not working.
+    // NOTE: inside the MENU, never `screen`: the trigger renders "None" as its own label when
+    // nothing is selected, so a bare text query clicks the button that opened the menu and the
+    // picker never hears an onChange.
     await waitFor(() =>
       expect(screen.queryAllByRole("menu", { hidden: true }).length).toBe(1),
     );
@@ -296,9 +288,8 @@ describe("AlertChannelsSection", () => {
         /does not point at a credential|não aponta para uma credencial/,
       ).length > 0,
     ).toBe(true);
-    // …and it says what that COSTS, which is the half an operator acts on: such a ref resolves to no
-    // row, so the worker signs nothing. A sentence that only says "cannot be shown" reads like a
-    // display quirk.
+    // NOTE: and it says what that COSTS, the half an operator acts on: such a ref resolves to no
+    // row, so the worker signs nothing. "Cannot be shown" alone reads like a display quirk.
     expect(
       screen.queryAllByText(
         /deliveries go unsigned|entregas saem sem assinatura/,
@@ -307,11 +298,9 @@ describe("AlertChannelsSection", () => {
   });
 
   test("a configured secret the read cannot show is still not cleared", async () => {
-    // `alert_channels.secret_ref` took any string up to 128 chars until #126 guarded both writers, so
-    // a row can hold text that names no vault entry. The read refuses to hand that out — it would
-    // publish whatever was typed there — so this pair reaches the modal: `hasSecret` true with no ref
-    // to show. Echoing the blank picker back is exactly the erasure this PR is about, and the
-    // omission is what makes the unshowable case safe rather than merely invisible.
+    // NOTE: a legacy `alert_channels.secret_ref` row can hold text that names no vault entry. The
+    // read refuses to hand that out (it would publish whatever was typed there), so the modal gets
+    // `hasSecret` true with no ref; echoing the blank picker back would erase the stored secret.
     channels = [channel({ hasSecret: true, secretRef: null })];
     await openEditor();
     const body = await save();
@@ -323,8 +312,8 @@ describe("AlertChannelsSection", () => {
     await waitFor(() =>
       expect(screen.queryAllByText("ops-hmac").length > 0).toBe(true),
     );
-    // Radix opens on pointerdown, not click.
-    // The FormField group carries the same accessible name, so this asks for the BUTTON.
+    // NOTE: Radix opens on pointerdown, not click, and the FormField group carries the same
+    // accessible name, so this asks for the BUTTON.
     fireEvent.pointerDown(
       screen.getByRole("button", { name: /Signing secret/ }),
       {
@@ -332,9 +321,7 @@ describe("AlertChannelsSection", () => {
         pointerType: "mouse",
       },
     );
-    // Inside the MENU, never `screen`: the trigger renders "None" as its own label when nothing is
-    // selected, so a bare text query clicks the button that opened the menu and the picker never
-    // hears an onChange — which reads exactly like the fix not working.
+    // NOTE: inside the MENU, never `screen` (see the test above).
     await waitFor(() =>
       expect(screen.queryAllByRole("menu", { hidden: true }).length).toBe(1),
     );
@@ -350,11 +337,10 @@ describe("AlertChannelsSection", () => {
   });
 
   test("switching the channel to Discord strands the ref instead of clearing it", async () => {
-    // The picker is drawn only for a webhook, so a save that switches the type has no picker on
-    // screen to have been touched. The stored ref is therefore untouched, the key is omitted, and the
-    // credential survives the round trip back to `webhook` — where the worker signs again, since it
-    // reads `secretRef && type === "webhook"`. The alternative, sending the blanked picker, is the
-    // same silent erasure this PR is about, reached through a different door.
+    // NOTE: the picker is drawn only for a webhook, so a save that switches the type leaves it
+    // untouched and omits the key. The credential survives the round trip back to `webhook`, where
+    // the worker signs again (`secretRef && type === "webhook"`); sending the blanked picker
+    // instead would silently erase it.
     await openEditor();
     const select = screen.getByLabelText(/^(Type|Tipo)$/) as HTMLSelectElement;
     fireEvent.change(select, { target: { value: "discord" } });
@@ -366,17 +352,16 @@ describe("AlertChannelsSection", () => {
 
   test("the modal says WHICH credential signs, not just that one does", async () => {
     await openEditor();
-    // The list badge only ever said "Signed". The picker resolving the ref to its vault entry is
-    // what lets the operator see, and keep, the credential they configured.
+    // NOTE: the picker resolving the ref to its vault entry is what lets the operator see, and
+    // keep, the credential they configured.
     await waitFor(() =>
       expect(screen.queryAllByText("ops-hmac").length > 0).toBe(true),
     );
   });
 
-  // ── THE BUTTON (issue #605) ──
+  // ── the Test button ──
   //
-  // Before it, an operator had no way to learn whether a channel worked short of waiting for an
-  // incident. The three tests here are not "the button posts"; they are the three answers a bare
+  // NOTE: the three tests here are not "the button posts"; they are the three answers a bare
   // "delivered" would let the operator read wrongly.
 
   const pressTest = async (over: Record<string, unknown> = {}) => {
@@ -410,15 +395,15 @@ describe("AlertChannelsSection", () => {
   });
 
   test("a delivered sample on a DISABLED channel does not read as watching", async () => {
-    // The trap this closes: the operator tests before enabling, which is the normal order, sees a
-    // green toast and leaves believing production is being watched by a channel that is off.
+    // NOTE: the operator tests before enabling, which is the normal order; a green toast alone
+    // would leave them believing production is watched by a channel that is off.
     const text = await pressTest({ enabled: false });
     expect(/still disabled|continua desabilitado/i.test(text)).toBe(true);
   });
 
   test("a delivered sample that went out UNSIGNED says that instead of success", async () => {
-    // Same failure one layer in: the destination took it, so the channel is reachable, and a
-    // receiver that verifies signatures will still drop every real alert.
+    // NOTE: the destination took it, so the channel is reachable, and a receiver that verifies
+    // signatures will still drop every real alert.
     const text = await pressTest({
       signed: false,
       warning: "the configured signing secret did not resolve",
@@ -445,8 +430,8 @@ describe("AlertChannelsSection", () => {
       warning: null,
     };
     screen.getByRole("button", { name: /^(Test|Testar)$/ }).click();
-    // Refusing to say WHY would reproduce the issue one level up: the operator learns the channel is
-    // broken and still cannot tell a deleted Discord webhook from a blocked host.
+    // NOTE: without the WHY the operator learns the channel is broken and still cannot tell a
+    // deleted Discord webhook from a blocked host.
     await waitFor(() =>
       expect(
         (document.body.textContent ?? "").includes("non-2xx response: 404"),
@@ -455,10 +440,9 @@ describe("AlertChannelsSection", () => {
   });
 
   test("two channels tested at once do not clear each other's spinner", async () => {
-    // REVIEW ROUND 1 of #605. With one `testingId` for the whole list, testing B while A is in flight
-    // re-enabled A and the first response to land cleared the other's spinner while it was still
-    // running. Both halves cost a real external send, and the second is this PR's own subject one
-    // screen up: a console saying idle about a delivery that has not happened.
+    // NOTE: the in-flight state is per channel. A single `testingId` for the whole list would
+    // re-enable A while B is tested, and the first response to land would clear the other's spinner
+    // while it still runs; both cost a real external send.
     channels = [channel(), channel({ id: "4", name: "Second webhook" })];
     const release: Array<() => void> = [];
     const realFetch2 = globalThis.fetch;
@@ -471,7 +455,7 @@ describe("AlertChannelsSection", () => {
           ? input
           : String((input as Request).url ?? input);
       if (url.endsWith("/test")) {
-        // Held open on purpose: the bug only exists while two are in flight together.
+        // NOTE: held open on purpose: the case only exists while two are in flight together.
         return await new Promise<Response>((resolve) => {
           release.push(() =>
             resolve(
@@ -500,7 +484,7 @@ describe("AlertChannelsSection", () => {
 
       buttons()[0]?.click();
       await waitFor(() => expect(release.length).toBe(1));
-      // The first half: B is still pressable, and A must NOT be.
+      // NOTE: B is still pressable, and A must NOT be.
       expect((buttons()[0] as HTMLButtonElement).disabled).toBe(true);
       expect((buttons()[1] as HTMLButtonElement).disabled).toBe(false);
 
@@ -508,7 +492,7 @@ describe("AlertChannelsSection", () => {
       await waitFor(() => expect(release.length).toBe(2));
       expect((buttons()[0] as HTMLButtonElement).disabled).toBe(true);
 
-      // The second half, and the one a single id got wrong: A answers, B has not.
+      // NOTE: A answers, B has not, and B's spinner stays.
       release[0]?.();
       await waitFor(() =>
         expect((buttons()[0] as HTMLButtonElement).disabled).toBe(false),
@@ -529,14 +513,14 @@ describe("AlertChannelsSection", () => {
     channels = [channel({ hasSecret: false, secretRef: null })];
     await openEditor();
     const body = await save();
-    // The other half of the prefill: an untouched empty picker is still untouched, so it must not
-    // send a stale ref from the component's last session either.
+    // NOTE: an untouched empty picker is still untouched, so it must not send a stale ref from the
+    // component's last session either.
     expect(Object.hasOwn(body ?? {}, "secretRef")).toBe(false);
   });
 
-  // ── excluded agents (issue #843) ──
+  // ── excluded agents ──
   //
-  // The dialog sends the whole list on every save, so what it opens with is what it keeps: an
+  // NOTE: the dialog sends the whole list on every save, so what it opens with is what it keeps: an
   // untouched save must send back exactly the stored ids, including one whose agent is gone (the
   // server accepts a kept id), and a toggle must add or drop exactly one.
   test("an untouched save sends the stored exclusions back, a deleted agent's included", async () => {
@@ -554,7 +538,7 @@ describe("AlertChannelsSection", () => {
         .getByRole("button", { name: "Production agent", hidden: true })
         .getAttribute("aria-pressed"),
     ).toBe("false");
-    // The id with no agent behind it is on screen, so it can be seen and dropped.
+    // NOTE: the id with no agent behind it is on screen, so it can be seen and dropped.
     expect(
       screen.getByRole("button", { name: /#99/, hidden: true }),
     ).toBeTruthy();

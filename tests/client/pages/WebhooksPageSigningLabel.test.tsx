@@ -7,26 +7,22 @@ import { MemoryRouter } from "react-router";
 import { ToastProvider } from "@/client/components";
 import { WebhooksPage } from "@/client/pages/WebhooksPage";
 
-// THE LIST HAS FOUR STATES, AND THE FOURTH IS WHY IT STOPPED DECIDING FOR ITSELF.
+// THE LIST HAS FOUR STATES, AND THE SERVER DECIDES THEM. `hasSecret` + `secretRef` answer three;
+// the fourth, a well-formed ref whose vault entry was DELETED or never filled, resolves to nothing
+// in the worker and the row cannot see it. So the label reads `signingState` from the server rather
+// than deriving it, or a dead ref reads "Signed with: vault:11" beside a delivery that went out
+// unsigned.
 //
-// It used to derive the label from `hasSecret` + `secretRef`, which are what the ROW can answer, and
-// that is three states. The fourth — a well-formed ref whose vault entry was DELETED, or created and
-// never filled — resolves to nothing in the worker just the same, and the row cannot see it: the
-// label said "Signed with: vault:11", the same sentence the live credential gets, on the page that
-// (since #724) also shows a delivery row saying that POST went out unsigned. The server now answers
-// the whole question in `signingState` and this reads it.
-//
-// NOTE: every assertion reduces to a boolean or a string BEFORE expect. A failing expectation that
-// holds a DOM node serializes a cyclic happy-dom tree and stalls the runner.
+// Every assertion reduces to a boolean or a string BEFORE expect: a failing expectation that holds
+// a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 function subscription(over: Record<string, unknown> = {}) {
   return {
     id: "5",
-    // Distinct from every other fixture in the suite. `screen` is document-wide and `bun test` runs
-    // many files in one worker, so a URL shared with `WebhookSubscriptionModal.test.tsx` let this
-    // file's first wait resolve against THAT file's DOM — green locally, red in CI, and pointing at
-    // the assertion after the wait rather than at the wait. The queries below are scoped to this
-    // render's own container for the same reason; the shared name is the belt.
+    // NOTE: distinct from every other fixture in the suite. `screen` is document-wide and `bun
+    // test` runs many files in one worker, so a URL shared with another file lets this file's first
+    // wait resolve against THAT file's DOM. The queries below are scoped to this render's own
+    // container for the same reason; the distinct name is the belt.
     url: "https://ops.example.com/page-label",
     secretRef: "vault:7",
     hasSecret: true,
@@ -111,10 +107,9 @@ describe("the webhooks list's signing label", () => {
   });
 
   test("says a hidden ref is SET without claiming the deliveries are signed", async () => {
-    // Both halves, and the second is why the word "Signed" cannot lead this sentence: such a ref
+    // NOTE: both halves, and the second is why "Signed" cannot lead this sentence: such a ref
     // resolves to no row, so the worker builds headers with a null secret and the delivery goes out
-    // unsigned. Saying "Signed" would be the console asserting the opposite of what leaves the
-    // installation — the same error as the "Unsigned" it replaced, pointing the other way.
+    // unsigned.
     subs = [
       subscription({
         secretRef: null,
@@ -133,10 +128,9 @@ describe("the webhooks list's signing label", () => {
     expect(says(/^(Unsigned|Sem assinatura)$/)).toBe(false);
   });
 
-  // The two the row could never answer, and the reason the derivation moved to the server. Each gets
-  // its own sentence because they are different errands: recreate a credential that is gone, or fill
-  // in one that is empty. Neither may keep naming the ref — there is nothing at that name to go look
-  // at, and naming it is what made the old label read as reassurance.
+  // NOTE: the two the row can never answer. Each gets its own sentence because they are different
+  // errands: recreate a credential that is gone, or fill in one that is empty. Neither names the
+  // ref: there is nothing at that name to go look at, and naming it reads as reassurance.
   test("a deleted credential is not still labelled Signed with its ref", async () => {
     subs = [subscription({ signingState: "missing" })];
     await show();

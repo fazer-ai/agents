@@ -6,12 +6,10 @@ import {
 } from "@/client/pages/resources/CodeToolTestModal";
 import { CONTEXT_VAR_NAMES } from "@/modules/tool-definitions/normalize";
 
-// Round 25. The test dialog said it ran the body "exactly as the agent would" and then sent no
-// `context` at all, so every advertised variable arrived `undefined`: a body reading
-// `context.contact_name` was tested against a value the agent will never supply. The HTTP tool's
-// dialog has always collected these — it asks `contextNamesReferencedBy` which `{{names}}` the
-// template mentions and draws a field per name (ToolEditModal.tsx). This is the same question for a
-// body: which of the runtime's names does this code actually read.
+// The test dialog runs the body as the agent would, so it has to send `context`, or every variable
+// arrives `undefined`. The HTTP tool's dialog asks `contextNamesReferencedBy` which `{{names}}` its
+// template mentions and draws a field per name (ToolEditModal.tsx); this is the same question for a
+// body: which of the runtime's names does this code read.
 describe("contextNamesUsedBy", () => {
   const rows: Array<[string, string, string[]]> = [
     ["dot access", "return context.contact_name;", ["contact_name"]],
@@ -43,10 +41,8 @@ describe("contextNamesUsedBy", () => {
       "return context.contact_name_2;",
       [],
     ],
-    // A body that reads nothing asks for nothing, which is what keeps the dialog empty for the
-    // ordinary tool.
-    // Round 26: optional chaining is how a careful body reads a variable a turn may not have, so it
-    // is the FIRST spelling to expect here, not an exotic one.
+    // NOTE: optional chaining is how a careful body reads a variable a turn may not have, so it is
+    // the FIRST spelling to expect here, not an exotic one.
     [
       "optional chaining, dot and bracket",
       `return [context?.contact_email, context?.["inbox_name"]];`,
@@ -62,10 +58,9 @@ describe("contextNamesUsedBy", () => {
   }
 });
 
-// Round 27: the scan is a shortcut over arbitrary JavaScript, and these two spellings are ordinary
-// rather than exotic. What the dialog owes is not seeing them, which no property scan can promise,
-// but never being the reason a value cannot be supplied: the full list is one click away, and the
-// scan only decides what the dialog OPENS with.
+// The scan is a shortcut over arbitrary JavaScript, and these two spellings are ordinary. No
+// property scan can promise to see them, so the dialog must never be the reason a value cannot be
+// supplied: the full list is one click away, and the scan only decides what the dialog OPENS with.
 describe("what the scan cannot see", () => {
   const invisible = [
     "const { contact_email } = context;\nreturn contact_email;",
@@ -130,11 +125,9 @@ describe("what the dialog sends", () => {
     );
   });
 
-  // The list is a SCAN of the body, and the scan reads member access. A body that destructures
-  // (`const { agent_name } = context`) or aliases (`const c = context`) names nothing the regex can
-  // see, so `names` comes back empty and the fallback inside the loop never ran: the dialog tested
-  // a turn without `agent_name`, which is a turn that cannot happen, and failed a body the runtime
-  // would have served. The guarantee belongs to the runtime, not to the scanner's eyesight.
+  // NOTE: the list is a SCAN of member access, so a body that destructures or aliases `context`
+  // names nothing and `names` comes back empty. `agent_name` must still be sent, or the dialog
+  // tests a turn that cannot happen: the guarantee belongs to the runtime, not to the scanner.
   test("agent_name survives a body whose read the scan cannot see", () => {
     expect(contextNamesUsedBy("const { agent_name } = context;")).toEqual([]);
     expect(contextToSend({}, [], "Agente")).toEqual({ agent_name: "Agente" });

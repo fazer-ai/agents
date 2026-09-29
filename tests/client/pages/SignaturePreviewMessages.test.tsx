@@ -8,19 +8,13 @@ import {
 } from "@/client/pages/agents/BehaviorTab";
 import { behaviorTabProps } from "./behaviorTabProps";
 
-// A REPETITION NOBODY ASKED FOR IS READ AS A BUG.
+// A REPETITION NOBODY ASKED FOR IS READ AS A BUG. The signature preview draws one balloon per
+// message, the only way to show that the signature repeats and which message `once` signs, so the
+// caption has to say the balloons ARE two messages, or two boxes with the same first line read as a
+// duplicated preview. Its absence is load-bearing too: with the split off, "1 of 1" is noise.
 //
-// #616 gave the signature preview one balloon per message, which is the only way to show that the
-// signature repeats and which of two messages `once` signs. What it did not do is say that the two
-// balloons ARE two messages: the label reads "Preview" and the hint "an example reply", singular,
-// so two boxes carrying the same first line come out looking like the same preview rendered twice.
-// It was reported as exactly that — the preview section is duplicated.
-//
-// The caption is therefore load-bearing, and so is its absence: with the split off there is one
-// message and "message 1 of 1" is noise on a delivery with no repetition to show.
-//
-// NOTE: every assertion reduces to a number or a boolean BEFORE expect. A failing expectation
-// holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
+// Every assertion reduces to a number or a boolean BEFORE expect: a failing expectation holding a
+// DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 const SIGNATURE: SignatureState = {
   enabled: true,
@@ -74,8 +68,8 @@ describe("the signature preview says its balloons are separate messages", () => 
     expect(captions()).toEqual(["1/2", "2/2"]);
   });
 
-  // The number alone says "there are two of these"; it does not say WHY, and the operator who did
-  // not connect it to the split section is the one who reported the duplication.
+  // NOTE: the number alone says "there are two of these"; it does not say WHY, and an operator who
+  // does not connect it to the split section reads it as duplication.
   test("split on: the hint names the setting that produced the second message", () => {
     renderTab(true);
     expect(screen.queryAllByText(SPLIT_SENTENCE).length).toBeGreaterThan(0);

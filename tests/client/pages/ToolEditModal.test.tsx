@@ -85,8 +85,8 @@ describe("formFromTool — legacy fixed URL bindings", () => {
   });
 });
 
-// Issue #59: the operator types a list; the server normalizes it (dedupe, sort, drop 2xx and
-// out-of-range). The field is permissive on purpose — a stray separator is not worth failing a save.
+// The operator types a list; the server normalizes it (dedupe, sort, drop 2xx and out-of-range).
+// The field is permissive on purpose: a stray separator is not worth failing a save.
 describe("parseExpectedStatuses", () => {
   test("an empty field declares nothing, which is the fail-closed default", () => {
     expect(parseExpectedStatuses("")).toEqual([]);
@@ -111,7 +111,7 @@ describe("parseExpectedStatuses", () => {
   });
 });
 
-// #456. The response template travels through the form as plain markdown; the {mode, template}
+// The response template travels through the form as plain markdown; the {mode, template}
 // envelope is assembled on save, and whatever ELSE the column held has to survive an edit that
 // never showed it.
 describe("formFromTool / payloadOf — the response template", () => {
@@ -155,12 +155,10 @@ describe("formFromTool / payloadOf — the response template", () => {
   });
 });
 
-// Round 3 of review, finding 4. The preview is labelled "exactly what the agent would receive", and
-// the runtime projects the template on 2xx ALONE — so a sample captured from a status outside that
-// range had the preview promising something the very same test run had just reported otherwise.
-//
-// The control is agreement with `buildHttpTool`, not with this file's reading of it: each case runs
-// the same definition through the runtime and compares.
+// The preview is labelled "exactly what the agent would receive", and the runtime projects the
+// template on 2xx ALONE, so a sample from a status outside that range must not be previewed as
+// projected. The control is agreement with `buildHttpTool`, not with this file's reading of it:
+// each case runs the same definition through the runtime and compares.
 describe("templatePreviewFor", () => {
   const BODY = {
     razao_social: "MAGAZINE LUIZA S/A",
@@ -264,16 +262,14 @@ describe("templatePreviewFor", () => {
   });
 });
 
-// Round 4 of review, finding 3. `outputSchema` accepted anything before this feature validated it
-// (MCP `tool_create` passed it through), so a row can hold `{mode:"template", template:42}`: a
-// declaration the reader refuses. Keeping it verbatim meant the editor showed an empty box, resent
-// the broken object on every save, and the service refinement — new in this same change — rejected
-// it. The operator could then edit nothing about that tool, and nothing said why.
+// A legacy row can hold `{mode:"template", template:42}`, a declaration the reader refuses (MCP
+// `tool_create` once stored `outputSchema` unvalidated). Kept verbatim, the editor would resend the
+// broken object on every save and the service would reject it, locking the tool with no reason.
 describe("outputSchemaForm", () => {
   test("a broken template declaration is dropped, with the reader's own reason", () => {
     const got = outputSchemaForm({ mode: "template", template: 42 });
     expect(got.outputTemplate).toBe("");
-    // The resend is what locked the tool.
+    // NOTE: resending it is what would lock the tool.
     expect(got.outputSchemaOther).toBeNull();
     expect(got.outputSchemaProblem).toContain("must be a string");
   });
@@ -329,9 +325,8 @@ describe("outputSchemaForm", () => {
   });
 });
 
-// Round 5 of review. Both findings are the same defect twice: the preview restated the runtime's
-// rules instead of asking it, so every rule the runtime learned in rounds 3 and 4 left the preview
-// behind. It now calls `projectToolResponse`, and these are the three cases that were wrong.
+// The preview calls `projectToolResponse` instead of restating the runtime's rules, so a rule the
+// runtime learns cannot leave the preview behind. These are three cases a restatement gets wrong.
 describe("templatePreviewFor — the rules are the runtime's, not a copy", () => {
   const TPL = "Empresa: {{razao_social}}";
 
@@ -369,9 +364,8 @@ describe("templatePreviewFor — the rules are the runtime's, not a copy", () =>
   }
 
   test("a render that overruns the model's limit is previewed clipped", async () => {
-    // Two 2,000-character fields and a separator: the substitutions, not the template, are what
-    // overrun. The runtime clips the PROJECTED body too — that is round 1's surviving mutant — and
-    // the preview was showing the whole thing under "exactly what the agent would receive".
+    // NOTE: two 2,000-character fields and a separator: the substitutions, not the template, are
+    // what overrun. The runtime clips the PROJECTED body too, so the preview must as well.
     const body = JSON.stringify({ a: "x".repeat(2000), b: "y".repeat(2000) });
     const template = "{{a}}\n---\n{{b}}";
     const preview = templatePreviewFor({ template, sample: body, status: 200 });
@@ -381,8 +375,8 @@ describe("templatePreviewFor — the rules are the runtime's, not a copy", () =>
   });
 
   test("a token-less template is previewed for a 204 with no body at all", async () => {
-    // The sample field is EMPTY here, which used to mean "nothing to preview". The runtime hands
-    // the model the operator's own text, so an empty box was the wrong answer.
+    // NOTE: the sample field is EMPTY here, and still there is a preview: the runtime hands the
+    // model the operator's own text.
     const preview = templatePreviewFor({
       template: "Done. The booking is confirmed.",
       sample: "",
@@ -400,16 +394,14 @@ describe("templatePreviewFor — the rules are the runtime's, not a copy", () =>
       sample: "not json at all",
       status: 200,
     });
-    // Previously null: no preview at all, for a call that succeeds and reaches the model.
-    // Round 14: and the REASON travels with it. Collapsed to a boolean, this case rendered the
-    // non-2xx sentence — "this sample came back as HTTP null" — for a response that came back 200.
+    // NOTE: a preview, for a call that succeeds and reaches the model, and the REASON travels with
+    // it: collapsed to a boolean, this case would render the non-2xx sentence for a 200.
     expect(preview?.skipped).toBe("not-json");
     expect(preview?.text).toBe(await runtimeText(200, "not json at all"));
   });
 });
 
-// Round 6 of review, findings 1 and 2. Two more ways the console answered a question the server
-// answers differently — and both are the same shape as round 5's: a rule restated instead of asked.
+// Two more places where the console must ask the runtime rather than restate its rule.
 describe("templatePreviewFor — the raw body is the raw body", () => {
   test("leading whitespace is not trimmed away before the clip", async () => {
     // On the raw path the runtime clips the body EXACTLY as it arrived, so trimming here slides the
@@ -456,13 +448,10 @@ describe("templatePreviewFor — the raw body is the raw body", () => {
   });
 });
 
-// Round 6 of review, finding 2. The Save button was gated on the two problems this screen can phrase
-// well — an unusable token, a stray brace — while the service refines with the WHOLE reader, which
-// also refuses a template past the character limit and one carrying a NUL or a lone surrogate. For
-// those, Save stayed enabled on a payload the server was always going to reject.
-//
-// So the test is not a list of shapes this file thinks are bad: it is the agreement itself, each
-// shape put through the console's gate and the service's schema and required to get the same answer.
+// The service refines with the WHOLE reader (which also refuses a template past the character limit
+// and one carrying a NUL or a lone surrogate), so Save must gate on the same answer. The test is
+// the agreement itself: each shape goes through the console's gate and the service's schema and
+// must get the same answer.
 describe("templateSaveProblem agrees with the service, shape for shape", () => {
   const NUL = String.fromCharCode(0);
   const CASES: [string, string][] = [
@@ -489,10 +478,9 @@ describe("templateSaveProblem agrees with the service, shape for shape", () => {
   });
 });
 
-// Round 13 of review. The server refuses a declared template it would not honour (400), so a Test
-// button that ignores the same check spends a REAL request against the operator's provider to be
-// told what the box on screen already knew. Asserted at the source because the alternative is
-// mounting the whole editor to read one `disabled`.
+// The server refuses a declared template it would not honour (400), so a Test button that ignores
+// the same check spends a REAL request against the operator's provider to be told what the box
+// already knew. Asserted at the source because the alternative is mounting the whole editor.
 test("the Test button is gated on the same template check Save is", async () => {
   const src = await Bun.file(
     "src/client/pages/resources/ToolEditModal.tsx",
@@ -504,10 +492,9 @@ test("the Test button is gated on the same template check Save is", async () => 
   expect(src).toMatch(/templateDeclProblem\s*=\s*useMemo/);
 });
 
-// Round 14 of review. The preview collapsed the runtime's three outcomes into a boolean, so a 2xx
-// response that simply is not JSON — a CSV, an XML, a plain "OK" — was explained to the operator as
-// "outside 2xx", with the status interpolated as `null` when the sample was pasted by hand. Same
-// shape as round 12's finding on the runtime side, one layer up.
+// The runtime has three outcomes, not a boolean: a 2xx response that is not JSON (a CSV, an XML, a
+// plain "OK") must not be explained as "outside 2xx", with the status interpolated as `null` when
+// the sample was pasted by hand.
 test("the preview names WHY the template did not apply, one branch per reason", async () => {
   const src = await Bun.file(
     "src/client/pages/resources/ToolEditModal.tsx",
@@ -519,16 +506,15 @@ test("the preview names WHY the template did not apply, one branch per reason", 
   expect(src).toMatch(
     /templatePreview\?\.skipped === "not-json"[\s\S]{0,400}outputTemplateNotJson/,
   );
-  // And never on the negation of "it rendered", which is what made one sentence cover two causes.
+  // NOTE: and never on the negation of "it rendered", which makes one sentence cover two causes.
   expect(src).not.toContain("!templatePreview.projected");
 });
 
-// Round 17 of review, finding 1. The dialog runs the definition `payloadOf` produced, and it was
-// handed its list of boxes from a DIFFERENT source: the raw form rows. Those disagree wherever two
-// rows trim to one name — which the editor permits — because `schemaFromAiFields` writes an object,
-// so the last declaration wins there while the dialog rendered both. Two boxes on one `ai:<name>`
-// slot means an earlier row's `required`, or its type, judging a value the saved definition never
-// declares: Send disabled, or a value validated against a schema that will not exist.
+// The dialog runs the definition `payloadOf` produced, so its boxes come from that definition, not
+// from the raw form rows. Those disagree wherever two rows trim to one name (which the editor
+// permits): `schemaFromAiFields` writes an object, so the last declaration wins. Two boxes on one
+// `ai:<name>` slot would let an earlier row's `required` or type judge a value the saved definition
+// never declares.
 test("the test dialog's boxes come from the definition it will send", () => {
   const form = formFromTool(legacyTool());
   const withDupes = {
@@ -588,14 +574,13 @@ test("and the dialog is built from that reader, not from the form rows", async (
     "src/client/pages/resources/ToolEditModal.tsx",
   ).text();
   expect(src).toMatch(/aiFields: testFieldsFrom\(/);
-  // The form rows are what disagreed with the payload; naming them here again would be the defect.
+  // NOTE: the form rows disagree with the payload, so they must not be the source here.
   expect(src).not.toMatch(/aiFields: form\.aiFields/);
 });
 
-// Finding 2 of the same round. A relative urlTemplate with no credential base is refused by
-// `buildHttpTool` before a request goes out, and Save already knows: `urlTemplateInvalid` is
-// deliberately false for that shape because `relativeWithoutBase` carries it separately. The test
-// button read only the first half, so it spent a real round trip to be told what the form knew.
+// A relative urlTemplate with no credential base is refused by `buildHttpTool` before a request
+// goes out, and Save already knows: `urlTemplateInvalid` is deliberately false for that shape
+// because `relativeWithoutBase` carries it separately. The Test button must read both halves too.
 test("the Test button carries the whole URL gate Save does", async () => {
   const src = await Bun.file(
     "src/client/pages/resources/ToolEditModal.tsx",
@@ -611,7 +596,7 @@ test("the Test button carries the whole URL gate Save does", async () => {
   }
 });
 
-// #459. The preview promises "exactly what the agent would receive", and a block is the one
+// The preview promises "exactly what the agent would receive", and a block is the one
 // construct whose output depends on how MANY of something came back, so the control is the same
 // as for a scalar template: agreement with `buildHttpTool` on the same definition and body.
 describe("templatePreviewFor with a list block", () => {
@@ -708,8 +693,8 @@ describe("insertEachBlock", () => {
       value = v;
     });
     expect(value).toBe("Total: {{total}}\n{{#each itens}}\n\n{{/each}}");
-    // What it inserts is not yet saveable, and the gate says what to write: a block with nothing
-    // to repeat would render a full list as an empty body (review round 2).
+    // NOTE: what it inserts is not yet saveable, and the gate says what to write: a block with
+    // nothing to repeat would render a full list as an empty body.
     expect(templateSaveProblem(value)).toContain("nothing to repeat");
     expect(
       templateSaveProblem(value.replace("\n\n", "\n- {{nome}}\n")),

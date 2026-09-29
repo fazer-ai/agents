@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { type LogGroupTitle, logGroupTitle } from "@/client/lib/logGroupTitle";
 import { FLOW_STAGES } from "@/modules/flowlog/stages";
 
-// Issue #357: the Logs page groups by `turnId`, which is a correlation id and not a claim that a
-// turn happened, and the group's name fell through to the literal word "Turn" whenever there was
-// neither a conversation nor a thread. Every row here is one line of the decision, so a change to
-// the ordering of the four answers shows up as a named case rather than as a rendering difference.
+// The Logs page groups by `turnId`, which is a correlation id and not a claim that a turn happened,
+// so a group with neither a conversation nor a thread must not fall through to the word "Turn".
+// Every row here is one line of the decision, so a change to the ordering of the four answers shows
+// up as a named case rather than as a rendering difference.
 
 interface Row {
   name: string;

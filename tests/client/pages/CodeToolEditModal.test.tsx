@@ -31,10 +31,9 @@ import {
 
 afterEach(cleanup);
 
-// The body is no longer a `<textarea>`: it is CodeMirror (issue #538), so `fireEvent.change` has
-// nothing to change. `EditorView.findFromDOM` is CodeMirror's own way to reach the view that owns a
-// node, so the test drives the REAL editor and its onChange rather than a stand-in for it, which is
-// what keeps these tests about the modal instead of about the widget.
+// The body is CodeMirror, not a `<textarea>`, so `fireEvent.change` has nothing to change.
+// `EditorView.findFromDOM` is CodeMirror's own way to reach the view that owns a node, so the test
+// drives the REAL editor and its onChange, which keeps these tests about the modal.
 function setCode(text: string) {
   const host = document.body.querySelector(".cm-editor") as HTMLElement;
   const view = EditorView.findFromDOM(host);
@@ -216,10 +215,9 @@ test("an invalid body warns but leaves Save enabled", async () => {
   expect(save?.hasAttribute("disabled")).toBe(false);
 });
 
-// The defect as the operator meets it, and the only place it is visible: Escape is how a suggestion
-// is dismissed, and it is also how this dialog closes. Radix hears the press first (capture phase on
-// `document`), so before the claim in escapeClaim.ts the same key that put the popup away asked
-// whether to throw the body out. Measured in a browser; this is the regression fence for it.
+// Escape is how a suggestion is dismissed, and it is also how this dialog closes. Radix hears the
+// press first (capture phase on `document`), so without the claim in escapeClaim.ts the key that
+// puts the popup away would also ask whether to throw the body out.
 test("Escape dismisses the suggestion without offering to discard the body", async () => {
   render(<Harness />);
   fireEvent.click(screen.getByText("open"));
@@ -238,8 +236,8 @@ test("Escape dismisses the suggestion without offering to discard the body", asy
   await waitFor(() => expect(completionStatus(view.state)).toBe("active"));
 
   content.dispatchEvent(
-    // `cancelable`, as a real keydown is: the fix works by `preventDefault`, which Radix reads back
-    // (react-dismissable-layer), and `preventDefault` on a non-cancelable event does nothing.
+    // NOTE: `cancelable`, as a real keydown is: the claim works by `preventDefault`, which Radix
+    // reads back (react-dismissable-layer), and on a non-cancelable event it does nothing.
     new KeyboardEvent("keydown", {
       key: "Escape",
       bubbles: true,
@@ -264,10 +262,10 @@ test("Escape dismisses the suggestion without offering to discard the body", asy
   );
 });
 
-// The defect as the operator meets it: open a tool, touch nothing, press Escape, and be asked
-// whether to discard changes. A body stored with CRLF (saved over MCP from a Windows client, or
-// carried in by an import) cannot survive CodeMirror, which normalizes line endings on the way in,
-// and the normalized text used to come back through `onChange` as if the operator had typed it.
+// Open a tool, touch nothing, press Escape: no "discard changes?" prompt. A body stored with CRLF
+// (saved over MCP from a Windows client, or imported) cannot survive CodeMirror, which normalizes
+// line endings on the way in, and that normalization must not come back through `onChange` as if
+// the operator had typed it.
 test("a tool stored with CRLF opens clean, and closes without asking", async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -340,7 +338,7 @@ test("a body with no return warns without disabling Save", async () => {
 
 // The other DOM rule: an answer belongs to the opening that asked for it. The GET outlives the
 // dialog, so closing while it is out and reopening on another tool would otherwise let the first
-// answer fill the second form — and Save would then patch the new id with the old tool's contents.
+// answer fill the second form, and Save would then patch the new id with the old tool's contents.
 // `fetch` is intercepted rather than the api module: `mock.module` is process-global and tears down
 // mocks other files installed (the note in document-starters-race.test.tsx).
 function TwoToolsHarness() {
@@ -463,8 +461,9 @@ test("a save the server warned about says so in the toast, not only under the fi
 });
 
 test("reopening a tool whose body does not parse warns again, without an edit", async () => {
-  // The opening clears the warnings, and reopening the same tool leaves the body identical — so an
-  // effect keyed only on the text does not rerun and a broken body looks clean until it is typed in.
+  // NOTE: the opening clears the warnings, and reopening the same tool leaves the body identical,
+  // so an effect keyed only on the text does not rerun and a broken body looks clean until typed
+  // in.
   const realFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const href =
@@ -554,9 +553,9 @@ test("a save that lands after the dialog was dismissed does not close the next o
 });
 
 test("a save that FAILS after the dialog was dismissed does not mark the next one", async () => {
-  // A refusal that arrives for a dialog that is gone has nowhere to land, and would put the
-  // previous tool's error on the form now open. This drives the RESPONSE branch — the client
-  // returns a transport failure as `error` rather than throwing — and the `catch` beside it carries
+  // NOTE: a refusal that arrives for a dialog that is gone has nowhere to land, and would put the
+  // previous tool's error on the form now open. This drives the RESPONSE branch (the client returns
+  // a transport failure as `error` rather than throwing), and the `catch` beside it carries
   // the same guard for the exceptions the client does not convert.
   const realFetch = globalThis.fetch;
   let fail = () => {};
@@ -613,7 +612,7 @@ test("a save that FAILS after the dialog was dismissed does not mark the next on
 
 test("the parser only runs while the dialog is open", () => {
   // This component stays mounted on the Tools page and the agent editor, and the empty form starts
-  // with the starter body — so an ungated effect downloads the parser chunk and parses a body
+  // with the starter body, so an ungated effect downloads the parser chunk and parses a body
   // nobody is editing, on every visit to either page. A source fence rather than a module mock:
   // `mock.module` is process-global here and tears down mocks other files installed (the note in
   // document-starters-race.test.tsx), and what is being asserted is one guard's presence.
@@ -629,12 +628,10 @@ test("the parser only runs while the dialog is open", () => {
 });
 
 test("a save in flight cannot be dismissed, and its finally belongs to its own opening", () => {
-  // Round 25. Two guards over one hole: a save dismissed with Esc/X and reopened before it answers.
-  // The dialog now refuses the dismissal, the rule the test modal beside it already follows
-  // (docs/modals.md) and the rule that makes the second guard unreachable from the UI, which is
-  // exactly why it is asserted here rather than driven: an unscoped `setSaving(false)` would leave
-  // the reopened form disabled with nothing running, for as long as the first request takes.
-  // A source fence for the reason the fence above gives.
+  // NOTE: two guards over one hole, a save dismissed with Esc/X and reopened before it answers. The
+  // dialog refuses the dismissal (docs/modals.md), which makes the second guard unreachable from
+  // the UI, hence a source fence: an unscoped `setSaving(false)` would leave the reopened form
+  // disabled with nothing running, for as long as the first request takes.
   const src = readFileSync(
     "src/client/pages/resources/CodeToolEditModal.tsx",
     "utf8",
@@ -653,7 +650,7 @@ test("a save in flight cannot be dismissed, and its finally belongs to its own o
 
 // The starter body's comment is the first console text an author of a code tool reads, so it
 // follows the console's language like every label around it. The `return` line does not: that is
-// the language's own word. Shipped in English since #517, caught in a browser over a pt-BR form.
+// the language's own word.
 test("the starter body speaks the console's language, and its code does not", async () => {
   const en = starterCode(i18n.t);
   expect(en).toContain("return { ok: true };");
@@ -671,17 +668,10 @@ test("the starter body speaks the console's language, and its code does not", as
   }
 });
 
-// Two lines, and the first one earns its place: it names the key that opens the list, which is the
-// one thing the editor cannot teach by itself. What it used to say instead (what `input` and
-// `context` hold, that the answer is a `return`) is what the completion and the `?` already answer,
-// so it was a paragraph about the body the author is about to delete.
-//
-// ONE key is named, and it is the one the READER's machine delivers: `SHOW_SCOPE_KEY` in
-// CodeEditor.tsx carries the keydown log that settled it (macOS eats the whole Ctrl+Space family,
-// and Alt-i is the circumflex dead key on a US International layout, so Chrome sends `key: "Dead"`
-// with `keyCode: 229`). `Mod-i` is one binding with two names, and printing the wrong one is worse
-// than printing none: it is a key the reader can press and watch do nothing. So the assertion is
-// that the line names the current platform's name and NOT the other, in both catalogs.
+// Two lines, and the first names the key that opens the list, the one thing the editor cannot teach
+// by itself (why that key: docs/ui.md, The code tool editor). `Mod-i` has two names, and printing
+// the wrong one names a key that does nothing, so the line names the current platform's name and
+// NOT the other, in both catalogs.
 test("the starter body is two lines, and names the platform's key", () => {
   for (const lang of ["en", "pt-BR"] as const) {
     const body = starterCode(i18n.getFixedT(lang));
@@ -691,17 +681,15 @@ test("the starter body is two lines, and names the platform's key", () => {
     expect(lines[0]).toContain(scopeKeyLabel());
     const other = scopeKeyLabel() === "Ctrl+I" ? "\u2318I" : "Ctrl+I";
     expect(lines[0]).not.toContain(other);
-    // And never the keys that measured as unreachable.
+    // NOTE: and never the keys that do not reach the editor on some platform.
     expect(/Ctrl-Space|Alt-i|Alt-`/.test(lines[0] ?? "")).toBe(false);
   }
 });
 
-// The other place the key is named, and the one that went stale in ENGLISH ONLY while every fence
-// stayed green: `code-tools-locale-defaults` compares each `t()` default against the English catalog,
-// so a chord hard-coded in BOTH agrees with itself and passes. pt-BR was right, English pointed at a
-// key that had already been measured as unreachable on a Mac, and the starter body two fields up
-// said something else. So the assertion is about the class rather than that line: nothing the
-// operator reads may spell a chord: the key has two names and only `scopeKeyLabel` knows which.
+// `code-tools-locale-defaults` compares each `t()` default against the English catalog, so a chord
+// hard-coded in BOTH agrees with itself and passes. Hence a sweep over the class: nothing the
+// operator reads may spell a chord, since the key has two names and only `scopeKeyLabel` knows
+// which.
 test("no codeTools string spells a hotkey, they interpolate it", () => {
   const CHORD = /Ctrl-|Cmd-|Alt-|\u2318|\u2325|Ctrl\+|Shift\+/;
   const flat: Array<[string, string]> = [];

@@ -12,12 +12,12 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { BehaviorTab } from "@/client/pages/agents/BehaviorTab";
 import { behaviorTabProps } from "./behaviorTabProps";
 
-// Issue #324, second half: `openai` reads PDFs now, `openrouter` and `openai-compatible` still do
-// not, and the operator who picks one of those has no way to learn it except from attachments that
-// silently come back unextracted. The warning belongs where the choice is made.
+// `openai` reads PDFs, `openrouter` and `openai-compatible` do not, and the operator who picks one
+// of those has no other way to learn it than attachments that silently come back unextracted. The
+// warning belongs where the choice is made.
 //
-// NOTE: every assertion reduces to a number or a boolean BEFORE expect. A failing expectation
-// holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
+// Every assertion reduces to a number or a boolean BEFORE expect: a failing expectation holding a
+// DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 const realFetch = globalThis.fetch;
 const stubFetch = (async () =>
@@ -50,19 +50,17 @@ const warnings = () =>
   screen.queryAllByText(/PDF attachments are skipped/i).length +
   screen.queryAllByText(/anexos em PDF são ignorados/i).length;
 
-// The model field carried a STATIC sentence naming which providers read PDFs, which this change
-// turns into a lie. It is counted separately because it is a different failure from a missing
-// warning: nothing about it depends on the provider being rendered.
+// A STATIC sentence on the model field naming which providers read PDFs would be false for some
+// provider. Counted separately because it is a different failure from a missing warning: nothing
+// about it depends on the provider being rendered.
 const staleClaims = () =>
   screen.queryAllByText(/reads images only/i).length +
   screen.queryAllByText(/lê apenas imagens/i).length;
 
 describe("vision provider document support, at the point of choice", () => {
-  // Installed in `beforeAll` rather than at module scope, and this is not style. `globalThis.fetch`
-  // is the whole PROCESS's, and a swap made while the module loads is in force from that moment
-  // until this describe finishes — a window that covers whatever else the runner is doing in
-  // between. Every DB-backed test in the suite that reaches the network is inside it. Bracketing it
-  // to the describe keeps the swap as short as the tests that need it.
+  // NOTE: installed in `beforeAll`, not at module scope: `globalThis.fetch` is the whole PROCESS's,
+  // and a swap made at load stays in force until this describe finishes, covering whatever else the
+  // runner does meanwhile. Bracketing it keeps the swap as short as the tests that need it.
   beforeAll(() => {
     globalThis.fetch = stubFetch;
   });
@@ -105,7 +103,7 @@ describe("vision provider document support, at the point of choice", () => {
     expect(warnings() > 0).toBe(true);
   });
 
-  // The one the issue is about: openai reads PDFs now, so warning about it would be the new lie.
+  // NOTE: openai reads PDFs, so a warning here would be false.
   test("openai carries no such warning", () => {
     renderWithProvider("openai");
     expect(warnings()).toBe(0);

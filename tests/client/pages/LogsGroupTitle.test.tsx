@@ -15,19 +15,17 @@ import { ToastProvider } from "@/client/components";
 import { LogsPage } from "@/client/pages/LogsPage";
 import { withI18n } from "@/tests/utils/i18n";
 
-// Issue #357: a Logs group whose rows have no conversation announces itself as "Turn", and the one
-// stage that can NEVER be a turn (`webhook`: an outbound delivery on a worker tick, long after
-// whatever produced the event) is exactly the one that always lands there. So this asserts what the
-// operator reads on the card, not that the card exists: a group that renders and lies about what it
-// is passes any structural test and fails the issue.
+// A Logs group whose rows have no conversation must not announce itself as "Turn", least of all for
+// the stage that can NEVER be a turn (`webhook`: an outbound delivery on a worker tick). So this
+// asserts what the operator reads on the card: a group that renders and lies about what it is
+// passes any structural test.
 //
-// NOTE: every assertion reduces to a string or a boolean BEFORE expect. A failing expectation still
+// Every assertion reduces to a string or a boolean BEFORE expect: a failing expectation still
 // holding a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
-// This file asserts on rendered LABELS, so what `t` answers is part of the fixture. It used to
-// secure that by replacing `react-i18next` in the module registry, which secured it for every other
-// file in the process too: the stub the last such file installed was what they all got. `withI18n`
-// hands this tree its own i18next by context instead: same answers, no reach past this file.
+// This file asserts on rendered LABELS, so what `t` answers is part of the fixture. `withI18n`
+// hands this tree its own i18next by context; replacing `react-i18next` in the module registry
+// would reach every other file in the process too.
 const realFetch = globalThis.fetch;
 
 interface Row {

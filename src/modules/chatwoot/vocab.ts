@@ -19,7 +19,7 @@ const labelCache = new Map<string, { value: string[]; expires: number }>();
 
 // Fetches (and caches) the account's labels + custom attribute definitions. `cacheKey` identifies the
 // Chatwoot instance (e.g. `${tenantId}:${instanceId}`); `now` is injectable for tests. Does NOT
-// swallow errors — the caller treats a throw as "no vocab" (the tools still work, just ungrounded).
+// swallow errors: the caller treats a throw as "no vocab" (the tools still work, just ungrounded).
 export async function loadChatwootVocab(
   client: ChatwootClient,
   cacheKey: string,
@@ -27,9 +27,9 @@ export async function loadChatwootVocab(
 ): Promise<ChatwootVocab> {
   const hit = cache.get(cacheKey);
   if (hit && hit.expires > now) return hit.value;
-  // A LABELS-ONLY ENTRY STILL IN DATE ANSWERS THE LABELS HALF (issue #642, round 12). The observation
-  // tick reads the labels alone and `buildToolset` asks for the pair moments later, so without this
-  // the same catalog is fetched twice per TTL, sequentially, inside the same observation deadline.
+  // NOTE: a labels-only entry still in date answers the labels half. The observation tick reads the
+  // labels alone and `buildToolset` asks for the pair moments later, so without this the same catalog
+  // is fetched twice per TTL, sequentially, inside the same observation deadline.
   const warm = labelCache.get(cacheKey);
   const borrowed = warm !== undefined && warm.expires > now;
   const [labels, attributes] = await Promise.all([
@@ -37,10 +37,9 @@ export async function loadChatwootVocab(
     client.listCustomAttributeDefinitions(),
   ]);
   const value: ChatwootVocab = { labels, attributes };
-  // BORROWED LABELS KEEP THE EXPIRY THEY CAME WITH (round 13). Stamping a fresh TTL onto a catalog
-  // read most of a window ago is how a label created in between stays invisible for nearly two
-  // windows instead of one — and the attribute endpoint recovering after a spell of failures is
-  // exactly when that entry is oldest.
+  // NOTE: borrowed labels keep the expiry they came with. A fresh TTL on a catalog read most of a
+  // window ago leaves a label created in between invisible for nearly two windows instead of one, and
+  // the attribute endpoint recovering after a spell of failures is exactly when that entry is oldest.
   cache.set(cacheKey, {
     value,
     expires: borrowed ? Math.min(now + TTL_MS, warm.expires) : now + TTL_MS,
@@ -56,13 +55,11 @@ export function attributesForModel(
   return (vocab?.attributes ?? []).filter((a) => a.model === model);
 }
 
-// THE LABELS ALONE, for a caller that needs no attribute definitions (the observer's label history,
-// issue #642, round 9). The combined read above is two requests under one `Promise.all`, so an
-// attribute endpoint that is down takes a perfectly good label catalog with it — and a caller that
-// just re-asked would pay a fresh `/labels` on every tick, since a failed combined read caches
-// nothing. This reads the combined entry when it is warm, keeps its own otherwise, and never fetches
-// the definitions. The sharing goes BOTH ways: the combined read above answers its labels half from
-// this entry rather than asking twice.
+// The labels alone, for a caller that needs no attribute definitions (the observer's label history).
+// The combined read is two requests under one `Promise.all`, so an attribute endpoint that is down
+// takes a good label catalog with it, and re-asking would pay a fresh `/labels` every tick since a
+// failed combined read caches nothing. Reads the combined entry when warm, keeps its own otherwise,
+// never fetches the definitions; the combined read answers its labels half from this entry too.
 export async function loadChatwootLabels(
   client: ChatwootClient,
   cacheKey: string,

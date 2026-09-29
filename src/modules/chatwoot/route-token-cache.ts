@@ -1,31 +1,10 @@
-// In-process cache for the receiver's route-token resolution.
-//
-// THE ACK PATH MUST NOT DEPEND ON POSTGRES BEING HEALTHY, AND MUST NOT PROMISE MORE THAN POSTGRES
-// CAN DELIVER. Those pull in opposite directions and the whole design is the line between them.
-//
-// Chatwoot gives the receiver ~5s to answer (`WEBHOOK_TIMEOUT`) and escalates the conversation
-// `pending -> open` when it does not, which takes the bot off a conversation it was about to answer
-// correctly (issue #225). Measured against a real Chatwoot + Sidekiq: one stalled ack, and the
-// activity note "marked open by system due to an error with the bot" lands 5.24s after the
-// customer's message. Resolving the bot is an interactive transaction (RLS needs `set_config`), so
-// under pool pressure it can burn that whole budget for a row that changes almost never.
-//
-// But a 200 is a promise. Chatwoot does not retry a 2xx and the payload is not stored (see
-// docs/chatwoot.md, "No durable payload store"), so acking on the strength of a cached row while
-// Postgres is actually down does not save the event, it loses it in silence, which is strictly worse
-// than the escalation. THE CACHE THEREFORE ANSWERS ONLY WHAT THE PROCESS CAN STILL BACK UP:
-//
-//   1. inside the TTL              -> served, no questions
-//   2. past it, last lookup OK     -> served, and refreshed behind the ack
-//   3. past it, last lookup FAILED -> miss, so the ack blocks and fails honestly, and Chatwoot's
-//                                     own retry ladder carries the event instead
-//
-// Rule 3 is what keeps rule 2 truthful, and it costs nothing in the case rule 2 exists for: an idle
-// instance on a HEALTHY database, where the entry is merely old and the refresh will succeed.
-//
-// Lives in its own module so the writers that have to invalidate it (provisioning, instance
-// connect/disconnect, deletion) can reach it without importing the receiver, which imports them.
-
+// In-process cache for the receiver's route-token resolution. Chatwoot gives the ack ~5s
+// (`WEBHOOK_TIMEOUT`) before escalating the conversation `pending -> open`, and resolving the bot is
+// an interactive transaction (RLS needs `set_config`) that pool pressure can stretch past that. But
+// a 2xx is never retried and the payload is not stored, so it serves only what the process can still
+// back: inside the TTL; past it while the last lookup succeeded (refreshed behind the ack); after a
+// FAILED lookup never, so the ack fails onto Chatwoot's retry ladder (docs/chatwoot.md, "Webhook
+// receiver"). Its own module because the receiver imports the writers that invalidate it.
 // How long a resolution is served without questioning it.
 export const ROUTE_TOKEN_CACHE_TTL_MS = 30_000;
 
@@ -193,7 +172,7 @@ export function routeTokenRefreshInFlight(
 // Wait on the refresh in flight, if any, for at most `timeoutMs`. Rejects on the refresh's own
 // failure (see trackRouteTokenRefresh) and rejects on the bound, which are the same answer to the
 // caller: this ack cannot be honoured, so let Chatwoot redeliver. The overrunning refresh is detached
-// on the way out — a hang that stayed registered would put every later delivery for this token behind
+// on the way out: a hang that stayed registered would put every later delivery for this token behind
 // a promise that never answers.
 export async function awaitRouteTokenRefresh(
   routeTokenHash: string,
@@ -228,13 +207,10 @@ export async function awaitRouteTokenRefresh(
 }
 
 // Registers `run` as THE refresh for this token and returns it, or returns the one already running.
-// Registering and starting are one step on purpose: any gap between them is a window where a second
-// caller sees no refresh and starts one.
-//
-// THE RETURNED PROMISE REJECTS WHEN THE REFRESH FAILS, and that is the point: everyone waiting on it
-// resumes into a cache the failure has just closed, so a resolved promise would send each of them
-// down the blocking path to open its own transaction — a burst against the pool at the moment the
-// pool is what is broken. Rejecting spends one lookup for all of them. The caller that STARTS a
+// Registering and starting are one step, or a second caller could see no refresh and start one.
+// The returned promise REJECTS when the refresh fails: every waiter resumes into a cache the failure
+// just closed, and a resolved promise would send each down the blocking path to open its own
+// transaction, a burst against the pool exactly when the pool is broken. The caller that STARTS a
 // refresh is detached, so it attaches the log; nothing else may swallow it.
 export function trackRouteTokenRefresh(
   routeTokenHash: string,
@@ -245,8 +221,8 @@ export function trackRouteTokenRefresh(
   if (existing) return existing;
   let p: Promise<void>;
   p = run().finally(() => {
-    // BY IDENTITY, not by key. This refresh can be detached before it settles — an invalidation
-    // retires it, or a waiter's bound drops it — and a later request registers its own under the same
+    // BY IDENTITY, not by key. This refresh can be detached before it settles (an invalidation
+    // retires it, or a waiter's bound drops it), and a later request registers its own under the same
     // key. Deleting by key here would remove THAT one while its lookup is still running, leaving the
     // map empty and the request after it opening a third.
     if (s.refreshing.get(routeTokenHash) === p) {
@@ -264,7 +240,7 @@ export function invalidateRouteTokenCache(routeTokenHash?: string): void {
   const s = store();
   s.generation++;
   // The refresh in flight goes with them. It began before the writer committed, so the answer it is
-  // about to produce is about the world this invalidation just retired — and a request arriving after
+  // about to produce is about the world this invalidation just retired, and a request arriving after
   // the commit would otherwise wait on it, and inherit its failure, for a question nobody is asking
   // any more. Detached, not cancelled: the lookup runs to completion and its write is refused by the
   // generation guard.

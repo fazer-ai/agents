@@ -14,68 +14,13 @@ import { agentBotChatwootId } from "./instance";
 import { resolveHumanReplyRoute } from "./normalize";
 import { isHumanReplyShape } from "./stranded-delivery";
 
-// Re-running the human-reply takeover a process death lost (issue #439).
-//
-// The sweep (issue #228) reports a delivery nothing finished; the recovery for a delivery that
-// carried a CUSTOMER message answers it by running the delivery path again (issue #295). This is the
-// third case, and it is neither: the delivery carried a COLLEAGUE's reply, so nothing is owed to the
-// customer and nothing is lost from the loss list — what was lost is a SIDE EFFECT, the transition
-// that steps the agent off the conversation (issue #430).
-//
-// WHY NOT THE DELIVERY PATH, which is what the other recovery does and is the obvious answer here
-// too. Not because the body cannot be rebuilt — that is what this paragraph used to say, and it was
-// wrong about its own neighbour: the ledger names the reply in `humanReplyMessageId`, written at
-// INSERT since issue #469 for the very fence a few lines below, so `buildRecoveryPayload` can read
-// an outgoing message back over REST exactly as it reads an incoming one, and issue #728 does that
-// to recover the memory append this delivery also lost.
-//
-// The reason is what the delivery path WOULD DO with it. It re-runs the takeover, the ownership
-// gates and, on a creation, a turn — and what is owed here is one effect, the status transition. A
-// conversation an operator handed back to the bot while the row sat stranded would be taken away
-// from it again, which is the defect issue #469 exists to prevent, bought with the fix. So this runs
-// the takeover itself, through the same unit the live delivery runs (./human-takeover.ts) — not a
-// second implementation of it, which is the defect this repo keeps paying for — and the memory half
-// has a job of its own beside it (./recover-human-reply.ts), for the same reason read the other way:
-// neither effect's refusal is a verdict about the other.
-//
-// NO MODEL AND NO ALERT, which is the whole reason the sweep needed a verdict of its own for it. The
-// alternative on the table was to classify these rows `lost`, and that is wrong in both directions
-// at once: it pages an operator about a message nobody lost, and it arms a turn to answer a reply
-// that was ours.
-//
-// WHAT IS RE-DECIDED HERE rather than carried: the ROUTE's provider half (the ledger stores the
-// payload's shape, and `device` is also what an unreserved provider's echo of our own reply looks
-// like), the agent's mode and takeover switch, and ownership. All of it is read as it stands NOW,
-// which is what the live path does too — it reads them at its own moment.
-//
-// AND NO VERSION IS CARRIED, which is a decision and the one place this deliberately differs from
-// the live path. There, the takeover compares the payload's `conversation.updated_at` against the
-// row's status mark, so a hand-back committed after the reply outranks it — the two `pending`s
-// otherwise look identical. Transplanted here that check refuses almost everything, and MEASURED
-// exactly where it matters: `chatwootStatusAt` is a version, not a change stamp, so it advances on
-// every payload that DECLARES a status, the customer's own next message included (state-order.ts).
-// The live check works because its payload is seconds old; a recovery's decision is half an hour
-// old, and a conversation the customer wrote on in between — which is precisely the conversation
-// where the agent has been answering over a person — reads as "somebody answered later than you".
-//
-// It is the pattern the repo already has a name for: a version is not an identity, and a mark that
-// advances on redeclaration cannot serve as one. What the recovery has instead is that it holds no
-// frozen snapshot at all: it reads the state NOW and writes one statement later, under a CAS on
-// what it read. "Is my decision still the most recent one" is a question a stale payload has to ask;
-// this one asks "does the state now allow the takeover", and ownership is the whole of that answer.
-//
-// THE COST, named rather than papered over: a hand-back that lands inside the sweep's window is
-// undone by this, and the operator has to click "Return to AI" once more. That is the same class of
-// gap as issue #469 and it errs in the direction a fence must err in — the failure is the agent
-// staying quiet on a conversation a person can see in their queue, not the agent speaking over
-// somebody, which is the defect issue #430 exists to prevent.
-//
-// NO AGE CEILING, unlike ./recover-delivery.ts, and the difference is what the two recover. That one
-// SENDS A REPLY, so hours later it is a stranger reopening a conversation rather than a late answer.
-// This one writes a status: a conversation still `pending` and still the bot's, hours after a person
-// answered on it, is a conversation the agent is still wrong to be holding, and the fence refuses on
-// its own the moment that stops being true.
-
+// Re-running the human-reply takeover a process death lost. A delivery that carried a COLLEAGUE's
+// reply owes the customer nothing and is not a loss; what was lost is a SIDE EFFECT, the transition
+// that steps the agent off the conversation. It runs the unit the live delivery runs
+// (./human-takeover.ts), never the delivery path nor a second copy, and the memory half is its own job
+// (./recover-human-reply.ts). No model, no alert. The route's provider half, the agent's mode and
+// takeover switch and ownership are re-read NOW; no version is carried and there is no age ceiling.
+// Why each: docs/chatwoot.md, "Webhook receiver", on the takeover recovery.
 const RECOVERY_KIND = "TAKEOVER_RECOVERY" as const;
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -120,7 +65,7 @@ export type TakeoverRecoveryOutcome =
   | "not-owed"
   // The mirror does not know this conversation yet, which is NOT a verdict: a delivery that died
   // before the mirror write leaves no row, and the very next event on that conversation creates one.
-  // Everything this needs — the inbox, the agent, the row the claim is a CAS on — hangs off it, and
+  // Everything this needs (the inbox, the agent, the row the claim is a CAS on) hangs off it, and
   // the payload that would let this path build one is the one thing the ledger cannot rebuild for an
   // outgoing message. So it is retried on the scheduler's own ladder and announced if it runs out,
   // rather than discarded as an answer.
@@ -160,22 +105,17 @@ export async function recoverStrandedTakeover(
   if (!row || row.conversationId === null) return "not-owed";
   const instanceId = row.chatwootInstanceId;
   const conversationId = row.conversationId;
-  // ONE reading of the column, handed to the resolver below rather than checked twice. A shape this
-  // build does not know and a row that recorded none are the same answer — nothing to act on — and
-  // `resolveHumanReplyRoute` already gives it for `null`, so a second guard here would be a second
-  // spelling of a rule that has one.
-  //
-  // NOTE: this is the TYPE gate and not a runtime one — the resolver compares against the two
-  // literals, so an unknown string reaching it answers `null` all the same, and a mutation that
-  // deletes this narrowing leaves the suite green. It stays because the column is a String and this
-  // is what keeps a raw one out of a typed API; what the predicate itself PROMISES is fixed by the
-  // classifier's table, where deleting either literal fails tests.
+  // NOTE: ONE reading of the column, handed to the resolver rather than checked twice: an unknown
+  // shape and none recorded are the same answer, and `resolveHumanReplyRoute` gives it for `null`.
+  // This is the TYPE gate, not a runtime one (the resolver compares against the two literals, and a
+  // mutation deleting this narrowing leaves the suite green); it keeps a raw String out of a typed
+  // API, and what the predicate PROMISES is fixed by the classifier's table.
   const shape = isHumanReplyShape(row.humanReplyShape)
     ? row.humanReplyShape
     : null;
 
   // The conversation's own inbox, and the agent bound to it. Keyed by the CONVERSATION and not by a
-  // payload inbox id, because there is no payload any more — the same reading `conversationAgent`
+  // payload inbox id, because there is no payload any more: the same reading `conversationAgent`
   // uses in the delivery for a payload that names no inbox.
   const bound = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const conv = await db.conversation.findUnique({
@@ -254,54 +194,26 @@ export async function recoverStrandedTakeover(
   if (bound.mode !== "production") return "not-owed";
   if (!readTakeoverConfig(bound.settings).onHumanReply) return "not-owed";
 
-  // THE ROUTE'S BOT, carried on the row, because the identity is what the ownership question is
-  // asked ABOUT and the two routes give different answers. Chatwoot fans a message to the
-  // conversation's assignee bot and to the inbox's, and only the route holding the conversation
-  // passes the gate — so on a conversation held by another persona's bot, deriving the identity from
-  // the inbox here asks a stricter question than the delivery did and refuses the takeover.
-  //
-  // The fallback is for rows an older build wrote, which carry no route: the inbox persona is the
-  // same answer on every conversation the inbox's own bot holds, which is all of them but this one
-  // case. It cannot make a takeover happen that should not — a wrong identity only ever REFUSES,
-  // because the fence asks whether the conversation is that bot's.
+  // NOTE: the route's bot, carried on the row, because ownership is asked ABOUT an identity and the
+  // two routes differ: Chatwoot fans a message to the conversation's assignee bot and the inbox's,
+  // and only the route holding the conversation passes the gate, so an identity from the inbox would
+  // refuse the takeover on a conversation another persona's bot holds. Rows an older build wrote carry
+  // no route and fall back to the inbox persona, which can only REFUSE wrongly, never take over.
   const ourAgentBotId =
     row.routeAgentBotId ??
     (await agentBotChatwootId(tenantId, instanceId, bound.agentId, base));
-  // A CHEAP FIRST LOOK, not the fence. The fence is inside the unit below and reads Chatwoot before
-  // it decides; this is the mirror answering the same question for free, so a conversation somebody
-  // already moved on costs a query instead of an HTTP round trip. It can only ever refuse: what it
-  // lets through is re-asked, of Chatwoot and of the mirror both, one statement before the write.
-  // OUR OWN UNFINISHED WRITE, asked before ownership because ownership cannot see it. The claim is
-  // taken before the toggle (#430), so a process that died between the two — the widest gap in the
-  // block, and therefore the likeliest death — left the row `open` from `pending` with Chatwoot
-  // never told. The fence, asked again, reads that as somebody else having moved the conversation on
-  // and stands down; the job then completes as an answer, the delete-on-done row disappears, and
-  // Chatwoot is left `pending` with the bot free to speak.
-  //
-  // NOT GATED ON THE CLAIM'S DEADLINE, and that is an arithmetic correction rather than a
-  // preference: the claim stands for 45 seconds (STATUS_CLAIM_TTL_MS) and the sweep does not call a
-  // delivery stranded for 30 minutes (STALE_AFTER_MS), so by the time anything reaches this line the
-  // deadline has been gone for twenty-nine of them. A liveness test here is not a stricter rule, it
-  // is a branch that never runs.
-  //
-  // What stands in for it is the LIVE READ inside the retry: the local `open` says a takeover
-  // claimed this conversation, and Chatwoot's own answer says whether the transition ever landed.
-  // `pending` there against `open` here is the signature of exactly the write that was lost, and
-  // nothing else produces it — a hand-back writes `pending` on the ROW, and a person who opened the
-  // conversation left Chatwoot `open` too.
-  //
-  // `pending` as the status the claim replaced stays in the predicate: it is what says the `open` on
-  // this row came from this takeover rather than from some other claim a later build might take.
+  // NOTE: our own unfinished write, asked before ownership because ownership cannot see it. The claim
+  // is taken before the toggle, so a death between the two (the widest gap, so the likeliest death)
+  // leaves the row `open` from `pending` with Chatwoot never told. Not gated on the claim's deadline:
+  // it is 45s (STATUS_CLAIM_TTL_MS) and nothing is stranded before 30 minutes (STALE_AFTER_MS), so
+  // that branch would never run. The LIVE READ inside the retry stands in: Chatwoot `pending` against
+  // our `open` is the signature of exactly the lost write (a hand-back writes `pending` on the ROW; a
+  // person who opened it left Chatwoot `open`). `pending` as the replaced status says this `open`
+  // came from this takeover rather than from some other claim.
   if (bound.status === "open" && bound.statusClaimFrom === "pending") {
-    // FINISHING rather than deciding, through the SAME unit and not a second copy of it. The claim
-    // is written before the toggle (#430), so a process that died between the two left the row
-    // `open` from `pending` with Chatwoot never told; the ownership fence, asked again, would read
-    // our own write as somebody else's and stand down, the job would complete as an answer, and the
-    // delete-on-done row would take the only recovery with it.
-    //
-    // `pending` as the status the claim replaced is what says the `open` on this row came from THIS
-    // takeover rather than from some other claim a later build might take. The deadline is not asked
-    // about: it is 45 seconds and nothing reaches here before 30 minutes.
+    // NOTE: FINISHING rather than deciding, through the SAME unit and not a second copy of it: asked
+    // again, the ownership fence would read our own write as somebody else's and stand down, the job
+    // would complete as an answer, and the delete-on-done row would take the only recovery with it.
     const finished = await runHumanReplyTakeover({
       tenantId,
       instanceId,
@@ -310,14 +222,11 @@ export async function recoverStrandedTakeover(
       ourAgentBotId,
       agentId: bound.agentId,
       decidedAtVersion: null,
-      // AND NO MESSAGE COORDINATE EITHER, because the fence it feeds is one of the steps finishing
-      // skips — and it is skipped here for a reason rather than by omission. A hand-back writes
-      // `pending` on the ROW, which takes the conversation out of the `open`-under-a-pending-claim
-      // shape this branch is selected by, so the case the fence exists for goes down the ordinary
-      // path below and IS asked there. What reaching this branch with a console mark means instead
-      // is an operator who opened the conversation themselves, and finishing the toggle is exactly
-      // what that click asked for. Passing the id here was written first and the mutation battery
-      // showed it changed nothing: no test could tell it from null, because no test can.
+      // NOTE: no message coordinate either: the fence it feeds is one of the steps finishing skips. A
+      // hand-back writes `pending` on the ROW, which takes the conversation out of this branch's
+      // shape, so that case goes down the ordinary path below and IS asked there; here a console mark
+      // means an operator opened the conversation themselves, and finishing the toggle is what that
+      // click asked for. An id here would change no outcome, and no test could tell it from null.
       decidedAtMessageId: null,
       conversationRowId: bound.conversationRowId,
       lastEventAt: bound.lastEventAt,
@@ -337,6 +246,10 @@ export async function recoverStrandedTakeover(
     return "recovered";
   }
 
+  // NOTE: a cheap first look, not the fence. The fence is inside the unit below and reads Chatwoot
+  // before it decides; this is the mirror answering the same question for free, so a conversation
+  // somebody already moved on costs a query instead of an HTTP round trip. It can only ever refuse:
+  // what it lets through is re-asked, of Chatwoot and of the mirror both, one statement before the write.
   const now = await conversationOwnershipNow({
     tenantId,
     instanceId,
@@ -357,12 +270,10 @@ export async function recoverStrandedTakeover(
     // hold a position, and the mark this would be compared against advances on every payload that
     // declares a status rather than only on the ones that change it.
     decidedAtVersion: null,
-    // THE OTHER AXIS IS NOT NULL, and it is what closes the half of #469 this path owns. The
-    // recovery runs at least half an hour after the delivery it rebuilds, so a hand-back an
-    // operator made in that stretch is exactly the write it must not walk back — and the ledger
-    // kept the one coordinate that says so, the message this takeover was about. A row an older
-    // build wrote names none, and there the fence has nothing to order, which is the behaviour that
-    // shipped with issue #439.
+    // NOTE: the other axis is not null. The recovery runs at least half an hour after the delivery,
+    // so a hand-back made in that stretch is exactly the write it must not walk back, and the ledger
+    // kept the coordinate that says so, the message this takeover was about. A row an older build
+    // wrote names none, and there the fence has nothing to order.
     decidedAtMessageId: row.humanReplyMessageId,
     conversationRowId: bound.conversationRowId,
     lastEventAt: bound.lastEventAt,
@@ -371,7 +282,7 @@ export async function recoverStrandedTakeover(
   });
   // A FENCE THAT STOOD DOWN IS AN ANSWER, and only a call that failed is worth a backoff. The
   // preliminary read above is not a lock: ownership can move between it and the fence's own read,
-  // and the fence correctly refuses then — retrying that spends the ladder and dead-letters a job
+  // and the fence correctly refuses then; retrying that spends the ladder and dead-letters a job
   // about a conversation that owes nothing.
   if (opened === "refused") return "not-owed";
   if (opened === "failed") return "failed";
@@ -387,8 +298,8 @@ export async function recoverStrandedTakeover(
 function readDeliveryRowId(payload: unknown): bigint | null {
   if (typeof payload !== "object" || payload === null) return null;
   const v = (payload as { deliveryRowId?: unknown }).deliveryRowId;
-  // `parseDbId` and not a local digits check, because the tree has ONE answer to "is this an id?"
-  // and a scheduler payload is a transport like any other (#371).
+  // NOTE: `parseDbId` and not a local digits check, because the tree has ONE answer to "is this an
+  // id?" and a scheduler payload is a transport like any other.
   return typeof v === "string" ? parseDbId(v) : null;
 }
 
@@ -421,7 +332,7 @@ async function takeoverRecoveryHandler(
   }
   // Retried on the same ladder as a failure, and it is the right shape for it: what this waits on is
   // another event creating the mirror row, which either happens within the backoff or does not
-  // happen at all. Running out reaches the dead-letter line, where `JOB_DEATH_LEVEL` says `warn` —
+  // happen at all. Running out reaches the dead-letter line, where `JOB_DEATH_LEVEL` says `warn`:
   // an operator learns, and what they learn about is a conversation the bot is still holding.
   if (outcome === "unresolved") {
     return {
@@ -433,8 +344,8 @@ async function takeoverRecoveryHandler(
 }
 
 // NO DEAD-LETTER HOOK OF ITS OWN, for the reason the delivery recovery states: `dispatchDeadLetter`
-// already announces every kind's death with the kind, the job id and the dedupe key — which here IS
-// the ledger row id — and takes its level from `JOB_DEATH_LEVEL`, where the answer sits next to the
+// already announces every kind's death with the kind, the job id and the dedupe key (which here IS
+// the ledger row id), and takes its level from `JOB_DEATH_LEVEL`, where the answer sits next to the
 // other thirteen.
 let registered = false;
 export function registerTakeoverRecoveryHandler(): void {

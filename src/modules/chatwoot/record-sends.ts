@@ -1,11 +1,8 @@
 import type { ChatwootClient } from "@/modules/chatwoot/client";
 
-// WHICH MESSAGES A TURN PUT IN THE CONVERSATION (issue #855), noted where Chatwoot hands their ids
-// back rather than at each call site that sends. A turn speaks through the reply, a split into
-// balloons, a voice note, an attachment, the handoff's closing line, a template, a private note and
-// any tool that writes to the conversation; a list of those sites is the list the next sender is
-// missing from. Every one of them goes through the turn's client, so the client is where the note is
-// taken.
+// Which messages a turn put in the conversation, noted where Chatwoot hands their ids back rather
+// than at each call site that sends: a list of send sites is the list the next sender is missing
+// from, and every one of them goes through the turn's client.
 //
 // A create runs on the REAL client, so one that calls another inside it (`sendPrivateNote` is a
 // `sendMessage`) is noted once, by the outer call. Every other method runs on the wrapper, so a
@@ -27,7 +24,7 @@ export const SENT_IDS_CAP = 50;
 const noters = new WeakMap<object, (id: unknown) => void>();
 
 // A message the turn's client did create even though the create did not say so: its response was
-// lost, and a read-back found it by the id the send carried (`findLandedMessage`, issue #499). The
+// lost, and a read-back found it by the id the send carried (`findLandedMessage`). The
 // message is on the customer's screen, so it is one of the turn's. A client that is not a recorded
 // one ignores it.
 export function noteLandedMessage(client: ChatwootClient, id: number): void {

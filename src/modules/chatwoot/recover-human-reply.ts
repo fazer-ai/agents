@@ -24,60 +24,14 @@ import { renderAttendantMessage } from "./render";
 import { responderCoversMessage } from "./responder-coverage";
 import { isHumanReplyShape } from "./stranded-delivery";
 
-// Folding back into the contact's memory the colleague's reply an ingestion lost (issue #728).
-//
-// THE PREMISE THAT BLOCKED THIS FOR THREE ISSUES, and why it is no longer true. Both neighbours used
-// to state it as a fact about the ledger: the takeover recovery, that no outgoing message is named
-// there at all; the sweep's `observer-strand`, that a recovery has only ever had a customer's message
-// to anchor on. Each was accurate when it was written, and both stopped being accurate at issue
-// #469, which added `humanReplyMessageId` and has written it at INSERT for every colleague's reply
-// since — for the takeover's own fence, which needed one coordinate to order a console write
-// against. One column, two readers: the fence that refuses, and now the read that rebuilds. Both
-// sentences were corrected where they lived; they are paraphrased and not quoted here on purpose,
-// because a claim the tree no longer makes should not be findable in it.
-//
-// WHY NOT THE DELIVERY RECOVERY, which is the obvious place and is what recovers a customer's
-// message. That one replays the WHOLE delivery through the receiver, and it claims the row from
-// `DEAD` to do it. Neither fits here:
-//
-//   - `DEAD` is the `WHERE status = 'DEAD'` worklist of customers who wrote and were never answered
-//     (issue #228), and the sweep says out loud that a colleague's own reply belongs on no such
-//     list. Recovering one must not put it there.
-//   - A replay re-runs the takeover, the ownership gates and, on a creation, a turn. What is owed
-//     here is exactly one effect — the words reaching memory — and the conversation may well have
-//     been handed back to the bot in the meantime (issue #469). Replaying would take it away from
-//     the bot again to recover a memory append, which is a second, worse defect bought with the fix.
-//
-// So this is a kind of its own, armed beside the takeover recovery rather than instead of it, and
-// the two retry independently: a `not-owed` takeover must not abort the memory, and a memory arm
-// that fails must not re-run the toggle.
-//
-// WHAT IS RE-DECIDED HERE rather than carried, which is the same list `recover-takeover.ts` keeps
-// and for the same reason — the job outlives the pass that armed it, so every fact it acts on is
-// read as it stands NOW:
-//
-//   - THE ROUTE'S PROVIDER HALF, before any network. The ledger stores the payload's SHAPE, and
-//     `device` is also what an unreserved provider's echo of our OWN reply looks like: sender-less,
-//     wearing `external_sender_name`. Anchoring on the column alone would file the agent's own words
-//     into the contact's memory as a human attendant's — the most expensive way this could be wrong,
-//     and the reason the resolver is asked here and not trusted from the row.
-//   - WHETHER THE ROUTE REMEMBERS AT ALL. `route_remembers = false` on the row does not separate "it
-//     was owed and the enqueue failed" from "this route never folds anything in": a `test`-mode
-//     agent leaves the same signature. Nothing on the row can tell them apart, so the question is
-//     not asked of the row — it is asked of the agent, now, the way the receiver asks it.
-//   - THE CONTACT-INBOX, which is what the thread is keyed by and what a `no-thread` outcome means
-//     the absence of.
-//
-// AND THE READ IS FENCED like the delivery recovery's is (`rebuiltInbound` there): a message that
-// comes back from REST as anything but a colleague's reply describes a degraded response — a missing
-// `message_type` normalizes to "other" — and handing that to the ingestion would append something
-// nobody wrote. Refused as `unreachable`, never settled as recovered.
-//
-// NO AGE CEILING, unlike the delivery recovery and for the reason the takeover's states: that one
-// SENDS A REPLY, so hours later it is a stranger reopening a conversation. This one writes to a
-// memory. A reply from four hours ago that the agent cannot see is a hole in the attendance whenever
-// the next customer message arrives, and closing it late is strictly better than not closing it.
-
+// Folding back into the contact's memory the colleague's reply an ingestion lost. The ledger names
+// every colleague's reply at INSERT (`humanReplyMessageId`), so the words are read back over REST by
+// id and rebuilt (./recover-payload.ts). A kind of its own beside the takeover recovery, never the
+// delivery recovery, and the two retry independently. Re-decided NOW, like ./recover-takeover.ts: the
+// route's provider half before any network, whether the route remembers at all, and the
+// contact-inbox, which keys the thread. A read that comes back as anything but a colleague's reply
+// is refused as `unreachable`, and there is no age ceiling. Why each: docs/chatwoot.md, "Webhook
+// receiver", on the human-reply recovery.
 const RECOVERY_KIND = "HUMAN_REPLY_RECOVERY" as const;
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -141,7 +95,7 @@ export async function armHumanReplyRecovery(
 
 export type HumanReplyRecoveryOutcome =
   // The append is queued. Not "appended": the ingest job owns that decision, and it is the same job
-  // the live path would have armed — including its own dedup, which is what makes a row stranded
+  // the live path would have armed, including its own dedup, which is what makes a row stranded
   // AFTER a successful ingestion cost nothing (../../graph/ingest.ts, `ingestVerdict`).
   | "remembered"
   // Nothing was owed, or nothing is owed any more. Every refusal that is a VERDICT rather than a
@@ -155,19 +109,13 @@ export type HumanReplyRecoveryOutcome =
   // The account could not be read, or answered with something unusable. Repairable, and the next
   // attempt may get a different answer.
   | "unreachable"
-  // NOBODY CAN TELL ANY MORE, and the recovery says that instead of guessing (review r2, narrowed in
-  // r5). The thread's dedup window has moved past this id, so the append the job would arm is one
-  // `ingestMessageIntoThread` refuses as `ancient` — SUCCESSFULLY, so a job armed anyway completes
-  // and nothing anywhere says the reply never landed.
-  //
-  // What the window CANNOT say is which of the two happened. Eviction is not absence: a delivery
-  // that crashed after arming its ingestion and before settling leaves a row exactly like this one,
-  // and its reply is already in the memory — sixty-four attendant messages later, that remembered
-  // reply reads `ancient` too. The first version of this outcome was called `gone` and told the
-  // operator the words were lost and had to be re-entered by hand, which on that path is an
-  // instruction to duplicate a message that is already there.
+  // Nobody can tell any more, and the recovery says so instead of guessing. The thread's dedup window
+  // has moved past this id, so the append would be refused as `ancient` SUCCESSFULLY and nothing would
+  // say the reply never landed. Nor can the window say which happened: a delivery that crashed after
+  // arming its ingestion leaves the same row with the reply already in memory, so telling the operator
+  // the words were lost would be an instruction to duplicate them.
   | "undecided"
-  // The enqueue failed — which is the very failure this recovery exists for, happening again.
+  // The enqueue failed, which is the very failure this recovery exists for, happening again.
   | "failed";
 
 export interface RecoverHumanReplyParams {
@@ -196,9 +144,8 @@ export async function recoverStrandedHumanReply(
         conversationId: true,
         humanReplyShape: true,
         humanReplyMessageId: true,
-        // WHICH ROUTE the delivery arrived on, so the recovery asks about the SAME agent the live
-        // path did. The takeover recovery reads `routeAgentBotId` for the neighbouring reason; here
-        // it is what separates a watcher's lost append from a responder's (review r1).
+        // NOTE: which route the delivery arrived on, so the recovery asks about the SAME agent the
+        // live path did; it is what separates a watcher's lost append from a responder's.
         routeObserved: true,
         routeAgentBotId: true,
         // WHEN THE MESSAGE ARRIVED, which is what dates the evidence used to recover an unstated
@@ -215,7 +162,7 @@ export async function recoverStrandedHumanReply(
   const messageId = row.humanReplyMessageId;
 
   // The conversation's own inbox and the agent bound to it, keyed by the CONVERSATION rather than by
-  // a payload inbox id, because there is no payload — the same read the takeover recovery makes.
+  // a payload inbox id, because there is no payload: the same read the takeover recovery makes.
   const bound = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const conv = await db.conversation.findUnique({
       where: {
@@ -229,7 +176,7 @@ export async function recoverStrandedHumanReply(
         id: true,
         inboxId: true,
         contactInboxId: true,
-        // WHO HOLDS IT, which is half of the answer to "was this an observer's route?" — see the
+        // WHO HOLDS IT, which is half of the answer to "was this an observer's route?"; see the
         // exception below. The mirror is the only source here: there is no payload to prefer, which
         // is the same fallback the receiver makes for a silent one.
         assigneeType: true,
@@ -237,13 +184,10 @@ export async function recoverStrandedHumanReply(
       },
     });
     if (!conv) return null;
-    // THE MIRROR KNOWS THE CONVERSATION AND NOT ITS INBOX, which is a THIRD state and not the
-    // absence of an inbox (review r6). `upsertInbox` answers null for an event whose payload names
-    // no inbox, and the row is created with `inbox_id` null; a later event fills it in
-    // (`decision.unversioned && inboxRowId != null`). Collapsed into the "no route" answer below, a
-    // conversation in that state resolved `not-owed` — terminal, so the reply was never read back
-    // and nothing ever revisited the row, on a mirror that Chatwoot could have completed a minute
-    // later.
+    // NOTE: the mirror knows the conversation and not its inbox, a THIRD state and not the absence
+    // of an inbox: `upsertInbox` answers null for an event whose payload names none, and a later event
+    // fills it in. Folded into "no route" it would resolve `not-owed`, terminal, on a mirror Chatwoot
+    // could complete a minute later.
     if (conv.inboxId === null) return "sparse" as const;
     const inbox = await db.inbox.findUnique({
       where: { id: conv.inboxId },
@@ -251,44 +195,18 @@ export async function recoverStrandedHumanReply(
         id: true,
         agentId: true,
         provider: true,
-        // When the responder was bound, which is what `responderCoversMessage` dates the message
-        // against below (issue #742).
+        // NOTE: when the responder was bound, which `responderCoversMessage` dates the message against
+        // below.
         responderBoundAt: true,
       },
     });
     if (!inbox?.agentId) return null;
-    // THE ROUTE'S OWN AGENT, AND THE TWO ROUTES RESOLVE IT DIFFERENTLY — which is not symmetry the
-    // receiver could have had, it is what `resolveRoute` actually does (review r1, corrected in r3):
-    //
-    //   const responder = await inboxAgentRuntime(tenantId, instanceId, n.inboxId, …)
-    //   const watcher   = await observerRuntimeForRoute(tenantId, instanceId, params.agentBotId, …)
-    //   const rt        = watcher ?? responder
-    //
-    // So a WATCHER's runtime comes from the bot the delivery arrived on, and a RESPONDER's comes
-    // from the INBOX — never from the bot. The difference is reachable: Chatwoot fans a message to
-    // the conversation's assigned bot and to the inbox's, so on a conversation another persona's bot
-    // holds, `routeAgentBotId` names that persona while the ingestion ran under the inbox's
-    // responder. Asked through the bot on both routes, a `test`-mode or switched-off assigned agent
-    // discards an append the inbox's production responder owed — and a responder rebind does the
-    // same to every row written before it.
-    //
-    // Reading `Inbox.agentId` on BOTH routes was the r1 defect and it is not what this restores: the
-    // watcher's half stays resolved through the bot, because there the bot IS the route.
-    //
-    // AND `routeObserved` HAS A THIRD VALUE (review r4). The claim is what states the role
-    // (`routeObserved: observer !== null`, written by the very UPDATE that takes the row), so a
-    // delivery stranded BEFORE its claim carries null — and `role-unstated` is one of the three
-    // verdicts the sweep arms this recovery from, which is to say the null is not an edge case here,
-    // it is a whole third of the inbound work. Read as `false`, an observer's lost append beside a
-    // `test`-mode or switched-off responder is discarded on the responder's gate, permanently, since
-    // the terminal row is never revisited: the r1 defect arriving by the one door r1 left open.
-    //
-    // The evidence that survives an unclaimed row is `routeAgentBotId`, written at INSERT, and the
-    // question the receiver asks of it is whether that bot's agent OBSERVES this inbox — the same
-    // row `observerRuntimeForRoute` requires before it will call a route a watcher's. So the role is
-    // recovered from the binding rather than assumed, and a pending attachment counts, for the
-    // reason the schema states: every reader that asks whether an agent observes an inbox counts a
-    // pending row, because the attachment may already be live upstream.
+    // NOTE: `routeObserved` has a third value: the claim states the role, so a delivery stranded
+    // before its claim carries null, and `role-unstated` is one of the verdicts that arm this. Read as
+    // `false`, an observer's append beside a `test` or switched-off responder would be discarded for
+    // good. The role is recovered from what survives: `routeAgentBotId` (written at INSERT) and whether
+    // that bot's agent OBSERVES this inbox, the row `observerRuntimeForRoute` requires; a pending
+    // attachment counts, since it may already be live upstream.
     const routeBotAgentId =
       row.routeAgentBotId === null
         ? null
@@ -302,14 +220,12 @@ export async function recoverStrandedHumanReply(
               select: { agentId: true },
             })
           )?.agentId ?? null);
-    // HOLDING THE CONVERSATION ENDS THE QUESTION, row or no row (issue #476 review, rounds 8 and 11,
-    // brought here by review r9). The fork delivers to the conversation's assignee bot as well, and
-    // an agent that used to answer this inbox keeps holding what it was assigned — including after
-    // it becomes the watcher. `observerRuntimeForRoute` refuses to call that route an observer's
-    // whenever the inbox has a responder of its own, which it does here by construction (the read
-    // above returns null without one). Recovered as an observer's, a strand on a conversation this
-    // bot holds would fold a reply into memory on a route the live path resolves to the inbox's
-    // responder — a `test`-mode one remembering nothing.
+    // NOTE: holding the conversation ends the question, row or no row. The fork delivers to the
+    // conversation's assignee bot too, and an agent that answered this inbox before becoming its
+    // watcher keeps what it was assigned; `observerRuntimeForRoute` refuses to call that route an
+    // observer's whenever the inbox has a responder, as it does here by construction. Recovered as an
+    // observer's, the reply would be folded in on a route the live path resolves to the inbox's
+    // responder.
     const heldByRouteBot =
       conv.assigneeType === "AgentBot" &&
       conv.assigneeId !== null &&
@@ -324,19 +240,20 @@ export async function recoverStrandedHumanReply(
             tenantId,
             inboxId: inbox.id,
             agentId: routeBotAgentId,
-            // AND OLDER THAN THE DELIVERY, which is the rule this subsystem already states for the
-            // other piece of after-the-fact evidence: "bot equality is evidence about the role only
-            // while the binding is OLDER than the delivery" (docs/chatwoot.md). An agent attached
-            // as an observer AFTER this message arrived says nothing about the route it arrived on,
-            // and reading it as one would arm the append under an agent that was not there. The
-            // sweep runs half an hour later, so that window is real.
-            //
-            // The other direction is left conservative on purpose: an attachment the fork had not
-            // confirmed when the message landed reads as the responder's route, which is the answer
-            // this recovery gave for every null before r4.
+            // NOTE: and older than the delivery: bot equality is evidence about the role only while
+            // the binding is OLDER than the delivery (docs/chatwoot.md, "Observer binding"). An
+            // observer attached after this message arrived says nothing about its route, and the sweep
+            // runs half an hour later, so that window is real. The other direction stays conservative:
+            // an attachment the fork had not confirmed when the message landed reads as the responder's.
             createdAt: { lte: row.receivedAt },
           },
         })) > 0);
+    // NOTE: the route's own agent, resolved the way the receiver's `resolveRoute` does: a WATCHER's
+    // runtime comes from the bot the delivery arrived on (the bot IS the route), a RESPONDER's from the
+    // INBOX, never the bot. Chatwoot fans a message to the conversation's assigned bot and the inbox's,
+    // so `routeAgentBotId` can name another persona that holds the conversation; asked through the bot
+    // on both routes, a `test` or switched-off assigned agent (or a responder rebind) would discard an
+    // append the inbox's responder owed.
     const routeAgentId = observed ? routeBotAgentId : inbox.agentId;
     if (routeAgentId === null) return null;
     const agent = await db.agent.findUnique({
@@ -344,16 +261,15 @@ export async function recoverStrandedHumanReply(
       select: { mode: true, enabled: true, settings: true },
     });
     if (!agent) return null;
-    // WHETHER A RESPONDER OF OURS ANSWERS THIS INBOX, which is the other half of the watcher's own
-    // condition: an observer beside a responder shares that responder's memory and folds into it; an
-    // observer with none folds nothing (issue #620). Asked of the inbox's binding, which is the same
-    // reading `routeRemembers` makes.
+    // NOTE: whether a responder of ours answers this inbox, the other half of the watcher's own
+    // condition: an observer beside a responder shares its memory and folds into it; one with none
+    // folds nothing. Asked of the inbox's binding, the same reading `routeRemembers` makes.
     const responder = await db.agent.findUnique({
       where: { id: inbox.agentId },
       select: { enabled: true, mode: true, settings: true },
     });
-    // The responder's bot, which names its route in the ledger: whether it received this message is
-    // asked of its own delivery row (issue #742). Read only on a watcher's route, the one place it
+    // NOTE: the responder's bot, which names its route in the ledger: whether it received this
+    // message is asked of its own delivery row. Read only on a watcher's route, the one place it
     // decides anything.
     const responderBotId =
       observed && responder !== null
@@ -370,7 +286,7 @@ export async function recoverStrandedHumanReply(
         : null;
     return {
       contactInboxId: conv.contactInboxId,
-      // The MIRROR's row id, which is what a flow-log line hangs on — the reports an operator reads
+      // The MIRROR's row id, which is what a flow-log line hangs on: the reports an operator reads
       // are keyed by it, not by Chatwoot's display id.
       conversationRowId: conv.id,
       agentId: routeAgentId,
@@ -395,8 +311,8 @@ export async function recoverStrandedHumanReply(
       observed,
     };
   });
-  // THE MIRROR HAS THE CONVERSATION AND NOT THE INBOX: a row another event completes, so the same
-  // answer the unknown conversation gets (review r6).
+  // NOTE: the mirror has the conversation and not the inbox: a row another event completes, so the
+  // same answer the unknown conversation gets.
   if (bound === "sparse") {
     logger.warn(
       "chatwoot human-reply recovery: %s names conversation %d, whose mirrored row carries no inbox yet; retrying",
@@ -439,22 +355,13 @@ export async function recoverStrandedHumanReply(
   ) {
     return "not-owed";
   }
-  // WHETHER THIS ROUTE REMEMBERS AT ALL, asked of the agent and not of the row (see the header), and
-  // asked PER ROUTE because the receiver asks it per route:
-  //
-  //   `routeRemembers = rt.enabled && (observer !== null ? responderRt !== null : ingestsContinuously(rt.mode))`
-  //
-  // On a WATCHER's route the mode is deliberately not asked — the row-backed observer decides this
-  // whatever its mode says, and only its switch is asked (issue #476 review, round 19) — and what IS
-  // asked is whether a responder of ours answers the inbox at all, because that responder's thread
-  // is the memory the watcher folds into (issue #620). On the responder's own route it is the mode.
-  //
-  // Read as the responder's on both, which is what shipped in the first draft of this file, the
-  // watcher's lost append is discarded whenever the responder is in `test` mode or switched off —
-  // silently, and permanently, since nothing revisits the row (review r1).
-  //
-  // A `test`-mode responder leaves a row byte for byte like the one a failed enqueue leaves, and the
-  // difference between "owed and failed" and "never owed" lives here and nowhere else.
+  // NOTE: whether this route remembers at all, asked of the agent and not of the row (see the
+  // header), and per route like the receiver's `routeRemembers`. On a WATCHER's route the mode is not
+  // asked, only the switch, plus whether a responder of ours answers the inbox (its thread is the
+  // memory the watcher folds into); on the responder's own route it is the mode. Read as the
+  // responder's on both, a watcher's append would be discarded for good whenever the responder is in
+  // `test` or switched off. A `test` responder leaves a row like a failed enqueue's, and only this
+  // tells "owed and failed" from "never owed".
   const routeRemembers =
     bound.enabled &&
     (bound.observed ? bound.responderExists : ingestsContinuously(bound.mode));
@@ -464,27 +371,14 @@ export async function recoverStrandedHumanReply(
   // a recovery armed on one anyway has nothing to key a thread by.
   if (bound.contactInboxId === null) return "not-owed";
   const contactInboxId = bound.contactInboxId;
-  // THE EPISODE BOUNDARY, and this is the one refusal here that protects against ACTIVE HARM rather
-  // than against wasted work (review r1). `/reset` clears the thread and, inside the same critical
-  // section, revokes every queued `INGEST_MESSAGE` for it — precisely because an append carrying
-  // text from before the reset would rebuild the memory an operator was just told had been cleared.
-  // It cannot revoke this job: the recovery is a kind of its own, armed before the command and
-  // running after it, and deleting the thread takes the append dedup with it, so nothing downstream
-  // would catch the duplicate either. Asked with the tree's own predicate, against Chatwoot's
-  // sequence, which is the order the operator actually experienced.
-  //
-  // A VERDICT, not a deferral: the boundary never moves back (`GREATEST`), so a later attempt asks
-  // the same question and gets the same answer.
-  //
-  // AND THIS ONE IS THE CHEAP HALF, not the fence. The fence is the second reading, immediately
-  // before the arm: a `/reset` landing during the REST round trip is exactly the case this exists
-  // for, and only that reading can see it. What this buys is the round trip itself on a conversation
-  // already cleared, which on a backfill is one Chatwoot call per stranded reply of a whole episode.
-  //
-  // It has a test of its own for exactly that, and it needed one: on the first battery, deleting
-  // this line alone killed nothing — the second reading answered the same way and every assertion
-  // still passed. What makes it load-bearing is asserting the ABSENCE OF THE CALL, not the verdict,
-  // which is the shape a "cheap half" has to be measured by.
+  // NOTE: the episode boundary, the one refusal here that prevents ACTIVE HARM. `/reset` clears the
+  // thread and revokes every queued `INGEST_MESSAGE` for it, but it cannot revoke this job (a kind of
+  // its own, armed before the command and running after it), and deleting the thread takes the append
+  // dedup with it. Asked with the tree's own predicate against Chatwoot's sequence, the order the
+  // operator experienced; a verdict, since the boundary only moves forward (`GREATEST`). This is the
+  // cheap half: the fence is the second reading just before the arm, the only one that sees a
+  // `/reset` landing during the REST round trip. What this saves is the round trip itself, so its
+  // test asserts the ABSENCE of that call; the verdict alone is the same either way.
   if (
     resetLandedAfter(
       messageId,
@@ -500,27 +394,13 @@ export async function recoverStrandedHumanReply(
     return "not-owed";
   }
 
-  // AND WHETHER THE APPEND CAN STILL LAND AT ALL (review r2). The thread remembers the last
-  // `INGEST_ID_WINDOW` ids per direction, and once that window is SATURATED an id below its floor is
-  // `ancient`: `ingestMessageIntoThread` refuses it rather than appending, because at that distance
-  // absence from the set stops being evidence of anything. That refusal is a success — the job
-  // completes, the row disappears on DONE, and the words are permanently absent with every line in
-  // the system saying the recovery worked.
-  //
-  // So it is asked HERE, where there is still somewhere to say it. `duplicate` is the ordinary happy
-  // answer for a row stranded AFTER the append landed and costs a job that would refuse anyway;
-  // `ancient` is the loss, and it gets a line an operator can act on, because at that point the only
-  // way the words reach the agent is a person putting them there.
-  //
-  // ASKED BEFORE THE NETWORK, and that ordering is a correction rather than a preference (issue
-  // #728, verifier round 2): the first draft read the page and asked afterwards, so `duplicate` and
-  // `ancient` each cost a Chatwoot round trip — and those are precisely the two answers a backlog
-  // produces in bulk. Nothing in the message decides either of them; the thread's own row does.
-  //
-  // EVIDENCE, NOT A GUARANTEE, exactly like the takeover recovery's cheap ownership look: the window
-  // can move between this read and the job's own. What it buys is that the common outcomes stop
-  // being silent, not that the race is closed — the job re-asks under the thread's lock, which is
-  // where the answer is authoritative.
+  // NOTE: whether the append can still land at all. The thread remembers the last `INGEST_ID_WINDOW`
+  // ids per direction, and once that window is SATURATED an id below its floor is `ancient`:
+  // `ingestMessageIntoThread` refuses it SUCCESSFULLY, so the job completes and nothing says the
+  // words never landed. Asked HERE, where it can still be said: `duplicate` is the happy answer for a
+  // row stranded after the append, `ancient` gets a line an operator can act on. Before the network,
+  // since those are the answers a backlog produces in bulk and the thread row alone decides them.
+  // Evidence, not a guarantee: the window can move before the job re-asks under the thread's lock.
   const thread = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.agentThread.findUnique({
       where: {
@@ -545,22 +425,13 @@ export async function recoverStrandedHumanReply(
       messageId,
       conversationId,
     );
-    // AND WHERE AN OPERATOR ACTUALLY LOOKS (verifier round 2). The line above is a process log, and
-    // a process log is not durable, not queryable by conversation, and gone with the container —
-    // which is the standard this repo's own reports are held to. Without this, the only line naming
-    // this message stays `human_reply_not_remembered`, written by the receiver at the moment of the
-    // loss, and that reason means something this one does not: it says the loss is transient and a
-    // retry is coming. Nothing is coming; this is where the retrying stops.
-    //
-    // AND IT REPORTS THE UNCERTAINTY, NOT A LOSS (review r5). Eviction from the window is not
-    // evidence of absence: past the floor the set answers "I no longer carry this id", which is the
-    // same answer for a reply that never landed and for one that landed sixty-four messages ago —
-    // and the second is reachable, from a delivery that armed its ingestion and crashed before
-    // settling. Reported as a permanent loss, this line tells an operator to re-type words that may
-    // already be in the memory, which is the duplicate the whole dedup window exists to prevent.
-    //
-    // At `error` all the same, and for the level's own reason: this is the one path where the
-    // machinery stops and a person has to read the conversation to decide.
+    // NOTE: a durable line, where an operator actually looks: a process log is not queryable by
+    // conversation and dies with the container, and the receiver's `human_reply_not_remembered` says
+    // a retry is coming, which is no longer true. It reports UNCERTAINTY, not a loss: past the floor
+    // the set cannot tell a reply that never landed from one that landed sixty-four messages ago (a
+    // delivery that armed its ingestion and crashed before settling), and calling it lost would tell
+    // an operator to re-type words that may already be in memory. At `error` because this is where
+    // the machinery stops and a person has to read the conversation.
     await writeFlowEvent(
       {
         tenantId,
@@ -593,7 +464,7 @@ export async function recoverStrandedHumanReply(
       ...(params.makeClient ? { makeClient: params.makeClient } : {}),
     });
     // `before` anchors the page that ENDS at this id, so the message is in it whatever the
-    // conversation's length — the same read the delivery recovery makes for the same reason.
+    // conversation's length, the same read the delivery recovery makes for the same reason.
     raw = await client.getMessages(conversationId, { before: messageId + 1 });
   } catch (e) {
     logger.warn(
@@ -615,15 +486,10 @@ export async function recoverStrandedHumanReply(
     return "unreachable";
   }
   const message = findRawMessage(page, messageId);
-  // Chatwoot no longer has the message: deleted, or the conversation was. Nothing to fold in, and no
-  // number of retries changes that.
-  //
-  // SAID OUT LOUD, because one other thing produces this exact answer (verifier round 5): a page
-  // that ignores `before` and returns some other stretch of the conversation. The two are
-  // indistinguishable from here and the verdict is the same either way, so this is a process log and
-  // not a durable line — a deleted message is nothing an operator can act on, and it is not on the
-  // conversation for them to miss. What the line buys is the second cause being findable at all,
-  // since it would otherwise be a `not-owed` with no trace anywhere.
+  // NOTE: Chatwoot no longer has the message (deleted, or the conversation was): nothing to fold in,
+  // and retries change nothing. Logged because one other cause gives this exact answer, a page that
+  // ignores `before`; the verdict is the same either way, so a process log rather than a durable line
+  // (a deleted message is nothing an operator can act on), which keeps the second cause findable.
   if (!message) {
     logger.warn(
       "chatwoot human-reply recovery: %s read conversation %d back and the page did not carry message %d; treating it as gone from the account",
@@ -635,7 +501,7 @@ export async function recoverStrandedHumanReply(
   }
 
   // REBUILT THROUGH THE SAME BUILDER THE OTHER RECOVERY USES, so the two cannot drift about what a
-  // webhook body looks like — the REST and webhook spellings differ in both fields this depends on
+  // webhook body looks like: the REST and webhook spellings differ in both fields this depends on
   // (`message_type` is an integer there and an enum string on the wire), and `normalizeChatwootEvent`
   // is the one reader that reconciles them.
   //
@@ -673,12 +539,11 @@ export async function recoverStrandedHumanReply(
       },
     }),
   );
-  // STILL A COLLEAGUE'S REPLY, or the read was degraded. The ledger row is the proof it ever was one,
-  // and a rebuild that comes back as anything else describes a REST response that lost something
-  // rather than a message that changed. Appending it anyway is the quiet failure this whole issue is
-  // about, one layer down: words nobody wrote, in a contact's permanent memory, attributed to an
-  // attendant. `unreachable` rather than `not-owed` for the reason the delivery recovery gives — the
-  // account answered with something unusable, which the next attempt may not.
+  // NOTE: still a colleague's reply, or the read was degraded: the ledger row proves it was one, so a
+  // rebuild that comes back as anything else is a REST response that lost something. Appending it
+  // would put words nobody wrote in a contact's permanent memory, attributed to an attendant.
+  // `unreachable` rather than `not-owed`: the account answered with something unusable, which the
+  // next attempt may not.
   if (
     normalized === null ||
     !isNewHumanReplyToCustomer(normalized, {
@@ -694,10 +559,9 @@ export async function recoverStrandedHumanReply(
     return "unreachable";
   }
 
-  // The ATTENDANT's renderer, which is the one the receiver picks for this role: the eager media pass
-  // never runs on an outgoing message, so there is no DESCRIPTION to fold in, and the
-  // customer-facing markers would tell the agent to ask its own colleague to retype a file. A voice
-  // note is the exception and gets its words folded in (issue #763): an audio reply of ours carries
+  // NOTE: the ATTENDANT's renderer, the one the receiver picks for this role: the eager media pass
+  // never runs on an outgoing message, and the customer-facing markers would tell the agent to ask
+  // its own colleague to retype a file. A voice note gets its words folded in: an audio reply carries
   // its own transcription, and the marker alone reads as an attendant who sent a file in silence.
   const text = renderAttendantMessage({
     text: normalized.message?.content ?? "",
@@ -713,7 +577,7 @@ export async function recoverStrandedHumanReply(
   if (!text.trim()) return "not-owed";
 
   // ASKED AGAIN, IMMEDIATELY BEFORE THE ARM, because the read above happened before a REST round
-  // trip and a `/reset` inside that stretch is exactly the one this fence exists for — the command
+  // trip and a `/reset` inside that stretch is exactly the one this fence exists for: the command
   // revokes what is queued, and this would queue after it. It does not CLOSE the window: the reset
   // can still land between this read and the enqueue, and what bounds that residue is the command's
   // own critical section, which holds the thread row and refuses while an append is in flight
@@ -734,13 +598,12 @@ export async function recoverStrandedHumanReply(
     return "not-owed";
   }
 
-  // WHOSE MEMORY IT IS FILED UNDER (issue #742), the rule the live path applies (`memoryOwner` in
-  // ./webhook.ts). A watcher's route beside a responder writes the responder's thread, and both
-  // stranded rows of one reply arm the same job, the later arm replacing the payload. The payload's
-  // agent decides whose compaction settings summarise the attendance this append closes, so it was
-  // whichever row the sweep reached last. Filed under the responder whenever that responder received
-  // the message and remembers continuously, both rows arm the same payload. Otherwise the route's
-  // own agent: a responder in `test`, switched off, or bound after the message holds no part of it.
+  // NOTE: whose memory it is filed under, the rule the live path applies (`memoryOwner` in
+  // ./webhook.ts). Both stranded rows of one reply arm the same job, the later arm replacing the
+  // payload, and the payload's agent decides whose compaction settings summarise the attendance.
+  // Under the responder whenever it received the message and remembers continuously, so both rows
+  // arm the same payload; otherwise the route's own agent (a responder in `test`, switched off, or
+  // bound after the message holds no part of it).
   const responder = bound.responder;
   const ownedByResponder =
     bound.observed &&
@@ -756,11 +619,10 @@ export async function recoverStrandedHumanReply(
       responder.botId,
       conversationId,
       { id: messageId, column: "humanReply" },
-      // WHEN CHATWOOT EMITTED IT, which is when it chose the recipients (review r1). The message read
-      // back above carries its own `created_at`, and that is the clock the live path reads from the
-      // payload; the receipt is the fallback only where the page names none. Dated by the receipt, a
-      // reply emitted before the responder was bound and delivered to the observer after it read as
-      // covered, and was filed under a responder that never received it.
+      // NOTE: when Chatwoot EMITTED it, which is when it chose the recipients: the message's own
+      // `created_at`, the clock the live path reads from the payload, with the receipt as fallback
+      // only where the page names none. Dated by the receipt, a reply emitted before the responder was
+      // bound would read as covered and be filed under a responder that never received it.
       messageCreatedAt(message),
       base,
     ));
@@ -816,12 +678,11 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-// THE PAGE, OR NULL FOR A BODY THAT IS NOT ONE (review r10). The two shapes Chatwoot answers with
-// are a bare array and `{ payload: [...] }`; anything else — an empty body, `{}`, an error object
-// rendered with a 200 — is a response this cannot read, and reading it as an EMPTY page is what
-// turned a degraded account into a verdict: the caller concluded the message was deleted and settled
-// the ledger row for good. An unreadable answer is the account failing, which is the one thing here
-// that a later attempt can find repaired.
+// The page, or null for a body that is not one. Chatwoot answers with a bare array or
+// `{ payload: [...] }`; anything else (an empty body, `{}`, an error object rendered with a 200) is
+// unreadable, and reading it as an EMPTY page would turn a degraded account into a verdict that the
+// message was deleted, settling the row for good. An unreadable answer is the account failing, which
+// a later attempt can find repaired.
 function readMessagePage(raw: unknown): unknown[] | null {
   if (Array.isArray(raw)) return raw;
   if (isRecord(raw) && Array.isArray(raw.payload)) return raw.payload;
@@ -853,8 +714,8 @@ function findRawMessage(
 function readDeliveryRowId(payload: unknown): bigint | null {
   if (typeof payload !== "object" || payload === null) return null;
   const v = (payload as { deliveryRowId?: unknown }).deliveryRowId;
-  // `parseDbId` and not a local digits check, because the tree has ONE answer to "is this an id?"
-  // and a scheduler payload is a transport like any other (#371).
+  // NOTE: `parseDbId` and not a local digits check, because the tree has ONE answer to "is this an
+  // id?" and a scheduler payload is a transport like any other.
   return typeof v === "string" ? parseDbId(v) : null;
 }
 
@@ -899,8 +760,8 @@ async function humanReplyRecoveryHandler(
 }
 
 // NO DEAD-LETTER HOOK OF ITS OWN, for the reason both neighbours state: `dispatchDeadLetter` already
-// announces every kind's death with the kind, the job id and the dedupe key — which here IS the
-// ledger row id — and takes its level from `JOB_DEATH_LEVEL`.
+// announces every kind's death with the kind, the job id and the dedupe key (which here IS the
+// ledger row id), and takes its level from `JOB_DEATH_LEVEL`.
 let registered = false;
 export function registerHumanReplyRecoveryHandler(): void {
   if (registered) return;

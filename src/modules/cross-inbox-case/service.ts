@@ -110,6 +110,9 @@ export type OpenCaseResult =
       openingOutsideWindow?: boolean;
       // Operator case labels the account does not have, left off the case.
       unknownCaseLabels?: string[];
+      // On `appended` and `already_open`: whether the note carrying the call's `reason` reached the
+      // case. Later writes can be withdrawn or fail without it being lost.
+      additionDelivered?: boolean;
       // The case could not be read to settle its owner, so nothing past that point was written:
       // `before_clear` wrote nothing, `before_team` cleared the bot and wrote no team.
       caseOwnerUnread?: CaseOwnerUnread;
@@ -421,8 +424,9 @@ async function run(
           input.caseTeamId ?? null,
           partial,
         );
-        // NOTE: what the model passed now is what the customer added since the case opened, and the case
+        // What the model passed now is what the customer added since the case opened, and the case
         // is where the team reads it.
+        let additionDelivered = false;
         if (!input.stillWanted || (await input.stillWanted())) {
           try {
             await client.sendMessageAsAdmin(
@@ -430,6 +434,7 @@ async function run(
               renderCaseAddition(input.reason, client.conversationUrl(origin)),
               { private: true },
             );
+            additionDelivered = true;
           } catch {
             partial.push("destination_note");
           }
@@ -442,6 +447,7 @@ async function run(
           caseUrl: client.conversationUrl(known),
           identity: null,
           partial,
+          additionDelivered,
           ...(caseOwnerUnread ? { caseOwnerUnread } : {}),
         };
       }
@@ -721,8 +727,9 @@ async function run(
         }
       }
       // ONE note on the case, so the team reads it whole: the subject, where it came from, and why.
-      await attempt("destination_note", () =>
-        client.sendMessageAsAdmin(
+      let noteDelivered = false;
+      await attempt("destination_note", async () => {
+        await client.sendMessageAsAdmin(
           caseId,
           appended
             ? renderCaseAddition(input.reason, originUrl)
@@ -732,8 +739,9 @@ async function run(
                 interpolate,
               ),
           { private: true },
-        ),
-      );
+        );
+        noteDelivered = true;
+      });
       await attempt("origin_link_note", () =>
         client.sendPrivateNote(origin, originLinkNote(caseUrl, inboxName)),
       );
@@ -792,6 +800,7 @@ async function run(
       }
       return {
         kind: appended ? "appended" : continued ? "continued" : "opened",
+        ...(appended ? { additionDelivered: noteDelivered } : {}),
         caseId,
         caseUrl,
         identity,

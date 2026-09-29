@@ -2180,7 +2180,7 @@ function getCurrentTimeTool(ctx: ToolCtx) {
 function additionLost(r: OpenCaseResult): boolean {
   return (
     (r.kind === "appended" || r.kind === "already_open") &&
-    (r.partial.includes("destination_note") || r.partial.includes("called_off"))
+    r.additionDelivered === false
   );
 }
 

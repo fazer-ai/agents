@@ -1273,6 +1273,42 @@ describe("openCaseInInbox", () => {
       );
     });
 
+    test("withdrawn after the addition landed: it is still reported as delivered", async () => {
+      const f = withCase("open");
+      const r = await openCaseInInbox(
+        f.client,
+        input({
+          originConversationId: 8,
+          // Wanted until the note is on the case, withdrawn for every write after it.
+          stillWanted: async () =>
+            !f.calls.some((c) => c.fn === "sendMessageAsAdmin"),
+        }),
+      );
+      expect(r).toMatchObject({
+        kind: "appended",
+        additionDelivered: true,
+        partial: ["called_off"],
+      });
+      expect(f.calls.some((c) => c.fn === "sendPrivateNote")).toBe(false);
+    });
+
+    test("withdrawn before the note on the case: the addition is reported as not delivered", async () => {
+      const f = withCase("open");
+      let asks = 0;
+      const r = await openCaseInInbox(
+        f.client,
+        input({
+          originConversationId: 8,
+          // The asks before the create, then the ones after it: the note's is the last to pass.
+          stillWanted: async () => ++asks <= 3,
+        }),
+      );
+      expect(r).toMatchObject({ kind: "appended", additionDelivered: false });
+      expect(
+        f.calls.some((c) => c.fn === "sendMessageAsAdmin" && c.args[0] === 60),
+      ).toBe(false);
+    });
+
     test("withdrawn before the addition is written: nothing is", async () => {
       const f = withCase("open");
       let asks = 0;
@@ -2345,6 +2381,36 @@ describe("the tool", () => {
     const out = String(await t.invoke({ reason: "x" }));
     expect(out).toContain("could NOT be added to that case");
     expect(out).not.toContain("was added to that case");
+  });
+
+  test("appended: a withdrawal after the note landed does not tell the model the addition was lost", async () => {
+    const f = fakeChatwoot({
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: {},
+          labels: [],
+        },
+        {
+          id: 60,
+          inboxId: 40,
+          contactId: 5,
+          status: "open",
+          attrs: { origin_conversation_id: 3 },
+          labels: [],
+        },
+      ],
+    });
+    const { t } = toolFor(f, {
+      stillWanted: async () =>
+        !f.calls.some((c) => c.fn === "sendMessageAsAdmin"),
+    });
+    const out = String(await t.invoke({ reason: "x" }));
+    expect(out).toContain("was added to that case");
+    expect(out).not.toContain("could NOT");
   });
 
   test("appended: a note that did not land reaches the flow log", async () => {

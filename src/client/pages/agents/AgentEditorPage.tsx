@@ -1996,7 +1996,7 @@ function AgentEditor() {
   // t('editor.configIssueWrongKind.vision', 'The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.guardrails', 'The guardrails credential is a type that cannot be used as an API key, so messages go out unscreened. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.embedding', 'A knowledge base needs indexing, but the embedding credential is a type that cannot be used as an API key. Pick a credential that holds a single key.')
-  // The contact-authorization gate also accepts a connected account, so its sentence refuses the
+  // NOTE: The contact-authorization gate also accepts a connected account, so its sentence refuses the
   // opposite case: a credential this product only reads internally and never sends out.
   // t('editor.configIssueWrongKind.contactAuth', 'The contact-authorization credential is a type this product never sends to another service, so the check fails and the agent stays silent. Pick a credential that can authenticate a request.')
   // Knowledge bases this agent uses (its RAG grant) that still have documents awaiting indexing —
@@ -3043,8 +3043,9 @@ function AgentEditor() {
         protectedLabelsError(protectedList, storedSettings) ??
         allowedLabelsError(allowedList, storedSettings) ??
         resolveLabelsClashError(protectedResolveLabels(toolsSettings)) ??
-        // Refused by the PATCH, which goes out after the grants PUT: checked here so a bad key
-        // does not leave new grants written beside the old settings.
+        // NOTE: the case attribute key is checked here, before the grants PUT.
+        // Refused by the PATCH, which goes out after that PUT, so a bad key would otherwise leave new
+        // grants written beside the old settings.
         (invalidCaseAttributeKey(crossInboxCase)
           ? t(
               "editor.crossInboxCase.attributeKeyInvalid",

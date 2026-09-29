@@ -19,12 +19,11 @@ import {
 } from "@/modules/chatwoot/management";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// The OBSERVER binding (issue #476): a monitoring agent attached to an inbox on the fork as an
-// observer, next to — never instead of — the responder. What is asserted is what Chatwoot was told
-// and what the row says afterwards, against a fake that personifies the fork's
-// `Api::V1::Accounts::Inboxes::AgentBotObserversController` (fazer-ai/chatwoot#453): POST is
-// idempotent, DELETE answers 404 for a bot that was not observing, and a Chatwoot without the route
-// answers 404 to the POST as well.
+// The OBSERVER binding: a monitoring agent attached to an inbox on the fork as an observer, next
+// to, never instead of, the responder. What is asserted is what Chatwoot was told and what the row
+// says afterwards, against a fake that personifies the fork's
+// `Api::V1::Accounts::Inboxes::AgentBotObserversController`: POST is idempotent, DELETE answers 404
+// for a bot that was not observing, and a Chatwoot without the route answers 404 to the POST too.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -500,11 +499,10 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     await bindInbox(ctx(tenantId), vendas.id, null, binding, appDb);
   });
 
-  // ...AND A DELETION INSIDE THE SAME WINDOW, refused by the same row (issue #540, window 5).
-  // `deleteAgent` refuses while the agent observes anything, and the pending row is what it now
-  // finds. The P2003 arm in `observeInbox` stays where it is: a deletion that lands between the
-  // preflight and the pending write still reaches the foreign key, and the attachment still goes
-  // back.
+  // NOTE: ...AND A DELETION INSIDE THE SAME WINDOW, refused by the same row. `deleteAgent` refuses
+  // while the agent observes anything, and the pending row is what it finds. The P2003 arm in
+  // `observeInbox` stays: a deletion that lands between the preflight and the pending write still
+  // reaches the foreign key, and the attachment still goes back.
   test("an agent cannot be deleted while its attach is in flight: the pending row is what refuses it", async () => {
     const efemera = await suDb.agent.create({
       data: {
@@ -553,12 +551,11 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     await deleteAgent(ctx(tenantId), efemera.id, appDb);
   });
 
-  // A PROMOTION INSIDE THE ATTACH WINDOW (issue #476 review, round 25) — now REFUSED AT ITS SOURCE
-  // (issue #540, window 5). The row is written before the fork is asked, and `updateAgent` refuses a
-  // mode change while the agent observes anything: the promotion no longer commits inside the window
-  // at all, which is what left the receiver with neither signal. The mode re-check under the agent's
-  // lock stays where it is — a promotion that lands between the preflight and the pending write
-  // still meets it, and the attachment still goes back.
+  // NOTE: A PROMOTION INSIDE THE ATTACH WINDOW is refused at its source. The row is written before
+  // the fork is asked, and `updateAgent` refuses a mode change while the agent observes anything, so
+  // the promotion cannot commit inside the window and leave the receiver with neither signal. The
+  // mode re-check under the agent's lock stays: a promotion that lands between the preflight and
+  // the pending write still meets it, and the attachment still goes back.
   test("an agent cannot be promoted while its attach is in flight: the pending row is what refuses it", async () => {
     const promovida = await suDb.agent.create({
       data: {
@@ -584,9 +581,8 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       observerRoute: true,
       observing,
       onAttach: async () => {
-        // The pending row is already there, so this is the refusal `updateAgent` makes for an agent
-        // that observes — and it is the whole of the fix: what used to slip through here was a mode
-        // change committing while nothing named the binding.
+        // NOTE: The pending row is already there, so this is the refusal `updateAgent` makes for an
+        // agent that observes: a mode change must not commit while nothing names the binding.
         promotion = await updateAgent(
           ctx(tenantId),
           promovida.id,
@@ -621,9 +617,9 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     ).toBe("monitoring");
   });
 
-  // ONE BOT SERVES EVERY INBOX THIS AGENT WATCHES, so a bot deleted out of band takes them all down
-  // together — and the reconcile, which asks whether the BOT exists, would report the untouched ones
-  // active once the replacement is provisioned (issue #476 review, round 26).
+  // NOTE: ONE BOT SERVES EVERY INBOX THIS AGENT WATCHES, so a bot deleted out of band takes them
+  // all down together, and the reconcile, which asks whether the BOT exists, would report the
+  // untouched ones active once the replacement is provisioned.
   test("re-observing after the shared bot was deleted reattaches every inbox this agent watches", async () => {
     const vigia = await suDb.agent.create({
       data: {
@@ -688,9 +684,9 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     await unobserveInbox(ctx(tenantId), b.id, vigia.id, healed, appDb);
   });
 
-  // ONE AGENT CAN HOLD BOTH ROLES: a monitoring agent may be the responder of one inbox (#209's
-  // first rung) while watching another, and the bot the two share is the one the Reconnect replaces
-  // (issue #476 review, round 28).
+  // NOTE: ONE AGENT CAN HOLD BOTH ROLES: a monitoring agent may be the responder of one inbox (it
+  // reads everything and answers nothing) while watching another, and the bot the two share is the
+  // one the Reconnect replaces.
   test("re-observing also puts the replaced bot back on the inboxes this agent answers", async () => {
     const dupla = await suDb.agent.create({
       data: { tenantId, name: "Dupla", systemPrompt: "x", mode: "monitoring" },
@@ -788,12 +784,11 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     const attached = new Set(observing);
     expect(attached.size).toBe(1);
 
-    // The whole interleaving, staged rather than raced. `bindInbox` REFUSES an agent that already
-    // observes the inbox, so the retire path is only reachable when the observe commits after that
-    // check: the row is removed before it runs and put back straight after, which is the window the
-    // refusal cannot see. The transaction then retires that row, and the re-observe lands once more
-    // between the commit and the detach — staged on the recheck's own read, the statement whose
-    // answer the fix depends on.
+    // NOTE: The whole interleaving, staged rather than raced. `bindInbox` REFUSES an agent that
+    // already observes the inbox, so the retire path is only reachable when the observe commits
+    // after that check: the row is removed before it runs and put back straight after. The
+    // transaction then retires that row, and the re-observe lands once more between the commit and
+    // the detach, staged on the recheck's own read, the statement the detach decision depends on.
     await suDb.inboxObserver.deleteMany({ where: { inboxId: inbox.id } });
     const reObserve = () =>
       suDb.inboxObserver.create({
@@ -860,9 +855,9 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     }
   });
 
-  // THE REPAIR TRAVELS WITH THE REPLACEMENT, whichever call makes it (issue #476 review, round 29).
-  // A RECONNECT on the inbox this persona answers replaces the shared bot exactly as an observe
-  // does, and the inbox it WATCHES went down with the old one.
+  // NOTE: THE REPAIR TRAVELS WITH THE REPLACEMENT, whichever call makes it. A RECONNECT on the inbox
+  // this persona answers replaces the shared bot exactly as an observe does, and the inbox it
+  // WATCHES went down with the old one.
   test("reconnecting the answered inbox puts the replaced bot back on the watched one", async () => {
     const ambos = await suDb.agent.create({
       data: { tenantId, name: "Ambos", systemPrompt: "x", mode: "monitoring" },
@@ -924,11 +919,10 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     await bindInbox(ctx(tenantId), answered.id, null, healed, appDb);
   });
 
-  // A REATTACHMENT THAT FAILED IS REPAIRABLE (issue #476 review, round 30). Gated on the bot id
-  // having changed, the propagation is a one-shot: the retry finds the row already carrying the new
-  // id and reattaches nothing, so the operator's second click would be a no-op on the very inbox the
-  // first one missed. The reconnect re-asserts every attachment whether or not the bot needed
-  // replacing, which is what makes the repair reachable.
+  // NOTE: A REATTACHMENT THAT FAILED IS REPAIRABLE. Gated on the bot id having changed, the
+  // propagation would be a one-shot: the retry finds the row already carrying the new id and
+  // reattaches nothing, so the operator's second click would miss the same inbox. The reconnect
+  // re-asserts every attachment whether or not the bot needed replacing.
   test("a reconnect re-asserts the persona's other attachments even when the bot did not change", async () => {
     const persona = await suDb.agent.create({
       data: {
@@ -989,10 +983,10 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     await bindInbox(ctx(tenantId), answered.id, null, cw, appDb);
   });
 
-  // A STALE LIST MAY NOT UNDO A REMOVAL (issue #476 review, round 30). The lists the propagation
-  // reads are one round trip old by the time the loop reaches the last of them, and an unobserve
-  // that completed in that window would otherwise be undone here — leaving Chatwoot with an
-  // attachment no row records, which is a removed observer still receiving every event.
+  // NOTE: A STALE LIST MAY NOT UNDO A REMOVAL. The lists the propagation reads are one round trip
+  // old by the time the loop reaches the last of them, and an unobserve that completed in that
+  // window must not be undone here: that leaves Chatwoot with an attachment no row records, a
+  // removed observer still receiving every event.
   test("a binding removed while the propagation runs is not reattached", async () => {
     const fugaz = await suDb.agent.create({
       data: { tenantId, name: "Fugaz", systemPrompt: "x", mode: "monitoring" },
@@ -1058,9 +1052,9 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     await bindInbox(ctx(tenantId), bound.id, null, cw, appDb);
   });
 
-  // A COMPENSATION MAY NOT PULL WHAT A COMMITTED ROW DEPENDS ON (issue #476 review, round 29). Two
-  // first-time observes of the same pair share one idempotent attachment upstream; if one commits
-  // and the other then fails, the loser's rollback would strip the winner's.
+  // NOTE: A COMPENSATION MAY NOT PULL WHAT A COMMITTED ROW DEPENDS ON. Two first-time observes of
+  // the same pair share one idempotent attachment upstream; if one commits and the other then fails,
+  // the loser's rollback would strip the winner's.
   test("a failed observe leaves the attachment a row committed meanwhile depends on", async () => {
     const vigia = await suDb.agent.create({
       data: {
@@ -1085,11 +1079,10 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       observerRoute: true,
       observing,
       onAttach: async () => {
-        // The other call's row, COMMITTED while this one's attach is in flight — stamped, because
-        // that is what committing means since issue #540: the two calls share one row (the unique is
-        // on the inbox), and the stamp is what separates "a call completed and depends on this
-        // attachment" from "a call is still in flight". Written directly: what is under test is the
-        // compensation, not a second observe's own path.
+        // NOTE: The other call's row, COMMITTED while this one's attach is in flight, and so
+        // stamped: the two calls share one row (the unique is on the inbox), and the stamp separates
+        // "a call completed and depends on this attachment" from "a call is still in flight".
+        // Written directly: what is under test is the compensation, not a second observe's path.
         await suDb.inboxObserver.upsert({
           where: { tenantId_inboxId: { tenantId, inboxId: spare.id } },
           create: {
@@ -1206,10 +1199,10 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       where: { id: otherInboxRowId },
       data: { agentId: null },
     });
-    // The monitoring agent observes `otherInbox` since the previous case; binding it as the
-    // responder THERE is refused. Elsewhere it may be the responder: bound, it reads everything
-    // and answers nothing — the mode an operator flips a bound agent into (#209's first rung) —
-    // so the observer binding is not the only door for it.
+    // NOTE: The monitoring agent observes `otherInbox` since the previous case; binding it as the
+    // responder THERE is refused. Elsewhere it may be the responder: bound, it reads everything and
+    // answers nothing (the mode an operator flips a bound agent into), so the observer binding is
+    // not the only door for it.
     await expect(
       bindInbox(ctx(tenantId), otherInboxRowId, monitoringAgent, cw, appDb),
     ).rejects.toMatchObject({ statusCode: 422 });
@@ -1424,14 +1417,12 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     ).toEqual([]);
   });
 
-  // THE COUNTER EVERY LATER READER COMPARES AGAINST (issue #540). A delivery records the generation
-  // it was RECEIVED under, and a reader asks whether the binding it is about to re-derive a fact
-  // from still describes that world. The counter is worth nothing unless it moves on every write
-  // that changes who routes an inbox and on no other — a movement it misses lets a stale derivation
-  // pass as evidence, and one it invents costs a delivery a refusal, which is a row an operator has
-  // to read.
-  //
-  // Asked here of the public calls, and in the test below of the writers that never go through them.
+  // NOTE: THE COUNTER EVERY LATER READER COMPARES AGAINST. A delivery records the generation it was
+  // RECEIVED under, and a reader asks whether the binding it re-derives a fact from still describes
+  // that world. The counter moves on every write that changes who routes an inbox and on no other:
+  // a movement it misses lets a stale derivation pass as evidence, and one it invents costs a
+  // delivery a refusal an operator has to read. Asked here of the public calls, and in the test
+  // below of the writers that never go through them.
   test("the generation steps once per binding that actually moves, and stands still for a write that moves none", async () => {
     const inbox = await suDb.inbox.create({
       data: {
@@ -1479,10 +1470,9 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     expect(await generation()).toBe(4);
   });
 
-  // THE FOURTH SITE, and the one outside chatwoot/management.ts: deleting an agent unbinds every
-  // inbox it answered. That is the same movement an unbind makes, and a delivery in flight would
-  // otherwise re-derive its route from a binding that is gone while the counter said the world had
-  // stood still.
+  // NOTE: THE FOURTH SITE, outside src/modules/chatwoot/management.ts: deleting an agent unbinds
+  // every inbox it answered, the same movement an unbind makes, and a delivery in flight must not
+  // re-derive its route from a binding that is gone while the counter says the world stood still.
   test("deleting a bound agent steps the generation of every inbox it answered", async () => {
     const inbox = await suDb.inbox.create({
       data: {
@@ -1518,10 +1508,9 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     expect(after.agentId).toBeNull();
     expect(after.bindingGeneration).toBe(bound.bindingGeneration + 1);
   });
-  // THE ATTACH WINDOW GETS A FACT OF ITS OWN (issue #540, window 5). The row used to be written only
-  // after Chatwoot agreed, so inside the window there was nothing to read: no row, and — where a
-  // promotion committed in that same window — not even the monitoring mode that stood in for it. The
-  // row now goes in first, unstamped, and is stamped when the fork answers.
+  // NOTE: THE ATTACH WINDOW HAS A FACT OF ITS OWN. The row goes in first, unstamped, and is stamped
+  // when the fork answers; written only after Chatwoot agreed, there would be nothing to read inside
+  // the window.
   test("the observer row is written before Chatwoot is asked, unstamped, and stamped when it answers", async () => {
     const inbox = await suDb.inbox.create({
       data: {
@@ -1598,12 +1587,11 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       await reconnectChatwootInstance(ctx(tenantId), instanceId, appDb);
     }
   });
-  // ...AND OF EVERY OTHER WRITER, which is why the counter is a trigger and not five call sites (PR
-  // review, round 1). Two of them were already missing from the list on the first pass: an account
-  // disconnect, which unbinds every inbox with a raw UPDATE of its own, and the PREVIOUS RELEASE,
-  // which moves bindings for the whole length of a rolling deploy (docs/deploy.md) and names no such
-  // column at all. A counter standing still there is worse than no counter: a reader takes a stale
-  // route derivation for a current one, which is the single reading the column exists to refuse.
+  // NOTE: ...AND OF EVERY OTHER WRITER, which is why the counter is a trigger and not a list of call
+  // sites: an account disconnect unbinds every inbox with a raw UPDATE of its own, and the PREVIOUS
+  // RELEASE moves bindings for the whole length of a rolling deploy (docs/deploy.md) without naming
+  // this column. A counter standing still there is worse than no counter: a reader takes a stale
+  // route derivation for a current one, the single reading the column exists to refuse.
   test("the counter follows writers that never call bindInbox: a raw unbind, and an account disconnect", async () => {
     const inbox = await suDb.inbox.create({
       data: {
@@ -1669,11 +1657,11 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       await reconnectChatwootInstance(ctx(tenantId), instanceId, appDb);
     }
   });
-  // A PENDING ROW IS SOMEBODY ELSE'S CALL IN FLIGHT, NOT A BINDING TO DEFER TO (PR review, round 1).
-  // Two overlapping observes of the same pair share ONE row, and reading the other call's pending row
-  // as "already observing" is the worst of both answers: this call writes no row AND its
-  // compensation skips the detach, so if the other call then fails and takes the row away, the
-  // attachment upstream is left with nothing here naming it.
+  // NOTE: A PENDING ROW IS SOMEBODY ELSE'S CALL IN FLIGHT, NOT A BINDING TO DEFER TO. Two
+  // overlapping observes of the same pair share ONE row, and reading the other call's pending row as
+  // "already observing" is the worst of both answers: this call writes no row AND its compensation
+  // skips the detach, so if the other call then fails and takes the row away, the attachment
+  // upstream is left with nothing here naming it.
   test("an observe that meets another call's pending row leaves the attachment they share", async () => {
     const inbox = await suDb.inbox.create({
       data: {
@@ -1707,13 +1695,12 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       await expect(
         observeInbox(ctx(tenantId), inbox.id, monitoringAgent, cw, appDb),
       ).rejects.toMatchObject({ statusCode: 409 });
-      // THE ATTACHMENT STAYS, and this assertion is the one round 10 turned around. "Nothing
-      // COMPLETED depends on it" was the wrong question: the other call's row is unstamped only for
-      // the length of its own network call, and the POST being idempotent the two share ONE
-      // attachment upstream. Pulled here, it would be gone the instant that call stamped its row —
-      // a confirmed observer in the database over a detached fork. What takes it back if that call
-      // fails is that call's own compensation; what repairs a row nothing ever settles is the
-      // reconcile reporting it `missing` and the Reconnect it offers.
+      // NOTE: THE ATTACHMENT STAYS. "Nothing COMPLETED depends on it" is the wrong question: the
+      // other call's row is unstamped only for the length of its own network call, and the POST
+      // being idempotent the two share ONE attachment upstream, so pulling it here would leave a
+      // confirmed observer over a detached fork once that call stamps. That call's own compensation
+      // takes it back if it fails; the reconcile's `missing` and its Reconnect repair a row nothing
+      // settles.
       expect(observing.size).toBe(1);
       // ...and the other call's row is left exactly where it was: this call did not write it.
       expect(
@@ -1724,15 +1711,12 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       await suDb.inboxObserver.deleteMany({ where: { inboxId: inbox.id } });
     }
   });
-  // ...AND WHEN THE ROW IT DEFERRED TO IS TAKEN AWAY, IT SAYS WHICH FAILURE THAT WAS (PR review,
-  // round 19). Two first-time observes of the same pair share one row: the first writes it, the
-  // second meets the unique and relies on it. The first failing then deletes the only row the second
-  // could stamp, and both fail on one failure — a retry rather than a decision, and the message is
-  // what tells the operator that.
-  //
-  // NOT recovered by writing the row here, deliberately: this path cannot tell "the other observe
-  // failed" from "an unobserve ran", and creating a row on the second reading revives a binding an
-  // operator has just removed, which is the arm round 6 took out of the upsert.
+  // NOTE: ...AND WHEN THE ROW IT DEFERRED TO IS TAKEN AWAY, IT SAYS WHICH FAILURE THAT WAS. The
+  // first observe writes the shared row and the second relies on it; the first failing deletes the
+  // only row the second could stamp, so both fail on one failure, and the message tells the
+  // operator it is a retry rather than a decision. NOT recovered by writing the row here: this path
+  // cannot tell "the other observe failed" from "an unobserve ran", and creating a row on the
+  // second reading revives a binding an operator has just removed.
   test("an observe whose adopted row is deleted mid-attach reports the race, not a take-back", async () => {
     const inbox = await suDb.inbox.create({
       data: {
@@ -1777,12 +1761,11 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     expect(observing.size).toBe(0);
   });
 
-  // A PENDING ROW IS NOT A BINDING FOR THE BULK REATTACH TO ASSERT (issue #540, PR review round 2).
-  // Attached upstream by this loop, it would leave the fork delivering to a bot whose row still says
-  // "attaching" — which the observe tick and the receiver believe indefinitely, so the tick retries
-  // for good. Stamping it here instead is worse: the call that wrote it can still be refused, and a
-  // stamp survives its compensation and its detach, leaving a row for an observe that was turned
-  // down. Skipped, both sides say the same thing, and observing again is the repair.
+  // NOTE: A PENDING ROW IS NOT A BINDING FOR THE BULK REATTACH TO ASSERT. Attached upstream by this
+  // loop, it would leave the fork delivering to a bot whose row still says "attaching", which the
+  // observe tick and the receiver believe indefinitely. Stamping it here is worse: the call that
+  // wrote it can still be refused, and a stamp survives its compensation and its detach. Skipped,
+  // both sides say the same thing, and observing again is the repair.
   test("the bulk reattach passes over an observer row Chatwoot never confirmed", async () => {
     const vigia = await suDb.agent.create({
       data: {
@@ -1870,11 +1853,11 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     await unobserveInbox(ctx(tenantId), settled.id, vigia.id, healed, appDb);
     await unobserveInbox(ctx(tenantId), stuck.id, vigia.id, healed, appDb);
   });
-  // ...AND THE SNAPSHOT IS A SNAPSHOT (issue #540, PR review round 3). A binding confirmed when the
-  // list was read can be unobserved, and a NEW observe insert its unstamped row, before this loop
-  // reaches that inbox. Read without the stamp, the loop attaches a bot for an observe it does not
-  // own and reports the attachment healthy — and if that observe then aborts before it learns the
-  // bot id, its own compensation cannot detach what this loop put there.
+  // NOTE: ...AND THE SNAPSHOT IS A SNAPSHOT. A binding confirmed when the list was read can be
+  // unobserved, and a NEW observe insert its unstamped row, before this loop reaches that inbox.
+  // Read without the stamp, the loop would attach a bot for an observe it does not own and report
+  // it healthy, and if that observe then aborts before it learns the bot id, its own compensation
+  // cannot detach what this loop put there.
   test("the reattach re-asks for the stamp, not just for a row, on each inbox it reaches", async () => {
     const vigia = await suDb.agent.create({
       data: {
@@ -1929,10 +1912,10 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       deletedBots: new Set([botRow.chatwootAgentBotId]),
       firstBot: 95,
       onAttach: async () => {
-        // The unobserve and the new observe, landing while the loop is between two of its inboxes:
-        // the row is there, and it is not the same binding any more. Done on the FIRST attach the
-        // loop makes, so it lands before the second inbox is re-asked — the window this recheck is
-        // about. `raced` is reached first (rows come back in id order) and `anchor` second.
+        // NOTE: The unobserve and the new observe, landing while the loop is between two of its
+        // inboxes: the row is there, and it is no longer the same binding. Done on the FIRST attach
+        // the loop makes, so it lands before the second inbox is re-asked. `raced` is reached first
+        // (rows come back in id order) and `anchor` second.
         await suDb.inboxObserver.updateMany({
           where: { tenantId, inboxId: anchor.id, agentId: vigia.id },
           data: { attachedAt: null },
@@ -1958,14 +1941,12 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       await unobserveInbox(ctx(tenantId), i.id, vigia.id, healed, appDb);
     }
   });
-  // ...AND THE MODE RECHECK MUST NOT TAKE THIS CALL'S OWN PENDING ROW AS THE EXEMPTION (issue #540,
-  // PR review round 4). `updateAgent` refuses a mode change while the agent observes anything, but
-  // the two writes do not serialize: it counts observers and locks the agent `FOR NO KEY UPDATE`,
-  // while the pending insert's foreign key takes only `KEY SHARE`, which is compatible — so a
-  // promotion and the pending row can both commit. The raw update below is that outcome. Read
-  // literally, the exemption sees the row this call just wrote, skips the refusal, and stamps a
-  // confirmed observer binding for an agent that ANSWERS: the state window 5 exists to prevent,
-  // reached through the fix for it.
+  // NOTE: ...AND THE MODE RECHECK MUST NOT TAKE THIS CALL'S OWN PENDING ROW AS THE EXEMPTION.
+  // `updateAgent` counts observers and locks the agent `FOR NO KEY UPDATE`, while the pending
+  // insert's foreign key takes only `KEY SHARE`, which is compatible, so a promotion and the pending
+  // row can both commit (the raw update below). Read literally, the exemption would see the row
+  // this call just wrote, skip the refusal, and stamp a confirmed observer binding for an agent
+  // that ANSWERS.
   test("a promotion that raced past updateAgent's own refusal is still caught by the mode recheck", async () => {
     const promovida = await suDb.agent.create({
       data: {
@@ -2011,13 +1992,11 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     ).toBe(0);
   });
 
-  // THE PAIR NAMES A SLOT, NOT A ROW (issue #540, PR review round 6). `(tenantId, inboxId)` is
-  // unique, so it looks like an identity — and it is not one across time. An unobserve inside the
-  // attach window takes this call's row away, and a second observe of the same pair puts its own
-  // row in the slot before the fork answers. Settling by the pair then stamped THAT call's intent as
-  // confirmed off THIS call's attach, and the compensation, looking for an unstamped row of the
-  // pair, found a stamped one and left it: a confirmed observer in the database with nothing
-  // attached on Chatwoot, reached through the fix for exactly that state.
+  // NOTE: THE PAIR NAMES A SLOT, NOT A ROW. `(tenantId, inboxId)` is unique but is not an identity
+  // across time: an unobserve inside the attach window takes this call's row away, and a second
+  // observe puts its own row in the slot before the fork answers. Settling by the pair would stamp
+  // THAT call's intent as confirmed off THIS call's attach, and a compensation looking for an
+  // unstamped row of the pair would leave it: a confirmed observer with nothing attached.
   test("an observe settles the row it wrote, never the row that replaced it", async () => {
     const inbox = await suDb.inbox.create({
       data: {
@@ -2034,8 +2013,8 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       observerRoute: true,
       observing,
       onAttach: async () => {
-        // The unobserve, and then the second observe: the row this call wrote is gone and another
-        // call's pending row is sitting in the slot it used to hold.
+        // NOTE: The unobserve, and then the second observe: the row this call wrote is gone and
+        // another call's pending row sits in its slot.
         await suDb.inboxObserver.deleteMany({
           where: { tenantId, inboxId: inbox.id },
         });
@@ -2063,26 +2042,23 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       select: { attachedAt: true },
     });
     expect(left.attachedAt).toBeNull();
-    // ...AND THE ATTACHMENT STAYS, which is the half round 10 corrected. This call did not complete,
-    // but the other one did attach — the POST is idempotent, so the two share one attachment
-    // upstream — and its row is unstamped only for the length of its own network call. Pulled here,
-    // the attachment would be gone the instant that call stamped a confirmed row over a detached
-    // fork. Its own compensation is what takes it back if it fails.
+    // NOTE: ...AND THE ATTACHMENT STAYS. This call did not complete, but the other one did attach
+    // (the POST is idempotent, so the two share one attachment upstream) and its row is unstamped
+    // only for the length of its own network call. Pulled here, the attachment would be gone the
+    // instant that call stamped a confirmed row over a detached fork. Its own compensation is what
+    // takes it back if it fails.
     expect(observing.size).toBe(1);
     await suDb.inboxObserver.deleteMany({
       where: { tenantId, inboxId: inbox.id },
     });
   });
 
-  // A ROW THAT MOVES IN PLACE MOVES A BINDING (issue #540, PR review round 6). A repair that rewrites
-  // `agent_id` or `inbox_id` changes who observes an inbox exactly as an insert and a delete would,
-  // and the counter is a trigger precisely so that it does not depend on anybody writing the shape
-  // this release happens to use. The inbox the row LEFT counts too: it lost an observer.
-  //
-  // And the write that must NOT count is the stamp, which is why the trigger is narrowed to those
-  // two columns: a pending row already counts as observing for every reader that gates a refusal, so
-  // stepping the generation when it settles would make the receiver refuse deliveries whose route
-  // derivation was right the whole time.
+  // NOTE: A ROW THAT MOVES IN PLACE MOVES A BINDING. Rewriting `agent_id` or `inbox_id` changes who
+  // observes an inbox exactly as an insert and a delete would, and the counter is a trigger so it
+  // does not depend on the shape any one release writes; the inbox the row LEFT counts too. The
+  // stamp must NOT count, which is why the trigger is narrowed to those two columns: a pending row
+  // already counts as observing for every reader that gates a refusal, so stepping the generation
+  // on settle would refuse deliveries whose route derivation was right the whole time.
   test("moving an observer row steps both inboxes, and stamping one steps neither", async () => {
     const [from, to] = await Promise.all([
       suDb.inbox.create({
@@ -2148,12 +2124,11 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     await suDb.inboxObserver.delete({ where: { id: row.id } });
   });
 
-  // ...AND THE DETACH ASKS ABOUT NOW, NOT ABOUT THE START OF THE CALL (issue #540, PR review round
-  // 8). A re-observe reads `alreadyObserving` before the fork is asked, and an unobserve can remove
-  // that confirmed row inside the window — which is the state the 409 above exists for. Gated on the
-  // old reading, this call kept an attachment nothing names any more, and where its POST landed
-  // after the unobserve's own DELETE the fork went on delivering to an agent that had been
-  // unobserved: the silent outcome, since no row is left for anything to report.
+  // NOTE: ...AND THE DETACH ASKS ABOUT NOW, NOT ABOUT THE START OF THE CALL. A re-observe reads
+  // `alreadyObserving` before the fork is asked, and an unobserve can remove that confirmed row
+  // inside the window (the state the 409 above exists for). Gated on the old reading, this call
+  // would keep an attachment nothing names, and where its POST landed after the unobserve's DELETE
+  // the fork would go on delivering to an unobserved agent, with no row left to report it.
   test("a re-observe whose row is removed mid-attach takes its attachment back", async () => {
     const inbox = await suDb.inbox.create({
       data: {
@@ -2199,17 +2174,12 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     ).toBe(0);
   });
 
-  // A PENDING ROW MEANS A CALL THAT CAN TAKE THE ATTACHMENT BACK (issue #540, PR review round 11).
-  // The row used to go in before the bot was provisioned, so it also stood for a call that could
-  // still fail without ever reaching Chatwoot. Two overlapping observes then had a road where both
-  // fail and the fork keeps an observer nothing names: the second attaches, fails to persist, and
-  // SKIPS its detach because the first one's row is in the table — and the first, having never
-  // obtained a bot id, deletes that row with nothing it can detach.
-  //
-  // Closed by WHERE the row is written, not by a second state on it: after the bot id and before the
-  // attach. Nothing is attached for this inbox before that point, so the window the row exists for is
-  // untouched — and the fact a compensation now leans on ("somebody who can detach is in flight") is
-  // true of every pending row there is.
+  // NOTE: A PENDING ROW MEANS A CALL THAT CAN TAKE THE ATTACHMENT BACK, which is why it is written
+  // after the bot id is obtained and before the attach. Written before provisioning, it would also
+  // stand for a call that can fail without reaching Chatwoot: the second of two overlapping observes
+  // attaches, fails to persist and SKIPS its detach because of the first one's row, and the first,
+  // with no bot id, deletes that row with nothing to detach. Nothing is attached for this inbox
+  // before that point, so the window the row exists for is untouched.
   test("no observer row exists before the fork has a bot to attach", async () => {
     const inbox = await suDb.inbox.create({
       data: {
@@ -2229,8 +2199,8 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       },
       select: { id: true },
     });
-    // What the table held AT THE MOMENT the bot was being provisioned — the window in which the old
-    // position had a row standing for a call that had not asked Chatwoot for anything yet.
+    // NOTE: What the table held AT THE MOMENT the bot was being provisioned, the window in which a
+    // row written before provisioning would stand for a call that had not asked Chatwoot anything.
     let rowsWhileProvisioning = -1;
     const fetchImpl = (async (url: string, init?: RequestInit) => {
       const path = new URL(url).pathname;
@@ -2272,17 +2242,12 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     ).toBe(0);
   });
 
-  // ...AND THE INSERT SERIALIZES AGAINST A PROMOTION (issue #540, PR review round 13). The insert
-  // alone does not: its foreign key on the agent takes `KEY SHARE`, which is compatible with the
-  // `FOR NO KEY UPDATE` that `updateAgent` holds while it counts observers and finds none, so the
-  // promotion and the pending row both commit. A process death before the recheck in the transaction
-  // below then leaves a PRODUCTION agent carrying a pending row: it routes, it blocks the ordinary
-  // edits, and observing again cannot settle it, because that recheck exempts a CONFIRMED row and
-  // not this one.
-  //
-  // What is asserted is that the row is never written at all when the mode has already moved — the
-  // refusal downstream produces the same 422 either way, so the observable that separates the two is
-  // WHETHER THE TABLE EVER HELD THE ROW.
+  // NOTE: ...AND THE INSERT SERIALIZES AGAINST A PROMOTION. The insert alone does not: its foreign
+  // key takes `KEY SHARE`, compatible with the `FOR NO KEY UPDATE` `updateAgent` holds while it
+  // counts observers, so both could commit, and a process death before the recheck below would
+  // leave a PRODUCTION agent carrying a pending row that routes, blocks ordinary edits, and cannot
+  // be settled (the recheck exempts only a CONFIRMED row). The downstream refusal is the same 422
+  // either way, so what is asserted is WHETHER THE TABLE EVER HELD THE ROW.
   test("a promotion landing before the insert stops the row from being written", async () => {
     const inbox = await suDb.inbox.create({
       data: {
@@ -2354,10 +2319,9 @@ describe.skipIf(!dbUp)("the observer binding", () => {
     ).toBe(0);
   });
 
-  // ...AND A FOREIGN KEY AT THAT INSERT NAMES THE INBOX (issue #540, PR review round 14). Answering
-  // `agentNotFound` for every P2003 was right while nothing had established the agent was there, and
-  // stopped being right the moment the lock above did: the agent is held for the length of that
-  // transaction, so it cannot be the row that went missing. What can is the inbox — `removeInbox`
+  // NOTE: ...AND A FOREIGN KEY AT THAT INSERT NAMES THE INBOX. The lock above holds the agent for
+  // the length of that transaction, so it cannot be the row that went missing, and answering
+  // `agentNotFound` for a P2003 would be wrong. What can go missing is the inbox: `removeInbox`
   // deletes the mirror, and the read that found it predates the whole Chatwoot call.
   test("an inbox removed mid-call is reported as the inbox, not as the agent", async () => {
     const inbox = await suDb.inbox.create({
@@ -2410,8 +2374,8 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       statusCode: 404,
       translationKey: "errors.inboxNotFound",
     });
-    // ...and the agent is still there, which is what makes the old message wrong rather than merely
-    // imprecise: an operator told to look for a deleted agent would find one that is fine.
+    // NOTE: ...and the agent is still there, so an `agentNotFound` answer would send the operator
+    // looking for a deleted agent that is fine.
     expect(await suDb.agent.count({ where: { tenantId, id: vigia.id } })).toBe(
       1,
     );

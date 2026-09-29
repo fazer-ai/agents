@@ -10,22 +10,13 @@ import {
 } from "@/modules/chatwoot/normalize";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #257. `chatwoot_conversation_id` stores Chatwoot's per-account DISPLAY id, and the mirror is
-// the only writer of it. It reads whatever `normalizeChatwootEvent` put on `conversationId`, and that
-// used to be `payload.id` for every event except message_created/message_updated — on the assumption
-// that "not a message event" means "the body IS the conversation".
-//
-// It does not. Chatwoot serializes each event's own SUBJECT with that subject's `webhook_data`, and
-// every one of them renders its own table id under the same `id` key: a contact
-// (`Contact#webhook_data`), a contact_inbox (`ContactInbox#webhook_data`), an inbox, a kanban card, a
-// message. So a foreign row id landed in `chatwoot_conversation_id` and opened a SECOND mirror row
-// for a conversation that already had one, which is what the report measured in production (two rows,
-// one keyed by the display id and one by a value no display id has).
-//
-// The payload shapes below were captured from the fork itself (`bundle exec rails runner` over
-// `app/listeners/{agent_bot,webhook}_listener.rb` and the `webhook_data` each of them calls), then
-// reduced to the fields this decision reads. The measured table at capture time was 7 of 19 event
-// shapes feeding a foreign id.
+// `chatwoot_conversation_id` stores Chatwoot's per-account DISPLAY id, and the mirror is its only
+// writer, reading whatever `normalizeChatwootEvent` put on `conversationId`. Chatwoot serializes each
+// event's own SUBJECT with that subject's `webhook_data`, and every one of them (a contact, a
+// contact_inbox, an inbox, a kanban card, a message) renders its own table id under `id`, so "not a
+// message event" does not mean "the body IS the conversation". A foreign row id there opens a SECOND
+// mirror row for a conversation that already has one. The shapes below come from the fork's
+// `app/listeners/{agent_bot,webhook}_listener.rb`, reduced to the fields this decision reads.
 
 const DISPLAY_ID = 1235; // conversations.display_id — the ONLY id this column may hold
 const TABLE_ID = 1320; // conversations.id for that same conversation
@@ -146,7 +137,7 @@ describe("chatwoot payload shape: only a conversation body carries a conversatio
   });
 });
 
-// ── the effect the report measured: one conversation, two mirror rows ──
+// ── the effect: one conversation, two mirror rows ──
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -204,10 +195,9 @@ describe.skipIf(!dbUp)(
       return mirrorChatwootEvent(tenantId, instanceId, n, appDb);
     }
 
-    // The report: row 687 keyed 1235 (the display id) at 11:21, row 688 keyed 1320 (the same
-    // conversation's TABLE id) at 11:46. Any event whose body is not a conversation reproduces it —
-    // this uses the one that names the table id outright, a message body's nested conversation vs the
-    // message body's own top-level id.
+    // NOTE: Any event whose body is not a conversation would key a second row; this one uses a message
+    // body, whose top-level id is the conversation's TABLE id while its nested conversation carries the
+    // display id.
     test("a message body's own id does not become a second conversation", async () => {
       await mirror({ event: "conversation_updated", ...conversationBody() });
       // Same conversation, arriving as an account-webhook message event. `payload.id` here is the
@@ -224,10 +214,8 @@ describe.skipIf(!dbUp)(
       expect(rows.map((r) => r.chatwootConversationId)).toEqual([DISPLAY_ID]);
     });
 
-    // Issue #222, and the same display-id-not-table-id rule this file exists for. The fork stamps the
-    // redirect episode's origin on the widget conversation and ships it on push_data; it is the ENTRY
-    // conversation's display id, so it lands in a column the mirror compares against
-    // chatwootConversationId.
+    // NOTE: The fork stamps the redirect episode's origin on the widget conversation and ships it on
+    // push_data; it is the ENTRY conversation's display id, compared against chatwootConversationId.
     test("the redirect origin rides in on the payload and lands in the column", async () => {
       const ORIGIN_DISPLAY = 4242;
       await mirror({
@@ -254,21 +242,10 @@ describe.skipIf(!dbUp)(
       expect(after.redirectOriginDisplayId).toBe(ORIGIN_DISPLAY);
     });
 
-    // The SAME divergence between the two serializers, on a different field, and the one that
-    // decides whether a customer gets answered at all.
-    //
-    // MEASURED on the fork, one message, both serializers: `Message#webhook_data[:message_type]` is
-    // the string `"incoming"` and `Message#push_event_data[:message_type]` is the integer `0`. The
-    // webhook carries the first; every REST read carries the second. `parseChatwootMessages` already
-    // maps both (`// REST API: integer enum. Tolerate the webhook's string form too`), and
-    // `normalizeChatwootEvent` did not — so an event rebuilt from a REST read normalized to
-    // `messageType: null`, `isNewIncomingMessage` answered false, and the customer's message was
-    // classified as not-incoming. Silently: no throw, no line, nothing.
-    //
-    // Nothing fed REST-shaped bodies to the normalizer on the reactive path until issue #295 —
-    // recovering a stranded delivery means rebuilding the event, and the only surviving source for
-    // its message is the REST read. This is the fence that stops the recovery from reintroducing the
-    // exact silence #228 removed.
+    // NOTE: `Message#webhook_data[:message_type]` is the string `"incoming"`, while
+    // `Message#push_event_data[:message_type]` (every REST read) is the integer `0`. Recovering a
+    // stranded delivery rebuilds the event from a REST read, so a normalizer that maps only the string
+    // silently classifies the customer's message as not incoming and nobody answers it.
     test("a message_type spelled the REST way is the same message", () => {
       const asWebhook = normalizeChatwootEvent({
         event: "message_created",
@@ -289,10 +266,8 @@ describe.skipIf(!dbUp)(
     // happened to be needed: an outgoing message rebuilt from REST must stay outgoing, or a
     // recovery would answer the bot's own reply.
     test("a blank or unparsable message_type is NOT a customer message", () => {
-      // `Number("")` and `Number("  ")` are both 0, which is the integer spelling of `incoming` —
-      // and `incoming` is the one class that drives an agent turn. Reading the field as a number at
-      // all is a widened domain, and this is where the widening is closed: the string-only reader
-      // this replaced rejected these by simply not matching "incoming".
+      // NOTE: `Number("")` and `Number("  ")` are both 0, the integer spelling of `incoming`, the one
+      // class that drives an agent turn; reading the field as a number must not widen to these.
       for (const v of ["", "   ", "\n", "0x0", " 0", "0 ", "abc", null, {}]) {
         expect(messageTypeOf(v)).toBe("other");
       }

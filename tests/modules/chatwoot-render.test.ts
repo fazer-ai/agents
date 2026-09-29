@@ -48,30 +48,22 @@ describe("renderInboundMessage", () => {
     ).toContain("enviou uma imagem");
   });
 
-  // O MARCADOR NÃO ESCOLHE O CANAL DE VOLTA (issue #758). Ele é lido pelo modelo como parte da
-  // mensagem que está respondendo, não como texto de referência, então o que ele mandar pedir é o
-  // que o cliente recebe: numa caixa de e-mail, onde não existe áudio, saiu "Envie as informações
-  // por texto ou áudio" para uma cliente que não tem como mandar áudio. O prompt do agente dizia,
-  // no segundo parágrafo, que ali não há áudio, e perdeu para a instrução de dentro do conteúdo.
+  // NOTE: o marcador não escolhe o canal de volta. O modelo o lê como parte da mensagem, então o
+  // que ele pedir é o que o cliente recebe, e uma instrução dentro do conteúdo vence o prompt: numa
+  // caixa de e-mail, pedir "texto ou áudio" oferece um canal que não existe.
   test("the unread-image marker does not offer a channel that may not exist", () => {
     const out = renderInboundMessage({ text: "", attachmentTypes: ["image"] });
     expect(out).not.toContain("áudio");
-    // E continua dizendo as duas coisas de que o modelo precisa: que veio uma imagem, e que o
-    // conteúdo dela não pôde ser lido — um marcador mudo faria o modelo responder como se a
-    // mensagem não tivesse anexo nenhum.
+    // NOTE: continua dizendo que veio uma imagem e que ela não pôde ser lida: um marcador mudo faria
+    // o modelo responder como se a mensagem não tivesse anexo.
     expect(out).toContain("imagem");
     expect(out.toLowerCase()).toContain("não foi possível ler");
   });
 
-  // A CERCA DO ACOPLAMENTO, e ela não é decorativa: `unwrapFileMarker`
-  // (src/modules/playground/sessions.ts) reconhece este marcador por `startsWith`, e é assim que o
-  // playground remonta o anexo na tela em vez de mostrar o texto cru ao operador. Reescrever a
-  // frase inteira quebraria aquele lado sem quebrar teste nenhum, em silêncio.
-  //
-  // Contra o FONTE do outro lado, e não contra um literal repetido aqui: `unwrapFileMarker` não é
-  // exportado, e uma cópia do prefixo neste arquivo provaria apenas que o render é consistente
-  // consigo mesmo. O que precisa continuar verdadeiro é que o texto que sai daqui é reconhecido
-  // LÁ, então é lá que a asserção vai buscar o prefixo.
+  // NOTE: `unwrapFileMarker` (src/modules/playground/sessions.ts) reconhece este marcador por
+  // `startsWith` para remontar o anexo na tela; reescrever a frase quebraria aquele lado em silêncio.
+  // A asserção lê o prefixo do fonte de lá, porque a função não é exportada e uma cópia do literal
+  // aqui só provaria que o render concorda consigo mesmo.
   test("the marker keeps the prefix the playground matches on", () => {
     const sessions = readFileSync(
       join(import.meta.dir, "../../src/modules/playground/sessions.ts"),
@@ -80,8 +72,8 @@ describe("renderInboundMessage", () => {
     const prefixos = [
       ...sessions.matchAll(/raw\.startsWith\("(<usuário [^"]+)"\)/g),
     ].map((m) => m[1] as string);
-    // Se o outro lado deixar de casar por prefixo, esta cerca perde o objeto e tem que falhar alto,
-    // em vez de passar com uma lista vazia.
+    // NOTE: se o outro lado deixar de casar por prefixo, a cerca falha alto em vez de passar com
+    // uma lista vazia.
     expect(prefixos.length).toBeGreaterThanOrEqual(2);
     for (const tipo of ["image", "file"] as const) {
       const out = renderInboundMessage({ text: "", attachmentTypes: [tipo] });
@@ -99,9 +91,7 @@ describe("renderInboundMessage", () => {
     ).toBe("<imagem>uma nota fiscal no valor de R$ 120</imagem>");
   });
 
-  // Issue #691: era `else if`, então uma mensagem com foto E PDF renderizava só a foto e o
-  // documento sumia sem deixar rastro — inclusive para o modelo, que respondia como se não
-  // existisse.
+  // NOTE: cada anexo tem seu bloco; se um excluísse o outro, o documento sumiria até para o modelo.
   test("a message carrying both an image and a document renders both", () => {
     const out = renderInboundMessage({
       text: "",
@@ -113,7 +103,7 @@ describe("renderInboundMessage", () => {
     expect(out).toContain("<documento>CNH do titular</documento>");
   });
 
-  // O texto do cliente aparece UMA vez, não uma por bloco.
+  // NOTE: o texto do cliente aparece uma vez, não uma por bloco.
   test("the customer's own words are not repeated once per block", () => {
     const out = renderInboundMessage({
       text: "segue em anexo",
@@ -186,9 +176,8 @@ describe("renderInboundMessage", () => {
   });
 });
 
-// NOTE: Issue #45 — a WhatsApp location pin must reach the model as coordinates, not as an
-// unusable "unsupported file" marker. The marker style mirrors the reaction marker (pt-BR
-// pseudo-tag with attributes).
+// A WhatsApp location pin reaches the model as coordinates, not as an unusable "unsupported file"
+// marker. The marker style mirrors the reaction marker (pt-BR pseudo-tag with attributes).
 describe("location markers (issue #45)", () => {
   test("coordinates + title render as a <localização> marker", () => {
     const out = renderInboundMessage({
@@ -259,9 +248,8 @@ describe("location markers (issue #45)", () => {
   });
 });
 
-// Round-2 review finding (P2). The other direction (issue #187): what the memory keeps of a message a
-// HUMAN AGENT sent. The wording is deliberately not shared with renderInboundMessage — every marker
-// there is written from the customer's side.
+// The other direction: what the memory keeps of a message a human agent sent. The wording is not
+// shared with renderInboundMessage, whose markers are all written from the customer's side.
 describe("renderAttendantMessage", () => {
   test("plain text goes in verbatim", () => {
     expect(
@@ -272,9 +260,8 @@ describe("renderAttendantMessage", () => {
     ).toBe("fecho por R$ 1.200");
   });
 
-  // The defect: an attendant who answers with a PDF and no caption produced an empty string, and the
-  // caller dropped the message — the memory then records that the team said nothing, which is the
-  // same failure the whole change is about.
+  // NOTE: an empty string here makes the caller drop the message, and the memory would record that
+  // the team said nothing.
   test("an attachment with no caption is still a message", () => {
     expect(
       renderAttendantMessage({ text: "", attachmentTypes: ["file"] }),
@@ -290,11 +277,9 @@ describe("renderAttendantMessage", () => {
     ).toBe("segue o orçamento\n<atendente enviou um arquivo do tipo 'file'>");
   });
 
-  // AN AUDIO REPLY SPEAKS, AND THE THREAD HAS TO SAY WHAT (issue #763). An outgoing voice note
-  // carries an EMPTY `content` — it must, since the WhatsApp connector refuses a caption on an
-  // audio — so the marker alone was the whole record, and the observer tick that renders every
-  // outgoing message through here classified five voice replies as a conversation the agent had
-  // never answered, then wrote a label from that reading.
+  // NOTE: an outgoing voice note carries an empty `content` (the WhatsApp connector refuses a
+  // caption on audio), so without the transcription the marker would be the whole record and the
+  // observer tick, which renders outgoing messages through here, would read it as unanswered.
   test("an audio reply speaks its words, and still names the attachment", () => {
     expect(
       renderAttendantMessage({
@@ -307,8 +292,8 @@ describe("renderAttendantMessage", () => {
     );
   });
 
-  // The transcription is a fallback for an empty content, never a replacement for what was written:
-  // a human attendant who typed a caption AND attached audio said both.
+  // NOTE: the transcription is a fallback for an empty content, never a replacement for what was
+  // written.
   test("a typed caption wins over a transcription", () => {
     expect(
       renderAttendantMessage({
@@ -319,8 +304,8 @@ describe("renderAttendantMessage", () => {
     ).toBe("segue o áudio\n<atendente enviou um arquivo do tipo 'audio'>");
   });
 
-  // Whisper's hallucinated subtitle credit is not words anybody said, and the same cleanup the
-  // customer's side applies has to apply here or the agent reads "Amara.org" as its own reply.
+  // NOTE: the customer side's Whisper cleanup applies here too, or the agent reads "Amara.org" as
+  // its own reply.
   test("a hallucinated transcription is dropped, leaving the marker alone", () => {
     expect(
       renderAttendantMessage({
@@ -331,7 +316,7 @@ describe("renderAttendantMessage", () => {
     ).toBe("<atendente enviou um arquivo do tipo 'audio'>");
   });
 
-  // A transcription on a NON-audio attachment is not a caption: the field belongs to the voice note.
+  // NOTE: a transcription on a non-audio attachment is not a caption: it belongs to the voice note.
   test("a transcription on a file attachment is ignored", () => {
     expect(
       renderAttendantMessage({
@@ -342,7 +327,7 @@ describe("renderAttendantMessage", () => {
     ).toBe("<atendente enviou um arquivo do tipo 'file'>");
   });
 
-  // Nothing said and nothing attached: the caller skips it, as it does for the customer.
+  // NOTE: nothing said and nothing attached: the caller skips it, as it does for the customer.
   test("an empty message renders nothing", () => {
     expect(renderAttendantMessage({ text: "   ", attachmentTypes: [] })).toBe(
       "",

@@ -10,8 +10,8 @@ import {
 } from "@/modules/chatwoot/management";
 import { chatwootAutoRepliesOutOfHours } from "@/modules/chatwoot/out-of-office";
 
-// Issue #166. Two products can both answer out of hours on the same inbox, on schedules neither can
-// see, and until this reading existed nothing in either console said so.
+// Two products can both answer out of hours on the same inbox, on schedules neither console shows;
+// this reading surfaces Chatwoot's side of it.
 
 // ── the rule, as a table ──
 //
@@ -307,13 +307,10 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
     expect(calls.sort()).toEqual([1, 2]);
   });
 
-  // Review round 1. Every Chatwoot request carries a 15s abort, so reading the accounts one after the
-  // other makes an unreachable server cost 15s PER ACCOUNT on a request the editor fires on load.
-  //
-  // Proved by deadlock, and by a rendezvous both sides announce: each account's list call publishes
-  // its own start and then waits for the other's, so a serial drain hangs whichever account it picks
-  // first. A one-sided version (only account 2 waits) would pass on a serial implementation that
-  // happened to read account 1 first, which is the shape of a temporal test that never goes red.
+  // NOTE: Every Chatwoot request carries a 15s abort, so a serial read makes an unreachable server
+  // cost 15s PER ACCOUNT on a request the editor fires on load. Each account's list call announces
+  // its start and waits for the other's, so a serial drain deadlocks; a one-sided wait would pass on
+  // a serial read that happened to take account 1 first.
   test("the accounts are read concurrently, not one timeout after another", async () => {
     const arrive: Record<number, () => void> = {};
     const started = new Map<number, Promise<void>>();
@@ -370,20 +367,10 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
     expect(calls).toEqual([]);
   });
 
-  // The whole chain refuses another tenant's agent, and this test cannot say WHICH link refused —
-  // measured, not assumed: swapping the scoped read for a super-admin one leaves all twelve tests
-  // green. The rows come back, and `loadChatwootClient` then does its own scoped read of the
-  // instance and throws, which lands in the catch that already exists for an unreachable account.
-  // So the scope on the bound-inbox read is the first of two fences and the second is load-bearing
-  // today. It stays because it is the read that hands rows to the caller, and because a fence whose
-  // only guarantee is a downstream detail is one refactor away from not being a fence at all.
-  // COUNTED PER BOUND INBOX, not per account, which is the unit the answer is about: the caller asks
-  // "did you read the out-of-hours state of this agent's inboxes", and an account is only the place
-  // that state comes from. Every case below reports how many of THIS AGENT's inboxes went unread.
-  //
-  // A 200 whose body is not a list. `parseInboxList` answers that with an empty array on purpose —
-  // a shape change must never invent an inbox — and for a caller that REPORTS ITS OWN COVERAGE that
-  // default is indistinguishable from an account where nothing is armed.
+  // NOTE: Unread coverage is COUNTED PER BOUND INBOX, not per account: every case below reports how
+  // many of THIS AGENT's inboxes went unread. `parseInboxList` answers a 200 whose body is not a
+  // list with an empty array (a shape change must never invent an inbox), which for a caller that
+  // reports its own coverage is indistinguishable from an account where nothing is armed.
   test("a body that is not a list leaves that account's inboxes unread", async () => {
     const { makeClient } = fakeChatwoot({
       1: { unexpected: "shape" },
@@ -402,9 +389,9 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
     expect(read.inboxes.length).toBeGreaterThan(0);
   });
 
-  // An entry with no id cannot be matched to a bound inbox at all, so the inboxes it should have
-  // described stay unread — while everything the same payload DID describe is still used. That last
-  // half is the part an account-wide verdict got wrong: it threw away the readable entries too.
+  // NOTE: An entry with no id cannot be matched to a bound inbox, so the inboxes it should have
+  // described stay unread, while everything else the same payload describes is still used; an
+  // account-wide verdict would throw away the readable entries too.
   test("an unreadable entry costs its own inbox, not the account", async () => {
     const { makeClient } = fakeChatwoot({
       1: {
@@ -463,9 +450,8 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
     expect(read.inboxes.map((i) => i.name)).not.toContain("WhatsApp Suporte");
   });
 
-  // The switch alone, with a perfectly good message beside it. Measured: without this case the
-  // switch check can be deleted and every other test stays green, because the message check catches
-  // the truthy-non-boolean spellings — this is the one that only the switch check sees.
+  // NOTE: The message check already catches truthy non-boolean switch values, so this is the one
+  // case only the switch check sees.
   test("an unreadable switch is unread even when the message is fine", async () => {
     const { makeClient } = fakeChatwoot({
       1: {
@@ -495,10 +481,9 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
     expect(read.unreadable).toBe(1);
   });
 
-  // An explicit null is the ordinary state of an inbox nobody wrote copy for — the column is
-  // nullable and null is its default (measured: six of six inboxes on the local fork). Treating it
-  // as unread would fill `unchecked` on almost every real install, which is how a field like this
-  // stops being read.
+  // NOTE: An explicit null is the ordinary state of an inbox nobody wrote copy for (the column is
+  // nullable and defaults to null); treating it as unread would fill `unchecked` on almost every
+  // install, which is how a field like this stops being read.
   test("working hours on with a null message is read, not unread", async () => {
     const { makeClient } = fakeChatwoot({
       1: {
@@ -585,6 +570,10 @@ describe.skipIf(!dbUp)("listOutOfOfficeInboxes", () => {
     expect(read.unreadable).toBe(1);
   });
 
+  // NOTE: This cannot tell WHICH link refused: `loadChatwootClient` also does its own scoped read of
+  // the instance and throws into the unreachable-account catch. The scope on the bound-inbox read
+  // stays anyway: that read hands rows to the caller, and a fence whose only guarantee is a
+  // downstream detail is one refactor away from not being a fence.
   test("another tenant's context sees nothing, agent id or not", async () => {
     const { makeClient, calls } = fakeChatwoot({ 1: ACCOUNT_1, 2: ACCOUNT_2 });
     expect(

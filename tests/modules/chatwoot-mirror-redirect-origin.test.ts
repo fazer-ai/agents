@@ -6,16 +6,13 @@ import { mirrorChatwootEvent } from "@/modules/chatwoot/mirror";
 import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #222, review round 1 of #355. The pairing is written by the fork's token resolve and read
-// by the closing stage, which MESSAGES and RESOLVES the conversation it names — so a pairing that
-// regresses to a previous episode's origin acts destructively on the wrong WhatsApp thread.
-//
-// A widget conversation can be re-entered from a second WhatsApp thread, and every payload that
-// carries the conversation carries whatever the pairing was when it was SERIALIZED. Delivery is not
-// serialization order: `AgentBots::WebhookJob` retries 3 times, 3s apart. `last_activity_at` cannot
-// separate two re-entries inside one second (whole-second resolution), so the only key that can is
-// the conversation's own `updated_at`, which moves on every write to the row — the update that
-// records the pairing included.
+// The pairing is written by the fork's token resolve and read by the closing stage, which MESSAGES
+// and RESOLVES the conversation it names, so a pairing that regresses to a previous episode's origin
+// acts destructively on the wrong WhatsApp thread. Every payload carries the pairing as it was when
+// SERIALIZED, and delivery is not serialization order (`AgentBots::WebhookJob` retries 3 times, 3s
+// apart). `last_activity_at` has whole-second resolution, so the only key that separates two
+// re-entries inside one second is the conversation's own `updated_at`, which moves on every write
+// to the row, the pairing's included.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -163,10 +160,9 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(await storedOrigin(40)).toBe(91);
   });
 
-  // The fork emits a conversation_updated of its own when the pairing changes on an existing
-  // conversation (fazer-ai/chatwoot#418). It carries a FRESH `updated_at` and the FROZEN
-  // `last_activity_at` — the column write does not move that one — so recency cannot order it and
-  // the version must.
+  // NOTE: The fork emits a conversation_updated of its own when the pairing changes on an existing
+  // conversation. It carries a FRESH `updated_at` and the FROZEN `last_activity_at` (the column
+  // write does not move that one), so recency cannot order it and the version must.
   test("the pairing's own conversation_updated applies despite a frozen last_activity_at", async () => {
     const T = 1_786_510_000;
     await mirror(
@@ -239,12 +235,11 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(await storedOrigin(45)).toBe(91);
   });
 
-  // The pairing rides on payloads whose STATE is old news, and the two questions are independent. A
-  // conversation the mirror has been following for a while has newer status/assignee/activity marks
-  // and no redirect mark at all — the shape of every conversation live when the fork gains the field,
-  // and of a rolling deploy. The first payload to carry the pairing can easily be behind on those
-  // other axes (a retry, a frozen message snapshot), and discarding it wholesale would leave the
-  // episode unpaired and send the caller to the recency fallback this whole change exists to remove.
+  // NOTE: The pairing rides on payloads whose STATE is old news, and the two questions are
+  // independent. A conversation mirrored before the fork gained the field (or during a rolling
+  // deploy) has newer status/assignee/activity marks and no redirect mark; discarding the first
+  // payload that carries the pairing wholesale would leave the episode unpaired and send the caller
+  // to the recency fallback.
   test("a payload behind on state still delivers a pairing it is the first to carry", async () => {
     const T = 1_786_550_000;
     // A conversation already being mirrored, with no pairing yet.
@@ -305,8 +300,8 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(row.lastEventAt).toEqual(new Date((T + 600) * 1000));
   });
 
-  // A Chatwoot too old to send `updated_at` has nothing to order by. It keeps the pre-fence
-  // behaviour — last write wins — rather than losing the pairing outright.
+  // NOTE: A Chatwoot too old to send `updated_at` has nothing to order by, so it falls back to last
+  // write wins rather than losing the pairing outright.
   test("without a version the payload still writes the pairing", async () => {
     const T = 1_786_530_000;
     await mirror(
@@ -319,9 +314,9 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(await storedOrigin(43)).toBe(91);
   });
 
-  // The fork CLEARS the pairing when a re-entry's token names no origin (fazer-ai/chatwoot#418), and
-  // states that clear as an explicit null rather than by omitting the key. Mirroring it is the whole
-  // point: the consumer holding the previous pairing is the one that has to stop acting on it.
+  // NOTE: The fork CLEARS the pairing when a re-entry's token names no origin, stating it as an
+  // explicit null rather than by omitting the key. The consumer holding the previous pairing is the
+  // one that has to stop acting on it.
   test("an explicit null clears the stored pairing", async () => {
     const T = 1_786_570_000;
     await mirror(
@@ -378,8 +373,8 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(await storedOrigin(49)).toBeNull();
   });
 
-  // A payload that OMITS the key leaves the stored one alone. Absent is not null: it is what a
-  // Chatwoot without fazer-ai/chatwoot#418 sends on every event, and reading it as a clear would wipe
+  // NOTE: A payload that OMITS the key leaves the stored one alone. Absent is not null: it is what a
+  // Chatwoot without the pairing field sends on every event, and reading it as a clear would wipe
   // the pairing of every episode on the first ordinary message.
   test("a payload with no origin key leaves the pairing standing", async () => {
     const T = 1_786_540_000;
@@ -401,11 +396,9 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(await storedOrigin(44)).toBe(77);
   });
 
-  // ── Review round 5 of #355: the pairing is the EPISODE'S IDENTITY, so the row's per-episode
-  //    watermarks have to move with it. `redirectLinkedAt` and `redirectClosedAt` are one-shots
-  //    scoped to "this redirect episode": the first gates the cross-link, the second is the
-  //    at-most-once claim for the goodbye. Neither knew which origin it was stamped for, because
-  //    until #222 nothing on this side did. ──
+  // NOTE: ── The pairing is the EPISODE'S IDENTITY, so the row's per-episode watermarks move with it.
+  //    `redirectLinkedAt` gates the cross-link and `redirectClosedAt` is the at-most-once claim for
+  //    the goodbye; both are one-shots scoped to one redirect episode. ──
 
   async function setWatermarks(convId: number, at: Date | null) {
     await suDb.conversation.updateMany({
@@ -425,8 +418,8 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     };
   }
 
-  // The defect this releases. Without it the second episode never gets its cross-link (the one-shot
-  // reads a watermark the FIRST episode set) and never gets its goodbye (the closing CAS asks for
+  // NOTE: Without the release, the second episode never gets its cross-link (the one-shot reads a
+  // watermark the FIRST episode set) and never gets its goodbye (the closing CAS asks for
   // `redirectClosedAt: null` and the first episode already spent it).
   test("a different origin releases the previous episode's watermarks", async () => {
     const T = 1_786_600_000;
@@ -476,12 +469,11 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(await watermarks(51)).toEqual({ linked: true, closed: true });
   });
 
-  // LEARNING a pairing is not a new episode, and the column alone cannot tell the two apart: stored
-  // null is both "the fork never spoke about this conversation" and "the fork said there is none".
-  // `chatwootRedirectOriginAt` is what separates them — it is set the first time we are TOLD — and
-  // the direction of the mistake decides which way to lean. Releasing here would re-run the
-  // cross-link on a live episode and post its private notes a second time, on every conversation, the
-  // day fazer-ai/chatwoot#418 is deployed; not releasing leaves exactly the behaviour of today.
+  // NOTE: LEARNING a pairing is not a new episode: stored null is both "the fork never spoke about
+  // this conversation" and "the fork said there is none", and `chatwootRedirectOriginAt` (set the
+  // first time we are TOLD) separates them. Releasing here would re-run the cross-link on a live
+  // episode and post its private notes again, on every conversation, the day the fork starts sending
+  // the field; not releasing leaves the episode as it is.
   test("the first pairing ever stated leaves the episode standing", async () => {
     const T = 1_786_620_000;
     await mirror(
@@ -560,10 +552,10 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(await watermarks(54)).toEqual({ linked: false, closed: false });
   });
 
-  // The release rides on the pairing being APPLIED, and both halves of that matter. A payload that
-  // says nothing about the pairing is not an episode change — it is every ordinary message from a
-  // Chatwoot without fazer-ai/chatwoot#418, and reading its silence as "no origin, therefore
-  // different" would release the episode of every conversation on every delivery.
+  // NOTE: The release rides on the pairing being APPLIED, and both halves matter. A payload that
+  // says nothing about the pairing is every ordinary message from a Chatwoot without the field, and
+  // reading its silence as "no origin, therefore different" would release every episode on every
+  // delivery.
   test("a payload that omits the key leaves the episode standing", async () => {
     const T = 1_786_650_000;
     await mirror(
@@ -625,7 +617,7 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(await watermarks(56)).toEqual({ linked: true, closed: true });
   });
 
-  // ── Review round 8 of #355: the upgrade day. ──
+  // NOTE: ── The upgrade day. ──
 
   async function marks(convId: number) {
     const row = await suDb.conversation.findFirstOrThrow({
@@ -640,15 +632,12 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     return row;
   }
 
-  // The regression this guards, and it fires on EVERY conversation at once. A redirect episode that
-  // began before the fork carried the field has a NULL column in Chatwoot, and once the fork ships,
-  // every payload for it carries the key with nil. Read as a stated clear, that stamps the mark, and
-  // a stamped mark is what tells `episodeOriginQuery` to refuse the recency fallback — so the first
-  // inbound after the upgrade loses its cross-link and every later WhatsApp touch loses its sibling.
-  //
-  // A clear is a TRANSITION, and there is nothing to transition from here. Silence and the column's
-  // default arrive as the same bytes, so the only thing that separates them is whether we were ever
-  // told about a pairing on this conversation.
+  // NOTE: This fires on EVERY conversation at once. An episode that began before the fork carried
+  // the field has a NULL column, and once the fork ships every payload carries the key with nil.
+  // Read as a stated clear, that stamps the mark, which tells `episodeOriginQuery` to refuse the
+  // recency fallback, so the next inbound loses its cross-link. A clear is a TRANSITION: silence and
+  // the column's default are the same bytes, and only "were we ever told about a pairing" separates
+  // them.
   test("a null on a conversation we were never told about is not a clear", async () => {
     const T = 1_786_700_000;
     await mirror(
@@ -701,10 +690,9 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     expect(row.chatwootRedirectOriginAt).toBe(T + 60.1);
   });
 
-  // The other half of round 8: a stored pairing with no mark. A Chatwoot too old to send
-  // `updated_at` writes the value and stamps nothing, so the mark cannot be the only evidence that
-  // we were told — the stored origin is evidence of its own, and a change away from it is a new
-  // episode exactly as it would be with a mark.
+  // NOTE: A stored pairing with no mark: a Chatwoot too old to send `updated_at` writes the value
+  // and stamps nothing, so the stored origin is evidence of its own, and a change away from it is a
+  // new episode exactly as it would be with a mark.
   test("a versionless pairing that changes still releases the episode", async () => {
     const T = 1_786_720_000;
     await mirror(
@@ -712,7 +700,7 @@ describe.skipIf(!dbUp)("mirror: the redirect pairing never regresses", () => {
     );
     let row = await marks(59);
     expect(row.redirectOriginDisplayId).toBe(77);
-    // No `updated_at` on that payload, so nothing to stamp: this is the state the finding is about.
+    // NOTE: No `updated_at` on that payload, so nothing to stamp: a pairing stored with no mark.
     expect(row.chatwootRedirectOriginAt).toBeNull();
 
     await setWatermarks(59, new Date());

@@ -10,20 +10,13 @@ import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
-// A PROCESS DEATH LOST THE TAKEOVER, and the recovery re-runs it (issue #439).
-//
-// The delivery that carries a colleague's reply is what steps the agent off the conversation (issue
-// #430), and that work is detached: the 200 is already out when it runs. A deploy, an OOM or a
-// restart in that window leaves a ledger row nothing finished, the conversation still `pending` and
-// still the bot's, and — until this — a sweep that closed the row as carrying nothing at stake.
-//
-// What is asserted here is the effect the issue is about, not the call that produces it: after the
-// recovery, the NEXT customer message does not drive a turn. The toggle alone would pass with the
-// local half broken, and the local claim alone would pass with Chatwoot never told.
-//
-// The Chatwoot side is the same behaving stub the live takeover's test uses: it holds a status per
-// conversation and the toggle moves it, so the second payload's status is read back rather than
-// written by the fixture.
+// A PROCESS DEATH CAN LOSE THE TAKEOVER, and the recovery re-runs it. The delivery that carries a
+// colleague's reply steps the agent off the conversation, detached after the 200; a deploy, an OOM
+// or a restart in that window leaves a ledger row nothing finished, with the conversation still
+// `pending` and the bot's. What is asserted is the effect: after the recovery, the NEXT customer
+// message drives no turn (the toggle alone passes with the local half broken, the local claim alone
+// with Chatwoot never told). The Chatwoot stub holds a status per conversation and the toggle moves
+// it, so the second payload's status is read back rather than written by the fixture.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -220,8 +213,8 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
       // A claim already held on the mirrored row, which is what an attempt whose toggle threw leaves
       // behind: `open` locally, still `pending` at Chatwoot.
       claimHeldMs?: number;
-      // The message the ledger recorded this takeover as being about, and the mark an unversioned
-      // console write left on the row (issue #469). Omitted = the ordinary pair, a delivery whose
+      // NOTE: The message the ledger recorded this takeover as being about, and the mark an
+      // unversioned console write left on the row. Omitted = the ordinary pair, a delivery whose
       // message nothing has handed back over; `null` for the message id = a row an older build
       // wrote, which recorded none.
       humanReplyMessageId?: number | null;
@@ -374,9 +367,8 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     const convId = 9101;
     const rowId = await seedStranded(convId);
 
-    // The defect, before the recovery runs: the conversation is still the bot's, so the customer's
-    // next message drives a full turn — the agent answering over the colleague, which is exactly
-    // what issue #430 exists to prevent.
+    // NOTE: Before the recovery runs the conversation is still the bot's, so the customer's next
+    // message drives a full turn: the agent answering over the colleague.
     expect(await customerWrites(convId)).toBe(true);
 
     expect(
@@ -388,9 +380,9 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
       }),
     ).toBe("recovered");
 
-    // Chatwoot was told, and the local row moved with a claim on it — the two halves the live path
-    // writes, both required (issue #436: an unversioned `open` that claims nothing is walked back by
-    // any payload still in flight).
+    // NOTE: Chatwoot was told, and the local row moved with a claim on it: the two halves the live
+    // path writes, both required (an unversioned `open` that claims nothing is walked back by any
+    // payload still in flight).
     expect(togglesFor(convId)).toHaveLength(1);
     expect(togglesFor(convId)[0]?.body).toEqual({ status: "open" });
     const row = await convRow(convId);
@@ -398,18 +390,16 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     expect(row.statusClaimFrom).toBe("pending");
     expect(row.statusClaimUntil).not.toBeNull();
 
-    // And the effect the issue is about.
+    // NOTE: And the next customer message finds a person on it.
     expect(await customerWrites(convId)).toBe(false);
   });
 
-  // THE HALF-HOUR THIS PATH WAITS IS THE WINDOW (issue #469). The live path races a hand-back by
-  // milliseconds; the recovery is armed only after a row has sat non-terminal for thirty minutes, so
-  // an operator clicking "Return to AI" in that stretch is not an edge case, it is the likely order
-  // of events. What the recovery would otherwise do is take a conversation back for a reply the
-  // operator had already seen and answered by handing it to the agent.
-  //
-  // The coordinate comes from the LEDGER, which is the only place it can: the payload is never
-  // stored (issue #228), and `inboundMessageId` is null on a colleague's reply by construction.
+  // NOTE: THE HALF-HOUR THIS PATH WAITS IS THE WINDOW. The live path races a hand-back by
+  // milliseconds; the recovery is armed only after a row sat non-terminal for thirty minutes, so an
+  // operator clicking "Return to AI" in that stretch is the likely order of events, and the recovery
+  // must not take back a conversation the operator already handed to the agent. The coordinate
+  // comes from the LEDGER, the only place it can: the payload is never stored, and
+  // `inboundMessageId` is null on a colleague's reply by construction.
   test("a hand-back made while the row sat stranded is not walked back", async () => {
     const convId = 9130;
     const rowId = await seedStranded(convId, {
@@ -445,9 +435,9 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     expect(togglesFor(convId)).toHaveLength(1);
   });
 
-  // A row an older build wrote names no message, and neither does a conversation nobody has clicked
-  // anything on. Each is a missing half, and each has to leave the fence with nothing to order —
-  // read as "stale" instead, the recovery issue #439 built would refuse every row it exists for.
+  // NOTE: A row an older build wrote names no message, and neither does a conversation nobody has
+  // clicked anything on. Each has to leave the fence with nothing to order: read as "stale", the
+  // recovery would refuse every row it exists for.
   test("a ledger row with no recorded message runs unfenced", async () => {
     const convId = 9132;
     const rowId = await seedStranded(convId, {
@@ -479,13 +469,13 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
     expect(togglesFor(convId)).toHaveLength(1);
   });
 
-  // AND THE ATTEMPT WHOSE TOGGLE NEVER LANDED IS COVERED BY THE SAME BRANCH, which is why the fence
-  // sits after the finishing arm rather than before it. A hand-back writes `pending` on the ROW, so
-  // it takes the conversation OUT of the `open`-under-a-pending-claim shape the finishing arm is
-  // selected by — the claim's residue stays, and the recovery goes down the ordinary path where the
-  // fence is asked. Putting the fence in the finishing arm too would instead refuse the case where
-  // an operator OPENED the conversation themselves, a click that asks for exactly what finishing
-  // does. Measured by writing that guard first and watching this shape prove it unreachable.
+  // NOTE: AND THE ATTEMPT WHOSE TOGGLE NEVER LANDED IS COVERED BY THE SAME BRANCH, which is why the
+  // fence sits after the finishing arm rather than before it. A hand-back writes `pending` on the
+  // ROW, taking the conversation OUT of the `open`-under-a-pending-claim shape the finishing arm is
+  // selected by, so the recovery goes down the ordinary path where the fence is asked. A fence in
+  // the finishing arm too would refuse the case where an operator OPENED the conversation
+  // themselves, a click that asks for exactly what finishing does (and this shape proves that
+  // guard unreachable).
   test("a hand-back over a claim whose toggle never landed is still refused", async () => {
     const convId = 9134;
     const rowId = await seedStranded(convId, {
@@ -548,15 +538,12 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("the customer writing in the window does NOT refuse the recovery", async () => {
-    // THE MEASUREMENT THAT DECIDED THE DESIGN, kept as a test because it is the one thing a reader
-    // will want to re-derive. The live takeover refuses a payload whose version is behind the row's
-    // status mark, which is how a hand-back outranks a reply that was already sent. Carried into the
-    // recovery, that check refuses here: `chatwootStatusAt` advances on every payload that DECLARES
-    // a status, so the customer's own next message moves it — and a conversation the customer wrote
-    // on is precisely the conversation where the agent has been answering over a person.
-    //
-    // So the recovery carries no version, and this fixes that: a mirror whose status mark is well
-    // ahead of the stranded delivery still gets its takeover.
+    // NOTE: WHY THE RECOVERY CARRIES NO VERSION. The live takeover refuses a payload whose version
+    // is behind the row's status mark, which is how a hand-back outranks a reply already sent. In
+    // the recovery that check would refuse here: `chatwootStatusAt` advances on every payload that
+    // DECLARES a status, so the customer's own next message moves it, and a conversation the
+    // customer wrote on is precisely where the agent has been answering over a person. A mirror
+    // whose status mark is well ahead of the stranded delivery still gets its takeover.
     const convId = 9104;
     const rowId = await seedStranded(convId, { mirrorVersion: "ahead" });
 
@@ -667,11 +654,11 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("the ROUTE's bot is what the recovery asks ownership about", async () => {
-    // ROUND 1, P1. Chatwoot fans one message to up to two bot routes — the conversation's assignee
-    // bot AND the inbox's — and only the route holding the conversation passes the gate. The
-    // stranded delivery here arrived on the assignee bot's route (OTHER_BOT holds the conversation),
-    // and deriving the identity from the inbox persona would ask a stricter question than the
-    // delivery did: refused, with the bot that DOES hold it free to answer over the person.
+    // NOTE: Chatwoot fans one message to up to two bot routes (the conversation's assignee bot AND
+    // the inbox's), and only the route holding the conversation passes the gate. This delivery
+    // arrived on the assignee bot's route (OTHER_BOT holds the conversation); deriving the identity
+    // from the inbox persona would ask a stricter question than the delivery did and refuse, with
+    // the bot that DOES hold it free to answer over the person.
     const convId = 9111;
     const rowId = await seedStranded(convId, {
       holder: OTHER_BOT,
@@ -709,11 +696,11 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("an attempt whose toggle threw is finished, not refused", async () => {
-    // ROUND 1, P1. The claim is written BEFORE the toggle (#430), so a toggle that throws leaves the
-    // row `open` under a live claim while Chatwoot still says `pending`. Asked again, the ownership
-    // fence reads our own write as somebody else having moved the conversation on and stands down —
-    // which spends the scheduler's retry on a verdict that can never change, deletes the job, and
-    // leaves Chatwoot `pending` with the bot able to answer.
+    // NOTE: The claim is written BEFORE the toggle, so a toggle that throws leaves the row `open`
+    // under a live claim while Chatwoot still says `pending`. Asked again, the ownership fence would
+    // read our own write as somebody else moving the conversation and stand down, spending the
+    // scheduler's retry on a verdict that can never change, deleting the job, and leaving Chatwoot
+    // `pending` with the bot able to answer.
     const convId = 9113;
     const rowId = await seedStranded(convId, { claimHeldMs: 30_000 });
     // Chatwoot's side of that state: the transition never landed.
@@ -762,11 +749,11 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a finished takeover leaves the operator the same trail a live one does", async () => {
-    // ROUND 4, P2. The sweep deliberately writes no line for an owed takeover — nothing was lost, so
-    // nothing may page anybody — which means the ONLY durable record that a person took this
-    // conversation is the `handoff` line the takeover itself writes. Finished through a second
-    // implementation it was not written at all, and the operator was left with an agent that stopped
-    // answering and nothing anywhere saying why. Running the same unit is what fixes it.
+    // NOTE: The sweep deliberately writes no line for an owed takeover (nothing was lost, so nothing
+    // may page anybody), which makes the `handoff` line the takeover itself writes the ONLY durable
+    // record that a person took this conversation. The recovery therefore runs the same unit rather
+    // than a second implementation, or the operator is left with an agent that stopped answering
+    // and nothing saying why.
     const convId = 9123;
     const rowId = await seedStranded(convId, { claimHeldMs: -30 * 60 * 1000 });
     liveStatus.set(convId, "pending");
@@ -803,15 +790,12 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a claim long past its deadline is still the write this recovery finishes", async () => {
-    // ROUND 3, P1, and it is arithmetic rather than judgement. Round 1 gated the retry on a LIVE
-    // claim; the claim stands for 45 seconds (STATUS_CLAIM_TTL_MS) and the sweep does not call a
-    // delivery stranded for 30 minutes (STALE_AFTER_MS), so that branch could never run on a real
-    // strand — the deadline is gone before anything reaches it. This is the shape a real one has:
-    // `open` on the row, the claim expired long ago, and Chatwoot never told.
-    //
-    // The authority is the live read inside the retry, not the deadline. What the deadline is still
-    // for is the reconcile's ownership comparison, which is by equality and does not care that the
-    // instant has passed.
+    // NOTE: Arithmetic rather than judgement: the claim stands for 45 seconds (STATUS_CLAIM_TTL_MS)
+    // and the sweep calls a delivery stranded only after 30 minutes (STALE_AFTER_MS), so a retry
+    // gated on a LIVE claim could never run on a real strand. This is the shape a real one has:
+    // `open` on the row, the claim expired long ago, and Chatwoot never told. The authority is the
+    // live read inside the retry; the deadline still serves the reconcile's ownership comparison,
+    // which is by equality and does not care that the instant has passed.
     const convId = 9114;
     const rowId = await seedStranded(convId, { claimHeldMs: -30 * 60 * 1000 });
     liveStatus.set(convId, "pending");
@@ -831,11 +815,11 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a conversation the mirror has never seen is retried, not answered", async () => {
-    // ROUND 2, P1. A delivery that died before the mirror write leaves no local row, and everything
-    // this path needs hangs off it — the inbox, the agent, and the row the claim is a CAS on. Read
-    // as `not-owed` the job completes, the delete-on-done row is gone, and the only recovery the
-    // conversation had disappears with it. It is not an answer: the next event on that conversation
-    // creates the row.
+    // NOTE: A delivery that died before the mirror write leaves no local row, and everything this
+    // path needs hangs off it: the inbox, the agent, and the row the claim is a CAS on. Read as
+    // `not-owed` the job completes, the delete-on-done row is gone, and the conversation's only
+    // recovery disappears with it. It is not an answer: the next event on that conversation creates
+    // the row.
     const convId = 9116;
     const rowId = await seedStranded(convId);
     await suDb.conversation.deleteMany({
@@ -884,10 +868,10 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("the retry reads Chatwoot before it writes, and stands down on a resolve", async () => {
-    // ROUND 2, P1. Between the failed attempt and this retry an operator can resolve or snooze the
-    // conversation, and their webhook is still in flight — the row still says `open` under our claim
-    // while Chatwoot has moved on. An unconditional toggle reopens what they just closed, which is
-    // the attribution invariant this module is built on.
+    // NOTE: Between the failed attempt and this retry an operator can resolve or snooze the
+    // conversation while their webhook is still in flight: the row still says `open` under our
+    // claim while Chatwoot has moved on. An unconditional toggle would reopen what they just closed,
+    // breaking the attribution invariant this module is built on.
     const convId = 9118;
     const rowId = await seedStranded(convId, { claimHeldMs: 30_000 });
     liveStatus.set(convId, "resolved");
@@ -905,15 +889,12 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a first attempt whose RESPONSE was lost is finished, not refused", async () => {
-    // The other thing the live read tells apart: Chatwoot committed the transition and only the
-    // answer was lost, so the conversation is already `open` there. That is the one status a
-    // takeover being DECIDED would refuse and one being FINISHED must accept — it is our own write
-    // coming back. What the first attempt still owes is the version, which the reconcile writes
-    // through the claim it named.
-    //
-    // The toggle runs anyway and is deliberately not asserted away: `toggle_status: open` on an
-    // already-open conversation is a no-op at Chatwoot, and a branch to skip it would be a second
-    // reading of a state the fence above has already decided.
+    // NOTE: Chatwoot committed the transition and only the answer was lost, so the conversation is
+    // already `open` there: the one status a takeover being DECIDED would refuse and one being
+    // FINISHED must accept, since it is our own write coming back. What remains owed is the
+    // version, which the reconcile writes through the claim it named. The toggle still runs (a
+    // no-op at Chatwoot on an open conversation); a branch to skip it would be a second reading of a
+    // state the fence above has already decided.
     const convId = 9119;
     const rowId = await seedStranded(convId, { claimHeldMs: -30 * 60 * 1000 });
     liveStatus.set(convId, "open");
@@ -931,13 +912,11 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a conversation Chatwoot reassigned is not toggled out of somebody else's queue", async () => {
-    // ROUND 4, P1. The row says `open` under our claim and Chatwoot still says `pending`, which is
-    // the signature of the write that was lost — but `pending` at Chatwoot is also where a
-    // conversation sits after being handed to ANOTHER bot or person. A check that read only the
-    // status would toggle it into the open queue on their behalf.
-    //
-    // The possession half of the fence is the same predicate in both modes; only the STATUS domain
-    // differs, and that is what this pins.
+    // NOTE: The row says `open` under our claim and Chatwoot still says `pending`, the signature of
+    // the lost write, but `pending` at Chatwoot is also where a conversation sits after being handed
+    // to ANOTHER bot or person; a check that read only the status would toggle it open on their
+    // behalf. The possession half of the fence is the same predicate in both modes; only the STATUS
+    // domain differs, and that is what this pins.
     const convId = 9122;
     const rowId = await seedStranded(convId, { claimHeldMs: -30 * 60 * 1000 });
     liveStatus.set(convId, "pending");
@@ -1005,14 +984,12 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a fence that stood down is an answer, not a failure", async () => {
-    // ROUND 2, P2. The preliminary ownership read is not a lock: Chatwoot can move the conversation
-    // between it and the fence's own read, and the fence correctly refuses then. Mapped to `failed`
-    // that spends the scheduler's backoff ladder and eventually dead-letters a job about a
-    // conversation that owes nothing.
-    //
+    // NOTE: The preliminary ownership read is not a lock: Chatwoot can move the conversation between
+    // it and the fence's own read, and the fence correctly refuses then. Mapped to `failed` that
+    // would spend the backoff ladder and dead-letter a job about a conversation that owes nothing.
     // Driven through the ONE reading the preliminary check cannot make: the fence asks Chatwoot
-    // first, so a conversation the mirror still calls the bot's while Chatwoot has handed it to a
-    // person reaches the fence and is refused there.
+    // first, so a conversation the mirror still calls the bot's while Chatwoot handed it to a person
+    // reaches the fence and is refused there.
     const convId = 9121;
     const rowId = await seedStranded(convId);
     liveStatus.set(convId, "open");
@@ -1067,9 +1044,9 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a toggle that fails keeps the claim and reports the failure", async () => {
-    // The same answer #430 gives on the live path: a failed call is an UNKNOWN outcome, not a
-    // refusal — Chatwoot commits the transition and the response is lost — so releasing the claim
-    // would put the agent straight back into a conversation the platform HAS handed over.
+    // NOTE: The same answer the live path gives: a failed call is an UNKNOWN outcome, not a refusal
+    // (Chatwoot may commit the transition and lose the response), so releasing the claim would put
+    // the agent straight back into a conversation the platform HAS handed over.
     const convId = 9109;
     const rowId = await seedStranded(convId);
     failingToggles.add(convId);

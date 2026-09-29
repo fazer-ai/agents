@@ -12,18 +12,13 @@ import {
 } from "@/modules/conversations/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #61. After a handoff, Chatwoot delivers a burst of conversation_* events and then a
-// message_updated tail whose conversation snapshot was serialized when the message event fired —
-// and handoff_to_human posts the customer message BEFORE it assigns the human, so that snapshot is
-// always the pre-handoff one. Whether the mirror survived came down to luck: `last_activity_at` has
-// one-second resolution and does not advance on a status or assignee change, so when the whole burst
-// landed inside one second the monotonic guard could not order it and the stale tail won, rewriting
-// the row to pending and CLEARING a real human assignee. Two conversations twenty minutes apart, the
-// same code path and the same event sequence, ended differently.
-//
-// The ordering key is the conversation's own `updated_at`, which every payload carries and which
-// moves on exactly the writes last_activity_at ignores. These tests therefore build payloads with
-// BOTH timestamps, as Chatwoot sends them.
+// After a handoff, Chatwoot delivers a burst of conversation_* events and then a message_updated
+// tail whose conversation snapshot was serialized when the message event fired, and
+// handoff_to_human posts the customer message BEFORE it assigns the human, so that snapshot is
+// always the pre-handoff one. `last_activity_at` has one-second resolution and does not advance on
+// a status or assignee change, so it cannot order a burst inside one second. The ordering key is
+// the conversation's own `updated_at`, which every payload carries and which moves on exactly the
+// writes last_activity_at ignores; these tests build payloads with BOTH timestamps.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -219,7 +214,7 @@ describe.skipIf(!dbUp)(
       await app?.$disconnect();
     });
 
-    // The conversation from the report that broke: every event, stale tail included, on 1786483614.
+    // NOTE: Every event, stale tail included, inside the same second.
     test("the whole burst inside one second still leaves the human owning it", async () => {
       await handoffBurst(6, 1_786_483_614, 1_786_483_614, 1_786_483_614);
       const row = await mirrored(6);
@@ -228,8 +223,8 @@ describe.skipIf(!dbUp)(
       expect(row.assigneeId).toBe(3);
     });
 
-    // The conversation that survived on luck: its tail was one second behind, so the monotonic guard
-    // discarded it. It must keep working for the same reason it worked before, not by accident.
+    // NOTE: A tail one second behind is discarded by the monotonic guard on activity alone, and
+    // must stay discarded.
     test("a tail one second behind is still discarded", async () => {
       await handoffBurst(9, 1_786_484_801, 1_786_484_800, 1_786_484_801);
       const row = await mirrored(9);
@@ -314,15 +309,11 @@ describe.skipIf(!dbUp)(
       expect((await mirrored(29)).status).toBe("open");
     });
 
-    // The same undo, from the other side: here the mirror never SAW the resolve, so there is no
-    // status change to notice when the customer's message arrives — the row already says open. The
-    // delayed resolve then carries a version greater than anything applied and would close a
-    // conversation with a customer waiting in it, firing the closing hooks on the way.
-    //
-    // What rules it out is not a version at all: `last_activity_at` moves only when a message is
-    // created, so a row ahead of this event on that axis has seen a message the event knows nothing
-    // about — and Chatwoot reopens on a new incoming message, so a `resolved` from before it is
-    // already void at the source.
+    // NOTE: The same undo, from the other side: the mirror never SAW the resolve, so the row already
+    // says open when the customer's message arrives, and the delayed resolve carries a version
+    // greater than anything applied. What rules it out is `last_activity_at`: it moves only when a
+    // message is created, so a row ahead of this event on that axis has seen a message the event
+    // knows nothing about, and Chatwoot reopens on a new incoming message, which voids the resolve.
     test("a resolve that predates the customer's message cannot close the conversation", async () => {
       const T = 1_786_496_800;
       await mirror({
@@ -482,11 +473,9 @@ describe.skipIf(!dbUp)(
       expect(handoffsAfter - handoffsBefore).toBe(1);
     });
 
-    // The same delayed handoff on a row that predates the column. The migration leaves
-    // `chatwoot_updated_at` null on every conversation that already exists, so on the deploy that
-    // ships this there is no stored version to order against — and a fallback to last_activity_at
-    // there would put exactly those rows back under the guard this change exists to remove, which
-    // is every conversation live at the moment of the upgrade.
+    // NOTE: The same delayed handoff on a row that predates the column: the migration leaves
+    // `chatwoot_updated_at` null on every existing conversation, and falling back to last_activity_at
+    // there would put every conversation live at upgrade time back under the one-second guard.
     test("a row with no watermark yet still takes the delayed handoff", async () => {
       const T = 1_786_493_500;
       // Seeded by an event carrying no updated_at, which is the shape a migrated row has: present,
@@ -525,10 +514,10 @@ describe.skipIf(!dbUp)(
       expect(row.assigneeId).toBe(3);
     });
 
-    // The attribute bags are ASSIGNED from whichever payload arrives, and the stale check used to be
-    // what kept a late delivery away from them. Now that a conversation event can win on version
-    // alone, one whose last_activity_at is older than the row's would roll a bag back over the newer
-    // payload that already mirrored it — a card jumping back a column after the handoff event lands.
+    // NOTE: The attribute bags are ASSIGNED from whichever payload arrives. A conversation event can
+    // win on version alone, so one whose last_activity_at is older than the row's must not roll a
+    // bag back over the newer payload that already mirrored it (a card jumping back a column after
+    // the handoff event lands).
     test("a delayed conversation event does not roll back the attribute bags", async () => {
       const T = 1_786_495_400;
       await mirror({
@@ -609,11 +598,10 @@ describe.skipIf(!dbUp)(
       expect(res.lastEventAt?.getTime()).toBe((T + 5) * 1000);
     });
 
-    // With no version anywhere, a message snapshot cannot be ordered against the conversation at
-    // all, so it moves no conversation state. Trusting it to PROMOTE an assignee was tried and is
-    // not safe either: a message a human sent BEFORE the conversation went back to the bot arrives
-    // with the same last_activity_at, and would re-take it — a false handoff, fired at whoever is
-    // subscribed. Neither direction can be ordered, so the mirror keeps what it has.
+    // NOTE: With no version anywhere, a message snapshot cannot be ordered against the conversation,
+    // so it moves no conversation state. Letting it PROMOTE an assignee is not safe either: a message
+    // a human sent BEFORE the conversation went back to the bot arrives with the same
+    // last_activity_at and would re-take it, a false handoff. Neither direction can be ordered.
     test("without any version, a message that arrives late cannot re-take the conversation", async () => {
       const T = 1_786_497_000;
       await mirror({
@@ -652,12 +640,10 @@ describe.skipIf(!dbUp)(
       expect(row.assigneeId).toBe(3);
     });
 
-    // A payload with no `meta` said nothing about the assignee (the degraded shape behind issue
-    // #27). It must not apply state — and, more importantly, must not claim to be the version we
-    // hold, or it outranks the complete payload that arrives late with the assignment.
-    // The degraded shape behind issue #27 drops `meta`, which is the ASSIGNEE. The status field is
-    // right there and intact, and a resolve that does not reach the mirror keeps the follow-up armed
-    // and the bot answering on a conversation Chatwoot has already closed.
+    // NOTE: A payload with no `meta` said nothing about the assignee. Its status field is intact and
+    // applies (a resolve that does not reach the mirror keeps the follow-up armed and the bot
+    // answering on a closed conversation), but it must not claim the assignee's version, or it
+    // outranks the complete payload that arrives late with the assignment.
     test("a degraded payload still resolves the conversation", async () => {
       const T = 1_786_499_500;
       await mirror({
@@ -721,11 +707,10 @@ describe.skipIf(!dbUp)(
       expect(row.status).toBe("resolved");
     });
 
-    // The reopen is the one place a MESSAGE writes state, so it is the one place a message claims a
-    // version — and with the marks split it can, because it moves the STATUS mark and leaves the
+    // NOTE: The reopen is the one place a MESSAGE writes state, so it is the one place a message
+    // claims a version, and with the marks split it can: it moves the STATUS mark and leaves the
     // assignee's alone. Inside a single second the `last_activity_at` fence cannot separate the
-    // resolve's companion from the reopen (that one-second resolution is the whole issue), so the
-    // version is the only thing left that can.
+    // resolve's companion from the reopen, so the version is the only thing left that can.
     test("a reopen in the same second as the resolve still outranks its companion", async () => {
       const T = 1_786_503_100;
       await mirror({
@@ -741,7 +726,7 @@ describe.skipIf(!dbUp)(
           messageId: 976,
           messageType: "incoming",
           status: "open",
-          // Same whole second, a later fraction: exactly the burst this issue is about.
+          // NOTE: Same whole second, a later fraction: the burst the version exists to order.
           lastActivityAt: T,
           updatedAt: T + 0.45,
         }),
@@ -947,16 +932,11 @@ describe.skipIf(!dbUp)(
       expect((await mirrored(52)).status).toBe("resolved");
     });
 
-    // Chatwoot emits several events for ONE write to the conversation (conversation_updated +
-    // conversation_status_changed), all carrying that write's version. They must not fight: the one
-    // that arrives second is frequently the one carrying `meta`, so rejecting an equal version
-    // would drop the assignee it brought.
-    // Chatwoot emits several events for ONE write (conversation_updated +
-    // conversation_status_changed), so an equal version is routine, not exotic. The pair must land
-    // on the same row state whichever half is delivered first: they describe the same row version,
-    // and a real unassignment would carry a strictly greater one. Under a plain `>=` the second
-    // delivery simply wins, so the reversed order clears the human and re-opens the very regression
-    // this suite is about.
+    // NOTE: Chatwoot emits several events for ONE write (conversation_updated +
+    // conversation_status_changed), all carrying that write's version, and the second to arrive is
+    // often the one carrying `meta`. The pair must land on the same row state whichever half comes
+    // first; a real unassignment carries a strictly greater version. Under a plain `>=` the second
+    // delivery simply wins, so the reversed order would clear the human.
     test.each([
       ["meta last", ["bare", "meta"]],
       ["meta first", ["meta", "bare"]],
@@ -1028,13 +1008,10 @@ describe.skipIf(!dbUp)(
       expect(row.assigneeType).toBe("User");
     });
 
-    // A conversation mirrored before the watermark column existed knows the payload's version but
-    // not its own. The payload's is the first thing we learn, so it decides that one event and
-    // ordering runs from there — otherwise the row would fall back to the type rule forever and a
-    // handoff carried by a message would stay invisible.
-    // A conversation mirrored before this column existed carries no version. Only OUR history is
-    // missing, so the first versioned conversation event establishes the mark and ordering runs from
-    // there.
+    // NOTE: A conversation mirrored before the watermark column existed carries no version. Only OUR
+    // history is missing, so the first versioned conversation event establishes the mark and ordering
+    // runs from there; otherwise the row would fall back to the type rule forever and a handoff
+    // carried by a message would stay invisible.
     test("a row with no stored version bootstraps from the first conversation event", async () => {
       const T = 1_786_496_000;
       await mirror({
@@ -1243,11 +1220,10 @@ describe.skipIf(!dbUp)(
         expect((await mirrored(41)).status).toBe("resolved");
       });
 
-      // Issue #77. The tails above are MESSAGE events, which stopped writing conversation state in
-      // #61. A conversation event is the case that remained: Chatwoot may have serialized one before
-      // the operator clicked and still be retrying its delivery (AgentBots::WebhookJob retries 3x at
-      // 3s), so it lands after the local write carrying the pre-click truth AND a higher version than
-      // the row's stamp — because the local write had no version to claim.
+      // NOTE: A conversation event (not a message tail, which writes no conversation state) may
+      // have been serialized before the operator clicked and still be retrying (AgentBots::WebhookJob
+      // retries 3x at 3s), so it lands after the local write carrying the pre-click truth AND a
+      // higher version than the row's stamp, because the local write had no version to claim.
       test("a take-over in the console survives a CONVERSATION event serialized before it", async () => {
         const T = 1_786_504_000;
         await mirror({
@@ -1356,10 +1332,9 @@ describe.skipIf(!dbUp)(
         expect(row.assigneeId).toBe(HUMAN.id);
       });
 
-      // A row with no marks cannot be ordered by version, so the coarse activity comparison decides —
-      // and `lastEventAt` may have been synthesized from receipt time, which makes it reject a
-      // snapshot that is actually newer. Treating that no-op as success left the operator's action
-      // absent from the mirror, and the runtime's ownership recheck reads this row.
+      // NOTE: A row with no marks cannot be ordered by version, so the coarse activity comparison
+      // decides, and a `lastEventAt` synthesized from receipt time makes it reject a snapshot that
+      // is actually newer. That no-op is not success: the runtime's ownership recheck reads this row.
       test("a read rejected by activity alone still leaves the console's write applied", async () => {
         const T = 1_786_508_000;
         // Mirrored WITHOUT a version (a Chatwoot too old to send one), so the row keeps null marks
@@ -1445,9 +1420,9 @@ describe.skipIf(!dbUp)(
         expect((await mirrored(43)).status).toBe("open");
       });
 
-      // Issue #188: this path resolves with the instance ADMIN token and deliberately does not
-      // assign the operator, so status + assignee cannot tell it apart from the agent closing the
-      // conversation itself. It is recorded instead.
+      // NOTE: This path resolves with the instance ADMIN token and deliberately does not assign the
+      // operator, so status + assignee cannot tell it apart from the agent closing the conversation
+      // itself. It is recorded instead.
       test("an operator resolving from the console is recorded as the console's doing", async () => {
         const T = 1_786_511_000;
         await mirror({
@@ -1478,10 +1453,10 @@ describe.skipIf(!dbUp)(
         expect(row.resolvedBy).toBe("console");
       });
 
-      // Review round 3 on #188/#199: the REST status route and MCP's `conversationStatus` both take
-      // `resolved` for a conversation that already is, where Chatwoot's own call is a no-op. The
-      // stamp used to be overwritten anyway, turning a genuine agent resolution into a `console`
-      // one and removing it from the funnel.
+      // NOTE: The REST status route and MCP's `conversationStatus` both accept `resolved` for a
+      // conversation that already is, where Chatwoot's own call is a no-op. The stamp must not be
+      // overwritten then, or a genuine agent resolution turns into a `console` one and leaves the
+      // funnel.
       test("re-resolving from the console keeps the agent's origin", async () => {
         const T = 1_786_513_000;
         await mirror({
@@ -1517,10 +1492,10 @@ describe.skipIf(!dbUp)(
         expect(row.resolvedBy).toBe("agent");
       });
 
-      // The other half of round 4, and the one first-writer-wins does NOT cover: an external close
-      // (Chatwoot UI, automation rule, auto_resolve_after) leaves the origin NULL by design, so the
-      // NULL predicate alone would happily let the operator's no-op claim it. What refuses is the
-      // status the console loaded BEFORE its toggle.
+      // NOTE: The half first-writer-wins does NOT cover: an external close (Chatwoot UI, automation
+      // rule, auto_resolve_after) leaves the origin NULL by design, so the NULL predicate alone would
+      // let the operator's no-op claim it. What refuses is the status the console loaded BEFORE its
+      // toggle.
       test("re-resolving a conversation closed outside our code records nothing", async () => {
         const T = 1_786_514_000;
         await mirror({
@@ -1652,12 +1627,11 @@ describe.skipIf(!dbUp)(
         expect(row.resolvedBy).toBeNull();
       });
 
-      // The same reopen, but with the live read WORKING. A successful versioned reconcile returns
-      // before the unversioned fallback runs, so a clear that lived only in the fallback never fired
-      // here — and `clearsResolutionOrigin` keeps the stamp on purpose, because the row still shows
-      // the pre-resolve status and the live read agrees, so neither says the conversation left
-      // "resolved". Nothing in the ordering can see this: the operator's click is the only evidence
-      // the resolution is over, which is why the clear belongs to the command.
+      // NOTE: The same reopen, with the live read WORKING. A successful versioned reconcile returns
+      // before the unversioned fallback runs (so a clear living only there would never fire), and
+      // `clearsResolutionOrigin` keeps the stamp on purpose
+      // (the row still shows the pre-resolve status and the live read agrees). The operator's click
+      // is the only evidence the resolution is over, which is why the clear belongs to the command.
       test("reopening from the console clears the origin on the versioned path too", async () => {
         const T = 1_786_516_000;
         await mirror({
@@ -1792,17 +1766,12 @@ describe.skipIf(!dbUp)(
     });
 
     describe("the inbound watermark is monotonic, not ordered with the state", () => {
-      // What a stale delivery lost is the order of the conversation's STATE. `lastInboundAt` is the
-      // time of a CUSTOMER MESSAGE and answers a different question — it anchors the follow-up "new
-      // episode" gate and the WhatsApp 24h service window — so the stale branch has to move it when
-      // the payload really is ahead of what is stored, and must never move it back.
-      //
-      // Found through the delivery recovery (#295): a conversation whose activity had moved past the
-      // stranded message reconciles to that later time, so the rebuilt body lands stale, and the
-      // customer got their reply while `lastInboundAt` stayed behind. But the rule belongs here, and
-      // so does the half the recovery cannot reach: Chatwoot's retry ladder re-sends a frozen
-      // snapshot of an OLD incoming message after a newer one already advanced the watermark, and
-      // writing that blind would drag the 24h anchor backwards.
+      // NOTE: A stale delivery loses the order of the conversation's STATE. `lastInboundAt` is the
+      // time of a CUSTOMER MESSAGE (it anchors the follow-up "new episode" gate and the WhatsApp 24h
+      // window), so the stale branch moves it when the payload really is ahead of what is stored and
+      // never moves it back. A recovered delivery can land stale (its conversation's activity moved
+      // past the stranded message), and Chatwoot's retry ladder can re-send an OLD incoming message's
+      // frozen snapshot after a newer one advanced the watermark.
       const T = 1_786_500_000;
       const inboundOf = async (convId: number) =>
         (

@@ -1,28 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { codeOnly } from "@/tests/utils/source-text";
 
-// Every MCP write tool opens with `const base = deps.base ?? basePrisma`, and the client it settles
-// on is the caller's answer to "which database is this write about". A tool that then calls a helper
-// WITHOUT passing it does not fail: the helper falls back to its own module-level client, and the
-// tool reads one database while writing another.
-//
-// The fallback is a default parameter (`base: PrismaClient = prisma`), which is the repo's
-// convention and is not the defect — 411 functions carry it, and the reason it exists is that most
-// callers have no client to offer. What it costs is a silent miss: dropping the argument is spelled
-// exactly like not having one.
-//
-// It has now happened twice in the same file. #490 fixed `brandingSet`, which was unmeasurable until
-// `getGlobalBranding` took the caller's client; #502 is `brandingAssetSet`, the sibling left behind,
-// where the preview reported a replacement that lived in a different database. Two sites, one
-// invariant, and nothing obliging the third — so the invariant is cobrado here instead of per tool.
-//
-// WHAT THIS DOES NOT COVER, measured rather than assumed. The same shape is possible anywhere in
-// `src/`, not only in these nine files. A tree-wide version of this sweep was written and thrown
-// away: it reported eleven sites, ten of them false — a Chatwoot client's `client.listInboxes()`
-// matched the module function `listInboxes` by bare name, a local closure shadowed an exported name,
-// and one "argument list" was the prose of a comment. The transports are where the invariant is
-// load-bearing (they are handed a client on purpose, by a caller that means it) and where the sweep
-// is exact, so that is what it claims.
+// Every MCP write tool opens with `const base = deps.base ?? basePrisma`, the caller's answer to
+// "which database is this write about". A tool that calls a helper WITHOUT passing it does not fail:
+// the helper falls back to its own module-level client, and the tool reads one database while writing
+// another. The default parameter (`base: PrismaClient = prisma`) is the repo's convention, not the
+// defect; the cost is that dropping the argument is spelled exactly like not having one. The sweep
+// covers the transports only: there the invariant is load-bearing and the sweep is exact, while a
+// tree-wide version matches by bare name and reports mostly false sites (a Chatwoot client's
+// `client.listInboxes()` against the module's `listInboxes`, shadowed locals, prose).
 
 // Everything the sweep decides, over source text it is handed, so the fixture cases below drive the
 // same code the tree does. Returns one entry per call that reaches a client-taking function without
@@ -38,11 +24,8 @@ function bareCalls(
     const name = m[2] as string;
     if (!accepts.has(name)) continue;
     const args = argsAt(code, m.index + (m[0] as string).length);
-    // The names a Prisma client goes by in these files. All three of `base`, `(base|db|tx)` and
-    // `(base|db|tx|suDb|client)` returned the same single offender when this was written, so the
-    // middle one is not buying an exemption for anything that exists — it is here because a helper
-    // called inside a `$transaction` receives `tx`, and `client` is left OUT because a Chatwoot
-    // client is called that.
+    // NOTE: The names a Prisma client goes by in these files. `tx` is here because a helper called inside a
+    // `$transaction` receives it, and `client` is left OUT because a Chatwoot client is called that.
     if (/\b(base|db|tx)\b/.test(args)) continue;
     found.push({
       name,
@@ -55,13 +38,9 @@ function bareCalls(
 
 // The parenthesised run starting just past an open paren, depth-aware so a nested call or object
 // literal does not end it early. Comments and string bodies are already blanked by `codeOnly`, which
-// is why a bare scan for the closing paren is enough here.
-//
-// MEASURED, so the next reader does not have to: `codeOnly` changes no number in this tree today.
-// Dropping it leaves the sweep at 174 calls reached and 0 offenders, identical. It is here so the
-// fence's answer does not depend on what the transports say ABOUT these calls in prose, which is the
-// failure `tests/utils/source-text.ts` was written for after a sweep read a comment as a use. The
-// fixture below is the proof that the predicate needs it; the tree is simply not exercising it yet.
+// is why a bare scan for the closing paren is enough. `codeOnly` changes no count in this tree; it is
+// there so the fence's answer does not depend on what the transports say ABOUT these calls in prose
+// (see `tests/utils/source-text.ts`), and the fixture below proves the predicate needs it.
 function argsAt(code: string, openEnd: number): string {
   let depth = 1;
   let i = openEnd;
@@ -88,9 +67,9 @@ async function clientTakingFunctions(): Promise<Set<string>> {
 }
 
 describe("the sweep itself", () => {
-  // Every case is a spelling this sweep got wrong at some point, or would have. Without these the
-  // tree assertion below is a green that proves nothing: after #502 there is no offender left in
-  // `src/`, so a sweep that had stopped matching anything would look exactly the same.
+  // NOTE: Every case is a spelling this sweep could get wrong. Without these the tree assertion below is a
+  // green that proves nothing: there is no offender left in `src/`, so a sweep that had stopped
+  // matching anything would look exactly the same.
   const accepts = new Set(["getGlobalBranding", "listInboxes"]);
 
   test("it flags a call that drops the client", () => {
@@ -144,14 +123,12 @@ describe("the sweep itself", () => {
 describe("every MCP write transport hands its client on", () => {
   test("no tool reaches a client-taking helper without naming a client", async () => {
     const accepts = await clientTakingFunctions();
-    // Worthless if it matched nothing. A rename of `PrismaClient`, or a glob that stops finding the
+    // NOTE: Worthless if it matched nothing. A rename of `PrismaClient`, or a glob that stops finding the
     // transports, would empty both numbers and leave the assertion below trivially true.
     //
-    // The floors are far below what any edition reports, because this file runs in all three trees
-    // and a sweep with an edition-sensitive count is how a test passes on master and fails in Free
-    // (#516, days before this one). Measured on the derived trees: master and Pro 411 client-taking
-    // functions, Free 410 — the Pro-only admin service that is swapped for a stub — with 9 transport
-    // files, 174 calls reached and 0 offenders in all three, identically.
+    // The floors are far below what any edition reports, because this file runs in all three trees and a
+    // sweep with an edition-sensitive count passes on master and fails in Free (Free swaps the Pro-only
+    // admin service for a stub, so it has one client-taking function fewer).
     expect(accepts.size).toBeGreaterThan(200);
 
     const offenders: string[] = [];

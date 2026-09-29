@@ -23,9 +23,8 @@ import {
 } from "@/modules/mcp/oauth/tokens";
 import { personData } from "@/tests/utils/person";
 
-// The fleet principal these SUPER_ADMIN-only functions now take. It is what names the actor on the
-// row each of them appends (#400); the rows themselves are asserted in
-// `tests/modules/audit-actor-family.test.ts`.
+// The fleet principal these SUPER_ADMIN-only functions take. It names the actor on the row each of
+// them appends; the rows themselves are asserted in `tests/modules/audit-actor-family.test.ts`.
 const su9400: TenantContext = {
   tenantId: null,
   userId: 9400n,

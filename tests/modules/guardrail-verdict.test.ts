@@ -12,36 +12,33 @@ import {
   verdictFromObject,
 } from "@/modules/guardrails/verdict";
 
-// Two tables, and they answer the two halves of issue #131: HOW each endpoint is asked for the
-// verdict, and how a verdict is read once it comes back, in whichever shape it came.
+// Two tables: HOW each endpoint is asked for the verdict, and how a verdict is read once it comes
+// back, in whichever shape it came.
 //
-// The axis both tables turn on is the one this module keeps getting wrong: a verdict that could not
-// be read must stay distinguishable from a verdict that says "clean". This is a moderation feature
-// and it fails OPEN, so every ambiguity that collapses into CLEAN is a message delivered unscreened
-// under a guardrail the operator believes is running.
+// The axis both turn on: a verdict that could not be read must stay distinguishable from a verdict
+// that says "clean". This is a moderation feature and it fails OPEN, so every ambiguity that collapses
+// into CLEAN is a message delivered unscreened under a guardrail the operator believes is running.
 
 describe("how each provider is asked for the verdict", () => {
-  // Measured, not assumed. What a wrong row costs is not symmetric: a provider wrongly on "prose"
-  // keeps today's behaviour, while one asked in the wrong dialect is refused on every screen and
-  // only survives it because a refused request is remade in prose.
+  // NOTE: Each row is how the endpoint behaves, not an assumption. What a wrong row costs is not symmetric: a
+  // provider wrongly on "prose" keeps the unconstrained behaviour, while one asked in the wrong dialect
+  // is refused on every screen and only survives it because a refused request is remade in prose.
   const table: Record<(typeof MODEL_PROVIDERS)[number], VerdictAskMode> = {
     // json_schema with strict is OpenAI's own; the adapter falls back to function calling on the
     // ids that predate it (gpt-4 and older), so no id is left without a constrained path.
     openai: "json-schema",
     // The adapter asks with a FORCED tool call, which every current Anthropic model implements.
     anthropic: "json-schema",
-    // The OpenAPI 3.0 subset, where nullability is a flag and not a type union. Measured live on
-    // gemini-3.5-flash and -flash-lite: the other dialect is refused with a 400, this one answers
-    // in a single call.
+    // NOTE: The OpenAPI 3.0 subset, where nullability is a flag and not a type union. On gemini-3.5-flash and
+    // -flash-lite the other dialect is refused with a 400; this one answers in a single call.
     google: "openapi",
     // The API implements json_object only and answers "unavailable now" to json_schema.
     deepseek: "prose",
     // Support is per ENDPOINT behind the router, not per model, and it changes without notice; the
     // router simply fails the request when it lands on a provider that lacks it.
     openrouter: "prose",
-    // An arbitrary server by definition. Measured against a local one that ignores the parameter:
-    // the client retried the same call six times over a minute and never settled, while the
-    // unconstrained call it makes today answered on the first try.
+    // NOTE: An arbitrary server by definition. Against one that ignores the parameter, the client retries the
+    // same call for a minute and never settles, while the unconstrained call answers on the first try.
     "openai-compatible": "prose",
   };
 
@@ -153,9 +150,9 @@ describe("readVerdict", () => {
     expect(v.error).toBeUndefined();
   });
 
-  // Defence in depth for a provider that IS on the list: an answer the schema could not validate
-  // must not throw away the text the model wrote. Reading it is exactly what the prose path does
-  // today, so recovering here is not a new behaviour, it is the old one still reachable.
+  // NOTE: Defence in depth for a provider that IS on the list: an answer the schema could not validate must
+  // not throw away the text the model wrote. Reading it is exactly what the prose path does, so
+  // recovering here adds no new behaviour.
   test("no schema answer falls back to the prose the model wrote", () => {
     const v = readVerdict(null, `Aqui está: ${clean}`);
     expect(v.violated).toBe(false);

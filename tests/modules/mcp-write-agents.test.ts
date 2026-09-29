@@ -98,10 +98,8 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
-  // MOVED OUT OF THE DB-FREE BLOCK, because the dry run stopped being a summary of the payload and
-  // became the apply itself, rolled back (#501): what it reports is what the apply produces, and
-  // producing it needs the database. That is the direction this file's header already describes —
-  // the gate is DB-free, the dry run is not.
+  // NOTE: Not in the DB-free block: the dry run is the apply itself, rolled back, so what it reports is what
+  // the apply produces, and producing it needs the database. The gate is DB-free; the dry run is not.
   test("agent_import dry-run (default) previews without writing", async () => {
     const exp = {
       version: AGENT_EXPORT_VERSION,
@@ -134,13 +132,12 @@ describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
     }
   });
 
-  // The preview has to disclose EVERY component array the apply can create — the apply reuses or
-  // creates each of them before it assigns the grants, so an omitted one is the dry run standing in
-  // for a different operation than the one that will run.
+  // NOTE: The preview has to disclose EVERY component array the apply can create: the apply reuses or
+  // creates each of them before it assigns the grants, so an omitted one is the dry run standing in for
+  // a different operation than the one that will run.
   //
-  // Compared against the export schema's own keys rather than a list written here: the way this
-  // broke was a component array being added to the bundle and not to the preview, and a hand-written
-  // list in the test would have been the same omission a second time.
+  // Compared against the export schema's own keys rather than a list written here: an array added to
+  // the bundle and not to the preview is the omission to catch, and a hand-written list would repeat it.
   test("the preview counts every component array a bundle can carry", async () => {
     const exp = {
       version: AGENT_EXPORT_VERSION,
@@ -332,10 +329,9 @@ describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
     });
   });
 
-  // Review finding, round 1: a dry run promises that the preview IS what an apply would store. The
-  // service normalizes the declaration (2xx and out-of-range dropped, deduped, sorted), so a preview
-  // echoing the raw argument would promise a shape the apply never writes, and would report a change
-  // for a no-op like [200].
+  // NOTE: A dry run promises that the preview IS what an apply would store. The service normalizes the
+  // declaration (2xx and out-of-range dropped, deduped, sorted), so a preview echoing the raw argument
+  // would promise a shape the apply never writes, and would report a change for a no-op like [200].
   test("tool_create dry-run previews the SAME expected statuses the apply stores", async () => {
     const p = principal({ tenantId: tenantA });
     const shapes = {
@@ -388,10 +384,10 @@ describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
     expect(row).toBeNull();
   });
 
-  // The count is not the rule and never was: what this asserts is that an apply which CHANGES the
-  // set is audited. Since the trail moved into the service (#393) the sibling half of that rule is
-  // observable too — clearing a set that is already empty changes nothing and records nothing — so
-  // the set is seeded first and both halves are asserted from the same starting point.
+  // NOTE: The count is not the rule: what this asserts is that an apply which CHANGES the set is audited. The
+  // trail is written by the service, so the sibling half is observable too (clearing a set that is
+  // already empty changes nothing and records nothing); the set is seeded first and both halves are
+  // asserted from the same starting point.
   test("agent_tools_set replace (empty set) applies + audits what it changed", async () => {
     const p = principal({ tenantId: tenantA });
     await agentToolsSet(
@@ -439,7 +435,7 @@ describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
   // A grant's id is caller-supplied, and `BigInt` accepts more than a column does. `0x11` is 17n, so
   // a request that never named a template could be handed one; a value past 2^63-1 converts here and
   // is refused by POSTGRES when the query binds it, answering 500 on a path that advertises a
-  // validation error. Both spellings, for the grant path the document tool introduced.
+  // validation error. Both spellings, for the grant path document tools use.
   test("a grant id that is not a plain in-range number is refused, not converted", async () => {
     const p = principal({ tenantId: tenantA });
     for (const bad of ["0x11", "9223372036854775808", " 7 ", "1e3"]) {
@@ -461,8 +457,8 @@ describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
     ).toBe(0);
   });
 
-  // The step that closed the MCP loop: this surface could CREATE a document template and had no way
-  // to GRANT it, so an operator authoring over MCP ended one move short of a working document tool.
+  // NOTE: This surface creates document templates, so it has to GRANT them too, or an operator authoring
+  // over MCP ends one move short of a working document tool.
   test("agent_tools_set can grant a document template", async () => {
     const starter = documentStarter("quote", "pt-BR");
     if (!starter) throw new Error("no starter");
@@ -514,10 +510,10 @@ describe.skipIf(!dbUp)("MCP agent-builder tools (DB)", () => {
     expect(row?.name).toBe("Builder");
   });
 
-  // BOTH REFUSALS THE OBSERVER BINDING ADDED (issue #476 review, round 46), asked by the PREVIEW too.
-  // `updateAgent` refuses to save a non-monitoring mode on an agent that observes an inbox, and
-  // `deleteAgent` refuses to delete one; a preview that cannot ask either approves the one write the
-  // apply is certain to reject, and the caller learns the truth from the 422.
+  // NOTE: BOTH REFUSALS THE OBSERVER BINDING ADDS, asked by the PREVIEW too. `updateAgent` refuses to save a
+  // non-monitoring mode on an agent that observes an inbox, and `deleteAgent` refuses to delete one; a
+  // preview that cannot ask either approves the one write the apply is certain to reject, and the
+  // caller learns the truth from the 422.
   test("the previews refuse an observing agent exactly as the applies do", async () => {
     const p = principal({ tenantId: tenantA });
     const inst = await seedChatwootInstance(suDb, {

@@ -27,7 +27,7 @@ import {
 } from "@/modules/webhooks/inbound/service";
 
 // The context these calls take: the tenant id came from a row this test created, so it carries
-// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+// TENANT_ADMIN, the role that tells `runScopedOn` the id never came from outside.
 const ctxOf = (tenantId: bigint): TenantContext => ({
   tenantId,
   userId: null,
@@ -50,9 +50,9 @@ const ASAAS_STATIC_HEADER = "asaas-access-token";
 
 // ── which header carries the token (unit, decision table) ──
 // Precedence, most specific first: the operator's per-instance override, then the provider's own
-// convention from the catalog, then our generic default. The catalog layer is what issue #107 was
-// missing: Asaas fixes `asaas-access-token` on its side and the operator cannot change it there, so
-// without it every Asaas delivery was compared against a header Asaas never sends.
+// convention from the catalog, then our generic default. Asaas fixes `asaas-access-token` on its side
+// and the operator cannot change it there, so without the catalog layer every Asaas delivery would be
+// compared against a header Asaas never sends.
 describe("inbound auth header resolution", () => {
   const cases: Array<{
     name: string;
@@ -96,10 +96,10 @@ describe("inbound auth header resolution", () => {
       authHeader: "asaas-access-token",
       signatureHeader: DEFAULT_SIGNATURE_HEADER,
     },
-    // Review round 1 of #370. An empty override IS a configured name, and dropping it here sent the
-    // gate the DEFAULT — which is the one thing the refusal exists to prevent: comparing the secret
-    // against `x-webhook-token` on an instance whose operator asked for something else. The write
-    // refuses `""` like any other unusable name; this is the row already written.
+    // NOTE: An empty override IS a configured name, and dropping it would send the gate the DEFAULT, the one
+    // thing the refusal exists to prevent: comparing the secret against `x-webhook-token` on an instance
+    // whose operator asked for something else. The write refuses `""` like any other unusable name; this
+    // is the row already written.
     {
       name: "an empty override reaches the gate rather than falling back",
       catalogType: "ASAAS",
@@ -126,9 +126,8 @@ describe("inbound auth header resolution", () => {
 });
 
 // ── auth strategies (unit) ──
-// One table, because this is one decision. Every row names the REASON, not pass/fail: the reason is
-// what issue #124 asked for, and a boolean cannot carry it: the four ways a secret fails to arrive
-// used to be the same `false` as a genuinely wrong token.
+// One table, because this is one decision. Every row names the REASON, not pass/fail: a boolean
+// cannot tell the four ways a secret fails to arrive from a genuinely wrong token.
 describe("inbound auth", () => {
   const body = '{"a":1}';
   const token = "s3cr3t";
@@ -141,15 +140,12 @@ describe("inbound auth", () => {
     (h: Record<string, string>) =>
     (n: string): string | null =>
       h[n] ?? null;
-  // The record lookup above answers every name, including ones no HTTP stack accepts. The receptor's
-  // real reader is `request.headers.get`, which THROWS on a name outside the RFC 7230 token — issue
-  // #362 — so the cases about an unusable name have to go through the real thing or they prove
-  // nothing about the caller.
-  //
-  // And the global `Headers` here is NOT the real thing: happy-dom replaces it, and its version
-  // accepts every name and answers null, so the first version of these two cases failed on the
-  // expected value rather than on the throw they exist to pin. `globalThis.BunRequest` is the native
-  // constructor tests/dom-setup.ts stashes before the replacement, which is what the route holds.
+  // NOTE: The record lookup above answers every name, including ones no HTTP stack accepts. The receptor's
+  // real reader is `request.headers.get`, which THROWS on a name outside the RFC 7230 token, so the
+  // cases about an unusable name go through the real thing. The global `Headers` here is NOT it:
+  // happy-dom replaces it with one that accepts every name and answers null.
+  // `globalThis.BunRequest` is the native constructor tests/dom-setup.ts stashes before the
+  // replacement, which is what the route holds.
   const nativeRequest = (globalThis as { BunRequest?: typeof Request })
     .BunRequest;
   const realHdr =
@@ -184,8 +180,8 @@ describe("inbound auth", () => {
       expected: { ok: true },
     },
 
-    // The four ways the secret never becomes usable. Each is a different thing for the operator to
-    // do, and all four were indistinguishable before.
+    // NOTE: The four ways the secret never becomes usable. Each is a different thing for the operator to do,
+    // and a single `false` cannot tell them apart.
     {
       name: "STATIC_HEADER without a secret ref on the instance",
       strategy: "STATIC_HEADER",
@@ -208,9 +204,9 @@ describe("inbound auth", () => {
       expected: { ok: false, reason: "secret_pending" },
     },
     {
-      // A multi-field credential (langfuse, google_oauth) decrypts to a Record. It is truthy, so it
-      // used to sail past the null check and die in Buffer.from, a 500 where every other refusal
-      // is a 401, which is both a crash and an oracle.
+      // NOTE: A multi-field credential (langfuse, google_oauth) decrypts to a Record. It is truthy, so it would
+      // sail past the null check and die in Buffer.from, a 500 where every other refusal is a 401, which
+      // is both a crash and an oracle.
       name: "STATIC_HEADER wired to a multi-field credential",
       strategy: "STATIC_HEADER",
       secret: filled({ publicKey: "pk", secretKey: "sk" }),
@@ -218,8 +214,8 @@ describe("inbound auth", () => {
       expected: { ok: false, reason: "secret_unusable" },
     },
     {
-      // The shipped guard was `if (!secret)`, which caught "" and null together. Splitting the
-      // states splits that guard, and an empty secret has to stay fail-closed.
+      // NOTE: `if (!secret)` catches "" and null together. Splitting the states splits that guard, and an empty
+      // secret has to stay fail-closed.
       name: "STATIC_HEADER wired to an empty secret, against an empty header",
       strategy: "STATIC_HEADER",
       secret: filled(""),
@@ -286,11 +282,11 @@ describe("inbound auth", () => {
       getHeader: hdr({ [DEFAULT_SIGNATURE_HEADER]: sig }),
       expected: { ok: true },
     },
-    // Issue #362. `config.authHeader` is operator text that becomes a header NAME, and a value with a
-    // space around it made `Headers.get` throw inside the gate — answering the delivery 500 where
-    // every other refusal gives 401, which is itself the oracle the uniform 401 exists to deny. The
-    // refusal has to be a refusal, on both strategies, and it must NOT fall back to the default name:
-    // comparing against a header the operator never chose is a worse failure than refusing.
+    // NOTE: `config.authHeader` is operator text that becomes a header NAME, and a value with a space around it
+    // makes `Headers.get` throw inside the gate: a 500 where every other refusal gives 401, which is
+    // itself the oracle the uniform 401 exists to deny. The refusal has to be a refusal, on both
+    // strategies, and it must NOT fall back to the default name: comparing against a header the operator
+    // never chose is a worse failure than refusing.
     {
       name: "STATIC_HEADER refuses a configured name no HTTP stack accepts",
       strategy: "STATIC_HEADER",
@@ -687,8 +683,8 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
       }),
     ).rejects.toMatchObject({ statusCode: 401 });
 
-    // The right value in the GENERIC header. Asaas never sends this one, so accepting it would
-    // mean the instance authenticates something Asaas cannot produce (issue #107).
+    // NOTE: The right value in the GENERIC header. Asaas never sends this one, so accepting it would mean the
+    // instance authenticates something Asaas cannot produce.
     await expect(
       receiveInbound({
         routeToken: routeToken as string,
@@ -728,9 +724,8 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
         kind: "asaas_payment",
       },
     });
-    // The exact body Asaas sends for a paid DIRECT (non-link) PIX charge: `paymentLink` is
-    // present with value null. Regression for the schema-rejects-null bug that turned real
-    // payments into a silent `outcome: "ignored"`.
+    // NOTE: The exact body Asaas sends for a paid DIRECT (non-link) PIX charge: `paymentLink` is present with
+    // value null. A schema that rejected null would turn real payments into a silent `outcome: "ignored"`.
     const body = JSON.stringify({
       event: "PAYMENT_RECEIVED",
       payment: {
@@ -768,15 +763,13 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
     expect(conv?.value?.toString()).toBe("500");
   });
 
-  // ── characters Postgres refuses to store (issue #218) ──
-  // A body that is valid JSON, passes the mapper's schema, and that the column then refuses. The
-  // two characters and BOTH destinations of the normalized event, measured against this database:
+  // NOTE: ── characters Postgres refuses to store ──
+  // A body that is valid JSON, passes the mapper's schema, and that the column then refuses:
   //   jsonb payload + lone surrogate -> invalid input syntax for type json
   //   jsonb payload + NUL            -> 22P05 unsupported Unicode escape sequence
   //   text  column  + lone surrogate -> 22021 invalid byte sequence for encoding "UTF8": 0xef 0xbf
   //   text  column  + NUL            -> 22021 invalid byte sequence for encoding "UTF8": 0x00
-  // Each one used to throw out of `receiveInbound`, which nothing above catches: a 500 with no
-  // delivery row and no FAILED record either, and a sender retrying a body that can never succeed.
+  // Uncaught, each is a 500 with no delivery row and a sender retrying a body that can never succeed.
   // The two halves get OPPOSITE treatment, which is what the second group below pins.
   const NUL = String.fromCharCode(0);
 
@@ -906,12 +899,11 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
       },
       appDb,
     );
-    // Incompressible on purpose: a run of one character compresses inside the index and slips past
-    // the limit, so a probe built from `repeat("x", n)` would prove nothing. Measured on this
-    // database, an incompressible dedupe key fails its unique index at ~2704 bytes with "index row
-    // size 6432 exceeds btree version 4 maximum 2704", which is the same 500-with-no-record this
-    // PR exists to remove. The mapper puts `payment.id` straight into the key and its schema caps
-    // neither that nor `event`.
+    // NOTE: Incompressible on purpose: a run of one character compresses inside the index and slips past the
+    // limit, so a probe built from `repeat("x", n)` proves nothing. An incompressible dedupe key fails its
+    // unique index at ~2704 bytes ("index row size 6432 exceeds btree version 4 maximum 2704"), another
+    // 500 with no record. The mapper puts `payment.id` straight into the key and its schema caps neither
+    // that nor `event`.
     const longId = Array.from({ length: 3000 }, (_, i) =>
       String.fromCharCode(97 + ((i * 7 + (i % 13)) % 26)),
     ).join("");
@@ -1116,11 +1108,10 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
     ).toBe(0);
   });
 
-  // ── why the 401 happened (issue #124) ──
+  // NOTE: ── why the 401 happened ──
   // The response is uniform by design, so the refusal REASON in the server log is the observable
-  // effect of this fix: asserting the 401 alone would assert the behaviour that was already there.
-  // Each broken instance is written straight to the table: the write boundary now refuses these
-  // values, and the point is precisely that databases already hold them.
+  // effect: asserting the 401 alone says nothing about the reason. Each broken instance is written
+  // straight to the table: the write boundary refuses these values, and databases may already hold them.
 
   function captureWarnings() {
     const seen: Record<string, unknown>[] = [];
@@ -1169,7 +1160,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
         secret: encryptJson("REAL-TOKEN"),
       },
     });
-    // What a client following the REST schema's own wording ("Vault reference name") used to store.
+    // NOTE: What a client following the REST schema's own wording ("Vault reference name") could store.
     const { token, id } = await rawInstance({
       strategy: "STATIC_HEADER",
       secretRef: "asaas-inbound",
@@ -1248,8 +1239,8 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
   });
 
   test("a delivery wired to a multi-field credential is refused, not crashed", async () => {
-    // langfuse-shaped: decryptJson gives a Record, which used to reach Buffer.from and throw, so a
-    // 500 where every other refusal is a 401.
+    // NOTE: langfuse-shaped: decryptJson gives a Record, which must not reach Buffer.from and throw, a 500
+    // where every other refusal is a 401.
     const entry = await suDb.vaultEntry.create({
       data: {
         tenantId,
@@ -1314,9 +1305,9 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
     });
   });
 
-  // Issue #362, end to end and through the reader the route actually holds. Written against a row
-  // created directly, because that is the case the write-side refusal cannot reach: rows already
-  // carry whatever they carry.
+  // NOTE: End to end, through the reader the route actually holds. Written against a row created directly,
+  // because that is the case the write-side refusal cannot reach: rows already carry whatever they
+  // carry.
   test("names the cause when the configured header name is not one, and still answers 401", async () => {
     const entry = await suDb.vaultEntry.create({
       data: {
@@ -1353,9 +1344,9 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
         base: appDb,
         deps: cap.deps,
       }),
-      // 401, not the 500 the TypeError produced. The status is the whole defect: a caller holding a
-      // route token and no valid secret got 500 where every other refusal gives 401, so the status
-      // itself said "this token resolves to a live instance that is misconfigured".
+      // NOTE: 401, not a 500 from the TypeError. The status is the whole defect: a 500 where every other refusal
+      // gives 401 tells a caller holding a route token and no valid secret that the token resolves to a
+      // live instance that is misconfigured.
     ).rejects.toMatchObject({ statusCode: 401 });
 
     expect(cap.seen[0]).toMatchObject({ reason: "header_name_unusable" });
@@ -1394,9 +1385,9 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
     ).rejects.toMatchObject({ statusCode: 401 });
   });
 
-  // Review round 1 of #370, and the same rule as the two above through a different door: an empty
-  // string is a configured name, and it used to be dropped one layer earlier — so the gate never saw
-  // it and authenticated against `x-webhook-token`, which the row's operator never chose.
+  // NOTE: The same rule as the two above through a different door: an empty string is a configured name, and
+  // dropping it one layer earlier would let the gate authenticate against `x-webhook-token`, which the
+  // row's operator never chose.
   test("an empty configured name refuses too, and does not authenticate on the default", async () => {
     const entry = await suDb.vaultEntry.create({
       data: {

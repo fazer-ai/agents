@@ -16,7 +16,7 @@ import {
 } from "@/modules/experiments/service";
 
 // The context these calls take: the tenant id came from a row this test created, so it carries
-// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+// TENANT_ADMIN, the role that tells `runScopedOn` the id never came from outside.
 const ctxOf = (tenantId: bigint): TenantContext => ({
   tenantId,
   userId: null,
@@ -292,9 +292,9 @@ describe.skipIf(!dbUp)("experiments CRUD + results", () => {
       ).agentId,
     ).toBe(target);
 
-    // The positive control the two refusals are FOR: a row stored before this rule existed is
-    // exactly what they now prevent, and it still overrides nobody. `bound` goes first, so the
-    // agent-less row is the only enabled experiment left and a null answer can only be about it.
+    // NOTE: The positive control the two refusals are FOR: an agent-less row stored before the rule is exactly
+    // what they prevent, and it still overrides nobody. `bound` goes first, so the agent-less row is the
+    // only enabled experiment left and a null answer can only be about it.
     await deleteExperiment(ctxOf(tnt), id, appDb);
     expect(
       await suDb.experiment.count({
@@ -321,10 +321,9 @@ describe.skipIf(!dbUp)("experiments CRUD + results", () => {
       ),
     ).toBeNull();
 
-    // The PR says such a row "stays inert, and naming an agent is what repairs it". The first half
-    // is the assertion above; this is the second, which was prose until it was run. The patch names
-    // only the agent, which is the whole repair an operator has, and the same resolver then answers
-    // with the variant on a thread that has no assignment yet.
+    // NOTE: Such a row stays inert, and naming an agent is what repairs it. The patch names only the agent,
+    // which is the whole repair an operator has, and the same resolver then answers with the variant on
+    // a thread that has no assignment yet.
     await updateExperiment({
       ctx: ctxOf(tnt),
       id: legacy.id,

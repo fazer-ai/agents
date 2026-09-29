@@ -123,10 +123,9 @@ describe.skipIf(!dbUp)("MCP tenant targeting (DB)", () => {
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  // An all-digits selector past what the column holds. The guard here was `/^\d+$/`, which this
-  // passes, and the value then reached Postgres as a bind error — a 500 out of a lookup whose only
-  // other outcome is a 404. It is also not a slug anyone can register, so NotFound is the whole
-  // answer. Issue #407.
+  // NOTE: An all-digits selector past what the column holds passes `/^\d+$/`, and must not reach Postgres as
+  // a bind error (a 500 out of a lookup whose only other outcome is a 404). It is not a slug anyone can
+  // register either, so NotFound is the whole answer.
   test("resolveTenantSelector answers NotFound for digits past the column, not a bind error", async () => {
     await expect(
       resolveTenantSelector((MAX_DB_ID + 1n).toString(), appDb),

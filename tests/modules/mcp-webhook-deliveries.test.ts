@@ -5,13 +5,13 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { webhookDeliveryGet, webhookDeliveryList } from "@/modules/mcp/read";
 import { webhookDeliveryRequeue } from "@/modules/mcp/write-webhooks";
 
-// ── THE DELIVERY LEDGER ON MCP (issue #305) ──
-// The REST half is covered in webhooks-outbound-deliveries.test.ts; this drives what MCP adds on
-// top of the same service: the scope gate, the dry run, and the audit row.
+// ── THE DELIVERY LEDGER ON MCP ──
+// The REST half is covered in webhooks-outbound-deliveries.test.ts; this drives what MCP adds on top
+// of the same service: the scope gate, the dry run, and the audit row.
 //
-// The dry run gets its own case for the reason it exists: the only way this call can fail is the
-// row not being DEAD, so a preview built from the id alone would approve exactly the requests the
-// apply refuses.
+// The dry run gets its own case for the reason it exists: the only way this call can fail is the row
+// not being DEAD, so a preview built from the id alone would approve exactly the requests the apply
+// refuses.
 
 function principal(over: Partial<VerifiedToken> = {}): VerifiedToken {
   return {

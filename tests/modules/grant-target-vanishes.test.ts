@@ -10,22 +10,13 @@ import {
 import { deleteCodeTool } from "@/modules/code-tools/service";
 
 // The gap between "this grant names a tool that exists" and the insert that points at it.
-//
-// `replaceAgentToolSelections` reads every target, then deletes the old selection rows and writes
-// the new ones. Nothing holds the targets still across those two steps, and nothing can cheaply:
-// the sources span five tables, and the namespace lock the tool services take is keyed to the tool
-// NAMESPACE, so it would cover two of them and leave MCP connections, integrations and knowledge
-// bases exactly as they are. So the race is not closed here; it is ANSWERED. A target deleted in
-// the gap is the same event as a target that was never there, and the caller gets the not-found the
-// read itself would have given a moment earlier instead of a 500 (round 31).
-//
-// Measured before the fix, on a real insert: PrismaClientKnownRequestError, code P2003, constraint
-// `agent_tool_selections_code_tool_definition_id_fkey`. Nothing in the API maps P2003, so it left
-// the console with a generic failure and the operator with no idea which tool went away.
-//
-// The race here is REAL, not simulated: the delete commits on a second connection, in the window
-// between the check and the insert, held open by a query extension on the writer's own client. What
-// the extension supplies is the TIMING; every row and every statement is the production path's.
+// `replaceAgentToolSelections` reads every target, then rewrites the selection rows, and nothing
+// cheap holds the targets still in between: the sources span five tables, and the tool services'
+// namespace lock covers two. So the race is ANSWERED, not closed: a target deleted in the gap is the
+// same event as one that was never there, and the caller gets the read's not-found instead of a 500
+// from an unmapped P2003 (`agent_tool_selections_code_tool_definition_id_fkey`). The race is REAL: the
+// delete commits on a second connection inside the window, held open by a query extension on the
+// writer's client, which supplies only the TIMING.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -130,7 +121,7 @@ describe.skipIf(!dbUp)("a grant target deleted mid-save", () => {
     expect((err as AppError).translationKey).toBe("errors.codeToolNotFound");
   });
 
-  // The same answer for a source that has nothing to do with code tools, because the fix is one
+  // NOTE: The same answer for a source that has nothing to do with code tools, because the answer is one
   // rule over the whole insert and not a code-tool special case.
   test("an HTTP tool deleted in the same window answers for ITS source", async () => {
     const ag = await agent();
@@ -159,15 +150,12 @@ describe.skipIf(!dbUp)("a grant target deleted mid-save", () => {
     );
   });
 
-  // The other half of the same window, and the one a not-found cannot answer. The delete takes the
-  // namespace lock, then the tool row FOR UPDATE, then cascades into the selection rows. This path
-  // used to take the agent row, delete the selection rows and only then ask the foreign key for the
-  // tool row -- so each transaction held what the other needed next, and PostgreSQL resolved it by
-  // killing one: `40P01 deadlock detected`, a 500 on whichever lost, and no P2003 for the mapping
-  // above to catch (round 34). Ordering both behind the namespace lock is what removes the cycle.
-  //
-  // The interleaving is forced, not waited for: the delete starts INSIDE the save's insert, and the
-  // pause is long enough for it to reach the lock it will wait on.
+  // NOTE: The other half of the same window, which a not-found cannot answer. The delete takes the namespace
+  // lock, then the tool row FOR UPDATE, then cascades into the selection rows. A save that took the
+  // agent row and deleted selection rows before its foreign key asked for the tool row would hold what
+  // the delete needs next, and PostgreSQL would kill one (`40P01 deadlock detected`, a 500 with no
+  // P2003 to map). Ordering both behind the namespace lock removes the cycle. Forced, not waited for:
+  // the delete starts INSIDE the save's insert, and the pause lets it reach the lock it will wait on.
   test("a delete racing a save deadlocks with neither", async () => {
     const ag = await agent();
     const doomed = await suDb.codeToolDefinition.create({
@@ -243,12 +231,11 @@ describe.skipIf(!dbUp)("a grant target deleted mid-save", () => {
     ]);
   }, 30_000);
 
-  // The third path that writes selection rows, and the one whose ids come from ANOTHER agent: a
-  // clone reads the source's grants and writes them under a new agent. A tool deleted between the
-  // two leaves the copy pointing at a row that is gone, the foreign key refuses it, and because the
-  // clone is one transaction the operator loses the agent and not the grant (round 35). The same
-  // lock orders it: the delete either goes first, and its cascade takes the source grant with it so
-  // there is nothing to copy, or it waits.
+  // NOTE: The third path that writes selection rows, and the one whose ids come from ANOTHER agent: a clone
+  // reads the source's grants and writes them under a new agent. A tool deleted between the two would
+  // leave the copy pointing at a row that is gone, and because the clone is one transaction the
+  // operator would lose the agent, not just the grant. The same lock orders it: the delete either goes
+  // first, and its cascade takes the source grant with it, or it waits.
   test("a clone racing a delete of what it copies still produces an agent", async () => {
     const src = await agent();
     const tool = await suDb.codeToolDefinition.create({

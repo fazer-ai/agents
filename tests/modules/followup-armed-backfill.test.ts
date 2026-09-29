@@ -4,16 +4,12 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { ENTER_FLEET_ROLE_SQL } from "@/lib/tenancy/fleet-role";
 
 // The original `follow_up_armed_at` backfill (20260807032257) ends in a bare
-// `UPDATE "agents" SET "follow_up_armed_at" = NOW()`. `agents` carries FORCE ROW LEVEL SECURITY,
-// which subjects even the table OWNER to `tenant_isolation`; only a superuser (or BYPASSRLS) is
-// exempt. On managed Postgres the migration role is typically the owner WITHOUT rolsuper, so that
-// statement matched zero rows and reported success — leaving every pre-existing agent with a null
-// watermark, which the sweep reads as "never armed" and skips forever (issue #106).
-//
-// This suite runs the follow-up migration through the APP connection, which is a non-superuser
-// role with RLS in force — the same conditions the affected installs migrate under. Running it as
-// the suite's superuser would prove nothing: the bare UPDATE works there, which is exactly why the
-// defect shipped unnoticed.
+// `UPDATE "agents" SET "follow_up_armed_at" = NOW()`. `agents` carries FORCE ROW LEVEL SECURITY, which
+// subjects even the table OWNER to `tenant_isolation`; on managed Postgres the migration role is
+// typically the owner WITHOUT rolsuper, so that statement matches zero rows and reports success,
+// leaving every pre-existing agent with a null watermark the sweep reads as "never armed" and skips
+// forever. This suite runs the migration through the APP connection (non-superuser, RLS in force), the
+// conditions those installs migrate under; as the suite's superuser the bare UPDATE works.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -95,12 +91,11 @@ describe.skipIf(!dbUp)("follow_up_armed_at backfill under RLS", () => {
     await appDb.$disconnect();
   });
 
-  // The file's own `SET app.is_super_admin` statement is INERT against today's schema: the policy
-  // that read it was split into a role-restricted one (issue #382), and this migration only ever
-  // runs BEFORE that split, on a database whose policy still carried the OR. Re-executing it here
-  // therefore has to supply the bypass of the era it is being run in — without it both this test
-  // and its negative twin would report "armed nothing", for two different reasons, and the pair
-  // would stop discriminating.
+  // NOTE: The file's own `SET app.is_super_admin` statement is INERT against today's schema: the policy that
+  // read it is now role-restricted, and this migration only ever runs on a database whose policy still
+  // carries the OR. Re-executing it here therefore supplies the bypass of that era; without it this
+  // test and its negative twin would both report "armed nothing", for two different reasons, and the
+  // pair would stop discriminating.
   test("arms the agents the original backfill left behind", async () => {
     const statements = await migrationStatements();
     await appDb.$transaction(

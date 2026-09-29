@@ -7,17 +7,13 @@ import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #598, the path the holdout scenario s10 named. Besides the turn and the debounce flush there
-// is a THIRD place that builds what the agent reads: `ingestUnhandledMessage`, which folds into the
-// contact's memory the message no turn ever covered — the one that arrived outside business hours,
-// and the one a colleague had already taken. It drops whatever "renders to nothing", and an email
-// whose whole request is its subject rendered to nothing.
-//
-// The customer who writes at 22:00 therefore disappeared from the thread, and in the morning the
-// agent answered a conversation in which, as far as it could see, nobody had asked anything. Same
-// defect as the issue, one path over, which is why the fix is not another field passed by hand: this
-// call site now asks `incomingRenderable`, the ONE mapping from a normalized event to what the agent
-// would read, so the next marker added to the renderer cannot reach two of the three readers.
+// Besides the turn and the debounce flush there is a THIRD place that builds what the agent reads:
+// `ingestUnhandledMessage`, which folds into the contact's memory the message no turn ever covered
+// (outside business hours, or already taken by a colleague). It drops whatever "renders to nothing",
+// so an email whose whole request is its subject has to render to something, or the agent answers in
+// the morning a conversation in which nobody asked anything. The call site asks
+// `incomingRenderable`, the ONE mapping from a normalized event to what the agent would read, so a
+// marker added to the renderer reaches all three readers.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -173,8 +169,8 @@ describe.skipIf(!dbUp)("the email nobody answered still reaches memory", () => {
     });
   });
 
-  // Issue #755: the instant the webhook payload carries travels with the fold, so the model later
-  // reads when the customer wrote it and not when somebody finally answered.
+  // NOTE: The instant the webhook payload carries travels with the fold, so the model later reads when the
+  // customer wrote it and not when somebody finally answered.
   test("the fold carries the instant the customer wrote it", async () => {
     const n = inboundEmail(6104, {
       content: "segue o comprovante",
@@ -197,9 +193,8 @@ describe.skipIf(!dbUp)("the email nobody answered still reaches memory", () => {
   });
 
   test("the text folded in is the text a turn would have read", async () => {
-    // Item 2 of the scenario, and the reason this call site asks the shared mapping instead of
-    // spelling the shape a third time: memory and the turn must not describe the same message
-    // differently.
+    // NOTE: The reason this call site asks the shared mapping instead of spelling the shape a third time:
+    // memory and the turn must not describe the same message differently.
     const n = inboundEmail(6102, {
       content: "Enviado do meu iPhone",
       subject: SUBJECT,

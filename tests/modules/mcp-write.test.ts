@@ -324,18 +324,12 @@ describe("MCP write gate (no DB)", () => {
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
-// EVERY BLOCK THIS TOOL PUBLISHES IS A BLOCK IT ACTUALLY WRITES.
-//
-// `agentSettingsSet` used to copy the args into its patch with one `if (args.X !== undefined)` line
-// per block, seventeen of them, and the eighteenth went in without one. `modelFallback` was in the
-// tool's schema, accepted by the parser, and dropped on the floor: a fallback-only call answered
-// "no updatable fields provided" and a call that also carried some other block succeeded while
-// ignoring the fallback entirely. Nothing failed; the tool reported success for a write it did not
-// make.
-//
-// The copy is a loop over `BEHAVIOR_PATCH_SHAPE` now, so this fence is not what stops the next one —
-// it is what proves the loop is still wired to the schema rather than to a list that drifted from
-// it. Keyed on the schema, DB-free, and one test per block so a failure names the block.
+// EVERY BLOCK THIS TOOL PUBLISHES IS A BLOCK IT ACTUALLY WRITES. A block in the tool's schema that
+// the patch copy skips is dropped on the floor: a call with only that block answers "no updatable
+// fields provided", and a call that also carries another block succeeds while ignoring it. The copy
+// is a loop over `BEHAVIOR_PATCH_SHAPE`, so this fence proves the loop is still wired to the schema
+// rather than to a list that drifted from it. Keyed on the schema, DB-free, and one test per block
+// so a failure names the block.
 describe("agent_settings_set writes every block it advertises", () => {
   const KEYS = Object.keys(
     BEHAVIOR_PATCH_SHAPE,
@@ -373,9 +367,8 @@ describe("agent_settings_set writes every block it advertises", () => {
     expect(KEYS).toContain("modelFallback");
   });
 
-  // The refusal is the operator's only list of what this tool takes, so it is derived from the same
-  // keys rather than typed out beside them — it named seventeen blocks while the schema had
-  // eighteen, and the missing one was exactly the block a caller would have been refused for.
+  // NOTE: The refusal is the operator's only list of what this tool takes, so it is derived from the same
+  // keys rather than typed out beside them, where it would drift from the schema.
   test("and the refusal names every one of them", async () => {
     const r = await agentSettingsSet(principal({}), { agent_id: "1" });
     expect(r.ok).toBe(false);
@@ -592,9 +585,9 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
       expect(r.data.status).toBe("pending");
       expect(String(r.data.ref)).toMatch(/^vault:\d+$/);
       expect(String(r.data.fillAt)).toContain("/resources/vault?fill=");
-      // Issue #151: the link has to name the tenant the entry belongs to. The console resolves the
-      // tenant from localStorage, so without this a fleet-level session's link opens whatever tenant
-      // the recipient's browser had selected, and the id is simply absent there.
+      // NOTE: The link has to name the tenant the entry belongs to. The console resolves the tenant from
+      // localStorage, so without this a fleet-level session's link opens whatever tenant the recipient's
+      // browser had selected, and the id is simply absent there.
       expect(String(r.data.fillAt)).toContain(`&switchTenant=${tenantA}`);
     }
     const row = await suDb.vaultEntry.findFirst({
@@ -689,10 +682,10 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     expect(audits).toBe(0);
   });
 
-  // Operator prose (handoff/kanban/tool guidance, guardrails policy, vision prompt, follow-up steps)
-  // is clamped by the readers, so an over-cap note used to come back as a SUCCESSFUL diff already
-  // showing the shortened value, which reads as "applied" rather than "cut". The dry run is checked
-  // too: a preview that promises a write the apply would refuse is worse than no preview.
+  // NOTE: Operator prose (handoff/kanban/tool guidance, guardrails policy, vision prompt, follow-up steps) is
+  // clamped by the readers, so an over-cap note would come back as a SUCCESSFUL diff already showing
+  // the shortened value, which reads as "applied" rather than "cut". The dry run is checked too: a
+  // preview that promises a write the apply would refuse is worse than no preview.
   test("agent_settings_set refuses over-cap guidance, on the preview and on the apply", async () => {
     const p = principal({ tenantId: tenantA });
     const boom = "h".repeat(TOOL_INSTRUCTIONS_MAX + 1);
@@ -752,11 +745,10 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
     );
   });
 
-  // #614 fenced the REST bag: a `settings` write that omits blocks the row holds is refused. The MCP
-  // patch reaches the SAME service function and must not be caught by it, because
-  // `mergeBehaviorSettings` starts from a copy of the stored bag, so by the time `updateAgent` sees
-  // it every stored key is present. Asked here rather than assumed: the fence protects this path too
-  // the day that merge stops carrying a key, which is the failure it would otherwise hide.
+  // NOTE: A REST `settings` write that omits blocks the row holds is refused. The MCP patch reaches the SAME
+  // service function and must not be caught by it: `mergeBehaviorSettings` starts from a copy of the
+  // stored bag, so by the time `updateAgent` sees it every stored key is present. Asked here rather
+  // than assumed, so the day that merge stops carrying a key the failure shows instead of hiding.
   test("a one-block MCP patch still applies on an agent with other blocks configured", async () => {
     const p = principal({ tenantId: tenantLegacy });
     const ag = await suDb.agent.create({
@@ -1076,18 +1068,12 @@ describe.skipIf(!dbUp)("MCP write tools (DB)", () => {
   });
 });
 
-// `brandingAssetSet` takes a Prisma client precisely so the caller decides which database the tool
-// answers from, and then read the CURRENT branding off the module-level client instead. The row it
-// reported as "already there" came from a different database than the one it was about to write.
-// Issue #502.
-//
-// Nothing reached it before: every other branding_asset_set test in this file refuses ahead of the
-// read (wrong scope, wrong kind, wrong mime, bad base64), and the dry-run fence's row for this tool
-// refuses on `content_base64` for the same reason. `brandingSet` had the identical defect and #490
-// fixed it because that tool had to be measurable; this is the sibling that was left behind.
-//
-// `app_branding` is a fleet singleton (id 1, no tenant column, outside RLS), so seeding it is a
-// global mutation rather than a per-tenant one. The block restores whatever it found.
+// `brandingAssetSet` takes a Prisma client so the caller decides which database the tool answers
+// from, and it reads the CURRENT branding off that same client: read off the module-level one, the
+// row it reports as "already there" would come from a different database than the one it writes.
+// Every other branding_asset_set test refuses ahead of the read, and the dry-run fence's row refuses
+// on `content_base64`, so this block is what reaches it. `app_branding` is a fleet singleton (id 1,
+// no tenant column, outside RLS), so seeding it is a global mutation; the block restores what it found.
 describe.skipIf(!dbUp)(
   "branding_asset_set reads through the client it was handed",
   () => {

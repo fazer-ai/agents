@@ -13,7 +13,7 @@ import {
 } from "@/modules/integrations/service";
 
 // The context these calls take: the tenant id came from a row this test created, so it carries
-// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+// TENANT_ADMIN, the role that tells `runScopedOn` the id never came from outside.
 const ctxOf = (tenantId: bigint): TenantContext => ({
   tenantId,
   userId: null,
@@ -220,12 +220,10 @@ describe.skipIf(!dbUp)("integration route token", () => {
     ).rejects.toBeInstanceOf(AppError);
   });
 
-  // Issue #362. Two of `config`'s keys are read back as HEADER NAMES, and nothing between the
-  // operator's JSON and `request.headers.get` asked whether they are ones — so a trailing space
-  // answered every delivery 500 instead of the uniform 401, and the provider retried a request that
-  // could never succeed. Refused rather than trimmed, the call issue #340 made for vault values:
-  // `x tok` has to be refused regardless of trimming, and the operator typing into raw JSON has no
-  // other feedback.
+  // NOTE: Two of `config`'s keys are read back as HEADER NAMES, so the write asks whether they are ones: a
+  // trailing space would answer every delivery 500 instead of the uniform 401, and the provider would
+  // retry a request that can never succeed. Refused rather than trimmed, like vault values: `x tok` has
+  // to be refused regardless of trimming, and the operator typing into raw JSON has no other feedback.
   const unusable = [
     "asaas-access-token ",
     " x-tok",

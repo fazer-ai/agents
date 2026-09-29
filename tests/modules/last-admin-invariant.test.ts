@@ -10,15 +10,13 @@ import type { TenantContext } from "@/lib/tenancy";
 import { personData } from "@/tests/utils/person";
 import { waitUntilBlocked } from "@/tests/utils/pg-waits";
 
-// The invariant is "a scope keeps somebody who can administer it", and #496 is about WHERE it is
-// enforced: `deleteUser` refuses to remove the last admin, `updateUserRole` demotes them with no
-// guard at all, and the count the delete does read is not serialised against another delete aimed
-// at a DIFFERENT admin of the same scope.
+// The invariant is "a scope keeps somebody who can administer it", on every write that reduces it:
+// `deleteUser` refuses to remove the last admin, `updateUserRole` refuses to demote them, and the
+// count each reads is serialised against a write aimed at a DIFFERENT admin of the same scope.
 //
-// Every test here scopes itself to a tenant created for it. The fleet half of the same invariant
-// (the last SUPER_ADMIN, tenantId null) is deliberately NOT asserted by counting: `users` is global,
-// the suite runs against a database other files write to, and a count keyed on a scope everyone
-// shares measures the neighbour rather than the rule.
+// Every test scopes itself to a tenant created for it. The fleet half (the last SUPER_ADMIN, tenantId
+// null) is deliberately NOT asserted by counting: `users` is global, the suite runs against a
+// database other files write to, and a count on a scope everyone shares measures the neighbour.
 const actor = (tenantId: bigint | null, userId: bigint): TenantContext => ({
   tenantId,
   userId,
@@ -122,8 +120,8 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
     const done = conn
       .$transaction(
         async (tx) => {
-          // The person rows AND their memberships: a tenant administrator's writes lock the
-          // membership (issue #756), the fleet's lock the person.
+          // NOTE: The person rows AND their memberships: a tenant administrator's writes lock the membership, the
+          // fleet's lock the person.
           await tx.$queryRawUnsafe(
             `SELECT id FROM tenant_users WHERE user_id IN (${ids.join(",")}) ORDER BY id FOR UPDATE`,
           );
@@ -161,8 +159,8 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
     await appDb.$disconnect();
   });
 
-  // The half the issue is titled after: the same invariant the delete enforces, on the write that
-  // reduces the count without removing anybody.
+  // NOTE: The demote half: the same invariant the delete enforces, on the write that reduces the count
+  // without removing anybody.
   test("demoting the last administrator of a tenant is refused", async () => {
     const { tenantId, adminIds } = await scope(1);
     await expect(
@@ -248,10 +246,10 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
     }
   });
 
-  // Run two writers so they read the scope at the same instant, and PROVE they did: both are parked
-  // on rows a third transaction holds, both are asserted to be blocked by it, and only then is it
-  // released. Started plain, the two just run one after the other on a quiet machine — measured,
-  // that is exactly what happened, and the race test passed against the tree that has the defect.
+  // NOTE: Run two writers so they read the scope at the same instant, and PROVE they did: both are parked on
+  // rows a third transaction holds, both are asserted to be blocked by it, and only then is it
+  // released. Started plain, the two just run one after the other on a quiet machine, and the race test
+  // would pass against a tree that has the defect.
   async function bothAtOnce(
     rows: bigint[],
     writers: Array<() => Promise<unknown>>,
@@ -285,8 +283,8 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
     expect(await adminsOf(tenantId)).toBe(1);
   });
 
-  // Same race across the two functions, which is the shape the fix has to answer as one invariant
-  // rather than as two guards: whoever loses is refused, and the tenant keeps an administrator.
+  // NOTE: Same race across the two functions, answered as one invariant rather than as two guards:
+  // whoever loses is refused, and the tenant keeps an administrator.
   test("a delete and a demote aimed at different administrators cannot both win", async () => {
     const { tenantId, adminIds } = await scope(2);
     const [a, b] = adminIds as [bigint, bigint];

@@ -60,9 +60,9 @@ describe("MCP read gate (no DB)", () => {
     if (!r.ok) expect(r.error).toContain("invalid agent_id");
   });
 
-  // `code_tool_schema` is a CONSTANT, not tenant data, and it still goes through the read gate: a
-  // surface that answers before the fence is one more thing to remember, and the answer costs the
-  // same either way (issue #538).
+  // NOTE: `code_tool_schema` is a CONSTANT, not tenant data, and it still goes through the read gate: a
+  // surface that answers before the fence is one more thing to remember, and the answer costs the same
+  // either way.
   test("code_tool_schema is behind the gate like every other read", () => {
     const r = codeToolSchema(principal({ scopes: [] }));
     expect(r.ok).toBe(false);
@@ -100,10 +100,9 @@ describe("MCP read gate (no DB)", () => {
     expect(body.failure).toContain("OPERATOR");
   });
 
-  // The globals half of the same vocabulary. It was a SENTENCE naming three of them until #538's
-  // follow-up, and the console's Ctrl-Space listing twenty while this answered three is exactly the
-  // drift `lib/code-tool-vocabulary.ts` exists to close: a body written through MCP and a body
-  // written in the console are the same body, in the same sandbox.
+  // NOTE: The globals half of the same vocabulary. The console's Ctrl-Space listing and this answer read the
+  // same list (`lib/code-tool-vocabulary.ts`): a body written through MCP and a body written in the
+  // console are the same body, in the same sandbox.
   test("code_tool_schema serves the globals the console offers", () => {
     const r = codeToolSchema(principal({}));
     expect(r.ok).toBe(true);
@@ -176,10 +175,10 @@ describe("MCP read gate (no DB)", () => {
     expect(body.result).toContain("dropped ENTIRELY");
   });
 
-  // `code_tool_create` no longer carries the contract, it names this tool for it, and `filterScopes`
-  // grants exactly the scopes a client asked for: a token with `mcp:write` and no `mcp:read` is a
-  // real token, and gating this on read alone pointed it at a tool it could neither list nor call.
-  // Same for `document_template_schema`, which `document_template_create` names the same way.
+  // NOTE: `code_tool_create` names this tool for the contract instead of carrying it, and `filterScopes`
+  // grants exactly the scopes a client asked for: a token with `mcp:write` and no `mcp:read` is a real
+  // token, and gating this on read alone would point it at a tool it could neither list nor call. Same
+  // for `document_template_schema`, which `document_template_create` names the same way.
   test("a write-only token reaches both authoring contracts", async () => {
     const writeOnly = principal({ scopes: ["mcp:write"] });
     expect(codeToolSchema(writeOnly).ok).toBe(true);
@@ -380,11 +379,10 @@ describe.skipIf(!dbUp)("MCP read tools (DB)", () => {
     if (!fenced.ok) expect(fenced.error).toContain("not found");
   });
 
-  // Round 24. An invalid body is SAVED on purpose and answered with a warning, so the warning is
-  // the only record that the tool is known-broken — and it is written once, at the save. An MCP
-  // operator reading the tool afterwards had no way to that fact: `code_tool_get` returned the
-  // source and ran no check, so the problem surfaced when an agent called it. The update preview
-  // makes it worse by pointing here: it reports `[]` for a patch that leaves the body alone,
+  // NOTE: An invalid body is SAVED on purpose and answered with a warning, written once at the save, so the
+  // warning is the only record that the tool is known-broken. `code_tool_get` runs the check on the
+  // stored body, or an MCP operator reading the tool would learn of the problem only when an agent
+  // called it. The update preview points here: it reports `[]` for a patch that leaves the body alone,
   // "the stored body's own warnings are code_tool_get's to show" (write-code-tools.ts).
   test("code_tool_get reports the stored body's own warnings", async () => {
     const broken = await suDb.codeToolDefinition.create({

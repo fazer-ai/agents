@@ -37,8 +37,8 @@ import {
   receiveInbound,
 } from "@/modules/webhooks/inbound/service";
 
-// Issue #818: an external system of the operator's own speaking back into a conversation it was
-// handed, through the GENERIC integration and `{{conversation_ref}}`.
+// An external system of the operator's own speaking back into a conversation it was handed, through
+// the GENERIC integration and `{{conversation_ref}}`.
 
 describe("the GENERIC mapper", () => {
   const map = (raw: unknown) => getMapper("GENERIC")?.map(raw);
@@ -493,13 +493,13 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
       framing: "operator_event",
       text: "Entraram 120 de 400\nPróxima às 16:30",
       instructions: "Mande o relatório como veio.",
-      // Issue #846: which instance spoke, so the conversation can name it.
+      // NOTE: Which instance spoke, so the conversation can name it.
       integrationInstanceId: String(genericId),
     });
   });
 
-  // Issue #817, review round 2: a re-dispatch runs under a scheduler deadline, and the turn it starts
-  // has to stop when that deadline fires, or it finishes beside the next attempt the sweep arms.
+  // NOTE: A re-dispatch runs under a scheduler deadline, and the turn it starts has to stop when that
+  // deadline fires, or it finishes beside the next attempt the sweep arms.
   test("the caller's deadline signal reaches the nudge turn", async () => {
     const minted = await ensureConversationRef({
       tenantId,
@@ -531,9 +531,9 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
     expect(seen).toBe(controller.signal);
   });
 
-  // Review round 3: the route runs this detached with no deadline, and once the sweep exists a claim
-  // older than the stale window is dispatched again. So a caller that brings no signal gets one, and it
-  // fires BEFORE the claim can go stale.
+  // NOTE: The route runs this detached with no deadline, and a claim older than the stale window is
+  // dispatched again by the sweep. So a caller that brings no signal gets one, and it fires BEFORE the
+  // claim can go stale.
   test("with no caller deadline the nudge still gets one, shorter than the stale window", async () => {
     expect(DISPATCH_DEADLINE_MS).toBeLessThan(PROCESSING_STALE_MS);
     const minted = await ensureConversationRef({
@@ -646,8 +646,8 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
       expect(status >= 400 && status < 500).toBe(true);
       expect(String(err)).toContain("conversationRefIntegrationId");
     }
-    // The name belongs to the minted ref, so a field that takes it is refused whatever else the tool
-    // says (review round 1).
+    // NOTE: The name belongs to the minted ref, so a field that takes it is refused whatever else the tool
+    // says.
     await expect(
       createToolDefinition(
         ctx(),
@@ -677,7 +677,7 @@ describe.skipIf(!dbUp)("GENERIC inbound end to end", () => {
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
-  // Review round 1: the integration previews read the same refusals as the write.
+  // NOTE: The integration previews read the same refusals as the write.
   test("the MCP integration previews refuse an open GENERIC route and unusable guidance", async () => {
     const openCreate = await integrationCreate(
       principal(),

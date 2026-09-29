@@ -9,8 +9,7 @@ import {
 import { knowledgeDocumentUpdate } from "@/modules/mcp/write-knowledge";
 import { listDocuments } from "@/modules/rag/documents";
 
-// Issue #708: a document can be read whole and edited in place through the MCP, and the list honours
-// the `limit` it used to accept and ignore.
+// A document can be read whole and edited in place through the MCP, and the list honours its `limit`.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -173,7 +172,7 @@ describe.skipIf(!dbUp)("MCP knowledge document tools", () => {
     expect(row.status).toBe("INDEXED");
   });
 
-  // Issue #857: the title is part of every chunk's vector, so renaming re-embeds.
+  // NOTE: The title is part of every chunk's vector, so renaming re-embeds.
   test("a title-only edit keeps the id and re-indexes", async () => {
     const preview = data<Record<string, unknown>>(
       await knowledgeDocumentUpdate(
@@ -255,7 +254,7 @@ describe.skipIf(!dbUp)("MCP knowledge document tools", () => {
     }
   });
 
-  // Review round 3: the REST twin refuses an empty field, and an empty text would wipe the content.
+  // NOTE: The REST twin refuses an empty field, and an empty text would wipe the content.
   test("an empty title or text is refused, on preview and on apply", async () => {
     for (const empty of [{ title: "" }, { text: "" }]) {
       for (const dry_run of [undefined, false]) {
@@ -273,8 +272,8 @@ describe.skipIf(!dbUp)("MCP knowledge document tools", () => {
     expect(row.content.length).toBeGreaterThan(0);
   });
 
-  // Review round 1: the apply refuses a NUL or a lone surrogate, so the preview must too, or it
-  // approves an edit that cannot happen.
+  // NOTE: The apply refuses a NUL or a lone surrogate, so the preview must too, or it approves an edit that
+  // cannot happen.
   test("a text the column cannot hold is refused by the preview, not only by the apply", async () => {
     for (const bad of [{ text: "a\u0000b" }, { title: "x\uD800" }]) {
       const r = await knowledgeDocumentUpdate(

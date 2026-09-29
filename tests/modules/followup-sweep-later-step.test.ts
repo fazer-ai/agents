@@ -19,21 +19,14 @@ import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
-// A VARREDURA QUE LEU ANTES DO CARIMBO NÃO REINICIA A ESCADA QUE JÁ ANDOU (issue #896).
-//
-// A varredura lê as conversas elegíveis uma vez e arma uma por uma. Entre a leitura e a vez desta
-// conversa no laço, o passo 0 pode terminar: carimba `last_follow_up_at` e reagenda a mesma linha
-// como `{ stepIndex: 1, episode }`, PENDING, para amanhã. A varredura então arma com a decisão que
-// leu antes do carimbo, e o `leaveLaterRun` recusava toda linha de passo > 0 como "sobra de outro
-// episódio": o payload virava `{ threadId, episode }` e o run_at, agora. O tick seguinte rodava
-// "passo 0", via o episódio carimbado e saía `done`; o último passo (etiqueta e resolve) nunca
-// rodava, e nada registrava a perda. O conserto pergunta de novo, no arme e sob a trava da linha, se o
-// episódio continua sem carimbo (`stillWanted`).
-//
-// A intercalação é determinística: o banco que a varredura recebe roda o passo 0 inteiro no instante
-// em que a varredura abre a transação do PRIMEIRO arme, que é depois da leitura das conversas. As duas
-// transações antes dele são a leitura dos agentes e a das conversas (src/modules/followups/handlers.ts,
-// sweepHandler); o teste confere que o passo 0 rodou ali, e não antes, pelo que ele mandou.
+// A VARREDURA QUE LEU ANTES DO CARIMBO NÃO REINICIA A ESCADA QUE JÁ ANDOU. Ela lê as conversas uma
+// vez e arma uma por uma; entre a leitura e a vez desta conversa, o passo 0 pode terminar, carimbar
+// `last_follow_up_at` e reagendar a linha como `{ stepIndex: 1, episode }`. Armar com a decisão lida
+// antes levaria a escada de volta ao passo 0, que veria o carimbo e sairia `done`, e o último passo
+// nunca rodaria. Por isso o arme pergunta de novo, sob a trava da linha, se o episódio continua sem
+// carimbo (`stillWanted`). A intercalação é determinística: o passo 0 roda inteiro quando a
+// varredura abre a transação do PRIMEIRO arme, depois das leituras de agentes e conversas
+// (sweepHandler, src/modules/followups/handlers.ts); o teste confere pelo que o passo 0 mandou.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -363,8 +356,8 @@ describe.skipIf(!dbUp)(
 
     test("a later step left by ANOTHER episode is still replaced by the new episode's step 0", async () => {
       await seedIdle(CONV_OUTRO_EPISODIO);
-      // A escada de um episódio anterior ficou pendente para amanhã, e o nosso último envio abriu
-      // um episódio novo sem cancelá-la (issue #796).
+      // NOTE: A escada de um episódio anterior ficou pendente para amanhã, e o nosso último envio abriu um
+      // episódio novo sem cancelá-la.
       await suDb.schedulerJob.create({
         data: {
           tenantId,
@@ -427,10 +420,10 @@ describe.skipIf(!dbUp)(
       });
     });
 
-    // Review rounds 1 and 2: step 0 can END the sequence on purpose inside the window between the
-    // sweep's read and its arm: the only step of a one-step ladder, a noted window, a schedule that
-    // never opens, retries spent. Each stamps the episode. The arm asks again whether the episode is
-    // still unstamped, so the finished row stays finished instead of going back to step 0.
+    // NOTE: Step 0 can END the sequence on purpose inside the window between the sweep's read and its arm: the
+    // only step of a one-step ladder, a noted window, a schedule that never opens, retries spent. Each
+    // stamps the episode. The arm asks again whether the episode is still unstamped, so the finished row
+    // stays finished instead of going back to step 0.
     test("a ladder that ended between the sweep's read and its arm stays ended", async () => {
       await clearFlowLog(suDb, { tenantId });
       const agent = await suDb.agent.findFirstOrThrow({ where: { tenantId } });

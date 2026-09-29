@@ -144,12 +144,10 @@ describe.skipIf(!dbUp)("getLangfuseCosts (DB)", () => {
     expect(result.byModel[2]).toEqual({ model: "unknown", costUsd: 0 });
   });
 
-  // THE FIGURE ON THE DASHBOARD IS THIS TENANT'S, NOT THE PROJECT'S (issue #427). Every trace we
-  // write carries the tenant slug as the Langfuse `userId` and one of our two environments; without
-  // those filters the query returns whatever else shares the project. Measured on a local Langfuse
-  // during this rodada: the unfenced 30-day total was $7.71, of which $2.70 belonged to two OTHER
-  // tenants (`live-426-r4`, `live-426-r2`) and was being shown to `local-demo` as its own cost.
-  // The type filter is the ceiling's own, so the two numbers on the same screen are the same query.
+  // NOTE: THE FIGURE ON THE DASHBOARD IS THIS TENANT'S, NOT THE PROJECT'S. Every trace we write carries the
+  // tenant slug as the Langfuse `userId` and one of our two environments; without those filters the
+  // query returns whatever else shares the project, other tenants' spend shown as this one's. The type
+  // filter is the ceiling's own, so the two numbers on the same screen are the same query.
   test("the cost is fenced to the tenant and to the segment's environment", async () => {
     const { fetchFn, urls } = capturingFetch([{ data: [] }, { data: [] }]);
     await getLangfuseCosts(ctx(), { source: "playground" }, appDb, fetchFn);
@@ -178,10 +176,10 @@ describe.skipIf(!dbUp)("getLangfuseCosts (DB)", () => {
     }
   });
 
-  // "ALL" IS OUR TWO ENVIRONMENTS, NOT EVERYTHING IN THE PROJECT (issue #427). The segment means
-  // "real and playground together", and a project an operator also points something else at would
-  // otherwise land in the console's headline figure. Measured: the `any of` operator takes the pair
-  // under `type: "stringOptions"`; asked as `type: "string"` Langfuse refuses the request outright.
+  // NOTE: "ALL" IS OUR TWO ENVIRONMENTS, NOT EVERYTHING IN THE PROJECT. The segment means "real and
+  // playground together", and a project an operator also points something else at would otherwise land
+  // in the console's headline figure. The `any of` operator takes the pair under
+  // `type: "stringOptions"`; asked as `type: "string"` Langfuse refuses the request outright.
   test("no segment asks for our two environments, not for the whole project", async () => {
     const { fetchFn, urls } = capturingFetch([{ data: [] }, { data: [] }]);
     await getLangfuseCosts(ctx(), {}, appDb, fetchFn);
@@ -196,9 +194,9 @@ describe.skipIf(!dbUp)("getLangfuseCosts (DB)", () => {
     });
   });
 
-  // A QUERY THAT CANNOT NAME THE TENANT IS NOT ASKED (issue #427). Without the slug there is no
-  // fence, and the project's total is not this tenant's: the read fails instead of answering with
-  // someone else's spend. The poll takes the same road for the same reason.
+  // NOTE: A QUERY THAT CANNOT NAME THE TENANT IS NOT ASKED. Without the slug there is no fence, and the
+  // project's total is not this tenant's: the read fails instead of answering with someone else's
+  // spend. The poll takes the same road for the same reason.
   test("a tenant the query cannot be fenced by is an error, not an unfenced read", async () => {
     // `tenants.slug` is NOT NULL and carries no check constraint, so the empty string is a state the
     // database accepts and this guard is reachable, not decorative.
@@ -219,10 +217,10 @@ describe.skipIf(!dbUp)("getLangfuseCosts (DB)", () => {
     }
   });
 
-  // THE LOCAL PRICE TABLE CHECKED AGAINST LANGFUSE'S (issue #868). The ledger is read over the
-  // Langfuse query's own tenant, window and sources, so the two figures beside each model are two
-  // prices for the same calls: a row of another tenant, of the other segment or from before the
-  // window would put a difference on screen that no price table caused.
+  // NOTE: THE LOCAL PRICE TABLE CHECKED AGAINST LANGFUSE'S. The ledger is read over the Langfuse query's own
+  // tenant, window and sources, so the two figures beside each model are two prices for the same calls:
+  // a row of another tenant, of the other segment or from before the window would put a difference on
+  // screen that no price table caused.
   describe("the cost check", () => {
     const DAY = 24 * 60 * 60 * 1000;
     let otherTenant = 0n;

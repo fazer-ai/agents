@@ -27,17 +27,13 @@ import {
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
-// A VARREDURA SÓ OFERECE O QUE O HANDLER VAI FAZER (issue #796).
-//
-// A varredura roda a cada minuto e re-arma `followup:<thread>` para toda conversa que ela seleciona.
-// Três entradas faziam dela um laço sem fim: um agente com o follow-up desligado continuava
-// selecionado (a SQL testava só `follow_up_armed_at`), uma conversa atribuída a OUTRO bot também (o
-// portão ao vivo devolve `stale`, que não carimba nada), e uma linha que o handler adiou de propósito
-// voltava para agora com o payload trocado, perdendo a contagem de retentativas e a cadência do
-// passo 0. Medido em produção: 89 linhas PENDING do passo 0, uma com `claim_seq` 366.
-//
-// O arranjo é o caminho vivo: a varredura de verdade arma, `claimDueJobs` reivindica, `runClaimed`
-// executa o handler de produção com um modelo e um Chatwoot falsos.
+// A VARREDURA SÓ OFERECE O QUE O HANDLER VAI FAZER. Ela re-arma `followup:<thread>` a cada minuto
+// para toda conversa que seleciona, então três entradas fariam dela um laço sem fim: um agente com o
+// follow-up desligado (`follow_up_armed_at` continua preenchido), uma conversa atribuída a OUTRO bot
+// (o portão ao vivo devolve `stale`, que não carimba nada), e uma linha que o handler adiou de
+// propósito voltando para agora com o payload trocado, perdendo a contagem de retentativas e a
+// cadência do passo 0. O arranjo é o caminho vivo: a varredura de verdade arma, `claimDueJobs`
+// reivindica, `runClaimed` executa o handler de produção com um modelo e um Chatwoot falsos.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -318,9 +314,9 @@ describe.skipIf(!dbUp)(
       expect(await rowOf(CONV_OFF)).toBeNull();
     });
 
-    // Another bot's conversation stays in the selection, because the mirror's assignee may be the
-    // stale half and only the live gate repairs it (review round 1). What ends the loop is the
-    // handler parking the row when the gate declines, and the next pass leaving it parked.
+    // NOTE: Another bot's conversation stays in the selection, because the mirror's assignee may be the stale
+    // half and only the live gate repairs it. What ends the loop is the handler parking the row when the
+    // gate declines, and the next pass leaving it parked.
     test("a conversation another bot holds is asked once, then parked for an hour", async () => {
       await seedIdle(CONV_OTHER_BOT, INBOX_ON, { type: "AgentBot", id: 99 });
       await runSweep();
@@ -344,8 +340,8 @@ describe.skipIf(!dbUp)(
       expect(s.sent).toEqual([]);
     });
 
-    // The retry the handler scheduled keeps its time and its count, so NUDGE_RETRY_LIMIT can be
-    // reached; before, each pass put the row back to now with the sweep's own payload.
+    // NOTE: The retry the handler scheduled keeps its time and its count, so NUDGE_RETRY_LIMIT can be
+    // reached; putting the row back to now with the sweep's own payload would reset both every pass.
     test("a run its handler put off keeps its time and its payload; a due one is armed as before", async () => {
       await seedIdle(CONV_LATER, INBOX_ON);
       await seedIdle(CONV_DUE, INBOX_ON);
@@ -396,9 +392,9 @@ describe.skipIf(!dbUp)(
       expect(due?.attempts).toBe(2);
     });
 
-    // Review round 3: only a STEP-0 deferral is this episode's. Our own reply opens a new episode
-    // without cancelling the old one's later step, and waiting for that step (days of cadence) would
-    // hold back the new episode's first follow-up. The sweep replaces it with step 0.
+    // NOTE: Only a STEP-0 deferral is this episode's. Our own reply opens a new episode without cancelling the
+    // old one's later step, and waiting for that step (days of cadence) would hold back the new
+    // episode's first follow-up. The sweep replaces it with step 0.
     test("a later step left over from an earlier episode is replaced by this episode's step 0", async () => {
       await seedIdle(CONV_OLD_STEP, INBOX_ON);
       await enqueueJob({
@@ -427,9 +423,8 @@ describe.skipIf(!dbUp)(
       expect(r?.runAt.getTime()).toBeGreaterThanOrEqual(before - 1_000);
     });
 
-    // Review round 5: a deferral that says nothing about why it may be kept was written before
-    // deferrals were marked, from a configuration that may have changed since. It is re-armed once,
-    // and the handler recomputes and marks it.
+    // NOTE: A deferral that says nothing about why it may be kept predates the marks, from a configuration
+    // that may have changed since. It is re-armed once, and the handler recomputes and marks it.
     test("an unmarked deferral is re-armed so the handler recomputes it", async () => {
       await seedIdle(CONV_LEGACY, INBOX_ON);
       await enqueueJob({
@@ -450,8 +445,8 @@ describe.skipIf(!dbUp)(
       expect(r?.runAt.getTime()).toBeLessThanOrEqual(Date.now());
     });
 
-    // Review round 7: our own reply opens a new episode without cancelling the old one's deferral.
-    // A backoff armed for the previous episode is not this one's, and its retry count is not either.
+    // NOTE: Our own reply opens a new episode without cancelling the old one's deferral. A backoff armed for
+    // the previous episode is not this one's, and its retry count is not either.
     test("a backoff armed for an earlier episode is replaced, and its retry count with it", async () => {
       await seedIdle(CONV_OTHER_EPISODE, INBOX_ON);
       await enqueueJob({
@@ -477,8 +472,8 @@ describe.skipIf(!dbUp)(
       expect(r?.runAt.getTime()).toBeLessThanOrEqual(Date.now());
     });
 
-    // Review round 8: a reply retires the row DONE with its attempts still counted. The next episode
-    // is new work and starts with a fresh budget, or one transient failure would dead-letter it.
+    // NOTE: A reply retires the row DONE with its attempts still counted. The next episode is new work and
+    // starts with a fresh budget, or one transient failure would dead-letter it.
     test("a row retired in an earlier episode is re-armed with a fresh budget", async () => {
       await seedIdle(CONV_RETIRED, INBOX_ON);
       await enqueueJob({
@@ -502,8 +497,8 @@ describe.skipIf(!dbUp)(
       expect(r?.attempts).toBe(0);
     });
 
-    // Review round 8: an appointment hold is released as soon as the sweep selects the conversation,
-    // which it does only once no live appointment holds it (the appointment ended or was cancelled).
+    // NOTE: An appointment hold is released as soon as the sweep selects the conversation, which it does only
+    // once no live appointment holds it (the appointment ended or was cancelled).
     test("an appointment hold is re-armed once the sweep selects the conversation", async () => {
       await seedIdle(CONV_HELD, INBOX_ON);
       await enqueueJob({
@@ -525,9 +520,9 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    // Found by the acceptance run: the handler threw, and the scheduler re-pended the row with the
-    // error and its own backoff, leaving the payload unmarked. That backoff is kept like the handler's
-    // own, or a failing model spends the whole budget one attempt per pass.
+    // NOTE: When the handler throws, the scheduler re-pends the row with the error and its own backoff,
+    // leaving the payload unmarked. That backoff is kept like the handler's own, or a failing model
+    // spends the whole budget one attempt per pass.
     test("the scheduler's failure backoff is kept, with its error and its budget", async () => {
       await seedIdle(CONV_FAILED, INBOX_ON);
       const later = new Date(Date.now() + 4 * 60_000);
@@ -558,9 +553,9 @@ describe.skipIf(!dbUp)(
       expect(r.payload).toEqual(payload);
     });
 
-    // Found by the verifier: a model that keeps failing sends the row DEAD, which stamps nothing, and
-    // each pass re-armed it for one more model call a minute. A death in this episode keeps the
-    // conversation out; one from an earlier episode does not.
+    // NOTE: A model that keeps failing sends the row DEAD, which stamps nothing, so re-arming it would buy one
+    // more model call a minute. A death in this episode keeps the conversation out; one from an earlier
+    // episode does not.
     test("a follow-up that died in this episode is not re-armed; one that died before it is", async () => {
       await seedIdle(CONV_DEAD_NOW, INBOX_ON);
       await seedIdle(CONV_DEAD_BEFORE, INBOX_ON);
@@ -583,8 +578,8 @@ describe.skipIf(!dbUp)(
         UPDATE scheduler_jobs
            SET status = 'DEAD', attempts = 5, updated_at = now() - interval '1 day'
          WHERE tenant_id = ${tenantId} AND dedupe_key = ${keyOf(CONV_DEAD_BEFORE)}`;
-      // Review round 7: a claim of the PREVIOUS episode that died after this silence began. Its death
-      // time says "this episode"; the episode written on it says otherwise, and that is what counts.
+      // NOTE: A claim of the PREVIOUS episode that died after this silence began. Its death time says "this
+      // episode"; the episode written on it says otherwise, and that is what counts.
       await seedIdle(CONV_DEAD_LATE, INBOX_ON);
       await enqueueJob({
         tenantId,
@@ -627,13 +622,13 @@ describe.skipIf(!dbUp)(
       expect((await rowOf(CONV_DEAD_NOW))?.status).toBe("DEAD");
       const revived = await rowOf(CONV_DEAD_BEFORE);
       expect(revived?.status).toBe("PENDING");
-      // Review round 6: the budget was spent on the earlier episode, so this one starts with a fresh
-      // one instead of dead-lettering on its first transient failure.
+      // NOTE: The budget was spent on the earlier episode, so this one starts with a fresh one instead of
+      // dead-lettering on its first transient failure.
       expect(revived?.attempts).toBe(0);
     });
 
-    // The cadence of a step longer than the cutoff: the handler reschedules to when the step is due,
-    // and the next pass used to pull it back to now, a claim and a reschedule every minute.
+    // NOTE: The cadence of a step longer than the cutoff: the handler reschedules to when the step is due, and
+    // a pass that pulled it back to now would cost a claim and a reschedule every minute.
     test("a step-0 cadence longer than the sweep's cutoff is not pulled back every pass", async () => {
       await seedIdle(CONV_SLOW, INBOX_SLOW);
       await runSweep();
@@ -656,8 +651,8 @@ describe.skipIf(!dbUp)(
       expect(after?.claimSeq).toBe(deferred?.claimSeq);
       expect(s.sent).toEqual([]);
 
-      // Review round 4: the operator shortens the cadence after the deferral. The instant the handler
-      // computed no longer holds, so the next pass re-arms the row now instead of waiting it out.
+      // NOTE: The operator shortens the cadence after the deferral. The instant the handler computed no longer
+      // holds, so the next pass re-arms the row now instead of waiting it out.
       const slow = await suDb.agent.findFirstOrThrow({
         where: { tenantId, name: "slow" },
         select: { id: true, settings: true },

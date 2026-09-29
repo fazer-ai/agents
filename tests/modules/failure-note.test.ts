@@ -33,15 +33,13 @@ import {
 } from "@/modules/scheduler/worker";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #71. A turn that dies leaves the customer with no reply and the operator with nothing to see
-// inside Chatwoot. The note that says so is easy; knowing the turn is DEFINITIVELY lost is not, and
-// getting it wrong is worse than saying nothing — the note tells an operator to take over, and taking
-// over closes the gate the pending retry depends on.
-//
-// These cover the five windows the design named: the announcement hangs off the dead-letter CAS (not
-// the attempt count, and not the handler's catch), a job re-armed mid-run is not dead, the direct
-// path fences on a newer message, an unreadable fence stays silent, and the coalescing claim is the
-// write itself so two concurrent failures cannot both announce.
+// A turn that dies leaves the customer with no reply and the operator with nothing to see inside
+// Chatwoot. Knowing the turn is DEFINITIVELY lost is the hard part, and getting it wrong is worse than
+// silence: the note tells an operator to take over, which closes the gate the pending retry needs.
+// Five windows: the announcement hangs off the dead-letter CAS (not the attempt count, not the
+// handler's catch), a job re-armed mid-run is not dead, the direct path fences on a newer message, an
+// unreadable fence stays silent, and the coalescing claim is the write itself so two concurrent
+// failures cannot both announce.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -77,9 +75,9 @@ let instanceId = 0n;
 let agentId = 0n;
 let nextConv = 900;
 
-// The double AUTHENTICATES like Chatwoot: the note is posted with the bot token, and the whole point
-// of window 1 is that a client built without one gets a 401 that a best-effort catch swallows. A stub
-// that accepts any token is what let that ship in the first place.
+// The double AUTHENTICATES like Chatwoot: the note is posted with the bot token, and a client built
+// without one gets a 401 that a best-effort catch swallows. A stub that accepts any token cannot see
+// that.
 interface Posted {
   conversationId: number;
   content: string;
@@ -602,12 +600,10 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       select: { id: true },
     });
     registerDebounceHandler();
-    // `tenantId` IS THE FENCE, not decoration: the tick is cross-tenant by design (one leader in
-    // production), so without it this drain claims and executes rows belonging to whatever else is
-    // using this database. Under `bun test --parallel` that is another worker's file, and the row it
-    // steals is gone before that file ever looks: measured, this call took the WEBHOOK_RETRY that
-    // tests/modules/debounce.test.ts had just enqueued for its own tenant, and the failure surfaced
-    // there, in a file that had done nothing wrong. See the note on TickOptions.tenantId.
+    // NOTE: `tenantId` IS THE FENCE, not decoration: the tick is cross-tenant by design (one leader in
+    // production), so without it this drain claims rows of whatever else uses this database, under
+    // `bun test --parallel` another worker's file (a WEBHOOK_RETRY tests/modules/debounce.test.ts
+    // enqueued), and the failure surfaces there. See the note on TickOptions.tenantId.
     await runSchedulerTick(appDb, {
       staleMs: 5 * 60_000,
       batchSize: 20,

@@ -18,17 +18,13 @@ import {
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
-// A VARREDURA NÃO PODE SUPLANTAR O FOLLOW-UP QUE ESTÁ RODANDO (issue #786).
-//
-// A varredura roda a cada minuto e re-arma `followup:<thread>` para toda conversa elegível. Enquanto
-// o passo 0 está na chamada do modelo, `last_follow_up_at` ainda não foi carimbado, então a conversa
-// continua elegível e o re-arme caía sobre a linha CLAIMED: status de volta a PENDING, payload
-// trocado, e o `reschedule` do passo 1 descartado pelo CAS do token. A segunda execução começava no
-// passo 0, via a conversa carimbada e devolvia `done`: o último passo (etiqueta e resolve) sumia.
-//
-// O arranjo é o caminho vivo inteiro: a varredura de verdade arma, `claimDueJobs` reivindica,
-// `runClaimed` executa o handler e grava o desfecho. A varredura do meio roda DENTRO do passo 0, na
-// sonda de posse ao vivo que precede a chamada do modelo, que é exatamente a janela da issue.
+// A VARREDURA NÃO PODE SUPLANTAR O FOLLOW-UP QUE ESTÁ RODANDO. Ela re-arma `followup:<thread>` a
+// cada minuto para toda conversa elegível, e enquanto o passo 0 está na chamada do modelo
+// `last_follow_up_at` ainda não foi carimbado. Um re-arme sobre a linha CLAIMED a devolveria a
+// PENDING com o payload trocado, o CAS do token descartaria o `reschedule` do passo 1, e o último
+// passo (etiqueta e resolve) sumiria. O arranjo é o caminho vivo inteiro (a varredura arma,
+// `claimDueJobs` reivindica, `runClaimed` executa e grava o desfecho), e a varredura do meio roda
+// DENTRO do passo 0, na sonda de posse que precede a chamada do modelo.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -299,7 +295,7 @@ describe.skipIf(!dbUp)(
       expect(after.payload).toEqual({
         threadId: threadOf(CONV_ESCADA),
         stepIndex: 1,
-        // O episódio que a varredura gravou no passo 0 segue com a escada (issue #796).
+        // NOTE: O episódio que a varredura gravou no passo 0 segue com a escada.
         episode: expect.any(String),
       });
       expect(after.claimSeq).toBe(step0.claimSeq);

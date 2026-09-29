@@ -20,11 +20,11 @@ import {
 } from "@/modules/webhooks/inbound/sweep";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 
-// Issue #817: the receptor acks first and dispatches detached, so a death in between left the row
-// PENDING or PROCESSING with the sender holding a 2xx, and only a redelivery ever retried it. The
-// sweep finds those rows and arms one re-dispatch each; the re-dispatch is the processor itself, so
-// the claim, the attempt cap and the dead-letter line are the processor's and are asserted here only
-// as far as the sweep reaches them.
+// The receptor acks first and dispatches detached, so a death in between leaves the row PENDING or
+// PROCESSING with the sender holding a 2xx, where only a redelivery would retry it. The sweep finds
+// those rows and arms one re-dispatch each; the re-dispatch is the processor itself, so the claim,
+// the attempt cap and the dead-letter line are the processor's and are asserted here only as far as
+// the sweep reaches them.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -433,9 +433,9 @@ describe.skipIf(!dbUp)("inbound sweep (issue #817)", () => {
     ).toBe(1);
   });
 
-  // Review round 1: a row whose re-dispatch died keeps its attempt count and stays stranded, so a
-  // pass that read only the oldest N rows would hand every pass to N such rows and never reach a newer
-  // delivery. More than one page of them here, and the newer row must still be armed.
+  // NOTE: A row whose re-dispatch died keeps its attempt count and stays stranded, so a pass that read only
+  // the oldest N rows would hand every pass to N such rows and never reach a newer delivery. More than
+  // one page of them here, and the newer row must still be armed.
   test("rows whose re-dispatch already died do not starve a newer stranded row", async () => {
     await clear(tenantA);
     const now = Date.now();
@@ -483,8 +483,8 @@ describe.skipIf(!dbUp)("inbound sweep (issue #817)", () => {
     expect(live.map((j) => j.dedupeKey)).toEqual([redispatchKey(fresh.id, 0)]);
   });
 
-  // Review round 1: an agent import creates its integrations with a route token each, and it can be
-  // the tenant's first inbound surface, which the boot arm never saw.
+  // NOTE: An agent import creates its integrations with a route token each, and it can be the tenant's first
+  // inbound surface, which the boot arm never saw.
   test("an agent import that brings an integration arms the sweep, and its dry run does not", async () => {
     const ctx: TenantContext = {
       tenantId: tenantImport,
@@ -524,9 +524,8 @@ describe.skipIf(!dbUp)("inbound sweep (issue #817)", () => {
     expect(await sweeps()).toBe(1);
   });
 
-  // Review round 2: the run's deadline has to reach the turn, or a turn past it finishes beside the
-  // next attempt. Driven through the re-dispatch with a fake nudge, on a GENERIC event that reaches
-  // the nudge phase.
+  // NOTE: The run's deadline has to reach the turn, or a turn past it finishes beside the next attempt.
+  // Driven through the re-dispatch with a fake nudge, on a GENERIC event that reaches the nudge phase.
   test("the re-dispatch hands its deadline signal to the nudge turn", async () => {
     await clear(tenantA);
     const minted = await ensureConversationRef({

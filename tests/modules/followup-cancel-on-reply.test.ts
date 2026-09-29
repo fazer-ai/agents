@@ -15,24 +15,14 @@ import {
 } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// O CANCELAMENTO POR RESPOSTA DO CLIENTE TEM QUE ALCANÇAR O JOB JÁ REIVINDICADO (issue #760).
-//
-// "Uma mensagem nova do cliente torna sem efeito o follow-up de inatividade pendente" é a promessa
-// que o receptor escreve, e ela valia só para a metade PENDING: um job que o worker já reivindicou
-// não é pendente, então o cancelamento passava por ele sem tocá-lo e o lembrete saía depois de o
-// cliente ter escrito. Tudo o que o job faz entre a reivindicação e o envio é janela — os portões de
-// entrada, a fila do thread, a chamada do modelo, a moderação, as idas e vindas ao Chatwoot — e a
-// #741 alargou essa janela em até 305 segundos, exatamente quando um turno reativo segura o thread,
-// que é dizer exatamente quando uma mensagem do cliente acabou de chegar.
-//
-// O dano medido na caixa que motivou a rodada não é um lembrete redundante: o agente de e-mail de
-// produção tem dois passos de 24h, e o segundo RESOLVE a conversa e aplica `sem-cliente-esperando`.
-// Então o cliente responde, recebe uma cobrança dos dados que acabou de mandar e, um dia depois, tem
-// a conversa encerrada como se ninguém estivesse esperando.
-//
-// A MENSAGEM ENTRA PELO CAMINHO DE ENTRADA DO APP, nunca escrita à mão na conversa: a cerca do outro
-// lado lê o estado da conversa, e um fixture que carimbasse `last_inbound_at` direto satisfaria a
-// cerca sem o cancelamento ter sido exercitado — o teste mediria a si mesmo.
+// O CANCELAMENTO POR RESPOSTA DO CLIENTE TEM QUE ALCANÇAR O JOB JÁ REIVINDICADO. "Uma mensagem nova
+// do cliente torna sem efeito o follow-up de inatividade pendente" vale também para um job que o
+// worker já reivindicou: tudo entre a reivindicação e o envio é janela (portões, fila do thread,
+// modelo, moderação, Chatwoot), e ela cresce justamente quando um turno reativo segura o thread, ou
+// seja, quando uma mensagem do cliente acabou de chegar. O dano não é só um lembrete redundante: um
+// passo final pode RESOLVER a conversa com `sem-cliente-esperando` logo depois de o cliente escrever.
+// A mensagem entra pelo caminho de entrada do app, nunca escrita à mão: um fixture que carimbasse
+// `last_inbound_at` satisfaria a cerca sem exercitar o cancelamento.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -100,8 +90,7 @@ function jobComoReivindicado(row: {
 }
 
 // Arma o follow-up como o varredor arma, e o deixa no estado que o caso pede. CLAIMED é o worker
-// tendo reivindicado a linha e estando dentro da execução; PENDING é a metade que a issue diz já
-// estar coberta.
+// tendo reivindicado a linha e estando dentro da execução; PENDING é a metade que o status já cobre.
 async function armar(
   convId: number,
   estado: "CLAIMED" | "PENDING",
@@ -383,9 +372,9 @@ describe.skipIf(!dbUp)(
       const job = await armar(CONV_PENDENTE, "PENDING");
       await clienteEscreve(CONV_PENDENTE, "oi, alguma novidade?");
 
-      // A metade que a issue diz já estar coberta, aqui para que o conserto da outra não a leve junto.
-      // A GARANTIA dela é o job não poder mais ser reivindicado, e isso se lê no status: a marca de
-      // aposentadoria é a pergunta do handler EM VOO, que um job nunca reivindicado não chega a fazer.
+      // NOTE: A metade PENDING, aqui para que o cancelamento do job reivindicado não a leve junto. A GARANTIA
+      // dela é o job não poder mais ser reivindicado, e isso se lê no status: a marca de aposentadoria é a
+      // pergunta do handler EM VOO, que um job nunca reivindicado não chega a fazer.
       const row = await suDb.schedulerJob.findUniqueOrThrow({
         where: { id: job.id },
         select: { status: true },
@@ -408,23 +397,14 @@ describe.skipIf(!dbUp)(
     test("a retirada não olha a idade da mensagem, e isso é a decisão", async () => {
       const job = await armar(CONV_REPLAY, "CLAIMED");
 
-      // A conversa NO MEIO da escada: o primeiro lembrete já saiu e ninguém falou desde então. É a
-      // linha que a varredura não re-arma (`GREATEST(last_inbound_at, last_replied_at) >
-      // last_follow_up_at` no sweepHandler), então retirar aqui não adia lembrete: mata o resto da
-      // escada, inclusive o resolve do passo final.
-      //
-      // E a retirada acontece assim mesmo. A alternativa seria uma cerca que reconhecesse a entrega
-      // velha, e nenhuma ordenação disponível aqui distingue as duas coisas que precisam ser
-      // distinguidas: o carimbo da mensagem é do relógio do Chatwoot, a hora de chegada da entrega
-      // confunde a resposta que cruza um lembrete em voo, e a retomada de DEAD não prova que a
-      // mensagem já foi atendida, porque uma entrega pode morrer antes de tratá-la. Cada uma dessas
-      // cercas deixa o mesmo buraco: o lembrete seguinte sai por cima de quem acabou de escrever, e
-      // o passo final resolve a conversa em cima dele.
-      //
-      // Perder a escada custa pouco: quem responde a mensagem recuperada avança `last_replied_at`,
-      // que abre episódio novo pelo mesmo predicado, e a varredura arma outra escada no silêncio
-      // seguinte. Ela só faz falta quando a passada recuperada NÃO responde, e aí o que falta à
-      // conversa é resposta, não um lembrete perguntando se o cliente ainda está lá.
+      // NOTE: A conversa NO MEIO da escada: o primeiro lembrete já saiu e ninguém falou desde então. A varredura
+      // não re-arma essa linha (`GREATEST(last_inbound_at, last_replied_at) > last_follow_up_at` no
+      // sweepHandler), então retirar aqui mata o resto da escada, inclusive o resolve do passo final. E
+      // retira assim mesmo: nenhuma ordenação disponível distingue a entrega velha da nova (o carimbo é do
+      // relógio do Chatwoot, a hora de chegada confunde a resposta que cruza um lembrete em voo, e a
+      // retomada de DEAD não prova que a mensagem foi atendida), e cada cerca dessas deixa o lembrete sair
+      // por cima de quem acabou de escrever. Perder a escada custa pouco: responder avança
+      // `last_replied_at`, que abre episódio novo, e a varredura arma outra escada no silêncio seguinte.
       await suDb.conversation.updateMany({
         where: { tenantId, chatwootConversationId: CONV_REPLAY },
         data: {
@@ -457,17 +437,11 @@ describe.skipIf(!dbUp)(
       const novo = await armar(CONV_REARME, "CLAIMED");
       expect(await jobRetired(novo, suDb)).toBe(false);
     });
-    // -------------------------------------------------------------------------------------------
-    // PONTA A PONTA, e o par é o ponto: o que interessa não é a linha do banco mudar de forma, é o
-    // LEMBRETE NÃO SAIR. Sem o controle positivo ao lado, este par passaria por qualquer motivo — um
-    // agente inelegível, uma cerca de silêncio, uma conversa resolvida — e mediria zero, que é o
-    // formato de teste que a bateria de mutação acusa como regra sem dono.
-    //
-    // A ÚNICA diferença entre os dois casos é a marca de aposentadoria. A mensagem do cliente também
-    // carimba o silêncio da conversa, e essa é OUTRA cerca (o silêncio datado por quem falou por
-    // último): se ela ficasse de pé, o handler desistiria por ela e o teste ficaria verde com o
-    // conserto desfeito. Por isso o estado de silêncio é reposto DEPOIS de a mensagem ter entrado
-    // pelo caminho de verdade — o cancelamento foi exercitado, e o que sobra medindo é a retirada.
+    // NOTE: PONTA A PONTA, e o par é o ponto: o que interessa é o LEMBRETE NÃO SAIR. Sem o controle positivo,
+    // o par passaria por qualquer motivo (agente inelegível, cerca de silêncio, conversa resolvida). A
+    // ÚNICA diferença entre os dois casos é a marca de aposentadoria: a mensagem do cliente também
+    // carimba o silêncio da conversa, que é OUTRA cerca, então o estado de silêncio é reposto DEPOIS de a
+    // mensagem entrar pelo caminho de verdade, e o que sobra medindo é a retirada.
     test("controle: sem resposta do cliente, o lembrete SAI", async () => {
       const job = await armar(CONV_CONTROLE, "CLAIMED");
       await emSilencioElegivel(CONV_CONTROLE);

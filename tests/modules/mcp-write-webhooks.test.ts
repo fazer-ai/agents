@@ -49,10 +49,9 @@ describe("MCP webhooks/alerts/integrations gate (no DB)", () => {
     if (!r.ok) expect(r.error).toContain("unknown event");
   });
 
-  // Review round 1 of #370. `dry_run` DEFAULTS to true here, so the preview is the operator's FIRST
-  // answer — and it echoed the config back as approved while the apply would refuse it, which is the
-  // shape issue #248 was about. A preview that answers only from its own arguments is not a preview
-  // of anything.
+  // NOTE: `dry_run` DEFAULTS to true here, so the preview is the operator's FIRST answer, and it must not
+  // echo the config back as approved when the apply would refuse it. A preview that answers only from
+  // its own arguments is not a preview of anything.
   test("integration_create's dry run refuses a header name the apply would refuse", async () => {
     const r = await integrationCreate(principal({}), {
       catalog_type: "ASAAS",
@@ -221,7 +220,7 @@ describe.skipIf(!dbUp)("MCP webhooks/alerts/integrations tools (DB)", () => {
     expect(row).toBeNull();
   });
 
-  // ── the test send on this transport (issue #605) ──
+  // NOTE: ── the test send on this transport ──
   //
   // `alert_channel_test` sits beside `webhook_test` and takes the same shape: one argument, no
   // `dry_run`, acts on the call. A preview of a test would be a preview of a preview, and the whole
@@ -349,8 +348,8 @@ describe.skipIf(!dbUp)("MCP webhooks/alerts/integrations tools (DB)", () => {
     }
   });
 
-  // The other half of the same round: the update tool has its own dry-run branch, and a rule enforced
-  // on one of the two would let an operator edit an instance into exactly what create refuses.
+  // NOTE: The other half: the update tool has its own dry-run branch, and a rule enforced on only one of
+  // the two would let an operator edit an instance into exactly what create refuses.
   test("integration_update's dry run refuses it too", async () => {
     const p = principal({ tenantId: tenantA });
     const created = await integrationCreate(

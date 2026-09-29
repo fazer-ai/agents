@@ -83,10 +83,9 @@ describe("MCP channels gate (no DB)", () => {
   });
 
   test("deployment_connect dry-run refuses a malformed base_url", async () => {
-    // NOTE: what is still answerable with NO database. The preview used to approve every base URL
-    // and this block previewed a successful connect; it now reads the tenant's current deployment
-    // to refuse a server switch (#490), so a successful preview belongs in the DB block below.
-    // What survives here is the pure half: a base URL that is not a URL needs nothing to refuse.
+    // NOTE: what is answerable with NO database: a base URL that is not a URL needs nothing to refuse.
+    // The preview reads the tenant's current deployment to refuse a server switch, so a successful
+    // preview belongs in the DB block below.
     const r = await deploymentConnect(principal({}), {
       base_url: "not-a-url",
       admin_token: "raw-secret-xyz",
@@ -201,11 +200,9 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     await appDb.$disconnect();
   });
 
-  // The APPLY's own refusal, which had no test at all until a mutation deleting it from
-  // `connectChatwootDeployment` survived the whole suite. Writing it is also what showed that the
-  // apply reached the network FIRST and refused the switch afterwards — so this test hung for 30s
-  // against a server that is not there, and the operator's admin token had already been sent to a
-  // deployment we were always going to reject. The check now runs before that round trip.
+  // NOTE: The APPLY's own refusal. The check runs before the credential round trip: refusing the switch
+  // after reaching the network would send the operator's admin token to a deployment we were always
+  // going to reject (and hang this test for 30s against a server that is not there).
   test("deployment_connect refuses a second, different Chatwoot server", async () => {
     const r = await deploymentConnect(
       principal({ tenantId: tenantA }),
@@ -303,14 +300,13 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
 
   test("deployment_connect dry-run with a raw token previews, creates nothing", async () => {
     // NOTE: tenantB, not tenantA. `tenantA` is seeded with a deployment at chat.example.com, so
-    // previewing a connect to a DIFFERENT server is a switch — which the preview now refuses the
-    // way the apply always did (#490). This test is about the token and the absent row, so it
-    // needs the tenant that has nothing connected.
+    // previewing a connect to a DIFFERENT server is a switch, which the preview refuses like the apply.
+    // This test is about the token and the absent row, so it needs the tenant that has nothing connected.
     const r = await deploymentConnect(
       principal({ tenantId: tenantB }),
       {
-        // NOTE: a public IP literal for the same reason as the gate test above — the preview
-        // resolves a hostname now, and this test is about the token and the absent row (#490).
+        // NOTE: a public IP literal for the same reason as the gate test above: the preview resolves a
+        // hostname, and this test is about the token and the absent row.
         base_url: "https://93.184.216.34",
         admin_token: "cw-token",
       },
@@ -381,8 +377,8 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     }
   });
 
-  // The reason the preview calls Chatwoot at all: without it this dry run would report a removal
-  // that the apply refuses, which is the shape of defect issue #248 removed one layer up.
+  // NOTE: The reason the preview calls Chatwoot at all: without it this dry run would report a removal that
+  // the apply refuses.
   test("inbox_remove dry-run says so when the inbox is still live", async () => {
     const cw = fakeChatwoot([11]);
     const r = await inboxRemove(
@@ -445,10 +441,9 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
   });
 
   test("inbox_bind dry-run previews current vs new agent (no network)", async () => {
-    // A REAL agent, and it is not decoration: the preview now asks the two questions the write asks
-    // past existence — the account is connected, and the agent being bound exists (#510). A literal
-    // id that names nothing used to read back "would bind" here, which is the write the apply
-    // refuses.
+    // NOTE: A REAL agent, and it is not decoration: the preview asks the two questions the write asks past
+    // existence (the account is connected, and the agent being bound exists), and a literal id naming
+    // nothing would read back "would bind", the write the apply refuses.
     const target = await suDb.agent.create({
       data: {
         tenantId: tenantA,
@@ -481,9 +476,8 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     if (!r.ok) expect(r.error).toMatch(/agent not found/i);
   });
 
-  // A PREVIEW ANSWERS WITH THE APPLY'S OWN "no" (issue #476 review, round 25). A dry run that
-  // approves an operation the apply then refuses is worse than no preview: the caller reads `ok`
-  // and learns the truth from the 422.
+  // NOTE: A PREVIEW ANSWERS WITH THE APPLY'S OWN "no". A dry run that approves an operation the apply then
+  // refuses is worse than no preview: the caller reads `ok` and learns the truth from the 422.
   test("inbox_observe and inbox_bind dry runs refuse what their applies refuse", async () => {
     const watcher = await suDb.agent.create({
       data: {
@@ -625,9 +619,9 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     });
     expect(after).not.toBeNull();
     expect(after?.disconnectedAt).not.toBeNull();
-    // Scoped to THIS instance, not to the tenant: since #395 the row is written by the service, so
-    // another test in this file disconnecting another account leaves one too. One row for one apply
-    // is still the claim, and the target is what says which apply.
+    // NOTE: Scoped to THIS instance, not to the tenant: the row is written by the service, so another test in
+    // this file disconnecting another account leaves one too. One row for one apply is still the claim,
+    // and the target is what says which apply.
     const audits = await suDb.auditLog.count({
       where: {
         tenantId: tenantA,

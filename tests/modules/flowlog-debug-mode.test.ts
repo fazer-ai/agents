@@ -24,13 +24,12 @@ import {
   experimentUpdate,
 } from "@/modules/mcp/write-settings";
 
-// The log debug mode of issue #58: while it is armed, this agent's flow lines keep their `detail`
-// strings whole instead of cutting them at 2000, which is what lets an operator read the audited
-// system prompt past that point.
+// The log debug mode: while it is armed, this agent's flow lines keep their `detail` strings whole
+// instead of cutting them at 2000, so an operator can read the audited system prompt past that point.
 //
-// The mode is stored as the INSTANT IT ENDS, and that is the design under test here more than the
-// lifting itself: there is no representable state where the mode is on and nobody said when it
-// stops, and nothing has to RUN for it to expire.
+// The mode is stored as the INSTANT IT ENDS, and that is the design under test more than the lifting:
+// there is no representable state where the mode is on and nobody said when it stops, and nothing
+// has to RUN for it to expire.
 
 const NOW = new Date("2026-08-25T12:00:00.000Z");
 const iso = (msFromNow: number) =>
@@ -163,8 +162,8 @@ describe("readObservabilityConfig — the mode expires because the stored value 
       NOW,
     );
     expect(onlySize.fullDetail).toBe(true);
-    // Arming the SIZE switch must not start storing the customer's PII: that is the other axis, and
-    // merging them is exactly what #58 refused.
+    // NOTE: Arming the SIZE switch must not start storing the customer's PII: that is the other axis, and it
+    // stays separate.
     expect(onlySize.logToolValues).toBe(false);
 
     const onlyPii = readObservabilityConfig(
@@ -242,8 +241,8 @@ describe("readDebugModes — one condition, three switches", () => {
 });
 
 describe("the debug ceiling is derived from what the API already accepts", () => {
-  // These two numbers are the justification for DEBUG_MAX_STRING, and they are pinned here so the
-  // constant cannot outlive the measurement it was chosen from.
+  // NOTE: These two numbers are the justification for DEBUG_MAX_STRING, pinned so the constant cannot outlive
+  // the figures it was chosen from.
   const VARS = {
     canal: "x".repeat(1234),
     nome_contato: "Maria Aparecida da Silva",
@@ -398,15 +397,15 @@ describe("the raised ceiling is a budget for the whole detail, not per string", 
       Array.from({ length: 50 }, (_, i) => [`k${i}`, "a".repeat(10_000)]),
     );
     const out = redactSecretsDeep(leaves, 0, cap, { left: cap });
-    // The budget plus the ONE marker on the leaf that spent it. Not one per leaf: an allowance that
-    // scales with the field count is not a bound, and this test used to grant exactly that.
+    // NOTE: The budget plus the ONE marker on the leaf that spent it. Not one per leaf: an allowance that
+    // scales with the field count is not a bound.
     expect(carried(out)).toBeLessThanOrEqual(cap + "…[truncated]".length);
   });
 
-  // The count is the whole point: `MAX_ARRAY` bounds arrays and `MAX_DEPTH` bounds nesting, but an
-  // object's key count is bounded by nothing here. A model's tool result is an arbitrary document,
-  // so "one marker per field past exhaustion" is a row that grows without limit — the debug ceiling
-  // was raised to 12,050 and a five-thousand-field result would have written 60 KB of markers alone.
+  // NOTE: The count is the whole point: `MAX_ARRAY` bounds arrays and `MAX_DEPTH` bounds nesting, but an
+  // object's key count is bounded by nothing here. A model's tool result is an arbitrary document, so
+  // "one marker per field past exhaustion" is a row that grows without limit: at the 12,050 debug
+  // ceiling a five-thousand-field result would write 60 KB of markers alone.
   test("the bound does not move when the field count does", () => {
     const cap = 4_000;
     const row = (fields: number) =>
@@ -555,8 +554,8 @@ describe("the raised ceiling is a budget for the whole detail, not per string", 
     ) as Record<string, string>;
     expect(out.first?.startsWith("a")).toBe(true);
     expect(out.first?.length).toBe(cap + "…[truncated]".length);
-    // Exhausted: the second leaf is EMPTY, marker included. `truncate(s, 0)` is the marker by
-    // itself, and a marker nobody paid for is how the whole-row bound leaked.
+    // NOTE: Exhausted: the second leaf is EMPTY, marker included. `truncate(s, 0)` is the marker by itself,
+    // and a marker nobody paid for leaks past the whole-row bound.
     expect(out.second).toBe("");
   });
 
@@ -625,19 +624,12 @@ describe("only an ISO instant that names its offset arms the mode", () => {
   });
 });
 
-// THE FAMILY, SWEPT RATHER THAN LISTED.
-//
-// The debug mode reaches a log line through `FlowContext.fullDetail`, and every context that knows
-// an agent has to carry it — otherwise one agent's setting answers one way on a reply and another
-// way on a follow-up, with nothing in the settings saying so. That is exactly what happened: the
-// proactive turn was left out on the reasoning that it read no observability settings, which stopped
-// being true the moment the loaded config grew the field.
-//
-// So the check is a sweep of every construction site, not a list of the ones remembered — and the
-// FILE list has to be swept too, which it was not. It was four paths written by hand, and a hand-
-// written list goes stale the same way a hand-written site list does: a new emitter arrived on the
-// base (`flowlog/command.ts`) and this test had nothing to say about it, while five files that were
-// there all along had never been looked at. Discovered now, from the tree.
+// THE FAMILY, SWEPT RATHER THAN LISTED. The debug mode reaches a log line through
+// `FlowContext.fullDetail`, and every context that knows an agent has to carry it, or one agent's
+// setting answers one way on a reply and another way on a follow-up with nothing in the settings
+// saying so. A site that "reads no observability settings" stops being one the moment the loaded
+// config grows the field. So the check sweeps every construction site, and the FILE list is
+// discovered from the tree too: a hand-written list goes stale exactly like a hand-written site list.
 const FLOW_SRC = new URL("../../src/", import.meta.url).pathname;
 
 async function flowFiles(): Promise<string[]> {
@@ -649,15 +641,12 @@ async function flowFiles(): Promise<string[]> {
   return out.sort();
 }
 
-// WHERE THE MODE HAS NOTHING TO WIDEN, named one by one with the reason.
-//
-// The mode lifts the 2,000-character cut on `detail` strings. A line whose detail is a closed
-// vocabulary — counters, enums, status slugs, numeric ids — cannot reach that cut on its longest
-// possible value, so carrying the mode there would buy nothing and cost a settings read per line.
-// The two lines that DO carry an unbounded string, the `generate` line's audited prompt and the
-// tool line's arguments and results, are in `graph/runtime.ts` and `graph/nudge.ts`.
-//
-// Named rather than counted, so a site added later fails this test instead of joining a tally.
+// WHERE THE MODE HAS NOTHING TO WIDEN, named one by one with the reason. The mode lifts the
+// 2,000-character cut on `detail` strings; a line whose detail is a closed vocabulary (counters,
+// enums, status slugs, numeric ids) cannot reach that cut, so carrying the mode would cost a settings
+// read per line for nothing. The unbounded strings (the audited prompt, a tool's arguments and
+// results) are in `graph/runtime.ts` and `graph/nudge.ts`. Named rather than counted, so a site added
+// later fails this test instead of joining a tally.
 const NO_LONG_STRING: Record<string, string> = {
   // `{ command: "teste" | "reset", reason: one of three literals, personaBot/routeBot: number }`.
   "modules/flowlog/command.ts": "closed vocabulary",
@@ -668,11 +657,9 @@ const NO_LONG_STRING: Record<string, string> = {
   "modules/debounce/handler.ts": "closed vocabulary",
   // The same `GateCloseDetail`, on the gate's handoff lines.
   "modules/chatwoot/webhook.ts": "closed vocabulary",
-  // `describeHumanTakeover`, which is that same `GateCloseDetail` (`{ outcome, via }`). The line
-  // moved here from `webhook.ts` when the takeover became a unit of its own (issue #439), and the
-  // exemption had to move with it: an exemption keyed by FILE is inherited by whatever the file
-  // holds next and lost by whatever leaves, so the reason is restated against the site that is here
-  // rather than carried over.
+  // NOTE: `describeHumanTakeover`, which is that same `GateCloseDetail` (`{ outcome, via }`). An exemption
+  // keyed by FILE is inherited by whatever the file holds next, so the reason is stated against the
+  // site that is here.
   "modules/chatwoot/human-takeover.ts": "closed vocabulary",
 };
 
@@ -787,11 +774,10 @@ test("the debug ceiling can never fall below the ordinary one", () => {
   expect(Math.max(MAX_STRING, 500 * 3)).toBe(MAX_STRING);
 });
 
-// The ceiling is derived from "the largest operator-authored prompt this API accepts", and that
-// sentence is only true while every path that supplies a prompt is held to the same number. The A/B
-// experiment variant was not: it REPLACES the agent's prompt when assigned, and its schema took any
-// string, so a variant could ship a prompt the agent itself would have been refused — and the debug
-// mode would then truncate the very field it exists to show.
+// The ceiling is derived from "the largest operator-authored prompt this API accepts", which holds
+// only while every path that supplies a prompt is held to the same number. An A/B experiment variant
+// REPLACES the agent's prompt when assigned, so a variant schema taking any string would ship a prompt
+// the agent itself would refuse, and the debug mode would truncate the very field it exists to show.
 describe("every prompt source is held to the ceiling the derivation assumes", () => {
   const at = () => "x".repeat(config.agent.promptMaxChars);
   const over = () => "x".repeat(config.agent.promptMaxChars + 1);
@@ -805,7 +791,7 @@ describe("every prompt source is held to the ceiling the derivation assumes", ()
     ).toBe(false);
   });
 
-  // The asymmetry is the fix, not an oversight. `variantSchema` is what `parseVariants` runs over a
+  // NOTE: The asymmetry is deliberate, not an oversight. `variantSchema` is what `parseVariants` runs over a
   // STORED row, and it parses the whole ARRAY: bounding it would make one prompt written under the
   // older contract fail that parse and silently disable the entire experiment for every turn.
   // Bounding a write refuses the caller, who can act on it; bounding a read refuses the tenant, who
@@ -834,7 +820,7 @@ describe("every prompt source is held to the ceiling the derivation assumes", ()
   });
 
   test("the ceiling covers the audit of the largest prompt any path may supply", () => {
-    // Both sources are now the same number, so the 2.56x worst case above still bounds the audit.
+    // NOTE: Both sources are the same number, so the 2.56x worst case above still bounds the audit.
     expect(DEBUG_MAX_STRING).toBeGreaterThanOrEqual(
       Math.ceil(config.agent.promptMaxChars * 2.56),
     );
@@ -874,7 +860,7 @@ describe("a schedule variable expands once, not once per occurrence", () => {
   test("the repeats collapse instead of multiplying", () => {
     const one = audit("{{horario_atendimento}}").length;
     const fifty = audit("{{horario_atendimento}}".repeat(50)).length;
-    // Unbounded, fifty occurrences would be fifty renderings. What it costs now is one rendering
+    // NOTE: Unbounded, fifty occurrences would be fifty renderings. What it costs is one rendering
     // plus a measured placeholder per repeat.
     expect(fifty).toBeLessThan(one * 2);
     expect(audit("{{horario_atendimento}}".repeat(50))).toContain(
@@ -902,15 +888,11 @@ describe("a schedule variable expands once, not once per occurrence", () => {
   });
 
   test("the reserved allowance is a MARGIN, and what is past it degrades rather than breaks", () => {
-    // This input is UNREACHABLE by construction, and is built by hand for that reason: since issue
-    // #346 `parseWindows` caps what any stored schedule surfaces at `MAX_SCHEDULE_WINDOWS`, so no
-    // row renders past the allowance reserved above however the column was written. It used to be
-    // reachable through the agent import, which took `windows` as `z.array(z.unknown())`.
-    //
-    // The test stays because what it pins is not the schedule, it is the ceiling's own fallback:
-    // past the reserve the field is CUT, with no throw and no unbounded row. That has to keep
-    // holding for whatever outgrows the reserve next, which is what makes the allowance a budget
-    // rather than an assumption about its inputs.
+    // NOTE: This input is UNREACHABLE by construction and is built by hand for that reason: `parseWindows`
+    // caps what any stored schedule surfaces at `MAX_SCHEDULE_WINDOWS`, so no row renders past the
+    // allowance reserved above. What it pins is the ceiling's own fallback: past the reserve the field is
+    // CUT, with no throw and no unbounded row, for whatever outgrows the reserve next. That is what makes
+    // the allowance a budget rather than an assumption about its inputs.
     const huge = {
       schedule: {
         windows: Array.from({ length: MAX_SCHEDULE_WINDOWS * 200 }, (_, i) => ({
@@ -1032,15 +1014,11 @@ describe("the MCP dry run answers the same as the apply", () => {
       dry_run: true,
     });
 
-  // THE CONTROL, and it is the point of this pair: without it the refusal below passes on a call
-  // that never reached the check at all. It did: the first version of this test asserted a refusal
-  // and was handed `insufficient_scope`, which is a refusal about something else entirely.
-  //
-  // It stopped asserting `ok: true` when #547 made naming an agent part of a create, since these
-  // calls carry no database to look one up in. What it asserts instead is the same discrimination
-  // one step earlier: a short prompt is not what this preview refuses. The variants are parsed
-  // BEFORE the agent is looked up, in the apply's own order, so the pair still separates a refusal
-  // about the prompt from a refusal about anything else.
+  // NOTE: THE CONTROL for this pair: without it the refusal below passes on a call that never reached the
+  // check (an `insufficient_scope` refusal is about something else entirely). These calls carry no
+  // database, and naming an agent is part of a create, so it cannot assert `ok: true`; it asserts that
+  // a short prompt is not what this preview refuses. The variants are parsed BEFORE the agent is looked
+  // up, in the apply's own order, so the pair still separates a refusal about the prompt from any other.
   test("a short variant prompt is not what the preview refuses", async () => {
     const res = JSON.stringify(await preview("curto"));
     expect(res).not.toContain("insufficient_scope");
@@ -1048,9 +1026,9 @@ describe("the MCP dry run answers the same as the apply", () => {
   });
 
   test("an update with an oversized variant answers, it does not throw", async () => {
-    // `mapVariants` validates now, so on the update path it threw BEFORE the try — and a tool that
-    // throws answers the caller with an exception instead of the `{ ok: false, error }` every other
-    // refusal on this surface produces. Create had it inside the boundary; update did not.
+    // NOTE: `mapVariants` validates, so on the update path it has to run inside the try: a tool that throws
+    // answers the caller with an exception instead of the `{ ok: false, error }` every other refusal on
+    // this surface produces.
     const res = await experimentUpdate(principal, {
       experiment_id: "1",
       variants: [{ key: "a", system_prompt: over }],

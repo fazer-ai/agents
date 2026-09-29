@@ -7,8 +7,8 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { ROUTE_COVERAGE } from "@/modules/mcp/route-coverage";
 import { buildMcpServer } from "@/modules/mcp/server";
 
-// Issue #708: every REST route either has an MCP twin, or says why not, or is a named gap. The
-// table is `src/modules/mcp/route-coverage.ts`, and its header says what each answer means.
+// Every REST route either has an MCP twin, or says why not, or is a named gap. The table is
+// `src/modules/mcp/route-coverage.ts`, and its header says what each answer means.
 
 const CONTROLLERS = join(import.meta.dir, "../../src/api/v1");
 
@@ -52,8 +52,8 @@ async function registeredTools(): Promise<Set<string>> {
       userId: 1n,
       tenantId: null,
       role: "SUPER_ADMIN",
-      // `mcp:admin` too: the fleet tools (deployment, tenants) are published only under it, and
-      // without it they read as absent (review round 2 of #780).
+      // NOTE: `mcp:admin` too: the fleet tools (deployment, tenants) are published only under it, and without it
+      // they read as absent.
       scopes: ["mcp:read", "mcp:write", "mcp:admin"],
       clientId: "c",
       jti: "j",
@@ -114,7 +114,7 @@ describe("REST routes and their MCP twins", () => {
     expect(blank).toEqual([]);
   });
 
-  // The two routes the issue was filed over, pinned so the table cannot quietly demote them to a gap.
+  // NOTE: Reading and editing a knowledge document, pinned so the table cannot quietly demote them to a gap.
   test("reading and editing a knowledge document have tools", () => {
     expect(ROUTE_COVERAGE["GET /v1/knowledge/documents/:id"]).toEqual({
       tool: "knowledge_document_get",

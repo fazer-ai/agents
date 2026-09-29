@@ -118,9 +118,8 @@ describe("format", () => {
 });
 
 // What the customer can add up. A unit price of 0.105 PRINTS as R$ 0,11, so a line of three of them
-// has to print R$ 0,33 — multiplying the hidden 0.105 gives 0.315, rounds to R$ 0,32, and leaves the
-// customer holding three numbers that do not agree. This is the exact failure the module's header
-// names, one level below where it was being checked.
+// has to print R$ 0,33: multiplying the hidden 0.105 gives 0.315, rounds to R$ 0,32, and leaves the
+// customer holding three numbers that do not agree.
 describe("what is printed is what is computed", () => {
   // The case the naive `Math.round(v * 100)` gets wrong, and the reason the rounding is done through
   // the decimal representation: the multiplication is binary, so 1.005 * 100 is 100.49999999999999
@@ -139,9 +138,9 @@ describe("what is printed is what is computed", () => {
     }
   });
 
-  // JavaScript writes small magnitudes in EXPONENT form, so a value like 1e-7 stringifies as "1e-7"
-  // and appending "e2" gives "1e-7e2" — not a number. The arithmetic then produced NaN and the
-  // customer's PDF printed NaN where its total belongs, for an amount that is simply zero cents.
+  // NOTE: JavaScript writes small magnitudes in EXPONENT form, so 1e-7 stringifies as "1e-7" and appending
+  // "e2" gives "1e-7e2", not a number: the arithmetic would produce NaN and the PDF would print NaN
+  // where its total belongs, for an amount that is simply zero cents.
   test("handles amounts JavaScript writes in exponent notation", () => {
     for (const unitPrice of [1e-7, 9e-7, 1e-21]) {
       const total = lineTotal({ description: "x", quantity: 1, unitPrice });
@@ -183,15 +182,12 @@ describe("what is printed is what is computed", () => {
       const v = lineTotal(item);
       expect(Math.abs(v * 100 - Math.round(v * 100))).toBeLessThan(1e-6);
     }
-    // And exactly, not nearly. `0.07 * 100` is 7.000000000000001, so a cents() that MULTIPLIES
-    // instead of shifting through the decimal hands back 0.07000000000000002 — a number that is not
-    // an amount of money, and that every later sum carries. (0.07, 0.14, 0.28, 0.29, 0.55 and 0.56
-    // are the first six two-decimal values with that property; most do multiply exactly, which is
-    // why an arbitrary example proves nothing here.)
-    // …and exactly across a whole document, which is where it becomes visible. `0.07 * 100` is
-    // 7.000000000000001, and one line absorbs that on the way back through /100 — a hundred lines do
-    // not. The subtotal is also returned to REST and MCP callers, so it has to BE the number, not
-    // print like it.
+    // NOTE: And exactly, not nearly. `0.07 * 100` is 7.000000000000001, so a cents() that MULTIPLIES instead of
+    // shifting through the decimal hands back 0.07000000000000002, which is not an amount of money. (0.07,
+    // 0.14, 0.28, 0.29, 0.55 and 0.56 are the first six two-decimal values with that property; most
+    // multiply exactly, so an arbitrary example proves nothing.) One line absorbs the error on the way
+    // back through /100 and a hundred lines do not, and the subtotal is returned to REST and MCP callers,
+    // so it has to BE the number, not print like it.
     const many = Array.from({ length: 100 }, () => ({
       description: "x",
       quantity: 1,

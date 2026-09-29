@@ -4,16 +4,13 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatOpenAI } from "@langchain/openai";
 import { analyzeGuardrail } from "@/modules/guardrails/analyze";
 
-// The constrained verdict, against the adapters themselves (issue #131).
+// The constrained verdict, against the adapters themselves. These build the vendor adapters directly
+// and point them at a local server instead of asserting on a fake model: the subject is what an
+// ADAPTER puts on the wire and does with the answer, exactly the parts a hand-written double would
+// invent (whether the schema travels as json_schema, what a deviation parses to).
 //
-// These build the vendor adapters directly and point them at a local server, instead of asserting
-// on a fake model. The whole change is about what an ADAPTER puts on the wire and what it does with
-// the answer, and those are exactly the parts a hand-written double gets to invent: every earlier
-// belief about this feature that turned out to be false ("the schema travels as json_schema",
-// "a deviation comes back as a null parse") was a belief about the adapter, not about our code.
-//
-// The server here is not a generic double either. It answers in each vendor's own response shape,
-// so the adapter parses it the way it parses the real one.
+// The server answers in each vendor's own response shape, so the adapter parses it the way it parses
+// the real one.
 
 const BASE = {
   direction: "input" as const,
@@ -190,10 +187,10 @@ describe("the verdict is asked for as a schema, not as prose", () => {
     expect(v.error).toBeUndefined();
   });
 
-  // The decoder is a property of the endpoint, and this repository reaches endpoints that only
-  // claim to be the one they imitate. Measured on a local one: an answer that is valid json but not
-  // a verdict comes back through `parsed` UNVALIDATED, so trusting it would publish "not violated"
-  // for a screen that produced no verdict at all.
+  // NOTE: The decoder is a property of the endpoint, and this repository reaches endpoints that only claim to
+  // be the one they imitate. On such an endpoint an answer that is valid json but not a verdict comes
+  // back through `parsed` UNVALIDATED, so trusting it would publish "not violated" for a screen that
+  // produced no verdict at all.
   test("json that is not a verdict does not become a clean verdict", async () => {
     openaiBody = JSON.stringify({ violado: true, categorias: ["toxicity"] });
     const v = await analyzeGuardrail(openaiModel, BASE, "json-schema");
@@ -201,9 +198,9 @@ describe("the verdict is asked for as a schema, not as prose", () => {
     expect(v.error).toBe("no usable verdict in response");
   });
 
-  // The provider list is about the ENDPOINT; the model field next to it is free text, and a model
-  // that takes ordinary chat and refuses this request would otherwise turn a working screen into a
-  // silent one. A refusal is answered by making the call the way it was made before this existed.
+  // NOTE: The provider list is about the ENDPOINT; the model field next to it is free text, and a model that
+  // takes ordinary chat and refuses this request would otherwise turn a working screen into a silent
+  // one. A refusal is answered by making the call in prose, without the constraint.
   test("a refused request is retried the way it used to be made", async () => {
     refuseConstrained = true;
     const v = await analyzeGuardrail(openaiModel, BASE, "json-schema");
@@ -256,10 +253,10 @@ describe("an adapter that answers around the schema", () => {
     expect(v.error).toBeUndefined();
   });
 
-  // Defence in depth, and it is reachable: measured on this adapter, a reply that answers in TEXT
-  // instead of calling the forced tool arrives with no parsed answer and the text intact. Reading
-  // it is what the prose path has always done, so the screen survives a model that ignored the
-  // tool, instead of being reported as one that never ran.
+  // NOTE: Defence in depth, and it is reachable: on this adapter, a reply that answers in TEXT instead of
+  // calling the forced tool arrives with no parsed answer and the text intact. Reading it is what the
+  // prose path does, so the screen survives a model that ignored the tool instead of being reported as
+  // one that never ran.
   test("a text answer is still read, rather than reported as unscreened", async () => {
     anthropicContent = [
       { type: "text", text: `Analisei: ${JSON.stringify(VIOLATION)}` },
@@ -277,16 +274,12 @@ describe("an adapter that answers around the schema", () => {
   });
 });
 
-// Gemini is asked in its own dialect, and this is where that is pinned. The adapter forwards the
-// schema unconverted, so what we hand it is what Gemini validates: measured live on
-// gemini-3.5-flash and -flash-lite, the json-schema dialect comes back 400 ("Proto field is not
-// repeating, cannot start list") and every screen then costs two calls, while this one answers in
-// one.
-//
-// The reverse is why the two dialects are not interchangeable, also measured live: asked with
-// `nullable: true`, OpenAI ignores the keyword, `suggestedReply` becomes a required string, and the
-// model is pushed into inventing one (8 runs on gpt-5.4-nano: `""` seven times, `"/"` once) — on
-// the direction whose entire rule is that it must never compose a reply.
+// Gemini is asked in its own dialect, pinned here. The adapter forwards the schema unconverted, so
+// what we hand it is what Gemini validates: the json-schema dialect comes back 400 ("Proto field is
+// not repeating, cannot start list") on gemini-3.5-flash and -flash-lite, and every screen would
+// cost two calls. Not interchangeable the other way either: asked with `nullable: true`, OpenAI
+// ignores the keyword, `suggestedReply` becomes a required string, and the model invents one (`""`
+// or `"/"`) on the direction whose rule is that it must never compose a reply.
 describe("the schema dialect Gemini speaks", () => {
   test("nullability reaches the wire as a flag, not as a type union", async () => {
     let wire = "";

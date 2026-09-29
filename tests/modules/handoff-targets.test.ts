@@ -82,10 +82,10 @@ describe("loadHandoffTargets", () => {
   });
 });
 
-// The takeover switch of issue #430, which shares this module with the handoff targets above and
-// nothing else. Its default is the opposite of every other block in the settings bag, and the
-// default is the whole point: an install that never opens the editor is the one the agent is
-// answering over people in.
+// The takeover switch, which shares this module with the handoff targets above and nothing else. Its
+// default is the opposite of every other block in the settings bag, and the default is the whole
+// point: an install that never opens the editor is the one the agent would be answering over people
+// in.
 describe("readTakeoverConfig", () => {
   test("a bag written before this block existed reads as ON", () => {
     expect(readTakeoverConfig({}).onHumanReply).toBe(true);

@@ -4,32 +4,14 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { contactInboxThreadId } from "@/graph/checkpointer";
 import { ingestDedupeKey } from "@/graph/ingest-job";
 
-// ── "NENHUMA INGESTÃO FOI ARMADA PARA ESTA MENSAGEM" NÃO É UMA CONTAGEM (issue #723) ──
-//
-// Quarenta e cinco lugares em dois arquivos fazem essa afirmação contando a POPULAÇÃO de linhas
-// `INGEST_MESSAGE` do tenant, antes e depois, e comparando. A população não é uma quantidade estável,
-// e não por sujeira de teste: a linha é APAGADA ao concluir (`JOB_DELETE_ON_DONE.INGEST_MESSAGE`, cujo
-// comentário em scheduler/lanes.ts explica que essa é a exceção justamente porque a chave nomeia UMA
-// mensagem e nada varre a tabela), e `drainPendingIngest` reapa e drena as pendentes de uma thread a
-// partir de três lugares do produto.
-//
-// O prejuízo tem dois lados, e a issue só viu um:
-//
-// 1. VERMELHO MAL ATRIBUÍDO. Alguém remove linha por perto e o delta não fecha. A mensagem lida como
-//    "a marca de posse humana está enfileirando ingestão quando não deveria", que é exatamente o
-//    defeito para o qual o teste foi escrito, e quem cai nisso na CI tem que descartar a feature
-//    antes de suspeitar da suíte.
-//
-// 2. VERDE QUE NÃO PROVA NADA, que é o caro e que só apareceu quando o holdout foi medido: uma troca
-//    1-por-1 (apaga a linha de outra mensagem, planta a da mensagem sob teste, população constante)
-//    deixou o arquivo 38/0. A linha que o teste jura não existir estava na tabela dois segundos
-//    antes da releitura, e ele passou. Melhorar a mensagem de erro não toca nisso: o veredito
-//    continua sendo decidido pelo TAMANHO da população.
-//
-// Este arquivo prova as três propriedades sem depender de reproduzir o flake, porque ele produz a
-// interferência em vez de esperar por ela. O que a entrega precisa ter é uma pergunta que nomeie a
-// linha: `ingestDedupeKey(graphThreadId, messageId)`, que a produção já usa para montar a chave e que
-// até esta rodada era privada.
+// ── "NENHUMA INGESTÃO FOI ARMADA PARA ESTA MENSAGEM" NÃO É UMA CONTAGEM ──
+// A população de linhas `INGEST_MESSAGE` do tenant não é estável: a linha é APAGADA ao concluir
+// (`JOB_DELETE_ON_DONE.INGEST_MESSAGE`, ver scheduler/lanes.ts) e `drainPendingIngest` drena pendentes
+// de três lugares do produto. Decidir pelo tamanho dá VERMELHO MAL ATRIBUÍDO (alguém remove uma linha
+// por perto e o delta lê como defeito da feature) e VERDE QUE NÃO PROVA NADA (uma troca 1-por-1 deixa
+// a população constante com a linha proibida na tabela). Este arquivo produz a interferência em vez de
+// esperar por ela, e a pergunta certa nomeia a linha: `ingestDedupeKey(graphThreadId, messageId)`, a
+// mesma chave que a produção monta.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -134,7 +116,7 @@ describe.skipIf(!dbUp)("an ingestion armed for THIS message", () => {
       },
     });
 
-    // A forma antiga decide por isto, e isto mudou.
+    // NOTE: A contagem decide por isto, e isto mudou.
     expect(await population()).toBe(3);
     // A afirmação que o teste queria fazer não mudou, porque nada armou ingestão para a mensagem.
     expect(await armedForMine()).toBe(false);
@@ -142,8 +124,8 @@ describe.skipIf(!dbUp)("an ingestion armed for THIS message", () => {
 
   test("O FALSO VERDE: população constante com a linha da própria mensagem plantada", async () => {
     const before = await population();
-    // A troca 1-por-1 que o holdout mediu: some uma de outra mensagem, entra a DESTA, na mesma
-    // transação, e o total não se mexe.
+    // NOTE: A troca 1-por-1: some uma de outra mensagem, entra a DESTA, na mesma transação, e o total não se
+    // mexe.
     await suDb.$transaction([
       suDb.schedulerJob.deleteMany({
         where: {
@@ -163,7 +145,7 @@ describe.skipIf(!dbUp)("an ingestion armed for THIS message", () => {
       }),
     ]);
 
-    // A forma antiga não vê nada acontecer: é exatamente aqui que ela passa em verde.
+    // NOTE: A contagem não vê nada acontecer: é exatamente aqui que ela passa em verde.
     expect(await population()).toBe(before);
     // E a linha que o teste jura não existir está na tabela.
     expect(await armedForMine()).toBe(true);

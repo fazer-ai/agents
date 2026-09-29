@@ -272,15 +272,13 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     reason,
   });
 
-  // THE BARRIER, at the reader that cannot be corrected afterwards (issue #194, round-7 review).
-  // Compaction replaces the raw turns of a closed attendance with a summary of them, so a message
-  // still owed by the ingestion queue is a message summarised out of existence: the later turn's own
-  // barrier appends it AFTER a summary written without it, and nothing ever rewrites that summary.
-  //
-  // The case the drain alone does not cover: an ingestion that DEFERS because a turn holds the
-  // thread. The drain comes back with nothing appended, the turn then finishes, and compaction's own
-  // in-flight check below is clear — so without consulting the drain's answer, compaction would read
-  // an attendance it knows is incomplete.
+  // NOTE: THE BARRIER, at the reader that cannot be corrected afterwards. Compaction replaces the raw turns of
+  // a closed attendance with a summary, so a message still owed by the ingestion queue would be
+  // summarised out of existence: the later turn's own barrier appends it AFTER a summary written without
+  // it, and nothing rewrites that summary. The case the drain alone does not cover: an ingestion that
+  // DEFERS because a turn holds the thread. The drain comes back with nothing appended, the turn
+  // finishes, compaction's own in-flight check is clear, so without consulting the drain's answer
+  // compaction would read an attendance it knows is incomplete.
   test("compaction stands down while ingestion is still owed", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 5601;
@@ -342,15 +340,13 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     ).toBe(1);
   });
 
-  // The generation fence reads "no AgentThread row" as /reset residue and retires the job, and that
-  // reading rested on an invariant #194 moved: every path that stamps a message used to upsert the
-  // row in the same transaction. Ingestion stamps from a QUEUED row now, so a brand-new contact inbox
-  // whose first attendance a person handled end to end reaches its resolve with messages owed and no
-  // row yet. Read as residue, that attendance is retired without ever being summarised, and no later
-  // event re-arms it — the memory of it is simply never written.
+  // NOTE: The generation fence reads "no AgentThread row" as /reset residue and retires the job. Ingestion
+  // stamps from a QUEUED row, so a brand-new contact inbox whose first attendance a person handled end to
+  // end reaches its resolve with messages owed and no row yet. Read as residue, that attendance would be
+  // retired without ever being summarised, and no later event re-arms it.
   //
-  // The contrast with the residue test further down is the whole point: same missing row, and the
-  // only difference is that something is owed.
+  // The contrast with the residue test further down is the whole point: same missing row, and the only
+  // difference is that something is owed.
   test("an attendance whose messages are still owed is summarised, not retired", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 5602;
@@ -454,12 +450,11 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     expect(rows[0]?.messageCount).toBe(3);
   });
 
-  // THE HAND-BACK EVIDENCE SURVIVES THE SUMMARY (issue #457, review round 8). A conversation
-  // resolved while a person still held it is compacted away with everything the hand-back decision
-  // reads — the handoff's tool result and the human agent's messages — and the next turn on the
-  // thread would find nothing, ask nothing, and go back to the silence the feature exists to end.
-  // The head that replaces the stretch carries what it ended in, as metadata: the summary text is
-  // model-written, and nothing here decides from model-written text.
+  // NOTE: THE HAND-BACK EVIDENCE SURVIVES THE SUMMARY. A conversation resolved while a person still held it
+  // is compacted away with everything the hand-back decision reads (the handoff's tool result and the
+  // human agent's messages), and the next turn would find nothing, ask nothing, and go back to the
+  // silence the feature exists to end. The head that replaces the stretch carries what it ended in, as
+  // metadata: the summary text is model-written, and nothing here decides from model-written text.
   test("a summarized human stretch leaves the hand-back still owed", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 5099;
@@ -505,11 +500,10 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     expect(owesHandbackNote(messages)).toBe(true);
   });
 
-  // AND WITH NOTHING TO SUMMARIZE, THE EVIDENCE STILL SURVIVES (issue #457, review round 13). A
-  // summarizer that returns only fence tags leaves every entry empty, `renderMemoryHead` answers
-  // null, and the rewrite then deletes the raw attendance and keeps nothing — including the handoff
-  // the hand-back decision reads. The head is kept in that one case for the sake of the stamp, and
-  // it says exactly what it is: past attendances, no summary of them.
+  // NOTE: AND WITH NOTHING TO SUMMARIZE, THE EVIDENCE STILL SURVIVES. A summarizer that returns only fence
+  // tags leaves every entry empty and `renderMemoryHead` answers null, so a rewrite that kept nothing
+  // would delete the handoff the hand-back decision reads. The head is kept in that one case for the
+  // sake of the stamp, and it says exactly what it is: past attendances, no summary of them.
   test("an empty summary still leaves a carrier for the hand-back", async () => {
     const saver = new MemorySaver();
     const contactInboxId = 5098;
@@ -727,10 +721,10 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     expect(after[0]).toStartWith(MEMORY_HEAD_OPEN);
   });
 
-  // The measured fact the in-flight guard is built on, pinned here so it stays checkable. A LangGraph
-  // invoke is a read-modify-write of the WHOLE message channel: it saves the state it loaded when it
-  // started, plus its own messages. A rewrite that lands in the middle of one is therefore not merged
-  // — it is UNDONE the moment the turn finishes, and the raw history it replaced comes back.
+  // NOTE: The fact the in-flight guard is built on, pinned here so it stays checkable. A LangGraph invoke is
+  // a read-modify-write of the WHOLE message channel: it saves the state it loaded when it started,
+  // plus its own messages. A rewrite that lands in the middle of one is therefore not merged: it is
+  // UNDONE the moment the turn finishes, and the raw history it replaced comes back.
   test("a rewrite that lands mid-invoke is undone when the turn finishes", async () => {
     const saver = new MemorySaver();
     const threadId = contactInboxThreadId(tenantId, instanceId, 5020);
@@ -944,10 +938,10 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     ).toBe(0);
   });
 
-  // The row is committed before the rewrite, on purpose. So a deferral between the two leaves a row
-  // describing turns that are still sitting raw in the thread — and if the conversation reopened
-  // meanwhile, the retry used to bail at the reopened guard and strand it there. The next resolve then
-  // summarized those same turns again into a SECOND row, and the memory head said it all twice.
+  // NOTE: The row is committed before the rewrite, on purpose. So a deferral between the two leaves a row
+  // describing turns that are still raw in the thread, and if the conversation reopened meanwhile, a
+  // retry that bailed at the reopened guard would strand it there: the next resolve would summarize the
+  // same turns into a SECOND row, and the memory head would say it all twice.
   test("a summary stranded by a deferral is applied even after the conversation reopens", async () => {
     const contactInboxId = 5024;
     const conversationId = 723;
@@ -1736,10 +1730,9 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     expect(head).toContain("Remarcou para quinta.");
   });
 
-  // The head renders the newest MEMORY_HEAD_MAX_ATTENDANCES rows, so the query asks for exactly
-  // those. It used to load every row this contact ever had and sort them all, on every compaction,
-  // to keep the last twenty — and the rows are kept forever by design. What this pins is the part a
-  // limit can silently get wrong: WHICH twenty, and in which order.
+  // NOTE: The head renders the newest MEMORY_HEAD_MAX_ATTENDANCES rows, so the query asks for exactly those
+  // instead of loading every row this contact has (rows are kept forever by design). What this pins is
+  // the part a limit can silently get wrong: WHICH twenty, and in which order.
   test("the head carries the newest attendances, oldest-first", async () => {
     const contactInboxId = 7180;
     const conversationId = 7181;
@@ -2022,14 +2015,13 @@ describe.skipIf(!dbUp)("memory compaction", () => {
     expect(detail).not.toContain("resumo do atendimento");
   });
 
-  // WHICH model the summariser runs on. Nothing pinned this before: all 34 makeModel injections in
-  // this file are `() => model`, and none of them looks at the argument. A change to where the model
-  // config comes from therefore passed green by construction — including one that hands the agent's
-  // key to a different vendor, which is the failure this file has no other way to see.
+  // NOTE: WHICH model the summariser runs on. Every other makeModel injection in this file is `() => model`
+  // and ignores the argument, so a change to where the model config comes from would pass green by
+  // construction, including one that hands the agent's key to a different vendor.
   //
-  // The summary is not a reply that is read once and gone: it becomes the memory head, position 0 of
-  // every future turn for this contact, written once and never rewritten. So the model behind it is
-  // worth pinning by name.
+  // The summary is not a reply read once and gone: it becomes the memory head, position 0 of every
+  // future turn for this contact, written once and never rewritten. So the model behind it is pinned
+  // by name.
   describe("which model the summariser runs on", () => {
     function captureModel(reply = "Ana marcou avaliação terça, R$ 250.") {
       const captured: Record<string, unknown>[] = [];
@@ -2109,10 +2101,10 @@ describe.skipIf(!dbUp)("memory compaction", () => {
       });
     });
 
-    // The behaviour-preservation claim, spelled out. An install that configures nothing must keep
-    // producing the summaries it already produced, and the temperature is the part of that which a
-    // rewrite of this call site can silently move: the prompt was chosen by an A/B battery measured
-    // at whatever the agent was set to (summarize.ts), and the summary it writes is permanent.
+    // NOTE: The behaviour-preservation claim, spelled out. An install that configures nothing must keep
+    // producing the summaries it already produced, and the temperature is the part a rewrite of this call
+    // site can silently move: the prompt was chosen at whatever the agent was set to (summarize.ts), and
+    // the summary it writes is permanent.
     test("the agent's own sampling travels when nothing is configured, and is dropped on a switch", async () => {
       await suDb.agent.update({
         where: { id: agentId },
@@ -2164,11 +2156,10 @@ describe.skipIf(!dbUp)("memory compaction", () => {
       });
     });
 
-    // Same vendor, different model, which is the swap this whole knob exists for. `reasoningEffort`
-    // is OpenAI-only and picked for ONE model id, and an explicit value routes the call to
-    // /v1/responses carrying it (planOpenAITransport) — so carrying the agent's onto a model that
-    // does not take it fails every compaction on the agent, not one call. Found by review: the first
-    // version of this gated on the PROVIDER, and same-vendor is exactly the case it let through.
+    // NOTE: Same vendor, different model, which is the swap this whole knob exists for. `reasoningEffort` is
+    // OpenAI-only and picked for ONE model id, and an explicit value routes the call to /v1/responses
+    // carrying it (planOpenAITransport), so carrying the agent's onto a model that does not take it fails
+    // every compaction on the agent. Gating on the PROVIDER alone would let exactly this case through.
     test("a model swap on the same vendor drops the agent's sampling too", async () => {
       await suDb.agent.update({
         where: { id: agentId },
@@ -2227,11 +2218,10 @@ describe.skipIf(!dbUp)("memory compaction", () => {
       });
     });
 
-    // The spend has to be filed under the model that ACTUALLY ran. Without this the cost break-down
-    // reports the summariser's tokens against the agent's model, which is the exact number an
-    // operator would consult to decide whether pointing the summariser somewhere cheaper worked —
-    // and it would show no change. Caught as a surviving mutation: every other assertion in this
-    // file passed with the ledger naming the agent's model.
+    // NOTE: The spend has to be filed under the model that ACTUALLY ran. Otherwise the cost break-down reports
+    // the summariser's tokens against the agent's model, the number an operator would consult to decide
+    // whether pointing the summariser somewhere cheaper worked, and it would show no change. No other
+    // assertion in this file notices the ledger naming the agent's model.
     test("the usage row names the model the summary was actually written by", async () => {
       await suDb.agent.update({
         where: { id: agentId },

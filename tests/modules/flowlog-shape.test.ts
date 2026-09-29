@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readObservabilityConfig } from "@/modules/flowlog/settings";
 import { describeShape } from "@/modules/flowlog/shape";
 
-// Decision table for what a tool call may leave in ExecutionLog.detail (issue #78). Each row is a
-// value the model could plausibly send and the shape that stands in for it.
+// Decision table for what a tool call may leave in ExecutionLog.detail. Each row is a value the model
+// could plausibly send and the shape that stands in for it.
 
 const DECLARED = new Set([
   "cpf",

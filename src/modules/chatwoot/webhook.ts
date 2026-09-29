@@ -1032,7 +1032,7 @@ const LEDGER_CLAIM_BACKOFF_MS = 300;
 // The memory append's enqueue, retried like the ledger claim for the same full-pool blip, wherever no
 // turn will cover the message: `retryArm`'s cases and a colleague's reply. A colleague's reply whose
 // attempts are spent leaves the row to the sweep, which re-arms it by id (./recover-human-reply.ts).
-// Every other ingestion keeps one attempt, with a turn behind it.
+// Every other ingestion keeps one attempt.
 const INGEST_ARM_ATTEMPTS = 4;
 const INGEST_ARM_BACKOFF_MS = 300;
 
@@ -1769,8 +1769,8 @@ type IngestOutcome = "queued" | "nothing" | "no-thread" | "failed";
 
 // Continuous ingestion: fold into the per-contact-inbox thread what no turn handled, so the bot has
 // full context when it resumes. The CALLER gates it (enabled production or monitoring), so a
-// `consumed` incoming here was silenced by a gate. It never throws: a failed enqueue comes back as
-// "failed", and the caller throws on it where the message has no other chance, leaving the row
+// `consumed` incoming here was silenced by a gate. A failed enqueue comes back as "failed" rather
+// than thrown, and the caller throws on it where the message has no other chance, leaving the row
 // PROCESSING for the sweep. See docs/graph.md, "Continuous ingestion".
 async function ingestUnhandledMessage(args: {
   tenantId: bigint;

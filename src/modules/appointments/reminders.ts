@@ -658,9 +658,22 @@ export async function appointmentReminderHandler(
   const p = job.payload;
   const threadId = typeof p.threadId === "string" ? p.threadId : null;
   const eventId = typeof p.eventId === "string" ? p.eventId : null;
-  if (!threadId || !eventId) return { outcome: "done" };
+  if (!threadId || !eventId) {
+    logger.warn(
+      "appointmentReminder: payload without threadId or eventId (job=%s), dropped",
+      String(job.id),
+    );
+    return { outcome: "done" };
+  }
   const parsed = parseThreadId(threadId);
-  if (!parsed || parsed.tenantId !== job.tenantId) return { outcome: "done" };
+  if (!parsed || parsed.tenantId !== job.tenantId) {
+    logger.warn(
+      "appointmentReminder: thread %s does not belong to the job's tenant (job=%s), dropped",
+      threadId,
+      String(job.id),
+    );
+    return { outcome: "done" };
+  }
   // NOTE: Null survives all the way to the nudge's refs (see ReminderNudgeArgs.calendarId).
   const calendarId = typeof p.calendarId === "string" ? p.calendarId : null;
   const credentialRef =
@@ -705,12 +718,25 @@ export async function appointmentReminderHandler(
       base,
     );
     if (live) {
-      if (live.notFound || live.cancelled) return { outcome: "done" };
+      if (live.notFound || live.cancelled) {
+        logger.info(
+          "appointmentReminder: event %s is %s, not sent (thread=%s)",
+          eventId,
+          live.notFound ? "gone" : "cancelled",
+          threadId,
+        );
+        return { outcome: "done" };
+      }
       if (live.summary) summary = live.summary;
     }
   }
 
   if (reminderAlreadyStarted(live, startISO, nowMs())) {
+    logger.info(
+      "appointmentReminder: event %s already started, not sent (thread=%s)",
+      eventId,
+      threadId,
+    );
     return { outcome: "done" };
   }
 
@@ -722,6 +748,9 @@ export async function appointmentReminderHandler(
     signal: ctx?.signal,
     tenantId,
     threadId,
+    // NOTE: The agent resolving after the booking is the ordinary close ("anything else?" / "no"),
+    // and the reminder is for the customer's own appointment, so a close of ours is still ours.
+    deliverToResolved: true,
     // NOTE: Re-asked inside the nudge across the model call, which is long enough for either answer
     // to change: the stamp can land, and a retry minutes before the start can still be composing
     // when the start arrives.
@@ -747,6 +776,13 @@ export async function appointmentReminderHandler(
   // NOTE: sent is spent: a run past its deadline that got this far has its `done` written, or its
   // retry sends the reminder a second time.
   if (nudgeReachedConversation(outcome)) ctx?.commit();
+  else
+    logger.info(
+      "appointmentReminder: nothing reached the conversation (outcome=%s thread=%s event=%s)",
+      outcome,
+      threadId,
+      eventId,
+    );
   // NOTE: A repairable refusal retries the SAME row, but only for the LAST offset: the backoff ladder
   // spans hours, so a retried earlier offset would land beside the next one and send both. An
   // earlier offset has a later one to carry the message; the last one's ceiling is the start itself.

@@ -28,19 +28,14 @@ import { extractMessageVisuals } from "@/modules/vision/extract-message";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogCount } from "../utils/flowlog";
 
-// ISSUE #864: A PICTURE IN AN EMAIL BODY NEVER REACHES VISION.
+// A PICTURE IN AN EMAIL BODY REACHES VISION.
 //
-// Chatwoot's mailbox keeps an inline image INSIDE the body instead of making it an attachment: a
-// blob URL in `content_attributes.email.html_content.full` when the HTML references it by `cid:`,
-// or `<img src="<blob url>">` appended to `text_content.full` when the mail has no HTML at all
-// (Apple Mail on iPhone). The message carries no attachment, the vision pass reads attachments
-// only, and the agent answers "I can't see the attachment" to a customer who sent one — on one
-// production mailbox, 2,397 of the 4,197 email messages that declared an attachment in 14 days.
-//
-// Measured at the two places the pass is consumed: the turn that re-reads the thread (REST page,
-// real extraction with a fake provider, the model's input captured), and the webhook's eager pass
-// (the delivered event, counted by vision stage lines with no credential, as in
-// vision-every-attachment.test.ts).
+// Chatwoot's mailbox keeps an inline image INSIDE the body, not as an attachment: a blob URL in
+// `content_attributes.email.html_content.full` when the HTML references it by `cid:`, or
+// `<img src="<blob url>">` appended to `text_content.full` when the mail has no HTML (Apple Mail on
+// iPhone). Asserted where the pass is consumed: the turn that re-reads the thread (REST page, fake
+// provider, the model's input captured), and the webhook's eager pass (vision stage lines with no
+// credential, as in ./vision-every-attachment.test.ts).
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;

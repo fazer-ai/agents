@@ -12,16 +12,12 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRow } from "../utils/flowlog";
 import { UsageReportingModel } from "../utils/scripted-models";
 
-// The speech normalizer is a BILLED model call on the audio path, and it used to leave no trace at
-// all: no llm_usage row, no execution_logs line, only a logger.warn on failure. Turning it on by
-// default without these two rows would be a fleet-wide cost increase nobody could see. Every test
-// here goes through the real runAgentTurn and reads the rows the operator would read, plus the one
-// thing no row records: the text the voice provider was actually handed.
-//
-// The last two tests are the feature's headline capability, end to end: the rewrite on a credential
-// of its OWN, resolved from the vault by loadAgentConfig (the only place that resolution happens, and
-// the only place a wrong field name would leave it silently unused), and that same credential when
-// its entry does not exist, which must cost the rewrite and never the voice note.
+// The speech normalizer is a BILLED model call on the audio path and it is on by default, so it must
+// leave an llm_usage row and an execution_logs line, or its cost is invisible. Every test goes through
+// the real runAgentTurn and reads the operator's rows, plus the text the voice provider was handed.
+// The last two cover the rewrite on a credential of its OWN, resolved by loadAgentConfig (the only
+// place a wrong field name would leave it silently unused), and that credential's entry missing,
+// which must cost the rewrite and never the voice note.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

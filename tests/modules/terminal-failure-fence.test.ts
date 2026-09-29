@@ -1,23 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-// ── EVERY UNIT OF WORK THAT DIES PERMANENTLY SAYS SO, AND THE COUNT STAYS AT ZERO (issue #356) ──
+// ── EVERY UNIT OF WORK THAT DIES PERMANENTLY SAYS SO, AND THE COUNT STAYS AT ZERO ──
 //
-// Four buses can reach a terminal failure state, and the history of this repo is the count of silent
-// ones going down by one at a time without anything recording how many were left: #196 gave the
-// compaction its line, #318 the unrouted delivery, #317 the dropped command, #325 the dead outbound
-// delivery, #282 the stranded one. Five rounds, five sites, one question.
-//
-// So the acceptance criterion is not a checklist in an issue body — that is satisfied by halves with
-// nothing going red. It is this sweep, and it asks two things:
-//
-//   1. the function that writes a terminal status also announces it;
-//   2. the SET of write sites is exactly the one below, so a sixth bus cannot be added silently.
-//
-// A source sweep, because the alternative (a runtime assertion) can only fire on a path a test
-// already drives, and the whole failure mode here is the path nobody thought to drive. This one
-// replaces the narrower fence #325 left behind (`webhooks-outbound-dead-fence.test.ts`): the
-// outbound module's entry below is what carries that property now, and the same question asked in
-// two files is how the two answers start to differ.
+// The census (docs/logs.md): (1) the function that writes a terminal status also announces it; (2)
+// the SET of write sites is exactly the one below, so a new bus cannot be added silently. A source
+// sweep, because a runtime assertion only fires on a path a test already drives, and the failure
+// mode is the path nobody drives. It is the only fence for the outbound module's dead delivery too:
+// the same question asked in two files is how the two answers start to differ.
 
 const SRC = "src";
 
@@ -106,15 +95,15 @@ const CENSUS: Record<string, string> = {
   // the delivery path threw, the turn threw, or the turn withheld its reply — puts it back, so the
   // next attempt finds a row it can claim instead of one that reads as somebody else's. Announcing
   // the RESTORE would page a second time about a message the loss line already reported, which is
-  // how an alert channel stops being read (#295). The FAILURE to restore is a different event and
+  // how an alert channel stops being read. The FAILURE to restore is a different event and
   // does page, from inside this same helper: from `PROCESSED` nothing revisits the row.
   "src/modules/chatwoot/recover-delivery.ts:putRowBack":
     "ALREADY ANNOUNCED: ./delivery-sweep.ts record, when this row was first declared DEAD",
   // The two that announce ELSEWHERE, and the only exemptions here. Both are CAS writes in the
   // scheduler's service layer, and neither can announce from where it sits: what a dead job means is
   // decided per kind by a registry only the worker holds, and both roads converge on the worker's
-  // `dispatchDeadLetter`, which announces for every kind since #356. The complementary sweep that
-  // every reaper calls `announceReaped` lives in memory-dead-letter.test.ts.
+  // `dispatchDeadLetter`, which announces for every kind. The complementary sweep that every reaper
+  // calls `announceReaped` lives in ./memory-dead-letter.test.ts.
   "src/modules/scheduler/service.ts:failJob":
     "ANNOUNCES ELSEWHERE: ../scheduler/worker.ts dispatchDeadLetter",
   "src/modules/scheduler/service.ts:reapStaleJobs":

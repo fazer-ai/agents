@@ -166,8 +166,8 @@ describe.skipIf(!dbUp)("tts", () => {
             provider: "openai",
             credentialRef: `vault:${ttsKeyId}`,
           },
-          // Pin split off so these TTS tests exercise the plain text/audio reply
-          // path (split is on by default now and has its own test).
+          // NOTE: split off so these tests exercise the plain text/audio reply path (split is on by
+          // default and has its own test).
           split: { enabled: false },
         },
       },
@@ -305,10 +305,9 @@ describe.skipIf(!dbUp)("tts", () => {
     expect(row?.status).toBe("skipped");
   });
 
-  // NOTE: a failing ElevenLabs synth used to log `format: "ogg_opus"` (our INTERNAL container name) next
-  // to a bare "failed with 400" — which reads exactly like the value we put on the wire, and was
-  // reported as such. The line now carries the provider-level format alongside it, plus the
-  // provider's own machine-readable error code (never its free-text message).
+  // NOTE: `ogg_opus` is our INTERNAL container name and alone reads like the value on the wire, so a
+  // failing synth logs the provider-level format beside it, plus the provider's machine-readable
+  // error code (never its free-text message).
   test("a provider failure logs the wire format and the provider's error code", async () => {
     const cfg: TtsConfig = {
       ...TTS_DEFAULTS,
@@ -514,7 +513,7 @@ describe.skipIf(!dbUp)("tts", () => {
       select: { voiceReply: true },
     });
     expect(c.voiceReply).toBe(true);
-    // "default" resets the preference to null → replies mirror the customer (item 14).
+    // NOTE: "default" resets the preference to null, so replies mirror the customer.
     await tool?.invoke({ preference: "default" });
     const c2 = await suDb.contact.findUniqueOrThrow({
       where: { id: contactId },
@@ -548,7 +547,7 @@ describe.skipIf(!dbUp)("tts", () => {
   });
 
   // THE AUDIO REPLY CARRIES ITS OWN WORDS, in the two places a later reader can reach them, and in
-  // NEITHER of them is `content` (issue #763). Filling `content` is the obvious fix and it is the
+  // NEITHER of them is `content`. Filling `content` is the obvious fix and it is the
   // one that breaks delivery: the WhatsApp connector refuses a caption on an audio, so the send
   // fails and the customer receives nothing. The fork stores `transcribed_text` on the attachment
   // and renders it under the player; upstream Chatwoot drops it, which is why the same words also

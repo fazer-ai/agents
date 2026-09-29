@@ -4,7 +4,7 @@ import {
   type TemplateSpan,
 } from "@/modules/tool-definitions/response-template";
 
-// WHERE EACH PIECE OF THE VOCABULARY SITS, so the editor can draw it (issue #563).
+// WHERE EACH PIECE OF THE VOCABULARY SITS, so the editor can draw it.
 //
 // The response template is markdown plus three spellings of our own, and in a plain textarea all
 // four look identical. Drawing them apart needs what `templateTokens` deliberately does not return:
@@ -94,10 +94,9 @@ describe("scanTemplate", () => {
     expect(spans.at(-1)?.kind).toBe("stray");
   });
 
-  // A TOKEN MAY SPAN LINES, because `TOKEN` does and this scan exists to say what the RUNTIME sees.
-  // Found in the browser: a `{{` left open and a `}}` typed a line down read as one token, and the
-  // renderer reads it the same way and refuses it. The completion's own rule stops at a line break,
-  // which is the offer being narrower than the grammar on purpose, not a disagreement about it.
+  // A TOKEN MAY SPAN LINES, because `TOKEN` does and this scan says what the RUNTIME sees: a `{{`
+  // left open and a `}}` a line down read as one token, which the renderer refuses. The completion
+  // stops at a line break on purpose, an offer narrower than the grammar, not a disagreement with it.
   test("reads a token that spans lines the way the renderer does", () => {
     const doc = "- {{nome}} X{{cliente.no\nFIM}}";
     expect(kinds(doc)).toEqual(["token:{{nome}}", "token:{{cliente.no\nFIM}}"]);

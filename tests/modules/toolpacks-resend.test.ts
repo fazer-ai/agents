@@ -261,10 +261,10 @@ describe.skipIf(!dbUp)("resend toolpack — resend_email_status", () => {
     expect(out).toContain("HTTP 404");
   });
 
-  // Measured against the live API: a sending-only key sends fine and answers 401 to
-  // `GET /emails/{id}`, and vault/secret-types.ts passes that same key at save time on purpose
-  // (`restricted_api_key` means the key is valid). So this is the one misconfiguration the
-  // credential test cannot warn about, and HTTP 401 alone sends the operator looking at the id.
+  // NOTE: a sending-only key sends fine and answers 401 to `GET /emails/{id}`, and
+  // src/modules/vault/secret-types.ts passes that key at save time on purpose (`restricted_api_key`
+  // means the key is valid). The credential test cannot warn about it, and HTTP 401 alone sends the
+  // operator looking at the id.
   test("a 401 names the key scope, and that the credential test passes anyway", async () => {
     const { impl } = stubFetch(401, { name: "restricted_api_key" });
     const tool = statusTool(baseCtx({ fetchImpl: impl }));
@@ -287,7 +287,6 @@ describe.skipIf(!dbUp)("resend toolpack — resend_email_status", () => {
   });
 });
 
-// Hardening, from the review of PR #570.
 describe("resend toolpack — who the recipient may be", () => {
   const contactCtx = (over: Partial<ToolpackCtx> = {}) =>
     baseCtx({
@@ -480,8 +479,7 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    // O que a PR nunca exercitou: com a linha gravada, o status daquele id é legível — e o de um id
-    // de outra thread não é.
+    // NOTE: with the row written, that id's status is readable, and an id from another thread's is not.
     test("the row the send wrote is what lets resend_email_status answer, and only for this thread", async () => {
       const { impl } = stubFetch(200, {
         id: "email_persisted",

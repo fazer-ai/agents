@@ -13,7 +13,7 @@ import {
 // a newline or a space. An HTTP field value has its surrounding whitespace stripped before any
 // handler sees it, so a token stored padded can never be matched by the one that arrives, and the
 // refusal is byte-identical to a wrong token: the operator retypes the value on the provider's side
-// forever (issue #338). The write refuses instead of repairing, so no secret is ever rewritten.
+// forever. The write refuses instead of repairing, so no secret is ever rewritten.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

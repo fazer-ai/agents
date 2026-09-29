@@ -23,25 +23,13 @@ import {
   experimentUpdate,
 } from "@/modules/mcp/write-settings";
 
-// Three write families accepted input their own domain cannot use, and each rule already existed
-// somewhere else: on the REST transport (a knowledge base's name is `minLength: 1` there, an
-// experiment's is 1-200) or in the runtime that reads the row back (a `urlTemplate` the tool call
-// feeds to `new URL`, an `agentId` the variant resolver looks up). The core never asked, so the MCP
-// road walked past all of them and the row landed. Issue #501.
-//
-// What each test pins is the EFFECT first and the refusal second, because a bound with no effect
-// behind it is a number someone will relax later. The effects are measured on the base commit:
-//
-//   - a base whose name is blank is dropped from `search_knowledge`'s scope list (buildRagTools
-//     filters on `name.trim()`), which also collapses the `knowledge_base` parameter for every
-//     OTHER base the agent has;
-//   - a 5000-character name goes whole into that tool's description on every turn, and evicts the
-//     other bases from the 1000-character budget the file keeps precisely so "a verbose KB never
-//     bloats the prompt";
-//   - a `url_template` that is not a URL builds a tool, grants it, offers it to the model and
-//     THROWS on the first call (`tool X: invalid urlTemplate`, 400) — not a ToolFailure the model
-//     can read, a raw AppError;
-//   - an experiment on an id that names no agent overrides nothing, forever.
+// Three write families refuse, in the CORE, input their own domain cannot use, so no transport (MCP
+// included) walks past rules the REST schema or the reading runtime already hold. Each test pins the
+// EFFECT first and the refusal second, because a bound with no effect behind it gets relaxed later:
+// a blank base name drops it from `search_knowledge`'s scope (and collapses `knowledge_base` for the
+// other bases); a 5000-character name evicts the others from the 1000-character description budget;
+// a `url_template` that is not a URL throws a raw AppError on the first call; an experiment on an id
+// that names no agent overrides nothing, forever.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -96,8 +84,8 @@ describe("what the agent does with a name its domain cannot use", () => {
     expect(Object.keys(both.schema.shape)).toContain("knowledge_base");
 
     const blank = searchTool([kb(1n, "   "), kb(2n, "Trocas")]);
-    // The blank one is filtered out, which leaves ONE named base — and with one there is nothing to
-    // narrow, so the parameter disappears. "Trocas" was searchable by name a moment ago.
+    // NOTE: the blank one is filtered out, which leaves ONE named base, and with one there is nothing
+    // to narrow, so the parameter disappears and "Trocas" stops being searchable by name.
     expect(Object.keys(blank.schema.shape)).not.toContain("knowledge_base");
     // And the model still reads it in the list, as an element with no name.
     expect(blank.description).toContain("<knowledge_base/>");
@@ -120,7 +108,7 @@ describe("what the model gets when a url_template is not a URL", () => {
   // resolves the host before the fake `fetchImpl` is ever called — so a runner without external DNS
   // would fail this on the lookup and read as a defect in the code under test. The repo's existing
   // pattern (mcp-write-channels, the dry-run fence) is this same address, and the allowlist matches
-  // it because the SSRF check compares the hostname it actually gets (review round 4).
+  // it because the SSRF check compares the hostname it actually gets.
   const HOST = "93.184.216.34";
   const def = (urlTemplate: string) => ({
     name: "consulta_pedido",
@@ -148,8 +136,7 @@ describe("what the model gets when a url_template is not a URL", () => {
     expect(String(await ok.invoke({}))).toContain("HTTP 200");
   });
 
-  // The other shape the write was not asking about: a template that starts with `/` is RELATIVE and
-  // takes its host from the credential's base URL. With no base there is nothing to prepend, and
+  // NOTE: a template that starts with `/` is RELATIVE and takes its host from the credential's base URL. With no base there is nothing to prepend, and
   // this one does not even build — it throws where the toolset is assembled, before any call.
   test("a relative template with no base does not even build", async () => {
     expect(() => buildHttpTool(def("/v1/items"), deps)).toThrow(
@@ -209,18 +196,16 @@ describe.skipIf(!dbUp)(
       }
       let v: unknown = (r as unknown as { data: unknown }).data;
       for (const k of path) v = (v as Record<string, unknown>)[k];
-      // NOTE: a path that names nothing used to return the string "undefined", and a `tool_id` of
-      // "undefined" is refused by BOTH halves — so every assertion that both halves refuse passed
-      // without the rule under test ever being reached. Two rows in this file were vacuous that way
-      // (review round 13, found by a mutation that would not die).
+      // NOTE: a `tool_id` of "undefined" is refused by BOTH halves, so returning that string would let
+      // every both-halves-refuse assertion pass without reaching the rule under test.
       if (v === undefined || v === null) {
         throw new Error(`no ${path.join(".")} in ${JSON.stringify(v)}`);
       }
       return String(v);
     }
 
-    // Both halves of one tool, on one input. The apply is asked FIRST so a preview that wrote (the
-    // #510 regression) would leave the row this counts.
+    // NOTE: both halves of one tool, on one input. The apply is asked FIRST so a preview that wrote
+    // would leave the row this counts.
     async function halves(
       fn: (
         p: VerifiedToken,
@@ -315,10 +300,10 @@ describe.skipIf(!dbUp)(
         ...over,
       });
 
-      // A credential that DOES supply a host, and one that does not because its kind ignores the
-      // column. The second is written straight through Prisma: #521 refuses to store a base URL on
-      // a kind that has no use for it, so the only way that row exists is from before that rule —
-      // and rows from before a rule are exactly what a read-backed check has to answer about.
+      // NOTE: a credential that DOES supply a host, and one that does not because its kind ignores the
+      // column. The second is written straight through Prisma: the vault refuses a base URL on a kind
+      // with no use for it, so that row only exists from before the rule, which is exactly what a
+      // read-backed check has to answer about.
       let dialable = "";
       let ignored = "";
       beforeAll(async () => {
@@ -348,11 +333,10 @@ describe.skipIf(!dbUp)(
         ignored = `vault:${baseIgnored.id}`;
       });
 
-      // The fourth site of the same sentence, and the one that had a control blessing it (review
-      // round 13). A template that starts with `/` is RELATIVE: `buildHttpTool` prepends the
-      // credential's base URL and, with none to prepend, refuses to build the tool at all — so the
-      // row stores, gets granted, is offered to the model, and throws on the first call. The
-      // console's form has blocked that pair on save all along; the core had not been asked.
+      // NOTE: a template that starts with `/` is RELATIVE: `buildHttpTool` prepends the credential's
+      // base URL and, with none, refuses to build the tool, so a stored row would be granted, offered
+      // to the model, and throw on the first call. The console's form blocks the pair on save; the
+      // core asks too.
       test("a relative template with no host to take is refused by both halves", async () => {
         // No credential at all.
         expect(
@@ -393,8 +377,8 @@ describe.skipIf(!dbUp)(
           }),
         ).toMatchObject({ applied: false, previewed: false });
 
-        // And a patch that names NEITHER is not a statement about the pairing: a row stored before
-        // this rule stays editable through everything else (the #524 shape).
+        // NOTE: a patch that names NEITHER is not a statement about the pairing: a row stored before
+        // this rule stays editable through everything else.
         const legacy = await suDb.toolDefinition.create({
           data: {
             tenantId,
@@ -456,10 +440,9 @@ describe.skipIf(!dbUp)(
           // refuses a real interpolation that moves it, so a host placeholder fails every call.
           "https://{{host}}/v1/items",
           "https://api.{{tenant}}.example.com/v1",
-          // The SINGLE-BRACE spelling of the same thing, which this check used to let through
-          // (round 6): `new URL` accepts the braces, and `normalizeToolShapes` rewrites the token to
-          // `{{contact_id}}` on the way to storage, so the runtime refuses it on every call.
-          // Measured on the base: `interpolation altered the origin`.
+          // NOTE: the SINGLE-BRACE spelling: `new URL` accepts the braces, and `normalizeToolShapes`
+          // rewrites the token to `{{contact_id}}` on the way to storage, so the runtime refuses it on
+          // every call (`interpolation altered the origin`).
           "https://api.{contact_id}.example.com/x",
         ])
           expect({
@@ -519,14 +502,10 @@ describe.skipIf(!dbUp)(
       });
     });
 
-    // The FOURTH road, and the one this round declared out of scope until it was exercised. The agent
-    // import writes tool definitions straight through Prisma, so none of the asserts above are on its
-    // path — and measured, a hand-edited bundle carrying `urlTemplate: "not-a-url"` imported CLEAN,
-    // with an empty warnings array and the row stored. `agent_import` is one of the MCP write tools
-    // this issue is about, so that was a site of the same defect, not another door.
-    //
-    // Warn-and-skip, in the module's own vocabulary and asking the SAME function the write asks: the
-    // tool this build cannot call is left out and named, the rest of the agent imports.
+    // NOTE: the FOURTH road. The agent import writes tool definitions straight through Prisma, so
+    // none of the asserts above are on its path, and a hand-edited bundle would import a
+    // `urlTemplate: "not-a-url"` clean. Warn-and-skip, asking the SAME function the write asks: the
+    // tool this build cannot call is left out and named, and the rest of the agent imports.
     describe("the import road", () => {
       const bundle = (urlTemplate: string) => ({
         version: 1,
@@ -600,10 +579,8 @@ describe.skipIf(!dbUp)(
         await suDb.toolDefinition.deleteMany({ where: { tenantId } });
       });
 
-      // The other half, and the one the apply-side fix itself created (review round 5): a rule added
-      // to the apply alone leaves the preview approving the creation of a component that will not be
-      // created. The count it shows and the warnings it names now come from the reader the apply
-      // skips with.
+      // NOTE: a rule added to the apply alone leaves the preview approving a component that will not
+      // be created, so the preview's count and warnings come from the reader the apply skips with.
       test("the preview subtracts the tool the apply will skip, and names it", async () => {
         const bad = await agentImport(
           principal(),
@@ -634,10 +611,9 @@ describe.skipIf(!dbUp)(
         ).toBe(0);
       });
 
-      // THE INVERSE, which the round-5 fix walked straight into (round 7): the apply asks whether a
-      // row under that name already exists BEFORE it asks whether this build can store the bundle's
-      // version, and reuses the row. A preview that only asked the second question announced a tool
-      // as skipped that the apply reuses and grants — the same divergence pointing the other way.
+      // NOTE: THE INVERSE: the apply asks whether a row under that name already exists BEFORE it asks
+      // whether this build can store the bundle's version, and reuses the row. A preview asking only
+      // the second question would announce as skipped a tool the apply reuses and grants.
       test("a bundled tool the tenant already has is reused, not reported as skipped", async () => {
         const ctx = {
           tenantId,
@@ -687,10 +663,10 @@ describe.skipIf(!dbUp)(
         await suDb.toolDefinition.deleteMany({ where: { tenantId } });
       });
 
-      // A bundle carrying the same tool name TWICE, which the rename logic in that module exists
+      // NOTE: a bundle carrying the same tool name TWICE, which the rename logic in that module exists
       // for: the apply creates the first and finds the row it just wrote for the second. Two
-      // independent passes over the state before the import read both entries as creations, so the
-      // preview reported as skipped a tool the apply reuses (round 8).
+      // independent passes over the pre-import state would read both as creations and report as
+      // skipped a tool the apply reuses.
       test("a name created earlier in the same bundle is reused by what follows it", async () => {
         const ctx = {
           tenantId,
@@ -727,8 +703,8 @@ describe.skipIf(!dbUp)(
 
       // The reuse lookup is against the name the apply will STORE, not the one the bundle carries,
       // and those differ for exactly one bundle: a tool named after a native, which the import
-      // stores as `<name>_2` (#457, #485). A mutation that looked the bundle's own name up survived
-      // every row above, because in all of them the two names are the same string.
+      // stores as `<name>_2`. Every row above uses one string for both, so none of them tells the two
+      // lookups apart.
       test("the name the preview looks up is the one the apply will store", async () => {
         const ctx = {
           tenantId,
@@ -767,14 +743,10 @@ describe.skipIf(!dbUp)(
         await suDb.toolDefinition.deleteMany({ where: { tenantId } });
       });
 
-      // A preview that writes is not a preview, and running the apply is what made this reachable
-      // (review round 9). For a credential the bundle names and the tenant lacks, the import creates
-      // a reference-only entry so the ref stays wired — and it created it on the outer client, which
-      // opens its own transaction and commits past the rehearsal's rollback. Measured before the fix:
-      // the agent unwound and the vault kept the row, plus a `credential.create` audit row for a write
-      // that never happened, after which the second preview read the credential as FOUND and stopped
-      // warning about it. A dry run that changes its own answer is the divergence this file is about,
-      // arriving through the mechanism meant to close it.
+      // NOTE: a preview that writes is not a preview. For a credential the bundle names and the tenant
+      // lacks, the import creates a reference-only entry, and it must do so inside the rehearsal's
+      // transaction: on the outer client it would commit past the rollback (plus a phantom
+      // `credential.create` audit row), and the second preview would read it as FOUND.
       test("the preview leaves no credential behind, and answers the same twice", async () => {
         const ctx = {
           tenantId,
@@ -831,14 +803,9 @@ describe.skipIf(!dbUp)(
         await suDb.toolDefinition.deleteMany({ where: { tenantId } });
       });
 
-      // The lookup and the write have to ask about the SAME string, and they did not: the vault trims
-      // a name before storing it, and the import resolved the bundle's spelling verbatim. A bundle
-      // carrying ` cred ` therefore resolved as missing on EVERY import — the first stored `cred`,
-      // and the second failed to find ` cred `, reached the insert, and collided with the row it had
-      // just written. Before round 9 that collision was swallowed into a `credentialNotFound` warning
-      // that silently unwired the ref; after it, with the write inside the import's transaction, it
-      // would take the whole import down. Neither is right: the name the lookup asks about is now the
-      // name the write stores (review round 10).
+      // NOTE: the lookup and the write ask about the SAME string: the vault trims a name before
+      // storing it, so a verbatim lookup of ` cred ` misses the stored `cred` on every later import,
+      // reaches the insert, and collides inside the import's transaction, taking it all down.
       test("a credential name the vault would trim resolves to the row it stored", async () => {
         const ctx = {
           tenantId,
@@ -893,12 +860,10 @@ describe.skipIf(!dbUp)(
         await suDb.toolDefinition.deleteMany({ where: { tenantId } });
       });
 
-      // And the read has to be in the same transaction as the write, for the same reason (review
-      // round 11). A bundle can reference the SAME missing credential twice under trim-equivalent
-      // spellings — the ref map is keyed by what the bundle wrote, so `cred` and ` cred ` are two
-      // passes — and a lookup on a separate connection cannot see the row the first pass created
-      // inside the import's transaction. The second pass therefore read it as missing and the insert
-      // collided with it, taking the whole import down, dry run included.
+      // NOTE: the read is in the same transaction as the write: the ref map is keyed by what the
+      // bundle wrote, so `cred` and ` cred ` are two passes, and a lookup on a separate connection
+      // cannot see the row the first pass created, so the second insert would collide and take the
+      // whole import down, dry run included.
       test("the same missing credential named twice is created once", async () => {
         const ctx = {
           tenantId,
@@ -916,7 +881,7 @@ describe.skipIf(!dbUp)(
           { name: "  cred_twice_501  ", kind: "generic" },
         ];
 
-        // The preview first: it runs the apply, so the collision took the dry run down too.
+        // NOTE: the preview first: it runs the apply, so a collision would take the dry run down too.
         const preview = await agentImport(principal(), { export: b }, D);
         expect(preview.ok).toBe(true);
 
@@ -937,13 +902,10 @@ describe.skipIf(!dbUp)(
         await suDb.toolDefinition.deleteMany({ where: { tenantId } });
       });
 
-      // The lookup belongs to the import's transaction for a second reason, and this is the one that
-      // is observable now that the insert tolerates a duplicate: asking it on the outer client opens
-      // a SECOND transaction while the import already holds one, so the import needs two connections
-      // to finish. On a pool that can give one it waits for a connection it will never get, and the
-      // failure is a transaction-start timeout rather than anything naming the vault. Measured: 33ms
-      // with the read inside, and `Unable to start a transaction in the given time` after 2s with it
-      // outside.
+      // NOTE: the second reason the lookup belongs to the import's transaction: on the outer client it
+      // opens a SECOND transaction while the import holds one, so on a one-connection pool the import
+      // waits forever and fails with `Unable to start a transaction in the given time`, naming
+      // nothing about the vault.
       test("the import finishes on a pool that can give one connection", async () => {
         const tiny = new PrismaClient({
           adapter: new PrismaPg({ connectionString: appUrl as string, max: 1 }),
@@ -974,12 +936,10 @@ describe.skipIf(!dbUp)(
         await suDb.toolDefinition.deleteMany({ where: { tenantId } });
       });
 
-      // The pairing from round 13, on the import road (review round 15). Left alone at first on the
-      // reasoning that an import lands a configuration the operator completes — it creates PENDING
-      // credentials on purpose. Measuring what the stored row costs overturned that: `buildHttpTools`
-      // is a bare `.map` inside the toolset literal, so a tool it cannot build throws out of the
-      // whole assembly and the agent loses EVERY tool, not just this one. There is nothing to
-      // complete later on an agent whose next turn has no tools.
+      // NOTE: the relative-template pairing, on the import road. Storing it for the operator to
+      // complete later (as PENDING credentials are) is wrong: `buildHttpTools` is a bare `.map` inside
+      // the toolset literal, so a tool it cannot build throws out of the whole assembly and the agent
+      // loses EVERY tool.
       test("a bundled tool with no host to take is left out, not stored", async () => {
         const ctx = {
           tenantId,
@@ -1031,11 +991,9 @@ describe.skipIf(!dbUp)(
         await suDb.toolDefinition.deleteMany({ where: { tenantId } });
       });
 
-      // The import writes knowledge bases straight through Prisma too, so the name rule at the top of
-      // this file is not on that path either (review round 14). A blank name is the same base the
-      // agent cannot scope a search to, and a 5000-character one eats the same tool-description
-      // budget — the two effects this whole round opened with. Warn and skip, in the module's own
-      // vocabulary, and the grants that named it then report `kbGrantNotFound`.
+      // NOTE: the import writes knowledge bases straight through Prisma too, so the name rule at the
+      // top of this file is asked here as well (same two effects: an unscopable blank name, a budget-
+      // eating long one). Warn and skip, and the grants that named it report `kbGrantNotFound`.
       test("a bundled knowledge base whose name is unusable is left out, and said", async () => {
         const ctx = {
           tenantId,
@@ -1055,10 +1013,9 @@ describe.skipIf(!dbUp)(
             (w) => w.code === "knowledgeBaseNameUnusable",
           ),
         ).toHaveLength(2);
-        // The control in the same bundle: the usable one landed, so this is a skip and not a refusal
-        // of the whole components array.
-        // NOTE: by NAME, not by tenant: earlier describes in this file leave their own bases in the
-        // same tenant, and a count over all of them measures those instead of this bundle.
+        // NOTE: the control in the same bundle: the usable one landed, so this is a skip and not a
+        // refusal of the whole components array. By NAME, not by tenant: earlier describes leave
+        // their own bases in the same tenant.
         const bases = await suDb.knowledgeBase.findMany({
           where: {
             tenantId,
@@ -1080,11 +1037,9 @@ describe.skipIf(!dbUp)(
         await suDb.toolDefinition.deleteMany({ where: { tenantId } });
       });
 
-      // And the report has to survive the clip (review round 16). The warning names a clipped name,
-      // because it fires precisely when the name may be enormous — and `dedupeWarnings` keyed on the
-      // code and the RENDERED params, so two bases whose names share their first 60 characters
-      // collapsed into one warning while both were skipped. The target is part of a warning's
-      // identity now, and it carries the whole name.
+      // NOTE: the report survives the clip. The warning renders a clipped name (it fires when the name
+      // may be enormous), so a dedupe on the rendered params would collapse two bases sharing their
+      // first 60 characters; the target, carrying the whole name, is part of a warning's identity.
       test("two bases that clip to the same text are still reported twice", async () => {
         const ctx = {
           tenantId,
@@ -1120,8 +1075,8 @@ describe.skipIf(!dbUp)(
         await suDb.toolDefinition.deleteMany({ where: { tenantId } });
       });
 
-      // The order the tools already had to learn (round 7), on this component too: a row ALREADY
-      // stored under that name is one to reuse whatever the bundle says. Asking the name rule first
+      // NOTE: the same order as for tools: a row ALREADY stored under that name is one to reuse
+      // whatever the bundle says. Asking the name rule first
       // would report as skipped a base the apply reuses and grants.
       test("a stored base under an unusable name is reused, not skipped", async () => {
         const ctx = {
@@ -1157,12 +1112,10 @@ describe.skipIf(!dbUp)(
         await suDb.toolDefinition.deleteMany({ where: { tenantId } });
       });
 
-      // And a row another writer commits BETWEEN the lookup and the insert is a fact to read, not an
-      // error to survive (review round 12). Inside this transaction a failed INSERT aborts
-      // everything, so a plain create took the whole agent down — dry run included — the moment two
-      // imports of the same bundle overlapped. Nothing here is timed: the other writer holds an
-      // UNCOMMITTED row, which the import cannot see, so it resolves the credential as missing and
-      // reaches its own insert; `pg_blocking_pids` is what proves it got there and is waiting.
+      // NOTE: a row another writer commits BETWEEN the lookup and the insert is a fact to read: inside
+      // this transaction a failed INSERT aborts everything, so a plain create would take the agent
+      // down when two imports overlap. Untimed: the other writer holds an UNCOMMITTED row the import
+      // cannot see, and `pg_blocking_pids` proves the import reached its own insert and waits.
       test("a credential another writer is creating is reused, not a collision", async () => {
         const ctx = {
           tenantId,
@@ -1233,12 +1186,10 @@ describe.skipIf(!dbUp)(
         await suDb.toolDefinition.deleteMany({ where: { tenantId } });
       });
 
-      // The other half of that write, and the branch the fix rewrote: a kind that CANNOT be created
-      // as a reference-only entry (managed OAuth gets its secret from a connect flow the empty
-      // placeholder cannot complete). It is asked of the guard the write itself asks, BEFORE the
-      // write, rather than by catching what the write throws — because the call now runs inside the
-      // import's transaction, and a statement that fails in there aborts it, so swallowing a
-      // database error would carry the import on over a connection where everything after fails.
+      // NOTE: a kind that CANNOT be a reference-only entry (managed OAuth gets its secret from a
+      // connect flow). It is asked of the write's own guard BEFORE the write, not by catching what the
+      // write throws: a failed statement aborts the import's transaction, so swallowing the error
+      // would carry the import on over a connection where everything after fails.
       test("a credential kind that cannot be pending is named, and the rest imports", async () => {
         const ctx = {
           tenantId,
@@ -1304,10 +1255,8 @@ describe.skipIf(!dbUp)(
         await suDb.tenant.delete({ where: { id: other.id } });
       });
 
-      // The round that measured this file left it as the one accepted shape here, with the note that
-      // `agentId: null` matches no agent because the resolver filters by an exact id, and that the
-      // REST body documented it as "any agent". #547 is that note answered: no agent named is input
-      // no reader can use, which is the whole thesis of this file.
+      // NOTE: `agentId: null` matches no agent (the resolver filters by an exact id), so no agent named
+      // is input no reader can use.
       test("no agent at all is refused by both halves, and the row nobody can reach proves why", async () => {
         // The REASON, not just the refusal: with the rule gone, `assertAgentPresent` chokes on an id
         // that is not there and refuses anyway, so a bare `applied: false` passes over a tree that
@@ -1321,8 +1270,8 @@ describe.skipIf(!dbUp)(
         });
         expect(await suDb.experiment.count({ where: { tenantId } })).toBe(0);
 
-        // Seeded past the write, because the write is what now refuses it: this is the row a
-        // deployment carries from before the rule, and it overrides nobody.
+        // NOTE: seeded past the write, because the write refuses it: this is a row from before the
+        // rule, and it overrides nobody.
         await suDb.experiment.create({
           data: {
             tenantId,
@@ -1407,9 +1356,8 @@ describe.skipIf(!dbUp)(
           agent_id: "888888888",
         });
         expect(moved).toMatchObject({ applied: false, previewed: false });
-        // The name too, on the PATCH. A mutation that dropped this one call from the update preview
-        // alone survived every create-side row: a rule asked of one tool's create is not thereby
-        // asked of its update, and the preview that stops asking is the #490 divergence again.
+        // NOTE: the name too, on the PATCH: a rule asked of one tool's create is not thereby asked of
+        // its update, and every create-side row passes with the update preview not asking.
         expect(
           await halves(experimentUpdate as never, {
             experiment_id: id,
@@ -1429,22 +1377,12 @@ describe.skipIf(!dbUp)(
         await suDb.experiment.deleteMany({ where: { tenantId } });
       });
 
-      // THE RACE, and it is why the lookup LOCKS instead of reading. There is no foreign key on
-      // `Experiment.agentId`, and `deleteAgent` is the writer that slips between an unlocked check and
-      // the insert that references the row: it takes the agent `FOR UPDATE`, nulls every experiment
-      // pointing at it, and deletes it — so at READ COMMITTED the check approves an agent that is gone
-      // by the time the row lands, which is the dangling reference this file exists to refuse.
-      //
-      // Driven through the REAL write rather than by re-issuing the lock here, because a test that
-      // takes its own lock proves Postgres works and says nothing about `assertAgentPresent`: a
-      // mutation that put the unlocked `findUnique` back would leave it green.
-      //
-      // NOTHING HERE IS TIMED, and that is the whole shape of it (review round 2). A sleep before
-      // starting the writer assumes the holder already has its connection and its row lock; a sleep
-      // after it assumes "has not settled yet" means "is waiting", which a writer that is merely slow
-      // to start satisfies just as well. Both are false greens on a loaded database, in opposite
-      // directions. So the holder SIGNALS its backend pid from inside the transaction, right after the
-      // lock, and the writer is then proved to be waiting by asking Postgres who is blocking whom.
+      // NOTE: THE RACE, and why the lookup LOCKS: `Experiment.agentId` has no foreign key, and
+      // `deleteAgent` (agent `FOR UPDATE`, null its experiments, delete) can slip between an unlocked
+      // check and the insert at READ COMMITTED. Driven through the REAL write, since a test taking its
+      // own lock says nothing about `assertAgentPresent`. NOTHING IS TIMED (a sleep is a false green
+      // on a loaded database): the holder SIGNALS its backend pid right after the lock, and the
+      // writer is proved to be waiting by asking Postgres who is blocking whom.
       type Holder = {
         pid: number;
         release: () => void;

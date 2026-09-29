@@ -72,15 +72,15 @@ function makeStub(
     assigneeType?: string | null;
     assigneeId?: number | null;
     // The bot Chatwoot reports on the inbox. Omitted = attached (501, the fixture's own); `null` is
-    // the drift the round-3 refusal is about (issue #495 review, round 3).
+    // the drift the hand-back refuses on.
     // Keyed by inbox NUMBER when a test moves the conversation, so "attached on the inbox it left,
     // nothing on the one it arrived at" is expressible; a bare value answers for every inbox.
     attachedBotId?: number | null | Record<number, number | null>;
-    // The inbox Chatwoot renders on the conversation. Omitted = the payload names none, which is
-    // every pre-round-6 fixture and the only shape that falls back to the mirror.
+    // The inbox Chatwoot renders on the conversation. Omitted = the payload names none, the only
+    // shape that falls back to the mirror.
     inboxId?: number;
     // ...and the inbox it MOVES to, from `movedFromRead` on: a transfer landing after the baseline
-    // was read and while the probes were awaiting (issue #495 review, round 7).
+    // was read and while the probes were awaiting.
     movedTo?: number;
     movedFromRead?: number;
   } = {},
@@ -99,8 +99,8 @@ function makeStub(
     updatedAt?: number;
     // Which live read it first appears on. The hand-back reads the conversation FOUR times, and the
     // windows between them are different defects: 1 the baseline before the status call, 2 the
-    // move-confirmation immediately before it (issue #495 review, round 7 — it looks only at
-    // `inbox_id`, so a holder appearing there is invisible to it), 3 the check after the unassign,
+    // move-confirmation immediately before it (it looks only at `inbox_id`, so a holder appearing
+    // there is invisible to it), 3 the check after the unassign,
     // and 4 the mirror write's own.
     fromRead?: number;
   } | null = null,
@@ -119,7 +119,7 @@ function makeStub(
     inboxAgentBotId: [] as number[],
   };
   const client = {
-    // The attachment Chatwoot actually has (issue #495 review, round 3). Attached by default —
+    // NOTE: the attachment Chatwoot actually has. Attached by default:
     // the hand-back's happy path is an inbox whose bot is where it was put; `attachedBotId` is what
     // a test sets to say otherwise, and `null` is the drift the refusal is about.
     inboxAgentBotId: async (inboxId: number) => {
@@ -178,10 +178,9 @@ function makeStub(
     },
     unassignConversation: async (_cid: number) => {
       calls.unassignConversation += 1;
-      // The endpoint REMOVES whoever is holding the conversation, so the double has to as well. An
-      // inert unassign models a Chatwoot that never takes anybody away, which is the one thing this
-      // call does — and it hid a hand-back that swept away a human who had arrived in the round trip,
-      // because every read after the write still reported them.
+      // NOTE: the endpoint REMOVES whoever is holding the conversation, so the double has to as well:
+      // an inert unassign would hide a hand-back that sweeps away a human who arrived in the round
+      // trip, because every read after the write would still report them.
       cleared = true;
       return {};
     },
@@ -502,11 +501,10 @@ describe.skipIf(!dbUp)("tier-3 chatwoot management + inbox binding", () => {
       "missing",
     );
 
-    // ...AND A ROW CHATWOOT NEVER CONFIRMED IS NOT ACTIVE EITHER (issue #540, PR review round 5).
-    // A process dying between the pending insert and the stamp leaves a row nothing settles, and
-    // this reconcile asked only whether the persona's BOT exists — which it does, for the other
-    // inbox that persona is on. Reported active, the console showed the binding healthy and offered
-    // no repair, while the observe tick retried against a binding that never landed.
+    // NOTE: ...AND A ROW CHATWOOT NEVER CONFIRMED IS NOT ACTIVE EITHER. A process dying between the
+    // pending insert and the stamp leaves a row nothing settles, and the persona's BOT still exists
+    // (for its other inbox). Reported active, the console would show the binding healthy and offer
+    // no repair, while the observe tick retries against a binding that never landed.
     const stuck = await suDb.inbox.create({
       data: {
         tenantId: tenant,
@@ -523,8 +521,8 @@ describe.skipIf(!dbUp)("tier-3 chatwoot management + inbox binding", () => {
         attachedAt: null,
       },
     });
-    // The same persona, confirmed on another inbox: its bot is alive, which is exactly what used to
-    // make the pending row read as healthy.
+    // NOTE: the same persona, confirmed on another inbox: its bot is alive, which is what could make
+    // the pending row read as healthy.
     await suDb.inboxObserver.create({
       data: { tenantId: tenant, inboxId: inboxGone.id, agentId: agentLive.id },
     });
@@ -633,7 +631,7 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
   let instanceId = 0n;
   let convId = 0n;
   // The conversation's inbox and the responder answering it: a hand-back is refused on an inbox
-  // nothing answers (issue #495), so the fixture carries one that does.
+  // nothing answers, so the fixture carries one that does.
   let inboxId = 0n;
   let responderId = 0n;
 
@@ -657,10 +655,9 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
           tenantId: tenant,
           name: "Ops",
           systemPrompt: "x",
-          // A RUNNABLE configuration, which the hand-back now asks for (issue #495 review, round 6):
-          // an `openai-compatible` endpoint authenticates by its URL, so it needs no vault entry and
-          // is genuinely runnable — an agent with no model config at all is not, and the fixture
-          // having one was hiding exactly the state the probe exists to refuse.
+          // NOTE: a RUNNABLE configuration, which the hand-back asks for: an `openai-compatible`
+          // endpoint authenticates by its URL, so it needs no vault entry. An agent with no model
+          // config at all is not runnable, which is the state the probe refuses.
           modelConfig: {
             provider: "openai-compatible",
             model: "local",
@@ -681,7 +678,7 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       })
     ).id;
     // The persona's bot on THIS deployment. A binding is not an identity, and the hand-back is one
-    // of the calls docs/chatwoot.md requires it before (issue #495 review, round 1).
+    // of the calls docs/chatwoot.md requires it before.
     await suDb.chatwootAgentBot.create({
       data: {
         tenantId: tenant,
@@ -733,16 +730,15 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(detail.chatwootConversationId).toBe(500);
     expect(detail.status).toBe("pending");
     expect(detail).not.toHaveProperty("messages");
-    // The observers, by name and by id (issue #494): none on this inbox.
+    // NOTE: the observers, by name and by id: none on this inbox.
     expect(detail.observerNames).toEqual([]);
     expect(detail.observers).toEqual([]);
   });
 
-  // The hand-back's own success state, which the type-only test called a takeover. `toggle_status ->
-  // pending` (or a concurrent assignment) can leave the conversation on the INBOX'S OWN agent bot,
-  // and that is precisely what the caller asked for — the gate reads it as the AI holding it. Reported
-  // as "taken-over", the console warns that somebody claimed a conversation the intended agent owns
-  // and takes the re-engage offer away with it.
+  // NOTE: the hand-back's own success state. `toggle_status -> pending` (or a concurrent assignment)
+  // can leave the conversation on the INBOX'S OWN agent bot, which is what the caller asked for (the
+  // gate reads it as the AI holding it). Reported as "taken-over", the console would warn that
+  // somebody claimed it and take the re-engage offer away.
   test("landing on the inbox's own bot is a return, not a takeover", async () => {
     const inbox = await suDb.inbox.create({
       data: {
@@ -757,7 +753,7 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
         tenantId: tenant,
         name: "OursBack",
         systemPrompt: "x",
-        // Runnable, like the fixture responder (issue #495 review, round 6).
+        // NOTE: runnable, like the fixture responder.
         modelConfig: {
           provider: "openai-compatible",
           model: "local",
@@ -800,8 +796,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       // Chatwoot answers with our own bot on the read the mirror write makes, which is the shape a
       // successful hand-back leaves behind.
       const stub = makeStub(
-        // This inbox's own bot is 950, not the fixture's 501, and the attachment check compares the
-        // id (issue #495 review, round 4).
+        // NOTE: this inbox's own bot is 950, not the fixture's 501, and the attachment check compares
+        // the id.
         { attachedBotId: 950 },
         {
           assigneeType: "AgentBot",
@@ -1061,7 +1057,7 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(row?.assigneeType).toBeNull();
   });
 
-  // A hand-back needs somebody to hand back TO (issue #495): on an inbox with no responder, or one
+  // NOTE: a hand-back needs somebody to hand back TO: on an inbox with no responder, or one
   // whose responder is switched off or only observes, the same `pending` + unassign strands the
   // conversation — nothing picks it up again, and the person who had it is gone. Refused before any
   // write, with the reason named, whichever of the three it is.
@@ -1091,11 +1087,10 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       "errors.returnNoResponder",
     ],
     [
-      // A BINDING IS NOT AN IDENTITY (issue #495 review, round 1). The row can be gone — an instance
-      // reconnected, the bot deleted upstream and the reconcile not run — and the runtime then has
-      // no token and no route to answer with, which docs/chatwoot.md requires before anything is
-      // claimed. Read as bound, the hand-back parked the conversation pending with nobody able to
-      // pick it up.
+      // NOTE: A BINDING IS NOT AN IDENTITY. The row can be gone (instance reconnected, bot deleted
+      // upstream, reconcile not run), leaving the runtime no token and no route, which docs/chatwoot.md
+      // requires before anything is claimed. Read as bound, the hand-back would park the conversation
+      // pending with nobody able to pick it up.
       "the responder has no bot on this Chatwoot",
       async () =>
         suDb.chatwootAgentBot.deleteMany({
@@ -1168,10 +1163,10 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     });
   }
 
-  // THE ROW IS NOT THE ATTACHMENT (issue #495 review, round 3). Our `ChatwootAgentBot` says a bot was
-  // created and attached once; a bot deleted or detached in the Chatwoot UI leaves it behind, and
-  // `reconcileInboxBots` only reports the drift — it asks whether the BOT exists, not whether it is
-  // attached. Handing back then set the conversation pending with no delivery route at all.
+  // NOTE: THE ROW IS NOT THE ATTACHMENT. Our `ChatwootAgentBot` says a bot was created and attached
+  // once; a bot deleted or detached in the Chatwoot UI leaves it behind, and `reconcileInboxBots`
+  // asks whether the BOT exists, not whether it is attached. Handing back would set the conversation
+  // pending with no delivery route at all.
   test("return is refused when Chatwoot has no bot on the inbox", async () => {
     await suDb.conversation.update({
       where: { id: convId },
@@ -1201,8 +1196,7 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(stub.calls.unassignConversation).toBe(0);
   });
 
-  // BOUND, ON, ANSWERING AND WITH A BOT IS STILL NOT "WOULD ANSWER" (issue #495 review, round 3). A
-  // credential deleted, pending or rotated makes every reactive turn end as `agent-unavailable`, so
+  // NOTE: BOUND, ON, ANSWERING AND WITH A BOT IS STILL NOT "WOULD ANSWER". A credential deleted, pending or rotated makes every reactive turn end as `agent-unavailable`, so
   // the hand-back would park the conversation pending on an agent that cannot run. Asked with the
   // runtime's own loader, so the two cannot drift about what runnable means.
   test("return is refused when the responder's config cannot be built", async () => {
@@ -1251,7 +1245,7 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     }
   });
 
-  // A DIFFERENT BOT IS NOT OUR BOT (issue #495 review, round 4). An out-of-band rebind, or a local
+  // NOTE: A DIFFERENT BOT IS NOT OUR BOT. An out-of-band rebind, or a local
   // persistence that failed after the remote call, leaves another persona receiving the inbox: some
   // bot is attached, so a null-only check passes, and the hand-back gives the conversation to one
   // this workspace never validated.
@@ -1284,10 +1278,9 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(stub.calls.toggleStatus).toEqual([]);
   });
 
-  // THE COMMONEST NON-RUNNABLE STATE OF ALL (issue #495 review, round 6): an agent nobody has
-  // configured. `modelConfig: {}` makes the loader THROW rather than answer null, and folding that
-  // into "unreadable" let it straight through — the fail-open rule is for a vault that could not
-  // answer, not for an answer saying the configuration is invalid.
+  // NOTE: THE COMMONEST NON-RUNNABLE STATE OF ALL: an agent nobody has configured. `modelConfig: {}`
+  // makes the loader THROW rather than answer null, and that is not "unreadable": the fail-open rule
+  // is for a vault that could not answer, not for an answer saying the configuration is invalid.
   for (const [title, modelConfig] of [
     ["it has no model configuration at all", {}],
     [
@@ -1296,8 +1289,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       { provider: "openai-compatible", model: "local" },
     ],
     [
-      // Loads AND builds — the `ChatOpenAI` constructors accept an empty key — and every request the
-      // vendor sees is rejected (issue #495 review, round 15).
+      // NOTE: loads AND builds (the `ChatOpenAI` constructors accept an empty key), and every request
+      // the vendor sees is rejected.
       "its provider needs a key and it has none",
       { provider: "openai", model: "gpt-5.4-mini" },
     ],
@@ -1342,7 +1335,7 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     });
   }
 
-  // THE INBOX IS READ OFF CHATWOOT, NOT OFF THE MIRROR (issue #495 review, round 6). A transfer
+  // NOTE: THE INBOX IS READ OFF CHATWOOT, NOT OFF THE MIRROR. A transfer
   // reaches this side by webhook, so for the length of that delivery the local row still names the
   // inbox the conversation LEFT — and every rule above, asked of that row, answers about an inbox
   // the conversation is no longer on.
@@ -1419,9 +1412,9 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     });
 
     afterAll(async () => {
-      // The hand-back CORRECTS the mirror's inbox when the transfer was real (issue #495 review,
-      // round 13), so the successful cases above leave the conversation on the destination — which
-      // is the point, and which the rest of this file does not expect.
+      // NOTE: the hand-back CORRECTS the mirror's inbox when the transfer was real, so the successful
+      // cases above leave the conversation on the destination, which is the point, and which the
+      // rest of this file does not expect.
       await suDb.conversation.update({
         where: { id: convId },
         data: { inboxId },
@@ -1499,9 +1492,9 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       expect(stub.calls.toggleStatus).toEqual([]);
     });
 
-    // ...and the attachment is asked about the inbox it ARRIVED at. A bot attached to the one it
-    // left says nothing about the destination, and reading the old number was how a hand-back into
-    // an inbox with a detached bot passed the remote half.
+    // NOTE: ...and the attachment is asked about the inbox it ARRIVED at: a bot attached to the one
+    // it left says nothing about the destination, and reading the old number would pass a hand-back
+    // into an inbox with a detached bot.
     test("a staffed destination returns, and is probed on its own number", async () => {
       await held();
       const stub = makeStub({
@@ -1519,11 +1512,10 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       expect(outcome).toBe("returned");
       expect(stub.calls.toggleStatus).toEqual(["pending"]);
       expect(stub.calls.inboxAgentBotId).toEqual([92]);
-      // ...AND THE MIRROR LEARNS WHERE IT IS (issue #495 review, round 13). The reconcile that
-      // follows a hand-back writes status and assignee and never `inboxId`, so a transfer whose
-      // webhook is delayed or lost left the row naming the inbox the conversation LEFT — and the
-      // console's "Respond now" resolves its agent from that row, which is the ORIGIN inbox's
-      // persona sending a customer-facing reply on a conversation that is not its own.
+      // NOTE: ...AND THE MIRROR LEARNS WHERE IT IS. The reconcile after a hand-back writes status and
+      // assignee, never `inboxId`, so a delayed or lost transfer webhook would leave the row naming
+      // the inbox the conversation LEFT, and the console's "Respond now" would have the ORIGIN inbox's
+      // persona reply on a conversation that is not its own.
       const moved = await suDb.conversation.findUniqueOrThrow({
         where: { id: convId },
         select: { inboxId: true },
@@ -1559,11 +1551,10 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       expect(stub.calls.toggleStatus).toEqual([]);
     });
 
-    // ...AND THE MOVE CAN LAND *AFTER* THE BASELINE (issue #495 review, round 7). Between that read
-    // and the toggle sit the locked row read, the vault round trip of the runnable probe and the
-    // attachment GET; a transfer landing in there had the OLD inbox validated and the new one never
-    // looked at, which parks the conversation on an inbox nothing answers and takes it from the
-    // person holding it.
+    // NOTE: ...AND THE MOVE CAN LAND *AFTER* THE BASELINE. Between that read and the toggle sit the
+    // locked row read, the runnable probe's vault round trip and the attachment GET; a transfer
+    // landing there would validate the OLD inbox only, parking the conversation on an inbox nothing
+    // answers and taking it from the person holding it.
     test("a move after the baseline is caught before the write", async () => {
       await held();
       const stub = makeStub({
@@ -1622,12 +1613,10 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       expect(stub.calls.toggleStatus).toEqual(["pending"]);
     });
 
-    // ...AND THE FINAL OWNERSHIP CHECK IS ASKED OF THE RESOLVED INBOX TOO (issue #495 review, round
-    // 8). Everything else was judged against the inbox Chatwoot names while this last comparison
-    // still read the row loaded at the top, so a conversation transferred to an inbox with ANOTHER
-    // responder came back held by that responder's own bot — the success state — and was reported and
-    // audited as `taken-over`, which takes the re-engage offer away from an operator whose hand-back
-    // worked.
+    // NOTE: ...AND THE FINAL OWNERSHIP CHECK IS ASKED OF THE RESOLVED INBOX TOO. Asked of the row
+    // loaded at the top, a conversation transferred to an inbox with ANOTHER responder, held by that
+    // responder's own bot (the success state), would be reported and audited as `taken-over`, taking
+    // the re-engage offer away from an operator whose hand-back worked.
     test("the destination's own bot holding it is a return, not a takeover", async () => {
       await held();
       const stub = makeStub(
@@ -1683,10 +1672,9 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     });
   });
 
-  // THE READING THAT DECIDES IS THE LAST ONE TAKEN (issue #495 review, round 10). The local check
-  // used to sit before the attachment GET and the move confirmation — two round trips — so an
-  // administrator switching the agent off inside that window was invisible to it, and the hand-back
-  // removed the human for an agent that will not answer.
+  // NOTE: THE READING THAT DECIDES IS THE LAST ONE TAKEN. A local check before the attachment GET
+  // and the move confirmation (two round trips) would miss an administrator switching the agent off
+  // inside that window, and the hand-back would remove the human for an agent that will not answer.
   test("a responder switched off during the GETs stops the write", async () => {
     await suDb.conversation.update({
       where: { id: convId },
@@ -1727,10 +1715,10 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(stub.calls.unassignConversation).toBe(0);
   });
 
-  // THE BINDING IS RE-READ, NOT ONLY THE AGENT IT NAMED (issue #495 review, round 12). The inbox row
-  // is resolved before the attachment GET and the move confirmation, so a rebind landing in that
-  // window left the last validation judging the agent that USED to be there — and the confirmation
-  // sees nothing, because it compares the inbox NUMBER, which did not move.
+  // NOTE: THE BINDING IS RE-READ, NOT ONLY THE AGENT IT NAMED. The inbox row is resolved before the
+  // attachment GET and the move confirmation, so a rebind in that window would leave the last
+  // validation judging the agent that WAS there before, and the confirmation sees nothing, because
+  // it compares the inbox NUMBER, which did not move.
   test("a responder swapped during the GETs stops the write", async () => {
     await suDb.conversation.update({
       where: { id: convId },
@@ -1784,10 +1772,9 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(stub.calls.unassignConversation).toBe(0);
   });
 
-  // A TEST AGENT NOBODY ACTIVATED HERE ANSWERS NOTHING (issue #495 review, round 10). `test` is not
-  // a mode that answers on its own: the receiver's gate keeps it silent on every conversation whose
-  // `testActivatedAt` is null, and the runnable probe knows nothing about activation — so this
-  // responder passed every rule and the hand-back parked the conversation pending with nobody there.
+  // NOTE: A TEST AGENT NOBODY ACTIVATED HERE ANSWERS NOTHING. The receiver's gate keeps `test` silent
+  // on every conversation whose `testActivatedAt` is null, and the runnable probe knows nothing about
+  // activation, so without this rule the hand-back parks the conversation with nobody there.
   test("a test agent not activated on this conversation refuses", async () => {
     const before = await suDb.agent.findUniqueOrThrow({
       where: { id: responderId },
@@ -1852,16 +1839,10 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     }
   });
 
-  // A LOCAL BOT ROW THAT VANISHED IS DEFINITE (issue #495 review, round 10). `deleteAgent` leaves the
-  // remote bot attached on purpose, so Chatwoot keeps reporting a numeric id for a persona whose
-  // route token no longer exists here — and the attachment check accepted it, handing the
-  // conversation to nobody.
-  //
-  // WHAT THIS TEST DOES AND DOES NOT PROVE, stated because the two round-10 fixes overlap here: with
-  // the local responder state now read LAST, this same deletion is also caught by that reading, so
-  // the observable refusal survives reverting the attachment guard alone. It is kept as a lock on
-  // the OUTCOME — a row that vanished mid-request never reaches the write — and the guard itself
-  // stands on the condition having been wrong on its own terms, not on this test isolating it.
+  // NOTE: A LOCAL BOT ROW THAT VANISHED IS DEFINITE. `deleteAgent` leaves the remote bot attached on
+  // purpose, so Chatwoot keeps reporting an id for a persona whose route token is gone here. This
+  // locks the OUTCOME (a row that vanished mid-request never reaches the write); it does not isolate
+  // the attachment guard, since the last local reading catches the same deletion.
   test("a bot row deleted mid-hand-back refuses", async () => {
     await suDb.conversation.update({
       where: { id: convId },
@@ -1908,11 +1889,10 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(stub.calls.toggleStatus).toEqual([]);
   });
 
-  // PREVIEW AND APPLY GIVE THE SAME REASON, not merely the same verdict (issue #495 review, round
-  // 14). A responder that is switched off AND whose bot is detached is refused by both halves, and
-  // with the two asking their checks in different orders they answered `returnAgentOff` and
-  // `returnAgentNotAttached` for one state with nothing in between — so an operator who approved a
-  // preview was handed a different remediation than the one they had read.
+  // NOTE: PREVIEW AND APPLY GIVE THE SAME REASON, not merely the same verdict. A responder switched
+  // off AND with its bot detached is refused by both halves; asking their checks in different orders
+  // would answer `returnAgentOff` and `returnAgentNotAttached` for one state, handing the operator a
+  // different remediation from the one they approved.
   test("the dry-run and the apply refuse with the same key", async () => {
     await suDb.conversation.update({
       where: { id: convId },
@@ -1969,17 +1949,11 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     }
   });
 
-  // THE REASON IS DECIDED AFTER THE LAST READING, NOT BY THE LOADER (issue #495 review, round 16).
-  // `loadAgentConfig` answers `null` for a switched-off agent and for a monitoring one as much as
-  // for a credential that will not resolve, so an administrator flipping the switch between this
-  // function's OWN two reads was answered with "check its model credential" — the one remediation
-  // that does not fix it — and the re-read that names it correctly sat behind that throw.
-  //
-  // The flip is placed exactly in that window by the client itself: the extension fires on the read
-  // at the top of the function, commits the change from another connection, and the loader's read a
-  // few statements later is the first to see it. Nothing coarser reaches the window — switching the
-  // agent off before the call is refused by the first check, which is the state the two earlier
-  // tests already cover.
+  // NOTE: THE REASON IS DECIDED AFTER THE LAST READING, NOT BY THE LOADER: `loadAgentConfig` answers
+  // `null` for a switched-off or monitoring agent as for an unresolvable credential, so a flip
+  // between this function's two reads must not be answered "check its model credential". The
+  // extension fires on the read at the top, commits the flip from another connection, and the
+  // loader's read is the first to see it (a flip before the call is the first check's case).
   test("a responder switched off between the two reads is named off, not unrunnable", async () => {
     let reads = 0;
     const racing = appDb.$extends({
@@ -2028,11 +2002,10 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     );
   });
 
-  // A CONSTRUCTOR THROW REFUSES, WHATEVER IT THREW (issue #495 review, round 9). `createChatModel`
-  // reads no database and calls nobody: a throw from it is deterministic and the runtime's own next
-  // turn gets the identical one. Several of those come out of the vendors' SDKs as a plain `Error`
-  // rather than an `AppError` — `ChatAnthropic` throws when no key is available anywhere — and
-  // reading a plain `Error` as a blip unassigned a human for a responder that cannot start.
+  // NOTE: A CONSTRUCTOR THROW REFUSES, WHATEVER IT THREW. `createChatModel` reads no database and
+  // calls nobody, so its throw is deterministic, and the vendors' SDKs throw a plain `Error` (e.g.
+  // `ChatAnthropic` with no key anywhere); read as a blip, it would unassign a human for a responder
+  // that cannot start.
   test("a plain constructor failure refuses the hand-back", async () => {
     await suDb.conversation.update({
       where: { id: convId },
@@ -2075,10 +2048,10 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     }
   });
 
-  // ...and a credential that cannot be DECRYPTED is preserved, not folded into "unreadable" (issue
-  // #495 review, round 9). A corrupt blob, or `ENCRYPTION_KEY` rotated, throws a plain crypto or
-  // JSON error and will throw the same one on every turn; CLAUDE.md says to throw rather than fall
-  // back on exactly that, and swallowing it handed the conversation over having unassigned somebody.
+  // NOTE: ...and a credential that cannot be DECRYPTED is preserved, not folded into "unreadable". A
+  // corrupt blob, or `ENCRYPTION_KEY` rotated, throws the same plain crypto or JSON error on every
+  // turn; CLAUDE.md says to throw rather than fall back on that, and swallowing it would hand the
+  // conversation over having unassigned somebody.
   test("a credential that cannot be decrypted is not read as a blip", async () => {
     await suDb.conversation.update({
       where: { id: convId },
@@ -2157,10 +2130,9 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     expect(stub.calls.toggleStatus).toEqual(["pending"]);
   });
 
-  // ...AND THE SAME REFUSAL ON THE FAR SIDE OF THE NETWORK (issue #495 review, round 1). The first
-  // check runs before the client is built and the baseline is read, both of which await; an unbind
-  // committing inside that window reached the status write on a stale snapshot and stranded the
-  // conversation, which is the outcome the guard exists to prevent.
+  // NOTE: ...AND THE SAME REFUSAL ON THE FAR SIDE OF THE NETWORK. The first check runs before the
+  // client is built and the baseline is read, both of which await; an unbind committing inside that
+  // window would reach the status write on a stale snapshot and strand the conversation.
   test("a responder unbound mid-hand-back stops the write", async () => {
     await suDb.conversation.update({
       where: { id: convId },
@@ -2279,7 +2251,7 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     const namedConv = (
       await suDb.conversation.create({
         data: {
-          // On the fixture's inbox, the one a responder answers (issue #495).
+          // NOTE: on the fixture's inbox, the one a responder answers.
           inboxId,
           tenantId: tenant,
           chatwootInstanceId: instanceId,
@@ -2323,7 +2295,7 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     const namedConv = (
       await suDb.conversation.create({
         data: {
-          // On the fixture's inbox, the one a responder answers (issue #495).
+          // NOTE: on the fixture's inbox, the one a responder answers.
           inboxId,
           tenantId: tenant,
           chatwootInstanceId: instanceId,
@@ -2363,26 +2335,18 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
     }
   });
 
-  // The window the compare above cannot see, because the write it guards is what destroys the
-  // evidence. The read after the status call says nobody is holding the conversation, so the unassign
-  // is aimed at NOBODY — and a human who claims it in the round trip that follows is removed by a
-  // request that had no work to do in the first place. Every read afterwards then agrees the
-  // conversation is free, so the call reports a clean return and the mirror stores one.
-  //
-  // Chatwoot has no conditional assignment to aim with: assignments#create writes whatever it is
-  // handed, with no holder or version to compare against. What closes the window is not spending the
-  // write at all when the read says there is nothing to remove.
-  //
-  // Its own double, because the shared one models arrival by READ NUMBER and this is about arriving
-  // between a read and a write. Here the unassign removes whoever holds the conversation when it
-  // lands, which is what the endpoint does.
+  // NOTE: the window the compare above cannot see: when the read after the status call finds nobody,
+  // an unassign aimed at NOBODY would remove a human who claims it in the round trip, and every later
+  // read would agree it is free. Chatwoot has no conditional assignment (assignments#create writes
+  // what it is handed), so the write is not spent when there is nothing to remove. Its own double:
+  // the shared one models arrival by READ NUMBER, and this is arrival between a read and a write.
   test("a human who arrives while the unassign is in flight is not swept away", async () => {
     // Its OWN row: the reads below carry a future `updated_at`, and leaving that version on the
     // shared conversation makes the next test's older read lose and fail for an unrelated reason.
     const raceConv = (
       await suDb.conversation.create({
         data: {
-          // On the fixture's inbox, the one a responder answers (issue #495).
+          // NOTE: on the fixture's inbox, the one a responder answers.
           inboxId,
           tenantId: tenant,
           chatwootInstanceId: instanceId,
@@ -2418,8 +2382,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
         return {};
       },
       toggleStatus: async () => ({}),
-      // Attached, which is this test's premise: the race it measures is a human arriving, not a bot
-      // going missing (issue #495 review, round 3).
+      // NOTE: attached, which is this test's premise: the race is a human arriving, not a bot going
+      // missing.
       inboxAgentBotId: async () => 501,
     };
     try {
@@ -2476,8 +2440,8 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
   // The baseline is the LIVE holder, not the mirrored row. An assignment webhook that was late or
   // lost leaves the mirror naming somebody else, and against that a human who was already there
   // before the request reads as a takeover — the hand-back refuses and the caller is told the
-  // conversation stayed with a person who never arrived. /reset never saw this because it reconciles
-  // from live first; the console and MCP callers do not.
+  // conversation stayed with a person who never arrived. /reset reconciles from live first; the
+  // console and MCP callers do not.
   test("a stale mirror does not turn the sitting holder into a takeover", async () => {
     await suDb.conversation.update({
       where: { id: convId },
@@ -2568,9 +2532,9 @@ describe.skipIf(!dbUp)(
           chatwootConversationId: 1,
           status: "resolved",
           assigneeType: "AgentBot",
-          // The fixture means "the bot handled it and closed it", which since issue #188 has to be
-          // RECORDED rather than inferred from status + assignee — that inference also matched a
-          // follow-up closing out a lead that never answered, and Chatwoot resolving on inactivity.
+          // NOTE: "the bot handled it and closed it" is RECORDED, not inferred from status + assignee,
+          // which also matches a follow-up closing out a silent lead and Chatwoot resolving on
+          // inactivity.
           resolvedBy: "agent",
           threadId: `${tenant}:${instanceId}:1`,
         },
@@ -2671,8 +2635,8 @@ describe("normalizeTimeZone", () => {
   });
 
   test("a zone the caller SENT and this cannot read is refused, not replaced", () => {
-    // Changed in issue #372. The old contract answered "UTC" here, which meant one typo
-    // (`America/Sao_Paolo`) bucketed the dashboard a day off with no way for the caller to tell.
+    // NOTE: refused, not read as "UTC": one typo (`America/Sao_Paolo`) would bucket the dashboard a
+    // day off with no way for the caller to tell.
     for (const bad of ["", "Not/AZone", "America/Sao_Paolo", "UTC+3"]) {
       let err: unknown = null;
       try {

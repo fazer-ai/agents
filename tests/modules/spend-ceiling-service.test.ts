@@ -24,7 +24,7 @@ import {
 } from "@/modules/tenant-settings/service";
 import { formatVaultRef } from "@/modules/vault/service";
 
-// What the gate READS (issue #426): the month's cost as the Langfuse poll last wrote it, one row per
+// What the gate READS: the month's cost as the Langfuse poll last wrote it, one row per
 // (tenant, source, month), never Langfuse itself. The rule is proved without a database in
 // ./spend-ceiling-decide.test.ts; the poll that writes the row in ./spend-ceiling-poll.test.ts.
 
@@ -254,8 +254,8 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
       expect(v.snapshot).toBeNull();
     });
 
-    // A ROW THE POLL COULD NOT REFRESH FOR WANT OF A LANGFUSE IS NO FIGURE TO ENFORCE (review
-    // round 2). The poll keeps the last figure on the row and marks it `langfuse-not-configured`;
+    // NOTE: A ROW THE POLL COULD NOT REFRESH FOR WANT OF A LANGFUSE IS NO FIGURE TO ENFORCE. The
+    // poll keeps the last figure on the row and marks it `langfuse-not-configured`;
     // the console says the ceiling cannot be enforced, and the gate has to agree with that
     // sentence: a tenant that switched Langfuse off at $50 of a $10 ceiling would otherwise be
     // refused for the rest of the month on a number nothing can refresh. Any OTHER failure keeps
@@ -396,9 +396,9 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
       });
     });
 
-    // A ROW NOBODY HAS REFRESHED IS STILL THE FLOOR OF THE TRUTH. Spend only grows inside a month,
-    // so the last good figure under-counts by the lag and never over-refuses; the verdict stands on
-    // it and SAYS it is stale, which is what the console and the alert line read (issue #426).
+    // NOTE: A ROW NOBODY HAS REFRESHED IS STILL THE FLOOR OF THE TRUTH. Spend only grows inside a
+    // month, so the last good figure under-counts by the lag and never over-refuses; the verdict
+    // stands on it and SAYS it is stale, which is what the console and the alert line read.
     test("a stale snapshot still decides, and is reported as stale", async () => {
       const polledAt = new Date("2026-08-15T11:58:00Z").getTime();
       const later = new Date(polledAt + SPEND_SNAPSHOT_STALE_AFTER_MS + 1);
@@ -553,7 +553,7 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
         // Two August rows in the ledger; July's is not this month's.
         ledgerCalls: 2,
         unpricedModels: ["openrouter/free-model"],
-        // Nothing was carried from another Langfuse project into this row (issue #427).
+        // NOTE: nothing was carried from another Langfuse project into this row.
         carriedUsd: 0,
       });
       const play = usage.entries.find((e) => e.source === "playground");
@@ -565,9 +565,9 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
       });
     });
 
-    // WHAT OF THE FIGURE CAME FROM A PROJECT THE TENANT LEFT (issue #427). The carry is what makes a
-    // month's figure exceed the current Langfuse project's own total, and the dashboard now shows
-    // the two beside each other, so the console has to be able to say which part is which.
+    // NOTE: WHAT OF THE FIGURE CAME FROM A PROJECT THE TENANT LEFT. The carry is what makes a month's
+    // figure exceed the current Langfuse project's own total, and the dashboard shows the two beside
+    // each other, so the console has to be able to say which part is which.
     test("the carry from a previous project reaches the console", async () => {
       const month = "2026-11-01T00:00:00Z";
       await seedSnapshot({
@@ -591,7 +591,7 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
       ).toMatchObject({ carriedUsd: 0 });
     });
 
-    // Nothing read is nothing fresh (review round 5): the gate lets every call through until the
+    // NOTE: nothing read is nothing fresh: the gate lets every call through until the
     // first poll lands, and a bar reading "$0 of $20" with no sentence beside it would say the
     // opposite. `polledAt: null` is what the card renders the sentence on; `stale` agrees.
     test("a month with no snapshot shows zero, and says nothing has been read", async () => {
@@ -612,7 +612,7 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
       });
     });
 
-    // "CONFIGURED" MEANS THE POLL CAN USE IT (review round 1). A block that is switched on with a
+    // NOTE: "CONFIGURED" MEANS THE POLL CAN USE IT. A block that is switched on with a
     // credential reference whose vault entry is gone, or holds no usable keys, is what the poll
     // reports as `langfuse-not-configured`; the console must not call the same tenant configured on
     // the strength of the reference alone, or the screen shows $0 with no sentence saying why.
@@ -690,7 +690,7 @@ describe.skipIf(!dbUp)("the spend ceiling against the cost snapshot", () => {
     });
   });
 
-  // A PATCH THAT NAMES NO DOLLAR FIGURE LEAVES A TOKEN BLOCK IN TOKENS (review round 1). The console
+  // NOTE: A PATCH THAT NAMES NO DOLLAR FIGURE LEAVES A TOKEN BLOCK IN TOKENS. The console
   // saves the whole block on every change, but the API takes partial patches, and an operator who
   // only changes the customer's sentence has not seen the new unit: merging that against the
   // synthesized zeroes would store a dollar block and drop the one warning that the old ceiling is

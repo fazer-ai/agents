@@ -16,9 +16,8 @@ import { waitUntilBlocked } from "@/tests/utils/pg-waits";
 
 // A fleet administrator needs no membership, and everybody else enters through one: taking the fleet
 // role away therefore has to say which tenant the person keeps working in, or it leaves an account
-// with nowhere to enter. It used to be attempted anyway, and the operator got a check constraint back
-// as a 500 (#534). Since issue #756 the role is held PER MEMBERSHIP, so the fleet also has to say
-// which membership it re-roles when the person has more than one.
+// with nowhere to enter (a check constraint, surfacing as a 500). The role is held PER MEMBERSHIP, so
+// the fleet also has to say which membership it re-roles when the person has more than one.
 const fleet = (userId: bigint): TenantContext => ({
   tenantId: null,
   userId,
@@ -58,7 +57,7 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
   const users: bigint[] = [];
   let seq = 0;
 
-  // A second fleet administrator, always, so the last-admin guard (#496) is not what answers these
+  // A second fleet administrator, always, so the last-admin guard is not what answers these
   // tests: what is under test is the transition, not the invariant one function above it.
   async function fleetAdmin(
     tag: string,
@@ -121,8 +120,8 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     await appDb.$disconnect();
   });
 
-  // The report's own case, and it is not an edge one: a fleet administrator ALWAYS has a null tenant,
-  // so before this every demotion of every super admin came back as a 500.
+  // NOTE: not an edge case: a fleet administrator ALWAYS has a null tenant, so without this every
+  // demotion of every super admin would come back as a 500.
   test("a demotion that names no tenant is refused, and the row is untouched", async () => {
     const keep = await fleetAdmin("keep");
     const target = await fleetAdmin("target");
@@ -170,8 +169,8 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     expect(await rowOf(target.id)).toEqual(fleetRow);
   });
 
-  // A fleet administrator who already belongs to the tenant (two rows of one person merged by the
-  // #756 migration keep both) ends with ONE membership there, carrying the role the demotion names.
+  // NOTE: a fleet administrator who already belongs to the tenant (two rows of one person merged by
+  // the per-membership migration keep both) ends with ONE membership there, carrying the role the demotion names.
   test("a demotion into a tenant the person already belongs to keeps one membership", async () => {
     const keep = await fleetAdmin("keep4");
     const target = await fleetAdmin("member");
@@ -211,15 +210,11 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     expect(rows.map((r) => r.tenantId)).toEqual([home]);
   });
 
-  // The locks this family takes are chosen from an unlocked read, and a demotion makes that read stale:
-  // a write that starts while one is uncommitted queues on the FLEET scope and wakes up holding it
-  // while the target now administers a tenant — and its guard would then count that tenant's
-  // administrators under a lock covering somebody else's scope, which is how two removals in one
-  // tenant both commit.
-  //
+  // NOTE: this family picks its locks from an unlocked read, which a demotion makes stale: a write
+  // queued on the FLEET scope wakes holding it while the target now administers a tenant, and its
+  // guard would count that tenant's administrators under the wrong lock (two removals both commit).
   // Proved by where the write WAITS, not by timing: the second holder owns the destination scope's
-  // advisory lock, so a write that re-reads its scope has to park on it, and one that kept the stale
-  // scope sails past and the wait below never fires.
+  // advisory lock, so a write that re-reads its scope parks on it, and a stale one sails past.
   test("a write whose target moved scope waits for the scope it lands in", async () => {
     const keep = await fleetAdmin("keep7");
     const target = await fleetAdmin("mover");
@@ -419,7 +414,7 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
       memberships: [{ tenantId: home, role: "AGENT" }],
     });
   });
-  // Review round 1: the person may already ADMINISTER the tenant they land in, alone. Replacing that
+  // NOTE: the person may already ADMINISTER the tenant they land in, alone. Replacing that
   // membership's role is a demotion there too, and the tenant keeps an administrator or nothing moves.
   test("a demotion that would leave the destination tenant without an administrator is refused", async () => {
     const keep = await fleetAdmin("keep8");
@@ -442,7 +437,7 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     });
   });
 
-  // Review round 1: a fleet administrator who also holds a membership shows that membership as its
+  // NOTE: a fleet administrator who also holds a membership shows that membership as its
   // own row in the fleet view, and re-roling it is a MEMBERSHIP edit. It must never double as taking
   // the fleet role away.
   test("editing a fleet administrator's membership leaves the fleet role alone", async () => {
@@ -491,7 +486,7 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
       memberships: [{ tenantId: home, role: "TENANT_ADMIN" }],
     });
   });
-  // Review round 2: the fleet deleting a person takes the scope of EVERY tenant they belong to, not
+  // NOTE: the fleet deleting a person takes the scope of EVERY tenant they belong to, not
   // only the ones they administer. An AGENT membership read at the start can be promoted, and the
   // tenant's previous administrator demoted, before the cascade takes it; holding the tenant's scope
   // is what makes those writes wait and then read the deletion. Proved by where the delete WAITS.
@@ -543,7 +538,7 @@ describe.skipIf(!dbUp)("demoting a fleet administrator", () => {
     expect(await removing).toBeUndefined();
     expect(await rowOf(member.id)).toBeNull();
   }, 30_000);
-  // Review round 3: two administrators removing a person's last two memberships from different
+  // NOTE: two administrators removing a person's last two memberships from different
   // tenants. The other removal is held open, having deleted its membership and taken the person;
   // this one has to wait for it, and then read that the account has nowhere left to enter.
   test("removing the last two memberships from two tenants takes the account with the second", async () => {

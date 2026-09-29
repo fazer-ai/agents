@@ -17,20 +17,13 @@ import {
   updateVaultEntry,
 } from "@/modules/vault/service";
 
-// Issue #504, second half: an HTTP tool can reference a `generic` credential while nothing in its
-// templates interpolates {{secret}}. Nothing refuses it and nothing should — a tool may hold a
-// reference it has not wired yet — but the request then goes out UNAUTHENTICATED and the upstream
-// answers 401/403, which reads as a bad credential rather than one that was never sent.
-//
-// THE FENCE IS EXECUTION, NOT A LIST. Every row below is built ONCE and read two ways: as a tool
-// definition the real executor runs against a captured fetch, and as the shapes a write would store.
-// The assertion is that the two agree. A rule the runtime has and this file does not shows up as a
-// secret in the captured request with the warning saying it was never sent, or the reverse.
-//
-// Four of these rows were wrong answers in the first draft, and none of them is a site the scan
-// missed: the body of a GET is assembled and discarded, a fixed field only leaves if something
-// emitted names it, a typed credential's auto-injection is SKIPPED when the operator already wrote
-// its target header, and a stored single-brace `{secret}` is normalized at build time and does reach.
+// An HTTP tool may reference a `generic` credential no template interpolates (it may not be wired
+// yet), but the request then goes out UNAUTHENTICATED and the 401/403 reads as a bad credential, so
+// the write warns. THE FENCE IS EXECUTION, NOT A LIST: each row is built ONCE, run by the real
+// executor against a captured fetch and read as the shapes a write stores, and the two must agree.
+// Rows that reading templates gets wrong: a GET's body is assembled and discarded, a fixed field
+// leaves only if something emitted names it, a typed credential's auto-injection is SKIPPED when the
+// operator wrote its target header, and a stored single-brace `{secret}` is normalized and reaches.
 
 const PUBLIC = "8.8.8.8";
 const SECRET = "SECRET123";
@@ -1147,7 +1140,7 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).not.toBeNull();
 
-    // NOTE: and a declared internal target (issue #615) lifts both refusals too, for that host and
+    // NOTE: and a declared internal target lifts both refusals too, for that host and
     // port and only when the tool's allowedHosts names it, as the guard does. The wrong port is a
     // refusal of its own, so it claims nothing, and it is shown on an https name the older checks
     // would pass: on http or a blocked literal they would refuse it anyway.
@@ -1228,7 +1221,7 @@ describe("the scanner answers what the runtime does", () => {
   });
 
   test("a fragment does not reach the upstream, which is why the table cuts it", async () => {
-    // NOTE: the PREMISE behind the row above, measured rather than assumed, because the stub fetch
+    // NOTE: the PREMISE behind the row above, checked on a real socket, because the stub fetch
     // the table runs on cannot show it: `fetchImpl` is handed the whole URL string. A real socket is
     // what says whether the bytes leave, and `req.url` on the server side is the request TARGET the
     // client put on the wire.
@@ -1512,7 +1505,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
 
   test("a generic credential nothing sends is reported, in the preview AND in the apply", async () => {
     // NOTE: both halves, because the preview is what the caller reads before deciding. A warning the
-    // apply adds and the dry run withholds is the preview promising a clean write (#490).
+    // apply adds and the dry run withholds is the preview promising a clean write.
     for (const dry_run of [undefined, false]) {
       const r = await create({ credential_ref: genericRef, dry_run });
       expect(r.ok).toBe(true);
@@ -1552,8 +1545,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
     // NOTE: `header` is the one kind whose injection target is operator-supplied, so the answer to
     // "does this credential reach the request" is in the vault row and nowhere else. Without the
     // stored param name the writer cannot resolve an injection at all, and every tool holding one of
-    // these credentials would be reported as unwired — the shape a mutation of exactly that line
-    // survived until this test existed.
+    // these credentials would be reported as unwired.
     const clean = await create({ credential_ref: headerRef });
     expect(clean.ok).toBe(true);
     expect(wiringWarning(clean)).toHaveLength(0);
@@ -1573,8 +1565,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   test("the credential's own base URL is part of the request, and is read off the entry", async () => {
     // NOTE: a RELATIVE template gets that base prepended before anything is interpolated, so a
     // {{secret}} stored in the base is sent — and the tool row alone cannot say so. Without the base
-    // in the facts the writer reports a working tool as unwired, which a mutation of exactly that
-    // line survived until this test existed.
+    // in the facts the writer would report a working tool as unwired.
     const relative = await create({
       credential_ref: basedRef,
       url_template: "/v1/thing",
@@ -1695,7 +1686,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
 
   test("a credential ref that names no row gets no wiring advice", async () => {
     // NOTE: the entry was deleted after the tool was wired to it. Reading the miss as a legacy
-    // `generic` handed the operator remediation for the wrong problem — the credential is not
+    // `generic` would hand the operator remediation for the wrong problem: the credential is not
     // unwired, it is gone, and config-health is what reports that.
     const gone = (
       await createVaultEntry(
@@ -1773,8 +1764,8 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
 
   test("clearing the ack message is not the same as leaving it alone", async () => {
     // NOTE: `ack_message: null` CLEARS it, and the applied row then declares no `__wait_message` at
-    // all. Reading the cleared field as "unchanged" restored an ack the write is removing, and the
-    // preview reported a credential shadowed by an argument that will not exist.
+    // all. Reading the cleared field as "unchanged" would restore an ack the write is removing, and
+    // the preview would report a credential shadowed by an argument that will not exist.
     const created = await create({
       credential_ref: queryRef,
       query: { token: "{{__wait_message}}" },
@@ -1798,10 +1789,10 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("a legacy base URL is not prepended, so the relative tool it fed is not judged", async () => {
-    // NOTE: the write can no longer create this row, and an upgraded database has them. The gate
-    // makes the resolve answer `null`, so a RELATIVE tool wired to one builds no request at all —
-    // and a warning about an unauthenticated request would describe something that cannot happen.
-    // Reading the STORED value here instead put the old host back and judged the tool against it.
+    // NOTE: the write cannot create this row, and an upgraded database has them. The gate makes the
+    // resolve answer `null`, so a RELATIVE tool wired to one builds no request at all, and a warning
+    // about an unauthenticated request would describe something that cannot happen. Reading the
+    // STORED value would put the old host back and judge the tool against it.
     const legacy = await suDb.vaultEntry.create({
       data: {
         tenantId,
@@ -1816,10 +1807,9 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
     // reportable at all — it injects a bearer, and the operator's own header wins. Without that the
     // credential is wired whatever the base is, and the row proves nothing.
     //
-    // Written straight through Prisma, because #501 now refuses this pair on the way in: a relative
-    // template whose credential supplies no dialable base is a tool `buildHttpTool` will not build,
-    // so the write stopped storing it. The rows an upgraded database already holds are exactly what
-    // this reader still has to answer about, which is why the row is seeded rather than created.
+    // Seeded straight through Prisma, because the write refuses this pair (a relative template whose
+    // credential supplies no dialable base is a tool `buildHttpTool` will not build), and the rows an
+    // upgraded database already holds are what this reader still has to answer about.
     const relative = await suDb.toolDefinition.create({
       data: {
         tenantId,

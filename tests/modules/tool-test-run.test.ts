@@ -6,7 +6,7 @@ import type { TenantContext } from "@/lib/tenancy";
 import { DEFAULT_HTTP_METHOD } from "@/modules/tool-definitions/service";
 import { runToolTest } from "@/modules/tool-definitions/test-run";
 
-// The editor's one-shot run of an unsaved definition (issue #456). What is worth pinning here is
+// The editor's one-shot run of an unsaved definition. What is worth pinning here is
 // not that a request goes out — every other HTTP-tool test proves that — but the three properties
 // that make this endpoint safe to have at all: it reuses the runtime's guards rather than a second
 // fetch path, it registers nothing, and it never hands the request back.
@@ -217,7 +217,7 @@ describe("runToolTest", () => {
   });
 });
 
-// Round 1 of review, finding 2. The endpoint's whole justification is that it adds no capability
+// The endpoint's whole justification is that it adds no capability
 // over saving the definition and calling it, and an unconstrained method is exactly a capability
 // the write schema does not grant: `tool_create` takes an enum of five.
 describe("runToolTest — the method vocabulary is the write schema's", () => {
@@ -258,8 +258,8 @@ describe("runToolTest — the method vocabulary is the write schema's", () => {
   });
 });
 
-// Round 2 of review. Three ways this endpoint answered a different question from the one the
-// operator was asking, each of them a divergence from the runtime rather than a bug of its own.
+// Three ways this endpoint could answer a different question from the operator's, each a divergence
+// from the runtime rather than a bug of its own.
 describe("runToolTest — the same request the saved tool would make", () => {
   test("a definition with no method is tested as the method it would be SAVED as", async () => {
     const seen: Seen = {};
@@ -294,10 +294,8 @@ describe("runToolTest — the same request the saved tool would make", () => {
     expect(src).toMatch(
       /timeoutMs:\s*(?:deps\.timeoutMs\s*\?\?\s*)?DEFAULT_HTTP_TOOL_TIMEOUT_MS/,
     );
-    // AND NO DEADLINE AT ALL, which is the half #464 changed. This file used to arm a second one
-    // over the body because the runtime's bound covered only the headers; the runtime covers the
-    // whole exchange now, so a timer here would be a second answer to the same question — the
-    // exact divergence between console and runtime this screen exists to not have.
+    // NOTE: AND NO DEADLINE AT ALL: the runtime's bound covers the whole exchange, so a timer here
+    // would be a second answer to the same question, a divergence between console and runtime.
     expect(src).not.toMatch(/setTimeout\(/);
     expect(src).not.toMatch(/timeoutMs:\s*\d/);
     expect(src).not.toMatch(/TIMEOUT_MS\s*=\s*\d/);
@@ -317,10 +315,9 @@ describe("runToolTest — the same request the saved tool would make", () => {
     expect(seen.url).toBeUndefined();
   });
 
-  // Round 13 of review. The whole argument for this endpoint existing is that it does what saving
-  // the definition and calling it does — so every shape the WRITE path refuses has to be refused
-  // here too, or the screen previews a definition the operator cannot save. Three writers already
-  // share the method vocabulary (above); these are the other two gates the write path runs.
+  // NOTE: this endpoint does what saving the definition and calling it does, so every shape the WRITE
+  // path refuses is refused here too, or the screen previews a definition the operator cannot save.
+  // The method vocabulary is above; these are the other two gates the write path runs.
   test.each([
     // A plain JSON object authored as if it were the payload. `parseBody` reads a fixed set of keys
     // and ignores the rest, so the request goes out assembled from the field names instead.
@@ -353,9 +350,9 @@ describe("runToolTest — the same request the saved tool would make", () => {
       {
         definition: {
           ...base,
-          // Unmatched delimiter: the write schema refuses it, and the reader used to answer
-          // "no template" — so the run went out and reported the RAW body as the model's text,
-          // previewing a definition that cannot be saved as though it were the finished thing.
+          // NOTE: unmatched delimiter: the write schema refuses it, and a reader answering "no
+          // template" would run and report the RAW body as the model's text, previewing a
+          // definition that cannot be saved.
           outputSchema: { mode: "template", template: "{{razao_social} — ok" },
         },
         args: { cnpj: "1" },
@@ -369,9 +366,8 @@ describe("runToolTest — the same request the saved tool would make", () => {
     expect(seen.url).toBeUndefined();
   });
 
-  // The two below are fences, not fixes: both were already green. They pin the OTHER half of the
-  // parity — that the gates added above refuse no more than the write path does, and that the
-  // authoring shapes the save canonicalizes already reach the provider canonicalized here.
+  // NOTE: the two below pin the OTHER half of the parity: the gates above refuse no more than the
+  // write path does, and the authoring shapes the save canonicalizes reach the provider canonicalized.
   test("but a legacy JSON Schema in outputSchema is let through, as the save lets it", async () => {
     // The column has been writable through MCP since it existed, unvalidated and read nowhere, so a
     // row may hold a real JSON Schema. The write schema judges only `mode: "template"`; refusing
@@ -438,18 +434,14 @@ describe("runToolTest — the same request the saved tool would make", () => {
   });
 });
 
-// Round 3 of review, findings 1 and 2. The wrapper that captures the raw body sat between the
-// runtime and the network, and both of the ways it could be noticed are timing rather than content.
+// The wrapper that captures the raw body sits between the runtime and the network, and both ways it
+// could be noticed are timing rather than content.
 describe("runToolTest — the capture wrapper is invisible to the runtime", () => {
   test("a body that arrives after the bound ends the call, wrapper or no wrapper", async () => {
-    // This test used to assert the opposite, and that is the whole point of #464. The runtime
-    // cleared its timer the instant `fetch` resolved and read the body afterwards, so its bound was
-    // on the HEADERS: the same definition against the same provider returned `HTTP 200 {"a":1}` in
-    // production and "The operation was aborted." on the screen built to preview it. There is one
-    // bound now, over the whole exchange, so both sides end together and the clone ends with them.
-    //
-    // Written with a short timeout on `buildHttpTool` rather than through `runToolTest`, because
-    // the real bound is ten seconds and the property is the ORDERING, not the number.
+    // NOTE: there is one bound, over the whole exchange (a bound on the HEADERS alone lets the runtime
+    // answer `HTTP 200` where the preview aborts), so both sides end together and the clone ends with
+    // them. A short timeout on `buildHttpTool`, not `runToolTest`: the real bound is ten seconds and
+    // the property is the ORDERING, not the number.
     const provider = (async (_u: string, init: RequestInit) =>
       new Response(
         new ReadableStream({
@@ -468,7 +460,7 @@ describe("runToolTest — the capture wrapper is invisible to the runtime", () =
         { status: 200, headers: { "content-type": "application/json" } },
       )) as unknown as typeof fetch;
 
-    // What `test-run.ts` hands `buildHttpTool`, read out of the file so this cannot pass against a
+    // NOTE: what `test-run.ts` hands `buildHttpTool`, read out of the file so this cannot pass against a
     // wrapper the module no longer uses.
     const src = await Bun.file(
       "src/modules/tool-definitions/test-run.ts",
@@ -554,9 +546,9 @@ describe("runToolTest — the capture wrapper is invisible to the runtime", () =
   test.each([204, 205, 304])(
     "a bodyless %i is handed back as the response it was",
     async (status) => {
-      // The wrapper used to rebuild the Response from the text it had read. Bun accepts an empty
-      // body on a null-body status where the spec does not, so this never threw here — but a
-      // rebuilt Response is a second object to keep faithful, and there is no longer one.
+      // NOTE: the wrapper does not rebuild the Response: Bun accepts an empty body on a null-body
+      // status where the spec does not, so a rebuild would not throw here, but it is a second object
+      // to keep faithful.
       const r = await runToolTest(
         ctx,
         {
@@ -576,14 +568,10 @@ describe("runToolTest — the capture wrapper is invisible to the runtime", () =
   );
 });
 
-// Round 6 of review, finding 3, and it is a correction of a decision made in round 2. That round
-// made EVERY throw out of `invoke` a 400, on the reasoning that everything reachable in there is the
-// caller's to fix. Half of them are not: a name that does not resolve, a body that stops
-// mid-stream, a provider that does not answer inside the bound. Answering 400 for those tells the
-// operator to edit a definition that is fine.
-//
-// The shapes below were measured, not guessed: AbortError (DOMException), DNSException with
-// ENOTFOUND, EncodingError for a broken stream.
+// Not every throw out of `invoke` is the caller's to fix: a name that does not resolve, a body that
+// stops mid-stream, a provider that does not answer inside the bound. A 400 for those tells the
+// operator to edit a definition that is fine. The shapes below are the runtime's real ones:
+// AbortError (DOMException), DNSException with ENOTFOUND, EncodingError for a broken stream.
 describe("runToolTest — what kind of failure it was", () => {
   const pub = {
     ...base,
@@ -680,16 +668,9 @@ describe("runToolTest — what kind of failure it was", () => {
   });
 });
 
-// Round 9 of review. `buildHttpTool` clears its abort timer the instant `fetch` resolves and reads
-// the body afterwards, so a provider that answers at once and then never finishes the body leaves
-// `res.text()` pending with no upper bound at all — measured under a 300ms bound, still hanging at
-// 3,001ms. Mid-turn that is its own defect, and out of this change's scope: closing it makes the
-// budget cover the whole exchange for every HTTP tool, which is a decision about a default rather
-// than a bug fix.
-//
-// Here it could not be left, and round 8 is why: every way of closing the dialog is blocked while a
-// request is in flight, so the operator would have a spinner and no exit, and the 504 this endpoint
-// advertises would never be sent.
+// A provider that answers at once and never finishes the body must still hit the deadline: every
+// way of closing the dialog is blocked while a request is in flight, so without it the operator
+// has a spinner and no exit, and the 504 this endpoint advertises is never sent.
 describe("runToolTest — the deadline covers the body, not just the headers", () => {
   test("a body that never ends is a 504 rather than a hang", async () => {
     const t0 = Date.now();
@@ -759,9 +740,8 @@ describe("runToolTest — the deadline covers the body, not just the headers", (
   }, 10_000);
 });
 
-// Round 10 of review, finding 1. The wire cap was applied AFTER `.text()` had buffered the whole
-// body, which is a second complete copy of the response alongside the one `buildHttpTool` is
-// already holding — over an endpoint whose contract is 100,000 characters.
+// The wire cap applies while reading: after `.text()` it would be a second complete copy of the
+// response beside the one `buildHttpTool` holds, over an endpoint whose contract is 100,000 characters.
 describe("runToolTest — the raw body is bounded while it is read", () => {
   test("a response far past the cap comes back capped, and counted whole", async () => {
     // 2 MB in 64kB chunks: enough that retaining it all would be visible, small enough to run.
@@ -853,14 +833,10 @@ describe("runToolTest — the raw body is bounded while it is read", () => {
   });
 });
 
-// And the BOUND itself, which is the only thing the finding was about: the two versions return the
-// same string, so nothing above can tell them apart. What separates them is what stays in memory
-// while the body is read.
-//
-// IN A SUBPROCESS, and that is the whole reason this test is shaped like this. `heapUsed` is
-// process-wide: measured inside the suite the delta reads 473 MB of other tests' allocations
-// whether the guard is there or not, which is a threshold nobody can set honestly. Alone in a fresh
-// process the two are 4.5 MB with the guard and 105 MB without it, both measured.
+// And the BOUND itself: a bounded and an unbounded read return the same string, so only what stays
+// in memory while the body is read tells them apart. IN A SUBPROCESS, because `heapUsed` is
+// process-wide and inside the suite it carries hundreds of MB of other tests' allocations, a
+// threshold nobody can set; alone, the guarded read stays at a few MB.
 test("a body far larger than memory allows is never retained whole", async () => {
   const script = `
       import { runToolTest } from "@/modules/tool-definitions/test-run";
@@ -896,14 +872,14 @@ test("a body far larger than memory allows is never retained whole", async () =>
   };
   expect(got.rawChars).toBe(300 * 1024 * 1024);
   expect(got.rawLen).toBe(100_000);
-  // Retaining the body is ~955 MB (measured); the guard keeps it under 2 MB. The threshold sits
-  // between them with an order of magnitude on either side.
+  // NOTE: retaining the body is ~955 MB; the guard keeps it under 2 MB. The threshold sits between
+  // them with an order of magnitude on either side.
   expect(got.grew).toBeLessThan(50 * 1024 * 1024);
 }, 180_000);
 
-// Round 12 of review, finding 1. The cleanup hangs off the BODY promise, which does not exist when
-// the fetch itself rejects — a refused connection, a TLS failure — so each failed test left its
-// timer, controller and listener alive for the whole budget.
+// The cleanup cannot hang off the BODY promise alone, which does not exist when the fetch itself
+// rejects (a refused connection, a TLS failure), or each failed test leaves its timer, controller
+// and listener alive for the whole budget.
 test("a fetch that rejects leaves no timer behind", async () => {
   const script = `
     import { runToolTest } from "@/modules/tool-definitions/test-run";

@@ -8,16 +8,12 @@ import {
 
 // The id a STORED ref names, and the two rules that are deliberately not the same one.
 //
-// `requireVaultRef` refuses everything but the canonical spelling on the way IN (#124), so a column
-// holds one form. Reading is lenient on purpose, and `canonicalVaultRef` in
-// src/client/lib/credentialRef.ts states the contract in writing: `vault:0007`, `vault: 7` and
-// `vault:7` are the same entry to every resolver. Refs predate the write rule, so reading strictly
-// would report a working credential as missing and switch a model or an integration off silently.
-//
-// The row this table exists for is the last one. A ref carrying digits past 2^63-1 CONVERTS, so the
-// `try`/`catch` every one of these eight sites had never ran, and the value went to Prisma, which
-// answered a bind error — the one input that made a resolver throw instead of answering "no such
-// entry". Lenient about SPELLING, bounded by RANGE. Issue #407.
+// `requireVaultRef` refuses all but the canonical spelling on the way IN. Reading is lenient on
+// purpose (`canonicalVaultRef` in src/client/lib/credentialRef.ts: `vault:0007`, `vault: 7` and
+// `vault:7` are one entry): refs predate the write rule, and a strict read would switch a working
+// credential off silently. Digits past 2^63-1 still CONVERT, so a `try`/`catch` around the
+// conversion never fires and Prisma answers a bind error instead of "no such entry": lenient about
+// SPELLING, bounded by RANGE.
 describe("readVaultRefId", () => {
   test("the canonical spelling reads back", () => {
     expect(readVaultRefId("vault:7")).toBe(7n);
@@ -59,7 +55,7 @@ describe("readVaultRefId", () => {
 });
 
 // The filter that helper turns into, and the one promise it makes to its callers: a ref naming no
-// entry matches NOTHING, rather than throwing or matching something else (issue #124).
+// entry matches NOTHING, rather than throwing or matching something else.
 describe("vaultRefWhere", () => {
   test("a ref that names an entry filters by that id, lenient spellings included", () => {
     expect(vaultRefWhere("vault:7")).toEqual({ id: 7n });

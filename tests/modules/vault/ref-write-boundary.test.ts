@@ -37,20 +37,17 @@ import {
 import { outboundUrl } from "../../utils/outbound";
 
 // The context these calls take: the tenant id came from a row this test created, so it carries
-// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+// TENANT_ADMIN, the role that tells `runScopedOn` the id never came from outside.
 const ctxOf = (tenantId: bigint): TenantContext => ({
   tenantId,
   userId: null,
   role: "TENANT_ADMIN",
 });
 
-// Every column that stores a `vault:<id>`, held to the same rule on the way in. A bare NAME was the
-// value that got stored and could never resolve: `vaultRefWhere` turns it into a filter matching
-// nothing, so the feature behaves as if nothing were configured — silently for five of these, and as
-// an unexplained 401 for the inbound secret (issue #124).
-//
-// The table exists because the finding came in a family. One service fixed and five left alone would
-// read as "these were checked", which is worse than nobody having checked at all.
+// Every column that stores a `vault:<id>`, held to the same rule on the way in. A bare NAME can never
+// resolve: `vaultRefWhere` turns it into a filter matching nothing, so the feature behaves as if
+// unconfigured (silently for five of these, an unexplained 401 for the inbound secret). One table for
+// all: one service checked and five not would read as "these were checked".
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -88,11 +85,9 @@ const uniq = (p: string) => `${p}-${process.pid}-${++seq}`;
 interface Boundary {
   // What the operator sees in the API, so a failure names the field rather than the test row.
   field: string;
-  // The name the REFUSAL puts on the wire (#231/#245), and every boundary here names one. The six
-  // columns of #124 were the holdout, on the argument that "the patch key the client sent already is
-  // the name" — which is what the client SENT, not what the server REFUSED, and an integrations
-  // write carries two ref keys in one body. A refusal with no field is unplaceable by any form
-  // (#320), so `requireVaultRef` now takes the name as a required argument.
+  // The name the REFUSAL puts on the wire, and every boundary here names one. The patch key the client
+  // sent is not it (an integrations write carries two ref keys in one body), and a refusal with no
+  // field is unplaceable by any form, so `requireVaultRef` takes the name as a required argument.
   wireField: string;
   create: (ref: string) => Promise<bigint>;
   update: (id: bigint, ref: string) => Promise<unknown>;
@@ -257,9 +252,8 @@ const boundaries: Boundary[] = [
   },
 ];
 
-// The agent keeps its refs inside two JSON bags rather than in columns of their own, which is how
-// they escaped the sweep the first time: there is no `credential_ref` column to grep for. The bags
-// are still a write boundary, and the same rule applies to them (issue #254).
+// The agent keeps its refs inside two JSON bags rather than in columns of their own, so there is no
+// `credential_ref` column to grep for. The bags are still a write boundary, and the same rule applies.
 const MODEL_BASE = { provider: "openai", model: "gpt-4o-mini" };
 
 // A settings bag holding exactly one credential ref, at `path` — the shape a save of that one
@@ -543,9 +537,8 @@ describe.skipIf(!dbUp)("vault ref write boundary", () => {
     });
   });
 
-  // The tenant's two credential blocks. Neither is a column and neither was in the #124 sweep;
-  // embedding had no check at all, and langfuse had one that answered "not found" for two values
-  // that are something else.
+  // NOTE: the tenant's two credential blocks. Neither is a column, and both are write boundaries: a
+  // check must not answer "not found" for a value that is something else.
   describe("tenant settings credential blocks", () => {
     test("embedding refuses a bare NAME, and stores a live ref canonically", async () => {
       await expect(
@@ -595,9 +588,9 @@ describe.skipIf(!dbUp)("vault ref write boundary", () => {
     });
 
     test("langfuse stores the canonical spelling, and admits an unfilled entry", async () => {
-      // `vault:007` resolved and was stored verbatim, which is exactly what makes the credential
-      // picker call a working credential unavailable; and an entry created empty on purpose was
-      // refused as "not found", which is a different fact with the same words.
+      // NOTE: `vault:007` stored verbatim makes the credential picker call a working credential
+      // unavailable, and an entry created empty on purpose is not "not found", which is a different
+      // fact with the same words.
       await updateLangfuse(ctx(), { credentialRef: `vault:00${lfId}` }, appDb);
       expect(
         (await getTenantSettings(ctx(), appDb)).langfuse.credentialRef,

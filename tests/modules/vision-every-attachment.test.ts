@@ -19,24 +19,14 @@ import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogCount } from "../utils/flowlog";
 
-// ISSUE #691: THE EAGER VISION PASS READ ONE ATTACHMENT AND THE OTHERS WERE NEVER OPENED.
+// THE EAGER VISION PASS OPENS EVERY ATTACHMENT, not only the first.
 //
-// `firstVisualAttachment` did what its name said, so a customer who attaches the receipt, the ID
-// and a screenshot in one e-mail had one of the three described, and the reply asked for what was
-// in the other two. On the mailbox this was measured against, 50.6% of the conversations that
-// arrive with an attachment carry more than one, so it was half the traffic — and NOTHING reported
-// it: the flow log wrote one `vision` line per turn with `status: ok`, because from the pipeline's
-// point of view nothing had been skipped.
-//
-// Asked where it is CONSUMED, not where it is defined: the fixture drives the real receiver
-// (`processChatwootDelivery`), so counting lines measures the call site. A unit test on
-// `visualAttachments` would pass with the webhook still taking `[0]`.
-//
-// Deterministic and offline by construction, exactly like `eager-media-flow-context.test.ts`: the
-// agent's vision is enabled with NO credentialRef, so the service takes its `no_credential` skip —
-// which emits the stage line — before it loads a Chatwoot client or reaches a provider. ONE LINE
-// PER ATTEMPT is what makes the count the measurement. And debounce is on, so the delivery arms
-// a job instead of running a turn: the eager pass runs ahead of that gate, and no model is asked for.
+// Asked where it is CONSUMED: the fixture drives the real receiver (`processChatwootDelivery`), so
+// counting lines measures the call site; a unit test on `visualAttachments` would pass with the
+// webhook still taking `[0]`. Offline like ./eager-media-flow-context.test.ts: vision has NO
+// credentialRef, so the service takes its `no_credential` skip (which emits ONE stage line PER
+// ATTEMPT) before any Chatwoot client or provider. Debounce is on, so the delivery arms a job instead
+// of a turn: the eager pass runs ahead of that gate, and no model is asked for.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -235,10 +225,9 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     });
   }
 
-  // Measured as a RATIO against the one-attachment message, never as an absolute count: the eager
-  // pass has more than one call site per delivery (it runs ahead of the gate and again after it,
-  // idempotent on a text already stashed — and nothing is stashed when the service skips). How many
-  // times the pass runs is not what this issue is about; how many attachments each pass opens is.
+  // NOTE: a RATIO against the one-attachment message, never an absolute count: the eager pass has more
+  // than one call site per delivery (ahead of the gate and after it, idempotent on a stashed text, and
+  // nothing is stashed on a skip). The subject is how many attachments each pass opens.
   test("every attachment is analyzed, not only the first", async () => {
     await clearFlowLog(suDb, { tenantId });
     await entregar(CONV_ID + 9, [anexo(401, "unico.png")]);
@@ -250,12 +239,12 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
       anexo(102, "comprovante.jpg"),
       anexo(103, "documento.png"),
     ]);
-    // Three files, three times the work. Before the fix this was `umSo`, whatever N was.
+    // NOTE: three files, three times the work.
     expect(await linhasDeVisao(CONV_ID)).toBe(3 * umSo);
   });
 
-  // The album. The cap is the point here, and so is saying so: a model told nothing answers as if
-  // the message had those files fewer, which is the failure this issue is about.
+  // NOTE: the album. The cap is the point here, and so is saying so: a model told nothing answers as
+  // if the message had those files fewer.
   test("beyond the cap, the overflow is named to the model instead of dropped", async () => {
     await clearFlowLog(suDb, { tenantId });
     const muitos = Array.from({ length: 11 }, (_, i) =>
@@ -265,27 +254,24 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
 
     // Eleven files cost EIGHT extractions, not eleven and not one — and exactly one pass, because
     // `attachmentsUnread` marks the event as already analyzed and the second call site takes its
-    // idempotence path. That mark is why a message whose every extraction fails no longer pays the
-    // whole provider bill twice, and pinning the number here is what would catch it coming back.
+    // idempotence path. That mark keeps a message whose every extraction fails from paying the whole
+    // provider bill twice.
     expect(await linhasDeVisao(CONV_ID + 1)).toBe(8);
     // A COUNT on the event, not text glued to the extraction: that is what lets it cross the
     // debounce re-fetch, and the marker itself is the renderer's job. Eleven here because vision
     // cannot run in this fixture: three are over the cap and the eight attempted all failed, and
     // a file that could not be read is as absent to the model as one never opened.
     expect(n.message?.attachmentsUnread).toBe(11);
-    // Through `incomingRenderable`, which is what the DIRECT path hands the renderer: handing the
-    // count straight to `renderInboundMessage` passed while neither adapter copied the field, so
-    // the marker reached no production path at all (PR #692 review, round 2). The count rides
+    // NOTE: through `incomingRenderable`, what the DIRECT path hands the renderer: handing the count
+    // straight to `renderInboundMessage` passes even when no adapter copies the field. The count rides
     // along; the marker itself waits for something that WAS read (see the render case below).
     expect(incomingRenderable(n).attachmentsUnread).toBe(11);
   });
 
-  // THE DEBOUNCE FLUSH IS THE PATH THE FIRST ROUND OF THIS PR DID NOT MEASURE, and it is the path
-  // most production agents take. The flush throws the webhook event away and rebuilds the message
-  // from Chatwoot's own page plus the in-process annotation store, so anything that lived only on
-  // `n.message` reached nobody. Two things did: the joined extraction (each `extractInboundFile`
-  // stashed its own under the same message key, and the store merges field by field, so N parallel
-  // extractions left whichever finished last) and the overflow notice.
+  // NOTE: THE DEBOUNCE FLUSH, the path most agents take, throws the webhook event away and rebuilds
+  // the message from Chatwoot's page plus the in-process annotation store, so what lives only on
+  // `n.message` reaches nobody. Both the joined extraction (the store merges field by field, so
+  // per-file stashes under one key keep whichever finished last) and the overflow notice must survive.
   test("the joined extraction and the overflow both survive the flush's re-fetch", async () => {
     clearMediaAnnotations();
     await clearFlowLog(suDb, { tenantId });
@@ -329,18 +315,17 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
         toRenderable({ ...row, imageDescription: "[a.jpg] comprovante" }),
       ),
     ).toContain('<anexos-nao-lidos quantidade="10">');
-    // Without one, the tried files are still named with their cause, and the image marker no longer
-    // asks for the file on its own: one request, not two.
+    // NOTE: without one, the tried files are still named with their cause, and the image marker does
+    // not ask for the file on its own: one request, not two.
     const semLeitura = renderInboundMessage(toRenderable(row));
     expect(semLeitura).toContain('motivo="falha"');
     expect(semLeitura).not.toContain("reenvie o arquivo");
   });
 
-  // DELIVERY RECOVERY RE-RUNS THE PASS FROM SCRATCH, and a partial re-run used to publish an
-  // aggregate poorer than the metadata it then overrode: with A and B already persisted and only B
-  // extracting again, the stash held B alone and won over the page that still had both (PR #692
-  // review, round 4). An attachment that already carries its extraction is reused instead of paid
-  // for again, which makes the aggregate complete by construction — and is also cheaper.
+  // NOTE: DELIVERY RECOVERY RE-RUNS THE PASS FROM SCRATCH, and the stash wins over the page, so a
+  // partial re-run (A and B persisted, only B extracted again) would publish B alone. An attachment
+  // that already carries its extraction is reused instead, which makes the aggregate complete by
+  // construction, and cheaper.
   test("an attachment already extracted is reused, not paid for again", async () => {
     clearMediaAnnotations();
     await clearFlowLog(suDb, { tenantId });
@@ -359,14 +344,10 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     expect(n.message?.imageDescription).toContain("ja-lido.png");
   });
 
-  // A recovery that finally reads everything has to CLEAR the earlier failure, not merely stop
-  // adding to it: the store merges field by field, so a count left out survives and the flush
-  // renders "N unread" beside the complete extraction — asking the customer to resend what was
-  // just read (PR #692 review, round 5).
-  //
-  // Driven through TWO deliveries of the SAME message, because the count is written by the webhook
-  // and a test that stashes it by hand passes with the call site still omitting it — which is how
-  // this very case passed on the first attempt.
+  // NOTE: a recovery that finally reads everything has to CLEAR the earlier failure: the store merges
+  // field by field, so a count left out survives and the flush renders "N unread" beside the complete
+  // extraction. Driven through TWO deliveries of the SAME message, because the webhook writes the
+  // count and a test that stashes it by hand passes with the call site omitting it.
   test("a pass that reads everything clears the count a failed one left", async () => {
     clearMediaAnnotations();
     await clearFlowLog(suDb, { tenantId });
@@ -421,11 +402,10 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
     );
   });
 
-  // THE CAP IS A BUDGET ON PROVIDER CALLS, NOT ON HOW MUCH OF THE MESSAGE WE WILL READ. Cutting the
-  // list before checking what was already extracted threw away results already in hand and then
-  // counted them as unread — and because the overlay WINS over the fetched page (round 4), the
-  // contradiction is destructive: nine descriptions on the page became eight plus "1 not read", so
-  // the model asked the customer to resend a file the page was showing it (PR #692 review, round 6).
+  // NOTE: THE CAP IS A BUDGET ON PROVIDER CALLS, NOT ON HOW MUCH OF THE MESSAGE WE READ. Cutting the
+  // list before checking what is already extracted would count results in hand as unread, and since
+  // the overlay WINS over the page, nine descriptions would become eight plus "1 not read" and the
+  // model would ask the customer to resend a file the page shows it.
   test("what is already extracted does not count against the cap", async () => {
     clearMediaAnnotations();
     await clearFlowLog(suDb, { tenantId });
@@ -476,7 +456,7 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
 
   // A meta write-back that lands for SOME attachments must not suppress the complete aggregate: it
   // is best-effort per attachment, so a page carrying one description out of two is a partial
-  // reading of the same pass, and `??=` used to let it win (PR #692 review, round 2).
+  // reading of the same pass (a `??=` would let it win).
   test("a partially written meta does not suppress the complete aggregate", () => {
     clearMediaAnnotations();
     const alvo = { tenantId: 1n, instanceId: 2n, messageId: 4242 };

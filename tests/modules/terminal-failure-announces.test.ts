@@ -26,16 +26,13 @@ import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import { withJobHandler } from "@/tests/utils/job-registry";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
-// ── A UNIT OF WORK THAT DIES PERMANENTLY HAS TO SAY SO (issue #356) ──
+// ── A UNIT OF WORK THAT DIES PERMANENTLY HAS TO SAY SO ──
 //
-// Four buses reach a terminal failure state and, before this, three of them said nothing anywhere:
-// the scheduler (for every kind without a hand-written hook), the alert bus, the inbound receptor,
-// and the RAG indexer. The operator cannot infer any of them — by definition nothing happens
-// afterwards — so the effect asserted here is always the durable row an operator reads
-// (`ExecutionLog`), never a return value or a counter, because counting is exactly what did not
-// reach anybody.
-//
-// Integration, real DB, real RLS. Only the network is injected.
+// The scheduler (every kind without a hand-written hook), the alert bus, the inbound receptor and
+// the RAG indexer each reach a terminal failure the operator cannot infer (nothing happens after
+// it), so the effect asserted is always the durable row an operator reads (`ExecutionLog`), never a
+// return value or a counter, which reaches nobody. Integration, real DB, real RLS; only the network
+// is injected.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -81,12 +78,10 @@ async function deadRows(expected: number, waitMs = POLL_DEADLINE_MS) {
   const deadline = Date.now() + waitMs;
   for (;;) {
     const rows = await flowLogRows(suDb, {
-      // flowlog-scope: tenant-wide — the subject is HOW MANY lines a terminal failure wrote, so a
-      // reader scoped to one turn would answer a different question and stay green while a second,
-      // duplicate line existed. None of these units HAS a turn; this file's tenant is its own, and
-      // `clearRows` empties it before each case through `clearFlowLog`, which settles the scheduled
-      // writes first — without that the emptying misses whatever the previous case had scheduled and
-      // not yet written, and 23 cases share this tenant (issue #375).
+      // flowlog-scope: tenant-wide. The subject is HOW MANY lines a terminal failure wrote, and none of
+      // these units has a turn. The tenant is this file's own, and `clearRows` empties it before each
+      // case through `clearFlowLog`, which settles scheduled writes first, or the emptying misses the
+      // line the previous case scheduled (many cases share this tenant).
       where: { tenantId, stage: "dead_letter" },
       orderBy: { id: "asc" },
     });
@@ -226,18 +221,13 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     await app?.$disconnect();
   });
 
-  // ── THE SCHEDULER: the biggest half, and it was per kind ──
+  // ── THE SCHEDULER: the biggest half, per kind ──
 
   test("the test harness puts the registry back, including when it was empty", async () => {
-    // WEBHOOK_RETRY has no production handler at all — nothing registers one and nothing enqueues
-    // the kind — so it is the case a restore that only re-registers a PREVIOUS handler gets wrong,
-    // and the mistake is invisible from inside the file that makes it: the stub surfaces as another
-    // file's scheduler test inheriting it, order-dependently.
-    //
-    // The absent state is SET UP here rather than assumed, because asserting it would be asserting
-    // a global this file does not own — scheduler.test.ts installs a stub for this very kind and
-    // does not put it back, which is the adjacent shape this helper cannot fix from here. Whatever
-    // was there goes back at the end.
+    // NOTE: WEBHOOK_RETRY has no production handler (nothing registers or enqueues it), so a restore
+    // that only re-registers a PREVIOUS handler leaks the stub into another file's scheduler test,
+    // order-dependently. The absent state is SET UP, not assumed: ./scheduler.test.ts installs a stub
+    // for this kind and does not put it back. Whatever was there goes back at the end.
     const outer = getJobHandler("WEBHOOK_RETRY");
     unregisterJobHandler("WEBHOOK_RETRY");
     try {
@@ -536,7 +526,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
     expect(reaped.find((r) => r.id === id)?.status).toBe("DEAD");
     await announceReaped(reaped, appDb);
 
-    // Its hook owns the announcement for this kind (a private note on the conversation, issue #71),
+    // NOTE: its hook owns the announcement for this kind (a private note on the conversation),
     // and here it declines to write one — the payload carries no thread. The generic line must not
     // step in over that decision: the hook already looked and said no.
     await Bun.sleep(400);
@@ -626,10 +616,9 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
         attempts: 7,
       },
     });
-    // The claim above is one cycle; this is the sentence the PR body makes about ALL of them. The
-    // measurement without the guard, on this same harness: cycle 1 leaves 1 DEAD + 1 PENDING, cycle
-    // 6 leaves 6 DEAD + 1 PENDING and six lines. One new delivery per death, for as long as the
-    // channel stays broken.
+    // NOTE: the claim above is one cycle; this holds it over many. Without the guard each death arms
+    // one new delivery (cycle 6 leaves 6 DEAD + 1 PENDING and six lines), for as long as the channel
+    // stays broken.
     const census: number[] = [];
     for (let cycle = 0; cycle < 4; cycle++) {
       await processAlertBatch({
@@ -811,11 +800,10 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
         integrationInstanceId: instanceId,
         dedupeKey: `inflight-356-${process.pid}`,
         payload: { kind: "conversion" },
-        // The fifth attempt, RUNNING right now: at the cap, claimed a moment ago — and RECEIVED
-        // long before that, which is the shape the first version of this test missed. Four prior
-        // deaths take time, so by the last attempt the receipt is always ancient; a staleness rule
-        // read off `receivedAt` calls this row stale forever and the test passed for the wrong
-        // reason with a fresh receipt.
+        // NOTE: the fifth attempt, RUNNING right now: at the cap, claimed a moment ago, and RECEIVED
+        // long before. Four prior deaths take time, so by the last attempt the receipt is always
+        // ancient; a staleness rule read off `receivedAt` would call this row stale forever, which a
+        // fresh receipt here would hide.
         status: "PROCESSING",
         attempts: 5,
         receivedAt: new Date(Date.now() - 60 * 60_000),
@@ -966,9 +954,9 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
         status: "PROCESSING",
         attempts: 5,
         receivedAt: new Date(Date.now() - 60 * 60_000),
-        // What a claim taken by a replica that does not stamp yet looks like. It is judged by the
-        // receipt, which is exactly what shipped before this column — no worse than today for a row
-        // the old code claimed, and the arm stops being reachable once every replica stamps.
+        // NOTE: a claim taken by a replica that does not stamp yet. It is judged by the receipt, no
+        // worse than a row claimed before the column existed, and the arm stops being reachable once
+        // every replica stamps.
         claimedAt: null,
       },
     });

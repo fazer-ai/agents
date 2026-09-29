@@ -26,7 +26,7 @@ import {
 import { toolDefinitionCreateSchema } from "@/modules/tool-definitions/service";
 
 // The decision table for what an HTTP tool may declare about the shape its response reaches the
-// model in (issue #456). The rule lives in one pure function; the DB-backed and runtime tests prove
+// model in. The rule lives in one pure function; the DB-backed and runtime tests prove
 // the wiring, never the rule.
 
 describe("readResponseTemplateResult", () => {
@@ -71,8 +71,8 @@ describe("readResponseTemplateResult", () => {
     });
   });
 
-  // Declared-and-broken is REFUSED, never stored-and-ignored: the operator wrote it and is the one
-  // who can fix it, and a declaration that looks saved and does nothing is the silence #456 removes.
+  // NOTE: declared-and-broken is REFUSED, never stored-and-ignored: the operator wrote it and is the
+  // one who can fix it, and a declaration that looks saved and does nothing fails in silence.
   test.each([
     [
       "a non-string template",
@@ -276,9 +276,9 @@ describe("templateLeaves", () => {
   });
 });
 
-// Round 4 of review, finding 2. A `{{` or `}}` that is not part of a token is invisible to the token
-// scan — `{{a}` matches nothing, so it is not an unusable TOKEN, it is not a token at all — and the
-// declaration was accepted, stored, and put in front of the model verbatim.
+// A `{{` or `}}` that is not part of a token is invisible to the token scan (`{{a}` matches nothing,
+// so it is not an unusable TOKEN, it is not a token at all), so without this check the declaration
+// is stored and put in front of the model verbatim.
 describe("unmatchedTemplateDelimiter", () => {
   test.each([
     ["Name: {{data.name}", "{{data.name}"],
@@ -307,14 +307,10 @@ describe("unmatchedTemplateDelimiter", () => {
   });
 });
 
-// Round 10 of review, finding 2. `tool_create` / `tool_update` have a dry run, and a dry run never
-// calls the service — so whatever this function puts in the patch is what the caller reads in the
-// preview and the diff, and then applies. The service stores what `storableResponseTemplate` makes
-// of the argument, so echoing the argument back promises a value that will not be stored.
-//
-// The same lesson the `body` check one line below already carries from issue #150, and the reason
-// it is a test rather than a comment: round 1 of this review showed a fix that only the call site
-// could prove.
+// `tool_create` / `tool_update` have a dry run, which never calls the service, so what this function
+// puts in the patch is what the caller reads in the preview and the diff. The service stores what
+// `storableResponseTemplate` makes of the argument, so echoing the argument back would promise a
+// value that will not be stored. Same rule as the `body` check beside it; only the call site proves it.
 describe("the MCP dry run previews what the apply would store", () => {
   const ctx = {
     tenantId: 1n,
@@ -345,9 +341,9 @@ describe("the MCP dry run previews what the apply would store", () => {
   });
 });
 
-// #459. One token addresses one value, so a response that is a list of unknown length (a product
-// search, a slot lookup, an order history) could not be projected at all and kept the raw clip,
-// with the invention risk #456 measured. A block repeats its content per item.
+// One token addresses one value, so a list of unknown length (a product search, a slot lookup, an
+// order history) needs a block, which repeats its content per item; otherwise it keeps the raw clip,
+// which invites the model to invent.
 describe("a list block (#459)", () => {
   const render = (template: string, body: unknown) =>
     renderResponseTemplate({ template }, body);
@@ -385,8 +381,8 @@ describe("a list block (#459)", () => {
   });
 
   test("a standalone block that renders a marker keeps the text after it on its own line", () => {
-    // Round 3 of review: the closing marker took its line ending, every item put one back, and a
-    // marker standing in for the items did not, so `Done` landed on the marker's line.
+    // NOTE: the closing marker takes its line ending and every item puts one back, so a marker
+    // standing in for the items must too, or `Done` lands on the marker's line.
     const tpl = "Items:\n{{#each items}}\n- {{name}}\n{{/each}}\nDone";
     expect(render(tpl, { items: [] }).text).toBe("Items:\n(none)\nDone");
     expect(render(tpl, { items: null }).text).toBe(
@@ -475,8 +471,8 @@ describe("a list block (#459)", () => {
     ).not.toContain("more");
   });
 
-  // Round 1 of review, finding 1. Fifty items of ~100 characters is 5,000, so the clip below
-  // removed the last ten AND the count after them: the model read a list that simply ended.
+  // NOTE: fifty items of ~100 characters is 5,000, so a clip after rendering would remove the last
+  // ten AND the count after them, and the model would read a list that simply ended.
   test("a block renders UNDER the clip, and the count of the rest survives it", () => {
     const items = Array.from({ length: 100 }, (_, i) => ({
       id: i + 1,
@@ -500,9 +496,9 @@ describe("a list block (#459)", () => {
   });
 
   test("a standalone block never lands past the budget, whatever the row length", () => {
-    // Round 4 of review: the reserve counted the marker and not the line ending after it, so the
-    // row length that filled the budget exactly overshot by one and the clip fired for nothing.
-    // A sweep, because the defect lives on one length in a hundred.
+    // NOTE: the reserve counts the marker AND the line ending after it, or the row length that fills
+    // the budget exactly overshoots by one and the clip fires for nothing. A sweep, because that
+    // lives on one length in a hundred.
     for (let len = 1; len <= 120; len++) {
       const items = Array.from({ length: 40 }, () => "d".repeat(len));
       for (const nl of ["\n", "\r\n"]) {
@@ -541,7 +537,7 @@ describe("a list block (#459)", () => {
   });
 
   test("a root list labels its items by index alone", () => {
-    // Round 1 of review, finding 2: `..0.name` is not a path the grammar accepts, and the label
+    // NOTE: `..0.name` is not a path the grammar accepts, and the label
     // exists to be pasted into the path fields.
     expect(render("{{#each .}}{{name}}{{/each}}", [{}]).missing).toEqual([
       "0.name",
@@ -623,8 +619,8 @@ describe("parseTemplate refuses a broken structure, and the reader carries the r
       "{{#each a b}}x{{/each}}",
       "does not name a list",
     ],
-    // Round 2 of review, finding 2: exactly what the picker inserts, saved one step early, would
-    // render a non-empty list as an empty body.
+    // NOTE: exactly what the picker inserts, saved one step early, would render a non-empty list as
+    // an empty body.
     ["an empty block", "{{#each a}}{{/each}}", "nothing to repeat"],
     [
       "a block with only the picker's empty line",

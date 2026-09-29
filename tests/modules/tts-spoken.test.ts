@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { prepareSpeechText } from "@/modules/tts/service";
 import { planSpokenReply } from "@/modules/tts/spoken";
 
-// Issue #787: a URL or an e-mail address in an audio reply is either read aloud (bare) or lost
+// A URL or an e-mail address in an audio reply is either read aloud (bare) or lost
 // (markdown link, whose URL prepareSpeechText drops). The plan moves every such item out of the
 // speech and into the text message that follows the audio.
 describe("planSpokenReply", () => {
@@ -103,7 +103,7 @@ describe("planSpokenReply", () => {
     });
   }
 
-  // Review round 1 of #788: the item written is the only copy of the destination the customer gets,
+  // NOTE: the item written is the only copy of the destination the customer gets,
   // so it has to survive the characters around it.
   const exact: Array<{ name: string; text: string; written: string[] }> = [
     {
@@ -173,7 +173,7 @@ describe("planSpokenReply", () => {
       text: "Use https://x.com.br/contato?para=sac@x.com.br e respondemos em até 2 dias",
       written: ["https://x.com.br/contato?para=sac@x.com.br"],
     },
-    // Review round 3: a match that starts or ends inside a token writes someone else's destination.
+    // NOTE: a match that starts or ends inside a token writes someone else's destination.
     {
       name: "italics around a URL do not hide it",
       text: "Abra _https://x.com.br/pedidos_ e confirme o pedido na tela",
@@ -219,7 +219,7 @@ describe("planSpokenReply", () => {
       text: "Escreva para sac@ágil.com.br e respondemos em até 2 dias",
       written: ["sac@ágil.com.br"],
     },
-    // Review round 4: structure before text, and one boundary rule for both ends.
+    // NOTE: structure before text, and one boundary rule for both ends.
     {
       name: "adjacent markdown links are two links",
       text: "Veja [um](https://x.com.br/a),[outro](https://x.com.br/b) para resolver seu pedido",
@@ -338,7 +338,6 @@ describe("planSpokenReply", () => {
     expect(plan.textOnly).toBe(false);
   });
 
-  // Review round 6.
   test("an autolink or inline code keeps the URL's own trailing characters", () => {
     for (const text of [
       "Redefina em <https://x.com.br/reset?token=abc_> ainda hoje",
@@ -368,7 +367,7 @@ describe("planSpokenReply", () => {
     }
   });
 
-  // Review round 7: the written item is the destination the link points to, not its markdown source.
+  // NOTE: the written item is the destination the link points to, not its markdown source.
   test("a markdown destination is handed over decoded", () => {
     expect(
       planSpokenReply(
@@ -388,7 +387,7 @@ describe("planSpokenReply", () => {
     ).toEqual(["foo+bar@x.com.br"]);
   });
 
-  // Review round 8: the rest of CommonMark's link destination.
+  // NOTE: the rest of CommonMark's link destination.
   test("a titled or angle-bracketed markdown link is a link", () => {
     for (const text of [
       'Redefina [aqui](https://x.com.br/reset?token=abc_ "Redefinir senha") ainda hoje',
@@ -418,7 +417,6 @@ describe("planSpokenReply", () => {
     ).toEqual(["sac@x.com.br"]);
   });
 
-  // Review round 9.
   test("an escaped parenthesis is the destination's, not the link's end", () => {
     const plan = planSpokenReply(
       "Abra [o pedido](https://x.com.br/a\\)) e confirme na tela",
@@ -443,7 +441,6 @@ describe("planSpokenReply", () => {
     ).toEqual(["https://x.com.br/a>b"]);
   });
 
-  // Review round 10.
   test("an address never restarts inside a local part it cannot hold", () => {
     expect(
       planSpokenReply(
@@ -471,7 +468,6 @@ describe("planSpokenReply", () => {
     expect(plan.speech).toBe("Escreva para e respondemos em 2 dias");
   });
 
-  // Review round 11.
   test("a quote or marker the address may own leaves it alone", () => {
     for (const text of [
       "Escreva para a!b'finance@x.com.br e respondemos em 2 dias",
@@ -492,7 +488,6 @@ describe("planSpokenReply", () => {
     ).toEqual(["https://x.com.br/Meu%20Arquivo.pdf"]);
   });
 
-  // Review round 13.
   test("a closing typographic quote is the sentence's", () => {
     for (const text of [
       "O endereço ‘https://x.com.br/pedidos’ permite acompanhar seu pedido",
@@ -506,7 +501,6 @@ describe("planSpokenReply", () => {
     }
   });
 
-  // Review round 14.
   test("inline code keeps its URL or address verbatim, punctuation included", () => {
     const plan = planSpokenReply(
       "Leia `https://ja.wikipedia.org/wiki/君の名は。` e escreva para `sac@x.com.br` depois",
@@ -526,7 +520,6 @@ describe("planSpokenReply", () => {
     expect(plan.speech).toBe("Abra o site quando puder");
   });
 
-  // Review round 15.
   test("a link label with brackets is still a link", () => {
     for (const text of [
       "Abra [o pedido [123]](https://x.com.br/reset?token=abc_) e confirme os dados",
@@ -548,7 +541,6 @@ describe("planSpokenReply", () => {
     }
   });
 
-  // Review round 16.
   test("addresses inside a longer formatted phrase are extracted", () => {
     for (const text of [
       "Envie para **sac@x.com.br ou vendas@x.com.br** e respondemos em 2 dias",
@@ -569,7 +561,7 @@ describe("planSpokenReply", () => {
     ).toEqual([]);
   });
 
-  // Review round 18: pairing later on the line does not make a mid-token marker a token start.
+  // NOTE: pairing later on the line does not make a mid-token marker a token start.
   test("a marker inside a local part stays the address's even when one closes later", () => {
     expect(
       planSpokenReply(
@@ -578,7 +570,6 @@ describe("planSpokenReply", () => {
     ).toEqual([]);
   });
 
-  // Review round 19.
   test("an underscore inside a later word does not close a leading one", () => {
     expect(
       planSpokenReply(
@@ -595,7 +586,6 @@ describe("planSpokenReply", () => {
     expect(plan.speech).not.toMatch(/mailto|subject|@/);
   });
 
-  // Review round 21.
   test("a Unicode ellipsis or terminator ends the sentence, not the URL", () => {
     for (const text of [
       "Acompanhe em https://x.com.br/pedido… Depois aguarde a confirmação",

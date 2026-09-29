@@ -10,7 +10,7 @@ import {
 import type { TenantContext } from "@/lib/tenancy";
 import { personData } from "@/tests/utils/person";
 
-// The caller, as the principal the delete now records itself under (#400): its tenant is the scope
+// The caller, as the principal the delete records itself under: its tenant is the scope
 // the target has to fall inside, and its user is the one the self-delete guard compares against.
 const actor = (tenantId: bigint, userId: bigint): TenantContext => ({
   tenantId,

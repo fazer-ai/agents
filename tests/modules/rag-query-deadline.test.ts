@@ -6,10 +6,9 @@ import {
   QUERY_BUDGET,
 } from "@/modules/rag/embeddings";
 
-// Issue #844: a query embedding is a customer waiting. Measured in production: searches of 139 s
-// and 158 s that returned normally, because the query waited as the ingest does (60 s per attempt on
-// the compatible path, the OpenAI client's 10 minutes under LangChain's six retries on the SDK
-// path). A stalled request here is one that never answers until it is aborted.
+// A query embedding is a customer waiting, so it does not wait as the ingest does (60 s per attempt
+// on the compatible path, the OpenAI client's 10 minutes under LangChain's six retries on the SDK
+// path), which lets a search take minutes. A stalled request here never answers until it is aborted.
 
 const nativeGlobals = globalThis as unknown as { BunResponse: typeof Response };
 const BunResponse = nativeGlobals.BunResponse;
@@ -144,7 +143,7 @@ describe("a query embedding gives up on a stalled request quickly (issue #844)",
     expect(Date.now() - started).toBeLessThan(1_550);
   });
 
-  // Review round 1: the attempt's deadline has to cover what happens outside the request, too.
+  // NOTE: the attempt's deadline has to cover what happens outside the request, too.
   test("a host check that stalls is bounded by the same deadline", async () => {
     const started = Date.now();
     const err = await embedQuery("consulta", compatible, {
@@ -177,7 +176,7 @@ describe("a query embedding gives up on a stalled request quickly (issue #844)",
     expect(Date.now() - started).toBeLessThan(400);
   });
 
-  // Review round 2: giving up on an attempt has to cancel it, not only stop waiting on it.
+  // NOTE: giving up on an attempt has to cancel it, not only stop waiting on it.
   test("a host check that answers after the deadline sends nothing", async () => {
     const p = provider(new Set([1, 2]), () => ({
       data: [{ embedding: vec(1) }],

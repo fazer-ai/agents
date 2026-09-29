@@ -8,9 +8,9 @@ import {
 } from "@/modules/vault/secret-types";
 
 // The decision table for "can an entry of this KIND supply what a field of this USE reads?", which is
-// the one question the write boundary, config-health and the runtime all ask (issue #471). A pure
-// function with a table, rather than a rule re-derived at each of the three: the whole defect was
-// three surfaces answering it differently, and DB-backed tests prove the wiring, never the rule.
+// the one question the write boundary, config-health and the runtime all ask. A pure function with a
+// table, rather than a rule re-derived at each of the three, so the three cannot answer it
+// differently; DB-backed tests prove the wiring, never the rule.
 //
 // Every catalog id appears below, enforced by the fence at the bottom, so adding a secret type fails
 // this file until somebody decides what it can serve.

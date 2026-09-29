@@ -12,13 +12,11 @@ import {
   type WindowSpec,
 } from "@/modules/business-hours/hours";
 
-// Issue #346. A schedule is read back from a JSON column, and the reader is the last place that
-// decides what a stored row MEANS — rows written before this change included, which is why the fix
-// lives here and not only at the import that produced them. For this dimension the two failure
-// directions are not symmetric: an empty window list is not "closed", it is ALWAYS OPEN
-// (`scheduleCanClose`). Refusing the whole array over one bad element therefore fails in the single
-// direction this module must never fail in, which is exactly what `parseExceptions` was already
-// written entry-by-entry to avoid.
+// A schedule is read back from a JSON column, and the reader is the last place that decides what a
+// stored row MEANS, rows already written included, so the check lives here and not only at the
+// import. The two failure directions are not symmetric: an empty window list is not "closed", it is
+// ALWAYS OPEN (`scheduleCanClose`), so refusing the whole array over one bad element fails in the
+// one direction this module must never fail in. Windows are read entry by entry, as exceptions are.
 
 const TZ = "America/Sao_Paulo";
 const WEEK: WindowSpec[] = [1, 2, 3, 4, 5].map((day) => ({
@@ -55,16 +53,16 @@ describe("one malformed window does not take the whole schedule with it", () => 
   test("the agent that was closed at 03:00 is still closed at 03:00", () => {
     const clean = sched(WEEK);
     const dirty = sched([...WEEK, { day: 6, start: "10:00", ends: "14:00" }]);
-    // The whole point: the two schedules must answer the gate identically. Before the fix `dirty`
-    // parsed to zero windows, and zero windows is the widest answer this module has.
+    // NOTE: the two schedules must answer the gate identically: parsing `dirty` to zero windows
+    // would be the widest answer this module has.
     expect(scheduleCanClose(dirty)).toBe(scheduleCanClose(clean));
     expect(isOutOfHoursNow(dirty, NIGHT)).toBe(true);
     expect(nextOpenAt(dirty, NIGHT)).toEqual(nextOpenAt(clean, NIGHT));
   });
 
   test("all-malformed still reads as no schedule, which is the honest answer", () => {
-    // Not a regression: with nothing readable there IS no grid, and always-on is what a schedule
-    // with no windows has always meant. The fix narrows WHEN that answer is reached, not what it is.
+    // NOTE: with nothing readable there IS no grid, and always-on is what a schedule with no windows
+    // means. Entry-by-entry reading narrows WHEN that answer is reached, not what it is.
     expect(parseWindows([{ day: 9, start: "x", end: "y" }])).toEqual([]);
     expect(scheduleCanClose(sched("not an array"))).toBe(false);
   });
@@ -77,10 +75,10 @@ describe("one malformed window does not take the whole schedule with it", () => 
 });
 
 describe("a stored schedule cannot be larger than a written one", () => {
-  // The write path caps windows and exceptions, and the import does not go through it. The cap is
-  // asked again HERE because the reader is what every consumer shares: the rendered weekly summary
-  // goes into the agent's system prompt once per variable name, and it grows linearly with the
-  // count (measured: 2,639 chars at 200 windows, 65,039 at 5,000).
+  // NOTE: the write path caps windows and exceptions, and the import does not go through it. The
+  // cap is asked again HERE because the reader is what every consumer shares: the rendered weekly
+  // summary goes into the agent's system prompt once per variable name, and it grows linearly with
+  // the count (about 2,600 chars at 200 windows, 65,000 at 5,000).
   const many = (n: number): WindowSpec[] =>
     Array.from({ length: n }, (_, i) => {
       const hh = String(i % 23).padStart(2, "0");
@@ -101,11 +99,10 @@ describe("a stored schedule cannot be larger than a written one", () => {
     );
   });
 
-  // Review round 2, and it is the inverse of the window rule above. Truncating EXCEPTIONS widens
-  // availability instead of narrowing it, so the reader must not do it: a dated closure past the cap
-  // would stop being honoured and the weekly grid would apply on that day, silently and on a row
-  // already written. Measured before the fix: Christmas at position 401 of 401 flipped
-  // `isOutOfHoursNow` at noon on the 25th from true to false. The bound is the writers' job.
+  // NOTE: the inverse of the window rule above. Truncating EXCEPTIONS widens availability instead
+  // of narrowing it, so the reader must not do it: a dated closure past the cap (Christmas at
+  // position 401 of 401) would stop being honoured and the weekly grid would apply on that day,
+  // silently and on a row already written. The bound is the writers' job.
   test("exceptions are NOT truncated by the reader, however many there are", () => {
     expect(
       parseExceptions(manyExceptions(MAX_SCHEDULE_EXCEPTIONS + 50)),

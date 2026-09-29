@@ -3,8 +3,8 @@ import { USAGE_NODE_IS_AGENT_TURN } from "@/graph/usage";
 import { SPEND_GATE_FOR_NODE } from "@/modules/spend-ceiling/coverage";
 
 // THE FENCE. A spend ceiling is one question asked in several places, and the failure mode of that
-// shape is not a wrong answer, it is a place that never asks (measured twice already: #134 and
-// #177). Nothing in the type system connects `LlmUsage.node` to a gate, so the connection is this
+// shape is not a wrong answer, it is a place that never asks. Nothing in the type system connects
+// `LlmUsage.node` to a gate, so the connection is this
 // test: every node the ledger can carry has to name which gate answers for it, and a node added
 // without one fails here rather than quietly spending past the ceiling.
 

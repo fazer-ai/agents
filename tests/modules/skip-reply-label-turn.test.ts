@@ -6,20 +6,12 @@ import { getConversationDetail } from "@/modules/conversations/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog } from "../utils/flowlog";
 
-// ── O MARCADOR DE SILÊNCIO TEM QUE SABER SE O TURNO FALOU (issue #726) ──
-//
-// A tela de conversa rotula um marcador pelo NOME da ferramenta e nada mais, então `skip_reply` lê
-// "Decidiu não responder" mesmo num turno em que a transferência já entregou uma mensagem ao
-// cliente. O operador vê a resposta uma linha acima e o marcador negando que ela existe, e isso é o
-// que vira "o bot ignorou o cliente" na escalação.
-//
-// O discriminante NÃO é o nome da ferramenta: é se ESTE TURNO botou uma mensagem na thread. Ler o
-// nome ("transferiu, logo respondeu") passa no caso reportado e troca uma mentira por outra no
-// turno em que a transferência foi declaradamente muda, que é um caso real desde a #662.
-//
-// A trilha é o lado barato de medir: a projeção já lê as linhas de `execution_logs` da conversa, e
-// o que falta é o marcador de silêncio carregar o fato. O lado ao vivo, que não tem trilha para
-// consultar, tem o seu próprio teste.
+// O marcador de silêncio sabe se o turno falou. Rotulado só pelo NOME da ferramenta, `skip_reply`
+// leria "Decidiu não responder" num turno em que a transferência já entregou uma mensagem, e o
+// operador veria a resposta uma linha acima e o marcador negando que ela existe. O discriminante é
+// se ESTE TURNO botou uma mensagem na thread: ler o nome ("transferiu, logo respondeu") erraria no
+// turno em que a transferência é declaradamente muda. A trilha é o lado barato de medir (a projeção
+// já lê `execution_logs`); o lado ao vivo tem o seu próprio teste.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -184,7 +176,7 @@ describe.skipIf(!dbUp)("o marcador de silêncio e o turno que falou", () => {
     expect(skip?.turnDelivered).toBe(true);
   });
 
-  // O par obrigatório, e o discriminante da rodada: transferiu SEM mensagem. Nada saiu, a frase é
+  // NOTE: o par obrigatório, e o discriminante: transferiu SEM mensagem. Nada saiu, a frase é
   // verdadeira, e o marcador tem que continuar dizendo que o cliente ficou sem resposta.
   test("o silêncio de um turno que não entregou nada continua sendo silêncio", async () => {
     await clearFlowLog(suDb, { tenantId });
@@ -219,7 +211,7 @@ describe.skipIf(!dbUp)("o marcador de silêncio e o turno que falou", () => {
     expect(decisoes.map((e) => e.turnDelivered)).toEqual([true, true]);
   });
 
-  // O ACHADO DA RODADA 2 DE REVIEW. Um `skip_reply` sozinho não encerra o turno desde a #639, então
+  // NOTE: um `skip_reply` sozinho não encerra o turno, então
   // o lote seguinte ainda roda: a transferência entrega uma mensagem DEPOIS da única linha que
   // carimbou, e ler só os carimbos responde "não entregou" sobre uma resposta que está na tela. O
   // fato que o turno escreve no fim responde por eles.
@@ -274,7 +266,7 @@ describe.skipIf(!dbUp)("o marcador de silêncio e o turno que falou", () => {
     ).toBeNull();
   });
 
-  // O OUTRO LADO, e o achado da rodada 1 de review: a primeira linha do lote pode ter lido uma
+  // NOTE: o outro lado: a primeira linha do lote pode ter lido uma
   // RESERVA (o anexo é reservado antes do download), e um download que falha desfaz a reserva sem
   // nada ter saído. A decisão terminal é a mais bem informada do turno — quando ela é escrita, tudo
   // a que o turno se comprometeu já aconteceu — então é ela que responde pelo turno, e uma resposta

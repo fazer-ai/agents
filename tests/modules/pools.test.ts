@@ -29,7 +29,7 @@ import {
 } from "@/modules/vault/service";
 
 // The context these calls take: the tenant id came from a row this test created, so it carries
-// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+// TENANT_ADMIN, the role that tells `runScopedOn` the id never came from outside.
 const ctxOf = (tenantId: bigint): TenantContext => ({
   tenantId,
   userId: null,

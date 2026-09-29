@@ -56,11 +56,10 @@ describe("buildSimulatedNativeTools (P4)", () => {
 });
 
 describe("applyToolMocks (P4)", () => {
-  // Issue #454, review round 3. `skip_reply` is conversation-scoped by category, so it used to be
-  // wrapped like the rest — and its RETURN is the whole tool: LangGraph calls the model again after
-  // a tool result, and "Produce no message now" is the instruction that makes the follow-up silent.
-  // Replaced by the generic `[simulated]` line, the playground writes a message production suppresses,
-  // which is the simulation lying about the one decision it exists to show.
+  // NOTE: `skip_reply` is conversation-scoped by category but not wrapped like the rest: its RETURN
+  // is the whole tool. LangGraph calls the model again after a tool result, and "Produce no message
+  // now" is what makes the follow-up silent; the generic `[simulated]` line would make the
+  // playground write a message production suppresses.
   test("skip_reply keeps its real acknowledgement instead of the simulated line", async () => {
     const tools = buildSimulatedNativeTools(
       { client: explodingClient, conversationId: 0 },
@@ -103,7 +102,7 @@ describe("applyToolMocks (P4)", () => {
     expect(String(await calc2?.invoke({ expression: "2 + 2" }))).toContain("4");
   });
 
-  // Round 12, and the same exemption as the test at the top of this block, one layer over. The
+  // NOTE: the same exemption as the test at the top of this block, one layer over. The
   // runtime recognises silence by this tool's own acknowledgement (`skipReplyRan`), so a canned
   // result under its name is not a decision to stay quiet: the graph asks the model again and the
   // simulation writes a follow-up production would have suppressed. The protocol is not the
@@ -120,8 +119,8 @@ describe("applyToolMocks (P4)", () => {
       new Set([SKIP_REPLY_TOOL]),
     );
     const skip = mocked.find((t) => t.name === SKIP_REPLY_TOOL);
-    // Invoked as a TOOL CALL, which is how the graph invokes it: since round 24 the tool identifies
-    // itself with a mark only it can set, and there is no `tool_call_id` to hang one on otherwise.
+    // NOTE: invoked as a TOOL CALL, as the graph does: the tool identifies itself with a mark only
+    // it can set, and there is no `tool_call_id` to hang one on otherwise.
     const out = (await skip?.invoke({
       type: "tool_call",
       id: "c1",
@@ -138,10 +137,9 @@ describe("applyToolMocks (P4)", () => {
     );
   });
 
-  // Round 14, and the other side of the same identity question. With natives revoked, the tool under
-  // this name is the OPERATOR'S, and it really calls something: refusing their mock there would have
-  // the playground hit the live endpoint — a simulation with side effects, which is the one thing it
-  // exists not to have.
+  // NOTE: with natives revoked, the tool under this name is the OPERATOR'S and really calls
+  // something: refusing their mock would have the playground hit the live endpoint, a simulation
+  // with side effects.
   test("a custom tool that merely shares the name still takes its mock", async () => {
     let called = 0;
     const theirs = tool(
@@ -191,7 +189,7 @@ if (appUrl && suUrl) {
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
-// Issue #363. A code tool runs for REAL in the playground: the sandbox reaches nothing outside the
+// A code tool runs for REAL in the playground: the sandbox reaches nothing outside the
 // thread, so there is no side effect to simulate, and the operator is there to see what their
 // function returns. The catalog says so, under a category of its own, or the panel would badge it
 // as an external tool and offer to mock what needs no mocking.

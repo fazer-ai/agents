@@ -28,25 +28,13 @@ import { reengageConversation } from "@/modules/conversations/reengage";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
-// ISSUE #757: O REENGAGE NÃO RODA A VISION, E O ANEXO CHEGA AO MODELO COMO IMAGEM ILEGÍVEL.
-//
-// A extração de imagem e documento é um passo eager do caminho de CHEGADA da mensagem
-// (`runEagerMedia`, ../../src/modules/chatwoot/webhook.ts): ela escreve o resultado na meta do
-// anexo, e é de lá que `parseChatwootMessages` monta `imageDescription`/`extractedText`. Uma
-// conversa cujas mensagens chegaram ANTES de o agente observar a caixa nunca passou por esse
-// caminho, e o reengage é justamente o botão que existe para atendê-la depois: ele relê a thread,
-// acha o anexo sem meta, e `renderInboundMessage` entrega ao modelo o marcador
-// o marcador de imagem sem extração que `renderInboundMessage` produz.
-//
-// O efeito, medido numa caixa de e-mail de produção: uma em cada cinco conversas elegíveis de um
-// backfill tem anexo na última mensagem do cliente, e a resposta que sai diz que a imagem não deu
-// para ler e pede de novo o número do pedido que está dentro dela.
-//
-// DETERMINÍSTICO E OFFLINE, pelo mesmo desenho de `vision-every-attachment.test.ts`: a vision do
-// agente fica LIGADA e SEM credencial, então `extractInboundFile` toma o desvio `no_credential`
-// antes de carregar cliente ou provedor, e emite a linha de estágio `vision` mesmo assim. Contar
-// linhas mede a TENTATIVA, que é exatamente o que esta issue afirma não existir — e mede no ponto
-// em que ela é consumida (o reengage de verdade), não numa função isolada.
+// O reengage roda a vision sobre o anexo que não passou pela CHEGADA. A extração é um passo eager
+// da chegada (`runEagerMedia`, ../../src/modules/chatwoot/webhook.ts) que grava a meta do anexo;
+// uma conversa cujas mensagens chegaram antes de o agente observar a caixa não tem essa meta, e sem
+// a vision o modelo recebe o marcador de imagem sem extração e pede de novo o que está nela.
+// Determinístico e offline, como `vision-every-attachment.test.ts`: a vision fica LIGADA e SEM
+// credencial, então `extractInboundFile` toma o desvio `no_credential` e ainda emite a linha de
+// estágio `vision`. Contar linhas mede a TENTATIVA, no reengage de verdade.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -432,11 +420,9 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
     expect(await visionLines(id)).toEqual([]);
   });
 
-  // ---------------------------------------------------------------------------------------------
-  // COM EXTRAÇÃO DE VERDADE. Os casos acima medem a TENTATIVA; estes medem o que o modelo recebe,
-  // que é onde a issue dói: o marcador que manda pedir reenvio some e o conteúdo do anexo entra.
-  // O provedor é um fetch falso e o download é um stub, então não há rede nem custo.
-  // ---------------------------------------------------------------------------------------------
+  // NOTE: com extração de verdade. Os casos acima medem a TENTATIVA; estes medem o que o modelo
+  // recebe: o marcador que manda pedir reenvio some e o conteúdo do anexo entra. O provedor é um
+  // fetch falso e o download é um stub, então não há rede nem custo.
 
   // Liga a credencial da vision só durante o caso: o resto do arquivo depende de ela NÃO existir.
   async function comCredencial<T>(fn: () => Promise<T>): Promise<T> {
@@ -566,10 +552,9 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
       expect(res.outcome).toBe("posted");
       const turno = modelo.humanTexts.join("\n");
       expect(turno).toContain("Print do pedido 21607129");
-      // O MARCADOR SOME. Ele é a frase que manda o agente pedir de volta o que está dentro do anexo
-      // que ninguém leu. LIDO DO RENDER, não transcrito aqui: um literal copiado vira asserção
-      // sempre-verdadeira no dia em que a frase muda, e foi o que quase aconteceu na #758 — o texto
-      // trocou, este teste continuou verde, e o que ele media tinha deixado de existir.
+      // NOTE: o marcador some. Ele é a frase que manda o agente pedir de volta o que está dentro do
+      // anexo que ninguém leu. LIDO DO RENDER, não transcrito aqui: um literal copiado vira asserção
+      // sempre verdadeira no dia em que a frase muda.
       const marcadorSemExtracao = renderInboundMessage({
         text: "",
         attachmentTypes: ["image"],
@@ -789,9 +774,9 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
     });
   });
 
-  // OS DOIS CASOS ABAIXO SÃO O CHATWOOT UPSTREAM, onde a rota de write-back da meta não existe: a
-  // extração da chegada não volta para o anexo, ela vive só no stash em memória. Foram achados pela
-  // rodada 1 do review da PR, e cada um mata uma regra diferente.
+  // NOTE: os dois casos abaixo são o Chatwoot upstream, onde a rota de write-back da meta não
+  // existe: a extração da chegada não volta para o anexo, vive só no stash em memória. Cada um mata
+  // uma regra diferente.
 
   test("extração que só existe no stash: o reengage não paga o provedor de novo", async () => {
     await comCredencial(async () => {

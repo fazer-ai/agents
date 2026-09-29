@@ -22,11 +22,11 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
-// Issue #895: a NEW conversation whose only customer message has nothing to answer (no text, no
-// attachment, no subject, no image in the body) used to stay `pending` and bot-owned forever. No turn
-// ran, so our side never spoke, so the follow-up never armed, and nothing was logged. Now the flush
-// and the direct path arm a delayed NOTHING_TO_ANSWER job, and the job closes it, with an `info` line
-// saying why, when everything it reads fresh still says there is nothing to answer.
+// A NEW conversation whose only customer message has nothing to answer (no text, no attachment, no
+// subject, no image in the body) runs no turn, so no follow-up would ever arm and it would stay
+// `pending` and bot-owned. The flush and the direct path arm a delayed NOTHING_TO_ANSWER job, which
+// closes it with an `info` line when everything it reads fresh still says there is nothing to
+// answer.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -394,7 +394,7 @@ async function closeLines(convDbId: bigint, expectSome = true) {
   return [];
 }
 
-// A customer message through the real receiver, so the retirement is measured at its call site.
+// A customer message through the real receiver, so the retirement is exercised at its call site.
 async function customerWrites(convId: number, content: string, id: number) {
   const n = normalizeChatwootEvent({
     event: "message_created",

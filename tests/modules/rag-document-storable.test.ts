@@ -21,37 +21,20 @@ import {
 } from "@/modules/rag/service";
 
 // The context these calls take: the tenant id came from a row this test created, so it carries
-// TENANT_ADMIN — the role that tells `runScopedOn` the id never came from outside (issue #280).
+// TENANT_ADMIN, the role that tells `runScopedOn` the id never came from outside.
 const ctxOf = (tenantId: bigint): TenantContext => ({
   tenantId,
   userId: null,
   role: "TENANT_ADMIN",
 });
 
-// A DOCUMENT THE COLUMN CANNOT HOLD IS REFUSED BY NAME, NOT BY A 500.
-//
-// `extractText` decodes an uploaded .txt/.md/.csv with `TextDecoder("utf-8")`, and its `normalize`
-// only folds CRLF and trims. A file carrying a `0x00` byte therefore produces a string holding
-// U+0000, which `createDocument` wrote straight into `KnowledgeDocument.content`. That column is
-// `text`, Postgres refuses a NUL in one (22021), and nothing caught it between the write and the
-// transport: an operator uploading the file got a 500 naming neither the file nor the reason
-// (issue #247). A `0x00` in a text export is ordinary: a fixed-width dump, a CSV from a tool that
-// pads, a file truncated mid-write.
-//
-// REFUSED, which is the opposite of what #218 and #243 do with the same two characters, and the
-// rule that decides is who can act on the answer. There the writer is a third party's webhook or an
-// exception message: nobody reads a rejection and a refusal costs the event, so the value is
-// repaired. Here it is a person who chose this file, a client calling an API that answers them, or a
-// model reading a tool failure it can act on. Deleting bytes out of a document an agent is about to
-// answer from would be worse than saying it cannot be stored.
-//
-// Asked of every text this module stores, not just the one that was reported: the column refuses the
-// ROW, so checking `content` and not `title` only moves which value produces the 500. The knowledge
-// bases, the documents and the approval queue are all covered below.
-//
-// The last block is the MCP half and needs no database, which is the point: `dry_run` defaults to
-// true and answers off the arguments alone, so a value the column cannot hold used to preview clean
-// and fail on apply. A dry run that cannot predict its own apply is worse than no dry run.
+// A document the `text` column cannot hold is refused by name, not by a 500. `extractText` decodes
+// an upload as UTF-8, so a `0x00` byte (ordinary in a fixed-width dump or a padded CSV) becomes a
+// NUL Postgres refuses (22021). Refused, not repaired as webhook text is: here the writer can act
+// on the answer, and deleting bytes from a document an agent answers from is worse. Every text this
+// module stores is checked, since the column refuses the whole ROW. The MCP block needs no
+// database: `dry_run` answers off the arguments alone, and a dry run that cannot predict its apply
+// is worse than none.
 
 const NUL = String.fromCharCode(0);
 
@@ -120,7 +103,7 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
     await app?.$disconnect();
   });
 
-  // The reachability the issue rests on: nothing exotic reaches `content`, an ordinary .txt does.
+  // NOTE: the reachability: nothing exotic reaches `content`, an ordinary .txt does.
   test("a .txt holding a 0x00 byte decodes to a NUL in the text", async () => {
     const { text } = await extractText({
       name: "policy.txt",
@@ -274,19 +257,18 @@ describe.skipIf(!dbUp)("a knowledge document the column cannot hold", () => {
     );
     expect(r.status).toBe(400);
     expect(r.message).toContain("U+0000");
-    // Named by what the CALLER sent, not by the column it lands in. The REST body and the agent's
-    // suggestion tool both spell this `content`; `proposedContent` is a field nobody can change
-    // because nobody sent it (review round 3).
+    // NOTE: named by what the CALLER sent, not by the column it lands in. The REST body and the
+    // agent's suggestion tool both spell this `content`; `proposedContent` is a field nobody can
+    // change because nobody sent it.
     expect(r.message).toContain("content ");
     expect(r.message).not.toContain("proposedContent");
   });
 });
 
-// What the refusal actually reads like, at the layer that renders it. `translationKey` is translated
-// per the request's Accept-Language while `message` is only the untranslated fallback, so a refusal
-// that interpolates an ENGLISH SENTENCE answers a pt-BR caller in two languages at once (review
-// round 2). Passing the parts instead is what closes it; the field name stays English in both, the
-// way a schema path does.
+// What the refusal reads like, at the layer that renders it. `translationKey` is translated per the
+// request's Accept-Language while `message` is only the untranslated fallback, so the refusal passes
+// the parts: interpolating an ENGLISH SENTENCE would answer a pt-BR caller in two languages at once.
+// The field name stays English in both, the way a schema path does.
 describe("the refusal answers in the caller's language", () => {
   async function render(locale: "en" | "pt-BR"): Promise<string> {
     let caught: unknown = null;

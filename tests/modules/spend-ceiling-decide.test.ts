@@ -21,7 +21,7 @@ import {
 } from "@/modules/spend-ceiling/settings";
 
 // The RULE, proved without a database. What the ledger says and what the operator is shown are
-// fiation; this is the decision itself (issue #146).
+// fiation; this is the decision itself.
 
 function cfg(patch: Partial<SpendCeilingConfig> = {}): SpendCeilingConfig {
   return { ...SPEND_CEILING_DEFAULTS, ...patch };
@@ -195,8 +195,8 @@ describe("reading the ceiling out of the settings bag", () => {
     );
   });
 
-  // A ceiling is money, so it is read to the cent, and the third decimal is dropped rather than
-  // rounded up: a ceiling that is LOWER is the safe side of its own field (issue #426).
+  // NOTE: a ceiling is money, so it is read to the cent, and the third decimal is dropped rather
+  // than rounded up: a ceiling that is LOWER is the safe side of its own field.
   test("a ceiling is read to the cent, and never rounded up", () => {
     expect(
       readSpendCeilingConfig({ spendCeiling: { monthlyInboxUsd: 10.9 } })
@@ -208,10 +208,10 @@ describe("reading the ceiling out of the settings bag", () => {
     ).toBe(10.99);
   });
 
-  // THE FLOAT'S OWN ERROR IS NOT A THIRD DECIMAL (review round 17). `262144.04 * 100` is
-  // `26214403.999999996`, so a floor, or a fixed nudge smaller than that error, read a legally saved
-  // amount as a cent less and made the gate refuse a cent early. A whole number of cents to within
-  // the float's precision is that number of cents, at any amount the ceiling allows.
+  // NOTE: the float's own error is not a third decimal. `262144.04 * 100` is `26214403.999999996`,
+  // so a floor, or a fixed nudge smaller than that error, would read a legally saved amount as a
+  // cent less and refuse a cent early. A whole number of cents to within the float's precision is
+  // that number of cents, at any amount the ceiling allows.
   test("a whole number of cents survives the float at any amount", () => {
     const read = (v: number) =>
       readSpendCeilingConfig({ spendCeiling: { monthlyInboxUsd: v } })
@@ -226,12 +226,11 @@ describe("reading the ceiling out of the settings bag", () => {
     }
   });
 
-  // THE UNIT CHANGED UNDER A ROW THAT WAS ALREADY WRITTEN (issue #426). A block saved when the
-  // ceiling counted tokens carries `monthlyInboxTokens`, and there is no price to convert it with:
-  // the reader answers no ceiling (0) on both halves, and says WHY, so the console can tell the
-  // operator the number they typed is not the number being enforced. The first save in dollars
-  // clears it: the writer's schema does not carry the old keys, and a block that names the new unit
-  // is a block the operator has seen.
+  // NOTE: a block saved when the ceiling counted tokens carries `monthlyInboxTokens`, and there is
+  // no price to convert it with: the reader answers no ceiling (0) on both halves, and says WHY, so
+  // the console can tell the operator the number they typed is not the number being enforced. The
+  // first save in dollars clears it: the writer's schema does not carry the old keys, and a block
+  // that names the new unit is a block the operator has seen.
   describe("a block written in tokens", () => {
     test("is no ceiling, and says so", () => {
       const read = readSpendCeilingConfig({
@@ -312,7 +311,7 @@ describe("reading the ceiling out of the settings bag", () => {
     expect(write(12.34)).toBe(12.34);
     expect(write(10.005)).toBe(10.01);
     expect(write(10.004)).toBe(10);
-    // The same at an amount where the float's error outgrows a fixed nudge (review round 17): the
+    // NOTE: the same at an amount where the float's error outgrows a fixed nudge: the
     // whole cent round-trips, and the half still rounds up.
     expect(write(262144.04)).toBe(262144.04);
     expect(write(262144.035)).toBe(262144.04);
@@ -516,8 +515,8 @@ describe("how often the ceiling announces itself", () => {
 // TWO DELIVERIES OF ONE MOMENT. Chatwoot dispatches an incoming message to the conversation's
 // assigned agent bot AND to the inbox's, which is two deliveries with two ids; the debounce flush
 // can also reach this branch alongside one of them. The per-notice claims make each write happen
-// once and say nothing about ORDER, so the second caller used to find the copy's window held, skip
-// to the handoff, and open the conversation while the first was still awaiting its send.
+// once and say nothing about ORDER: without a single flight the second caller would find the copy's
+// window held, skip to the handoff, and open the conversation while the first still awaits its send.
 describe("two over-ceiling sequences on one conversation", () => {
   beforeEach(() => {
     clearContactAuthState();

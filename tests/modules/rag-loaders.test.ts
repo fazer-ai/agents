@@ -77,11 +77,9 @@ describe("extractText", () => {
   });
 
   test("pdf: extracts the text of a real one-page document", async () => {
-    // The success path had no test, which is what made the ownership fix invisible: the loader used
-    // to build its own `PDFDocumentProxy` and hand it to unpdf, and unpdf only destroys documents it
-    // created itself ("caller-supplied proxies keep their lifecycle with the caller"), so one parsed
-    // PDF stayed alive per upload. Passing the bytes puts the lifecycle back with unpdf, and this is
-    // what proves the two routes extract the same thing (issue #697, review round 1).
+    // NOTE: the loader passes unpdf the bytes, not its own `PDFDocumentProxy`: unpdf only destroys
+    // documents it created ("caller-supplied proxies keep their lifecycle with the caller"), so a
+    // proxy would keep one parsed PDF alive per upload. This proves both routes extract the same.
     const objs = [
       "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
       "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n",

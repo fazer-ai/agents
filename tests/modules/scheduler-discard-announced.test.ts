@@ -25,12 +25,10 @@ import {
 } from "@/modules/scheduler/worker";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 
-// A DISCARDED OUTCOME LEAVES A LINE WHERE ALERTS LOOK (issue #896).
-//
-// Two roads discard what a scheduler handler returned: the run passed its deadline, or its claim was
-// superseded. Both used to write to stdout only, so an alert channel never saw a follow-up whose next
-// step was dropped. The deadline road now always writes a `dead_letter` warn; the supersede road does
-// for FOLLOWUP, and stays quiet for DEBOUNCE, where a supersede is every burst that grows mid-run.
+// A discarded outcome leaves a line where alerts look, not only on stdout. Two roads discard what a
+// scheduler handler returned: the run passed its deadline, or its claim was superseded. The deadline
+// road always writes a `dead_letter` warn; the supersede road does for FOLLOWUP, and stays quiet for
+// DEBOUNCE, where a supersede is every burst that grows mid-run.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 let dbUp = false;
@@ -185,7 +183,7 @@ describe.skipIf(!dbUp)("a discarded scheduler outcome (issue #896)", () => {
     expect(row.status).toBe("CLAIMED");
   });
 
-  // Review round 1: a command like /reset retires the claimed row on purpose (DONE, `cancelledAt`,
+  // NOTE: a command like /reset retires the claimed row on purpose (DONE, `cancelledAt`,
   // claim_seq bumped). The run's outcome is then fenced by design, and a warn would page an alert
   // channel for a retirement an operator asked for.
   test("a FOLLOWUP retired on purpose while it ran stays off the flow log", async () => {

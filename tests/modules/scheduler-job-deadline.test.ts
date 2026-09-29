@@ -29,13 +29,12 @@ import {
   unregisterJobHandler,
 } from "@/modules/scheduler/worker";
 
-// Issue #811: nothing ended a scheduler job that was still running. The reaper re-pends a CLAIMED row
-// once its claim is older than the stale window, but the handler holding it kept running, so a hung
-// handler held its slot until whatever it awaited returned, and after the reap the same row could be
-// claimed again beside it. A job now runs under a deadline below the stale window: when it fires, the
-// handler's signal aborts, the run is failed through failJob, and the slot is released whether or not
-// the handler listens. Whatever the handler returns afterwards is discarded, and its row is not
-// claimed again in this process until the handler has actually returned. Real Postgres, real claims.
+// A scheduler job runs under a deadline below the stale window: the reaper re-pends a CLAIMED row
+// once its claim is older than that window, and a hung handler would otherwise hold its slot and run
+// beside the row's next claim. When the deadline fires, the handler's signal aborts, the run is
+// failed through failJob, and the slot is released whether or not the handler listens. A later
+// return is discarded, and the row is not claimed again in this process until the handler returns.
+// Real Postgres, real claims.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

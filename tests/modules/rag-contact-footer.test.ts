@@ -22,7 +22,7 @@ import {
 } from "@/modules/rag/service";
 import { type ChunkRow, insertChunks, searchChunks } from "@/modules/rag/sql";
 
-// Issue #747: a help-center article's closing "contact us" paragraph, retrieved into an agent, reads
+// A help-center article's closing "contact us" paragraph, retrieved into an agent, reads
 // as an order to hand the customer off. With the base's switch on, the passage a search returns
 // loses it; with the switch off, or anywhere but the tail of the document, nothing changes.
 

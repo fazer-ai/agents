@@ -13,10 +13,9 @@ import {
   SEND_IMAGE_MAX_TURN_BYTES,
 } from "@/modules/images/settings";
 
-// Issue #65. An agent that already holds a product image's URL had no way to deliver it: the only
-// caller of sendFileAttachment was the Google Drive toolpack, so "send a picture" meant "upload the
-// catalogue to Drive first". The tool that closes it fetches a URL the MODEL chose, which is why
-// every test below is about what the fetch REFUSES as much as about what it delivers.
+// An agent that holds a product image's URL delivers it without going through the Google Drive
+// toolpack. The tool fetches a URL the MODEL chose, which is why every test below is about what the
+// fetch REFUSES as much as about what it delivers.
 
 const PNG = new Uint8Array([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,

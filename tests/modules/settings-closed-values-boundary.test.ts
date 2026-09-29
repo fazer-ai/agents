@@ -35,16 +35,11 @@ import {
 } from "@/modules/agents/service";
 import CONSOLE_BEHAVIOR_SAVE from "@/tests/fixtures/console-behavior-save-settings.json";
 
-// A CLOSED SETTINGS VALUE THE READER WOULD THROW AWAY IS REFUSED ON REST (#622).
-//
-// #612, #616 and #618 closed this one field at a time. The rest of the bag had the same hole: REST
-// parsed `settings` as a record of unknown, the block's reader replaced an unknown value with its
-// default, the runtime acted on the default, and GET echoed what was sent. MCP already refused all of
-// it through BEHAVIOR_PATCH_SHAPE, whose documented rule is exactly this question (a value the reader
-// throws away is declared; one it honours after measuring must still parse). REST now asks it too.
-//
-// Asked through `assertAgentCreatable` (the create path, where nothing is stored) and without naming
-// a new symbol, so on the base these fail on the assertion rather than on an import.
+// A closed settings value the reader would throw away is refused on REST, as MCP refuses it through
+// BEHAVIOR_PATCH_SHAPE (a value the reader throws away is declared; one it honours after measuring
+// must still parse). Accepting it would save a value the block's reader replaces with its default,
+// the runtime acting on the default while GET echoes what was sent. Asked through
+// `assertAgentCreatable` (the create path, where nothing is stored).
 function refusal(settings: Record<string, unknown>) {
   try {
     assertAgentCreatable({ name: "x", settings });
@@ -72,8 +67,8 @@ describe("closed settings values on the create path", () => {
     ],
     ["monitoring.analysis", { monitoring: { analysis: "sempre" } }],
     ["memory.compaction.enabled", { memory: { compaction: { enabled: 1 } } }],
-    // Keys the schema declares `never` under `input` are tolerated only with the type the reader
-    // reads there, so a value it throws away is still refused (#626's acceptance run: "sim" saved).
+    // NOTE: keys the schema declares `never` under `input` are tolerated only with the type the
+    // reader reads there, so a value it throws away (such as "sim") is still refused.
     [
       "guardrails.input.checks.promptAdherence",
       { guardrails: { input: { checks: { promptAdherence: "sim" } } } },
@@ -199,7 +194,7 @@ describe("assertSettingsClosedValues", () => {
     }
   });
 
-  // A block NAMED as null is an edit of it (#619), which the reader answers with its defaults.
+  // NOTE: a block NAMED as null is an edit of it, which the reader answers with its defaults.
   test("a block named as null passes", () => {
     expect(caught({ split: null, tts: null }, undefined)).toBeNull();
   });

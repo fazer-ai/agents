@@ -73,11 +73,8 @@ describe.skipIf(!dbUp)("scheduler", () => {
       data: { name: "SCH", slug: `sch-${process.pid}` },
     });
     tenantId = t.id;
-    // NOTE: this used to wipe scheduler_jobs GLOBALLY so the cross-tenant claim would only see this
-    // file's rows. That made the file destructive to anything else on the database — including a
-    // second suite running at the same time, whose jobs vanished mid-test. The claim and the reaper
-    // now take a tenant fence instead (see claimDueJobs), so the isolation no longer needs a
-    // table-wide delete.
+    // NOTE: no table-wide delete: the claim and the reaper take a tenant fence (see claimDueJobs),
+    // and wiping scheduler_jobs globally would destroy the jobs of a suite running at the same time.
   });
 
   afterAll(async () => {
@@ -159,15 +156,10 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect(b.payload).toEqual({ threadId: "1:2:3" });
   });
 
-  // THE LANE SPLIT. The scheduler tick awaits its claimed jobs one at a time, so a kind that takes
-  // seconds per job holds up everything behind it. Two kinds are drained by their own workers for
-  // opposite reasons — DEBOUNCE because it must be fast, MEMORY_COMPACT because it is slow and fires
-  // for every agent on every closed attendance — and neither may be picked up here, or the split
-  // buys nothing.
-  // The set-based sibling of the single-row upsert. It exists because a caller that arms many rows
-  // INSIDE one transaction pays a round trip per row against a five-second budget, and it has to
-  // answer the same two questions the single-row version does: what a re-arm means for the failure
-  // budget, and whether the payload it carries is authoritative.
+  // NOTE: the set-based sibling of the single-row upsert. It exists because a caller that arms many
+  // rows INSIDE one transaction pays a round trip per row against a five-second budget, and it has
+  // to answer the same two questions the single-row version does: what a re-arm means for the
+  // failure budget, and whether the payload it carries is authoritative.
   describe("arming many rows at once", () => {
     const key = (n: number) => `bulk-${process.pid}-${n}`;
     const sysCtx = () => ({
@@ -176,13 +168,11 @@ describe.skipIf(!dbUp)("scheduler", () => {
       role: "TENANT_ADMIN" as const,
     });
 
-    // The set-based sibling cannot express `upsertJobRow`'s "no payload means keep the stored one":
-    // the rows travel as a `text[]`, so an omission would have to be spelled as a JSON value and
-    // every spelling of it is also a payload somebody could mean. It used to be optional and
-    // coerced to `{}`, which REPLACED the stored payload and cleared its secret half on a re-arm
-    // that never asked to. `@ts-expect-error` is the assertion here, the same way it is in
-    // `delivery-sweep.test.ts`: making the field optional again removes the error and fails the
-    // typecheck on this line, which is the only thing that can catch a narrowing being widened back.
+    // NOTE: the set-based sibling cannot express `upsertJobRow`'s "no payload means keep the stored
+    // one": the rows travel as a `text[]`, and every JSON spelling of an omission is also a payload
+    // somebody could mean; coercing it to `{}` would REPLACE the stored payload and clear its secret
+    // half. `@ts-expect-error` is the assertion, as in `delivery-sweep.test.ts`: making the field
+    // optional again removes the error and fails the typecheck on this line.
     test("refuses at COMPILE time to arm a row with no payload", () => {
       const shape = (rows: Parameters<typeof upsertJobRows>[1]["rows"]) =>
         rows.length;
@@ -323,6 +313,9 @@ describe.skipIf(!dbUp)("scheduler", () => {
     });
   });
 
+  // NOTE: the lane split. Two kinds are drained by their own workers for opposite reasons (DEBOUNCE
+  // because it must be fast, MEMORY_COMPACT because it is slow and fires for every agent on every
+  // closed attendance), and neither may be picked up by the shared lane, or the split buys nothing.
   test("the shared lane claims neither debounce nor compaction jobs", async () => {
     const shared = await enqueueJob({
       rearm: "same-work",
@@ -363,13 +356,12 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect(mineIds).toEqual([compaction]);
   });
 
-  // Round-12 review finding (P1). The shared lane holds one FIFO batch of a fixed size, and one kind
-  // in it — INGEST_MESSAGE — has a row count proportional to how much contacts write, armed for
-  // `now`. Ordered by run_at those rows are always the oldest, so on a fleet arming more of them per
-  // tick than the batch holds, they fill every batch and an APPOINTMENT_REMINDER is never claimed at
-  // all, however overdue: a kind whose entire purpose is to arrive BEFORE something.
-  //
-  // Staged at the boundary that matters: the batch is smaller than the ingestion backlog.
+  // NOTE: the shared lane holds one FIFO batch of a fixed size, and one kind in it (INGEST_MESSAGE)
+  // has a row count proportional to how much contacts write, armed for `now`. Ordered by run_at
+  // those rows are always the oldest, so a fleet arming more of them per tick than the batch holds
+  // would leave an APPOINTMENT_REMINDER unclaimed however overdue, a kind whose purpose is to
+  // arrive BEFORE something. Staged at the boundary that matters: the batch is smaller than the
+  // ingestion backlog.
   test("a batch full of ingestion still leaves room for a due reminder", async () => {
     const reminder = await enqueueJob({
       rearm: "same-work",
@@ -444,29 +436,21 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect((await statusOf(busy)).status).toBe("PENDING");
   });
 
-  // ISSUE #681. `SKIP LOCKED` is the half of the claim that nothing measured: mutating it away left
-  // the whole suite green, because every other claim test runs with nobody else holding a row. What
-  // it buys is that a second tick, or a second replica, walks PAST a row the first one is holding
-  // instead of queueing behind it — and the worker's non-overlap guard turns a queued claim into a
-  // tick that never starts the next one, for every lane and every tenant, since the claim is
-  // cross-tenant by design.
-  //
-  // The lock is real and held from another connection, which is the only way the difference exists
-  // at all: `FOR UPDATE` and `FOR UPDATE SKIP LOCKED` are the same statement until something else is
-  // already holding the row. The deadline is the assertion, like the concurrent-drain test in
-  // scheduler-lanes: without SKIP LOCKED this claim blocks on the lock instead of failing an
-  // expectation, so what has to be asserted is that it came back at all.
+  // NOTE: `SKIP LOCKED` lets a second tick walk PAST a row the first one holds instead of queueing
+  // behind it; a queued claim, under the worker's non-overlap guard, stalls every lane and tenant.
+  // Every other claim test runs with nobody holding a row, so only this one tells `FOR UPDATE` from
+  // `FOR UPDATE SKIP LOCKED`: the lock is real and held from another connection. The deadline is
+  // the assertion (as in scheduler-lanes.test.ts): without SKIP LOCKED the claim blocks instead of
+  // failing an expectation.
   test("the claim walks past a row another holder has, instead of queueing behind it", async () => {
     const held = await enqueueJob({
       rearm: "same-work",
       tenantId,
       kind: "WEBHOOK_RETRY",
       dedupeKey: "dk-contention-held",
-      // Older, which is the shape contention actually takes: the claim is FIFO on run_at, so the row
-      // two ticks reach together is the oldest one. The discrimination does NOT depend on it, and
-      // that was measured rather than assumed — with SKIP LOCKED mutated away the test goes red with
-      // the held row armed either older or newer, because a claim whose limit exceeds the due rows
-      // scans every one of them and blocks on whichever is held.
+      // NOTE: older, which is the shape contention takes: the claim is FIFO on run_at, so the row
+      // two ticks reach together is the oldest. The discrimination does NOT depend on it: a claim
+      // whose limit exceeds the due rows scans every one of them and blocks on whichever is held.
       runAt: new Date(Date.now() - 120_000),
       base: appDb,
     });
@@ -536,10 +520,9 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect((await statusOf(id)).status).toBe("DONE");
   });
 
-  // Issue #287. The failure budget bounds CONSECUTIVE failures, not the row's lifetime, so a pass
-  // that completed spends the budget it earned. Started from a NON-ZERO count on purpose: the first
-  // spelling of this test enqueued a fresh row and asserted `attempts === 0`, which is what the row
-  // already carried, so it passed either way and pinned nothing.
+  // NOTE: the failure budget bounds CONSECUTIVE failures, not the row's lifetime, so a pass that
+  // completed spends the budget it earned. Started from a NON-ZERO count on purpose: a fresh row
+  // already carries `attempts === 0`, so asserting it would pin nothing.
   test("reschedule re-pends and clears the failure budget a completed pass earned", async () => {
     const id = await enqueueJob({
       rearm: "same-work",
@@ -564,10 +547,10 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect(s.attempts).toBe(0);
   });
 
-  // `rescheduleJob` has TWO write paths — a Prisma update and a raw statement for the merging
-  // `payloadPatch` — and the budget has to mean the same thing on both, or the reset depends on
-  // whether the caller happened to carry a counter forward. Measured: removing it from the raw
-  // branch alone left the rest of this file green, which is how the two would have drifted.
+  // NOTE: `rescheduleJob` has TWO write paths (a Prisma update and a raw statement for the merging
+  // `payloadPatch`), and the budget has to mean the same thing on both, or the reset depends on
+  // whether the caller happened to carry a counter forward. Nothing else in this file covers the
+  // raw branch alone.
   // APPOINTMENT_REMINDER is the caller that takes it, and its own retry ladder (`nudgeRetries`) is
   // what bounds that work, not the scheduler's budget.
   test("the merging reschedule clears the budget too", async () => {
@@ -601,10 +584,9 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect(row.payload).toEqual({ threadId: "1:2:3", nudgeRetries: 1 });
   });
 
-  // The defect this issue reports, in the shape that produces it: a job that reschedules itself
-  // forever (FLOWLOG_SWEEP, FOLLOWUP_SWEEP, HEARTBEAT) accumulates every failure it has ever had,
-  // across weeks of otherwise successful passes, and the fifth one dead-letters the row for good.
-  // Measured before the fix: DEAD after the fifth, with four healthy passes in between.
+  // NOTE: a job that reschedules itself forever (FLOWLOG_SWEEP, FOLLOWUP_SWEEP, HEARTBEAT) must not
+  // accumulate every failure it has ever had across weeks of successful passes, or the fifth one
+  // dead-letters the row for good.
   test("a perpetual job outlives more lifetime failures than the cap", async () => {
     const id = await enqueueJob({
       rearm: "same-work",
@@ -679,10 +661,10 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect(status).toBe("DEAD");
   });
 
-  // Issue #339, and the other half of #287. `rescheduleJob` clears the budget a completed pass
-  // earned; DONE is the same pass with a different ending, and it did not. Every kind whose
-  // dedupeKey names a permanent identity (a thread, a document) finishes its work with this call, so
-  // the budget one attendance spent was still on the row when the next one re-armed it.
+  // NOTE: `rescheduleJob` clears the budget a completed pass earned, and DONE is the same pass with
+  // a different ending, so it clears it too. Every kind whose dedupeKey names a permanent identity
+  // (a thread, a document) finishes its work with this call, and the budget one attendance spent
+  // would otherwise still be on the row when the next one re-arms it.
   test("completing a job clears the failure budget the pass earned", async () => {
     const id = await enqueueJob({
       tenantId,
@@ -700,10 +682,9 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect(s.attempts).toBe(0);
   });
 
-  // The defect #339 reports, in the shape that produces it: MEMORY_COMPACT's dedupeKey is the
-  // THREAD, so one physical row serves every attendance that contact ever has. A transient failure
-  // in one of them was inherited by the next, and the fifth, months later with healthy attendances in
-  // between, retired compaction for that contact for good.
+  // NOTE: MEMORY_COMPACT's dedupeKey is the THREAD, so one physical row serves every attendance that
+  // contact ever has; a transient failure inherited by the next attendance would, at the fifth,
+  // retire compaction for that contact for good.
   //
   // The re-arm here declares "same-work" ON PURPOSE, which is the declaration that keeps the budget:
   // the row survives because the passes COMPLETED, not because the caller asked for a clean slate.
@@ -891,7 +872,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect((await statusOf(id)).status).toBe("DEAD");
   });
 
-  // Issue #744: a job that fails on every try — a Chatwoot that is down — measured by how long after
+  // NOTE: a job that fails on every try (a Chatwoot that is down), measured by how long after
   // its first run it goes DEAD, with each retry claimed exactly when it falls due. The recoveries are
   // armed once and nothing re-arms them, so this span is the whole outage they can outlast.
   async function deathAfterMs(kind: SchedulerJobKind, key: string) {
@@ -1107,13 +1088,11 @@ describe.skipIf(!dbUp)("scheduler", () => {
     await suDb.schedulerJob.delete({ where: { id } });
   });
 
-  // The reason jobRetired takes a connection at all, measured rather than argued. runScopedOn opens
-  // a $transaction, which PINS a pooled connection, and withEntityLock's advisory lock is held by
-  // that same transaction — so a retirement read that opens its own asks a pinned pool for a second
-  // connection. `DB_POOL_MAX=1` is a supported setting, and there the read does not wait: it fails.
-  // Which would be survivable if it were loud, and it is not — jobRetired swallows a failed read as
-  // NOT retired (deliberately: an unknown must not drop a legitimate message), so on that setting
-  // the fence inside the claim would answer "keep going" every single time.
+  // NOTE: why jobRetired takes a connection. runScopedOn opens a $transaction, which PINS a pooled
+  // connection holding withEntityLock's advisory lock, so a read that opens its own asks a pinned
+  // pool for a second one; on the supported `DB_POOL_MAX=1` it fails. jobRetired swallows a failed
+  // read as NOT retired (an unknown must not drop a legitimate message), so there the fence inside
+  // the claim would answer "keep going" every time.
   test("the retirement read answers inside a pinned transaction, on a pool of one", async () => {
     const id = await enqueueJob({
       rearm: "same-work",
@@ -1138,8 +1117,8 @@ describe.skipIf(!dbUp)("scheduler", () => {
         async (scoped) => ({
           // Handed the transaction's own connection: reads the row and sees the tombstone.
           shared: await jobRetired(job, onePool, scoped),
-          // Opening its own from in here is the bug: the read cannot run, and the swallow turns
-          // that into "not retired" — the fence silently off.
+          // NOTE: opening its own from in here fails: the read cannot run, and the swallow turns
+          // that into "not retired", the fence silently off.
           own: await jobRetired(job, onePool),
         }),
       );
@@ -1228,8 +1207,8 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect((await statusOf(id)).status).toBe("DONE");
   });
 
-  // Issue #744 through the worker, which is what hands `failJob` the kind: the tests above call it
-  // directly and would stay green with the worker naming any kind at all.
+  // NOTE: the backoff through the worker, which is what hands `failJob` the kind: the tests above
+  // call it directly and would stay green with the worker naming any kind at all.
   test("a recovery failed by its handler backs off in minutes, not seconds (#744)", async () => {
     registerJobHandler("HUMAN_REPLY_RECOVERY", async () => ({
       outcome: "fail",

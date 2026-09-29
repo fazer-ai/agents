@@ -1,20 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-// EVERY DELETE OF AN OBSERVER ROW TAKES THE INBOX LOCK FIRST (issue #540, PR review round 5).
-//
-// The rule is old — this module has one lock order, account then inbox — and what made it load
-// bearing is the trigger that now steps `binding_generation`. Deleting an `inbox_observers` row
-// locks that row and then, inside the same statement, the AFTER DELETE trigger updates the inbox;
-// `bindInbox` and `unobserveInbox` lock the inbox first and then wait to delete the same row. Two
-// transactions doing those in opposite orders is a cycle, and Postgres resolves it by aborting one
-// with 40P01 — which on the compensation path is caught and swallowed, leaving a pending row behind
-// while the observer is detached upstream. The two sides then disagree, which is the single thing
-// this whole path is built to avoid.
-//
-// Asked of the SOURCE rather than of a running pair of transactions, and deliberately: staging the
-// interleaving takes two connections and precise sequencing, and the result would be a flaky test
-// for a rule a reader can state in one line. What is checked is that rule, on every delete, so the
-// next one written cannot quietly leave the lock out.
+// Every delete of an observer row takes the inbox lock first (the module's order is account, then
+// inbox). Deleting an `inbox_observers` row locks it and then its AFTER DELETE trigger updates the
+// inbox's `binding_generation`, while `bindInbox` and `unobserveInbox` lock the inbox and then
+// delete the row. Opposite orders are a cycle Postgres breaks with 40P01, which the compensation
+// path swallows, leaving a pending row while the observer is detached upstream. Asked of the SOURCE
+// rather than of two live transactions: staging the interleaving would be a flaky test for a rule
+// stated in one line, and this checks every delete, including the next one.
 
 const SRC = "src/modules/chatwoot/management.ts";
 const src = await Bun.file(SRC).text();

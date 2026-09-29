@@ -26,7 +26,7 @@ import {
 import { isValidPlaygroundThread } from "@/modules/playground/thread";
 import { clearFlowLog } from "../utils/flowlog";
 
-// Issue #839: each playground turn says what it spent, over every model call it made, and the
+// Each playground turn says what it spent, over every model call it made, and the
 // session says the running total. The live number is summed in process and the reopened one is
 // read from the ledger, so the assertions here hold them to EACH OTHER and to the rows: a turn line
 // that disagreed with the ledger would be a second, unaudited set of books.
@@ -256,11 +256,11 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       cachedReadTokens: 1024,
       cacheCreationTokens: 256,
       completionTokens: AGENT_SPEND.output + JUDGE_SPEND.output,
-      // Issue #858: which step made each call.
+      // NOTE: which step made each call.
       byNode: { agent: 1, guardrail: 1 },
-      // Issue #863: the agent's call at gpt-4o-mini's published rates ($0.15 input, $0.075 cached,
-      // $0.60 output per million), the cached share at the cache rate and only the rest at the full
-      // one. The judge's model is made up, so the table cannot price it, and it is counted, not zeroed.
+      // NOTE: the agent's call at gpt-4o-mini's published rates ($0.15 input, $0.075 cached, $0.60
+      // output per million), the cached share at the cache rate and only the rest at the full one.
+      // The judge's model is made up, so the table cannot price it, and it is counted, not zeroed.
       costUsd: expect.closeTo((176 * 0.15 + 1024 * 0.075 + 80 * 0.6) / 1e6, 12),
       unpricedCalls: 1,
       olderTablePricedCalls: 0,
@@ -358,7 +358,7 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
       cacheCreationTokens: 0,
       completionTokens: 30,
       byNode: { vision: 1 },
-      // The image read is written outside the model callbacks and is priced all the same (#863).
+      // NOTE: the image read is written outside the model callbacks and is priced all the same.
       costUsd: expect.closeTo((400 * 0.15 + 30 * 0.6) / 1e6, 12),
       unpricedCalls: 0,
       olderTablePricedCalls: 0,
@@ -410,9 +410,8 @@ describe.skipIf(!dbUp)("playground usage (issue #839)", () => {
     ]);
   });
 
-  // Reload (the operator's report on PR #840): the lines were in the browser only, so a refresh kept
-  // the total and dropped every turn's line. Through the REAL checkpointer, since the reopened
-  // transcript is read from it and the per-turn usage joins on the ids it stored.
+  // NOTE: a refresh keeps every turn's line, not only the total. Through the REAL checkpointer,
+  // since the reopened transcript is read from it and the per-turn usage joins on the ids it stored.
   test("a reopened session gives each reply the line its turn had live, a follow-up's included", async () => {
     const first = await runPlaygroundTurn({
       ctx: ctx(),

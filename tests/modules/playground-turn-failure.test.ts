@@ -16,11 +16,10 @@ import {
 } from "@/modules/playground/service";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
-// Issue #841: a playground turn that fails says why, or where the reason is. The failure that
-// prompted it was a database error raised while the turn was being assembled: it reached the app's
-// catch-all, which answers a bare 500 in plain text, and the console threw the text away and blamed
-// the model. What a failure must carry now: the turn id (for the Logs page link), the error's text
-// in development only, and in production our own sentence plus a Logs line in our words.
+// A playground turn that fails says why, or where the reason is, even for an error raised while the
+// turn is assembled (which the app's catch-all would answer as a bare 500 the console blames on the
+// model). A failure carries the turn id (for the Logs page link), the error's text in development
+// only, and in production our own sentence plus a Logs line in our words.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -45,7 +44,7 @@ if (appUrl && suUrl) {
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
-// The shape of the reported failure: a server-side error with nothing to do with the model.
+// A server-side error with nothing to do with the model.
 const SECRET_DETAIL = 'column "conversation_ref_integration_id" does not exist';
 const breaks = (() => {
   throw new Error(SECRET_DETAIL);

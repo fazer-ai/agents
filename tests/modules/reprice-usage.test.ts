@@ -10,7 +10,7 @@ import {
 } from "@/modules/pricing/reprice";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 
-// Issue #867: an operator re-prices ledger rows with the table in the tree now, when the table that
+// An operator re-prices ledger rows with the table in the tree now, when the table that
 // priced them was wrong. Dry run by default; `apply` writes only the rows whose figure changes and
 // stamps them with the current table; a row the table cannot price is left as it was and counted;
 // each row is priced at its own `created_at`; and the tenant, period and `price_table` filters hold.
@@ -149,8 +149,8 @@ describe("arguments", () => {
     ).toThrow(/--provider must be one of/);
   });
 
-  // The table has no price for an openai-compatible server, but a tenant's own price does, and
-  // pricing those rows after the price is saved is one of the reasons the command exists (review).
+  // NOTE: the table has no price for an openai-compatible server, but a tenant's own price does, and
+  // pricing those rows after the price is saved is one of the reasons the command exists.
   test("a model only a tenant's own price covers is accepted", () => {
     expect(
       parseRepriceArgs([
@@ -314,10 +314,10 @@ describe.skipIf(!dbUp)("re-pricing the ledger (issue #867)", () => {
     expect(await read(after)).toEqual({ cost: WRONG, table: OLD });
   });
 
-  // Issues #865 and #866: a figure the table never gave is not the table's to correct.
-  // Issues #865 and #866: each row is priced as the capture would price it now. A tenant's price
-  // saved after the fact comes first, OpenRouter's figure included; without one, what OpenRouter
-  // charged stands and the table re-prices only what it priced.
+  // NOTE: a figure the table never gave is not the table's to correct: each row is priced as the
+  // capture would price it now. A tenant's price saved after the fact comes first, OpenRouter's
+  // figure included; without one, what OpenRouter charged stands and the table re-prices only what
+  // it priced.
   test("a tenant's price saved after the fact re-prices its rows, and OpenRouter's figure stands without one", async () => {
     await clear();
     const block = {

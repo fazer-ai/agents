@@ -2,18 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { readdir } from "node:fs/promises";
 import { join, relative } from "node:path";
 
-// Who may bring a `scheduler_jobs` row into existence, enforced per call site.
-//
-// Issue #339. A row's failure budget survives the unit of work that spent it, so whoever arms the
-// row has to say what the re-arm MEANS — new work, or the same work pushed again. `enqueueJob` asks
-// that as a required field, so the compiler asks it of every one of its call sites. What the compiler
-// cannot see is a writer that never calls `enqueueJob` at all, and that was not hypothetical:
-// `armDebounce` had its own hand-copied upsert (same status/run_at/last_error block, no budget
-// question), which is why DEBOUNCE — a dedupeKey that is the THREAD, reused by every burst that
-// contact ever has — silently kept a dead-lettered flush's five attempts forever.
-//
-// So the fence is on the WRITE, not on the caller: one module creates the row, its params carry the
-// question, and a second writer added later fails here instead of inheriting a default nobody chose.
+// Who may bring a `scheduler_jobs` row into existence, enforced per call site. A row's failure
+// budget survives the unit of work that spent it, so whoever arms the row says what the re-arm
+// MEANS (new work, or the same work pushed again); `enqueueJob` makes that a required field. The
+// compiler cannot see a writer that never calls `enqueueJob`: a hand-copied upsert on DEBOUNCE (a
+// dedupeKey that is the THREAD, reused by every burst) would keep a dead-lettered flush's spent
+// attempts forever. So the fence is on the WRITE: one module creates the row, and a second writer
+// fails here instead of inheriting a default nobody chose.
 
 const OWNER = "src/modules/scheduler/service.ts";
 

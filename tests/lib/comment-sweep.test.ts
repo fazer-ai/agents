@@ -69,6 +69,7 @@ describe("what the sweep reads as provenance", () => {
       "// Measured on the repaired text, not on the value.",
       "// The first attempt fails fast.",
       "// A token that no longer matches is refused.",
+      "// Uma correção apoiada no id erraria calada o caso real.",
     ]) {
       expect(citesProvenance(block(text))).toBe(false);
     }

@@ -18,7 +18,7 @@ const OWED_WORK = /\b(TODO|FIXME):/;
 // History told without a number: a finding credited to a reviewer, or the code's earlier behaviour.
 // Precise on purpose: "before the change" in a concurrency sense and "used to" as purpose stay prose.
 const HISTORY =
-  /\b(?:review|codex|copilot)\s+(?:found|flagged|caught|asked)\b|\b(?:found|flagged|caught)\s+by\s+(?:the\s+)?(?:review|codex|copilot)\b|\breview\s+r\d+\b|\(r\d+\)|\bround-\d+\b|\b(?:before|after|until)\s+(?:the|this)\s+(?:fix|refactor|PR)\b|\b(?:the|a)\s+(?:first|earlier|previous|old)\s+(?:version|revision|implementation|spelling)\s+of\s+this\b|\b(?:this|that|it|which|they)\s+used\s+to\b|\bused\s+to\s+be\b|\bmeasured\s+on\s+(?:a\s+real|a\s+live|a\s+production|production)\b|\bthis\s+(?:PR|pull\s+request)\b|\b(?:esta|nesta|desta)\s+PR\b|\bcaso\s+real\b/i;
+  /\b(?:review|codex|copilot)\s+(?:found|flagged|caught|asked)\b|\b(?:found|flagged|caught)\s+by\s+(?:the\s+)?(?:review|codex|copilot)\b|\breview\s+r\d+\b|\(r\d+\)|\bround-\d+\b|\b(?:before|after|until)\s+(?:the|this)\s+(?:fix|refactor|PR)\b|\b(?:the|a)\s+(?:first|earlier|previous|old)\s+(?:version|revision|implementation|spelling)\s+of\s+this\b|\b(?:this|that|it|which|they)\s+used\s+to\b|\bused\s+to\s+be\b|\bmeasured\s+on\s+(?:a\s+real|a\s+live|a\s+production|production)\b|\bthis\s+(?:PR|pull\s+request)\b|\b(?:esta|nesta|desta)\s+PR\b|\bcaso\s+real\s*:/i;
 const NARRATION =
   /\b(measured|medido|real case|caso real|used to|before this change|originally|turned out|we found)\b/i;
 // Text a tool reads rather than a person: a suppression, a type directive, an i18n key, an edition marker.

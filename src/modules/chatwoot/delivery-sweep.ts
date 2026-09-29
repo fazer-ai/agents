@@ -17,39 +17,20 @@ import {
   type StrandedVerdict,
 } from "./stranded-delivery";
 
-// Finds Chatwoot deliveries stranded by a process death and says so (issue #228). One DELIVERY_SWEEP
-// job per tenant, armed at boot and when a Chatwoot account is connected, self-rearming.
-//
-// IT STILL DOES NOT ANSWER THE CUSTOMER ITSELF, and that is the design rather than a shortcut.
-// Recovering the turn means running one, and a turn run from HERE is not the turn the delivery would
-// have run: the flush machinery re-checks ownership and contact authorization itself, but the
-// test-mode gate, the availability window and the redirect gate are applied by the delivery path and
-// are gone with the process that died. Two earlier designs (arming the flush, running it inline)
-// were both wrong for that same reason.
-//
-// What it does instead is arm one DELIVERY_RECOVERY per row it declares lost (issue #295), and that
-// job re-runs the DELIVERY PATH, where every one of those gates already lives. A kind of its own
-// because it spends a whole agent turn and this sweep spends an indexed query — lanes.ts states the
-// rule, and folding the turn in here would start a batch's worth of them inside a job sized for
-// queries.
-//
-// The reporting half stands on its own and is not conditional on the recovery working. The issue's
-// harm has two halves — the message is gone, and it is gone SILENTLY — and this closes the second
-// completely: every stranded row becomes terminal, `WHERE status = 'DEAD'` is the list of customers
-// who wrote and were never answered, and each one leaves an error-level line on the conversation,
-// which is what the console reads and what the alert channels dispatch.
+// Finds Chatwoot deliveries stranded by a process death and says so. One DELIVERY_SWEEP job per
+// tenant, armed at boot and when a Chatwoot account is connected, self-rearming. It does not answer
+// the customer itself: a turn run from here would skip the test-mode, availability and redirect
+// gates the delivery path applies. It arms one DELIVERY_RECOVERY per row it declares lost, which
+// re-runs the delivery path (a kind of its own because it spends a turn and this job is sized for
+// queries, see lanes.ts). The report stands on its own: every stranded row becomes terminal,
+// `WHERE status = 'DEAD'` lists the customers never answered, and each leaves an error-level line.
+// See docs/chatwoot.md, "Webhook receiver".
 
-// Longer than any legitimate delivery. There is no number to derive it from — the direct path runs
-// the agent turn INSIDE `processChatwootDelivery` and neither the model call nor the tools have a
-// timeout — so it is a policy choice, and generous on purpose.
-//
-// What being early costs is one false ALERT, not a second turn: nothing here acts on the
-// conversation. A turn still running past this mark has its row marked DEAD and its loss
-// dispatched, and then the turn finishes and `processChatwootDelivery`'s tx2 writes PROCESSED over
-// it — by id, deliberately, so the row ends up saying the true thing (see the note there). The
-// alert is what cannot be recalled. Thirty minutes puts that outside anything but a pathological
-// turn; closing it properly needs the processor to heartbeat, which is machinery this does not
-// carry.
+// Longer than any legitimate delivery, a policy choice with no number to derive it from (the direct
+// path runs the turn inside `processChatwootDelivery`, and neither the model call nor the tools have
+// a timeout). Early costs one false alert, not a second turn: a turn still running has its row
+// marked DEAD and its loss dispatched, then tx2 writes PROCESSED over it by id. The alert cannot be
+// recalled; closing that properly needs a processor heartbeat.
 const STALE_AFTER_MS = 30 * 60 * 1000;
 // Cadence of the sweep. Recovery is not on the table, so what this buys is how fast an operator
 // learns; minutes rather than hours because the answer is "go read this conversation".
@@ -62,48 +43,14 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// Retire the ledger rows of the messages a turn just ran over.
+// Which messages the decision covered, as the caller can state it. The shapes are exclusive, as a
+// union, because a filter with no message bound (`{ chatwootInstanceId, conversationId }`) would
+// retire every non-terminal row on the conversation and close whatever loss sat there.
 //
-// This is the half that makes the sweep's question answerable. A delivery row records ONE message,
-// and the question the sweep asks is about that message: did anything ever process it? Answering it
-// by comparing the conversation's watermarks cannot work, and three review rounds of this PR each
-// found a different way it fails — the watermark is a per-CONVERSATION high-water mark and the
-// question is per-MESSAGE, so any scalar reading of it either closes real losses (a later
-// deliberate skip moves it past an unanswered message) or reports answered ones.
-//
-// So the turn says so directly. A burst re-fetched from Chatwoot may contain messages whose own
-// delivery DIED before finishing — that is exactly what the flush rescues, since it re-reads every
-// message above the watermark rather than the one that armed it — and those rows are the ones this
-// retires. In the ordinary case it updates nothing: a delivery that completed already reached
-// PROCESSED on its own.
-//
-// It runs AFTER the turn, never at the post gate: the gate claims before the reply is sent, and
-// retiring there would erase the evidence of precisely the crash window the sweep exists to catch.
-// Which messages the decision covered, in the shape the caller can actually state it — and the two
-// shapes are EXCLUSIVE, spelled as a union so the third combination cannot be written.
-//
-// It is not a stylistic union. Every field was optional once, and dropping all three left a filter
-// with no message bound at all: `{ chatwootInstanceId, conversationId }`, which retires every
-// non-terminal row on the conversation and closes whatever loss was sitting there. A `not: null`
-// alarm was what stood between that call and the damage, on a filter whose whole job is to be
-// narrow. There is now no such call to write.
-//
-//   The third is ONE ROW, and it exists because one of the callers does not speak for the
-//   conversation. Chatwoot fans a message to up to TWO bot routes — `agent_bots_for` returns the
-//   conversation's assignee bot AND the inbox's active bot, each with its own `delivery_id` — so a
-//   message can hold two ledger rows that differ only by which bot received it. A gate exit taken
-//   because the conversation is held by ANOTHER PARTY is not a statement that the message was
-//   handled; it is a statement that WE are not handling it. Keyed by conversation and message, that
-//   exit retires the other route's row, and if that route's process then dies the loss is invisible.
-//   `deliveryRowId` is the caller saying "only the delivery I am".
-//
-// AND `covered` RIDES THE SHAPE, for the same reason and stated by the same union (issue #576, PR
-// review round 4). Whether a turn folded the message into the thread is a fact about the MESSAGE,
-// so only a caller speaking for the message may state it; a route saying "I am not handling this"
-// says nothing about whether the route that IS handling it will. Recorded as a message-wide `false`,
-// that stand-down was read as evidence while the owner's own row sat unsettled, and the owner's late
-// transcription was folded in a second time on the strength of it. Spelled `?: never` on the
-// single-row shape, so there is no such call to write.
+// The single-row shape exists because Chatwoot fans a message to up to two bot routes
+// (`agent_bots_for`), each with its own ledger row; a gate exit taken because another party holds
+// the conversation says only "we are not handling it", so `deliveryRowId` limits it to itself, and
+// `covered` is `?: never` there, since only a caller speaking for the message may state coverage.
 type CoveredMessages =
   // The burst a turn ran over, known exactly because the thread was re-fetched.
   | {
@@ -113,19 +60,11 @@ type CoveredMessages =
       upToMessageId?: never;
       deliveryRowId?: never;
     }
-  // The gate exits, which decide before any fetch and can only say what the watermark they advance
-  // says. That is a RANGE, and it is bounded at BOTH ends: the burst they consume is everything
-  // after the watermark as it stood, up to the payload's newest id. Open at the bottom, it reaches
-  // back past its own burst and retires a strand some earlier message left behind — the gate never
-  // decided about that one, and closing it hides a real loss for good. (Message 1 strands; message 2
-  // arrives on a human-owned conversation and advances the watermark past both; a gated flush for
-  // message 3 then swallows message 1.)
-  //
-  // A range is sound HERE, where it is a write at the moment of the decision, and would not be as a
-  // read afterwards — that difference is the whole reason the sweep no longer reads watermarks at
-  // all. `afterMessageId` null means nothing had been handled yet, so the burst genuinely starts at
-  // the beginning. `upToMessageId` is required: it is the message the gate just decided about, and
-  // the bound is inclusive because that message is the one most in need of retiring.
+  // The gate exits, which decide before any fetch and can only state the range their watermark
+  // advance consumes: after the watermark as it stood, up to the payload's newest id (inclusive, the
+  // message just decided about). Bounded at both ends: open at the bottom it would retire an earlier
+  // strand the gate never decided about. A range is sound as a write at the decision, not as a read
+  // afterwards. `afterMessageId` null means nothing had been handled yet.
   | {
       messageIds?: never;
       covered: boolean;
@@ -141,33 +80,14 @@ type CoveredMessages =
       upToMessageId?: never;
     };
 
-// WHETHER A TURN FOLDED THESE MESSAGES INTO THE THREAD, written on its own and WITHOUT SETTLING
-// ANYTHING (issue #576).
-//
-// Separate from the settlement because the two are decided at different moments and a turn cannot
-// wait for the second to record the first: `graph.invoke` persists the channel long before anybody
-// knows whether a reply will reach the customer, and a TTS or a send that fails in between jumps
-// past the settlement entirely while tx2 closes the row all the same. Settling from there instead
-// would be far worse than losing the fact — a row closed mid-turn is a delivery the sweep can no
-// longer see, which is the silent loss this whole subsystem exists to prevent.
-//
-// MONOTONIC. `false` is the ABSENCE of a turn, not a claim that none can ever run: a message
-// consumed with no turn records `false`, and an operator's manual re-engagement then runs a turn over
-// that same tail and checkpoints it. Only `false -> true` moves, so a later settlement carrying
-// `false` — the burst's own word for the messages its cap dropped — cannot take back a coverage that
-// really happened.
-//
-// ASYMMETRIC ON A PENDING ROW, which is where this stops following the settlement's rule (PR review,
-// round 7). The settlement skips PENDING because moving that row's STATUS preempts a delivery whose
-// CAS has not run yet; this write touches only the column, so it preempts nothing.
-//
-//   `true` is written there. A flush that re-fetched the thread from Chatwoot legitimately covers a
-//   message whose own row was inserted and not yet claimed, and nothing later repairs that null: the
-//   delivery, when it does run, only re-arms a flush whose watermark has already moved past it.
-//   Left out, the commonest recovery shape in a debounced deployment records nothing.
-//
-//   `false` is not. That row's owner has not arrived, and "no turn covered this" is exactly what its
-//   own delivery is about to decide — writing the absence first would answer for it.
+// Whether a turn folded these messages into the thread, written on its own and settling nothing:
+// `graph.invoke` persists the channel long before anyone knows whether a reply reaches the customer,
+// and settling from there would close a row mid-turn and hide it from the sweep.
+// Monotonic: only `false -> true` moves, since `false` is the absence of a turn (a later manual
+// re-engagement can cover the same tail). On a PENDING row `true` is written (a re-fetching flush
+// legitimately covers a not-yet-claimed message, and nothing later repairs that null) but `false`
+// is not, since that row's own delivery is about to decide it. This touches only the column, so,
+// unlike the settlement, it preempts no CAS.
 export async function recordTurnCoverage(params: {
   tenantId: bigint;
   instanceId: bigint;
@@ -189,13 +109,9 @@ export async function recordTurnCoverage(params: {
   const covered = params.covered;
   await runScopedOn(params.base, sysCtx(params.tenantId), (db) =>
     db.chatwootWebhookDelivery.updateMany({
-      // `AND` rather than a spread, because the settlement's filter carries an `OR` of its own on the
-      // wide scope and a second one at the same level would replace it.
-      //
-      // And the coverage clause is an explicit LIST rather than `not: true`: the column is nullable,
-      // and `NOT (col = true)` is NULL for a NULL row — which is every row that has not yet said
-      // anything, i.e. exactly the ones this exists to write. Measured: with `not: true` it settled
-      // nothing at all. Same trap the observer exclusion below spells out.
+      // NOTE: `AND` rather than a spread, because the settlement's filter carries its own `OR` on the
+      // wide scope. The coverage clause is an explicit list, not `not: true`: the column is nullable
+      // and `NOT (col = true)` is NULL for a NULL row, exactly the rows this exists to write.
       where: {
         AND: [
           scope,
@@ -218,6 +134,12 @@ export async function recordTurnCoverage(params: {
   });
 }
 
+// Retires the ledger rows of the messages a turn just ran over. A delivery row records one message
+// and the sweep asks about that message; a per-conversation watermark cannot answer a per-message
+// question, so the turn states it directly. A re-fetched burst can hold messages whose own delivery
+// died (the flush re-reads everything above the watermark); ordinarily this updates nothing. Runs
+// after the turn, never at the post gate, which claims before sending: retiring there would erase
+// the evidence of the crash window the sweep exists to catch.
 export async function retireCoveredDeliveries(
   params: CoveredMessages & {
     tenantId: bigint;
@@ -253,32 +175,18 @@ export async function retireCoveredDeliveries(
       ? { ...scope, id: params.deliveryRowId }
       : {
           ...scope,
-          // AN OBSERVER'S ROW IS NEVER ANOTHER ROUTE'S TO CLOSE (issue #476 review, round 34). The
-          // wide scope exists because a human, a command or a gate answers the MESSAGE, whichever
-          // route carried it — true of every route that could have answered, and false of the one
-          // that never could. The observer owes the memory instead, and it pays that on its own
-          // schedule: its ingestion can fail, and the throw that leaves the row for the sweep is
-          // the only thing standing between that and a message nothing remembers. Retired from
-          // here the row is terminal before the observer is done with it, the sweep can no longer
-          // see it, and the loss is silent — the one failure this whole subsystem exists to
-          // prevent. The observer settles its own row, always `this-delivery` scoped, so nothing
-          // legitimate reaches an observer's row through this branch.
-          // Spelled as an explicit list rather than `not: true`: the column is nullable, and
-          // `NOT (col = true)` is NULL for a NULL row, which would exclude rows this filter has to
-          // keep and settle nothing at all.
+          // NOTE: an observer's row is never another route's to close. The wide scope exists because a
+          // human, command or gate answers the message on any route that could have; the observer
+          // owes the memory instead, and a failed ingestion leaves its row for the sweep. Closed from
+          // here, the row turns terminal before the observer is done and the loss goes silent. The
+          // observer settles its own row, `this-delivery` scoped. An explicit list, not `not: true`:
+          // `NOT (col = true)` is NULL for a NULL row and would settle nothing.
           OR: [{ routeObserved: null }, { routeObserved: false }],
-          // NOTE: AND NEITHER IS A ROW THAT OWES WORDS RATHER THAN AN ANSWER (issue #478 review, round 4),
-          // which is the observer's rule above applied to the other row that answers nobody. The
-          // transcribed `message_updated` names its message now, so without this it matches the wide
-          // scope and the CREATION's own settlement closes it — the two are deliveries of the same
-          // message, racing — and the update is terminal before its ingestion is armed. An enqueue
-          // failure or a death after that is then invisible to the sweep, which is the silence the
-          // throw at the tail of ./webhook.ts exists to prevent. Like the observer, it settles its
-          // own row, `this-delivery` scoped, through the branch above.
-          //
-          // A NO-OP ON EVERY ROW WRITTEN BEFORE THIS BUILD: until it, `inboundMessageId` was written
-          // for `isNewIncomingMessage` alone, which requires a creation, so nothing this filter used
-          // to reach is excluded by naming the event.
+          // NOTE: nor a row that owes words rather than an answer (the transcribed `message_updated`):
+          // matched by the wide scope, the creation's settlement would close it before its ingestion
+          // is armed, hiding a later failure from the sweep. It settles its own row through the branch
+          // above. On older rows `inboundMessageId` was only written for creations, so this excludes
+          // nothing they held.
           event: TURN_BEARING_EVENT,
           inboundMessageId:
             params.messageIds !== undefined
@@ -291,69 +199,28 @@ export async function retireCoveredDeliveries(
                 },
         };
 
-  // TWO writes, and the split is what makes the correction exact rather than nearly exact.
-  //
-  // NOTE: the pair is not a transaction, and neither is the watermark advance that precedes every
-  // caller of this. Every window between those writes leaves a state that is WRONG AND VISIBLE — a
-  // row still in the worklist for a message something did handle, a correction with no closing line
-  // — never a loss that goes quiet, which is the one failure this whole sweep exists to prevent.
-  // Alert dispatch happens inside `writeFlowEvent`, so a transaction spanning it would hold a
-  // database write open across somebody else's HTTP endpoint. They are named in the PR's validation
-  // scope instead, next to the sibling window this design already accepts on purpose (a delivery
-  // that dies between its insert and its CAS).
-  //
-  // THE ORDINARY CASE FIRST, and the order is the fix for a race rather than a preference.
-  //
-  // The sweep's own write turns a covered row PROCESSING -> DEAD. Run the DEAD statement first and
-  // that transition lands BETWEEN the two: the DEAD read finds nothing (the row was still
-  // PROCESSING), the sweep marks it DEAD and dispatches the loss, and the PROCESSING statement then
-  // finds nothing either. The row stays DEAD for good, reported as a customer nobody answered, with
-  // no owner left to run tx2 over it — permanent, and exactly backwards.
-  //
-  // This way round, the same interleaving is harmless in both directions. Landing after this
-  // statement, the sweep's terminal CAS is on the status it READ (`PROCESSING`) and matches nothing,
-  // so it counts the row as raced and writes no line. Landing before it, this statement finds
-  // nothing and the DEAD statement below catches the row and writes the correction.
-  //
-  // PROCESSING only, and never PENDING: that is the state whose owner has not
-  // arrived yet, and this write cannot tell "abandoned before the claim" from "claimed a millisecond
-  // from now". The ack is spent before the row is even inserted, so a burst re-read from Chatwoot
-  // legitimately contains a message whose own delivery sits between its insert and its CAS —
-  // retiring it makes that CAS match nothing and the delivery return "skipped", so the mirror write
-  // never runs and `lastInboundAt`, the contact and the attribute bags stay behind. That is
-  // preempting a delivery rather than rescuing one. A PROCESSING row is already claimed, so retiring
-  // it preempts nothing: its own tx2 writes PROCESSED over this a moment later. What it leaves out
-  // is a delivery that died in the sliver between its insert and its CAS, reported as a loss even
-  // though a later burst answered it — two statements wide, against a whole turn for PROCESSING.
-  // WHETHER A TURN FOLDED THE MESSAGE IN is the fact continuous ingestion needs and could not ask
-  // for (issue #576): its gate reads who owns the conversation NOW, which on a `message_updated` is a
-  // reading taken after the decision it is asking about. This call is where every settlement passes,
-  // so it is where the fact is written down. Best-effort like everything else here: a write that does
-  // not land leaves the null the reader falls back on.
+  // NOTE: two writes, not a transaction (nor with the preceding watermark advance): every window
+  // between them leaves a state that is wrong and visible, never a quiet loss, and a transaction
+  // would span `writeFlowEvent`'s alert dispatch to somebody else's endpoint. PROCESSING first: the
+  // other order lets the sweep's PROCESSING -> DEAD land between them and leaves the row DEAD for
+  // good. PROCESSING only, never PENDING: a burst can contain a message between its insert and its
+  // CAS, and retiring it would make that delivery skip its mirror write. Every settlement passes
+  // here, so the "turn folded the message in" fact for continuous ingestion is written here too.
   const answered = params.settlement === "answered";
   const { count } = await runScopedOn(
     params.base,
     sysCtx(params.tenantId),
     (db) =>
       db.chatwootWebhookDelivery.updateMany({
-        // A ROLE NOT YET STATED IS NOT A ROLE OF `false` (issue #476 review, round 35), and this
-        // is the one statement where the difference bites. The receiver writes the role just after
-        // the claim, so an observer's row is briefly PROCESSING having said nothing — and settling
-        // that row closes it before the observer is done with its ingestion, the same silent loss
-        // the observer exclusion above exists to prevent. A row still being WORKED therefore
-        // settles only once it has said it is not an observer's. Nothing is stranded by this: the
-        // `route_observed` migration stamped `false` on every row still on the worklist, so a null
-        // one being worked is a live delivery between its claim and its statement, and its own tx2
-        // closes it a moment later. The DEAD statement below is unaffected — a terminal row has no
-        // owner left to state anything, and leaving it unsettled would keep a reported loss open
-        // for a message a turn did handle.
+        // NOTE: a role not yet stated is not `false`. The receiver writes the role just after the
+        // claim, so settling a PROCESSING row that has said nothing could close an observer's row
+        // before its ingestion. Nothing strands: the migration stamped `false` on every worklist row,
+        // so a null one is a live delivery whose own tx2 closes it. The DEAD statement is unaffected.
         where: {
           ...where,
-          // ONLY ON THE WIDE SCOPE (issue #476 review, round 39). A single-row settlement already
-          // names the row it may touch, and the observer's own — the one path that settles after
-          // recording `routeObserved: true` — is exactly that shape: required to say `false` here,
-          // it matched nothing, and a process exiting between the ingestion and tx2 left a handled
-          // delivery for the sweep to report and replay.
+          // NOTE: only on the wide scope. A single-row settlement already names its row, and the
+          // observer's own settlement is that shape: requiring `false` there would match nothing and
+          // leave a handled delivery for the sweep to report and replay.
           ...(params.deliveryRowId === undefined
             ? { routeObserved: false }
             : {}),
@@ -378,17 +245,11 @@ export async function retireCoveredDeliveries(
     });
   }
 
-  // AND THE ROWS THAT NEED A CLOSING LINE, which are the ones that were DEAD.
-  //
-  // READING them first would race the sweep in both directions: a row turning DEAD between the read
-  // and the write loses its correction, and two retirees reading the same DEAD row both write one.
-  // An UPDATE that names DEAD in its own predicate and returns what it moved answers both at once —
-  // only one statement can move a given row out of DEAD, and it is the one holding the rows.
-  //
-  // DEAD is a correction rather than a contradiction. The sweep reaches its verdict by INFERENCE —
-  // nothing has moved this row — while a turn that ran over the message is direct evidence, and it
-  // wins. Nothing is erased: `WHERE status = 'DEAD'` is what is STILL unanswered, and the line that
-  // reported the loss stays where it was written, joined by the one below saying how it ended.
+  // NOTE: and the rows that need a closing line, the ones that were DEAD. One UPDATE naming DEAD in
+  // its predicate and returning what it moved, because a read first would race the sweep both ways
+  // (a correction lost, or written twice). DEAD is corrected, not contradicted: the sweep's verdict
+  // is an inference and a turn over the message is direct evidence. The loss line stays; the one
+  // below says how it ended.
   const corrected = await runScopedOn(
     params.base,
     sysCtx(params.tenantId),
@@ -434,18 +295,10 @@ export async function retireCoveredDeliveries(
       {
         stage: "delivery",
         level: "warn",
-        // A "warn", and it does NOT page the channel the loss paged. That is a real gap and it is
-        // deliberately not closed here: a channel's `minLevel` defaults to "error", so an operator
-        // who was paged about this customer learns of the answer from the Logs page or from the DEAD
-        // worklist, not from the channel.
-        //
-        // Routing it as an "error" instead was tried and is worse. `dispatchAlertsForEvent`
-        // coalesces a pending delivery by (channel, stage, level), so a correction landing inside
-        // the loss alert's window would not close it — it would INCREMENT it, and the operator would
-        // get a bigger loss alert carrying the original's summary. The alerting subsystem has levels
-        // and stages and no concept of a resolution, for any event; inventing half of one here buys
-        // a wrong notification instead of a missing one. `WHERE status = 'DEAD'` stays the list that
-        // answers "who is still unanswered", and it is correct the instant this write lands.
+        // NOTE: a "warn" that does not page the channel the loss paged (`minLevel` defaults to
+        // "error"), a known gap. Routing it as "error" is worse: alert dispatch coalesces by
+        // (channel, stage, level), so the correction would increment the loss alert instead of
+        // closing it. The DEAD worklist is correct the instant this lands.
         status: "ok",
         detail: {
           outcome: answered ? "answered_late" : "consumed_late",
@@ -479,8 +332,8 @@ interface StrandedRow {
   conversationId: number | null;
   inboundMessageId: number | null;
   humanReplyShape: string | null;
-  // The reply's own id, written at INSERT since issue #469. It is what lets the words be read back
-  // and folded into memory (issue #728) — see `armReplyMemory` below.
+  // The reply's own id, written at insert. It lets the words be read back and folded into memory
+  // (see `armReplyMemory`).
   humanReplyMessageId: number | null;
   routeObserved: boolean | null;
   routeRemembers: boolean | null;
@@ -491,45 +344,35 @@ export interface SweepCounts {
   closed: number;
   // Terminal, a customer message lost.
   lost: number;
-  // Terminal and nothing lost, but a SIDE EFFECT was owed and never ran: the delivery carried a
-  // colleague's reply, so the takeover it should have written is armed for recovery (issue #439).
-  // Counted apart from `closed` because they are opposite outcomes wearing the same terminal state —
-  // one is a row that needed nothing, the other a row that needed something and got it late.
+  // Terminal and nothing lost, but a side effect was owed and never ran: a colleague's reply whose
+  // takeover is armed for recovery. Apart from `closed`: a row that needed something and got it late.
   owed: number;
-  // Terminal and nothing a customer sent is at stake, but an OBSERVER's route lost the ingestion of
-  // a colleague's reply (issue #476). Counted apart because it is neither `closed` (a row that owed
-  // nothing) nor `owed` (a row whose side effect was armed for recovery): nothing can replay it, so
-  // the count and the line beside it are the whole record.
+  // Terminal, nothing a customer sent at stake, but an observer's route lost the ingestion of a
+  // colleague's reply. Neither `closed` nor `owed`: nothing can replay it, so the count and the line
+  // beside it are the whole record.
   observerStrands: number;
-  // Terminal, no customer waiting on a reply, and the TRANSCRIPTION of a customer message owed to
-  // memory (issue #478). Counted apart from `lost` because the worklist is not the same list: `DEAD`
-  // is customers who wrote and were never answered, and these rows are on routes where no reply was
-  // ever coming. Counted apart from `owed` because the recovery is the ordinary delivery replay
-  // rather than a side effect of its own.
+  // Terminal, no customer waiting, and a customer message's transcription owed to memory. Apart from
+  // `lost` (the DEAD worklist is customers never answered, and no reply was coming here) and from
+  // `owed` (recovered by the ordinary delivery replay).
   owedTranscription: number;
-  // Terminal, a colleague's reply, and a route NOTHING EVER NAMED: the process died between the
-  // INSERT and the claim, so no build stated the role (issue #540, window 2). Counted apart from
-  // `owed` because the takeover is armed on a guess that may not have been owed, and apart from
-  // `observerStrands` because the gap reported may not exist — what is certain is only that one of
-  // the two stories happened and this pass cannot say which.
+  // Terminal, a colleague's reply, and a route no build ever named: the process died between the
+  // INSERT and the claim. Apart from `owed` (the takeover is armed on a guess) and from
+  // `observerStrands` (the gap may not exist): only one of the two stories happened.
   roleUnstated: number;
   // The row moved under the sweep (a redelivery claimed it) between the scan and the write.
   raced: number;
 }
 
 // The conversation's mirror row, for the ids the flow line is filed under. Null when the mirror does
-// not know this conversation — a delivery that died before the mirror write — in which case the line
-// is filed without one, because it is still worth writing.
-//
-// It no longer reads any watermark, and that is the point of the retirement above: the question
-// "did anything cover this message" is answered by the row's own status, not inferred here.
+// not know this conversation (a delivery that died before the mirror write); the line is still
+// filed. It reads no watermark: whether anything covered the message is the row's own status.
 async function mirrorOf(
   row: StrandedRow,
   tenantId: bigint,
   base: PrismaClient,
-  // Asked only by the verdict that reports it, and asked HERE so it is read before the terminal
-  // transition: after `finish` the row is never scanned again, so a lookup that threw there would
-  // take the only record of an unrecoverable gap with it (issue #476 review, round 31).
+  // Asked only by the verdict that reports it, and here, before the terminal transition: after
+  // `finish` the row is never scanned again, so a lookup that threw there would take the only record
+  // of an unrecoverable gap with it.
   withResponderRoute = false,
 ): Promise<{
   conversationRowId: bigint;
@@ -578,21 +421,11 @@ async function mirrorOf(
   });
 }
 
-// Writes the row's terminal state, CASing on the status the scan read. Losing that CAS means a
-// redelivery claimed the row in between and is processing the event right now — the outcome this
-// sweep exists to report the absence of — so it is not a failure and nothing is recorded.
-//
-// NOTE: The other ordering is not symmetric and is left as it stands. On a PENDING row this CAS
-// races the delivery's own `PENDING -> PROCESSING` claim, and winning it means that claim then
-// matches nothing and returns "skipped" — a redelivery arriving in that instant is discarded, and
-// with it the one path that could still have answered the customer through the real gates. The
-// report is still true (nothing had processed the message), and the window needs a manual replay to
-// land inside the sweep's write, since Chatwoot holds a 200 and does not redeliver on its own.
-// Closing it means letting a claim take a row back from a terminal state, which is recovery: the
-// DELIVERY_RECOVERY armed below does exactly that, from `DEAD` and through the real gates (issue
-// #295), rather than this write being widened to allow it.
-// Exported for the test: the false branch is a race between the scan and the write, and a test that
-// tries to construct one goes green for the wrong reason more often than it detects.
+// Writes the row's terminal state, CASing on the status the scan read. Losing the CAS means a
+// redelivery claimed the row and is processing it now, so nothing is recorded. On a PENDING row,
+// winning races the delivery's own claim and discards a redelivery arriving that instant; the report
+// is still true, and taking a row back from a terminal state is the DELIVERY_RECOVERY's job, not a
+// wider write here. Exported for the test: a constructed race goes green for the wrong reason.
 export async function finish(
   row: StrandedRow,
   tenantId: bigint,
@@ -636,19 +469,11 @@ export async function sweepStrandedDeliveries(
     raced: 0,
   };
 
-  // BOTH non-terminal states, because both strand and for the same reason. The ack is spent before
-  // the ledger row is even written, so a death between the insert and the CAS leaves PENDING — and
-  // #226's answer to that ("a redelivery goes on to the CAS instead of being dropped") only helps
-  // when a redelivery actually arrives, which it usually does not, because Chatwoot holds a 200.
-  // The staleness cutoff belongs in the QUERY, not only in the classifier, because the batch is
-  // capped. Ordered and capped by `received_at` alone, a backlog of BATCH rows with old receipts
-  // that were RECENTLY reclaimed fills every slot with live attempts, and a genuinely stranded row
-  // with a newer receipt is skipped pass after pass — starved by rows the classifier then discards
-  // as in-flight. Filtered here, every row in the batch is one the sweep will actually decide.
-  //
-  // The two arms are the same `claimedAt ?? receivedAt` the classifier uses, written the way a
-  // nullable column has to be compared. The classifier still asks its own question afterwards: this
-  // is which rows to look at, that is what they mean, and the boundary belongs to the pure rule.
+  // NOTE: both non-terminal states strand: a death between insert and CAS leaves PENDING, and a
+  // redelivery rarely comes since Chatwoot holds a 200. The staleness cutoff is in the query, not
+  // only the classifier, because the batch is capped: ordered by `received_at` alone, recently
+  // reclaimed old rows would fill every slot and starve a real strand. Both arms are the
+  // classifier's `claimedAt ?? receivedAt`, spelled for a nullable column.
   const cutoff = new Date(now.getTime() - STALE_AFTER_MS);
   const rows = (await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.chatwootWebhookDelivery.findMany({
@@ -689,19 +514,12 @@ export async function sweepStrandedDeliveries(
       now,
       staleAfterMs: STALE_AFTER_MS,
     });
-    // Unreachable through the query above, which already excluded every row a live attempt could
-    // still be working. Kept because the RULE is the classifier's, not the query's: they are two
-    // statements of one threshold, and this is where they would be caught disagreeing rather than
-    // where a fresh row would be marked terminal.
+    // NOTE: unreachable through the query, kept because the rule is the classifier's: two
+    // statements of one threshold, and this is where they would be caught disagreeing.
     if (verdict === "in-flight") continue;
-    // Read the mirror only for a row that is going in the loss list: it is where the line is filed,
-    // and neither terminal-but-benign verdict writes one. A saved query per such row, not a rule —
-    // `record` returns before the line for any other verdict, so reading it anyway changes no
-    // outcome and no test can hold this (a mutation that widens it to the owed row survives the
-    // suite, which is what the sentence says).
-    // A read that throws must not cost the report: the observer verdict's line is the ONLY record
-    // of its gap, and `record` marks the row terminal before it could be written. Null here is
-    // "could not tell", which the line says out loud rather than resolving one way (round 31).
+    // NOTE: the mirror is read only for a row going in the loss list (the only verdict that writes
+    // a line). A throwing read must not cost the report, since `record` marks the row terminal
+    // first; null is "could not tell", said out loud.
     const mirror =
       verdict === "lost" ||
       verdict === "observer-strand" ||
@@ -724,25 +542,12 @@ export async function sweepStrandedDeliveries(
   return counts;
 }
 
-// THE WORDS, WHICH ARE A SECOND DEBT ON THE SAME ROW (issue #728).
-//
-// Not a verdict of its own, and that is the design rather than an omission: the three verdicts below
-// answer "what was owed the CONVERSATION" — a handover, or nothing, or an answer we cannot give —
-// and each of them can sit on a row that ALSO owed a memory append. The two are independent, they
-// are armed together, and neither waits on the other. A verdict would have had to choose between
-// them.
-//
-// Asked of the row alone, which is all this pass has: it names a conversation, a reply id and a
-// shape this build knows. Everything the row CANNOT say — whether the shape resolves to a reply on
-// this provider, whether the route remembers anything at all, whether the thread exists — is
-// re-asked by the recovery against the state as it stands then (./recover-human-reply.ts). That
-// split is deliberate: `route_remembers = false` on the row is the same signature for "the arm
-// failed" and for "this route never remembers", and nothing here can tell them apart.
-//
-// FREE WHERE IT WAS NOT OWED, exactly like the takeover beside it: the job re-asks every gate and
-// answers `not-owed` having written nothing. And harmless where it was already DONE — a row
-// stranded after a successful ingestion re-arms the same append, which the ingest job's own dedup
-// refuses (`ingestVerdict`, ../../graph/ingest.ts).
+// The words, a second debt on the same row. Not a verdict: the verdicts answer what the conversation
+// was owed, and any of them can sit on a row that also owed a memory append; the two are armed
+// independently. Asked of the row alone; everything it cannot say (provider shape, whether the route
+// remembers, whether the thread exists) is re-asked by ./recover-human-reply.ts, since
+// `route_remembers = false` reads the same for a failed arm and a route that never remembers. Free
+// where not owed (`not-owed`), harmless where done (the ingest dedup, ../../graph/ingest.ts).
 async function armReplyMemory(
   row: StrandedRow,
   tenantId: bigint,
@@ -754,9 +559,8 @@ async function armReplyMemory(
     await armHumanReplyRecovery(tenantId, row.id, base);
     return true;
   } catch (error) {
-    // `warn` and not `error`, because the receiver has already reported this loss at `error` on the
-    // conversation itself (issue #720): this is the SECOND attempt failing to be armed, and the line
-    // an operator acts on is the first one.
+    // NOTE: `warn`, not `error`: the receiver already reported this loss at `error` on the
+    // conversation, and that first line is the one an operator acts on.
     logger.warn(
       { error },
       `chatwoot delivery sweep: ${label} was stranded owing a colleague's reply and the recovery of its memory could not be armed; the words stay out of the conversation's memory`,
@@ -774,21 +578,11 @@ async function record(
   base: PrismaClient,
 ): Promise<void> {
   const label = `${row.deliveryId} (${row.event})`;
-  // NOTE: THE TRANSCRIPTION STRAND, and it borrows one half from each of its neighbours (issue #478).
-  //
-  // From the LOSS: the row goes DEAD and the ordinary delivery recovery is armed on it. That is not
-  // a choice of wording, it is what makes the replay possible at all — `recoverStrandedDelivery`
-  // claims from DEAD, and the row leaves it again the moment the replay settles, which is the next
-  // scheduler tick. The replay is safe on every row that reaches here, including the ordinary
-  // write-back a ledger row cannot be told apart from this one: it re-runs the SAME event, and a
-  // `message_updated` drives no turn and is refused by the ingest gate wherever a turn already
-  // answered.
-  //
-  // From the TAKEOVER: the line is `warn` and says what was owed, instead of the loss line's `error`
-  // and its "the customer's message was never answered". Nobody here is waiting on a reply — on the
-  // routes this verdict is about, none was ever coming — so paging an operator would be paging them
-  // about a memory gap the replay is already closing. The DEAD row is still the record if it never
-  // does.
+  // NOTE: the transcription strand takes one half from each neighbour. From the loss: the row goes
+  // DEAD and the ordinary delivery recovery is armed (it claims from DEAD); the replay is safe, since
+  // a `message_updated` drives no turn and the ingest gate refuses it where a turn answered. From the
+  // takeover: a `warn` saying what was owed, since no reply was ever coming on these routes and
+  // paging would be about a memory gap the replay is closing.
   if (verdict === "owed-transcription") {
     if (!(await finish(row, tenantId, "DEAD", base))) {
       counts.raced += 1;
@@ -798,10 +592,8 @@ async function record(
     try {
       await armDeliveryRecovery(tenantId, row.id, base);
     } catch (error) {
-      // NOTE: Nothing follows it, because the line below would say the replay was armed (issue #478
-      // review, round 5). The row is already DEAD and no later pass revisits it, so two lines
-      // contradicting each other is the whole record an operator gets of a transcription that is
-      // not coming back.
+      // NOTE: nothing follows, because the line below would say the replay was armed. The row is
+      // already DEAD and never revisited, so these two lines are the whole record.
       logger.error(
         { error },
         `chatwoot delivery sweep: ${label} was stranded owing a transcription and its replay could not be armed; the words stay out of the conversation's memory and the row stays DEAD`,
@@ -822,37 +614,17 @@ async function record(
       counts.raced += 1;
       return;
     }
-    // PROCESSED IN BOTH ARMS, including the one that owes a takeover, and the reason is what DEAD
-    // means here: it is the `WHERE status = 'DEAD'` worklist of customers who wrote and were never
-    // answered (issue #228). A colleague's own reply belongs on no such list. The record that
-    // something was owed is the job armed below plus the line it writes if it lands, and if that job
-    // never runs the state is the one every install had before issue #430 — a conversation the next
-    // reply takes over on its own.
+    // NOTE: PROCESSED in both arms, including the one owing a takeover: DEAD is the worklist of
+    // customers never answered, and a colleague's reply belongs on no such list. If the armed job
+    // never runs, the next human reply takes the conversation over on its own.
     if (verdict === "observer-strand") {
       counts.observerStrands += 1;
-      // WHAT THIS LINE MAY CLAIM, and it is less than the first draft of it claimed (issue #476
-      // review, round 30). Beside a responder of ours, that responder's own delivery of the same
-      // reply folds it into the shared memory and owes the takeover, so the row lost nothing. With
-      // none, the observer's memory is the only one the inbox has and this reply is simply not in
-      // it, and nothing will replay it.
-      //
-      // ...UNLESS THE ROUTE REMEMBERS NOTHING (issue #620): an observer on an inbox with no responder
-      // of ours folds nothing in, and its claim records `route_remembers = false`. That value is
-      // also what a failed arm writes down before the row settles, so it cannot close the row
-      // benign (PR review, round 3); what it can do is keep this line from asserting a loss the
-      // claim says was never owed. The line names both readings and stays a `warn`.
-      //
-      // The question is about RECEIPT TIME and this runs half an hour later, so the binding read
-      // here is evidence and not an answer: an inbox bound in between reads as covered when it was
-      // not. Asked of a responder with a ROUTE rather than of `Inbox.agentId` alone — a binding
-      // whose persona bot was deleted upstream receives no delivery of its own, which is the same
-      // reading the receiver makes when it decides whether to remember beside one — and reported at
-      // one level, `warn`, that says what is known and no more. An `error` on the read alone would
-      // page an operator for the ordinary shared inbox; an `info` would file the real gap where
-      // nobody looks.
-      // ...AND IT CAN BE REPLAYED NOW (issue #728), which is exactly what the sentence below used to
-      // deny. The claim that it could not rested on the delivery recovery needing a customer message
-      // id — true of THAT recovery, and never true of the row, which has named the reply since #469.
+      // NOTE: what this line may claim. Beside a responder of ours, its own delivery folds the reply
+      // into the shared memory, so nothing was lost; with none, the observer's memory is the only
+      // one. `route_remembers = false` (also what a failed arm writes) cannot close the row benign,
+      // only keep the line from asserting a loss; it names both readings. The binding is read now,
+      // not at receipt, so it is evidence, not an answer: asked of a responder with a route, at
+      // `warn` (an `error` would page for the ordinary shared inbox). The reply is replayable.
       const memoryArmed = await armReplyMemory(row, tenantId, base, label);
       logger.warn(
         "chatwoot delivery sweep: %s stranded on an observer's route carrying a colleague's reply (%s) on conversation %s; %s. The inbox %s NOW, which is not what it had when the event arrived",
@@ -874,25 +646,11 @@ async function record(
     }
     if (verdict === "role-unstated") {
       counts.roleUnstated += 1;
-      // NOTE: BOTH HONEST THINGS, because this pass cannot tell the two stories apart and each of them
-      // costs something different when guessed wrong (issue #540, window 2).
-      //
-      // The takeover is ARMED, which is free where it was not owed: `recover-takeover.ts` re-asks
-      // every gate — the shape, the provider, the mode, the config, the ownership — and answers
-      // `not-owed` without touching the conversation. On the far commoner responder's route it is
-      // the handover the delivery died owing, and refusing it here would leave the conversation with
-      // the bot until the next human reply.
-      //
-      // And the gap is REPORTED, which is what reading the row as the responder's silently skipped:
-      // on a WATCHER's route the takeover was never owed and what WAS owed — the colleague's reply
-      // folded into the observer's memory — cannot be replayed from here (see `observer-strand`), so
-      // without this line it leaves no trace anywhere at all.
-      // WHETHER IT WAS ACTUALLY ARMED, because the line below is the only record this row leaves and
-      // the row is already PROCESSED — nothing revisits it (PR review, round 6). Stated
-      // unconditionally, that line told an operator a takeover was armed on the exact reading where
-      // it was not, which is the one case they would have had to act on themselves.
-      // AND THE WORDS TOO, on the same both-honest-things reading (issue #728): whichever of the two
-      // routes this was, the append it owed is the one thing the row can still name.
+      // NOTE: both honest things, since this pass cannot tell the stories apart. The takeover is
+      // armed (free where not owed: recover-takeover.ts re-asks every gate), and the gap is reported
+      // (on a watcher's route the owed memory append leaves no other trace). The line states whether
+      // it was actually armed, because the row is already PROCESSED and nothing revisits it. The
+      // words are armed too, whichever route this was.
       await armReplyMemory(row, tenantId, base, label);
       let armed = true;
       try {
@@ -923,10 +681,8 @@ async function record(
     }
     if (verdict === "owed-takeover") {
       counts.owed += 1;
-      // BEST-EFFORT, and armed AFTER the CAS for the same reason the loss recovery is armed after
-      // its own: winning the CAS is what makes this row nobody else's. A failure here leaves the
-      // conversation as it was, which is the pre-#430 behaviour rather than a new harm, so it is
-      // logged at `warn` and not `error` — nothing was lost that an operator has to go find.
+      // NOTE: best-effort, armed after the CAS (winning it makes the row nobody else's). A failure
+      // leaves the conversation as it was, so `warn`: nothing was lost an operator has to find.
       try {
         await armTakeoverRecovery(tenantId, row.id, base);
       } catch (error) {
@@ -935,10 +691,8 @@ async function record(
           `chatwoot delivery sweep: ${label} was stranded owing a handover and its recovery could not be armed; the conversation stays with the bot until the next human reply`,
         );
       }
-      // TWO DEBTS, TWO JOBS (issue #728). The handover is what this row was stranded OWING; the
-      // append is what it was stranded CARRYING, and until the ledger's reply id was read back
-      // nothing could go get it. Armed independently of the takeover's own result: a handover that
-      // could not be armed says nothing about whether the words can still be remembered.
+      // NOTE: two debts, two jobs: the handover it was stranded owing, the append it was stranded
+      // carrying. Armed independently: a handover that failed says nothing about the words.
       await armReplyMemory(row, tenantId, base, label);
       logger.info(
         "chatwoot delivery sweep: %s stranded on %s owing a human-reply handover (%s) on conversation %s; closing and arming the recovery",
@@ -959,49 +713,21 @@ async function record(
     return;
   }
 
-  // NOTE: a rescue landing between this CAS and the line below writes its own correction (the row
-  // was DEAD when it looked), so both lines end up on the conversation — the loss and the
-  // `answered_late` closing it, out of order but complete. What is not possible is the loss going
-  // unreported.
-  //
-  // The CAS goes FIRST, and the line only if it wins. Ordering it the other way (an earlier round of
-  // this PR did) trades a real failure for a worse one: `writeFlowEvent` DISPATCHES the alert as it
-  // writes — Discord, webhook, an operator's phone — and nothing can retract that, so a line written
-  // before the CAS pages someone about a lost message every time a redelivery claimed the row in
-  // between. That race is a designed path here, not an infrastructure failure; the row moving under
-  // the sweep is precisely the outcome `finish` exists to detect.
-  //
-  // What the old ordering was protecting against is real but smaller: if the write fails after the
-  // CAS won, the row is DEAD with no line and no later pass revisits it. It is not a silence, though
-  // — the DEAD row is itself the record, and `WHERE status = 'DEAD'` is the list this sweep exists
-  // to produce. A failing write here is the tenant's own database refusing an insert one statement
-  // after accepting an update, which is an outage, not a race.
+  // NOTE: the CAS goes first and the line only if it wins: `writeFlowEvent` dispatches the alert as
+  // it writes and nothing retracts it, and a redelivery claiming the row in between is a designed
+  // path. A write failing after a won CAS leaves a DEAD row with no line, which is still the record
+  // (and an outage, not a race). A rescue landing after the CAS writes its own correction, so both
+  // lines end up on the conversation; the loss is never unreported.
   if (!(await finish(row, tenantId, "DEAD", base))) {
     counts.raced += 1;
     return;
   }
 
-  // The recovery, armed at the only moment anything knows this row just became recoverable: the
-  // query above reads PENDING and PROCESSING, so from here on the row is invisible to every later
-  // pass of this sweep.
-  //
-  // WHICH IS ALSO WHY A ROW THAT WAS ALREADY DEAD WHEN THIS SHIPPED IS NEVER RECOVERED, including
-  // one still inside the six-hour ceiling at the moment of the deploy. That is a decision and not an
-  // oversight, and a review round asked for the backfill that would close it. It is not here for two
-  // reasons that outlive this file: it would arm a whole backlog in one pass, each row a model call
-  // and a reply to a real customer, and what a BATCH of recoveries costs is the one thing about this
-  // feature nobody has measured. And those rows are not silent — they are exactly the
-  // `WHERE status = 'DEAD'` worklist issue #228 exists to produce, which is where an operator was
-  // already going to find them. A backfill is its own piece of work, with its own risk to weigh and
-  // its own trigger to choose (boot runs on every replica of every deploy; a migration cannot
-  // enqueue application work).
-  //
-  // BEST-EFFORT, and the failure is survivable in exactly the way the loss line's is not: the row is
-  // already DEAD and already in the worklist, so an operator still learns. What is lost is the
-  // automatic attempt, which is why it is logged loudly rather than swallowed.
-  //
-  // Armed BEFORE the line rather than after, so the alert an operator receives is never newer than
-  // the attempt to make it moot.
+  // NOTE: the recovery is armed now, the only moment anything knows the row became recoverable (the
+  // query reads PENDING and PROCESSING). Rows already DEAD before recovery existed are never
+  // recovered, deliberately: a backfill would arm a whole backlog of model calls and real replies
+  // at once, and those rows are already on the DEAD worklist. Best-effort and logged loudly (the
+  // row is already reported). Armed before the line, so the alert is never newer than the attempt.
   try {
     if (isRecoverableStrand(row))
       await armDeliveryRecovery(tenantId, row.id, base);
@@ -1086,11 +812,9 @@ export async function ensureDeliverySweep(
     kind: "DELIVERY_SWEEP",
     dedupeKey: "delivery-sweep",
     runAt: new Date(Date.now() + SWEEP_INTERVAL_MS),
-    // NOTE: One perpetual row per tenant, same shape as the flow-log sweep and the heartbeat: a
-    // completed pass clears the budget on its own (#287/#337), and a boot or a newly connected
-    // account re-arming this row is the SAME unit of work, not a new one. Clearing here would hand a
-    // sweep that keeps failing five fresh attempts every time an account is connected, which is the
-    // cap doing nothing (#339).
+    // NOTE: one perpetual row per tenant, like the flow-log sweep and the heartbeat: a completed
+    // pass clears the budget, and a re-arm is the same unit of work. Clearing here would give a
+    // failing sweep five fresh attempts every time an account connects, defeating the cap.
     rearm: "same-work",
     base,
   });

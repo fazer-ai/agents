@@ -1,31 +1,27 @@
 import type { UnreadFile } from "@/modules/vision/unread";
 import type { ChatwootMessageRow } from "./messages";
 
-// In-process fallback for the eager media annotations (STT transcription, vision extraction).
-// The canonical store is the Chatwoot attachment meta (updateAttachmentMeta write-back), but that
-// PATCH route only exists on the fazer.ai Chatwoot fork — on upstream Chatwoot it 404s and the
-// debounce flush re-fetch reads an empty meta, so the agent answered "não audível" to a voice note
-// it had already transcribed (issue #49). The eager pass stashes every completed annotation here and
-// the flush (and the quote page) overlays whatever the meta is missing, so the fork write-back
-// becomes an ENRICHMENT (human agents see the transcription in Chatwoot), never a requirement.
-// Ephemeral BY DESIGN: memory only, TTL + size bound — the anti-PII rule (never mirror message
-// bodies into our DB) stays intact, and the single-replica deploy invariant (docs/deploy.md) makes
-// this process's memory reach both the webhook and the flush worker.
+// In-process fallback for the eager media annotations (STT transcription, vision extraction). The
+// canonical store is the Chatwoot attachment meta, but that PATCH route only exists on the fazer.ai
+// fork; on upstream it 404s and the flush re-fetch reads an empty meta. The eager pass stashes every
+// annotation here and the flush (and the quote page) overlays what the meta is missing, so the fork
+// write-back is an enrichment, never a requirement. Memory only, TTL and size bound: message bodies
+// never reach our DB, and the single-replica invariant (docs/deploy.md) lets this process's memory
+// reach both the webhook and the flush worker.
 
 export interface MediaAnnotation {
   transcribedText?: string;
   imageDescription?: string;
   extractedText?: string;
-  // How many attachments the eager pass did NOT read: over the per-message cap, or attempted and
-  // failed. One count because the model's move is the same for both — name what is missing and ask
-  // for it again. A COUNT, never text: it crosses the debounce re-fetch, where the notice this
-  // becomes is phrased by the renderer like every other marker (PR #692 review, rounds 1 and 3).
+  // How many attachments the eager pass did NOT read (over the cap, or failed): the model's move is
+  // the same for both. A count, never text: it crosses the debounce re-fetch, and the renderer
+  // phrases the notice like every other marker.
   attachmentsUnread?: number;
   // The unread files the pass tried, each with its name and cause, so the renderer can say what to
   // ask for. Memory only, like everything here: the name is the customer's text.
   unreadFiles?: UnreadFile[];
-  // The pass that wrote this went through the email body's images too (issue #864). They leave no
-  // meta anywhere, so this is the only record that they were read, or were all ornaments.
+  // The pass went through the email body's images too. They leave no meta anywhere, so this is the
+  // only record that they were read, or were all ornaments.
   bodyRead?: boolean;
 }
 
@@ -110,11 +106,9 @@ export function stashMediaAnnotation(
   scheduleSweep(nowMs);
 }
 
-// Fills IN PLACE the annotation fields a fetched page is missing. A value already present on the
-// attachment meta (the fork write-back landed) is authoritative and never overwritten.
 // One message's annotation, when this process still holds it. The audio reply stashes the text it
-// spoke under the id Chatwoot gave the send, which is how a channel failure reported minutes later
-// recovers the reply on an upstream Chatwoot that drops the attachment metadata (issue #587).
+// spoke under the id Chatwoot gave the send, so a channel failure reported minutes later recovers
+// the reply on an upstream Chatwoot that drops the attachment metadata.
 export function mediaAnnotationFor(
   tenantId: bigint,
   instanceId: bigint,
@@ -126,6 +120,8 @@ export function mediaAnnotationFor(
   return hit.note;
 }
 
+// Fills IN PLACE the annotation fields a fetched page is missing. A value already present on the
+// attachment meta (the fork write-back landed) is authoritative and never overwritten.
 export function overlayMediaAnnotations(
   tenantId: bigint,
   instanceId: bigint,
@@ -136,14 +132,11 @@ export function overlayMediaAnnotations(
     const hit = store.get(keyOf(tenantId, instanceId, row.id));
     if (!hit || nowMs - hit.at >= TTL_MS) continue;
     row.transcribedText ??= hit.note.transcribedText ?? null;
-    // THE VISION FIELDS ARE AGGREGATES, and there the "meta wins" rule inverts (PR #692 review,
-    // round 2). The write-back is best-effort PER ATTACHMENT: with two images extracted and one
-    // meta write landing, the fetched page carries a non-null description built from that one
-    // attachment, and `??=` would let the partial suppress the complete. The stash is written by
-    // the pass that produced ALL of them, in one call after the loop, so when it is present it is
-    // the more complete reading of the same extraction — never a different one, since the pass is
-    // idempotent per message and the store is message-keyed with a 15-minute TTL. Absent (another
-    // process, or past the TTL), the meta still answers, which is what it is for.
+    // NOTE: the vision fields are aggregates, so "meta wins" inverts. The write-back is per
+    // attachment, so a page with one of two meta writes landed carries a partial description that
+    // `??=` would keep. The stash is written once by the pass that produced all of them (idempotent
+    // per message, message-keyed, 15-minute TTL), so when present it is the more complete reading of
+    // the same extraction. Absent (another process, past the TTL), the meta answers.
     if (hit.note.bodyRead) row.bodyRead = true;
     row.imageDescription =
       hit.note.imageDescription ?? row.imageDescription ?? null;

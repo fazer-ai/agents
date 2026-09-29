@@ -19,12 +19,12 @@ export interface LoadChatwootClientDeps {
   makeClient?: (
     cfg: ConstructorParameters<typeof ChatwootClient>[0],
   ) => Promise<ChatwootClient>;
-  // The persona bot token to act AS (bot-token endpoints: send/toggle/assign). Default "" =
-  // admin-only client (the bot identity now lives per-persona on ChatwootAgentBot, not the instance).
+  // The persona bot token to act AS (bot-token endpoints: send/toggle/assign). Default "" is an
+  // admin-only client: the bot identity lives per persona on ChatwootAgentBot, not on the instance.
   botToken?: string;
-  // A client for an agent that must never post to the customer (issue #568): the monitoring turn
-  // gets one, so every tool it holds keeps working while a customer-visible send throws. See
-  // ChatwootClientConfig.mute — the refusal is at the transport, not on a list of methods.
+  // A client for an agent that must never post to the customer: the monitoring turn gets one, so
+  // its tools keep working while a customer-visible send throws. The refusal is at the transport
+  // (ChatwootClientConfig.mute), not on a list of methods.
   mute?: boolean;
   // See ChatwootClientConfig.expiresOn: the whole client stops answering past this.
   expiresOn?: AbortSignal;
@@ -58,8 +58,8 @@ export async function loadChatwootClient(
   });
 }
 
-// The instance's Chatwoot base URL, without building a client (no token decrypted, no DNS). What an
-// email body image is compared against before it is read (issue #864).
+// The instance's Chatwoot base URL, without building a client (no token decrypted, no DNS). An
+// email body image is compared against it before it is read.
 export async function chatwootBaseUrl(
   tenantId: bigint,
   instanceId: bigint,

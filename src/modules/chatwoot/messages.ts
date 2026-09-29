@@ -30,11 +30,9 @@ import {
 export interface ChatwootMessageRow {
   id: number;
   content: string;
-  // WHEN Chatwoot recorded it (issue #749). The fetched page is the only place the re-engage path can
-  // learn how old the message it is about to answer is: the mirror column `last_inbound_at` is null
-  // on a conversation whose row was created from an event that is not a message, which is every
-  // conversation this button exists for. OPTIONAL because a row built by hand (a fixture, a caller
-  // that synthesises one) has no instant to carry, and absent has to read the same as unreadable.
+  // When Chatwoot recorded it. The only place the re-engage path can learn the age of the message it
+  // answers: `last_inbound_at` is null on a row created from a non-message event. Optional because a
+  // hand-built row has no instant, and absent reads the same as unreadable.
   createdAt?: Date | null;
   messageType: "incoming" | "outgoing" | "activity" | "template" | "other";
   private: boolean;
@@ -55,66 +53,57 @@ export interface ChatwootMessageRow {
   unreadFiles?: UnreadFile[] | null;
   // Best-effort first-attachment file name (from the data_url basename), for the unsupported marker.
   attachmentName: string | null;
-  // OS ANEXOS VISUAIS EM SI, com o id e a url que uma extração precisa (issue #757). Os dois campos
-  // acima dizem o que JÁ foi extraído; este diz o que existe PARA extrair, e é o que permite a um
-  // turno que releu a thread abrir um anexo cuja meta nunca foi escrita. A conversa que chegou
-  // antes de o agente observar a caixa nunca passou pelo caminho eager, e sem isto ela chega ao
-  // modelo como "o usuário enviou uma imagem" e nada mais.
+  // The visual attachments themselves, with the id and url an extraction needs. The fields above say
+  // what was already extracted; this says what exists to extract, so a turn that re-read the thread
+  // can open an attachment whose meta was never written (a conversation that arrived before the
+  // agent observed the inbox never went through the eager path).
   visuals: VisualAttachment[];
-  // How many of `visuals` are images the mailbox kept in the email body (issue #864). They carry no
-  // attachment type, so this is what makes a message whose only content is one of them answerable.
+  // How many of `visuals` are images the mailbox kept in the email body. They carry no attachment
+  // type, so this is what makes a message whose only content is one of them answerable.
   bodyImages?: number;
   // True when a vision pass already went through the body images (in-process stash): attachment
-  // meta never covers them, since they have no attachment to carry it (issue #864).
+  // meta never covers them, since they have no attachment to carry it.
   bodyRead?: boolean;
-  // NOTE: The first usable location attachment's content (coordinates/title), for the
-  // <localização> marker — mirrors the direct webhook path (issue #45). Null when absent/unusable.
+  // The first usable location attachment's content (coordinates/title), for the <localização>
+  // marker, as on the direct webhook path. Null when absent or unusable.
   location: RenderableLocation | null;
   // content_attributes.in_reply_to — the quoted/replied-to message id, if any.
   inReplyTo: number | null;
   // content_attributes.is_reaction — true when this message is an emoji reaction (content = emoji).
   isReaction: boolean;
-  // NOTE: The email's Subject header (issue #598), from `content_attributes.email.subject`. Null on
-  // every message no mailbox wrote, which is every message on every other channel.
+  // The email's Subject header, from `content_attributes.email.subject`. Null on every message no
+  // mailbox wrote.
   emailSubject: string | null;
-  // NOTE: `content_attributes.activity.type` (issue #642). Non-null on the activity rows that
-  // declare what they narrate — a status change, a Linear event — and null on the ones that carry
-  // only a localized sentence, which is where a label change lives.
+  // `content_attributes.activity.type`: non-null on activity rows that declare what they narrate (a
+  // status change, a Linear event), null on those that carry only a localized sentence, which is
+  // where a label change lives.
   activityType: string | null;
-  // `content_attributes.activity.status` on a status-change activity row (issue #897): the status the
-  // conversation moved to. Null on every other row. OPTIONAL because a row built by hand (a fixture,
-  // a caller that synthesises one) narrates no status, and absent reads the same as null.
+  // `content_attributes.activity.status` on a status-change activity row: the status the
+  // conversation moved to. Null on every other row. Optional because a hand-built row narrates no
+  // status, and absent reads the same as null.
   activityStatus?: string | null;
-  // WHO SENT IT, from Chatwoot's own `sender.type`. It is what separates OUR outgoing message from a
-  // human agent's, a distinction `messageType` cannot make and the burst selection needs: a reply a
-  // person wrote closes every customer message before it, and one of ours closes only what its turn
-  // claimed (issue #698).
+  // Who sent it, from Chatwoot's `sender.type`. Separates our outgoing message from a human agent's,
+  // which `messageType` cannot: a person's reply closes every customer message before it, one of
+  // ours closes only what its turn claimed.
   senderType: "contact" | "user" | "agent_bot" | "other" | null;
-  // WHICH sender, when the page named one. Carried with the type because "agent_bot" alone does not
-  // say OURS: a conversation can be assigned to another AgentBot, whose replies write no claim row in
-  // this runtime, and exempting it from the outgoing boundary would read its answers as ours
-  // (PR #701, review round 1).
+  // Which sender, when the page named one. "agent_bot" alone does not say ours: another AgentBot's
+  // replies write no claim row here, and exempting them from the outgoing boundary would read its
+  // answers as ours.
   senderId: number | null;
-  // `content_attributes.external_sender_name`, which is the OTHER route a person answers by: typed
-  // on the phone paired to the inbox's number, never through the CRM. The fork stores that echo
-  // sender-less, so `senderType` is null on it and the two clauses above cannot see it at all — and
-  // it is the only field on the row that separates it from the three other shapes of sender-less
-  // outgoing message Chatwoot itself writes (an automation rule, a scheduled message, a CSAT
-  // survey). Trusting it also needs the inbox's WhatsApp provider, which the page does not carry;
-  // see `foreignReplyBoundary` and `providerReservesEchoIds` (PR #701, review round 8).
+  // `content_attributes.external_sender_name`: a person answering on the phone paired to the inbox's
+  // number. The fork stores that echo sender-less, so `senderType` is null, and this is the only
+  // field that separates it from Chatwoot's own sender-less outgoing messages (automation rule,
+  // scheduled message, CSAT survey). Trusting it also needs the inbox's WhatsApp provider; see
+  // `foreignReplyBoundary` and `providerReservesEchoIds`.
   externalSenderName: string | null;
-  // `content_attributes.imported`, written by the history importer on a backfilled row. It is NOT a
-  // detail of the mark above, it is the fence on it: an import inserts last year's messages with
-  // today's autoincrement ids, so a phone's backfilled reply lands ABOVE a live customer message
-  // nobody has answered yet — and read as a boundary it would silence that customer, and every other
-  // one in the operator's backlog, on the day they pair a phone (PR #701, review round 9). The
-  // webhook path fences the same flag one layer up (`hasDeviceAttendantShape`), where it is
-  // unreachable; here the page really carries it.
+  // `content_attributes.imported`, written by the history importer. The fence on the mark above: an
+  // import inserts old messages with today's ids, so a backfilled phone reply lands above a live,
+  // unanswered customer message and, read as a boundary, would silence the operator's backlog the
+  // day they pair a phone. The webhook path fences it one layer up (`hasDeviceAttendantShape`).
   imported: boolean;
-  // The name the send gave itself on the way out (issue #499), when this message is one of ours and
-  // the sender asked for one. Null on every message nobody named: everything inbound, everything a
-  // person wrote, and every send from a caller with no resend to decide. It is what lets a delivery
-  // be proved by identity instead of by matching text.
+  // The name the send gave itself on the way out, when this message is one of ours and the sender
+  // asked for one. Null on everything inbound, everything a person wrote, and sends with no resend to
+  // decide. It lets a delivery be proved by identity instead of by matching text.
   sendId: string | null;
 }
 
@@ -155,15 +144,9 @@ function metaStringFrom(attachments: unknown, key: string): string | null {
   return null;
 }
 
-// EVERY attachment that carries the key, labelled by file name when there is more than one.
-//
-// The singular reader above says it in its own comment — "the first attachment that carries it" —
-// and that was one of the three places issue #691 threw N-1 extractions away. The storage was never
-// the problem: vision writes back per attachment. Three readers collapsed it.
-//
-// One attachment returns exactly what `metaStringFrom` returned, byte for byte: the common case
-// keeps its wording, and so do the tests that pinned it. The label only appears when there is
-// something to tell apart.
+// Every attachment that carries the key, labelled by file name when there is more than one (vision
+// writes back per attachment, so reading only the first throws the others away). One attachment
+// returns exactly what `metaStringFrom` returns, so the common case keeps its wording.
 function metaJoinedFrom(attachments: unknown, key: string): string | null {
   if (!Array.isArray(attachments)) return null;
   const partes: { nome: string | null; texto: string }[] = [];
@@ -181,9 +164,8 @@ function metaJoinedFrom(attachments: unknown, key: string): string | null {
     .join("\n\n");
 }
 
-// The basename of an attachment's data url, or null. Same rule as `fileNameFrom`, per attachment,
-// and best-effort for the same reason: `decodeURIComponent` throws on an invalid escape, and a
-// label must never cost the page it labels (PR #692 review, round 1).
+// The basename of an attachment's data url, or null. Best-effort like `fileNameFrom`:
+// `decodeURIComponent` throws on an invalid escape, and a label must never cost the page it labels.
 function fileNameOfUrl(url: unknown): string | null {
   if (typeof url !== "string" || !url) return null;
   const path = url.split("?")[0] ?? url;
@@ -263,7 +245,7 @@ function visualsFrom(attachments: unknown): VisualAttachment[] {
   return out;
 }
 
-// The attachments, then the images the mailbox kept in the email body (issue #864).
+// The attachments, then the images the mailbox kept in the email body.
 function visualsWithBody(
   attachments: unknown,
   ca: Record<string, unknown> | null,
@@ -290,27 +272,20 @@ function attachmentTypesFrom(attachments: unknown): string[] {
   return out;
 }
 
-// Parses the raw response into normalized rows sorted by id ascending (Chatwoot ids are globally
-// increasing per account, so id order is chronological and drives the watermark comparison).
-// HOW MANY MESSAGES THE RESPONSE ACTUALLY CARRIED, before any of them were parsed — or `null` when
-// the response was not a list at all (issue #499).
-//
-// `parseChatwootMessages` folds three different answers into one empty array: a page that really is
-// empty, a body that was not a list (`{}`, `null`, a 200 with prose), and a full page whose rows
-// were all unreadable. A caller asking "did I reach the end of the history?" needs to tell the first
-// from the other two — the first is an answer and the other two are a degraded read, and treating a
-// degraded read as the end of the history is how "I could not tell" turns back into "it is not
-// there". Callers that only want the messages have no use for this and should keep using the parser
-// alone.
+// How many messages the response carried before parsing, or `null` when it was not a list at all.
+// `parseChatwootMessages` folds three answers into one empty array (an empty page, a non-list body,
+// a page of unreadable rows); a caller asking "did I reach the end of the history?" must tell the
+// first from the degraded two, or "I could not tell" turns into "it is not there".
 export function chatwootMessageListLength(raw: unknown): number | null {
   if (Array.isArray(raw)) return raw.length;
   if (isRecord(raw) && Array.isArray(raw.payload)) return raw.payload.length;
   return null;
 }
 
-// Chatwoot ships this field in two spellings, both its own: epoch SECONDS from the jbuilder
-// partials (`.to_i`) and an ISO-8601 string from a plain attribute. Anything that does not parse
-// reads as absent, never as the epoch — a 1970 age is a lie with more digits than a missing one.
+// Parses the raw response into normalized rows sorted by id ascending (Chatwoot ids increase per
+// account, so id order is chronological and drives the watermark comparison). `created_at` comes as
+// epoch seconds (jbuilder `.to_i`) or an ISO-8601 string; anything unparseable reads as absent,
+// never as the epoch.
 export function parseChatwootMessages(raw: unknown): ChatwootMessageRow[] {
   const list: unknown[] = Array.isArray(raw)
     ? raw
@@ -396,12 +371,10 @@ export function toRenderable(row: ChatwootMessageRow): RenderableMessage {
   };
 }
 
-// CAN THIS MESSAGE BE ANSWERED AT ALL — asked in three places that have to agree: the one branch
-// `renderInboundMessage` returns "" on, the debounce burst (`pendingIncoming`) and the supersede
-// gate (`maxIncomingId`). It used to be spelled three times as "text OR an attachment", and the
-// email subject (issue #598) is exactly the shape that separates the copies if one is updated and
-// another is not: the burst would drop the message the renderer had just learned to read. One
-// function, three callers, and a fence test that walks the shapes and asserts they answer alike.
+// Can this message be answered at all? Asked by `renderInboundMessage` (its "" branch), the debounce
+// burst (`pendingIncoming`) and the supersede gate (`maxIncomingId`), which must agree: if one copy
+// learned a new shape (a subject-only email) and another did not, the burst would drop a message the
+// renderer can read. A fence test walks the shapes and asserts they answer alike.
 export function hasAnswerableContent(
   m: Pick<
     ChatwootMessageRow,
@@ -420,8 +393,8 @@ export function hasAnswerableContent(
 // The supersede gates (debounce flush AND the direct path) compare it against the id a turn is
 // answering to detect a mid-turn arrival. Renderable is `hasAnswerableContent`, the same predicate
 // pendingIncoming asks: a voice note / image / file carries empty content, and so does an email
-// whose request is in the subject — treating either as "no new input" let a stale turn post its
-// reply over a customer who had already moved on.
+// whose request is in the subject; treating either as "no new input" lets a stale turn post its
+// reply over a customer who has already moved on.
 export function maxIncomingId(
   messages: ChatwootMessageRow[],
   floor: number,

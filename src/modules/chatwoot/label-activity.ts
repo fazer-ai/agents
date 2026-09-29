@@ -1,30 +1,11 @@
-// WHAT CHATWOOT ITSELF WRITES WHEN A LABEL CHANGES (issue #642, review round 5).
-//
-// An activity row carries no structure for this: no sender, and `content_attributes` only on the
-// activities that declare a type (a status change), never on a label change. So the only way to know
-// that a row narrates a label change is the sentence, and the only way to read a sentence without
-// guessing is the TEMPLATE it was rendered from — `conversations.activity.labels.added` and
-// `.removed`, interpolated with the actor's name and with `labels.join(", ")`
-// (`LabelActivityMessageHandler#create_label_change_activity`).
-//
-// Guessing at the POSITION instead is what the two rounds before this one kept paying for: "a run of
-// known titles at the edge of the line" misses German and Turkish, which put the run in the middle
-// ("Hans hat vip hinzugefügt"), and the quoted form it needed for Japanese accepts any other
-// activity that happens to quote a value — a priority change, a group rename. The templates say
-// where the labels are in every locale, and say it exactly.
-//
-// COPIED FROM THE FORK, `config/locales/*.yml` of fazer-ai/chatwoot, on 14/set/2026: 74 distinct
-// strings across every locale it ships, as YAML DECODES them and not as the file spells them — a
-// single-quoted scalar escapes an apostrophe by doubling it, and a pattern built from the raw
-// spelling waits for two apostrophes Chatwoot never writes (round 10). A template that drifts stops matching, and a line nobody
-// matches is simply not read — the same miss this block already chooses over inventing a decision,
-// and never a false positive.
-// ...AND WHICH OF THE TWO VERBS IT IS (issue #645, review round 1). The subtree has exactly two
-// leaves, `added` and `removed`, and folding them into one table threw away the only thing that
-// says whether a line CAN be `/reset`'s own cleanup: the command only ever removes, so an addition
-// whose Sidekiq job lands out of order was being read as the removal and spending its budget. The
-// two tables are the same 74 strings, split by the key they came from (37 and 37, disjoint), and
-// `bun scripts/extract-chatwoot-activity-templates.ts <fork>/config/locales` prints them apart.
+// What Chatwoot writes when a label changes. An activity row carries no structure for it (no sender,
+// no `content_attributes`), so the only reliable reading is the template it was rendered from:
+// `conversations.activity.labels.added` / `.removed`, interpolated with the actor and
+// `labels.join(", ")` (`LabelActivityMessageHandler#create_label_change_activity`). Guessing at the
+// position misses locales that put the run mid-sentence. Vendored from the fork's
+// `config/locales/*.yml` as YAML decodes them (a doubled apostrophe is one), split by verb because
+// only a removal can be `/reset`'s cleanup. Regenerate with
+// `bun scripts/extract-chatwoot-activity-templates.ts`; see docs/chatwoot.md, "Observation".
 const LABEL_ADDED_TEMPLATES: readonly string[] = [
   "%{user_name} %{labels} যোগ করেছেন",
   "%{user_name} a ajouté %{labels}",
@@ -111,25 +92,12 @@ const LABEL_ACTIVITY_TEMPLATES: readonly string[] = [
   ...LABEL_REMOVED_TEMPLATES,
 ];
 
-// EVERY OTHER ACTIVITY SENTENCE CHATWOOT CAN WRITE (round 9), all 963 of them across every locale
-// and every section but `labels`: assignments, teams, priorities, SLA policies, mutes, Linear
-// events, WhatsApp group updates. A line one of these explains is not a label change, whatever it
-// names — asked FIRST, before any label template is tried.
-//
-// It started as the 58 that collide when their own placeholders hold ORDINARY values ("Ana added
-// SLA policy Gold" reads as a label on an account that has one), and that was not enough, because
-// the placeholder is where somebody ELSE's text goes: an agent display name of "John added vip"
-// renders "Assigned to Gi by John added vip", which the English label template parses as the label
-// `vip`, and a WhatsApp group name reaches a template the same way. Every rendering matches its OWN
-// template, so holding all of them is what makes that class closed.
-//
-// The drift cuts the other way here, and it is the one thing to know when upgrading the fork: a
-// label template that drifts stops matching and the line is missed, while an activity template we
-// do NOT have is a sentence nothing refuses, and a crafted value inside it can be read as a change.
-// Regenerate with `bun scripts/extract-chatwoot-activity-templates.ts <fork>/config/locales` when
-// the fork's activity strings move. The walker takes EVERY leaf under `conversations.activity`, at
-// any depth: reading only one level missed 105 of them, the group member add/remove sentences among
-// them, and one template left out is one sentence nothing refuses (round 11).
+// Every other activity sentence Chatwoot can write, across every locale and every section but
+// `labels`, at any depth. Asked first: a line one of these explains is not a label change, whatever
+// it names. All of them and not only the ones that collide on ordinary values, because a
+// placeholder carries somebody else's text (a display name "John added vip") and every rendering
+// matches its own template. On a fork upgrade, a missing template here is a sentence nothing
+// refuses, while a drifted label template is only a miss. Regenerate with the extraction script.
 const OTHER_ACTIVITY_TEMPLATES: readonly string[] = [
   "%{agent} detuvo el mensaje programado recurrente.",
   "%{assignee_name} %{user_name}-നെ നിയുക്തനാക്കി ",
@@ -1109,25 +1077,12 @@ function pieces(template: string): Piece[] {
     );
 }
 
-// EVERY WAY THIS LINE COULD HAVE BEEN RENDERED FROM THIS TEMPLATE, and not just the first (round
-// 13). A placeholder holds somebody's text, and that text can contain the very words the template
-// puts around it: an agent called "John added Smith" renders "John added Smith added vip" from
-// "%{user_name} added %{labels}", and the earliest split reads the label as "Smith added vip",
-// which no account has. Reading only that split dropped a real change; the caller's catalog is what
-// picks the right one, so it is handed all of them.
-//
-// The walk enumerates OCCURRENCES OF THE LITERALS (there is always one between two placeholders),
-// so it costs the number of times the template's own words appear in the line, not the line's
-// length. A value is never empty: Chatwoot rendered something there.
-// WHAT THE CAP COSTS, AND WHY IT IS THE RIGHT COST (round 18). A value repeating one of the
-// template's own literals more than 32 times exhausts the budget before the walk reaches the last
-// boundary, which for a suffix template is the genuine one — so a crafted actor name carrying
-// " added " 32 times makes a real "… added vip" unreadable. That is a MISS, and a miss is the
-// direction this module fails in on purpose: the line is not shown, no decision is invented, and
-// the guard still holds because `namesGuardedTitle` scans the raw sentence independently of any
-// reading. Raising the number moves the crafted case rather than removing it, and removing the cap
-// makes the walk unbounded on a line somebody else writes. Reached only by a crafted value: no
-// Chatwoot-rendered sentence repeats its own literal.
+// Every way this line could have been rendered from this template, not just the first: a
+// placeholder can contain the template's own words ("John added Smith added vip"), and the caller's
+// catalog picks the right split. The walk enumerates occurrences of the literals, so it costs the
+// number of times they appear, not the line's length. The cap only bites on a crafted value, and
+// the result is a miss (the guard still scans the raw sentence); raising it moves the crafted case,
+// and removing it makes the walk unbounded on a line somebody else writes.
 const SPLITS_MAX = 32;
 
 function readings(template: Piece[], line: string): string[] {
@@ -1172,10 +1127,9 @@ function readings(template: Piece[], line: string): string[] {
       found >= 0;
       found = line.indexOf(next.literal, found + 1)
     ) {
-      // PAST THE OCCURRENCE THIS VALUE ENDED AT, and never back to the literal node with the old
-      // position: that node would rescan and could settle on a LATER occurrence, pairing a value
-      // with a boundary it was not measured against. "Hans hat vip hinzugefügt junk hinzugefügt"
-      // then reads as the label "vip hinzugefügt junk" beside the real "vip" (round 14).
+      // NOTE: past the occurrence this value ended at, never back to the literal node with the old
+      // position: that node could settle on a later occurrence and pair a value with a boundary it
+      // was not measured against.
       walk(
         index + 2,
         found + next.literal.length,
@@ -1199,16 +1153,10 @@ const LABEL_ACTIVITY_PIECES: readonly (readonly [LabelChangeKind, Piece[]])[] =
     ),
   ];
 
-// AND THE SENTENCES A DATA IMPORT WRITES (round 17), all 90 of them across every locale.
-// `DataImports::Intercom::ActivityContentBuilder` is a SECOND producer of activity rows, rendering
-// from `data_imports.<vendor>.activities.*` — a subtree nothing under `conversations.activity`
-// covers — and writing `content_attributes: {}`, so the structural check cannot tell it apart
-// either. Seventeen of these read as a label change: "%{actor} added a participant" is the label
-// `a participant` on an account that has one.
-//
-// Kept apart from the table above because that builder appends the imported part's own body as
-// `"<sentence>: <body>"` (`append_body`), so the refusal has to accept that tail too. The tail is
-// REQUIRED to start with ": ", which is what keeps it from being a wildcard.
+// The sentences a data import writes (`DataImports::Intercom::ActivityContentBuilder`), a second
+// producer of activity rows from `data_imports.<vendor>.activities.*`, with `content_attributes: {}`
+// so the structural check cannot tell them apart. Some read as a label change ("%{actor} added a
+// participant"). Kept apart because the builder appends the imported body as `": <body>"`.
 const IMPORT_ACTIVITY_TEMPLATES: readonly string[] = [
   "%{actor} a ajouté %{target} en tant que participant",
   "%{actor} a ajouté un participant",
@@ -1302,23 +1250,11 @@ const IMPORT_ACTIVITY_TEMPLATES: readonly string[] = [
   "%{actor} usó una respuesta rápida",
 ];
 
-// The refusal side only has to answer WHETHER some split matches, which a regex already does by
-// backtracking, so it stays one anchored pattern per template.
-//
-// `[\s\S]` AND NOT `.`, because the two sides have to read a value the same way (round 15). The
-// label side walks its literals with `indexOf`, which crosses a line break without noticing; `.`
-// stops at one. So a value carrying a newline slipped past the refusal and was then read as a label
-// change by a template that does cross it: "Assigned to Gi by John\n added vip" is an assignment
-// that the English label template parses as the label `vip`, and an account that has a `vip` gets a
-// decision the model never made. A WhatsApp group name reaches `%{value}` the same way, and that one
-// is written by whoever is in the group. The value stays NON-EMPTY on both sides: Chatwoot rendered
-// something into every placeholder, and the walk requires at least one character there too.
-// TRIMMED like the line it is matched against (round 16). The two Malayalam assignment templates
-// end in a space, and the caller compares against `content.trim()`, so an anchored pattern built
-// from the raw template could never match its OWN sentence: "John added vip-നെ നിയുക്തനാക്കി " was
-// refused by nothing and then read by the English label template as the label
-// "vip-നെ നിയുക്തനാക്കി". The table stays as the fork spells it, so the extraction script still
-// reproduces it; the trim happens here, where the comparison does.
+// The refusal side only asks whether some split matches, so it stays one anchored regex per
+// template. `[\s\S]` and not `.`: the label walk uses `indexOf`, which crosses a line break, so both
+// sides must read a value the same way or a newline in a value slips past the refusal. Values stay
+// non-empty on both sides. Trimmed like the line it is matched against (some templates end in a
+// space), while the table stays as the fork spells it so the extraction script reproduces it.
 function refusalPattern(template: string, tail: string): RegExp {
   return new RegExp(
     `^${template
@@ -1344,16 +1280,11 @@ const OTHER_ACTIVITY_PATTERNS: readonly RegExp[] = [
   ),
 ];
 
-// EVERY READING OF THIS LINE AS A LABEL CHANGE, not the first one (round 7). Two locales can render
-// sentences that differ only by a word the other one puts inside `%{labels}`: Portuguese ships both
-// "%{user_name} removeu %{labels}" (pt_BR) and "%{user_name} removeu a %{labels}" (pt), so "Ana
-// removeu a vip" parses as the label "a vip" under one and "vip" under the other. Returning the
-// first match hid every Portuguese removal behind a title no account has. The caller decides which
-// reading is real by asking its own catalog, which is the only thing that can tell them apart.
-//
-// Empty when no template rendered this line. The SEPARATOR is Chatwoot's own `", "`, so a title
-// containing a comma and a space is split here and then fails the caller's catalog check, which is
-// a miss and not a wrong reading.
+// Every reading of this line as a label change, not the first: pt and pt_BR ship sentences that
+// differ by a word the other puts inside `%{labels}` ("Ana removeu a vip"), and only the caller's
+// catalog can tell them apart. Empty when no template rendered this line. The separator is
+// Chatwoot's `", "`, so a title with a comma and space splits and then fails the catalog check (a
+// miss, not a wrong reading).
 export type LabelChangeKind = "added" | "removed";
 
 export interface LabelChangeReading {
@@ -1385,8 +1316,8 @@ export function labelsNarrated(content: string): LabelChangeReading[] {
 }
 
 // Test-only: the templates exactly as this module compiles them, so a test can assert that what is
-// vendored here is what Chatwoot renders — an apostrophe escaped by doubling it in a single-quoted
-// YAML scalar is the shape that reaches here wrong and shows up nowhere else (round 10).
+// vendored here is what Chatwoot renders (a doubled apostrophe in a single-quoted YAML scalar is the
+// shape that goes wrong silently).
 export const __templatesForTest = {
   labels: LABEL_ACTIVITY_TEMPLATES,
   labelsAdded: LABEL_ADDED_TEMPLATES,

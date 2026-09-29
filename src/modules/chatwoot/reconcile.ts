@@ -8,42 +8,24 @@ import { emitOutbound } from "@/modules/webhooks/outbound/service";
 import type { LiveConversationState } from "./normalize";
 import { statusClaimDeferredWins, statusClaimVerdict } from "./status-claim";
 
-// Applies a LIVE conversation snapshot (a REST `GET /conversations/:id`) to the mirror row, under the
-// same ordering rule the webhook mirror uses.
-//
-// Two callers, one reason. A GET is the only way to learn the conversation's own version
-// (`updated_at.to_f`) outside a webhook: the write endpoints render an agent or a status blob and
-// never that field, while `api/v1/conversations/partials/_conversation.json.jbuilder` renders exactly
-// the value the webhook carries. So whoever acts on Chatwoot over REST and then writes this row has
-// to read the conversation back, or the row keeps a mark describing the state BEFORE the action, and
-// an event that was already in flight — carrying a higher version and the pre-action truth — is
-// accepted over it.
-//
-//   * the proactive nudge, which probes live ownership before spending on a model, and
-//   * the console's handoff / return / status buttons (issue #77), whose write is otherwise
-//     unversioned and can be undone by a conversation event Chatwoot was still retrying.
-//
-// The write is conditional in three independent ways, which is what keeps this safe to call after
-// any REST action: a webhook committed between the GET and here is newer (the lastEventAt fence), a
-// field is only written when the version carrying it is at least as new as the mark that orders that
-// field, and each mark only ever moves forward. Nothing is written when nothing differs.
+// Applies a live conversation snapshot (REST `GET /conversations/:id`) to the mirror row, under the
+// webhook mirror's ordering rule. A GET is the only way to learn the conversation's version
+// (`updated_at.to_f`) outside a webhook: the write endpoints never render it. So a caller that acts
+// over REST (the proactive nudge's ownership probe, the console's handoff/return/status buttons) reads
+// back, or the row keeps a pre-action mark and an in-flight event with the pre-action truth wins.
+// The write is conditional three ways: the lastEventAt fence (a webhook committed after the GET is
+// newer), per-field ordering against the mark that orders that field, and forward-only marks.
+// Nothing is written when nothing differs.
 
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
-// What the reconcile did, for a caller that has to act on it. The nudge only needs the write to have
-// happened; the console needs both halves of this:
-//
-//   * `state` is the row AFTER the call, so an optimistic broadcast announces what is stored rather
-//     than what the click intended — the two differ whenever the snapshot lost, or whenever Chatwoot
-//     answered with something other than what was asked for. It carries `lastEventAt` for the same
-//     reason as the rest: the snapshot can bring a message the mirror had not seen, this call
-//     advances the stored recency, and the conversations list SORTS by the value it is handed;
-//   * `outrankedByVersion` says WHY a field did not land. Losing to a stored VERSION is evidence that
-//     something strictly newer is in the row, and the caller must leave it alone. Losing to the coarse
-//     activity comparison is not evidence of anything (see the fence note below), so a caller that
-//     just wrote to Chatwoot and knows what it asked for may still apply its own fields.
+// What the reconcile did. `state` is the row AFTER the call (with `lastEventAt`, since the list sorts
+// by it), so an optimistic broadcast announces what is stored, not what the click intended.
+// `outrankedByVersion` says why a field did not land: losing to a stored version means something
+// strictly newer is in the row and the caller must leave it alone; losing to the coarse activity
+// comparison is no evidence, so a caller that just wrote to Chatwoot may still apply its own fields.
 export interface ReconcileResult {
   state: {
     status: string;
@@ -55,11 +37,9 @@ export interface ReconcileResult {
   applied: boolean;
   outrankedByVersion: boolean;
   /**
-   * The snapshot's status lost to a LOCAL CLAIM rather than to ordering (issue #436): this side has
-   * written a transition the source has not confirmed, so a read taken while it is on the wire is
-   * about the state we already decided to leave. Distinct from `outrankedByVersion`, which is about
-   * something newer at the SOURCE — a caller that trusts the live read on principle still has to
-   * stand down for this one, because the thing it does not know about is ours.
+   * The snapshot's status lost to a local claim rather than to ordering: this side wrote a
+   * transition the source has not confirmed. Distinct from `outrankedByVersion` (something newer at
+   * the source): a caller that trusts the live read still stands down, because what it lacks is ours.
    */
   refusedByStatusClaim: boolean;
 }
@@ -71,14 +51,10 @@ export interface ReconcileFromLiveParams {
   conversationId: number;
   live: LiveConversationState;
   /**
-   * The local status claim this caller is holding, when it is holding one (issue #436). A claim
-   * fences the status against payloads serialized before the write that took it; this read is not
-   * one of those — it is what EARNS that write the version it was made without — so its owner passes
-   * the deadline it wrote and is let through.
-   *
-   * Null for every other caller, and that is the safe default rather than a formality: the nudge's
-   * probe is a plain live read, and a Chatwoot that has not yet committed somebody else's toggle
-   * would answer it with the pre-toggle status and undo the claim through this write.
+   * The local status claim this caller holds, if any. A claim fences the status against payloads
+   * serialized before its write; this read is what earns that write its version, so the owner passes
+   * the deadline it wrote and is let through. Null for every other caller is the safe default: a
+   * plain live read against a Chatwoot that has not committed someone's toggle would undo the claim.
    */
   ownsStatusClaim?: Date | null;
   base: PrismaClient;
@@ -152,20 +128,12 @@ export async function reconcileMirrorFromLive(
         const sec = (d: Date) => Math.floor(d.getTime() / 1000);
         const liveAt = live.lastActivityAt;
         const liveVersion = live.updatedAt;
-        // NOTE: A webhook can commit BETWEEN the caller's GET and this write, which makes the
-        // snapshot in hand the older truth even though it was read later. Two keys can order that,
-        // and they are not interchangeable:
-        //
-        //   * the conversation's own version, which is exact and is what the mirror uses — available
-        //     for a field only when BOTH the snapshot carries one and the mark that orders that field
-        //     already holds one;
-        //   * `last_activity_at`, which is all there is otherwise, and is coarse: one-second
-        //     resolution, unmoved by a status or assignee change, and compared against a stored
-        //     `lastEventAt` that a payload without it may have synthesized from receipt time.
-        //
-        // So the activity comparison is the FALLBACK, per field, not a veto over the whole snapshot:
-        // letting it reject a versioned write would discard the precise key in favour of the coarse
-        // one, and on an inflated `lastEventAt` it would keep discarding it (issue #77, round 1).
+        // NOTE: a webhook can commit between the caller's GET and this write, making the snapshot the
+        // older truth. The conversation's version is exact, used for a field only when both the
+        // snapshot and that field's mark carry one; `last_activity_at` is the coarse fallback (1s
+        // resolution, unmoved by status or assignee, compared against a `lastEventAt` possibly
+        // synthesized from receipt time). Per field, not a veto: letting it reject a versioned write
+        // would discard the precise key, and keep discarding it on an inflated `lastEventAt`.
         const activityStale =
           liveAt !== null &&
           current.lastEventAt !== null &&
@@ -194,15 +162,11 @@ export async function reconcileMirrorFromLive(
             );
         const claimed = verdict !== "apply";
         result.refusedByStatusClaim = claimed;
-        // NOTE: THE OWNER'S ADJUDICATION (issue #436). This read is the version the source gave our
-        // own transition, so it is also the answer to everything the claim had to refuse without one.
-        // A refusal ahead of it was a write committed AFTER ours — a colleague handing the
-        // conversation back while the toggle was on the wire — and the only status a refusal can have
-        // kept is the one the claim replaced, so that is the state that stands. Behind it, the
-        // refusal was a snapshot frozen before our write and goes.
-        //
-        // Forward-only against the status mark as well, for the ordinary reason: an operator's own
-        // change applied INSIDE the claim is newer than both, and nothing here may walk it back.
+        // NOTE: the owner's adjudication. This read is the version the source gave our transition. A
+        // refusal ahead of it was a write committed after ours (a colleague handing the conversation
+        // back mid-toggle), and the only status it can have kept is the one the claim replaced, so
+        // that stands; a refusal behind it was a pre-write snapshot and goes. Forward-only against the
+        // status mark too: an operator's change applied inside the claim is newer than both.
         const deferredAt = current.statusClaimRefusedAt;
         const deferredStatus = current.statusClaimFrom;
         const deferredWins =
@@ -215,16 +179,10 @@ export async function reconcileMirrorFromLive(
         const statusRanked = orderedBy(current.chatwootStatusAt);
         const statusOrdered = !claimed && !deferredWins && statusRanked;
         const assigneeOrdered = orderedBy(current.chatwootAssigneeAt);
-        // NOTE: A field the snapshot LOST while a version could rank it — the row holds a strictly
-        // newer write, which a caller must not paper over.
-        //
-        // The VERSION comparison and not `statusOrdered`, so a claim cannot be reported as one. The
-        // two answers are read for opposite purposes: this one tells the console its click was
-        // beaten by something newer and it must stand down, and a claim is the exact opposite
-        // situation — an unconfirmed local write, which a fresh command outranks by being newer than
-        // it. Folded in, the console would return early on `outrankedByVersion` and its own
-        // unversioned fallback — the write that makes the operator's action visible at all — would
-        // never run.
+        // NOTE: a field the snapshot lost while a version could rank it: the row holds a strictly
+        // newer write. The version comparison and not `statusOrdered`, so a claim is not reported as
+        // one: folded in, the console would return early and its own unversioned fallback (the write
+        // that makes the operator's action visible) would never run.
         result.outrankedByVersion =
           liveVersion !== null &&
           ((!statusRanked && current.chatwootStatusAt !== null) ||
@@ -251,11 +209,9 @@ export async function reconcileMirrorFromLive(
             ? live.status
             : null;
         const nextStatusAt = deferredWins ? deferredAt : liveVersion;
-        // NOTE: The assignee this call leaves behind, computed once for the same reason as the status
-        // above: the row, the answer the caller broadcasts and the durable event have to agree about
-        // who holds this conversation. They can differ from the stored trio on the deferred path too
-        // — the refused status event and the owner's GET are two different readings, and the GET may
-        // have seen an assignment the other one did not carry (issue #468, round 11).
+        // NOTE: the assignee this call leaves behind, computed once so the row, the broadcast and the
+        // durable event agree. On the deferred path it can differ from the stored trio: the owner's
+        // GET may have seen an assignment the refused status event did not carry.
         const nextAssigneeId = assigneeOrdered
           ? live.assigneeId
           : current.assigneeId;
@@ -269,9 +225,9 @@ export async function reconcileMirrorFromLive(
           ...(nextStatus !== null && nextStatus !== current.status
             ? { status: nextStatus }
             : {}),
-          // The claim's own bookkeeping, written by its owner and nobody else: the version the source
-          // gave our transition, and the end of whatever this call just adjudicated. Both belong to
-          // this read — it is the only one that can produce either. ./status-claim.ts.
+          // NOTE: the claim's bookkeeping, written only by its owner: the version the source gave our
+          // transition, and the end of what this call adjudicated. Only this read can produce
+          // either. ./status-claim.ts.
           ...(ours && liveVersion !== null
             ? { statusClaimStampedAt: liveVersion }
             : {}),
@@ -330,12 +286,10 @@ export async function reconcileMirrorFromLive(
         };
         if (Object.keys(data).length === 0) return;
         await db.conversation.update({ where, data });
-        // NOTE: THE DEFERRED TRANSITION IS ANNOUNCED HERE, because nothing else will. The webhook that
-        // carried it was acknowledged with its status refused, so the mirror emitted nothing and the
-        // consoles were last told `open` by the claim itself; a status the database alone knows about
-        // leaves every open page and every outbound consumer on the wrong state until some later
-        // event happens to correct it (issue #468, round 9). Every OTHER write on this path either
-        // agrees with what the source already announced or is announced by its own caller.
+        // NOTE: the deferred transition is announced here because nothing else will: its webhook was
+        // acknowledged with the status refused, so the mirror emitted nothing and consoles would stay
+        // on the claim's `open`. Every other write here agrees with what the source announced or is
+        // announced by its caller.
         if (
           deferredWins &&
           nextStatus !== null &&

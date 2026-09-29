@@ -3,6 +3,7 @@
 import type { FileCounts } from "@/tests/utils/comment-blocks";
 
 export const COMMENT_LEDGER: Record<string, FileCounts> = {
+  "src/api/features/branding/branding.admin.service.ts": [0, 2],
   "src/api/v1/agents.controller.ts": [6, 0],
   "src/client/pages/agents/AgentEditorPage.tsx": [28, 12],
   "src/client/pages/agents/ToolGrantsEditor.tsx": [6, 1],

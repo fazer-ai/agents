@@ -12,9 +12,9 @@ import { asSuperAdminOn, runScopedOn, type TenantContext } from "@/lib/tenancy";
 // (create/update/delete) lives in tenants.admin.service; the schemas/types stay here so callers keep
 // a stable surface.
 
-// NOTE: these AppError translationKeys are localized centrally in `onError` (not via a literal
-// translate() call), so they are declared here for the i18n extractor (keepRemoved: false).
-// t/translate magic comments — keep defaults in sync with src/api/locales/*.json:
+// NOTE: these AppError translationKeys are localized centrally in `onError`, not via a literal
+// `translate()` call, so they are declared here for the i18n extractor (keepRemoved: false).
+// t/translate magic comments: keep defaults in sync with src/api/locales/*.json:
 // translate('errors.tenantSlugInUse', 'This slug is already in use')
 // translate('errors.tenantNotFound', 'Tenant not found')
 // translate('errors.noUpdatableFields', 'No updatable fields provided')

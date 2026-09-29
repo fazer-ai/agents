@@ -336,7 +336,7 @@ const config = {
   // NOTE: When true (the default), the first-run /setup flow requires the token
   // printed in the server log. Disable only on trusted networks.
   setupTokenRequired: SETUP_TOKEN_REQUIRED !== "false",
-  // Global cap on concurrent agent model calls — the LLM round-trip in the LangGraph agent node
+  // Global cap on concurrent agent model calls: the LLM round-trip in the LangGraph agent node
   // (graph.ts) plus the opt-in TTS-normalize call. Conversations drain fully in parallel (the debounce
   // worker does not serialize them); this is the ONLY throttle on model calls, applied process-wide
   // across every entrypoint (debounce/webhook/nudge/playground) so a burst does not hammer the

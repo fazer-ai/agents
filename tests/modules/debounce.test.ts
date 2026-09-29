@@ -5163,14 +5163,14 @@ describe.skipIf(!dbUp)("debounce", () => {
   });
 
   // ── A balloon that fails mid-reply ────────────────────────────────────────────
-  // A throw out of `flushDebounceJob` leaves the watermark unadvanced and the WORKER retries (Chatwoot
-  // does not re-send), answering the burst again: the first balloon twice, every side-effecting tool
-  // re-run. So what already landed decides: the turn reports, the watermark moves, no retry is armed.
+  // A throw out of `flushDebounceJob` leaves the watermark unadvanced and the WORKER retries: the first
+  // balloon twice, every side-effecting tool re-run. So what already landed decides: the turn reports,
+  // the watermark moves, no retry is armed. Tested at the flush, not as a unit: the unit cannot see the
+  // watermark, and the watermark is the whole mechanism.
 
-  // Personifies the fork on the three properties the reconciliation depends on: it ASSIGNS an id to
-  // what it accepts, it STORES the `content_attributes` the create carried, and it honours `before`
-  // when paging. A stub missing any of them sends every reply here down the "cannot prove delivery"
-  // road, which is green for the wrong reason.
+  // Personifies the fork on what the reconciliation depends on: it ASSIGNS an id to what it accepts,
+  // STORES the create's `content_attributes` and honours `before` when paging. A stub missing any of
+  // them sends every reply down the "cannot prove delivery" road, green for the wrong reason.
   function makeFailingStub(opts: {
     // The conversation as it stands before the reply: the customer's own messages, INCOMING like
     // the `page` helper writes them, because this same read is what the flush coalesces from.

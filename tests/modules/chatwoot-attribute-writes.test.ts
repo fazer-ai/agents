@@ -15,9 +15,8 @@ const client = (fetchImpl: typeof fetch) =>
 
 describe("custom attribute writes against endpoints that replace", () => {
   test("a conversation write keeps the keys already in the bag", async () => {
-    // The deterministic half of issue #112, and the one no burst is needed to see: the tool sends
-    // ONE key, the endpoint assigns the whole hash, so every other attribute on the conversation is
-    // erased — including ones written turns earlier.
+    // NOTE: the deterministic half, visible without a burst: the tool sends ONE key and the
+    // endpoint assigns the whole hash, so a plain write would erase every other attribute.
     const cw = fakeChatwootAttributeStore(5, {
       conversations: { 61: { origem: "Instagram" } },
     });
@@ -79,10 +78,9 @@ describe("custom attribute writes against endpoints that replace", () => {
   });
 
   test("the conversation read uses the admin token, the write the bot token", async () => {
-    // `conversations#show` only became bot-accessible in Chatwoot on 2026-06-05 (upstream #14655),
-    // so a bot-token read 401s on any older instance and takes the whole write down with it. The
-    // write stays on the bot token: `custom_attributes` has always been in the bot allowlist, and
-    // the attribute must be attributed to the persona.
+    // NOTE: `conversations#show` is bot-accessible only in Chatwoot builds from 2026-06-05 on, so a
+    // bot-token read 401s on older instances and takes the write down with it. The write stays on
+    // the bot token (`custom_attributes` is in the bot allowlist) so it is attributed to the persona.
     const cw = fakeChatwootAttributeStore(5);
     const c = await client(cw.fetchImpl);
     await c.setConversationCustomAttributes(61, { produto: "cadeira" });

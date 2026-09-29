@@ -13,13 +13,10 @@ import {
 import { type ClaimedJob, jobRetired } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// DB-backed mirror of issue #22: the appointment identity block must reach the system prompt after
-// the last reminder fired, and a cancelled appointment must never resurface.
-//
-// And of issue #376: the block, and the follow-up pause behind it, follow the RECORD and not the
-// reminder jobs. The two configurations that used to write no job at all — reminders switched off,
-// and a booking sooner than the smallest offset — have a test each below, and both fail against a
-// build where booking and arming are the same call.
+// The appointment identity block must reach the system prompt after the last reminder fired, and a
+// cancelled appointment must never resurface. The block, and the follow-up pause behind it, follow
+// the RECORD and not the reminder jobs: the two configurations that write no job (reminders switched
+// off, a booking sooner than the smallest offset) have a test each below.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -165,8 +162,7 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     });
     // NOTE: suDb, not appDb. The app connection is the RLS-fenced runtime role, and a statement
     // that does not go through runScopedOn carries no `app.tenant_id`, so it matches ZERO rows and
-    // reports success. Written on appDb this DELETE removed nothing, and the test then proved the
-    // prompt block survives reminder rows that were still sitting there — not what it says.
+    // reports success: the DELETE would remove nothing and the test would prove nothing.
     await suDb.$executeRawUnsafe(
       `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId}`,
     );
@@ -179,10 +175,9 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(prompt).not.toContain("calendar_update_event");
   });
 
-  // (#685) O bloco enuncia o instante corrente, e ele tem que ser o MESMO que as variáveis de prompt
-  // renderizam: duas leituras do relógio de um turno discordando dentro de um prompt é o defeito que
-  // esta issue trata, não o conserto. Aqui as duas atravessam o caminho real (`loadAgentConfig`), com
-  // o `{{data_hora_atual}}` do operador ao lado do bloco.
+  // O bloco enuncia o instante corrente, e ele tem que ser o MESMO que as variáveis de prompt
+  // renderizam: duas leituras do relógio de um turno não podem discordar dentro de um prompt. Aqui as
+  // duas atravessam o caminho real (`loadAgentConfig`), com o `{{data_hora_atual}}` ao lado do bloco.
   test("the block's clock is the same one the prompt variables render", async () => {
     await seedConversation(140);
     await appointmentBooked({
@@ -227,13 +222,10 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     }
   });
 
-  // E a cerca acima passa com o relógio REAL nas duas pontas, que é justamente o caso em que trocar
-  // `promptOpts.now` por um `new Date()` próprio não muda nada: sem simulação os dois valores
-  // coincidem e a meia hora de arredondamento engole a diferença. Quem discrimina é o playground, a
-  // ferramenta com que o operador valida este conserto: com a simulação de tempo ligada, o bloco tem
-  // que responder a PAREDE simulada, senão o operador vê as variáveis em 23:00 e o bloco no relógio
-  // do servidor, que é o defeito desta issue dentro de um único prompt. O sobrevivente de mutação que
-  // pediu este teste veio do verificador.
+  // A cerca acima passa com o relógio REAL nas duas pontas, onde trocar `promptOpts.now` por um
+  // `new Date()` próprio não muda nada (o arredondamento de meia hora engole a diferença). Quem
+  // discrimina é o playground com a simulação de tempo ligada: o bloco tem que responder à PAREDE
+  // simulada, senão o operador vê as variáveis em 23:00 e o bloco no relógio do servidor.
   test("the playground's simulated clock reaches the block, not just the variables", async () => {
     await seedConversation(141);
     await appointmentBooked({
@@ -273,10 +265,9 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
   });
 
   test("a record-only booking keeps the appointment AND the reminders already armed", async () => {
-    // Round 16 made an observation pass `reminders: null`, which in this unit is not "arm nothing":
-    // the retire runs unconditionally before that check, so it means "the policy was switched off,
-    // cancel what is armed". An observer restating the responder's appointment would have taken the
-    // responder's reminders down with it. `recordOnly` is the third answer: touch no reminder.
+    // NOTE: `reminders: null` is not "arm nothing" here: the retire runs unconditionally before
+    // that check, so it means "cancel what is armed", and an observer restating the responder's
+    // appointment would take its reminders down. `recordOnly` is the third answer: touch no reminder.
     await seedConversation(120);
     const args = {
       tenantId,
@@ -320,7 +311,7 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
   test("a record-only booking that MOVED retires the stale reminders, and arms none", async () => {
     // Preserving is right for a re-statement of the same booking and wrong for one that moved: a
     // reminder carries the time it was armed for, and for a non-Google provider the handler reads
-    // that payload rather than the record — so a preserved one announces the obsolete time.
+    // that payload rather than the record, so a preserved one announces the obsolete time.
     await seedConversation(121);
     const args = {
       tenantId,
@@ -389,8 +380,8 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(prompt).not.toContain("## Agendamentos deste atendimento");
   });
 
-  // NOTE: hasLiveAppointment is the follow-up suppression predicate (issue #39), reading the same
-  // record the block above does. Covered here because this file already owns the fixtures.
+  // hasLiveAppointment is the follow-up suppression predicate, reading the same record the block
+  // above does. Covered here because this file already owns the fixtures.
   test("hasLiveAppointment: true while the start is ahead, false once cancelled", async () => {
     await seedConversation(104);
     await appointmentBooked({
@@ -412,9 +403,9 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     );
   });
 
-  // (#376) The two configurations that used to write no scheduler row, and so left the platform with
-  // no appointment at all. Both assert the RECORD's consequences, not the row count: the pause
-  // predicate and the prompt block.
+  // The two configurations that write no scheduler row must still leave the platform with an
+  // appointment. Both assert the RECORD's consequences, not the row count: the pause predicate and
+  // the prompt block.
   test("(#376) an appointment booked with reminders switched off still stands", async () => {
     await seedConversation(106);
     const res = await appointmentBooked({
@@ -444,8 +435,8 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
       eventId: "ev_soon",
       calendarId: "primary",
       credentialRef: null,
-      // 30 minutes out: both default offsets are already behind us, so computeReminderJobs yields
-      // nothing to enqueue. That is correct for a JOB and was fatal for the record.
+      // NOTE: 30 minutes out: both default offsets are already behind us, so computeReminderJobs
+      // yields nothing to enqueue. That is correct for a JOB and must not cost the record.
       startISO: inHours(0.5),
       summary: "Encaixe",
       calendarLabel: null,
@@ -453,10 +444,9 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
       base: appDb,
     });
     expect(res).toEqual({ record: "recorded", remindersArmed: 0 });
-    // Scoped, and by THIS appointment's dedupe prefix. Two ways to read zero here are wrong: an
-    // unscoped count on the app connection answers zero under RLS whatever is in the table (the
-    // assertion would hold with the fix reverted), and a tenant-wide count is answered by the rows
-    // the tests above left behind.
+    // NOTE: scoped, and by THIS appointment's dedupe prefix: an unscoped count on the app
+    // connection answers zero under RLS whatever is in the table, and a tenant-wide count is
+    // answered by the rows the tests above left behind.
     expect(
       await runScopedOn(appDb, sysCtx(), (db) =>
         db.schedulerJob.count({
@@ -485,7 +475,7 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(prompt).toContain('event_id="ev_soon"');
   });
 
-  // (#376) A reschedule is cancel-then-book on the SAME id, which is what `calendar_update_event`
+  // A reschedule is cancel-then-book on the SAME id, which is what `calendar_update_event`
   // does when the start changes. If the re-book did not clear the tombstone the appointment would
   // vanish from the platform at the exact moment the customer moved it, taking the pause and the
   // prompt block with it.
@@ -530,9 +520,8 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(events[0]?.startISO).toBe(movedTo);
   });
 
-  // (#376) The order inside appointmentBooked is load-bearing in two directions, and this is the
-  // one a concurrency test cannot reach: arming fails, and the appointment still has to be known,
-  // because "the platform forgot the appointment" is the entire defect this unit exists for.
+  // The order inside appointmentBooked is load-bearing in two directions, and this is the one a
+  // concurrency test cannot reach: arming fails, and the appointment still has to be known.
   test("(#376) arming that throws still leaves the appointment recorded, and still reports", async () => {
     await seedConversation(110);
     let thrown: unknown;
@@ -595,10 +584,10 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     );
   });
 
-  // (#352) An id is only unique WITHIN the system that issued it, and a tool definition can now
-  // declare bookings from a system that is not Google. Two systems that both count from 1 land on
-  // the same id, and while the record's key was (tenant, external id) alone the second booking
-  // MOVED the first one and a cancel on either retired both.
+  // An id is only unique WITHIN the system that issued it, and a tool definition can declare
+  // bookings from a system that is not Google. Two systems that both count from 1 land on the same
+  // id, so a key of (tenant, external id) alone would let the second booking MOVE the first one and a
+  // cancel on either retire both.
   test("(#352) two systems may issue the same id without touching each other", async () => {
     await seedConversation(111);
     const shared = "42";
@@ -666,11 +655,10 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(await hasLiveAppointment(tenantId, threadOf(111), appDb)).toBe(true);
   });
 
-  // (#352, and the reason the provider is a COLUMN.) The block's Google instruction is written into
-  // the system prompt of a real turn, and the same block can hold appointments that answer to it and
-  // appointments that do not. Measured on the prompt `loadAgentConfig` actually produces, with the
-  // Calendar write tools genuinely granted — the configuration where the model was previously told
-  // to cancel a Feegow booking with calendar_cancel_event.
+  // The reason the provider is a COLUMN: the same block can hold appointments that answer to the
+  // Google instruction and appointments that do not. Asserted on the prompt `loadAgentConfig`
+  // produces, with the Calendar write tools granted, so the model is never told to cancel a Feegow
+  // booking with calendar_cancel_event.
   test("(#352) the real prompt scopes the Google instruction to Google bookings", async () => {
     await seedConversation(113);
     const instance = await suDb.integrationInstance.create({
@@ -730,12 +718,9 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
   });
 
   // A booking RE-STATED at an earlier time. Arming only writes the offsets whose reminder time is
-  // still ahead, so the offsets the new start outran keep their old row: same dedupe key, old run
-  // time, old start in the payload. Measured on the un-fixed build: a booking 30h out with [24, 1],
-  // re-stated 2h out, left `reminder:<id>:24` PENDING to fire FOUR HOURS AFTER the appointment had
-  // already happened, describing the wrong day — and nothing downstream catches it, because
-  // `reminderAlreadyStarted` reads the payload's own stale start and a booking with no Google
-  // credential has no live event to be corrected against.
+  // still ahead, so an offset the new start outran keeps its old row (old run time, old start in the
+  // payload) unless it is retired, and would fire after the appointment describing the wrong day.
+  // Nothing downstream catches it: `reminderAlreadyStarted` reads the payload's own stale start.
   test("(#352) re-stating a booking earlier retires the reminders it outran", async () => {
     await seedConversation(114);
     const book = (hoursOut: number) =>
@@ -832,16 +817,15 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
         }),
       ),
     ).toBe(0);
-    // The appointment itself still stands — retiring the reminders is not cancelling the booking.
+    // NOTE: the appointment itself still stands: retiring the reminders is not cancelling the
+    // booking.
     expect(await hasLiveAppointment(tenantId, threadOf(115), appDb)).toBe(true);
   });
 
-  // The OTHER edge of the same unconditional retire (#352, round 5). A start the platform cannot
-  // read is not a re-statement: `recordAppointment` refuses to move the record on it and writes
-  // nothing, so the previous booking goes on standing at its old start. Retiring on that path would
-  // take its reminders with it and arm nothing back, leaving a live appointment the customer is
-  // never reminded of — and the only signal is the unreadable-start warning, which says nothing
-  // about reminders.
+  // The OTHER edge of the same unconditional retire. A start the platform cannot read is not a
+  // re-statement: `recordAppointment` writes nothing, so the previous booking stands at its old
+  // start, and retiring on that path would leave a live appointment the customer is never reminded
+  // of, with only an unreadable-start warning that says nothing about reminders.
   test("(#352) an unreadable re-statement leaves the standing booking's reminders alone", async () => {
     await seedConversation(117);
     const book = (startISO: string) =>
@@ -884,13 +868,10 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(await hasLiveAppointment(tenantId, threadOf(117), appDb)).toBe(true);
   });
 
-  // (#352, round 10) The retire has to survive the re-arm that FOLLOWS it. `isRetired` asks two
-  // questions — is there a tombstone, and did the claim token move — and the re-arm answers the first
-  // one away: enqueueJob's upsert replaces the payload wholesale, so a row a handler had already
-  // CLAIMED comes back with no stamp. Without the token moving too, that handler goes on to send a
-  // reminder built from its claim-time payload, announcing the start the re-statement just replaced.
-  // The very defect the retire exists to prevent, through the in-flight door instead of a leftover
-  // PENDING row.
+  // The retire has to survive the re-arm that FOLLOWS it. `isRetired` asks two questions (is there a
+  // tombstone, did the claim token move), and enqueueJob's upsert replaces the payload wholesale, so
+  // a row a handler already CLAIMED comes back with no stamp. Without the token moving too, that
+  // handler sends a reminder built from its claim-time payload, announcing the replaced start.
   test("(#352) a re-statement retires the reminder a handler is already running", async () => {
     await seedConversation(119);
     const book = (hoursOut: number) =>
@@ -937,8 +918,8 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
       claimSeq: before.claimSeq,
     };
 
-    // The customer moves the appointment while that handler is mid-run. 36h out keeps the 24h offset
-    // alive, so the row is re-armed rather than left retired — which is what clears the tombstone.
+    // NOTE: the customer moves the appointment while that handler is mid-run. 36h out keeps the 24h offset
+    // alive, so the row is re-armed rather than left retired, which is what clears the tombstone.
     await book(36);
     const after = await readRow();
     expect(
@@ -949,7 +930,7 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect(await jobRetired(claimed, appDb)).toBe(true);
   });
 
-  // (#352, round 5) "primary" is a real Google calendar. A booking that lives in the operator's own
+  // "primary" is a real Google calendar. A booking that lives in the operator's own
   // system has no calendar at all, and the payload is what the nudge's fenced data is built from, so
   // a fill-in here reaches the model as `calendar_id=primary` for an appointment Google never saw.
   // The context block already answers this question by emitting no calendar_id for those bookings.
@@ -981,8 +962,8 @@ describe.skipIf(!dbUp)("per-turn appointment context (issue #22)", () => {
     expect((row?.payload as { calendarId?: unknown } | null)?.calendarId).toBe(
       null,
     );
-    // (#352, round 8) And the payload says WHICH system, because two of them may issue the same id:
-    // the reminder turn holds `42` and, without this, no way to name the system that issued it.
+    // NOTE: the payload says WHICH system, because two of them may issue the same id: the reminder
+    // turn holds `42` and, without this, no way to name the system that issued it.
     expect((row?.payload as { provider?: unknown } | null)?.provider).toBe(
       "feegow",
     );

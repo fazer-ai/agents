@@ -221,9 +221,8 @@ describe("invalidToolPreconditions", () => {
     ]);
   });
 
-  // Round 5 of PR #378: the key was not checked at all, only the value. Every case below parses as a
-  // perfectly good condition and names something the runtime will never match, so the API answered
-  // 200 on a rule that guards nothing and the tool the operator meant to fence kept running.
+  // Every case below parses as a perfectly good condition and names something the runtime never
+  // matches, so accepting the KEY unchecked answers 200 on a rule that guards nothing.
   describe("the KEY is a tool name, and it is checked", () => {
     const good = { kind: "attribute", scope: "contact", key: "cpf" } as const;
 
@@ -328,7 +327,7 @@ describe("assertSettingsToolPreconditions", () => {
   });
 });
 
-// Findings from review round 1 of PR #378. Each one is a way the rule was weaker than it read.
+// Each case is a way the rule would be weaker than it reads.
 describe("round 1: a condition that would be silently weaker is refused", () => {
   test.each([
     ["a number", 42],
@@ -339,8 +338,8 @@ describe("round 1: a condition that would be silently weaker is refused", () => 
   ])(
     "refuses the whole condition when `equals` is %s, instead of dropping it",
     (_label, equals) => {
-      // Dropping `equals` would turn "the attribute must be X" into "the attribute must exist",
-      // which is a weaker rule than the operator wrote — and weaker in silence.
+      // NOTE: dropping `equals` would turn "the attribute must be X" into "the attribute must
+      // exist", which is a weaker rule than the operator wrote, and weaker in silence.
       const settings = {
         toolPreconditions: {
           t: { kind: "attribute", scope: "contact", key: "k", equals },

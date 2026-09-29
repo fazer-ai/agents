@@ -11,12 +11,10 @@ import { flowLogRows } from "../utils/flowlog";
 
 // The webhook's own ownership gate, and the line it leaves behind.
 //
-// Every message that arrives on a conversation the bot no longer owns takes this exit, and until
-// issue #271 it produced one process log line that named no reason and nothing the operator's console
-// could show. The customer keeps writing, the bot stays silent, and the trail an investigation reads
-// is empty — which is how the ack escalation was first read as a human takeover.
-//
-// The effect asserted here is the row in `execution_logs`, because that is what the console reads.
+// Every message that arrives on a conversation the bot no longer owns takes this exit: the customer
+// keeps writing and the bot stays silent, so the exit has to leave a reason an investigation can
+// read. The effect asserted here is the row in `execution_logs`, because that is what the console
+// reads (a process log line is not).
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -249,13 +247,11 @@ describe.skipIf(!dbUp)("the webhook gate leaves a trail", () => {
     });
   });
 
-  // The line has to name the reading the GATE decided on, and after #295 that is no longer the one
-  // the payload proposed: a payload is a snapshot of an earlier instant and the mirror row is what
-  // this event settled on, so the gate reads the mirror's status. `describeClosedGate` states the
-  // same rule from its own side — the status rides along instead of being re-read, because a second
-  // query would answer about a different moment — and a proposal is a different moment just as
-  // surely. Reported from the payload, a conversation the operator had already resolved was recorded
-  // as `ownership_lost` at `pending`, which sends an investigation after a missing assignee.
+  // The line has to name the reading the GATE decided on, which is the mirror's status, not the
+  // payload's: a payload is a snapshot of an earlier instant. `describeClosedGate` carries the status
+  // along instead of re-reading it, for the same reason. Reported from the payload, a conversation
+  // the operator already resolved would read as `ownership_lost` at `pending`, sending an
+  // investigation after a missing assignee.
   test("the status reported is the one the gate closed on, not the one proposed", async () => {
     const T = Math.floor(Date.now() / 1000);
     // One delivery to put the conversation in the mirror, then the resolve written onto the row with
@@ -271,14 +267,14 @@ describe.skipIf(!dbUp)("the webhook gate leaves a trail", () => {
       where: { tenantId, chatwootConversationId: 9107 },
       data: { status: "resolved", chatwootStatusAt: T + 3600 },
     });
-    // The stranded message, serialized a minute BEFORE that resolve. Behind the status mark on its
-    // own clock, so the reopen exception refuses it and the mirror stays `resolved`.
+    // NOTE: the stranded message, serialized a minute BEFORE that resolve. Behind the status mark
+    // on its own clock, so the reopen exception refuses it and the mirror stays `resolved`.
     //
     // The spy is taken HERE, around the one delivery whose line this is about, and restored in a
     // `finally`. `logger` is a module singleton shared by every test in the process, so a spy left
-    // standing is seen by the next file's own `spyOn` — measured on CI, where it made a neighbouring
-    // suite read this file's line instead of its own. `mockRestore` also clears `mock.calls` in Bun,
-    // so the lines are copied out first.
+    // standing is seen by the next file's own `spyOn`, and a neighbouring suite would read this
+    // file's line instead of its own. `mockRestore` also clears `mock.calls` in Bun, so the lines are
+    // copied out first.
     const info = spyOn(logger, "info");
     let lines: unknown[][] = [];
     try {

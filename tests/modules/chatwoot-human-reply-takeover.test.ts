@@ -23,17 +23,14 @@ import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogRows } from "../utils/flowlog";
 
-// A PERSON ANSWERED THE CUSTOMER, and the agent has to step off the conversation (issue #430).
+// A PERSON ANSWERED THE CUSTOMER, and the agent has to step off the conversation.
 //
-// The effect asserted is the one the issue is about: after a human reply, the NEXT customer message
-// does not drive a turn. It is asserted end to end rather than by watching the toggle alone, because
-// the toggle is only half the mechanism — Chatwoot then serializes the new status onto the next
-// message payload and the mirror's reopen exception is what has to believe it. A test that stopped
-// at "we called toggle_status" would pass with that half broken.
+// Asserted end to end: after a human reply, the NEXT customer message does not drive a turn. The
+// toggle is only half the mechanism; Chatwoot then serializes the new status onto the next message
+// payload and the mirror's reopen exception has to believe it.
 //
 // The Chatwoot side is a stub that BEHAVES: it holds the conversation status, the toggle moves it,
-// and the fixture reads it back. Hardcoding "open" into the second payload would be the test writing
-// the answer it is checking.
+// and the fixture reads it back, so no payload hardcodes the answer being checked.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -86,9 +83,9 @@ const failingToggles = new Set<number>();
 // Who holds each conversation in the stub's Chatwoot, when it is not our own bot.
 const liveHolder = new Map<number, number>();
 // The newest message id the stub's Chatwoot has for a conversation, which is what the REST show
-// renders as `messages` and what a console write ordered by the source's sequence stamps (issue
-// #469). Driven by the fixture the same way `liveStatus` is: the deliveries below move it, so the
-// mark the console reads is one the test never writes by hand.
+// renders as `messages` and what a console write ordered by the source's sequence stamps. Driven by
+// the fixture the same way `liveStatus` is: the deliveries below move it, so the mark the console
+// reads is one the test never writes by hand.
 const liveLatestMessageId = new Map<number, number>();
 // Work that runs while the client is being built, which is where the real round trip is: building a
 // client resolves the base URL's host. It is the window a person can claim, resolve or reassign the
@@ -180,7 +177,7 @@ describe("the ownership fence's projection", () => {
         // who holds it — the pair, since User and AgentBot are separate id namespaces
         "assigneeId",
         "assigneeType",
-        // where the last unversioned console write stands in the source's sequence (issue #469)
+        // NOTE: where the last unversioned console write stands in the source's sequence
         "consoleWriteAtMessageId",
         // the status version, which orders this decision against a later one
         "chatwootStatusAt",
@@ -210,10 +207,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
         tenantId,
         name: "Atendente",
         systemPrompt: "Você é prestativa.",
-        // A RUNNABLE model configuration, which the hand-back asks for since issue #495 review
-        // round 6: an unconfigured agent cannot answer, so it cannot be handed a conversation.
-        // `openai-compatible` is the one provider that authenticates by URL, so it needs no key
-        // (round 15).
+        // NOTE: a RUNNABLE model configuration, which the hand-back asks for: an unconfigured
+        // agent cannot answer, so it cannot be handed a conversation. `openai-compatible`
+        // authenticates by URL, so it needs no key.
         modelConfig: {
           provider: "openai-compatible",
           model: "local",
@@ -307,12 +303,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   // The conversation as Chatwoot would serialize it right now: bot-owned, and holding whatever
   // status the stub currently has.
   //
-  // ONE clock behind both timestamps, and that is not fixture hygiene, it is the thing under test.
-  // `last_activity_at` is whole seconds and `updated_at` carries a fraction that runs a little ahead
-  // of the message it accompanies; the reopen ordering compares them TRUNCATED for exactly that
-  // reason (state-order.ts). Driving them from two independent clocks makes `updated_at` outrun
-  // `last_activity_at` by whole seconds, which no real burst does, and the reopen is then refused for
-  // a reason the source never produces.
+  // ONE clock behind both timestamps: `last_activity_at` is whole seconds and `updated_at` runs a
+  // fraction ahead, so the reopen ordering compares them TRUNCATED (src/modules/chatwoot/state-order.ts).
+  // Two clocks would let `updated_at` outrun it by whole seconds, which no real burst does.
   function conversation(convId: number, inboxId = INBOX_ID, holder = OUR_BOT) {
     stamp += 1;
     return {
@@ -331,8 +324,8 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     };
   }
 
-  // Whether a DIRECT turn ran for this delivery, which is the effect the issue is about — not "was
-  // the gate closed", which is one inference away from it. `onDirectTurn` fires on both the outcome
+  // Whether a DIRECT turn ran for this delivery, the effect under test, and not "was the gate
+  // closed", which is one inference away from it. `onDirectTurn` fires on both the outcome
   // and the throw, so a turn that starts and dies against the fixture's absent model key still
   // counts as having run.
   let turnsRan = 0;
@@ -421,7 +414,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     })) as "processed" | "skipped";
   }
 
-  // The shape the fork stores for a reply typed on the paired phone, measured off the wire:
+  // The shape the fork stores for a reply typed on the paired phone, as it arrives on the wire:
   // outgoing, sender-less, and marked with external_sender_name.
   const deviceReply = (text: string) => ({
     content: text,
@@ -462,12 +455,10 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     });
   }
 
-  // The takeover's OWN lines, and only those. The `handoff` stage is shared with the gate's existing
-  // trail (issue #271), which writes one line per customer message the bot did not answer — so after
-  // a takeover the next customer message legitimately adds a second row saying `ownership_lost`. It
-  // is a different statement about a different moment, and counting it here would make this assertion
-  // depend on how many messages the fixture happens to send afterwards. `via` is the discriminator:
-  // only this path writes it.
+  // The takeover's OWN lines, and only those. The `handoff` stage is shared with the gate's trail,
+  // which writes an `ownership_lost` line per customer message the bot did not answer; counting those
+  // would tie this assertion to how many messages the fixture sends. `via` is the discriminator: only
+  // this path writes it.
   async function takeoverRows(convId: number, waitMs = POLL_DEADLINE_MS) {
     const conv = await convRow(convId);
     if (!conv) return [];
@@ -549,8 +540,8 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect((await takeoverRows(conv)).length).toBe(1);
   });
 
-  // The three shapes Chatwoot itself produces that are outgoing and sender-less. Measured on a live
-  // fork: an automation rule, a scheduled message whose author is not a User, and a CSAT survey all
+  // The three shapes Chatwoot itself produces that are outgoing and sender-less, as the fork sends
+  // them: an automation rule, a scheduled message whose author is not a User, and a CSAT survey all
   // reach the bot exactly like a device reply does, minus the marker. Treating any of them as a
   // person would silence the agent on a conversation nobody is holding.
   test("an automation, a scheduled message and a CSAT survey are not a person", async () => {
@@ -622,10 +613,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect(toggles(conv).length).toBe(0);
   });
 
-  // Issue #187's rule, applied to the route it could not see. Without this the memory of the
-  // attendance is a conversation in which only the customer spoke — measured in production, where
-  // the agent's own private note said "the amount is not in the available context" about a price the
-  // attendant had stated on the phone three messages earlier.
+  // A human reply joins the contact's memory as the attendant, including one sent from the phone.
+  // Without it the memory of the attendance is a conversation in which only the customer spoke, and
+  // the agent cannot see a price the attendant already stated.
   test("the reply from the phone is folded into the contact's memory as the attendant", async () => {
     const conv = 8440;
     await deliver(conv, { ...customerSays("oi") });
@@ -771,7 +761,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   });
 
   // An agent with no Agent Bot row on this instance cannot speak here at all: every call it makes
-  // goes out with an empty token (issue #79). Nothing is written, and the delivery still completes.
+  // goes out with an empty token. Nothing is written, and the delivery still completes.
   test("an inbox whose agent has no bot on this instance takes nothing over", async () => {
     const conv = 8480;
     await deliver(conv, { ...customerSays("oi") }, ORPHAN_INBOX_ID);
@@ -899,16 +889,11 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect((await takeoverRows(conv, 200)).length).toBe(0);
   });
 
-  // THE OTHER SIDE OF WRITING THE ROW FIRST, and the compensation that must NOT exist. The claim is
-  // taken locally and then the open fails, so the row says `open` over a conversation Chatwoot may
-  // never have moved. Handing the claim back there looks like the fix and is the defect: a failed
-  // call is an UNKNOWN outcome, not a refusal — Chatwoot commits the transition and the response is
-  // lost — and rolling back on the unknown puts the agent straight back to answering over the person
-  // it just handed the conversation to.
-  //
-  // So the claim stands, and what resolves it is the deadline rather than the next message: while it
-  // is live it refuses precisely the `pending` that message carries, and once it runs out the
-  // conversation Chatwoot really did leave `pending` comes back to the agent on its own.
+  // THE COMPENSATION THAT MUST NOT EXIST. The claim is taken locally and then the open fails. A
+  // failed call is an UNKNOWN outcome, not a refusal (Chatwoot may commit and lose the response), so
+  // handing the claim back could put the agent back to answering over the person. The claim stands
+  // and its deadline resolves it: while live it refuses the `pending` the next message carries, and
+  // once it runs out a conversation Chatwoot really left `pending` comes back to the agent.
   test("a failed open keeps the claim, and the next message is refused while it stands", async () => {
     const conv = 8512;
     await deliver(conv, { ...customerSays("oi") });
@@ -1106,7 +1091,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     });
   });
 
-  // ── ISSUE #436: THE CLAIM IS UNORDERABLE UNTIL THE RECONCILE STAMPS IT ──
+  // ── THE CLAIM IS UNORDERABLE UNTIL THE RECONCILE STAMPS IT ──
   //
   // The row moves to `open` before the toggle goes out, and that write claims no version (the toggle
   // endpoint renders none). Deliveries for one conversation are dispatched detached and never
@@ -1118,7 +1103,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   //
   // Asserted on the TURN and not on the row, because the row is repaired a moment later by the
   // reconcile and the turn is not: by then the agent has already spoken into a conversation a
-  // colleague is holding, which is the whole of issue #430.
+  // colleague is holding.
   test("a customer message delivered while the toggle is on the wire drives no turn", async () => {
     const conv = 8560;
     await deliver(conv, { ...customerSays("oi") });
@@ -1135,7 +1120,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     }
     expect(turnsRan).toBe(before);
     // AND THE RECONCILE STAMPED THE SOURCE'S VERSION ON IT, which is the other half of the rule: the
-    // claim refuses what it cannot place, and this is the number that ends that — everything past it
+    // claim refuses what it cannot place, and this is the number that ends that: everything past it
     // is a write committed after ours. The mark the claim was taken at is where it started.
     const claimed = await convRow(conv);
     expect(claimed?.statusClaimStampedAt ?? 0).toBeGreaterThan(markBefore ?? 0);
@@ -1194,11 +1179,10 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect((await convRow(conv))?.status).toBe("open");
   });
 
-  // ISSUE #468, ROUND 6. The same way in, by the OTHER shape: two events that are companions of ONE
-  // write — the customer's own reopen, dispatched as `conversation_status_changed` and, because
-  // `status` is in the conversation's `list_of_keys`, `conversation_updated` — queued behind the
-  // reply and delivered inside the window. They agree on `updated_at` by construction, and that
-  // agreement proves only that they describe one write, never that the write came after the claim.
+  // The same way in, by the OTHER shape: two companions of ONE write (the customer's reopen,
+  // dispatched as `conversation_status_changed` and, since `status` is in `list_of_keys`,
+  // `conversation_updated`) delivered inside the window. They agree on `updated_at` by construction,
+  // which proves they describe one write, never that the write came after the claim.
   test("two companions of a write made BEFORE the claim cannot walk it back", async () => {
     const conv = 8566;
     await deliver(conv, { ...customerSays("oi") });
@@ -1231,11 +1215,10 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect(row?.statusClaimRefusedAt).toBe(beforeTheReply.updated_at);
   });
 
-  // ISSUE #468, ROUND 7. What the claim must NOT cost: the conversation coming back. Once the source
-  // has stamped our transition, a payload ahead of that version is a write made after ours whichever
-  // event carries it — and when the hand-back's own `conversation_*` event is delayed or lost, the
-  // next thing carrying it is the customer's own message. Asserted on the TURN, because the harm is
-  // not a wrong row: it is the message acknowledged with nobody answering the customer.
+  // What the claim must NOT cost: the conversation coming back. Once the source has stamped our
+  // transition, a payload ahead of that version is a later write whichever event carries it, and if
+  // the hand-back's own event is lost the next carrier is the customer's message. Asserted on the
+  // TURN: the harm is the message acknowledged with nobody answering.
   test("a customer message newer than the stamped claim brings the bot back", async () => {
     const conv = 8567;
     await deliver(conv, { ...customerSays("oi") });
@@ -1250,20 +1233,11 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect(turnsRan).toBe(before + 1);
   });
 
-  // ISSUE #468, ROUND 8. The compare-and-swap orders this write against one that has already
-  // COMMITTED. It says nothing about a `mirrorChatwootEvent` transaction that has already READ the
-  // row — with no claim on it — and has not written yet: that one commits its own decision straight
-  // over the `open`, and the agent answers over the person. The lock is what orders those two, and it
-  // is the same lock the mirror and the reconcile take.
-  // AND THE MARK IS ONE OF THE TERMS IT SWAPS ON, for the same reason the assignee is: it is ordered
-  // independently of the status version, so a console write can move it while status, version and
-  // assignee all stay exactly as this delivery read them. An operator setting an already-`pending`,
-  // bot-owned conversation back to `pending` is precisely that write, and without the term the swap
-  // would win against a decision newer than the one it read (issue #469).
-  //
-  // Asked of the swap DIRECTLY, because the window it closes cannot be pried open from inside this
-  // process: nothing is awaited between the fence's read and this statement. That is the same reason
-  // the assignee term's own mutation survives the suite.
+  // THE MARK IS ONE OF THE TERMS THE CLAIM'S SWAP COMPARES, like the assignee: it is ordered apart
+  // from the status version, so a console write (setting a bot-owned `pending` conversation to
+  // `pending` again) can move it alone, and without the term the swap would beat a newer decision.
+  // Asked of the swap DIRECTLY: nothing is awaited between the fence's read and the statement, so the
+  // window cannot be opened from inside this process.
   test("the claim loses to a console write that moved only the mark", async () => {
     const conv = 8569;
     await deliver(conv, { ...customerSays("oi") });
@@ -1351,15 +1325,11 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     );
   });
 
-  // ISSUE #468, ROUND 3. The claim cannot tell a conversation event frozen BEFORE our write from one
-  // committed after it — the version that would separate them is our own transition's, which the
-  // toggle does not render — so it refuses both, and refusing a real hand-back would lose it, since
-  // we ack the event and Chatwoot never redelivers. What keeps that from being a hole is that the
-  // refusal is DEFERRED rather than dropped: it keeps its version, and the reconcile that finally
-  // learns ours adjudicates the two. Ahead of ours, it was a write committed after our own.
-  //
-  // The live read is pinned to a version below the hand-back's, which is what a GET issued before it
-  // committed comes back with.
+  // The claim cannot tell an event frozen BEFORE our write from one committed after it (the toggle
+  // renders no version), so it refuses both. Dropping a real hand-back would lose it (we ack and
+  // Chatwoot never redelivers), so the refusal is DEFERRED with its version, and the reconcile that
+  // learns ours adjudicates. The live read is pinned below the hand-back's version, as a GET issued
+  // before it committed would be.
   test("a hand-back committed while the toggle is on the wire survives the reconcile", async () => {
     const conv = 8564;
     await deliver(conv, { ...customerSays("oi") });
@@ -1396,19 +1366,15 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     return deviceReply("já te respondo");
   }
 
-  // AN OPERATOR ASKED FOR THE AGENT BACK, and a reply frozen before that click must not undo it
-  // (issue #469).
+  // AN OPERATOR ASKED FOR THE AGENT BACK, and a reply frozen before that click must not undo it.
   //
-  // Driven through the real console function, not through a hand-written row: the defect lives in
-  // what `mirrorConsoleWrite` writes when its live read cannot be versioned, so a fixture that
-  // stamped the mark itself would be testing the fence against an input the console never produces.
-  //
-  // `unversionedReads` is what makes the branch reachable, and it is the deployment the issue names
-  // as the common case: a Chatwoot older than 4.0.2 renders no `updated_at` at all, so for it the
-  // fallback is not the exceptional path, it is every path.
+  // Driven through the real console function: what matters is what `mirrorConsoleWrite` writes when
+  // its live read cannot be versioned, so a fixture stamping the mark itself would test an input the
+  // console never produces. `unversionedReads` reaches that branch, which on a Chatwoot older than
+  // 4.0.2 (no `updated_at` rendered) is every path.
   describe("an unversioned hand-back outranks a reply frozen before it", () => {
-    // The click, with the delivery's payload captured BEFORE it — which is the ordering the issue is
-    // about: Chatwoot serialized the reply, then the operator clicked, then the reply arrived.
+    // NOTE: the click, with the delivery's payload captured BEFORE it: Chatwoot serialized the
+    // reply, then the operator clicked, then the reply arrived.
     async function handBack(convId: number): Promise<string> {
       const row = await convRow(convId);
       if (!row) throw new Error("no mirrored conversation");
@@ -1493,11 +1459,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       }
     });
 
-    // THE OTHER BUTTON THAT REACHES THE SAME DEFECT. "Return to AI" is not the only console write
-    // that hands a conversation back: pressing `pending` on a bot-owned conversation Chatwoot has as
-    // `open` says the same thing, goes through the same unversioned fallback, and was measured
-    // undone the same way (`open`, `pending`, `open` again) before this path took a reading of its
-    // own. Left to the fence's other half, #469 would close on one of its two call sites.
+    // THE OTHER BUTTON THAT HANDS BACK. Pressing `pending` on a bot-owned conversation Chatwoot has
+    // as `open` says what "Return to AI" says and goes through the same unversioned fallback, so it
+    // takes its own reading too, or a frozen reply would undo it (`open`, `pending`, `open` again).
     test("a status button hands back too, and is ordered the same way", async () => {
       const conv = 8611;
       unversionedReads.add(conv);
@@ -1653,9 +1617,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     });
 
     // THE HALF THIS DOES NOT REACH, asserted so it cannot be read as covered. A live read that fails
-    // outright names no message, so there is no mark, and the fence has nothing to order — the
-    // behaviour that shipped before this file existed. The id the mark would need is the id of a
-    // message Chatwoot has and we have not seen, so no watermark of ours can supply it.
+    // outright names no message, so there is no mark and the fence has nothing to order. The id the
+    // mark would need is that of a message Chatwoot has and we have not seen, so no watermark of ours
+    // can supply it.
     test("a console read that failed outright leaves the gap open", async () => {
       const conv = 8602;
       failingReads.add(conv);
@@ -1700,7 +1664,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
           deps,
           base: appDb,
         });
-        // Still the defect, and named as such: with no coordinate on either side, the reply wins.
+        // NOTE: the known gap, named as such: with no coordinate on either side, the reply wins.
         expect(liveStatus.get(conv)).toBe("open");
       } finally {
         failingReads.delete(conv);
@@ -1743,10 +1707,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       }
     });
 
-    // THE READING IS TAKEN BEFORE THE ACTION, and that is what keeps this fence from becoming the
-    // defect it guards against. `mirrorConsoleWrite` runs after its caller's Chatwoot calls, so a
-    // reading it took itself would include a colleague who replied during the round trip — and the
-    // mark would then cover that reply and have the takeover skip a real handover (issue #430).
+    // THE READING IS TAKEN BEFORE THE ACTION. `mirrorConsoleWrite` runs after its caller's Chatwoot
+    // calls, so a reading it took itself would include a colleague who replied during the round
+    // trip, and the mark would cover that reply and have the takeover skip a real handover.
     //
     // Driven through the toggle's own in-flight window, which is the only place a test can stand:
     // the request is on the wire, Chatwoot has not committed it, and a message written there is
@@ -1782,24 +1745,13 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
       }
     });
 
-    // A VERSIONED Chatwoot reconciles instead of falling back, and it stamps the mark ANYWAY. That
-    // is not belt and braces, and it is the one thing this fence got wrong on the first pass: the
-    // recovery of issue #439 carries no version by construction, so on a versioned deployment a mark
-    // written only on the fallback would leave the recovery with nothing to order against — a
-    // hand-back made inside its half-hour window undone, on precisely the installs that HAVE
-    // versions. The consequence is asserted where the recovery lives
-    // (tests/modules/chatwoot-recover-takeover.test.ts); the stamp is asserted here, at the write.
+    // A VERSIONED Chatwoot reconciles instead of falling back, and stamps the mark ANYWAY: the
+    // takeover recovery carries no version, so without the mark it could undo a hand-back inside its
+    // window (asserted in tests/modules/chatwoot-recover-takeover.test.ts; the stamp is asserted here).
     //
-    // On the live path it changes nothing: a delivery that carries a version is refused by the
-    // version check before the fence is asked, and one that gets past it was written after the
-    // click, so its id is above this mark.
-    // AND ON A VERSIONED DEPLOYMENT THE MARK IS NOT INERT, which is the correction to the sentence
-    // the round-4 fix was first written with ("on the live path it changes nothing"). The two
-    // predicates disagree in one shape: a payload whose version compares EQUAL to the row's, which
-    // is what a console write that did not move `updated_at` leaves. The version check is strict
-    // (`decidedAtVersion < now.statusAt`), so equal PASSES it, and then the mark is the only thing
-    // between a reply that predates the click and the takeover. It refuses, which is what this
-    // fence exists for; the claim it changes nothing was the overstatement.
+    // On the live path the mark matters in one shape: a payload whose version EQUALS the row's (a
+    // console write that did not move `updated_at`). The version check is strict
+    // (`decidedAtVersion < now.statusAt`), so a tie passes it, and the mark is what refuses the reply.
     test("a versioned delivery whose version ties is still ordered by the mark", async () => {
       const conv = 8614;
       await deliver(conv, composerReply("eu assumo"));

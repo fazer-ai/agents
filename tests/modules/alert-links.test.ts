@@ -11,7 +11,7 @@ import type { FlowContext } from "@/modules/flowlog/service";
 import { outboundUrl } from "../utils/outbound";
 import { POLL_DEADLINE_MS } from "../utils/poll";
 
-// Issue #665: an alert names where it happened, so an operator can get from the Discord message to
+// An alert names where it happened, so an operator can get from the Discord message to
 // the turn or the conversation without guessing a time window on /logs.
 
 const host = config.publicUrl.replace(/\/+$/, "");

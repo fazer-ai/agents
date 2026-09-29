@@ -11,7 +11,7 @@ import {
 } from "@/modules/chatwoot/annotations";
 import type { ChatwootMessageRow } from "@/modules/chatwoot/messages";
 
-// The in-process media-annotation fallback (issue #49): the eager STT/vision pass stashes every
+// The in-process media-annotation fallback: the eager STT/vision pass stashes every
 // completed annotation here, and the flush overlays what the Chatwoot attachment meta is missing
 // (upstream Chatwoot has no fork meta route, so the write-back 404s and the meta stays empty).
 
@@ -60,7 +60,8 @@ describe("media annotations (issue #49)", () => {
     );
     const rows = [
       row({ id: 1 }),
-      // NOTE: Meta already carries the transcription (fork write-back landed) — it stays authoritative.
+      // NOTE: meta already carries the transcription (the fork write-back landed): it stays
+      // authoritative.
       row({ id: 2, transcribedText: "do meta" }),
       row({ id: 3 }),
     ];
@@ -119,7 +120,7 @@ describe("media annotations (issue #49)", () => {
       1_000,
     );
     expect(mediaAnnotationCount()).toBe(1);
-    // NOTE: No further stash happens — this is the idle process, where only the scheduled sweeper
+    // NOTE: no further stash happens: this is the idle process, where only the scheduled sweeper
     // (which calls exactly this function) can reclaim the entry.
     sweepMediaAnnotations(1_000 + 16 * 60_000);
     expect(mediaAnnotationCount()).toBe(0);

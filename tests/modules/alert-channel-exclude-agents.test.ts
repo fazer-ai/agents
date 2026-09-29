@@ -18,10 +18,10 @@ import {
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 import { outboundUrl } from "../utils/outbound";
 
-// Issue #843: an evaluation battery runs test agents on the same instance as production, and their
-// deliberate warnings flooded the operator's alert channel. A channel can now leave named agents out.
-// Two things are asserted together because the issue asked for both: the excluded agent's line does
-// NOT reach this channel, and it IS still in the flow log, which the battery reads to score.
+// A channel can leave named agents out, so an evaluation battery running test agents beside
+// production does not flood it with deliberate warnings. Two things are asserted together: the
+// excluded agent's line does NOT reach this channel, and it IS still in the flow log, which the
+// battery reads to score.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

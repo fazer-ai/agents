@@ -13,12 +13,11 @@ import { remoteInboxIsGone, removeInbox } from "@/modules/chatwoot/management";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { flowLogCount } from "../utils/flowlog";
 
-// #307: an inbox deleted in Chatwoot leaves its mirror behind FOREVER. Sync deliberately never
-// prunes (keeping a binding beats pruning one), and the explicit action that comment points at does
-// not exist. The removal has to be fenced, and the fence is the whole design: the mirror row is
-// recreated by `upsertInbox` for ANY inbox that sends traffic, so deleting the mirror of a LIVE
-// inbox is not a removal at all — the next message rebuilds the row with no agent bound and the
-// customer lands in `emitUnroutedMessage`. Only an inbox Chatwoot ANSWERS is gone may be removed.
+// Sync deliberately never prunes (keeping a binding beats pruning one), so an inbox deleted in
+// Chatwoot leaves its mirror behind until this explicit removal runs. The fence is the whole design:
+// `upsertInbox` recreates the mirror row for ANY inbox that sends traffic, so deleting the mirror of
+// a LIVE inbox is not a removal (the next message rebuilds it unbound and the customer lands in
+// `emitUnroutedMessage`). Only an inbox Chatwoot ANSWERS is gone may be removed.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -49,9 +48,8 @@ function ctx(t: bigint): TenantContext {
 
 // Personifies the fork's Api::V1::Accounts::InboxesController#show. `fetch_inbox` resolves it with
 // `Current.account.inboxes.find(params[:id])` and only THEN runs `authorize @inbox, :show?`, so a
-// missing inbox raises RecordNotFound before any policy check. Measured live against the fork
-// (~/dev/chatwoot/main, 2026-08-25): live id → 200 with the inbox JSON, absent id → 404
-// {"error":"Resource could not be found"}, no token → 401.
+// missing inbox raises RecordNotFound before any policy check: live id → 200 with the inbox JSON,
+// absent id → 404 {"error":"Resource could not be found"}, no token → 401.
 function fakeChatwoot(live: number[]) {
   const calls: Array<{ method: string; path: string }> = [];
   const fetchImpl = (async (url: string, init?: RequestInit) => {
@@ -84,12 +82,10 @@ function fakeChatwoot(live: number[]) {
 // The predicate that authorizes DESTROYING a row, so it is deliberately narrower than it looks: a
 // table, because the DB test below can only reach the two answers the fake produces.
 //
-// This shares a body with `unbindNeedsNothingRemote` and is deliberately NOT the same function. That
-// one asks "is there nothing left to disconnect?" about a POST to /set_agent_bot; this asks "did
-// Chatwoot state this inbox does not exist?" about a GET on the inbox itself. They agree today
-// because both routes resolve the inbox through the same `find`, and they would stop agreeing the
-// moment either route's 404 semantics changed — at which point one of them must move without the
-// other. A false answer here deletes an operator's row; there it only skips a call.
+// It shares a body with `unbindNeedsNothingRemote` and is deliberately NOT the same function: that
+// one asks about a POST to /set_agent_bot, this one about a GET on the inbox. They agree only because
+// both routes resolve the inbox through the same `find`; if either route's 404 changes, one must move
+// without the other. A false answer here deletes an operator's row; there it only skips a call.
 describe("remoteInboxIsGone", () => {
   const rows: Array<[string, unknown, boolean]> = [
     [
@@ -355,12 +351,10 @@ describe.skipIf(!dbUp)("#307 removing the mirror of a deleted inbox", () => {
   // The row is read, THEN the network is asked, so a second removal can land inside that window. It
   // must not answer a 500: both callers asked for the row to be gone and the row is gone.
   //
-  // The window is opened DETERMINISTICALLY, from inside the probe, rather than by firing two real
-  // removals and hoping the scheduler interleaves them. Two concurrent flows open four scoped
-  // transactions between them, and under a contended pool the loser fails to start one at all — so
-  // the concurrent version failed on CI for a reason that has nothing to do with the rule under test
-  // (and would have passed locally forever). Injecting the interleaving at the seam asserts the
-  // rule itself, and it is what mutating `deleteMany` back to `delete` still trips.
+  // The window is opened DETERMINISTICALLY, from inside the probe, not by firing two real removals:
+  // two concurrent flows open four scoped transactions, and under a contended pool the loser can fail
+  // to start one at all, for a reason unrelated to the rule. Injected at the seam, the test still
+  // trips when `deleteMany` becomes `delete`.
   test("a removal whose row vanished inside the probe window still succeeds", async () => {
     const inbox = await seedInbox(7308);
     const deps = {

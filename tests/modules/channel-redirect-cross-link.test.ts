@@ -63,7 +63,7 @@ describe("cross-link notes", () => {
   });
 });
 
-// ── which conversation the cross-link actually reads (issue #222) ──
+// ── which conversation the cross-link actually reads ──
 
 // The notes are best-effort HTTP, so they are not what this asserts. The test-mode propagation is:
 // it reads the SIBLING's activation stamp and writes it onto the widget row, so a durable effect in
@@ -160,7 +160,7 @@ describe.skipIf(!dbUp)(
           testActivatedAt: activated,
         },
       });
-      // The decoy: newer, never activated. The old predicate takes this one.
+      // NOTE: the decoy: newer, never activated. The recency fallback takes this one.
       await suDb.conversation.create({
         data: {
           tenantId,
@@ -232,7 +232,7 @@ describe.skipIf(!dbUp)(
       expect(row.redirectLinkedAt).not.toBeNull();
     });
 
-    // Review round 5 of #355. The origin this call resolves its sibling with is read at the top of
+    // The origin this call resolves its sibling with is read at the top of
     // the delivery, and the watermark it stamps is written after two round trips and a Chatwoot POST.
     // A pairing accepted in that window moves the episode, and stamping anyway spends the NEXT
     // episode's only shot on the previous episode's notes: the inbound for the new origin finds the
@@ -285,11 +285,11 @@ describe.skipIf(!dbUp)(
       expect(out.testActivatedAt).toBeNull();
     });
 
-    // Review round 7 of #355. Since round 6, `(origin=null, mark=null)` and `(origin=null, mark=set)`
-    // are DIFFERENT states — never told, versus told there is none — and a claim that compares only
-    // the origin reads them as one. This call resolved its sibling through the recency fallback,
-    // which is what "never told" licenses; a stated clear landing under it revokes that licence, and
-    // the notes would go to a WhatsApp conversation the source just said is not this episode's.
+    // `(origin=null, mark=null)` and `(origin=null, mark=set)` are DIFFERENT states (never told,
+    // versus told there is none), and a claim that compares only the origin reads them as one. This
+    // call resolves its sibling through the recency fallback, which is what "never told" licenses;
+    // a stated clear landing under it revokes that licence, and the notes would go to a WhatsApp
+    // conversation the source just said is not this episode's.
     test("does not stamp when a stated clear lands on the legacy state", async () => {
       const cfg: ChannelRedirectConfig = {
         ...CHANNEL_REDIRECT_DEFAULTS,
@@ -340,7 +340,7 @@ describe.skipIf(!dbUp)(
       });
     });
 
-    // Review round 9 of #355. The mark is a VERSION and advances on every payload that states the
+    // The mark is a VERSION and advances on every payload that states the
     // pairing, the ones stating the SAME pairing included. Compared for equality it reads an ordinary
     // webhook arriving mid-call as an episode change and spends this inbound's attempt on nothing:
     // no notes, no propagation, on an episode that never moved.

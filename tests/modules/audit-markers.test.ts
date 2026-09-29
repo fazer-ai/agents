@@ -2,10 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { AUDIT_MARKER_KEYS, carriesAuditMarker } from "@/lib/audit/markers";
 
 // The console renders a row it did not write, so it has to know every marker a producer can put on
-// a projection. It knew one of two, and the one it did not know is nested rather than top-level, so
-// an agent edit that moved only unread configuration rendered as "this action recorded no field
-// values": the trail denying a mutation it holds. The list is the fix; this file is what keeps it
-// true when the next family adds a marker.
+// a projection, nested ones included; a marker it does not know renders an agent edit that moved only
+// unread configuration as "this action recorded no field values", the trail denying a mutation it
+// holds. This file keeps the list true when the next family adds a marker.
 describe("the audit markers a reader has to know", () => {
   test("every marker a projection module writes is on the list", async () => {
     const producers = [
@@ -29,7 +28,7 @@ describe("the audit markers a reader has to know", () => {
 
   test("a marker is found wherever a producer puts it, not only at the top", () => {
     expect(carriesAuditMarker({ undisclosedChanged: true })).toBe(true);
-    // #394's shape: the marker rides on the FIELD's own projection.
+    // NOTE: the settings shape: the marker rides on the FIELD's own projection.
     expect(
       carriesAuditMarker({ settings: { unreadConfigChanged: true } }),
     ).toBe(true);

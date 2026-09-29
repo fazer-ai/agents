@@ -4,7 +4,7 @@
 // `/teste` arrives twice with two route ids and exactly one delivery may run it. The fence fails
 // CLOSED on an unresolvable identity on either side, and the two closed answers mean different
 // things to whoever reads the log line: one delivery deferring to a persona that will run it, versus
-// no persona existing at all and every route dropping the command (issue #317).
+// no persona existing at all and every route dropping the command.
 import { describe, expect, test } from "bun:test";
 import {
   type CommandRoute,

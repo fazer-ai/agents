@@ -16,12 +16,11 @@ import {
 } from "@/modules/business-hours/hours";
 import { outOfHoursGate } from "@/modules/chatwoot/webhook";
 
-// Issue #346. The import writes the two schedule JSON columns straight through
-// (`exportedBusinessHoursSchema` takes them as `z.array(z.unknown())`), so a hand-authored or
-// hand-edited bundle is the one writer that never answers to `businessHoursCreateSchema`. What makes
-// it worth a test rather than a type is the DIRECTION of the failure: a grid that cannot be read is
-// an EMPTY grid, and an empty grid is always open, so a typo in a bundle turns an agent that was
-// closed at night into one that answers around the clock on the destination tenant.
+// The import writes the two schedule JSON columns straight through (`exportedBusinessHoursSchema`
+// takes them as `z.array(z.unknown())`), so a hand-edited bundle never answers to
+// `businessHoursCreateSchema`. The failure direction matters: an unreadable grid is an EMPTY grid,
+// and an empty grid is always open, so a typo turns an agent closed at night into one that answers
+// around the clock.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -137,8 +136,8 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
   });
 
   test("a clean bundle is stored verbatim and warns about nothing", async () => {
-    // The control. Without it every assertion below is also satisfied by an import that drops
-    // everything, or by one that warns unconditionally.
+    // NOTE: the control. Without it every assertion below is also satisfied by an import that
+    // drops everything, or by one that warns unconditionally.
     const name = `limpa-${process.pid}`;
     const { row, warnings, linkedTo } = await importSchedule(name, WEEK);
     expect(row.windows).toEqual(WEEK);
@@ -155,9 +154,8 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
     // Stored cleaned, so the console shows what the runtime will actually honour and an
     // edit-and-save round trip cannot resurrect the entry.
     expect(row.windows).toEqual(WEEK);
-    // And the agent is still CLOSED at 03:00 — asserted through the gate the webhook actually runs,
-    // not through the parsed schedule, because "the schedule can close" is a proxy and "the agent is
-    // silenced and the customer hears the away note" is the effect the issue reports.
+    // NOTE: the agent is still CLOSED at 03:00, asserted through the gate the webhook runs: "the
+    // schedule can close" is only a proxy for "the agent is silenced and the away note is posted".
     const schedule = parseSchedule(
       row as unknown as {
         windows: unknown;
@@ -191,11 +189,9 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
     ).toEqual({ name, count: 2 });
   });
 
-  // Review round 1. The count is a per-ENTRY question, not a subtraction of array lengths: an
-  // exception can survive and still lose something. `parseExceptions` prunes the ranges INSIDE an
-  // exception it keeps, and an exception with no ranges means CLOSED ALL DAY, so a half-day written
-  // backwards lands as a full-day closure. Safe direction, and still a schedule the operator did not
-  // ask for, which is the silence this warning exists to break.
+  // The count is per ENTRY, not a subtraction of array lengths: `parseExceptions` prunes ranges
+  // inside an exception it keeps, and an exception with no ranges means CLOSED ALL DAY, so a
+  // backwards half-day lands as a full-day closure the operator did not ask for.
   test("a half-day whose range is backwards becomes a full closure, and says so", async () => {
     const name = `meia-${process.pid}`;
     const backwards = {
@@ -204,8 +200,8 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
       ranges: [{ start: "14:00", end: "09:00" }],
     };
     const { row, warnings } = await importSchedule(name, WEEK, [backwards]);
-    // Kept, not dropped: dropping it would let the weekly grid apply on Christmas Eve, which is the
-    // always-open direction. It lands as the closure it now is.
+    // NOTE: kept, not dropped: dropping it would let the weekly grid apply on that date, which is
+    // the always-open direction.
     expect(row.exceptions).toEqual([
       { date: "2026-12-24", label: "Véspera", ranges: [] },
     ]);
@@ -234,8 +230,8 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
   });
 
   test("an exception stored exactly as written warns about nothing", async () => {
-    // The control for the two above: the per-entry check must not fire on a clean entry, or the
-    // warning becomes noise and stops meaning anything.
+    // NOTE: the control for the two above: the per-entry check must not fire on a clean entry, or
+    // the warning becomes noise.
     const name = `intacta-${process.pid}`;
     const clean = {
       date: "2026-12-24",
@@ -257,13 +253,13 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
     expect(
       warnings.find((x) => x.code === "hoursWindowsDropped")?.params,
     ).toEqual({ name, count: 25 });
-    // Not skipped: skipping would leave the agent with no schedule at all, which is the always-open
-    // state this whole change exists to keep unreachable.
+    // NOTE: not skipped: skipping would leave the agent with no schedule at all, which is always
+    // open.
     expect(linkedTo).toBe(row.id);
   });
 
-  // Review round 2. The cap counts SURVIVORS, not positions: a malformed entry consumes no slot, so
-  // every one of them before the cap used to over-report the loss by one.
+  // The cap counts SURVIVORS, not positions: a malformed entry consumes no slot, or each one before
+  // the cap would over-report the loss by one.
   test("an unreadable window before the cap does not cost a valid one", async () => {
     const name = `contagem-${process.pid}`;
     const many = Array.from({ length: MAX_SCHEDULE_WINDOWS }, (_, i) => {
@@ -274,7 +270,6 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
       { day: 9, start: "x", end: "y" },
       ...many,
     ]);
-    // All 200 valid windows land: the bad one did not push the last one past the cap.
     expect((row.windows as unknown[]).length).toBe(MAX_SCHEDULE_WINDOWS);
     expect(
       warnings.find((x) => x.code === "hoursWindowsDropped")?.params,
@@ -282,8 +277,8 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
   });
 
   test("exceptions past the cap are refused by the WRITER, and named", async () => {
-    // The reader no longer truncates these (a dropped closure widens availability), so this bound
-    // exists only here, where the operator is told the count.
+    // NOTE: the reader does not truncate these (a dropped closure widens availability), so this
+    // bound exists only here, where the operator is told the count.
     const name = `muitas-${process.pid}`;
     const many = Array.from({ length: MAX_SCHEDULE_EXCEPTIONS + 12 }, () => ({
       date: "2026-01-01",
@@ -303,8 +298,8 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
       { day: 1 },
     ]);
     expect(row.windows).toEqual([]);
-    // Always open is the honest reading of a grid with nothing in it — but the operator is told,
-    // which is the difference between this and the defect.
+    // NOTE: always open is the correct reading of an empty grid; what matters is that the operator
+    // is told.
     expect(
       warnings.find((x) => x.code === "hoursWindowsDropped")?.params,
     ).toEqual({ name, count: 2 });

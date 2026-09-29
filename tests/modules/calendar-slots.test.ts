@@ -219,7 +219,7 @@ describe("computeAvailableSlots", () => {
   });
 });
 
-// Issue #100: several allowed calendars are INDEPENDENT sources of availability (one per
+// Several allowed calendars are INDEPENDENT sources of availability (one per
 // professional/resource), not one pooled calendar. The decision this table pins is which slots
 // survive and in what order, because that is what the customer is offered when they ask "who can
 // see me first?".
@@ -277,9 +277,9 @@ describe("computeAggregatedSlots", () => {
   });
 
   test("the WHOLE range survives for every calendar, never just its head", () => {
-    // A per-calendar bound here (an earlier revision kept the first eight starts) turns "all bookable
-    // slots" into "the first couple of hours", and an afternoon request comes back unavailable while
-    // the afternoon is free.
+    // NOTE: a per-calendar bound here (say, the first eight starts) turns "all bookable slots" into
+    // "the first couple of hours", and an afternoon request comes back unavailable while the
+    // afternoon is free.
     const slots = agg({
       timeMin: iso("09:00"),
       timeMax: iso("17:00"),
@@ -347,7 +347,7 @@ describe("computeAggregatedSlots", () => {
   });
 });
 
-// Issue #345: the write path judges a requested appointment by asking the SAME generator the
+// The write path judges a requested appointment by asking the SAME generator the
 // availability tool answers with. A decision table pins the rule; the toolpack tests pin that the
 // write tools consult it.
 describe("judgeBooking — the rule a calendar write has to pass", () => {

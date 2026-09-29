@@ -16,23 +16,14 @@ import { outboundUrl } from "../utils/outbound";
 import { POLL_DEADLINE_MS } from "../utils/poll";
 import { countInSrc } from "../utils/source-text";
 
-// ── A SMOKE DETECTOR WITH A BUTTON ON IT (issue #605) ──
+// ── A SMOKE DETECTOR WITH A BUTTON ON IT ──
 //
-// An alert channel was configured blind: the first evidence either way was an incident. The route
-// added here posts a sample alert to the channel's destination and hands the outcome back, which is
-// what `POST /subscriptions/:id/test` already did for the other outbound family.
-//
-// What the tests below are actually guarding is not the route's existence — that is the cheap half —
-// but the two ways a test button lies:
-//
-//   - It exercises a DIFFERENT path from the real send, so it approves a channel whose alerts will
-//     never arrive. `sendWebhookTest` is a second copy of the outbound worker's rules and has to be
-//     kept in step by hand; this one is not, and the last test in the file is that fact measured
-//     against the source, not asserted in prose.
-//   - It leaves a real alert behind. The trap is specific and it is the coalescing window: a PENDING
-//     `AlertDelivery` of the same channel/stage/level is bumped with `count++` instead of becoming a
-//     new row, AND THE COALESCED ROW KEEPS THE FIRST EVENT'S BODY. A row left by a test would
-//     therefore not merely add noise, it would swallow the text of the next real alert.
+// The test route posts a sample alert to the channel's destination and hands the outcome back. The
+// tests guard the two ways a test button lies:
+//   - It exercises a DIFFERENT path from the real send (as `sendWebhookTest`, a hand-kept copy of the
+//     outbound worker's rules, does), approving a channel whose alerts never arrive.
+//   - It leaves a real alert behind: a PENDING `AlertDelivery` of the same channel/stage/level is
+//     coalesced, and THE COALESCED ROW KEEPS THE FIRST EVENT'S BODY, swallowing the next real alert.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -264,8 +255,8 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
       requestTimeoutMs: 25,
     });
 
-    // The request DID go out — the failure is in the waiting, not before the send, which is the
-    // distinction that tells the operator where to look.
+    // NOTE: the request DID go out: the failure is in the waiting, not before the send, which tells
+    // the operator where to look.
     expect(sent).toHaveLength(1);
     expect(res.ok).toBe(false);
     expect(res.status).toBe(null);
@@ -356,14 +347,9 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
   });
 
   test("a destination that redirects does not hand the URL back in the reason", async () => {
-    // THE HOLDOUT'S OWN FINDING (s10), and it is the sharpest thing in this file. A Discord webhook
-    // URL embeds a bot token, which is why the column is encrypted and the read returns
-    // `scheme://host/…`. Bun's `UnexpectedRedirect` names the URL it was fetching, IN FULL, and that
-    // string was going straight into this result, into the console toast that renders it, and into
-    // `alert_deliveries.last_error` where the worker stores the same one.
-    //
-    // The error text below is the one Bun actually produced against a 302, copied from the live
-    // measurement rather than invented: a fixture spelled from memory would be a test of my memory.
+    // NOTE: a Discord webhook URL embeds a bot token, and Bun's `UnexpectedRedirect` names the URL
+    // it was fetching IN FULL, which would reach this result, the console toast and
+    // `alert_deliveries.last_error`. The error text below is the one Bun produces against a 302.
     const path = "/api/webhooks/1234567890/TOKENDEDISCORDaaaSEGREDO";
     const id = await seed("redirected", { url: outboundUrl(path) });
     const { fetchImpl } = receiver(() => {
@@ -388,11 +374,9 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
   });
 
   test("an IPv6 destination's path is masked too, brackets and all", async () => {
-    // REVIEW ROUND 3. The first masking was a regex alone, and it stopped at `]`: an IPv6 literal
-    // matched only up to the bracket, failed to parse, collapsed to "…" and left the whole
-    // token-bearing path standing next to it. The destination is KNOWN here — it was just decrypted
-    // — so it is replaced by literal string match, which no URL spelling can defeat. The regex stays
-    // as the backstop for a URL this code does not know, such as a redirect target.
+    // NOTE: a regex stops at `]`, so an IPv6 literal would leave the token-bearing path in the
+    // clear. The destination is KNOWN here (just decrypted), so it is replaced by literal string
+    // match; the regex is only the backstop for a URL this code does not know, like a redirect target.
     const url = "https://[2606:4700::1111]/hooks/PRIVATETOKENv6";
     const id = await seed("v6", { url });
     const { fetchImpl } = receiver(() => {
@@ -413,9 +397,8 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
   });
 
   test("a path holding punctuation the regex would stop at is masked whole", async () => {
-    // The other half of the same hole, and the reason guessing where a URL ENDS is the wrong job to
-    // give the thing guarding a token: a path containing `)` or `'` used to end the match there and
-    // hand the remainder back in the clear.
+    // NOTE: guessing where a URL ENDS is the wrong job for the thing guarding a token: a regex
+    // ending at `)` or `'` would hand the remainder back in the clear.
     const url = outboundUrl("/hooks/tok)en'SUFFIXSECRET");
     const id = await seed("punct", { url });
     const { fetchImpl } = receiver(() => {
@@ -432,9 +415,8 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
   });
 
   test("a host that does not resolve is still readable after the masking", async () => {
-    // The other side of the same edit, and the reason the pattern demands a scheme: a DNS failure
-    // names a bare host, which is the whole advice the message carries and is already visible in the
-    // masked URL. Redacting it would trade a leak for a result that says nothing.
+    // NOTE: the pattern demands a scheme because a DNS failure names a bare host, which is the whole
+    // advice the message carries and is already visible in the masked URL.
     const id = await seed("dns");
     const { fetchImpl } = receiver(() => {
       throw new Error("getaddrinfo ENOTFOUND alerts.example.invalid");
@@ -480,13 +462,13 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
       assertSafe: allowAll,
     });
 
-    // No delivery row at all — in particular no PENDING one, which the next real alert of the same
-    // channel/stage/level would be folded into, losing its own summary to this test's.
+    // NOTE: no delivery row at all, in particular no PENDING one, which the next real alert of the
+    // same channel/stage/level would be folded into, losing its own summary to this test's.
     expect(await suDb.alertDelivery.count({ where: { channelId: id } })).toBe(
       0,
     );
-    // No flow-log line the alerting path would itself route (`dispatchAlertsForEvent` takes warn and
-    // error), which is the loop the issue names: a test that alerts about itself.
+    // NOTE: no flow-log line the alerting path would itself route (`dispatchAlertsForEvent` takes
+    // warn and error), or the test alerts about itself.
     expect(
       // flowlog-scope: tenant-wide — the claim is that the send wrote no alerting line ANYWHERE in
       // this tenant, which a reader scoped to one turn could not make. Through the settling helper
@@ -495,9 +477,8 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
       await flowLogCount(suDb, { where: alerting }),
     ).toBe(0);
 
-    // THE POSITIVE CONTROLS, and they are not decoration here. Both tables are empty in a tenant
-    // created seconds ago, so a delta of zero is indistinguishable from a reader that cannot see
-    // the rows at all.
+    // NOTE: THE POSITIVE CONTROLS. Both tables are empty in a tenant created seconds ago, so a zero
+    // is indistinguishable from a reader that cannot see the rows at all.
     const probe = await suDb.executionLog.create({
       data: {
         tenantId,
@@ -515,8 +496,8 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
     ).toBe(1);
     await suDb.executionLog.delete({ where: { id: probe.id } });
 
-    // And no audit row: the trail records CHANGES, and a test changes nothing. Same decision already
-    // taken for `webhook_test`.
+    // NOTE: no audit row: the trail records CHANGES, and a test changes nothing (same as
+    // `webhook_test`).
     expect(await suDb.auditLog.count({ where: { tenantId } })).toBe(
       auditBefore,
     );
@@ -639,13 +620,9 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
       },
       select: { id: true },
     });
-    // TICK UNTIL IT CLAIMS, because one tick is not what the worker promises. The claim is
-    // `FOR UPDATE ... SKIP LOCKED`: a row another transaction holds is SKIPPED, and the next tick
-    // takes it. That is the design, and in production it costs one interval. In this suite it is a
-    // race against every other file sharing the database, and a single tick lost it once in a full
-    // run and won it in the next — which is the flake this loop exists to remove, not a defect of
-    // the worker. The loop returns the moment it delivers, so the deadline is only ever reached on a
-    // run that was going to fail.
+    // NOTE: TICK UNTIL IT CLAIMS. The claim is `FOR UPDATE ... SKIP LOCKED`, so a row another
+    // transaction holds is skipped until the next tick; under the full suite other files share the
+    // database, so one tick can claim nothing. The loop returns the moment it delivers.
     const until = Date.now() + POLL_DEADLINE_MS;
     while (real.sent.length === 0 && Date.now() < until) {
       await processAlertBatch({
@@ -671,10 +648,9 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
   });
 
   test("one place in the alerting module posts, and it is neither of the callers", async () => {
-    // The structural half of the test above: parity held by construction rather than by two call
-    // sites that have to be edited together. `sendWebhookTest` is the counter-example in this repo,
-    // a second copy of the outbound worker's rules kept in step by hand, and the reason this ledger
-    // is written against the whole module rather than against the two files I happened to touch.
+    // NOTE: the structural half of the test above: parity held by construction rather than by two
+    // call sites edited together (`sendWebhookTest` is the hand-kept counter-example), checked
+    // against the whole module.
     const posts = await countInSrc(/\bfetchImpl\(/g);
     const inAlerting = Object.keys(posts)
       .filter((f) => f.startsWith("src/modules/flowlog/"))

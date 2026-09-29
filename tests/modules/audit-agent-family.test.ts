@@ -17,20 +17,13 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { agentSettingsSet, promptSet } from "@/modules/mcp/write";
 import { agentUpdate } from "@/modules/mcp/write-agents";
 
-// The agent-configuration trail, recorded by the service instead of by the MCP transport.
+// The agent-configuration trail, recorded by the service, so every transport (console REST, MCP,
+// API key) leaves the same row.
 //
-// Eight actions were audited (`agent.create`, `.update`, `.delete`, `.clone`, `.import`,
-// `.tools_set`, `.prompt_set`, `.settings_set`) and all eight were written by `write-agents.ts` /
-// `write.ts` after the service had committed. The six REST routes of `agents.controller.ts` reach
-// the SAME service functions and wrote nothing, so the console — which speaks REST — left no trace
-// of a config change at all.
-//
-// Three of those actions (`agent.update`, `.prompt_set`, `.settings_set`) funnel into ONE function,
-// `updateAgent`. So the move is not a transcription: the service has to decide which of the three a
-// call is, and it cannot ask the caller. It decides from the DIFF, which is what `docs/mcp.md`
-// already promises ("the same change leaves the same row whichever of the three transports made
-// it") — and the console makes that the only workable rule, because its General tab PATCHes `name`,
-// `systemPrompt`, `enabled`, `mode` and `modelConfig` together on every save, changed or not.
+// Three actions (`agent.update`, `.prompt_set`, `.settings_set`) funnel into ONE function,
+// `updateAgent`, which decides which one a call is from the DIFF, not from the caller (docs/mcp.md):
+// the console's General tab PATCHes `name`, `systemPrompt`, `enabled`, `mode` and `modelConfig`
+// together on every save, changed or not.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -104,28 +97,23 @@ async function seedAgent(over: Record<string, unknown> = {}) {
   );
 }
 
-// The snapshot a row is built from has to be read UNDER the lock that serializes the write, and the
-// window that opens otherwise is not one a behavioural test can pin: it needs two transactions to
-// interleave at one instant, and a passing run would prove nothing about the next. So the rule is
-// asserted structurally, on the source, the way an ordering the engine is merely ALLOWED to break
-// has to be. `lockedBeforeSnapshot` is extracted so the fixtures below can prove it catches the
-// order this PR was reviewed for, which a scan over a clean tree never would.
+// The snapshot a row is built from has to be read UNDER the lock that serializes the write. The
+// window otherwise needs two transactions to interleave at one instant, which no behavioural test
+// pins, so the rule is asserted on the source. `lockedBeforeSnapshot` is extracted so the fixtures
+// below prove it catches the wrong order, which a scan over a clean tree never would.
 export function lockedBeforeSnapshot(
   body: string,
   snapshot: string,
 ): "locked" | "unlocked" | "not found" {
-  // Comment lines are dropped FIRST, and that is not tidiness. `updateAgent` explains its lock in a
-  // NOTE three lines above taking it, so a scan of the raw text finds "FOR UPDATE" in the prose and
-  // reports every order as locked — measured: this fence passed with the reviewed defect restored.
+  // NOTE: comment lines are dropped FIRST: `updateAgent` explains its lock in a NOTE above taking
+  // it, so a scan of the raw text finds "FOR UPDATE" in the prose and reports every order as locked.
   const code = body
     .split("\n")
     .filter((l) => !l.trim().startsWith("//"))
     .join("\n");
-  // The UPDATE family, both spellings, because what this fence is about is a lock that SERIALIZES
-  // the write, and `FOR NO KEY UPDATE` conflicts with itself exactly like `FOR UPDATE` does (#546
-  // weakened two of these writers to it so a bind's `FOR KEY SHARE` would stop waiting on them).
-  // The SHARE family deliberately does NOT count: two writers can hold it at once, so a snapshot
-  // read under one is the same race as a snapshot read under nothing.
+  // NOTE: the UPDATE family, both spellings: the fence is about a lock that SERIALIZES the write,
+  // and `FOR NO KEY UPDATE` conflicts with itself like `FOR UPDATE` does. The SHARE family does NOT
+  // count: two writers can hold it at once, so a snapshot read under one is still a race.
   const lock = code.search(/FOR (?:NO KEY )?UPDATE/);
   const snap = code.indexOf(snapshot);
   if (lock < 0 || snap < 0) return "not found";
@@ -133,8 +121,8 @@ export function lockedBeforeSnapshot(
 }
 
 function bodyOf(src: string, fn: string): string {
-  // Both spellings: the functions this file reads are a mix of `export function` and
-  // `export async function`, and anchoring on one of them threw rather than failing an assertion.
+  // NOTE: both spellings: the functions this file reads mix `export function` and
+  // `export async function`, and anchoring on one would throw rather than fail an assertion.
   const start = [`export async function ${fn}(`, `export function ${fn}(`]
     .map((a) => src.indexOf(a))
     .find((i) => i >= 0);
@@ -145,7 +133,7 @@ function bodyOf(src: string, fn: string): string {
 
 describe("the audit snapshot is read under the write's lock", () => {
   test("the predicate catches the order this PR was reviewed for", () => {
-    // Positive control: the shape the review found, and the shape that replaced it.
+    // NOTE: positive control: the snapshot read before the lock, and after it.
     const wrong = "const before = read(SNAP);\nawait sql`… FOR UPDATE`;";
     const right = "await sql`… FOR UPDATE`;\nconst before = read(SNAP);";
     expect(lockedBeforeSnapshot(wrong, "SNAP")).toBe("unlocked");
@@ -164,7 +152,7 @@ describe("the audit snapshot is read under the write's lock", () => {
         "SNAP",
       ),
     ).toBe("not found");
-    // And the prose that broke the first version of this fence.
+    // NOTE: and prose that names the pattern, which a text-level fence would misread.
     const commented = `// the FOR UPDATE below serializes it\n${wrong}`;
     expect(lockedBeforeSnapshot(commented, "SNAP")).toBe("unlocked");
   });
@@ -228,10 +216,8 @@ describe("the two snapshots are canonicalized at ONE instant", () => {
   });
 
   test("the clock is read ONCE for the whole comparison", async () => {
-    // Structural, and for the same reason the lock ordering below is: the consequence is a race
-    // whose window is the gap between two synchronous calls, so a behavioural test would pass on the
-    // broken code every time. Measured — replacing the shared instant with a fresh one per side
-    // fails no test, which is exactly why this one reads the source instead.
+    // NOTE: structural, like the lock ordering below: the race's window is the gap between two
+    // synchronous calls, so a behavioural test passes on the broken code every time.
     const src = Bun.file("src/modules/agents/audit-projection.ts");
     const body = bodyOf(await src.text(), "agentUpdateAudit");
     const clockReads = (b: string) =>
@@ -470,15 +456,10 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("the third transport leaves the same row, differing only in how it authenticated", async () => {
-    // The seam promises one row per change whichever door made it, and `actorType` is what names the
-    // door. The console (`user`) and MCP (`mcp`) are exercised above; this is the Bearer key, the
-    // one the PR body claimed without measuring.
-    //
-    // Asserted at the SERVICE and not through the route, and the line is worth drawing: what a
-    // Bearer request contributes is a context whose `actorType` is `api_key`, and that resolution —
-    // token to principal to context — is `#392`'s and is proven by its own test
-    // (`audit-seam.test.ts`, "a Bearer API key is attributed as one"). What is unproven for THIS
-    // family is that its rows carry whatever the context says, which is what this measures.
+    // NOTE: the console (`user`) and MCP (`mcp`) are exercised above; this is the Bearer key.
+    // Asserted at the SERVICE: resolving a Bearer token to an `api_key` context is proven in
+    // `audit-seam.test.ts` ("a Bearer API key is attributed as one"); what this family adds is that
+    // its rows carry whatever the context says.
     const viaKey = await seedAgent();
     const viaConsole = await seedAgent();
     await clearAudit();
@@ -735,8 +716,8 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("a settings edit the readers clamp to the same value leaves no row", async () => {
-    // Raw-different, canonically equal: `debounce.windowSeconds` of 1 and of 2 both read as 3
-    // (measured). This is NOT the unread-configuration case, and the distinction is the one the
+    // NOTE: raw-different, canonically equal: `debounce.windowSeconds` of 1 and of 2 both read as
+    // 3. This is NOT the unread-configuration case, and the distinction is the one the
     // residue draws: `windowSeconds` is a field the readers see, so it is not in the residue, and
     // what moved is a value the platform then replaced. Nothing the runtime does changed and nothing
     // is being kept from anyone, so there is nothing to record.
@@ -786,9 +767,9 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("a block named like a prototype member is not swallowed by the comparison", async () => {
-    // The names-based version filtered on `k in resolved`, which walks the prototype: measured,
-    // `"constructor" in resolved` is true, so a stored block by that name vanished from the trail.
-    // A whole-value comparison has no key iteration and therefore no such corner.
+    // NOTE: a names-based filter on `k in resolved` walks the prototype (`"constructor" in
+    // resolved` is true), so a stored block by that name would vanish from the trail. A whole-value
+    // comparison has no key iteration and therefore no such corner.
     const agent = await seedAgent({ settings: { constructor: { a: 1 } } });
     await clearAudit();
 
@@ -1034,8 +1015,8 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("whitespace around the endpoint does not smuggle the credential past the rule", async () => {
-    // `z.string().url()` validates through `new URL`, which ignores surrounding whitespace, and
-    // `validateModelConfigForWrite` discards the parsed result — so the space reaches the column and
+    // NOTE: `z.string().url()` validates through `new URL`, which ignores surrounding whitespace,
+    // and `validateModelConfigForWrite` discards the parsed result, so the space reaches the column and
     // an anchored test on the raw string would answer "not an endpoint".
     const agent = await seedAgent({
       modelConfig: {
@@ -1067,10 +1048,10 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("a stored block named __proto__ is not swallowed by the residue map", async () => {
-    // `out[k] = v` is not an assignment for that key: it invokes the legacy prototype setter and
-    // creates no own property, so both residues would serialize empty and the write would vanish.
+    // NOTE: `out[k] = v` is not an assignment for that key: it invokes the legacy prototype setter
+    // and creates no own property, so both residues would serialize empty and the write would vanish.
     //
-    // Seeded through SQL because the app cannot produce this state — measured: Prisma drops an own
+    // Seeded through SQL because the app cannot produce this state: Prisma drops an own
     // `__proto__` during serialization, so `{"__proto__":{…},"ok":1}` reaches the column as
     // `{"ok":1}`. A row carrying one arrives from a migration or a direct write, and the projection
     // reads the column rather than the payload. `ok` is on both sides so the ONLY difference between
@@ -1183,9 +1164,8 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("correcting an accidentally pasted credential is not refused by the trail", async () => {
-    // The audit shares the mutation's transaction, so a throw while building the row rolls the write
-    // back — and the write it rolled back was exactly the one that REMOVES the credential. Measured
-    // before the fix: `TypeError: undefined is not an object`.
+    // NOTE: the audit shares the mutation's transaction, so a throw while building the row would
+    // roll back exactly the write that REMOVES the credential.
     const agent = await seedAgent({
       systemPrompt: "https://u:hunter2@prompts.example.com/p",
     });
@@ -1390,9 +1370,9 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("a model config that omits `model` and one that sends it empty are the same", async () => {
-    // The schema defaults `model` to `""`, so both resolve identically at runtime — measured. A
-    // picker that preserved missing-versus-empty filed an `agent.update` for a save that changed
-    // nothing, in a trail whose whole rule is that it records changes.
+    // NOTE: the schema defaults `model` to `""`, so both resolve identically at runtime. A picker
+    // that preserved missing-versus-empty would file an `agent.update` for a save that changed
+    // nothing.
     const agent = await seedAgent({
       modelConfig: { provider: "openai-compatible" },
     });
@@ -1466,7 +1446,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("embedded userinfo is caught under any scheme, and an ordinary link is not", async () => {
-    // Measured both ways: `user:pass@` does not fire on a prompt that merely links to
+    // NOTE: both ways: `user:pass@` does not fire on a prompt that merely links to
     // `…/faq?secao=cancelamento`, and it does fire on an `ftp://` credential. A rule that also
     // matched an embedded QUERY could not separate those two, and it drops the WHOLE field.
     const agent = await seedAgent({
@@ -1598,13 +1578,13 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("a tool precondition named __proto__ stays in the canonical view", async () => {
-    // `readToolPreconditions` builds its map with `Object.create(null)` and keys it by TOOL NAME, so
-    // that key arrives as an OWN property of the reader's output — measured. A plain assignment in
-    // the projection walk dropped it, taking an ACTIVE runtime precondition out of the canonical
-    // view: its removal then read as merely "unread configuration" instead of as the change it is.
+    // NOTE: `readToolPreconditions` builds its map with `Object.create(null)` and keys it by TOOL
+    // NAME, so that key arrives as an OWN property of the reader's output. A plain assignment in the
+    // projection walk would drop it, taking an ACTIVE runtime precondition out of the canonical view,
+    // so its removal would read as "unread configuration" instead of as the change it is.
     //
     // Seeded through SQL because Prisma drops an own `__proto__` on the way to the column, so the
-    // app cannot write this state — a row carrying one comes from a migration or a direct write.
+    // app cannot write this state; a row carrying one comes from a migration or a direct write.
     const agent = await seedAgent();
     await su?.$executeRawUnsafe(
       `UPDATE agents SET settings = '{"toolPreconditions":{"__proto__":{"kind":"attribute","key":"cpf","scope":"conversation"}}}'::jsonb WHERE id = ${agent.id}`,

@@ -14,16 +14,11 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { conversationHandoff } from "@/modules/mcp/write-conversations";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// THE CONVERSATION-CONTROL FAMILY, WHOSE TRAIL WAS WRITTEN BY THE MCP TRANSPORT AND BY NOTHING ELSE.
-//
-// Issue #398, the last of #306's service families. What separates it from the five configuration
-// families (#399) is that the mutation is not ours: handoff, return, status and reengage all
-// change state inside somebody else's system, so "the row shares the mutation's transaction" is not
-// available here and the row follows the effect instead. That is the invariant this file pins from
-// both sides: a call Chatwoot accepted leaves a row, and a call it refused leaves none.
-//
-// The actor half is the point of the move: the console speaks REST, and before this the console's
-// own reply to a live customer left nothing at all.
+// THE CONVERSATION-CONTROL FAMILY. Unlike the configuration families, the mutation is not ours:
+// handoff, return, status and reengage change state inside Chatwoot, so the row cannot share the
+// mutation's transaction and follows the effect instead (docs/api-and-fleet.md, "A mutation in
+// somebody else's system"). This file pins that from both sides: a call Chatwoot accepted leaves a
+// row, and a call it refused leaves none, whichever door (console REST, API key, MCP) made it.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -238,8 +233,8 @@ describe.skipIf(!dbUp)(
           tenantId,
           name: "Atendente",
           systemPrompt: "Você é prestativa.",
-          // A RUNNABLE model configuration, which the hand-back asks for since issue #495 review
-          // round 6: an unconfigured agent cannot answer, so it cannot be handed a conversation.
+          // NOTE: a RUNNABLE model configuration, which the hand-back requires: an unconfigured
+          // agent cannot answer, so it cannot be handed a conversation.
           modelConfig: {
             provider: "openai-compatible",
             model: "local",
@@ -390,11 +385,10 @@ describe.skipIf(!dbUp)(
       });
     });
 
-    // THE MATRIX, and it is here because the same finding arrived twice: a row that carries what the
-    // caller ASKED for instead of where the write LANDED. Every action of this family that writes
-    // through `mirrorConsoleWrite` gets a row from the same value the broadcast publishes, so the two
-    // cannot disagree about the same instant, and each one is measured on a conversation whose live
-    // state answers something other than the request.
+    // THE MATRIX: a row carries where the write LANDED, not what the caller ASKED for. Every action
+    // that writes through `mirrorConsoleWrite` gets a row from the same value the broadcast
+    // publishes, and each is driven on a conversation whose live state answers something other than
+    // the request.
     const liveConversation = (over: {
       status: string;
       assigneeId?: number | null;
@@ -736,7 +730,7 @@ describe.skipIf(!dbUp)(
     });
 
     // An untargeted handoff makes no assignment request, and the open toggle does not auto-assign
-    // anybody (measured on 4.17.0). With the post-write state unusable, the row must not invent a
+    // anybody (Chatwoot 4.17.0). With the post-write state unusable, the row must not invent a
     // human: the holder is the one the conversation already had.
     test("an untargeted handoff with no usable state does not invent a holder", async () => {
       await clearAudit();
@@ -784,8 +778,8 @@ describe.skipIf(!dbUp)(
       expect(row?.actorType).toBe("api_key");
     });
 
-    // One logical mutation, one row. The transport used to write its own AFTER the service returned,
-    // so a service that records as well would double every MCP apply.
+    // One logical mutation, one row: a transport that also recorded after the service returned
+    // would double every MCP apply.
     test("an apply over MCP leaves exactly one row, and it names the mcp door", async () => {
       await clearAudit();
       const id = await seedConversation(4008);
@@ -797,8 +791,8 @@ describe.skipIf(!dbUp)(
       ) => {
         const url = typeof input === "string" ? input : input.toString();
         seen.push(url);
-        // Authenticates like Chatwoot does: a blank token is a 401 before any authorization runs, so a
-        // stub that accepts anything is what let issue #79 ship.
+        // NOTE: authenticates like Chatwoot does: a blank token is a 401 before any authorization
+        // runs, and a stub that accepts anything would hide a request sent without one.
         const token =
           new Headers(init?.headers).get(CHATWOOT_AUTH_HEADER) ?? "";
         if (!token) return new Response("unauthorized", { status: 401 });

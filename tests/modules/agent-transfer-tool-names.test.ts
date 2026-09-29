@@ -6,34 +6,14 @@ import { loadMcpToolsForAgent } from "@/graph/tools/mcp";
 import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { exportAgent, importAgent } from "@/modules/agents/transfer";
 
-// ── THE NAME A TOOL IS EXPOSED UNDER HAS TO SURVIVE AN EXPORT/IMPORT (#412) ──
+// THE NAME A TOOL IS EXPOSED UNDER HAS TO SURVIVE AN EXPORT/IMPORT. The import reassigns ids, so
+// nothing id-derived may reach `mcp__<slug>__<tool>` (the slug fallback for a name with no ASCII, the
+// `_N` suffix order between two names that cut to one slug) or pick which of two calendar instances
+// `dropDuplicateToolNames` keeps: an inverted order makes each name answer to the OTHER server,
+// silently (docs/graph.md, "Tool names").
 //
-// `mcp__<slug>__<tool>` is built from the connection's display name, which the export carries and the
-// import matches on — so the name is portable, EXCEPT where the row id leaks into it:
-//
-//   1. the FALLBACK. A display name that yields no ASCII at all (emoji-only, CJK-only) sanitizes to
-//      the empty string, and `mcpServerSlug` fell back to `mcp_<connId>`. The import assigns a new
-//      id, so the same connection came back under a different name.
-//   2. the `_N` SUFFIX. Two display names that agree on the first 28 characters cut to one slug, and
-//      `namespacedToolName` hands the plain name to whichever server is assembled FIRST and `_2` to
-//      the next. #410 anchored that order on `mcpServerConnectionId asc`, which is stable inside a
-//      tenant and means nothing across one: on the destination the ids are whatever the import
-//      assigned, and when the destination ALREADY has one of the two (it is reused, keeping its own
-//      id) the pair can invert. Both names still exist and each one now answers to the OTHER server.
-//
-// (2) is the sharper half and needs no emoji: two ordinary ASCII names are enough. It is also the
-// failure that cannot be seen, because nothing is missing — the model calls the name it was given and
-// reaches a different backend.
-//
-// The same sentence holds one row down in the grant order. Two instances of one integration catalog
-// expose exactly the same tool names, `dropDuplicateToolNames` keeps whichever is assembled first,
-// and that order was `integrationInstanceId asc` for the same reason. An import that inverts it points
-// the agent's calendar tools at the other calendar account.
-//
-// Driven through the REAL exportAgent/importAgent on the application role. NOT the superuser one:
-// that role bypasses RLS and the import's component lookup does not filter by tenant (it relies on
-// the scope), so it matches the SOURCE tenant's rows, creates nothing, and the whole file reports the
-// opposite result.
+// Driven on the application role, NOT the superuser one: that role bypasses RLS, and the import's
+// component lookup relies on the scope, so it would match the SOURCE tenant's rows and create nothing.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -59,8 +39,8 @@ const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
 // Plainly different to a reader, identical to the slug: the cut is at 28 characters and they agree on
-// the first 28. Alphabetically ALPHA sorts before BETA, and that is the order the fix restores; the
-// ids are what put them the other way round on the destination.
+// the first 28. ALPHA sorts before BETA by name; the ids put them the other way round on the
+// destination.
 const ALPHA = "Acme CRM production connection alpha";
 const BETA = "Acme CRM production connection beta";
 // No letter, no digit: sanitizes to the empty string and takes the fallback branch.

@@ -16,19 +16,14 @@ import {
 } from "@/modules/tenant-settings/service";
 import { countingBase } from "../utils/counting-base";
 
-// The tenant / tenant-settings / branding trail, moved into the services that perform the writes.
-//
-// Six actions existed and all six were written by an MCP tool after the service had committed, so
-// the identical change made from the console left no row at all. Measured, not assumed: every
-// probe in this file failed on the base. Three more things this family made visible, each with a
-// test below that dies if the fix is undone:
-//
+// The tenant / tenant-settings / branding trail, recorded by the services that perform the writes,
+// so the console and MCP leave the same row. Three invariants of this family, each with a test:
 //   - `audit_logs.tenant_id` is ON DELETE CASCADE, so a `tenant.delete` row filed under the tenant
-//     it deletes is erased by the same statement. The deployment's most consequential act, gone.
+//     it deletes would be erased by the same statement; it is fleet-level.
 //   - A SUPER_ADMIN writes whichever tenant the PATH names, not the one its header selects, so a row
-//     keyed on the context lands in a stranger's trail.
-//   - Removing a branding asset had no audit name on any transport, and none of the branding writes
-//     ran inside a transaction, so no row could ever have been atomic with them.
+//     keyed on the context would land in a stranger's trail.
+//   - Removing a branding asset is recorded, and the branding writes run inside a transaction, so
+//     the row is atomic with them.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -115,6 +110,16 @@ describe.skipIf(!dbUp)("the tenant family records from its services", () => {
         `DELETE FROM tenants WHERE id IN (${tenantId}, ${otherId})`,
       );
       await su.$executeRawUnsafe(`DELETE FROM app_branding WHERE id = 1`);
+<<<<<<< ours
+=======
+      // @full-only
+      // NOTE: the asset writers put real files on disk, and a leftover is not inert: the next run's
+      // set comparison sees it.
+      for (const f of brandingFiles()) {
+        await unlink(`${BRANDING_DIR}/${f}`).catch(() => {});
+      }
+      // @full-only-end
+>>>>>>> theirs
     }
     await su?.$disconnect();
     await app?.$disconnect();
@@ -281,9 +286,8 @@ describe.skipIf(!dbUp)("the tenant family records from its services", () => {
     expect(await rows({ tenantId })).toEqual([]);
   });
 
-  // THREE rows since #444, and the new one is the point of that issue: the credential this tool
-  // fills is created by the vault service, which records it now. Before, `langfuse.connect` was the
-  // only trace that a credential had appeared, and it names the connection rather than the entry.
+  // THREE rows: the credential this tool fills is created by the vault service, which records it;
+  // `langfuse.connect` names the connection rather than the entry.
   test("langfuse_connect records the credential, the settings write and the connection as the three writes they are", async () => {
     await clearAudit();
     const res = await langfuseConnect(
@@ -309,4 +313,144 @@ describe.skipIf(!dbUp)("the tenant family records from its services", () => {
     expect(dump).not.toContain("pk-lf-probe");
     expect(dump).not.toContain("sk-lf-probe");
   });
+<<<<<<< ours
+=======
+  // @full-only
+
+  // ── branding: fleet-level, and the actor's selected tenant does not move it ──
+
+  test("a branding write records at the fleet level even when the actor has a tenant selected", async () => {
+    await clearAudit();
+    await updateBrandingColors(
+      // A SUPER_ADMIN with a tenant chosen in the console: the row must NOT follow that choice.
+      superAdmin({ tenantId }),
+      { brandName: "Contoso" },
+      appDb,
+    );
+    expect(await rows({ tenantId })).toEqual([]);
+    const fleet = await rows({ tenantId: null, actorId: USER });
+    expect(fleet.map((r) => r.action)).toEqual(["branding.set"]);
+    expect(fleet[0]?.target).toBe("branding:global");
+    expect(fleet[0]?.before).toMatchObject({ brandName: null });
+    expect(fleet[0]?.after).toMatchObject({ brandName: "Contoso" });
+  });
+
+  test("a branding write and its row share ONE transaction", async () => {
+    const { base, total } = countingBase(appDb);
+    await updateBrandingColors(superAdmin(), { brandName: "Fabrikam" }, base);
+    expect(total()).toBe(1);
+  });
+
+  test("uploading and REMOVING an asset both leave a row, and neither carries bytes", async () => {
+    await clearAudit();
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const file = new Blob([png], { type: "image/png" });
+    await setBrandingAsset(superAdmin(), "logo", "dark", file, appDb);
+    await clearBrandingAsset(superAdmin(), "logo", "dark", appDb);
+    const fleet = await rows({ tenantId: null, actorId: USER });
+    expect(fleet.map((r) => r.action)).toEqual([
+      "branding_asset.set",
+      // Removal had no audit name on ANY transport before: no MCP tool clears an asset.
+      "branding_asset.clear",
+    ]);
+    expect(fleet[0]?.after).toMatchObject({ present: true, bytes: 4 });
+    expect(fleet[1]?.before).toMatchObject({ present: true });
+    expect(fleet[1]?.after).toMatchObject({ present: false });
+    expect(projectionText(fleet)).not.toContain("PNG");
+    await unlink(assetPath("logo-dark.png")).catch(() => {});
+  });
+
+  // The file side of the same transaction, which is the half Postgres does not roll back for you.
+  //
+  // Both writes touch disk as well as the row, so both have an ordering that only matters when the
+  // transaction does not commit. The upload drops the file it superseded and the clear drops the one
+  // it is unlinking, and each happens AFTER the commit rather than beside the write: deleting the
+  // file first would leave a failed update's row naming bytes that are already gone.
+  test("the file a row names is written before the row, and outlives a rollback", async () => {
+    const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], {
+      type: "image/png",
+    });
+    const png2 = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d])], {
+      type: "image/png",
+    });
+    const nameOf = async () =>
+      (await su?.appBranding.findUnique({ where: { id: 1 } }))
+        ?.logoDarkKey as string;
+
+    await setBrandingAsset(superAdmin(), "logo", "dark", png, appDb);
+    const live = await nameOf();
+    expect(await Bun.file(assetPath(live)).exists()).toBe(true);
+
+    // A DIFFERENT image of the same format. The deterministic name this replaced would have made
+    // this the same path, so the public image would already have changed before the transaction.
+    const filesBefore = brandingFiles();
+    await expect(
+      setBrandingAsset(superAdmin(), "logo", "dark", png2, failingAudit(appDb)),
+    ).rejects.toThrow();
+    expect(await nameOf()).toBe(live);
+    expect((await Bun.file(assetPath(live)).arrayBuffer()).byteLength).toBe(4);
+    // The file this call wrote and then rolled back left nothing behind. Compared as a SET against a
+    // snapshot, not as a count: the directory is shared with whatever else the run touched.
+    expect(brandingFiles()).toEqual(filesBefore);
+
+    await expect(
+      clearBrandingAsset(superAdmin(), "logo", "dark", failingAudit(appDb)),
+    ).rejects.toThrow();
+    expect(await nameOf()).toBe(live);
+    expect(await Bun.file(assetPath(live)).exists()).toBe(true);
+
+    // Committing is what publishes, and it drops the file it superseded.
+    await setBrandingAsset(superAdmin(), "logo", "dark", png2, appDb);
+    const live2 = await nameOf();
+    expect(live2).not.toBe(live);
+    expect((await Bun.file(assetPath(live2)).arrayBuffer()).byteLength).toBe(5);
+    expect(await Bun.file(assetPath(live)).exists()).toBe(false);
+
+    // Re-uploading the SAME bytes lands on the same digest, so there is nothing to drop.
+    await setBrandingAsset(superAdmin(), "logo", "dark", png2, appDb);
+    expect(await nameOf()).toBe(live2);
+    expect(await Bun.file(assetPath(live2)).exists()).toBe(true);
+
+    // And the same re-upload ROLLING BACK must not take the live file with it. Content addressing
+    // is what makes this case exist: identical bytes make the name this call "created" the name the
+    // row already had, so the cleanup has to ask the committed row rather than assume.
+    await expect(
+      setBrandingAsset(superAdmin(), "logo", "dark", png2, failingAudit(appDb)),
+    ).rejects.toThrow();
+    expect(await nameOf()).toBe(live2);
+    expect(await Bun.file(assetPath(live2)).exists()).toBe(true);
+
+    await clearBrandingAsset(superAdmin(), "logo", "dark", appDb);
+    expect(await Bun.file(assetPath(live2)).exists()).toBe(false);
+  });
+
+  test("clearing an asset that was never set writes nothing, row or no row", async () => {
+    await su?.$executeRawUnsafe(`DELETE FROM app_branding WHERE id = 1`);
+    await clearAudit();
+    await clearBrandingAsset(superAdmin(), "favicon", "light", appDb);
+    expect(await rows({ tenantId: null, actorId: USER })).toEqual([]);
+
+    // The other half, and the one that was wrong: a row EXISTS because something else was
+    // configured, and this variant is already null. Writing anyway would record a clearance reading
+    // `present: false` on both sides and bump `updatedAt`, which is the version every visitor's
+    // browser keys its cached copy of every asset on.
+    await updateBrandingColors(superAdmin(), { brandName: "SOMETHING" }, appDb);
+    const before = await su?.appBranding.findUnique({ where: { id: 1 } });
+    await clearAudit();
+    const answered = await clearBrandingAsset(
+      superAdmin(),
+      "favicon",
+      "light",
+      appDb,
+    );
+    expect(await rows({ tenantId: null, actorId: USER })).toEqual([]);
+    // A no-op still answers with the branding that IS stored. Reporting the default would have the
+    // console re-render the fallback identity over a configured one.
+    expect(answered.brandName).toBe("SOMETHING");
+    expect(
+      (await su?.appBranding.findUnique({ where: { id: 1 } }))?.updatedAt,
+    ).toEqual(before?.updatedAt as Date);
+  });
+  // @full-only-end
+>>>>>>> theirs
 });

@@ -9,14 +9,11 @@ import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Chatwoot's first-response SLA, asked where it is WRITTEN FROM — the real receiver
-// (`processChatwootDelivery`), not `mirrorChatwootEvent` called by hand.
-//
-// Every fixture here is a `message_created` or a `conversation_updated`, and that is the point:
-// those are the events an Agent Bot actually receives. `AgentBotListener` never dispatches
-// `conversation_created` to a bot, so a rule that needed one would pass under a fixture that builds
-// it and report nothing in production. Nothing in this file constructs that event.
-//
+// Chatwoot's first-response SLA, asked where it is WRITTEN FROM: the real receiver
+// (`processChatwootDelivery`), not `mirrorChatwootEvent` called by hand. Every fixture is a
+// `message_created` or a `conversation_updated`, the events an Agent Bot receives: `AgentBotListener`
+// never dispatches `conversation_created` to a bot, so a rule needing one would pass here and report
+// nothing in production.
 // The agent is `enabled: false` on purpose. It is the case the numbers exist for (an inbox the bot
 // never touches still has a service level) and it proves the mirror does not come from the agent
 // pipeline: nothing here can run a turn, ask a model, or write LlmUsage.
@@ -268,8 +265,8 @@ describe.skipIf(!dbUp)("the mirrored first-response SLA", () => {
   });
 
   test("a conversation the mirror first meets mid-dialogue keeps the source's numbers", async () => {
-    // No conversation_created is delivered here — an Agent Bot never gets one. The row is born from
-    // a message that is NOT the conversation's first, and the readings it carries are still the
+    // NOTE: no conversation_created is delivered here: an Agent Bot never gets one. The row is born
+    // from a message that is NOT the conversation's first, and the readings it carries are still the
     // whole conversation's, because Chatwoot computed them from its messages table.
     const convId = 9812;
     const createdAt = Math.floor(Date.now() / 1000) - 86_400;

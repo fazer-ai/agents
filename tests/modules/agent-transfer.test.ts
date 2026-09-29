@@ -56,8 +56,8 @@ function ctx(): TenantContext {
 }
 
 // Which schedule an integration config points at, decided in one place because the export asks it
-// twice — once to BUNDLE the schedule and once to rewrite the id to a portable NAME — and the two
-// answering differently is a bundle whose config still carries a destination-invalid id.
+// twice (once to BUNDLE the schedule, once to rewrite the id to a portable NAME), and two different
+// answers would leave a bundle whose config still carries a destination-invalid id.
 //
 // The padded row is the one that matters. `resolveBusinessHoursId` in the Calendar toolpack trims
 // before reading, so `" 7 "` is a WORKING configuration pointing at schedule 7; a reader here that
@@ -104,7 +104,7 @@ describe("the schedule an integration config references", () => {
 });
 
 // A dry run discloses every component array a bundle can carry, and the list is read off the
-// schema so it cannot forget one. Code tools (issue #363) are one of them.
+// schema so it cannot forget one. Code tools are one of them.
 describe("the component arrays a bundle can carry", () => {
   test("include code tools", () => {
     expect(EXPORTED_COMPONENT_KEYS).toContain("codeTools");
@@ -152,9 +152,9 @@ describe.skipIf(!dbUp)("agent export/import", () => {
           credentialRef: `vault:${llmKey.id}`,
         },
         settings: {
-          // TWO credentials in one block: the voice engine's and the speech rewrite's own model.
-          // The second one is the one a per-block loop misses, and then export refuses the whole
-          // agent (a tenant-local vault:<id> survives into the file) while import cannot rewire it.
+          // NOTE: TWO credentials in one block: the voice engine's and the speech rewrite's own
+          // model. A per-block loop misses the second, and then export refuses the whole agent (a
+          // tenant-local vault:<id> survives into the file) while import cannot rewire it.
           tts: {
             mode: "never",
             credentialRef: `vault:${ttsKey.id}`,
@@ -162,9 +162,8 @@ describe.skipIf(!dbUp)("agent export/import", () => {
             normalizeProvider: "openai",
             normalizeCredentialRef: `vault:${llmKey.id}`,
           },
-          // And the block that three private copies of the credential-path list did not know: with it
-          // out of the list, this same export threw 500 ("unresolved vault reference"), because the
-          // id survived translation and the leak defense caught it.
+          // NOTE: A credential path outside the shared list survives translation, and the leak
+          // defense then fails this export with "unresolved vault reference".
           guardrails: {
             enabled: true,
             provider: "openai",
@@ -317,7 +316,7 @@ describe.skipIf(!dbUp)("agent export/import", () => {
 
   // A BUNDLE IS A FILE, and it can be exported today and imported in a year. The migration repairs
   // the rows that exist when it runs; nothing repairs a backup, so restoring one taken before the
-  // rename would come back missing the tool — the one failure a backup exists to prevent. And the
+  // rename would come back missing the tool, the one failure a backup exists to prevent. And the
   // precondition is worse than the grant: the runtime matches by whatever name it finds, so it goes
   // inert while the editor still shows it, and the write boundary then refuses the agent's next
   // settings save because it checks the key against the native catalog.
@@ -396,20 +395,12 @@ describe.skipIf(!dbUp)("agent export/import", () => {
     expect(native.enabledTools).toEqual(["set_labels"]);
   });
 
-  // THE HALF THAT DECIDES WHETHER `__proto__` IS A PROBLEM AT ALL, and it is measured here because
-  // this is the only path that can carry the key that far. Import copies the settings bag verbatim
-  // on purpose (a rule on a non-native tool name has to survive a transfer), and the bundle's
-  // `settings` is a `z.record` whose values are `z.unknown()` — passed by reference, own keys intact.
-  // So the key reaches the `agent.create` call, where REST and MCP would both have lost it.
-  //
-  // It still never reaches Postgres: Prisma rebuilds the JSON value, and the rebuild drops it. That
-  // is what makes the whole question moot — `agent_settings_get` can never return an entry under this
-  // name, so there is nothing for the MCP surface's ignored tombstone to fail to delete. Nothing in
-  // src/ enforces this; the assertion below is the enforcement, and it reads the RAW jsonb rather
-  // than the Prisma-decoded row, because a value stored and not decoded would look identical there.
-  //
-  // Note the payload is parsed, not written as a literal: `__proto__:` in an object literal sets the
-  // prototype instead of creating the own key this is about. See tool-keyed-unwritable.test.ts.
+  // Import is the only path that carries a `__proto__` key as far as `agent.create` (it copies the
+  // settings bag verbatim, values `z.unknown()`, own keys intact), and Prisma's JSON rebuild drops it
+  // there. Nothing in src/ enforces this, so this assertion does, on the RAW jsonb: a value stored
+  // and not decoded would look identical in the Prisma row. The payload is parsed because
+  // `__proto__:` in an object literal sets the prototype. Why this makes the MCP tombstone moot:
+  // docs/mcp.md, "Write tools".
   test("an imported tool rule named `__proto__` never reaches storage (Prisma drops it)", async () => {
     const exp = await exportAgent(ctx(), agentId, appDb);
     const imported = {
@@ -433,16 +424,15 @@ describe.skipIf(!dbUp)("agent export/import", () => {
       SELECT settings::text AS j FROM agents WHERE id = ${BigInt(agent.id)}`;
     expect(raw[0]?.j.includes("__proto__")).toBe(false);
     const stored = JSON.parse(raw[0]?.j ?? "{}") as Record<string, unknown>;
-    // Everything else in both blocks is stored untouched: nothing here sanitizes, and `constructor`
-    // is the control — every bit as prototype-ish, and it IS storable, because zod keeps it and both
-    // runtime maps are null-prototype.
+    // NOTE: Everything else in both blocks is stored untouched: nothing here sanitizes, and
+    // `constructor` is the control, just as prototype-ish and storable, because zod keeps it and
+    // both runtime maps are null-prototype.
     const pre = stored.toolPreconditions as Record<string, unknown>;
     const gui = stored.toolGuidance as Record<string, unknown>;
     expect((pre.handoff_to_human as Record<string, unknown>).key).toBe("cpf");
     expect(gui.handoff_to_human).toBe("peça o CPF");
-    // `getOwnPropertyDescriptor`, because `gui.constructor` reads the INHERITED one — which is also
-    // the reason a name like this is worth a control: it is stored as an own key and only an own-key
-    // read proves it.
+    // NOTE: `getOwnPropertyDescriptor`, because `gui.constructor` reads the INHERITED one: only an
+    // own-key read proves it was stored.
     expect(Object.getOwnPropertyDescriptor(gui, "constructor")?.value).toBe(
       "sobrevive",
     );
@@ -516,9 +506,9 @@ describe.skipIf(!dbUp)("agent export/import", () => {
         role: "TENANT_ADMIN",
       };
       const { agent, warnings } = await importAgent(dstCtx, exp, appDb);
-      // A credential absent in the target tenant is no longer dropped: a reference-only PENDING entry
-      // is created (name + kind) and the ref stays wired, so the operator only fills the secret. The
-      // warning deep-links to the vault (where the pending secret is filled), not the editor field.
+      // NOTE: A credential absent in the target tenant is not dropped: a reference-only PENDING
+      // entry is created (name + kind) and the ref stays wired, so the operator only fills the
+      // secret. The warning deep-links to the vault (where the secret is filled), not the editor.
       for (const name of ["llm-key", "tts-key"]) {
         const w = warnings.find(
           (x) => x.code === "credentialPending" && x.params?.name === name,
@@ -739,11 +729,10 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
         urlTemplate: "https://api.example.com/o/{{id}}",
         allowedHosts: ["api.example.com"],
         credentialRef: `vault:${key.id}`,
-        // A lookup that answers 404 for "no such order" is the canonical case of issue #59, and it
-        // is exactly the sort of tool an operator moves between instances.
+        // NOTE: A lookup that answers 404 for "no such order" is the canonical expected status,
+        // and exactly the sort of tool an operator moves between instances.
         expectedStatuses: [404],
-        // Same shape of statement, one issue later (#352): what this tool's response says about an
-        // appointment.
+        // NOTE: What this tool's response says about an appointment.
         appointment: {
           action: "book",
           idPath: "data.id",
@@ -751,8 +740,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
           reminderOffsetsHours: [24, 1],
           askConfirmationOnLast: true,
         },
-        // And the same shape again, one issue later still (#456): what the response looks like by
-        // the time it reaches the model.
+        // NOTE: What the response looks like by the time it reaches the model.
         outputSchema: {
           mode: "template",
           template: "Pedido {{data.id}} — {{data.status}}",
@@ -836,7 +824,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       },
       appDb,
     );
-    // A code tool the agent is granted (issue #363). Its body is the "wiring", the way an HTTP
+    // NOTE: A code tool the agent is granted. Its body is the "wiring", the way an HTTP
     // tool's request is, and it travels in the bundle for the same reason; the grant names it by
     // NAME, like every other component.
     const codeTool = await suDb.codeToolDefinition.create({
@@ -947,12 +935,12 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(c?.mcpServers.find((m) => m.name === "tools-server")).toBeDefined();
     expect(c?.integrations.find((i) => i.name === "Pagamentos")).toBeDefined();
     expect(c?.knowledgeBases.find((k) => k.name === "Catálogo")).toBeDefined();
-    // The contact-footer switch changes what a search returns (issue #747), so it travels.
+    // NOTE: The contact-footer switch changes what a search returns, so it travels.
     expect(
       c?.knowledgeBases.find((k) => k.name === "Catálogo")?.stripContactFooters,
     ).toBe(true);
-    // A DOCUMENT grant names a template by SLUG, so the template itself has to travel with it —
-    // otherwise the import has a grant pointing at a component the destination never heard of, and
+    // NOTE: A DOCUMENT grant names a template by SLUG, so the template itself has to travel with
+    // it, or the import has a grant pointing at a component the destination never heard of, and
     // the only thing it can do is drop the grant with a warning.
     expect(
       c?.documentTemplates?.find((tpl) => tpl.slug === "orcamento")?.blocks
@@ -975,13 +963,13 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(json).not.toContain("src-hash");
     expect(json).not.toContain("inboundSecretRef");
     expect(json).not.toContain("routeTokenHash");
-    // meta block present (item 2).
+    // NOTE: meta block present.
     expect(exp.meta?.appVersion).toBeDefined();
   });
 
   // A template's prose is TENANT CONTENT, like a knowledge-base document's text. The scanner cannot
   // tell an operator writing "api_key=abcdef" into a quote's terms from a leaked credential, and
-  // refusing there would make that operator's own agent unexportable — the guard blocking the thing
+  // refusing there would make that operator's own agent unexportable, the guard blocking the thing
   // it exists to protect.
   test("exports a template whose prose looks like a secret", async () => {
     const starter = documentStarter("quote", "pt-BR");
@@ -1047,10 +1035,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     }
   });
 
-  // Review round 1, finding 3, and its sibling. The import writes STRAIGHT to the DB, so every
-  // field it copies has to pass through the reader the runtime uses — `expectedStatuses` and
-  // `appointment` already did, `outputSchema` and `method` did not. A hand-edited bundle is the
-  // only way to reach either, which is exactly why nothing caught them.
+  // The import writes STRAIGHT to the DB, so every field it copies (here `outputSchema` and
+  // `method`) has to pass through the reader the runtime uses. A hand-edited bundle is the only way
+  // to reach them, so no other test would catch a gap.
   test("a hand-edited bundle cannot plant a template the runtime would ignore", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -1077,9 +1064,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     const td = await suDb.toolDefinition.findFirst({
       where: { tenantId: dstTenant, name },
     });
-    // DROPPED rather than stored: parked in the column it would read as "no template" at runtime
-    // and as a legacy JSON Schema in the editor, with nothing anywhere saying why the projection
-    // stopped. The import cannot refuse the way the service does — a bundle is handed over whole.
+    // NOTE: DROPPED rather than stored: parked in the column it would read as "no template" at
+    // runtime and as a legacy JSON Schema in the editor, with nothing saying why the projection
+    // stopped. The import cannot refuse the way the service does: a bundle is handed over whole.
     expect(td?.outputSchema).toEqual({});
     await suDb.$executeRawUnsafe(
       `DELETE FROM agent_tool_selections WHERE agent_id = ${BigInt(agent.id)}`,
@@ -1169,12 +1156,12 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       where: { tenantId: dstTenant, name: "lookup_order" },
     });
     expect(td?.label).toBe("Buscar pedido");
-    // Review finding, round 1: a declaration dropped in transfer makes the destination resume
-    // alerting on a status the operator had already ruled a result, with nothing to point at.
+    // NOTE: A declaration dropped in transfer makes the destination resume alerting on a status
+    // the operator had already ruled a result, with nothing to point at.
     expect(td?.expectedStatuses).toEqual([404]);
-    // (#352) And the appointment declaration, for the same reason one issue later: a bundle that
-    // drops it re-imports a tool that books appointments the destination never hears about — no
-    // follow-up pause, no reminder, nothing in the prompt, and nothing saying why.
+    // NOTE: Same for the appointment declaration: a bundle that drops it re-imports a tool that
+    // books appointments the destination never hears about (no follow-up pause, no reminder,
+    // nothing in the prompt, and nothing saying why).
     expect(td?.appointment).toEqual({
       action: "book",
       // The provider travels with it too: it is half the appointment identity, so a bundle that
@@ -1185,9 +1172,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       reminderOffsetsHours: [24, 1],
       askConfirmationOnLast: true,
     });
-    // (#456) And the response template, for the third time the same reason: a bundle that drops it
-    // re-imports a tool that hands the model the first 4000 characters of a response instead of the
-    // four fields the operator picked, and nothing anywhere says the projection stopped.
+    // NOTE: Same for the response template: a bundle that drops it re-imports a tool that hands
+    // the model the first 4000 characters of a response instead of the fields the operator picked,
+    // and nothing anywhere says the projection stopped.
     expect(td?.outputSchema).toEqual({
       mode: "template",
       template: "Pedido {{data.id}} — {{data.status}}",
@@ -1216,14 +1203,14 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     });
     expect(kb?.chunkSize).toBe(500);
     expect(kb?.stripContactFooters).toBe(true);
-    // KB created empty (no bundled documents). Creation is SILENT now — only a reuse warns — so no
+    // NOTE: KB created empty (no bundled documents). Creation is SILENT (only a reuse warns), so no
     // kbCreatedEmpty warning fires; the empty base just exists.
     expect(warnings.some((w) => w.code === "kbCreatedEmpty")).toBe(false);
     const kbDocCount = await suDb.knowledgeDocument.count({
       where: { tenantId: dstTenant, knowledgeBaseId: kb?.id },
     });
     expect(kbDocCount).toBe(0);
-    // Business hours were recreated on the destination and linked to the agent — also silently.
+    // NOTE: Business hours were recreated on the destination and linked to the agent, also silently.
     const bh = await suDb.businessHours.findFirst({
       where: { tenantId: dstTenant, name: "Comercial" },
     });
@@ -1251,7 +1238,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       "MCP",
       "RAG",
     ]);
-    // The template itself was recreated on the destination, and the grant points at THAT row —
+    // NOTE: The template itself was recreated on the destination, and the grant points at THAT row:
     // a DOCUMENT grant carrying the source tenant's id would reach across the fence or resolve to
     // nothing at all.
     const dstTemplate = await suDb.documentTemplate.findFirst({
@@ -1335,10 +1322,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   // The gate and the WRITE have to agree on what the value is. `templateNameSchema` trims before it
-  // measures, so a name padded with whitespace passes a check the raw string would fail — and this
-  // path wrote the raw string. The name becomes the tool's title, which every granted agent carries
-  // on every turn, so a hand-edited bundle could plant a huge one past a bound that had just
-  // approved it.
+  // measures, so a name padded with whitespace passes a check the raw string would fail; writing the
+  // raw string would let a hand-edited bundle plant a huge tool title, carried by every granted agent
+  // on every turn, past a bound that had just approved it.
   test("stores the name the metadata gate approved, not the raw one", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -1374,8 +1360,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   // Names are unique per tenant, so a bundle can arrive with a free slug and a name this account
-  // already uses. That has to be a WARNING: it used to reach the unique index and come back as a
-  // driver error, which fails the whole import over one component.
+  // already uses. That has to be a WARNING: reaching the unique index would come back as a driver
+  // error, which fails the whole import over one component.
   test("warns instead of failing when the bundle's template name is taken here", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -1411,17 +1397,12 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     );
   });
 
-  // The pre-check above answers "free", and the whole import runs inside ONE transaction. So a writer
-  // that commits in the window between that answer and the insert does not cost one template: the
-  // P2002 aborts the transaction, every statement after it fails with "current transaction is
-  // aborted", and the operator loses the entire import — agent, tools, knowledge bases — to a race.
-  //
-  // A `catch` around the insert cannot fix that, which is the trap here: it looks like the remedy and
-  // makes the failure less legible, because the transaction is already dead when it runs. Only NOT
-  // RAISING works, which is what `ON CONFLICT DO NOTHING` does.
-  //
-  // The race is produced rather than waited for: the interceptor below commits the colliding row on
-  // the SUPERUSER connection — a different transaction — at the moment the pre-check answers.
+  // The whole import runs in ONE transaction, so a writer that commits between the pre-check's "free"
+  // and the insert makes the P2002 abort it, and the operator loses the entire import (agent, tools,
+  // knowledge bases) to a race. A `catch` around the insert cannot fix that, because the transaction
+  // is already dead when it runs; only NOT RAISING works (`ON CONFLICT DO NOTHING`). The race is
+  // produced, not waited for: the interceptor commits the colliding row on the SUPERUSER connection
+  // (another transaction) at the moment the pre-check answers.
   test("survives a writer that takes the name between the check and the insert", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -1440,10 +1421,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
         documentTemplate: {
           async findFirst({ args, query }) {
             const answer = await query(args);
-            // Fired on the NAME pre-check specifically, and measured rather than assumed: the first
-            // version fired on the SLUG one, so the name check that runs next found the row and took
-            // the ordinary warning path. The test passed against the unfixed code — a race test that
-            // never reaches the race, which is worse than no test.
+            // NOTE: Fired on the NAME pre-check specifically: firing on the SLUG one lets the name
+            // check that runs next find the row and take the ordinary warning path, a race test that
+            // never reaches the race and passes against unfixed code.
             const asksByName =
               (args as { where?: { name?: unknown } }).where?.name !==
               undefined;
@@ -1490,18 +1470,12 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     });
   });
 
-  // Same race, three more call sites (issue #221). Each of the loops below pre-checks a DIFFERENT
-  // unique index, so a note on the test above would prove nothing about them: `ON CONFLICT DO
-  // NOTHING` has to be reached through each loop's own data. What a lost race costs is not the
-  // component but the IMPORT: the P2002 aborts the enclosing transaction, every statement after it
-  // fails with "current transaction is aborted", and the operator loses the agent, the grants and
-  // the knowledge bases to a collision over one name.
-  //
-  // The component is renamed to a value unique to this run rather than reusing the fixture's: the
-  // fresh-tenant import test above already created `lookup_order`, `tools-server` and `Pagamentos`
-  // on the destination and left them there, so a pre-check against those answers "taken" and the
-  // race never happens. The grant still names the fixture, which is why the import warns
-  // `httpGrantNotFound` here and the assertions do not look at that one.
+  // Same race, three more call sites. Each loop below pre-checks a DIFFERENT unique index, so
+  // `ON CONFLICT DO NOTHING` has to be reached through each loop's own data; a lost race costs the
+  // whole IMPORT, as above. The component gets a name unique to this run: the fresh-tenant import
+  // test above left `lookup_order`, `tools-server` and `Pagamentos` on the destination, so a
+  // pre-check against those answers "taken" and the race never happens. The grant still names the
+  // fixture, which is why the import warns `httpGrantNotFound` here and nothing asserts on it.
   test("survives a writer that takes the HTTP tool name between the check and the insert", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -1520,11 +1494,10 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     const racing = appDb.$extends({
       query: {
         toolDefinition: {
-          // Hooked on the INSERT, which is the far side of the window: the pre-check has already
-          // answered "free" by the time this runs, so taking the name here is exactly the writer
-          // that commits in between. (It used to hook the pre-check's `findFirst`; the check now
-          // reads every name and compares the model-facing spelling, so there is no per-name query
-          // left to recognise.)
+          // NOTE: Hooked on the INSERT, the far side of the window: the pre-check has already
+          // answered "free", so taking the name here is exactly the writer that commits in between.
+          // The pre-check reads every name and compares the model-facing spelling, so it has no
+          // per-name query to hook.
           async createMany({ args, query }) {
             const rows = (args as { data?: unknown }).data;
             const first = (Array.isArray(rows) ? rows[0] : rows) as
@@ -1562,9 +1535,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     // The reuse the pre-check reports says nothing about the body, and neither does the reuse the
     // insert reports: the tool that survived is the one already there, with its own body.
     expect(warnings.some((w) => w.code === "httpToolBodyIgnored")).toBe(false);
-    // What the issue is actually about: the statements AFTER the losing insert still ran. The grants
-    // are written at the very end of the same transaction, so a count here is the proof that it was
-    // never aborted.
+    // NOTE: The statements AFTER the losing insert still ran. The grants are written at the very
+    // end of the same transaction, so a count here is the proof that it was never aborted.
     const grants = await suDb.agentToolSelection.count({
       where: { agentId: BigInt(agent.id) },
     });
@@ -1706,7 +1678,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   // A discriminated union refuses the WHOLE array on one unknown arm, so a grant of a source a newer
-  // release added would make an otherwise importable agent unimportable — and say nothing about
+  // release added would make an otherwise importable agent unimportable, and say nothing about
   // which part was the problem. Dropped with a count instead.
   test("skips a grant whose source this build does not know", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
@@ -1724,9 +1696,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     const skipped = warnings.find(
       (w) => w.code === "unknownGrantSourceSkipped",
     );
-    // NOTE: BOTH names, and the pair is the assertion. `count` is what the console pluralizes on; `n` is
-    // what an editor from the previous release still reads, and dropping it mid-overlap would render
-    // a literal "{{n}}" there (issue #513, docs/deploy.md).
+    // NOTE: BOTH names, and the pair is the assertion. `count` is what the console pluralizes on;
+    // `n` is what an editor from the previous release still reads, and dropping it mid-overlap
+    // would render a literal "{{n}}" there (docs/deploy.md).
     expect(skipped?.params).toEqual({ count: 1, n: 1 });
     // …and everything else still arrived.
     const grants = await suDb.agentToolSelection.findMany({
@@ -1743,7 +1715,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   // The other side of the tolerant fallback: a grant from a source we DO know, missing its required
-  // field, is a broken bundle — not a newer version's doing. Swallowing it would drop the grant in
+  // field, is a broken bundle, not a newer version's doing. Swallowing it would drop the grant in
   // silence and blame the wrong thing.
   test("refuses a malformed grant from a source it knows", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
@@ -1792,14 +1764,11 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   test("a bundle this build produces still carries riskTier, for an older importer (issues #137, #149)", async () => {
-    // The other direction of the same compatibility, and the reason the KEY outlives the column.
-    // The bundle format is versioned as a whole, so an instance one release behind parses OUR bundle
-    // with a schema where `riskTier` is REQUIRED — dropping the key from the export would make every
-    // bundle this build writes unimportable there. Since #149 the value is a constant rather than
-    // the row's, because the schema `@ignore`s the column so this build never names it in SQL, which
-    // is what lets the next release drop it. What this pins is the SHAPE the
-    // older importer requires, which is all that stands between a bundle and a validation failure at
-    // the destination. The literal below stands in for that older required-field check.
+    // NOTE: Why the KEY outlives the column: an instance one release behind parses OUR bundle with
+    // a schema where `riskTier` is REQUIRED, so dropping it would make every bundle this build
+    // writes unimportable there. The value is a constant because the schema `@ignore`s the column
+    // (this build never names it in SQL, so the next release can drop it). The literal below stands
+    // in for that older required-field check.
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
     });
@@ -1810,8 +1779,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   test("a bundle carrying the retired riskTier still imports (issue #137)", async () => {
-    // Bundles exported before the risk tier was dropped carry `riskTier` on every HTTP tool. The
-    // import schema is a plain z.object, which STRIPS unknown keys — the removal is only safe as
+    // NOTE: Bundles exported before the risk tier was dropped carry `riskTier` on every HTTP tool.
+    // The import schema is a plain z.object, which STRIPS unknown keys; the removal is only safe as
     // long as that holds, so pin it against a bundle from an older instance.
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -1902,7 +1871,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   // A BUNDLE IS A FILE, so it can arrive carrying a key the write boundary now refuses. Refusing the
   // import would block a restore over a key that governs nothing and that the operator cannot edit
   // out of a bundle; it is dropped instead. Same boundary as the rename above, opposite verdict,
-  // because there the old key's value still governs something (issue #568 review).
+  // because there the old key's value still governs something.
   test("a bundle carrying the retired taxonomy imports, without it", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -1943,9 +1912,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   // A BUNDLE CARRIES THE TAXONOMY TOO, and dropping it here would mean a RESTORE loses exactly what
-  // an UPGRADE keeps (review round 28). The sentence is the migration's, word for word: the test
-  // over there asserts the same text for the same input, which is the only thing keeping a SQL
-  // renderer and a TS one from drifting apart.
+  // an UPGRADE keeps. The sentence is the migration's, word for word:
+  // tests/prisma/drop-retired-label-settings-migration.test.ts asserts the same text for the same
+  // input, which is the only thing keeping a SQL renderer and a TS one from drifting apart.
   test("a bundle's configured taxonomy becomes the tool's guidance, not nothing", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -1983,11 +1952,11 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   test("a restored classifier gets the label tool its guidance names", async () => {
-    // The old classifier applied labels itself and consulted no allowlist, so a bundle can carry an
-    // explicit NATIVE grant with no label tool in it and still have classified. Restoring it with
-    // the migrated sentence and without the tool leaves an agent that runs, spends a model call per
-    // burst, and classifies nothing. Step 1c of the migration does this for rows that exist when it
-    // runs; a bundle is a file (review round 31).
+    // NOTE: The retired classifier applied labels itself and consulted no allowlist, so a bundle
+    // can carry an explicit NATIVE grant with no label tool in it and still have classified.
+    // Restoring it with the migrated sentence and without the tool leaves an agent that spends a
+    // model call per burst and classifies nothing. Step 1c of the migration repairs the rows that
+    // exist when it runs; a bundle is a file.
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
     });
@@ -2079,7 +2048,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
 
   // A BUNDLE OVER THE PROTECTED-LABEL CEILING IS CLAMPED, not refused and not stored whole: the
   // reader stops AT the ceiling, so a longer stored list would show the operator guards that guard
-  // nothing, and the agent it produced would fail its own first save (issue #568, review round 23).
+  // nothing, and the agent it produced would fail its own first save.
   test("a bundle with more guards than the ceiling imports clamped, and says so", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -2098,8 +2067,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     const stored = (row.settings as Record<string, Record<string, string[]>>)
       .setLabels?.protected;
     expect(stored?.length).toBe(PROTECTED_LABELS_MAX);
-    // The list kept is the FRONT of the bundle's, which is the same one the reader would have
-    // honoured — so what the console shows and what the tool guards are the same set.
+    // NOTE: The list kept is the FRONT of the bundle's, the same one the reader would have
+    // honoured, so what the console shows and what the tool guards are the same set.
     expect(stored?.[0]).toBe("guarda-0");
     expect(stored?.at(-1)).toBe(`guarda-${PROTECTED_LABELS_MAX - 1}`);
     // And the operator is told, with the count of guards that are gone.
@@ -2112,7 +2081,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
   });
 
-  // The allowed list (issue #638) is clamped by the same rule, and says so under its own code.
+  // The allowed list is clamped by the same rule, and says so under its own code.
   test("a bundle with more allowed labels than the ceiling imports clamped, and says so", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -2172,7 +2141,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   // A BUNDLE IS A FILE, and one exported before the rename instructs the model to call a tool the
-  // catalog no longer has. The keys around it already move; the prose did not (review round 26).
+  // catalog does not have. The keys around it move, and so does the prose.
   test("a bundle whose PROMPT names the old tool has it moved, and says so", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -2220,9 +2189,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
   });
 
-  // A LEGACY NAME IS ONLY LEGACY WHILE NOTHING ELSE ANSWERS TO IT. Once `assign_label` stopped being
-  // native, an operator became free to create a tool under it — and a bundle from THAT agent means
-  // its own tool by the key. Mapped blindly, the guard moves to `set_labels` while the custom tool,
+  // A LEGACY NAME IS ONLY LEGACY WHILE NOTHING ELSE ANSWERS TO IT. `assign_label` is not native, so
+  // an operator can create a tool under it, and a bundle from THAT agent means its own tool by the
+  // key. Mapped blindly, the guard moves to `set_labels` while the custom tool,
   // which keeps its name, runs unguarded.
   test("a rule for a CUSTOM tool named assign_label stays on it", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
@@ -2250,7 +2219,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     const conds =
       (row.settings as Record<string, Record<string, { key?: string }>>)
         .toolPreconditions ?? {};
-    // `assign_label` is a legal custom name now, so the tool is NOT renamed and neither is its rule.
+    // NOTE: `assign_label` is a legal custom name, so the tool is NOT renamed and neither is its rule.
     expect(conds.assign_label?.key).toBe("da_custom");
     expect(conds.set_labels).toBeUndefined();
     await suDb.toolDefinition.deleteMany({
@@ -2259,11 +2228,11 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     await suDb.agent.deleteMany({ where: { id: BigInt(agent.id) } });
   });
 
-  // Round 15 of PR #485: a bundle authored before a native took the name. The assembly reserves
-  // every native name (#457), so a tool imported under one would exist in the console and never
-  // reach the model, and this path writes straight to the DB, past the service's refusal. Renamed
-  // the way the migration renames a row already there — the first free `<name>_N` — and warned;
-  // the grant follows the tool, not the name it had in the bundle.
+  // A bundle authored before a native took the name. The assembly reserves every native name, so a
+  // tool imported under one would exist in the console and never reach the model, and this path
+  // writes straight to the DB, past the service's refusal. Renamed the way the migration renames a
+  // row already there (the first free `<name>_N`) and warned; the grant follows the tool, not the
+  // name it had in the bundle.
   test("a bundled HTTP tool named after a native lands under a free name, warned, and its grant follows", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -2278,8 +2247,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       (g) => g?.source === "HTTP" && g.tool === "lookup_order",
     );
     if (grant?.source === "HTTP") grant.tool = "skip_reply";
-    // `skip_reply_2` already exists on the destination: it is REUSED, warned, the way any same-name
-    // component is — a second import of the same bundle lands on the same row (round 17), and the
+    // NOTE: `skip_reply_2` already exists on the destination: it is REUSED, warned, the way any
+    // same-name component is, so a second import of the same bundle lands on the same row and the
     // bundle's tool is not stored under a third name.
     const existing = await suDb.toolDefinition.create({
       data: {
@@ -2325,10 +2294,10 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(grants.map((g) => g.toolDefinitionId)).toEqual([row?.id ?? null]);
   });
 
-  // Round 16: the free name was chosen against the rows already stored, and a bundle can carry the
-  // suffix itself — `calculator` and `calculator_2` side by side. The native one took `_2`, the
-  // genuine `_2` was then "reused" onto it, and two grants for one row broke the unique index and
-  // aborted the whole import. The bundle's own names are taken before any suffix is chosen.
+  // A bundle can carry the suffix itself (`calculator` and `calculator_2` side by side). Choosing the
+  // free name only against stored rows would give the native one `_2`, "reuse" the genuine `_2` onto
+  // it, and two grants for one row would break the unique index and abort the whole import. The
+  // bundle's own names are taken before any suffix is chosen.
   test("a bundle carrying both a native name and its suffix keeps two rows and two grants", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -2378,10 +2347,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     );
   });
 
-  // Round 29: the destination can hold two rows the model reads as one name. `Foo` and `foo` were
-  // both legal while the unique index was case-sensitive, and both derive `foo`. Picking `[0]` off
-  // an unordered read bound the grant to whichever the database listed first, which is another URL
-  // with another credential, and nothing on screen said which one the agent got.
+  // The destination can hold two rows the model reads as one name: legacy `Foo` and `foo` both
+  // derive `foo`. Picking `[0]` off an unordered read would bind the grant to whichever the database
+  // lists first, another URL with another credential, with nothing on screen saying which one.
   test("a grant whose name matches two stored rows is reported, never guessed", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -2438,13 +2406,11 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     });
   });
 
-  // Round 21: two DISTINCT bundled tools whose names normalize to the same identifier -- "buscar
-  // pedido" and "buscar_pedido", which a hand-edited bundle or an older build can both carry --
-  // resolved to the same stored name. The walk only consults `taken` once a native, a RAG tool or
-  // the OTHER kind holds the name, so nothing stopped the second one, and the row the first had
-  // just written was then read as a same-kind REUSE: the second definition was discarded and both
-  // grants collapsed onto one row. A name a previous component of this loop CLAIMED is occupied
-  // like any other, so the second takes the next suffix.
+  // Two DISTINCT bundled tools can normalize to the same identifier ("buscar pedido" and
+  // "buscar_pedido"). Without counting names this loop already CLAIMED, the row the first just wrote
+  // would read as a same-kind REUSE for the second: its definition discarded and both grants
+  // collapsed onto one row. A claimed name is occupied like any other, so the second takes the next
+  // suffix.
   test("two bundled tools whose names normalize alike keep two rows", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -2513,12 +2479,10 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     );
   });
 
-  // Round 21: the `send_<slug>` names were reserved for every template the bundle CARRIES, before
-  // anything asked whether those templates would be imported at all. A template the loop below
-  // skips -- unreadable, or named like one the destination already has -- publishes no tool, so a
-  // bundled tool renamed off its name was renamed for nothing: the grant follows the rename, but a
-  // prompt naming the tool stops finding it, and no document tool ever took the name. Only the
-  // templates that will actually claim a name reserve one.
+  // Only the templates that will actually be imported reserve their `send_<slug>` name. A template
+  // the loop below skips (unreadable, or named like one the destination already has) publishes no
+  // tool, so renaming a bundled tool off that name would be for nothing: the grant follows the
+  // rename, but a prompt naming the tool stops finding it.
   test("a tool keeps its name when the template that would take it is skipped", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -2572,10 +2536,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(warnings.some((w) => w.code === "httpToolRenamed")).toBe(false);
   });
 
-  // Round 17: the free name was chosen past the rows already stored, so importing the same bundle
-  // twice stored its native-named tool twice (`_2`, then `_3`), each agent bound to its own copy.
-  // The renamed name is decided by the bundle alone, and a row already under it is reused like
-  // every other same-name component.
+  // The renamed name is decided by the bundle alone, and a row already under it is reused like every
+  // other same-name component. Choosing it past the stored rows would store the tool again on every
+  // import of the same bundle (`_2`, then `_3`), each agent bound to its own copy.
   test("importing the same bundle twice binds both agents to one renamed row", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -2615,10 +2578,10 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     }
   });
 
-  // Round 18: a bundle can carry the same native-named component twice (a hand-edited file). Each
-  // occurrence chose a new suffix and the last one overwrote the grant mapping, so one grant went
-  // to the last row and the two of them collided on the unique index and aborted the import. The
-  // name is chosen once per bundle name, and two grants on one row are one grant.
+  // A bundle can carry the same native-named component twice (a hand-edited file). A suffix per
+  // occurrence would let the last one overwrite the grant mapping, and the two grants would collide
+  // on the unique index and abort the import. The name is chosen once per bundle name, and two
+  // grants on one row are one grant.
   test("the same native-named tool twice in a bundle lands once, and its two grants collapse to one", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -2671,8 +2634,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     ]);
   });
 
-  // Round 20: the console derives the name from the label on every save, so a renamed row whose
-  // label still derived the reserved name could not be saved again from there. The label follows
+  // The console derives the name from the label on every save, so a renamed row whose label still
+  // derived the reserved name could not be saved again from there. The label follows
   // the name where it derived the old one, and is the operator's own otherwise.
   test("a renamed tool's label follows the name where the console would derive the old one", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
@@ -2694,7 +2657,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(normalizeToolName(row?.label ?? "")).toBe("private_note_2");
   });
 
-  // Round 22: a label at the authoring limit (200) that derives the name cannot carry the suffix
+  // A label at the authoring limit (200) that derives the name cannot carry the suffix
   // without passing the limit, which would lock the row out of the console the other way; it
   // becomes the name itself, which derives to itself.
   test("a renamed tool's label at the authoring limit becomes the name", async () => {
@@ -2716,8 +2679,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     expect(row?.label).toBe("react_to_message_2");
   });
 
-  // Round 16: the rename was recorded and reported before the checks that can skip the component,
-  // so a native-named tool with a method this version does not send was announced as imported
+  // The rename is recorded and reported only after the checks that can skip the component, or a
+  // native-named tool with a method this version does not send would be announced as imported
   // under a name no row carries, next to the warning that it was not imported.
   test("a native-named tool skipped for its method is not reported as renamed", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
@@ -2760,7 +2723,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     ).toBe(true);
   });
 
-  // Issue #363: a code tool is a component like an HTTP tool. The body travels with the bundle
+  // A code tool is a component like an HTTP tool. The body travels with the bundle
   // (it is the tool; a bundle without it imports a grant pointing at nothing) and the grant names
   // the tool by NAME. The body stays under the secret scanner: a key pasted into a comparison is
   // exactly what the scanner exists to catch, and there is no credential to name instead.
@@ -2850,7 +2813,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   // The same two rules an HTTP tool answers to, and a third one of its own. A native's name is
-  // reserved by the assembly (#457), so the tool moves to the first free `<name>_N`. And ONE
+  // reserved by the assembly, so the tool moves to the first free `<name>_N`. And ONE
   // namespace reaches the model: the service refuses a code tool named like an HTTP tool where it
   // is typed (code-tools/service.ts), so a stored HTTP row under the name cannot be reused the way
   // a same-kind row is, and the tool moves to a free name too. Either way the grant follows.
@@ -2901,7 +2864,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       orderBy: { name: "asc" },
     });
     // NOTE: the label follows the name where the console would derive the old one from it, the
-    // same rule as an HTTP tool's (round 20 of PR #485).
+    // same rule as an HTTP tool's.
     expect(rows.map((r) => [r.name, r.label])).toEqual([
       ["consultar_cep_2", "Consultar CEP 2"],
       ["set_labels_2", "Set labels 2"],
@@ -2928,7 +2891,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   // A bundle is a FILE: hand-edited, or written by a version whose rules differ. A name the model
-  // could never be offered (empty, spaced, past 64 characters) does not just store a bad row — the
+  // could never be offered (empty, spaced, past 64 characters) does not just store a bad row: the
   // provider refuses the whole function list, so the agent granted it answers nothing at all. The
   // import writes past the service that would refuse it, so it normalizes to the same identifier
   // the console derives from a label, and says so as a rename. The label and the description are
@@ -2976,7 +2939,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
 
   // The namespace the import writes into is four kinds, not two: a document template publishes
   // `send_<slug>` and is assembled BEFORE either tool table, so a bundled tool landing on that name
-  // is the one the assembly drops — the grant survives, pointing at a row the model never sees.
+  // is the one the assembly drops, and the grant survives pointing at a row the model never sees.
   test("a bundled code tool named after a document's tool moves out of its way", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
@@ -3054,9 +3017,9 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       name: "send_contrato_bundle",
       label: "Send contrato bundle",
     });
-    // A REAL starter, not an empty shell: only a template that will actually be imported reserves
-    // its `send_<slug>` name (round 21), and `blocks: []` is refused by the validity gate — the
-    // fixture would then be asserting a rename for a template that never publishes anything.
+    // NOTE: A REAL starter, not an empty shell: only a template that will actually be imported
+    // reserves its `send_<slug>` name, and `blocks: []` is refused by the validity gate, so the
+    // fixture would be asserting a rename for a template that never publishes anything.
     const bundleStarter = documentStarter("quote", "pt-BR");
     if (!bundleStarter) throw new Error("no starter");
     bundle.components.documentTemplates = [
@@ -3105,8 +3068,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
 
   // The import writes past the services in BOTH directions, so the namespace question is asked in
   // both: a bundled template whose `send_<slug>` a destination tool already holds is skipped, the
-  // way one whose name another template holds is. And a bundle can carry blank metadata — hand
-  // edited, or written by a build with other rules — which the services refuse and which would
+  // way one whose name another template holds is. And a bundle can carry blank metadata (hand
+  // edited, or written by a build with other rules), which the services refuse and which would
   // leave a row nothing can save again.
   test("a bundled template whose tool name is taken is skipped, and blank metadata falls back to the name", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
@@ -3193,8 +3156,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     );
     if (!code) throw new Error("bundle missing validar_cpf");
     code.name = "schema_ajustado";
-    // Standard JSON Schema: accepted, and converted to the compact map — which is a change the
-    // operator has to know about, because it is the contract the model is offered.
+    // NOTE: Standard JSON Schema: accepted, and converted to the compact map, which is a change
+    // the operator has to know about, because it is the contract the model is offered.
     code.inputSchema = {
       type: "object",
       properties: { cpf: { type: "string" } },
@@ -3235,7 +3198,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
 
   // Reuse is decided by the name the MODEL sees. A row written before names were canonicalized is
   // stored `Legado_Foo` and answers to `legado_foo`, so an exact lookup would miss it and insert a
-  // SECOND row under the same model-facing name — two catalog entries, one name, and the assembly
+  // SECOND row under the same model-facing name: two catalog entries, one name, and the assembly
   // dropping whichever came second.
   test("an imported tool whose name a legacy row already answers to is reused, not duplicated", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
@@ -3287,7 +3250,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   // A rename has to fit inside the ceiling it is renaming for. A 64-character name is legal, and
-  // `<name>_2` is 66 — refused by the provider with the whole function list for a code tool, and
+  // `<name>_2` is 66: refused by the provider with the whole function list for a code tool, and
   // normalized back to the original by the HTTP builder, which silently undoes the rename.
   test("a rename of a name already at the 64-character ceiling stays inside it", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
@@ -3331,7 +3294,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       where: { tenantId: dstTenant, name: stored?.name },
       select: { label: true },
     });
-    // Round 26: asserted as the QUESTION, not as the text. `${long} 2` is 66 characters and
+    // NOTE: asserted as the QUESTION, not as the text. `${long} 2` is 66 characters and
     // normalizes back to 64 with the suffix cut, so it derives the name the row could not take:
     // the console submits that name on every save and the tool cannot be saved again. What the
     // label owes is deriving the name the row actually has.
@@ -3434,8 +3397,8 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     ).toBe(0);
   });
 
-  // `run_code` was a native between PR #485 and issue #363, so a bundle exported in that window
-  // names it in the NATIVE allowlist. The write boundary refuses an unknown native where it is
+  // `run_code` was once a native, so a bundle exported from such a build names it in the NATIVE
+  // allowlist. The write boundary refuses an unknown native where it is
   // typed; here the name is dropped, said, and the rest of the allowlist lands.
   test("a NATIVE grant naming a tool this build does not have imports without it, warned", async () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb);
@@ -3611,8 +3574,8 @@ describe.skipIf(!dbUp)("agent export/import with KB documents", () => {
       where: { tenantId: dstTenant, kind: "RAG_INGEST" },
     });
     expect(jobsAfter).toBe(jobsBefore);
-    // Creating the docs is SILENT now (only reuse warns); the editor's live "needs indexing" alert
-    // surfaces them instead. So no kbDocsImported warning — the UNINDEXED rows above are the contract.
+    // NOTE: Creating the docs is SILENT (only reuse warns); the editor's live "needs indexing"
+    // alert surfaces them instead, so no kbDocsImported warning: the UNINDEXED rows are the contract.
     expect(warnings.some((w) => w.code === "kbDocsImported")).toBe(false);
   });
 
@@ -3623,8 +3586,8 @@ describe.skipIf(!dbUp)("agent export/import with KB documents", () => {
     });
     const { warnings } = await importAgent(dstCtx(), exp, appDb);
     const reused = warnings.find((w) => w.code === "kbReusedDocsSkipped");
-    // NOTE: Field NAMES pinned, for the same reason as `unknownGrantSourceSkipped` above: `n` here would
-    // pluralize on a count that is not there (issue #513).
+    // NOTE: Field NAMES pinned, for the same reason as `unknownGrantSourceSkipped` above: `n` here
+    // would pluralize on a count that is not there.
     expect(Object.keys(reused?.params ?? {}).sort()).toEqual([
       "count",
       "n",
@@ -3645,7 +3608,7 @@ describe.skipIf(!dbUp)("agent export/import with KB documents", () => {
   });
 });
 
-// Issue #794: a base that mirrors a help center portal keeps what makes it a mirror across an export.
+// A base that mirrors a help center portal keeps what makes it a mirror across an export.
 // Without the article ids, setting the source again at the destination would read every imported
 // document as curated and create a second copy of each article.
 describe.skipIf(!dbUp)("agent export/import with a knowledge source", () => {

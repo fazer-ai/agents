@@ -1,16 +1,10 @@
-// A CONTROL COMMAND THAT DID NOT RUN, AND THE LINE THAT SAYS SO.
-//
-// `/teste` and `/reset` are the operator driving the tooling from inside the conversation, and a
-// delivery drops one in three measured ways: the agent it resolved is not in `test` mode (issue
-// #270's dead end, and the ordinary case of an operator typing `/teste` at a production agent), the
-// delivery arrived on another persona's route and leaves the command to the inbox's own persona
-// (correct behaviour), or the inbox's agent has no Chatwoot bot identity at all, in which case EVERY
-// route fails closed and the command runs nowhere.
-//
-// All three end the same way from the outside: the operator types the command and nothing happens.
-// #311 gave the first one a process log line, which is not what an operator reads; #274 settled that
-// the operator-facing signal for a silence is the `ExecutionLog` row, because that is what the Logs
-// page shows. This file asserts that row (issue #317).
+// A CONTROL COMMAND THAT DID NOT RUN, AND THE LINE THAT SAYS SO. A delivery drops `/teste` or
+// `/reset` in three ways: the agent it resolved is not in `test` mode, the delivery arrived on
+// another persona's route and leaves the command to the inbox's own persona (correct behaviour), or
+// the inbox's agent has no Chatwoot bot identity, so EVERY route fails closed. From outside all three
+// look the same: nothing happens. The operator-facing signal for a silence is the `ExecutionLog` row
+// (the Logs page shows it; a process log line is not what an operator reads), so this file asserts
+// that row.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
@@ -118,8 +112,8 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
 
     testAgentId = await mkAgent("Teste", "test");
     prodAgentId = await mkAgent("Producao", "production");
-    // The agent with no Chatwoot identity: bound to an inbox, in test mode, and unable to speak
-    // anywhere — every bot-token call it makes goes out with an empty token (issue #79).
+    // NOTE: the agent with no Chatwoot identity: bound to an inbox, in test mode, and unable to
+    // speak anywhere, since every bot-token call it makes goes out with an empty token.
     const orphanAgentId = await mkAgent("SemPersona", "test");
     for (const agentId of [testAgentId, prodAgentId]) {
       await suDb.chatwootAgentBot.create({
@@ -191,8 +185,8 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
       // second command (`agent_bots_for` sends one message to the conversation's assigned bot and
       // to the inbox's).
       sameMessage?: boolean;
-      // A payload that names no inbox ANYWHERE, which is the shape issue #270's fallback exists
-      // for: the agent is resolved from the conversation the mirror already stored.
+      // NOTE: a payload that names no inbox ANYWHERE: the agent is resolved from the conversation
+      // the mirror already stored.
       sparse?: boolean;
     } = {},
   ): Promise<void> {
@@ -241,11 +235,9 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
 
   // Scoped to the conversation by its INTERNAL id, and SETTLED rather than polled: the emit is
   // fire-and-forget, so an unscoped read answers with a neighbour's row and one that does not wait
-  // reads before the row lands. This used to poll for the count the test EXPECTS, which answered the
-  // presence cases correctly and could not answer the absence ones at all: a poll for zero spends
-  // its whole deadline and then reports the empty read it opened with. `flowLogRows` settles the
-  // scheduled writes first, so both directions are answered by the same read (#419), and `expected`
-  // stops being an input to HOW the read is taken.
+  // reads before the row lands. A poll for zero cannot answer an absence (it spends its deadline and
+  // reports the empty read it opened with); `flowLogRows` settles the scheduled writes first, so
+  // presence and absence are answered by the same read (see tests/utils/flowlog.ts).
   async function commandRows(convId: number) {
     const conv = await suDb.conversation.findFirst({
       where: { tenantId, chatwootConversationId: convId },
@@ -323,9 +315,8 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
     });
   });
 
-  // Measured live before this was written: one `/teste` on a production agent whose conversation is
-  // assigned to another persona's bot produced TWO identical `inactive` rows, one per route. They
-  // are not the same fact, and the pair now reads as one command: the inbox's persona reports what
+  // One `/teste` on a production agent whose conversation is assigned to another persona's bot
+  // arrives on two routes, and the two rows are not the same fact: the inbox's persona reports what
   // stopped it, the other route reports that it deferred.
   test("the fan-out reports one command, not the same drop twice", async () => {
     await deliver(9202, PROD_INBOX, "/teste", OUR_BOT);
@@ -345,11 +336,10 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
     });
   });
 
-  // The sparse-payload path (#270): no inbox anywhere on the event, so `inboxAgentRuntime` answers
-  // nothing and the agent comes from the conversation the mirror already stored. The row has to name
-  // that agent, and the route question has to be asked against ITS persona — reading only the
-  // payload's runtime writes a row attributed to nobody, and calls both fan-out deliveries the same
-  // drop, on the one path where the ids cost nothing to keep.
+  // The sparse-payload path: no inbox anywhere on the event, so `inboxAgentRuntime` answers nothing
+  // and the agent comes from the conversation the mirror stored. The row has to name that agent and
+  // ask the route question against ITS persona: reading only the payload's runtime writes a row
+  // attributed to nobody and calls both fan-out deliveries the same drop.
   test("a sparse payload names the agent the conversation stored", async () => {
     await deliver(9203, PROD_INBOX, "bom dia", OUR_BOT);
     await deliver(9203, PROD_INBOX, "/teste", OUR_BOT, { sparse: true });
@@ -373,8 +363,8 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
   });
 
   // The line reports the delivery; it must not be able to drop it. The persona's token is
-  // undecryptable here, which is what `loadAgentBot` would have thrown on — after the mirror
-  // committed, leaving the ledger row on PROCESSING with nothing running and no upstream retry.
+  // undecryptable here, which `loadAgentBot` would throw on after the mirror committed, leaving the
+  // ledger row on PROCESSING with nothing running and no upstream retry.
   test("an unreadable persona still writes the line, and the delivery finishes", async () => {
     await deliver(9501, BAD_TOKEN_INBOX, "/teste", OUR_BOT);
     const rows = await commandRows(9501);

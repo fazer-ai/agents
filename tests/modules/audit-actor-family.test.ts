@@ -19,24 +19,13 @@ import { upsertApproval } from "@/modules/mcp/oauth/consent";
 import { issueAccessToken } from "@/modules/mcp/oauth/tokens";
 import { personData } from "@/tests/utils/person";
 
-// THE ACTOR FAMILY (issue #400): revoking a token, changing a role, inviting a user.
-//
-// The last three groups of #306, and the only ones with no MCP twin at all — every action name here
-// is invented rather than moved down, because before this nothing on any transport recorded them.
-// They are also the group a compliance reader asks about first: who was invited, who became an
-// admin, whose token was revoked.
-//
-// The question this file exists to hold is WHICH TRAIL each row joins, because these are the
-// families whose tables carry no tenant to follow. `users`, `invitations` and `mcp_oauth_*` are all
-// global (no RLS), so the row's tenant is a decision and not a consequence, and it is made twice in
-// two different directions:
-//
+// THE ACTOR FAMILY: revoking a token, changing a role, inviting a user. The question this file holds
+// is WHICH TRAIL each row joins: `users`, `invitations` and `mcp_oauth_*` are global (no RLS), so the
+// row's tenant is a decision, made in two directions (docs/api-and-fleet.md, "A row about a person"):
 //   - the MCP OAuth surface is the DEPLOYMENT's, so its rows are fleet-level (`tenant_id NULL`);
 //   - a user's or an invitation's row belongs to the tenant of the SUBJECT, which for a SUPER_ADMIN
-//     acting across tenants is never the actor's own.
-//
-// Getting the second one wrong is invisible from the writing side and total from the reading side:
-// the tenant the change happened to would never see it.
+//     acting across tenants is never the actor's own. Keyed wrong, the tenant the change happened to
+//     never sees it.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -323,9 +312,8 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
       select: { revokedAt: true },
     });
     expect(access.revokedAt).not.toBeNull();
-    // The half that used to live in its own statement, outside any transaction: a failure between
-    // the two left the access token denylisted and the refresh alive, which is the client minting a
-    // fresh access token on the spot.
+    // NOTE: both revocations share one transaction: a failure between them would leave the access
+    // token denylisted and the refresh alive, and the client would mint a fresh access token.
     expect(
       await suDb.mcpOAuthRefreshToken.count({
         where: { clientId: client.clientId, revokedAt: null },
@@ -482,10 +470,10 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
   });
 
   test("a cross-tenant id never takes the lock it is about to be refused for", async () => {
-    // `users` and `invitations` are global, so an unscoped `FOR UPDATE` by id locks a row the caller
-    // has no business touching — BEFORE the scoped read decides it is a 404. A tenant admin could
+    // NOTE: `users` and `invitations` are global, so an unscoped `FOR UPDATE` by id locks a row the
+    // caller has no business touching, BEFORE the scoped read decides it is a 404. A tenant admin could
     // then hold another tenant's user row for the length of their own transaction, and somebody
-    // else's role change, deletion or login write waits behind it. Round 1 on #498.
+    // else's role change, deletion or login write waits behind it.
     //
     // Asserted as an ORDER and not as a duration: the refusal has to arrive while the lock is still
     // held by somebody else. Unscoped, the call blocks until the holder commits, so `released` would
@@ -675,9 +663,8 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
   });
 
   test("every recorded mutation reads its `before` under the row's own lock", async () => {
-    // Per FUNCTION, not per module. A fence that only counts locks across a file passes while one of
-    // its mutations has none: measured — removing the lock from `updateUserRole` entirely left the
-    // module-wide check green, because `deleteUser` still carried one.
+    // NOTE: per FUNCTION, not per module: a fence counting locks across a file passes while one of
+    // its mutations has none, because a sibling still carries one.
     //
     // The lock is what makes the recorded `before` the value this write actually replaced. Without
     // it two acts on the same row both read the same one, and the trail shows one of the two changes
@@ -726,10 +713,9 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
         /FOR (?:NO KEY )?UPDATE|FOR KEY SHARE|FOR SHARE/g,
       );
       expect(`${path}: ${locks?.length ?? 0}`).not.toBe(`${path}: 0`);
-      // Uniform on purpose: a module that mixes `FOR UPDATE` with `FOR NO KEY UPDATE` deadlocks over
-      // a key nobody was changing, and a deadlock has no green test to show it (#395). Nothing
-      // references these rows by foreign key, so nothing takes KEY SHARE on them and `FOR UPDATE` is
-      // the mode that fits.
+      // NOTE: uniform on purpose: a module that mixes `FOR UPDATE` with `FOR NO KEY UPDATE`
+      // deadlocks over a key nobody was changing, and a deadlock has no green test. Nothing takes KEY
+      // SHARE on these rows (no foreign key points at them), so `FOR UPDATE` fits.
       expect(`${path}: ${new Set(locks).size}`).toBe(`${path}: 1`);
       expect(`${path}: ${locks?.[0]}`).toBe(`${path}: FOR UPDATE`);
     }

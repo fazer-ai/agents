@@ -196,7 +196,7 @@ describe("armRedirectChatFollowUp", () => {
     });
   });
 
-  // Review round 12 of #355. The stamp is what lets the mirror's retirement tell the ladder it is
+  // The stamp is what lets the mirror's retirement tell the ladder it is
   // ending from the one it is starting, and both directions matter: an event that states an episode
   // must put it on the job, and an event that states none must leave the key OFF rather than write
   // a null that reads as "the cleared episode".
@@ -540,15 +540,11 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     await suDb.tenant.delete({ where: { id: tenantId } }).catch(() => {});
   });
 
-  // The caller with no job to ask about. A widget resolve reaches the closing straight from a webhook,
-  // so every `stillWanted` fence inside is one this path skips — while /reset CLEARS the at-most-once
-  // anchor on purpose, so the funnel can be tested again. Between this run's claim and its sends, that
-  // clear used to leave it free to post the goodbye and resolve the sibling on an episode the operator
-  // had just been told was erased.
-  //
-  // The reset lands in exactly that window. The rendezvous is the claim re-read itself, because the
-  // claim's own write holds the row until it commits: a second connection writing there first blocks
-  // on the lock instead of simulating anything.
+  // The caller with no job to ask about: a widget resolve reaches the closing straight from a webhook,
+  // skipping every `stillWanted` fence, while /reset CLEARS the at-most-once anchor on purpose. A
+  // clear between this run's claim and its sends must stop the goodbye. The rendezvous is the claim
+  // re-read itself, because the claim's own write holds the row until it commits: a second connection
+  // writing there first blocks on the lock instead of simulating anything.
   const restoreAnchor = async () => {
     await suDb.conversation.updateMany({
       where: { tenantId, chatwootConversationId: WIDGET_CONV },
@@ -556,9 +552,9 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     });
   };
 
-  // Review round 10 of #355. A timed close (`closeChat: true`) posts the goodbye on the chat and
-  // resolves it BEFORE it looks the WhatsApp sibling up, and every fence past that first send is
-  // deliberately skipped — half a goodbye is worse than a duplicate. So the sibling lookup is the one
+  // A timed close (`closeChat: true`) posts the goodbye on the chat and resolves it BEFORE it looks
+  // the WhatsApp sibling up, and every fence past that first send is deliberately skipped (half a
+  // goodbye is worse than a duplicate). So the sibling lookup is the one
   // read that happens after this run is already committed to an episode, and re-reading the pairing
   // there lets a re-entry landing inside those round trips redirect the WhatsApp half: a move sends
   // the goodbye to, and RESOLVES, the conversation the NEW episode just paired with.
@@ -806,14 +802,10 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     }
   });
 
-  // The other ordering, and the one the anchor alone cannot see. Above, the reset lands AFTER the
-  // claim and the post-claim re-read catches it. Here it lands BEFORE: the resolve trigger reaches
-  // this function straight from a webhook, so it carries no `stillWanted`, and while it is loading
-  // Issue #222. The closing MESSAGES and RESOLVES the conversation it picks, and it used to pick the
-  // contact's most-recently-active conversation on the entry inbox. Writing into an older entry
-  // conversation is enough to make it the latest, so the goodbye and the resolve land on a thread that
-  // was never this episode's origin. Here the decoy is deliberately newer, and the stored pairing
-  // still wins.
+  // The closing MESSAGES and RESOLVES the conversation it picks. The contact's most recently active
+  // entry conversation is the wrong pick: writing into an older one makes it the latest, and the
+  // goodbye lands on a thread that was never this episode's origin. The decoy is newer, and the stored
+  // pairing still wins.
   test("the closing acts on the STORED origin, not the most recently active entry conversation", async () => {
     await restoreAnchor();
     const DECOY_CONV = 7173;
@@ -834,7 +826,7 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
         chatwootConversationId: DECOY_CONV,
         status: "pending",
         threadId: `${tenantId}:${instanceId}:${DECOY_CONV}`,
-        // NEWER than the origin: the old predicate would take this one.
+        // NOTE: NEWER than the origin: the recency fallback would take this one.
         lastEventAt: new Date(Date.now() + 60_000),
         lastInboundAt: new Date(),
       },
@@ -875,10 +867,10 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     }
   });
 
-  // the conversation, the agent, the bot and the client, /reset clears the anchor. The claim then
-  // SUCCEEDS -- `redirectClosedAt: null` reads the same whether nobody ever closed it or the command
-  // just wiped it -- and every check downstream is happy with the timestamp this run itself wrote.
-  // The customer gets a goodbye on an episode the operator was told had been erased.
+  // The other ordering, which the anchor alone cannot see: the reset lands BEFORE the claim. The
+  // resolve trigger carries no `stillWanted`, and while it loads the conversation, the agent, the bot
+  // and the client, /reset clears the anchor. The claim then SUCCEEDS (`redirectClosedAt: null` reads
+  // the same whether nobody ever closed it or the command just wiped it), so it needs its own fence.
   test("a closing that claims a reset-cleared anchor sends nothing", async () => {
     await restoreAnchor();
     const s = stubClient();
@@ -952,7 +944,7 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
 
   // The hole the comparison alone leaves. If `lastInboundAt` was ALREADY null when this run read it,
   // /reset writes null too and the predicate matches straight across the command it is fencing — the
-  // claim succeeds and the goodbye goes out exactly as before. Every other column the command touches
+  // claim succeeds and the goodbye goes out anyway. Every other column the command touches
   // goes to null or to zero, so none of them closes it either. A caller with no job AND no token to
   // compare therefore does not get to claim at all.
   test("a jobless closing with no episode token does not claim", async () => {
@@ -1052,17 +1044,11 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     }
   });
 
-  // THE JOB IS ASKED AGAIN AFTER THE CLAIM READ, and that read is a database round trip. THE RULE
-  // (../../src/graph/nudge.ts) is one ask per stretch of I/O that precedes a write, and never any I/O
-  // between an ask and the write it guards. A /reset landing inside that round trip retires this job
-  // while the claim check — which asks about the ANCHOR, not about the job — still reports this run
-  // as the one delivering: the goodbye goes out and both conversations are resolved, on an episode
-  // the operator was told had been erased.
-  //
-  // The reset is committed FROM INSIDE the claim read, through the same `$extends` query seam the
-  // jobless test above uses, so the window is the real one rather than a stub flipping on a call
-  // count. That is what makes this pin the ORDER: an ask moved back above the read would answer
-  // before the retirement lands and send anyway.
+  // THE JOB IS ASKED AGAIN AFTER THE CLAIM READ. THE RULE (../../src/graph/nudge.ts) is one ask per
+  // stretch of I/O that precedes a write, and never any I/O between an ask and the write it guards;
+  // the claim check asks about the ANCHOR, not the job, so it cannot see a /reset inside that read.
+  // The reset is committed FROM INSIDE the claim read (the same `$extends` seam as the jobless test
+  // above), which pins the ORDER: an ask moved back above the read would answer too early and send.
   test("a reset landing inside the claim read stops the closing", async () => {
     await restoreAnchor();
     const s = stubClient();
@@ -1174,7 +1160,7 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
       update: { status: "CLAIMED", payload },
     });
     // The snapshot the worker holds: captured at claim time, before any stamp. The token comes from
-    // the ROW, never a literal — a retire in an earlier test bumps it, and a hardcoded 0 would then
+    // the ROW, never a literal: a retire in an earlier test bumps it, and a hardcoded 0 would then
     // read as superseded and make every later ladder stand down for the wrong reason.
     return {
       id: row.id,
@@ -1192,9 +1178,9 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     persistUsage: async () => {},
   });
 
-  // Issue #281. The chat stage is the only one of the three that needs the agent to author anything,
-  // and it used to advance regardless: an agent that could not answer at all still cost the lead its
-  // softest stage, moving them one step closer to the closing with nothing sent.
+  // The chat stage is the only one of the three that needs the agent to author anything, so it must
+  // not advance when the agent cannot answer: that would cost the lead its softest stage with nothing
+  // sent.
   async function withUnresolvableCredential<T>(
     fn: () => Promise<T>,
   ): Promise<T> {
@@ -1222,9 +1208,9 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     }
   }
 
-  // Review round 12 of #355. Every reschedule here rebuilds the payload field by field, so the
-  // episode stamp the retirement reads has to be listed on each one or the ladder loses it at the
-  // first stage advance — and a ladder with no stamp reads as the PREVIOUS episode's, which is
+  // Every reschedule here rebuilds the payload field by field, so the episode stamp the retirement
+  // reads has to be listed on each one or the ladder loses it at the first stage advance, and a
+  // ladder with no stamp reads as the PREVIOUS episode's, which is
   // exactly the job the next pairing change retires.
   test("a stage advance carries the episode stamp forward", async () => {
     const job = await claimed("chat", 6203);
@@ -1325,13 +1311,13 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     expect(s.resolved).toEqual([]);
   });
 
-  // AND THE SAME WINDOW WITH THE DATABASE GONE, which is the pair the incident actually reported:
-  // a /reset, and a pool too exhausted to answer whether it happened. The lenient probe answers "not
-  // retired" to an unreadable row — right for a send it must not abandon halfway, wrong here, because
-  // the ask inside the thread's critical section runs BEFORE the divider and the checkpoint. Guessing
-  // there writes the memory back after the operator was told it was cleared, and no later fence
-  // catches it. `runAgentNudge` marks that one ask `{ strict: true }`, and this callback has to carry
-  // it through: the liveness half stays fail-open, the retirement half stops failing open.
+  // AND THE SAME WINDOW WITH THE DATABASE GONE: a /reset, and a pool too exhausted to answer whether
+  // it happened. The lenient probe answers "not retired" to an unreadable row, right for a send it
+  // must not abandon halfway, wrong here, because the ask inside the thread's critical section runs
+  // BEFORE the divider and the checkpoint. Guessing there writes the memory back after the operator
+  // was told it was cleared, and no later fence catches it. `runAgentNudge` marks that one ask
+  // `{ strict: true }`, and this callback has to carry it through: the liveness half stays fail-open,
+  // the retirement half does not.
   test("a retirement read that fails after the reset does not write the memory back", async () => {
     const job = await claimed();
     let reads = 0;
@@ -1653,7 +1639,7 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     });
   });
 
-  // ── Issue #246: the gate answers at handler entry and the stages send later, across I/O of their
+  // ── The gate answers at handler entry and the stages send later, across I/O of their
   //    own. These pin what the ladder does when the switch flips INSIDE that window, which is the
   //    moment an operator watching a lead being chased is likeliest to reach for it.
   test("switched off during the link mint sends nothing AND does not advance", async () => {
@@ -1942,15 +1928,10 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
         data: { testActivatedAt: null },
       });
     }
-    // The reset really landed mid-run, so this is the window and not a run that stopped earlier.
-    // `stampReads` stays at 1: the fence answers "retired" before it ever reaches the fallible read,
-    // which is the ordering this pins. Move the retirement read back after the stamp read and the
-    // double's throw reaches the outer catch, the fence answers "go", and the closing goes out.
-    //
-    // What the double CANNOT reproduce is a query PostgreSQL rejects: it throws in JS before any SQL
-    // runs, so the transaction is never left aborted. That case is why the ordering exists rather
-    // than a catch — with a real abort, every later statement in the transaction fails too — and it
-    // is argued in the code, not covered here.
+    // NOTE: `stampReads` stays at 1: the fence answers "retired" before it reaches the fallible
+    // read. With the retirement read after the stamp read, the double's throw reaches the outer catch
+    // and the closing goes out. The double cannot reproduce a query PostgreSQL rejects (which aborts
+    // the transaction, so a catch is not enough); that is why the ordering exists.
     expect(retiredMidRun).toBe(true);
     expect(stampReads).toBe(1);
     expect(s.sent).toEqual([]);
@@ -2077,7 +2058,7 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     expect(s.sent.map(([c]) => c)).toEqual([WIDGET_CONV]);
   });
 
-  // Issue #811. The same stage whose job's deadline already ended: the run was failed and its slot
+  // The same stage whose job's deadline already ended: the run was failed and its slot
   // handed to the next job, so the nudge it would author is one nobody is waiting for, and the retry
   // would send it a second time. The registration hands the job's signal down to `runAgentNudge`.
   test("a chat stage its job's deadline already ended sends nothing", async () => {
@@ -2103,7 +2084,7 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     expect(commits).toBe(0);
   });
 
-  // Issue #811, the other side: a nudge that reached the chat spent the stage, and the run says so,
+  // The other side: a nudge that reached the chat spent the stage, and the run says so,
   // so that a run past its deadline has its advance written instead of its retry nudging again.
   test("a chat stage whose nudge reached the chat commits its run", async () => {
     const job = await claimed();
@@ -2179,7 +2160,7 @@ describe.skipIf(!dbUp)("a ladder retired while claimed", () => {
     expect(wire.filter((u) => u.includes("/messages"))).toHaveLength(1);
   });
 
-  // Issue #811: the link sent spends stage 2, and the run says so, so that a run past its deadline
+  // The link sent spends stage 2, and the run says so, so that a run past its deadline
   // has its advance to the closing written instead of its retry sending the link again.
   test("stage 2 commits its run when the link is sent", async () => {
     await asTestAgent(null, new Date());

@@ -43,8 +43,8 @@ describe("parseChatwootMessages", () => {
     expect(rows[1]?.messageType).toBe("outgoing");
   });
 
-  // ISSUE #749: quando a mensagem chegou. Chatwoot manda `created_at` em SEGUNDOS desde a época,
-  // o que um `new Date(v)` leria como 1970 — uma idade de 56 anos onde a mensagem tem minutos.
+  // Quando a mensagem chegou. Chatwoot manda `created_at` em SEGUNDOS desde a época, o que um
+  // `new Date(v)` leria como 1970: uma idade de 56 anos onde a mensagem tem minutos.
   // A forma ISO é aceita porque outras rotas da mesma API mandam assim, e o que não dá para ler
   // vira `null`, nunca um instante inventado: a variável de idade prefere sumir a mentir.
   test("lê o instante da mensagem, em época ou ISO, e nunca inventa um", () => {
@@ -67,7 +67,7 @@ describe("parseChatwootMessages", () => {
     expect(rows[4]?.createdAt).toBeNull();
   });
 
-  // ISSUE #642: the one structural field an activity row has. Chatwoot sets it on the activities
+  // The one structural field an activity row has. Chatwoot sets it on the activities
   // that declare what they narrate (a status change writes `conversation_status_changed`), and never
   // on a label change, which ships as a localized sentence and nothing else.
   test("reads the activity type a row declares, and only as a string", () => {
@@ -159,8 +159,8 @@ describe("parseChatwootMessages", () => {
     expect(rows[0]?.inReplyTo).toBe(7);
   });
 
-  // Issue #691: `metaStringFrom` said it in its own comment — "read from the first attachment that
-  // carries it" — so a message whose three attachments were all extracted surfaced one of them.
+  // Every extracted attachment counts, not only the first one that carries the meta string: a
+  // message with three extracted attachments must surface all three.
   test("every extracted attachment reaches the row, labelled by file name", () => {
     const rows = parseChatwootMessages({
       payload: [
@@ -241,8 +241,8 @@ describe("parseChatwootMessages", () => {
     );
   });
 
-  // NOTE: Issue #45 — the debounce re-fetch path must carry the pin the same way the direct path
-  // does, and the maps-URL basename ("maps") must stop leaking as a fake file name.
+  // The debounce re-fetch path carries the pin the same way the direct path does, and the maps-URL
+  // basename ("maps") does not leak as a fake file name.
   test("location attachment: coordinates ride the REST row into the renderable", () => {
     const rows = parseChatwootMessages({
       payload: [
@@ -279,7 +279,7 @@ describe("parseChatwootMessages", () => {
   });
 
   // THE NAME A SEND GAVE ITSELF, read back so a delivery can be proved by identity rather than by
-  // matching text (issue #499). The bag is shared with Chatwoot's own keys and with whatever an
+  // matching text. The bag is shared with Chatwoot's own keys and with whatever an
   // operator's automation writes there, so anything that is not a string is somebody else's key
   // colliding with ours, not a name this build wrote.
   test("reads the send id, and only when it is a string", () => {

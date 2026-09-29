@@ -5,12 +5,10 @@ import { redactEndpoint } from "@/modules/audit/projection";
 // surfaces that return these URLs whole are not. `redactEndpoint` is what stands between an operator
 // pasting a token into an endpoint and that token being permanent.
 //
-// A table rather than a fixture per caller, because the rule is ONE and the callers are two. It was
-// briefly two rules — the alert channel keeping only its origin, the outbound subscription keeping
-// its path as well, on the reasoning that its column is in the clear. That reasoning ran from where
-// a value is stored to whether it is a secret, and those are unrelated: both families accept the
-// same arbitrary HTTPS destination, and the destinations operators point them at (Discord, Slack)
-// carry the credential in the PATH.
+// A table rather than a fixture per caller, because the rule is ONE and the callers are two. Where
+// a value is stored says nothing about whether it is a secret: both families accept the same
+// arbitrary HTTPS destination, and the ones operators use (Discord, Slack) carry the credential in
+// the PATH.
 
 const CASES: Array<[what: string, url: string, redacted: string]> = [
   // The three places a credential hides in the abstract, one at a time, then all at once.

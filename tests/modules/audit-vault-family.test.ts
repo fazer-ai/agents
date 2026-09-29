@@ -11,12 +11,8 @@ import {
   updateVaultEntry,
 } from "@/modules/vault/service";
 
-// THE VAULT FAMILY (issue #444), where only the CREATION of a credential was audited, and only over
-// MCP.
-//
-// Two of its three routes had no action name anywhere. Replacing the value behind a live reference
-// (`PUT /v1/vault/:id`) was invisible on every transport, and deleting a credential was invisible
-// while creating one was recorded. Both are named here.
+// THE VAULT FAMILY: creating, replacing the value behind a live reference (`PUT /v1/vault/:id`) and
+// deleting a credential are all recorded, on every door.
 //
 // This is also the family where the metadata and the thing that authenticates sit in adjacent
 // columns, so the split matters more than usual: `secret` is compared and never carried, `baseUrl`
@@ -177,12 +173,10 @@ describe.skipIf(!dbUp)("the vault family records its own changes", () => {
     expect((await rows("credential.update")).length).toBe(1);
   });
 
-  // The stale-snapshot half, which is what the review round after the first fix found. The gate used
-  // to compare with the value the CALLER decrypted, and that snapshot predates a network round trip
-  // to the provider: two overlapping refreshes of the same expired credential both saw the old
-  // refresh token and both recorded the same rotation. Comparing under the row lock against what is
-  // STORED makes the second one a no-op, which is what "a row only when something changed" means
-  // when two writers are asking.
+  // The value the CALLER decrypted predates a network round trip to the provider, so two
+  // overlapping refreshes of one expired credential both see the old refresh token. Comparing under
+  // the row lock against what is STORED makes the second one a no-op: "a row only when something
+  // changed", with two writers asking.
   test("two refreshes carrying the same rotation record it once", async () => {
     const id = await oauthEntry(`twice${uniq()}`, baseCred);
     const rotated = { ...baseCred, accessToken: "at-2", refreshToken: "rt-2" };
@@ -191,7 +185,7 @@ describe.skipIf(!dbUp)("the vault family records its own changes", () => {
     expect((await rows("credential.update")).length).toBe(1);
   });
 
-  // A source fence, and the same instrument #395 put on `chatwoot/management.ts`: the lock this
+  // A source fence, the same instrument as on `chatwoot/management.ts`: the lock this
   // module takes on `vault_entries` is what makes "compare, then write" one decision, and a lock
   // that is missing or in a DIFFERENT mode has no failing test to show it. A mixed mode is the
   // deadlock: an INSERT of a row whose foreign key points at a locked row takes `KEY SHARE`, which
@@ -269,8 +263,8 @@ describe.skipIf(!dbUp)("the vault family records its own changes", () => {
     await collect();
   });
 
-  // The action with no name on any transport before this: the only MCP caller of the service is
-  // `langfuse.connect`, which records its own action and not this one.
+  // The only MCP caller of this service is `langfuse.connect`, which records its own action and not
+  // this one, so this test is the one that covers it.
   test("replacing the value behind a live reference is recorded, as a change and not as a value", async () => {
     await clearAudit();
     const name = `u${uniq()}`;
@@ -287,8 +281,8 @@ describe.skipIf(!dbUp)("the vault family records its own changes", () => {
     expect(rest).toEqual([]);
     expect(row?.action).toBe("credential.update");
     expect(row?.target).toBe(`vault:${id}`);
-    // The marker on BOTH sides, the way #394 and #397 do it: it says a write moved something the row
-    // does not show, which is a fact about the change rather than about either end of it.
+    // NOTE: the marker on BOTH sides, as in the other families: it says a write moved something the
+    // row does not show, a fact about the change rather than about either end of it.
     expect(row?.before).toMatchObject({ name, undisclosedChanged: true });
     expect(row?.after).toMatchObject({ name, undisclosedChanged: true });
     await collect();

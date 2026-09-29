@@ -1,18 +1,11 @@
-// What a ledger row still stuck on PENDING or PROCESSING means, long after the attempt that claimed
-// it started. The 200 is out before `processChatwootDelivery`'s CAS `PENDING -> PROCESSING` and its
-// final `-> PROCESSED`, so a process that dies in between leaves a row nothing works: Chatwoot does
-// not redeliver, and the customer's message is never answered. An ordinary exception does NOT strand
-// a row: the agent turn, the eager media pass and the mirror write are each caught.
-
-// This says whether a customer message was LOST, and nothing else. It does not answer, and neither
-// does the sweep: the gates a flush applies (test mode, availability, redirect) do not survive the
-// dead process, so the sweep arms a DELIVERY_RECOVERY that re-runs the delivery path
-// (./recover-delivery.ts).
-
-// A pure function of the row alone. A watermark is a per-CONVERSATION high-water mark and this is a
-// per-MESSAGE question, so every comparison against one either closes a real loss or reports a
-// covered message. Instead a turn that runs over a message retires that message's ledger row itself,
-// so a row still non-terminal is one nothing covered. Both live in ./delivery-sweep.ts.
+// What a ledger row still stuck on PENDING or PROCESSING means, long after its attempt started. The
+// 200 is out before `processChatwootDelivery`'s CAS `PENDING -> PROCESSING` and its final
+// `-> PROCESSED`, so a process that dies in between leaves a row nothing works, Chatwoot does not
+// redeliver, and the customer's message is never answered. An ordinary exception does NOT strand a
+// row: the agent turn, the eager media pass and the mirror write are each caught. This says only
+// whether a customer message was LOST. Neither it nor the sweep answers: the delivery path's gates
+// (test mode, availability, redirect) die with the process, so the sweep arms a DELIVERY_RECOVERY
+// that re-runs that path (./recover-delivery.ts). Why: docs/chatwoot.md, "Webhook receiver".
 
 import type { HumanReplyRoute } from "./normalize";
 import { LATE_TRANSCRIPTION_EVENT, TURN_BEARING_EVENT } from "./normalize";
@@ -27,15 +20,15 @@ export interface StrandedDeliveryRow {
   receivedAt: Date;
   // When the CURRENT attempt claimed the row, or null when nothing has. A row is not stranded
   // because it is old, it is stranded because nothing has moved it for longer than the longest
-  // legitimate delivery — and a redelivery is allowed to claim a row left stranded on PENDING, so an
+  // legitimate delivery, and a redelivery is allowed to claim a row left stranded on PENDING, so an
   // attempt that started a minute ago must not be judged by a receipt from an hour ago.
   claimedAt: Date | null;
   // The conversation this delivery was about. Written at INSERT by every build that has the column,
-  // for every event that names one — which, on the receiver, is every event that reaches the ledger
+  // for every event that names one, which on the receiver is every event that reaches the ledger
   // at all. Null therefore means one of two things, and the pair below tells them apart.
   conversationId: number | null;
   // The INBOUND message this delivery carried, when it carried one. Null on every event that is not
-  // a customer message — a conversation update, the bot's own reply coming back around — and those
+  // a customer message (a conversation update, the bot's own reply coming back around), and those
   // are the rows where nothing was lost no matter how long they sat.
   inboundMessageId: number | null;
   // What this delivery owed, when what it owed was the human-reply takeover: the shape the payload
@@ -60,11 +53,11 @@ export type StrandedVerdict =
   // The current attempt started recently enough that a live process may still be working it. Left
   // alone.
   | "in-flight"
-  // Stranded, but carried no inbound message — either its event could never carry one, or its event
+  // Stranded, but carried no inbound message: either its event could never carry one, or its event
   // could and this one did not (our own reply coming back around). Terminal and benign: nothing a
   // customer sent is at stake, so it must NOT appear in the list of lost messages.
   //
-  // BENIGN IS ABOUT THE CUSTOMER'S MESSAGE, and it is not the same as "no effect was owed" — the
+  // BENIGN IS ABOUT THE CUSTOMER'S MESSAGE, and it is not the same as "no effect was owed": the
   // verdict below is what carries that other half.
   | "no-message"
   // Stranded carrying no customer message, and owing a HUMAN-REPLY TAKEOVER that never ran: a
@@ -108,6 +101,11 @@ export type StrandedVerdict =
   // row and the scan only sees non-terminal ones.
   | "lost";
 
+// A pure function of the row alone. A watermark is a per-CONVERSATION high-water mark and this is a
+// per-MESSAGE question, so every comparison against one either closes a real loss or reports a
+// covered message. Instead a turn that runs over a message retires that message's ledger row itself,
+// so a row still non-terminal is one nothing covered. The sweep and that retirement are both in
+// ./delivery-sweep.ts.
 export function classifyStrandedDelivery(
   row: StrandedDeliveryRow,
   policy: StrandedDeliveryPolicy,
@@ -128,7 +126,7 @@ export function classifyStrandedDelivery(
   // pair that identifies a transcription row (a `message_updated` naming an inbound message) is
   // itself proof this build wrote it, so its nulls are recorded and there is nothing for the fence
   // to protect. Asked after it, a transcription row stranded on PROCESSING without a stamp would be
-  // called `lost` — the one answer it must never get, since no customer is waiting on a reply.
+  // called `lost`, the one answer it must never get, since no customer is waiting on a reply.
   if (bears === "transcription") return "owed-transcription";
   // NOTE: a row this build never touched, whose nulls are UNRECORDED rather than "nothing was there".
   // Read literally, every message the previous release lost would be closed as carrying none, on the

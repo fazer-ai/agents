@@ -10,6 +10,12 @@ function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
 }
 
+// The margin: `responderBoundAt` is OUR clock and `last_activity_at` is CHATWOOT's, so compared
+// directly a Chatwoot running ahead makes a later binding look older. Outside five minutes the answer
+// does not depend on which host is ahead (far past a synchronised fleet's skew, still covering a host
+// without NTP); inside it the ledger is asked, one extra read only in the window that matters.
+const BINDING_CLOCK_SKEW_MS = 5 * 60_000;
+
 // Does the responder actually have a delivery of this message? An observer beside a responder does
 // not fold the message into memory because the responder's delivery does (`responderRemembers`), but
 // Chatwoot picks recipients from the bindings standing when it EMITS the event, so a responder bound
@@ -17,19 +23,6 @@ function sysCtx(tenantId: bigint): TenantContext {
 // when the binding predates the emission by the margin (a NULL `responderBoundAt` predates
 // everything), or when a sibling delivery on the responder's route that could still see the binding
 // is in the ledger; otherwise the observer keeps it. See docs/chatwoot.md, "Observer binding".
-
-// The margin: `responderBoundAt` is OUR clock and `last_activity_at` is CHATWOOT's, so compared
-// directly a Chatwoot running ahead makes a later binding look older. Outside five minutes the answer
-// does not depend on which host is ahead (far past a synchronised fleet's skew, still covering a host
-// without NTP); inside it the ledger is asked, one extra read only in the window that matters.
-const BINDING_CLOCK_SKEW_MS = 5 * 60_000;
-
-// The clock is the EMISSION, not the receipt: Chatwoot chose the recipients when it emitted, and a
-// receipt adds a network hop and any delivery wait. `last_activity_at` is that moment for a
-// `message_created`, read at the START of its second (epoch seconds; rounding early errs toward asking
-// for evidence); a payload carrying none falls back to the receipt. Erring toward "the binding is
-// newer" costs a duplicate memory line when the sibling is still in flight, the other way costs the
-// message: wrong and visible over quiet and wrong.
 export async function responderCoversMessage(
   tenantId: bigint,
   instanceId: bigint,
@@ -41,7 +34,13 @@ export async function responderCoversMessage(
   // `inboundMessageId`, while a colleague's reply is outgoing and named by `humanReplyMessageId`.
   // Asked with the inbound column alone, a reply never finds its sibling and both routes append it.
   message: { id: number; column: "inbound" | "humanReply" } | null,
-  // When the source EMITTED this event, from the payload's own clock; null when it carries none.
+  // When the source EMITTED this event, from the payload's own clock; null when it carries none, and
+  // the receipt stands in. The emission, not the receipt: Chatwoot chose the recipients when it
+  // emitted, and a receipt adds a network hop and any delivery wait. For a `message_created` it is
+  // `last_activity_at`, read at the START of its second (epoch seconds; rounding early errs toward
+  // asking for evidence). Erring toward "the binding is newer" costs a duplicate memory line when the
+  // sibling is still in flight, the other way costs the message: wrong and visible over quiet and
+  // wrong.
   emittedAt: Date | null,
   base: PrismaClient,
 ): Promise<boolean> {
@@ -61,7 +60,7 @@ export async function responderCoversMessage(
     // NOTE: our own row not being readable is not evidence that the responder is missing the message;
     // answer covered rather than double what the responder remembers.
     if (self === null) return true;
-    // The receipt only answers where the payload named no emission of its own — and there it is OUR
+    // The receipt only answers where the payload named no emission of its own, and there it is OUR
     // clock on both sides, so it needs no margin.
     if (emittedAt === null && responderBoundAt <= self.receivedAt) return true;
     // Without both coordinates the sibling cannot be named, and an unnamed sibling is not one that

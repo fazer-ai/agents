@@ -1,31 +1,18 @@
-// The webhook body a stranded delivery no longer has, rebuilt from what survived it. The event body
-// is never stored (a customer's words are not held at rest a second time), so the ledger row names
-// only a conversation and a message, and the delivery path takes a webhook body.
-//
-// This rebuilds a BODY and hands it to `normalizeChatwootEvent`, never a `NormalizedChatwootEvent`:
-// exactly one place knows how a Chatwoot payload becomes an event, the one a live delivery goes
-// through, and building the event here would be a second reader of the same shape.
+// The webhook body a stranded delivery no longer has, rebuilt from what survived it. The body is
+// never stored (a customer's words are not held at rest twice), so the ledger names only a
+// conversation and a message. This rebuilds a BODY for `normalizeChatwootEvent`, never a
+// `NormalizedChatwootEvent`: the one reader a live delivery goes through is the only place that
+// knows how a payload becomes an event. The CONVERSATION comes from the mirror, which every gate
+// already reads: a recovery asks "may this be answered NOW", so state that moved while the row sat
+// stranded is the answer, not noise. The MESSAGE comes from a REST read, all the mirror lacks.
 
-// The CONVERSATION comes from the mirror, not a re-read: every downstream gate already consults it,
-// and a recovery asks "may this be answered NOW", so a status or assignee that moved while the row
-// sat stranded is the answer, not noise. The MESSAGE comes from a REST read, the one thing the
-// mirror does not hold.
-
-// REST and the wire spell two message fields differently: `message_type` is an INTEGER over REST and
-// the enum STRING on the wire (`messageTypeOf` in ./normalize.ts takes both), and a contact SENDER
-// carries `type: "contact"` over REST and no `type` on the wire, carried as REST gives it because its
-// reader (`isHumanAgentMessage`) needs an OUTGOING message and a recovery rebuilds an inbound one.
-// Attachments do not diverge: both views render `attachments.map(&:push_event_data)`, so the eager
-// STT pass downloads from the same `data_url` a live delivery handed it.
-
-// Deliberately NOT carried (absent means "said nothing", the sentinel the mirror honours):
-//   - `conversation.custom_attributes`: they came from the mirror, so re-merging them would write the
-//     mirror onto itself, and a stale read could undo an attribute an operator set meanwhile.
-//   - `meta.sender`: available live, but this body carries the stranded message's clock, and an
-//     identity read now at that clock can EMPTY the stored field under the mirror's tie rule
-//     (docs/chatwoot.md, "Mirror sync"; docs/contact-auth.md). The next event settles it, and
-//     `tests/modules/chatwoot-recover-delivery.test.ts` pins the omission.
-//   - the kanban card, for the same reason.
+// Deliberately NOT carried (absent means "said nothing", which the mirror honours):
+// `conversation.custom_attributes`, which came from the mirror, so re-merging writes the mirror onto
+// itself and a stale read could undo an attribute an operator set meanwhile; and `meta.sender` and
+// the kanban card, because this body carries the stranded message's clock and an identity read now
+// at that clock can EMPTY the stored field under the mirror's tie rule (docs/chatwoot.md, "Mirror
+// sync"; docs/contact-auth.md). The next event settles it, and
+// `tests/modules/chatwoot-recover-delivery.test.ts` pins the omission.
 export interface RecoveryConversation {
   // Chatwoot's per-account DISPLAY id, the only id this may hold.
   chatwootConversationId: number;
@@ -47,6 +34,12 @@ export interface RecoveryConversation {
   redirectOriginAt: number | null;
 }
 
+// A message as the REST read gives it. REST and the wire spell two fields differently: `message_type`
+// is an INTEGER over REST and the enum STRING on the wire (`messageTypeOf` in ./normalize.ts takes
+// both), and a contact SENDER carries `type: "contact"` over REST and no `type` on the wire, kept as
+// REST gives it because its reader (`isHumanAgentMessage`) needs an OUTGOING message and a recovery
+// rebuilds an inbound one. Attachments do not diverge: both views render
+// `attachments.map(&:push_event_data)`, so the eager STT pass downloads from the same `data_url`.
 export interface RecoveryMessage {
   id: number;
   content: string | null;
@@ -158,13 +151,13 @@ export function buildRecoveryPayload(params: {
         : {}),
       // The customer's own clock, on the field `normalizeChatwootEvent` reads it from. On the wire
       // this is the CONVERSATION's activity time, and for a `message_created` that is exactly this
-      // message's — which is why the message's own timestamp is the right source for it.
+      // message's, which is why the message's own timestamp is the right source for it.
       ...(m.createdAt !== null ? { last_activity_at: m.createdAt } : {}),
       ...(c.contactInboxId !== null
         ? { contact_inbox: { id: c.contactInboxId } }
         : {}),
       // The assignee block is the one the ownership gate reads, and it is present whenever the
-      // mirror knows the conversation at all — which it does, or this row would not have been
+      // mirror knows the conversation at all, which it does, or this row would not have been
       // classified. An unassigned conversation is `assignee: null` INSIDE a present meta, which is
       // "really unassigned"; omitting meta would say "said nothing" and leave the gate reading a
       // stale mirror it just came from.

@@ -1,3 +1,12 @@
+// Answering the customer whose delivery a process death stranded, by running the DELIVERY PATH
+// again: not a flush, since the delivery path's gates die with the process, and not a
+// re-implementation of gates that decide AND act; re-firing their side effects is safe per gate. AT
+// LEAST ONCE: a turn whose tools had fired fires them again, and the one refused replay is a control
+// command (`/reset` deletes the memory thread), which an operator can retype. It never runs a turn
+// beside a live one in this process: the in-memory turn-in-flight fence is asked first, safe under
+// docs/deploy.md §4's single-replica invariant; a turn live on ANOTHER replica is a gap every module
+// gating on it shares. Why each: docs/chatwoot.md, "Webhook receiver", on the delivery recovery.
+
 import type { PrismaClient } from "@/../generated/prisma/client";
 import logger from "@/api/lib/logger";
 import basePrisma from "@/api/lib/prisma";
@@ -28,33 +37,6 @@ import { reconcileMirrorFromLive } from "./reconcile";
 import { buildRecoveryPayload } from "./recover-payload";
 import { processChatwootDelivery } from "./webhook";
 
-// Answering the customer whose delivery a process death stranded, by running the DELIVERY PATH
-// again: not a flush, and not a re-implementation of the gates. See docs/chatwoot.md, "Webhook
-// receiver", on the delivery recovery.
-
-// Not the flush: it re-checks ownership and contact authorization itself, but test mode,
-// availability/out-of-hours and the channel redirect run only in the delivery path and their verdicts
-// die with the process, so a flush would reply out of hours or in an unactivated test conversation.
-// Not a re-implementation: those gates DECIDE AND ACT (the redirect sends the link, availability
-// posts the away message, test mode its notice), so a copy would have to reproduce the actions and
-// their claims, and `isTestSilenced` already has five callers.
-
-// Re-firing the side effects is safe per gate. Availability posts behind a real CAS
-// (`claimAwayMessage` claims the watermark before it posts). The test notice (`testNoticeSentAt`)
-// and the redirect (`redirectSentAt`) are one-shot watermarks read before the act and written after,
-// safe here because a recovery is serialized against a live turn by the in-flight fence and against
-// another recovery by the claim CAS. A death BETWEEN one of those acts and its watermark repeats it
-// (a duplicate private note, or the redirect link sent twice), which two interleaved live deliveries
-// already reach; closing it needs claim-then-act inside gates this module does not own.
-
-// AT LEAST ONCE, by design: a dead process may have done something first and the ledger does not
-// say how far it got, so a turn whose tools had fired fires them again (closing that needs a durable
-// per-effect claim in the delivery path and every tool). Refused here is the one destructive replay:
-// a control command (`/reset` deletes the memory thread), which an operator can retype. It never runs
-// a turn beside a live one: the in-memory turn-in-flight fence is asked first, safe under the
-// single-replica / one-leader invariant; a turn live on ANOTHER replica is a gap shared with every
-// module that gates on it.
-
 // How many recoveries one stranded row may ever get, counted by the ledger's `attempts`, which the
 // claim in `processChatwootDelivery` writes. THREE is policy, not tuning. A bound exists because a
 // recovery runs a real turn (model spend, side-effecting tools), and a row failing for a reason
@@ -73,8 +55,8 @@ export const MAX_RECOVERY_AGE_MS = 6 * 60 * 60 * 1000;
 
 // How long to wait before asking again about a conversation that was BUSY. A minute: long enough
 // that a short turn is over, short enough that a customer's second stranded message is not left
-// behind the first one for a scheduler interval. Nothing measures a turn's length — there is no
-// timeout on the model call or the tools — so this is a cadence, not an estimate of one.
+// behind the first one for a scheduler interval. Nothing measures a turn's length (there is no
+// timeout on the model call or the tools), so this is a cadence, not an estimate of one.
 const BUSY_RETRY_MS = 60_000;
 
 // Conversations with a recovery running IN THIS PROCESS, so a second one defers instead of starting
@@ -102,7 +84,7 @@ export type RecoveryOutcome =
   // read and the CAS. Somebody else is doing this work, so there is nothing to retry.
   | "superseded"
   // The conversation is BUSY: a turn is live on it, or another recovery holds it. Transient by
-  // construction and on a timescale nothing here controls — a turn is deliberately unbounded, which
+  // construction and on a timescale nothing here controls: a turn is deliberately unbounded, which
   // is why the sweep waits thirty minutes before calling one abandoned.
   | "deferred"
   // The Chatwoot account could not be READ, or answered with a snapshot that cannot be trusted.
@@ -267,20 +249,14 @@ interface LoadedRow {
   settleScopedToThisDelivery: boolean | null;
 }
 
-// Putting the row back: the compensating write both failure roads below take, and the one place a
-// swallowed error would cost a customer. Three answers: a row that MOVED was taken by something
-// else, which is fine; a write that FAILED leaves the row where the delivery path put it, and
-// `PROCESSING` is revisited by the sweep while `PROCESSED` is never looked at again, so the customer
-// leaves the worklist unanswered (the caller for `PROCESSED` says so at `error`). Retried, because
-// the failure guarded against is a transient database blip; bounded, and the last word is the log.
-
-// Not fenced: a handler that was merely STALLED when the sweep judged its row abandoned can still
-// reach `processChatwootDelivery`'s final settlement (by id, no CAS) and write `PROCESSED` over a row
-// restored here to `DEAD`. The recovery adds an actor, not an outcome: a stalled handler settling its
-// own row does the same without one. The missing CAS is deliberate (./webhook.ts): a turn that
-// outlives the threshold and completes DID deliver, and a generation counter would have to tell
-// "completed late" from "woke up and failed", which the live path does not answer about itself. A
-// later recovery then reads a row that is no longer `DEAD` and refuses before claiming anything.
+// Putting the row back: the compensating write both failure roads below take, retried (the failure
+// guarded against is a transient database blip) and bounded, with the log as the last word. A row
+// that MOVED was taken by something else, which is fine; a write that FAILED leaves the row where the
+// delivery path put it, and `PROCESSED`, unlike `PROCESSING`, is never swept again, so the caller
+// says so at `error`. Not fenced: a handler merely STALLED past the sweep's threshold can still
+// settle its row `PROCESSED` by id over one restored here, as it would with no recovery (why that
+// write has no CAS: ./webhook.ts). A later recovery then reads a row that is no longer `DEAD` and
+// refuses before claiming anything.
 export async function putRowBack(params: {
   base: PrismaClient;
   tenantId: bigint;
@@ -350,7 +326,7 @@ async function runRecovery(params: {
         },
       },
       select: {
-        // The mirror's own row id, for filing the closing line against the conversation — the same
+        // The mirror's own row id, for filing the closing line against the conversation, the same
         // place the sweep filed the loss it closes.
         id: true,
         contactInboxId: true,
@@ -455,7 +431,7 @@ async function runRecovery(params: {
     return "unreachable";
   }
   // Unreadable rather than absent: `parseLiveConversation` returns null for a snapshot it cannot
-  // trust (no status, or an AgentBot assignee with no id — unverifiable ownership). Deferring is
+  // trust (no status, or an AgentBot assignee with no id: unverifiable ownership). Deferring is
   // what the live gate does with the same answer, and for the same reason: proceeding would mean
   // falling back to the mirror, which is the value this read exists to distrust.
   if (!live) {
@@ -471,17 +447,9 @@ async function runRecovery(params: {
   // two reads, and the row read above is then the best thing left.
   //
   // Read from the reconcile above rather than re-read here, so what the body states is the row that
-  // call decided — a second read would answer about a different moment, and the two message reads
+  // call decided; a second read would answer about a different moment, and the two message reads
   // sit between them.
   const state = reconciled?.state ?? conv;
-
-  // NOTE: a customer who wrote again cannot be answered about the older message. Live, `shouldPost`
-  // withholds the reply and the newer message's delivery carries it; for a recovery that delivery
-  // already ran and answered the newer message only (a direct turn feeds the graph its OWN trigger
-  // text), so the replay would spend a model call, post nothing and close the loss falsely. Asked
-  // HERE, before the claim, as `unrecoverable` (a newer message never un-arrives), through
-  // `maxIncomingId`, the delivery path's own predicate: an away message or an operator's note moves
-  // the conversation forward without answering anything.
 
   // NOTE: the page has to reach back to the message: twenty outgoing or activity messages since the
   // strand would push a newer CUSTOMER message off the newest page, and this would replay a message
@@ -523,6 +491,13 @@ async function runRecovery(params: {
       );
       return "unrecoverable";
     }
+    // NOTE: a customer who wrote again cannot be answered about the older message. Live,
+    // `shouldPost` withholds the reply and the newer message's delivery carries it; for a recovery
+    // that delivery already ran and answered the newer message only (a direct turn feeds the graph
+    // its OWN trigger text), so the replay would spend a model call, post nothing and close the loss
+    // falsely. Asked HERE, before the claim, as `unrecoverable` (a newer message never un-arrives),
+    // through `maxIncomingId`, the delivery path's own predicate: an away message or an operator's
+    // note moves the conversation forward without answering anything.
     const newest = maxIncomingId(recent, messageId);
     if (newest > messageId) {
       // NOTE: which of the two cases, said out loud, because they read the same from the row and an
@@ -603,7 +578,7 @@ async function runRecovery(params: {
         name: true,
         agentId: true,
         // When THIS binding was made. A role the row never stated cannot be read off a binding
-        // younger than the delivery — see the refusal below.
+        // younger than the delivery; see the refusal below.
         responderBoundAt: true,
         // NOTE: ...and whether any binding has moved since, which the stamp above cannot answer: an
         // observer attached or detached leaves `responderBoundAt` where it was.
@@ -795,7 +770,7 @@ async function runRecovery(params: {
       // The name is the mirror's copy of what the wire carried, and it is the one field here that
       // nothing observable turns on: its only consumer is the inbox upsert, which would write this
       // value back onto the very row it was read from. Carried because the rebuild reproduces the
-      // body — null where the mirror has no row for the route, which is the placeholder case named
+      // body; null where the mirror has no row for the route, which is the placeholder case named
       // on the parameter.
       inboxName: inbox?.name ?? null,
       message: {
@@ -815,13 +790,13 @@ async function runRecovery(params: {
       },
     }),
   );
-  // Unreachable in practice — the body above is built to normalize — and not an assertion: a
+  // Unreachable in practice (the body above is built to normalize), and not an assertion: a
   // recovery that cannot produce an event has nothing to hand the delivery path, and saying so is
   // cheaper than a throw nobody catches.
   if (!normalized) return "unrecoverable";
 
   // THE AGE, ASKED AGAIN ON THE CUSTOMER'S OWN CLOCK. The check at the top is on `receivedAt`, which
-  // is when THIS application inserted the ledger row — not when the customer wrote. A webhook
+  // is when THIS application inserted the ledger row, not when the customer wrote. A webhook
   // delayed by a Chatwoot retry or an outage on our side inserts late, so a message hours older than
   // the ceiling can pass that first check. The REST read is what finally supplies the true instant,
   // and it is asked BEFORE the claim so a refusal spends no attempt.
@@ -871,24 +846,13 @@ async function runRecovery(params: {
     return "unreachable";
   }
 
-  // NOTE: a control command is not replayed, the one place a recovery refuses work it could do. A
-  // process can die after an effect and before settling its row, and `/reset` deletes before the
-  // tail settles, so a replay would delete the memory gathered SINCE the first reset. Refused rather
-  // than made idempotent: its author is an operator who can retype it, and its effect is destructive,
-  // not a reply; the row stays DEAD on the worklist for them. Not a general answer to replayed
-  // effects (see the head of this file).
-
-  // NOTE: a command only where one is ACTIVE, a TEST-mode agent: at a production agent `/reset` is
-  // ordinary text the turn answers (./webhook.ts, `commandMode === "test"`), and refusing it would
-  // leave the customer with nothing. The mode is read here with the BINDING, in one transaction, so it
-  // is about the agent that answers; the delivery path reads it again, so a production -> test flip in
-  // the few queries between can let a `/reset` pass here and run there. Closing that would widen
-  // `processChatwootDelivery`'s contract for every caller over a window a handful of queries wide.
-
-  // NOTE: not on an OBSERVER's route: the fence is about a command the responder already executed,
-  // and the observer never executes one; its ingestion is what stranded the row, so refusing would
-  // drop the message. And only of a CREATION, as the live path asks: an update of the same message
-  // is not a second command, and a voice note whose words read as `/reset` would lose its append.
+  // NOTE: a control command is not replayed: `/reset` deletes before the tail settles its row, so a
+  // replay would delete the memory gathered SINCE; its author, an operator, can retype it, and the
+  // row stays DEAD for them. Only where a command is ACTIVE, a TEST-mode agent (elsewhere `/reset` is
+  // text the turn answers, ./webhook.ts), with the mode read here with the BINDING in one
+  // transaction. Not on an OBSERVER's route, which never executes one and whose ingestion is what
+  // stranded the row; only of a CREATION, as the live path asks. Why each, and the mode-flip window
+  // left open: docs/chatwoot.md, "Webhook receiver", on the delivery recovery.
   if (
     isNewIncomingMessage(normalized) &&
     observerRouteBotId === null &&
@@ -903,38 +867,27 @@ async function runRecovery(params: {
     return "unrecoverable";
   }
 
-  // NOTE: asked AGAIN just before the handoff: the check at the top spends no network on a busy
-  // conversation, and since then two REST reads and a reconcile gave a live delivery time to start a
-  // turn (a live delivery does not consult the recovery claim). BOTH keys, the pair `/reset` asks in
-  // ./webhook.ts: the conversation key is taken at the top of a turn, and the GRAPH key is the one a
-  // follow-up NUDGE claims (../../graph/nudge.ts) while posting here, so asking only the first would
-  // build a turn beside a nudge mid-reply. The graph half is asked of the ROW (`turnOwnsThread`, which
-  // turns an unreadable answer into "held"), since the Map says "free" for a turn on another replica;
-  // with a null contact inbox the graph thread is the conversation's and keeps the in-process answer.
-
-  // NOTE: it NARROWS the window and does not close it: the rest is `processChatwootDelivery`'s path
-  // down to `runAgentTurn`'s claim, which COUNTS turns rather than refusing a second (two deliveries
-  // really overlap when debounce is off). A live delivery arriving there means the customer wrote
-  // again, which the newest-message check already answers; a follow-up NUDGE needs no new message,
-  // and what covers it is the mark taken below, held to the handoff, which `followUpHandler` reads.
-  // In this process, which under docs/deploy.md §4's single-replica invariant is every one of them.
+  // NOTE: the fence is asked AGAIN just before the handoff (below): two REST reads and a reconcile
+  // gave a live delivery, which does not consult the recovery claim, time to start a turn. BOTH keys,
+  // the pair `/reset` asks in ./webhook.ts: the conversation key a turn takes at its top, and this
+  // GRAPH key, which a follow-up NUDGE claims while posting (../../graph/nudge.ts). The graph half is
+  // also asked of the ROW (`turnOwnsThread`, unreadable reads as "held"), since the Map says "free"
+  // for a turn on another replica. It narrows the window without closing it; what covers the rest is
+  // the mark held to the handoff, in this process, which under docs/deploy.md §4 is every one of
+  // them. The rest of the argument: docs/chatwoot.md, "Webhook receiver", on the delivery recovery.
   const graphKey = resolveGraphThreadId(
     params.tenantId,
     instanceId,
     conversationId,
     contactInboxId,
   );
-  // NOTE: a route whose agent has no bot identity is not a recovery: `heldByAnotherParty` compares
-  // ids, so with `ourAgentBotId` null the gate goes LOOSE and a conversation another AgentBot holds
-  // reads as ours. A live delivery never gets here (its route token's bot exists), and the reply
-  // would be posted with no token anyway, refused by the client. Not narrowed to "held by another
-  // bot": the identity is what is missing. `unrecoverable`: the repair is an operator binding the
-  // inbox. An agent bound to NOTHING still runs, since the delivery path writes its `no_agent` line.
-
-  // NOTE: and only where the replay would post. A transcription replay posts nothing and needs no
-  // identity, and refusing it would lose the words from the only memory a human-owned conversation
-  // has. Ownership is still asked, with the ledger's route id; where even that is missing, a loose
-  // comparison mis-answers only when an AGENT BOT holds the conversation, so that case is refused.
+  // NOTE: a route whose agent has no bot identity is not recovered where the replay would post:
+  // `heldByAnotherParty` compares ids, so with `ourAgentBotId` null the gate goes LOOSE and a
+  // conversation another AgentBot holds reads as ours. The identity is what is missing, so this is not
+  // narrowed to "held by another bot"; `unrecoverable`, the repair being an operator binding the inbox.
+  // A transcription replay posts nothing and still runs, ownership asked with the ledger's route id;
+  // where even that is missing, a loose comparison mis-answers only when an AGENT BOT holds the
+  // conversation, so that case is refused. An agent bound to NOTHING still runs (its `no_agent` line).
   if (agentId !== null && agentBotId === null) {
     const heldByABot = (mirrorNow ?? state).assigneeType === "AgentBot";
     if (replayPosts || heldByABot) {
@@ -958,7 +911,7 @@ async function runRecovery(params: {
   // Asked in three steps, because the middle one AWAITS and the other two cannot.
   //
   // The Map first, so a conversation already busy costs no query. Then the row, which is the only
-  // reader that crosses replicas. Then the Map AGAIN — and that last ask is the one that decides:
+  // reader that crosses replicas. Then the Map AGAIN, and that last ask is the one that decides:
   // `turnOwnsThread` reads a row, and a turn starting while that read is in flight marks the Map
   // and returns a row-read describing the instant before it did. Two Map lookups are what that
   // costs, and they are also the last thing before the mark, so nothing suspends between the answer
@@ -993,17 +946,10 @@ async function runRecovery(params: {
   // loss on a customer nobody replied to. Asked for explicitly (`onDirectTurn`) rather than read back
   // off the world, since a recorded error or a missing outgoing message describes a MOMENT, not this
   // turn.
-
-  // NOTE: the claim does not revoke the original handler: `DEAD` is the sweep's verdict, and a
-  // handler that was merely stalled holds no lock this side can take, so claiming from `DEAD` takes
-  // back the LEDGER only (its own tx2 CAS then settles nothing). Two INVOKES are fenced: a handler in
-  // `runAgentTurn` holds the thread's durable claim, which the fence above asks. What is left is a
-  // handler stalled half an hour BEFORE its turn (every await there has its own deadline, so the
-  // process is pathological), overlapping as two live deliveries can.
   let turnThrew = false;
   // The outcome the DIRECT turn reported, or null when no turn ran at all. Null is not a third kind
-  // of failure: it is the gate having decided before any turn — a human holding the conversation, a
-  // status that is not `pending`, a control command consumed — and the gate's decision IS the answer
+  // of failure: it is the gate having decided before any turn (a human holding the conversation, a
+  // status that is not `pending`, a control command consumed), and the gate's decision IS the answer
   // to whether this message is still owed a reply.
   let turnOutcome: string | null = null;
   // NOTE: what the ingestion answered; null means it never ran. A memory-only replay reports no turn,
@@ -1011,21 +957,14 @@ async function runRecovery(params: {
   // also remembered nobody: an inbox unbound, switched off or flipped to test mode during the wait
   // reaches no ingestion branch, and the delivery still comes back `"processed"`.
   let ingestOutcome: string | null = null;
-  // NOTE: held across the handoff, not merely probed: this keeps the fence's answer true until the
-  // turn takes its own claim. Balanced in the `finally`, since an unbalanced mark makes every reader
-  // of the key defer on this conversation until restart (../../graph/inflight.ts). BOTH keys: the
-  // conversation key keeps `followUpHandler` and a second recovery off; `/reset` asks the GRAPH key
-  // (`threadBusyForResetOn`) and refuses while anyone is mid-write, and without it a reset between
-  // the mark and the turn's claim would clear the memory this turn then restores. The window holds
-  // the mirror write, the ownership gates, contact authorization and the spend ceiling.
-
-  // NOTE: taken as RESERVATIONS, not invokes: every writer asks `isTurnInFlight`, which counts both,
-  // but `markTurnOwning` asks `isTurnRunning` (whether ANOTHER invoke is reading the thread), and
-  // counting this hold as one would skip the attendance divider on a new conversation. Both maps
-  // COUNT, so the turn taking the same key is an increment. Process-local: a `/reset` on another web
-  // replica reads neither, and closing that means taking the durable claim (`markTurnOwning`) here,
-  // which WAITS on an append's lease and the reset's row lock, changing what the fence means. Left on
-  // docs/deploy.md §4's single-replica invariant; see docs/chatwoot.md, "Mirror sync".
+  // NOTE: held across the handoff, not merely probed, so the fence's answer stays true until the
+  // turn takes its own claim; balanced in the `finally`, since an unbalanced mark defers every reader
+  // of the key until restart (../../graph/inflight.ts). BOTH keys: the conversation key keeps
+  // `followUpHandler` and a second recovery off, and the GRAPH key keeps `/reset`
+  // (`threadBusyForResetOn`) from clearing a memory this turn then restores. RESERVATIONS, not
+  // invokes: counted as one, `markTurnOwning` would skip the attendance divider on a new
+  // conversation. Process-local, left on docs/deploy.md §4's single-replica invariant; the window
+  // and why the durable claim is not taken here: docs/chatwoot.md, "Mirror sync".
   markTurnReserved(handoffKey);
   markTurnReserved(graphKey);
   try {
@@ -1049,6 +988,12 @@ async function runRecovery(params: {
       // "the row does not say", which is a different instruction from `false`, and collapsing the
       // two would hand the widest scope to every row an older build wrote.
       settleScopedToThisDelivery: row.settleScopedToThisDelivery ?? undefined,
+      // NOTE: the claim does not revoke the original handler: `DEAD` is the sweep's verdict, and a
+      // stalled handler holds no lock this side can take, so claiming from `DEAD` takes back the
+      // LEDGER only (its own tx2 CAS then settles nothing). Two INVOKES are fenced: a handler in
+      // `runAgentTurn` holds the thread's durable claim, which the fence above asks. What is left is
+      // a handler stalled half an hour BEFORE its turn (every await there has its own deadline, so
+      // the process is pathological), overlapping as two live deliveries can.
       claimFrom: "DEAD",
       onIngest: (o) => {
         ingestOutcome = o;
@@ -1246,7 +1191,7 @@ export function isRecoverableStrand<
 // reads PENDING and PROCESSING, so a DEAD row is invisible to every later pass.
 //
 // `rearm: "new-work"` because that is what a second arming would be. A row can only be declared DEAD
-// once — `finish` is a CAS — so in practice this is armed once per row and the question is
+// once (`finish` is a CAS), so in practice this is armed once per row and the question is
 // hypothetical; answered anyway, because the row it upserts carries the failure budget, and a row
 // re-armed as the same work would hand a recovery that keeps failing a fresh five every time.
 export async function armDeliveryRecovery(

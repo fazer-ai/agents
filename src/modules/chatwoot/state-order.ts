@@ -1,57 +1,27 @@
 /**
- * Ordering rules for the conversation state the mirror keeps in sync with Chatwoot.
- *
- * Pure: no DB, no clock. `mirrorChatwootEvent` collects the facts, calls this once, and writes what
- * it is told. Kept apart so the reasoning lives in one place and can be exercised as a decision table
- * (`tests/modules/chatwoot-state-order.test.ts`) instead of through the database.
+ * Ordering rules for the conversation state the mirror keeps in sync with Chatwoot. Pure: no DB, no
+ * clock. `mirrorChatwootEvent` collects the facts, calls this once and writes what it is told, so
+ * the reasoning is a decision table (`tests/modules/chatwoot-state-order.test.ts`). The rule, why a
+ * message snapshot moves no state, the reopen exception and why there are three marks:
+ * docs/chatwoot.md, "Conversation state ordering".
  */
-
-// What the source does, read on the fork:
-// 1. A MESSAGE event embeds a conversation SNAPSHOT serialized when the message fired
-//    (`AgentBotListener` builds the payload, then enqueues it; a failed delivery retries with that
-//    same copy). It describes the conversation as of THAT moment, not the delivery's.
-// 2. `handoff_to_human` posts its message BEFORE assigning the human, so the tail of every handoff
-//    burst carries the pre-handoff state; applied, it rewrites the row back to bot-owned.
-// 3. `last_activity_at` has ONE-SECOND resolution and does not advance on a status or assignee
-//    change at all, so a whole burst shares one value and it cannot order that burst.
-
-// 4. `conversation.updated_at` can: it is the source row's version stamp, moved by every write to it
-//    (status and assignee included), sub-second, and serialized together with the state it describes.
-// 5. `AgentBots::WebhookJob` retries 3 times, 3s apart, so deliveries arrive out of order by ~9s.
-// 6. A degraded payload (`meta` absent) carries a trustworthy status and says nothing at all about
-//    the assignee.
-
-// The rule: conversation state comes from conversation-level events, ordered among themselves by
-// version. A message snapshot moves no state and claims no version, so the frozen handoff tail has
-// nothing to say whatever second it landed in. "Nothing to say" is about STATE: the redirect pairing
-// has its own mark, so a payload discarded for state can still be the only witness of a pairing.
-// One exception, the source's own doing: a brand-new incoming customer message reopens the
-// conversation BEFORE dispatch (`Message#execute_after_create_commit_callbacks` runs
-// `reopen_conversation`, then `dispatch_create_events`): a status change, never an assignee change.
-
-// A snapshot need not be trusted as the only witness of a new assignee (a handoff event delayed past
-// the human's first message): it claims no version, so the mark does not advance past the delayed
-// event, and that event applies when it lands.
-
-// Why three marks and not one: each field is ordered by the version of the payload that last WROTE
-// it. After a degraded payload, status and assignee reflect different source versions, so one mark
-// would order one of them by a number that does not describe it: hold the degraded event's version
-// and the complete event after it loses the assignee it alone witnesses; withhold it and that event
-// reopens a conversation resolved after it. Split marks also make the reopen exception safe: it moves
-// the STATUS mark only, so a handoff event in flight is still ordered by an untouched assignee mark.
-
-// The third mark, the redirect pairing, is written by an update of its own on the source row, so
-// from then on it describes a version neither other mark does. It cannot borrow their fallback:
-// recording the pairing is a column write, which by point 3 leaves `last_activity_at` frozen, and a
-// recency fence would discard exactly the payload it exists to keep.
-
-// Versions are compared as raw unix-seconds doubles, never converted to `Date`: that rounds to the
-// millisecond and collapses two writes microseconds apart into one version.
 
 import { statusClaimVerdict } from "./status-claim";
 
+// What the source does, read on the fork, cited by number below and in ./normalize.ts:
+// 1. A MESSAGE event embeds a conversation SNAPSHOT serialized when it fired, not at delivery.
+// 2. `handoff_to_human` posts before assigning the human, so a handoff burst ends in pre-handoff
+//    state.
+// 3. `last_activity_at` has one-second resolution and does not move on a status or assignee change.
+// 4. `conversation.updated_at` is the row's sub-second version, moved by every write to it.
+// 5. `AgentBots::WebhookJob` retries 3 times, 3s apart, so deliveries arrive out of order by ~9s.
+// 6. A degraded payload (`meta` absent) states a trustworthy status and nothing about the assignee.
 export interface StatePayload {
-  /** `conversation.updated_at`. Null on a Chatwoot older than 4.0.2, which sends no version. */
+  /**
+   * `conversation.updated_at`. Null on a Chatwoot older than 4.0.2, which sends no version. Compared
+   * as raw unix-seconds doubles, never a `Date`: that rounds to the millisecond and merges two writes
+   * microseconds apart into one version.
+   */
   version: number | null;
   /** `last_activity_at`. Coarse (see 3 above), and the only axis the unversioned fields have. */
   activityAt: Date | null;
@@ -90,7 +60,7 @@ export interface StateRow {
   assigneeType: string | null;
   redirectOriginAt: number | null;
   /**
-   * Whether this conversation has EVER had a pairing stated about it — the mark, or a stored origin
+   * Whether this conversation has EVER had a pairing stated about it: the mark, or a stored origin
    * for the versionless instances that write the value and stamp nothing. Both are evidence; only
    * having neither is silence.
    */
@@ -114,7 +84,7 @@ export interface StateDecision {
    * below is applied. Not "apply nothing": the redirect pairing has a mark of its own and is decided
    * separately, precisely because the payload that first carries one is routinely behind on the rest
    * (see the stale branch below). `mirrorChatwootEvent` returns early on this flag, and writes what
-   * the two exceptions — the pairing, and a refused close's `resolvedBy` — tell it to.
+   * the two exceptions, the pairing and a refused close's `resolvedBy`, tell it to.
    */
   stale: boolean;
   /** The status to write, or null to keep the stored one. */
@@ -143,9 +113,10 @@ export interface StateDecision {
   assigneeAt: number | null;
   /**
    * Whether the payload's redirect origin may overwrite the stored pairing, on a THIRD mark (see the
-   * header). Ordered by version and NEVER by `last_activity_at`: recording the pairing is a column
-   * write, which does not advance `last_activity_at`, so its own conversation_updated arrives with a
-   * FROZEN activity timestamp and a recency fence would discard exactly the event with the answer.
+   * doc named in the header). Ordered by version and NEVER by `last_activity_at`: recording the
+   * pairing is a column write, which does not advance it (point 3), so its own conversation_updated
+   * arrives with a FROZEN activity timestamp and a recency fence would discard exactly the event with
+   * the answer.
    */
   redirectOrigin: boolean;
   /** Version to stamp on the redirect-origin mark, or null to leave it where it is. */
@@ -275,7 +246,7 @@ export function decideConversationWrites(
     (row.statusAt === null ||
       Math.floor(eventAt.getTime() / 1000) >= Math.floor(row.statusAt));
   // A LOCAL CLAIM OUTRANKS BOTH ROUTES ABOVE, and it is the only rule here that is not about a
-  // version — because the write it protects had none to claim. A payload restating the status the
+  // version, because the write it protects had none to claim. A payload restating the status the
   // claim replaced is a snapshot from before that write, whichever axis it would have won on: the
   // reopen exception carries one (a customer message frozen while the toggle was on the wire), and
   // the ordinary ordered path carries the other (a delayed or companion `conversation_*` event, which

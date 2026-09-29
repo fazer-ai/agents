@@ -1,12 +1,10 @@
 import { clipText } from "@/lib/text";
 import type { UnreadCause, UnreadFile } from "@/modules/vision/unread";
-// Renders ONE inbound customer message into the text the agent actually sees, mirroring the n8n
-// "Extrair mensagem" node so the agent gets modality + reply context instead of a silent blank:
-//   * audio  → the transcription in <mensagem-de-audio>…</mensagem-de-audio> (or a "não audível"
-//              marker when transcription is empty/failed);
-//   * image, other file → a marker; text → as-is;
-//   * a quoted/replied-to message → prefixed with the referenced snippet when resolvable.
-// Pure: no DB, no network. Shared by the direct (webhook) path and the debounce flush.
+// Renders ONE inbound customer message into the text the agent sees, mirroring the n8n "Extrair
+// mensagem" node: audio becomes its transcription in <mensagem-de-audio> (or a "não audível" marker
+// when it is empty or failed), an image or other file a marker, text itself, and a quoted message is
+// prefixed with the referenced snippet when resolvable. Pure: no DB, no network. Shared by the direct
+// (webhook) path and the debounce flush.
 
 // A location attachment's usable content: coordinates and/or the provider's place title ("Padaria do
 // Zé, Rua X, 123"). Coordinate-less pins keep the title; see firstLocationAttachment for the (0,0)
@@ -176,7 +174,7 @@ export function renderInboundMessage(
     const para = quoted
       ? ` para: "${clipText(quoted.replace(/\s+/g, " ").trim(), QUOTE_MAX)}"`
       : "";
-    // The subject rides along here too. It cannot happen on a mailbox — nobody reacts to an email —
+    // The subject rides along here too. It cannot happen on a mailbox (nobody reacts to an email),
     // but `hasAnswerableContent` admits a message for its subject alone, and a renderer that dropped
     // it on this one branch would be the predicate and the renderer disagreeing again, on a shape the
     // type allows. The fence walks it.
@@ -235,7 +233,7 @@ export function renderInboundMessage(
       m.location.latitude !== null && m.location.longitude !== null
         ? ` latitude="${m.location.latitude}" longitude="${m.location.longitude}"`
         : "";
-    // NOTE: The title is provider/user text inside a quoted pseudo-attribute — a double quote in it
+    // NOTE: The title is provider/user text inside a quoted pseudo-attribute: a double quote in it
     // would read as closing the attribute early; swap for single quotes (no full XML escaping, per
     // this file's marker convention).
     const title = m.location.title
@@ -283,7 +281,7 @@ export function renderInboundMessage(
     }
   }
   // OUTERMOST, and after the quote marker for that reason: the quote is context for the body, the
-  // subject is the envelope both sit in — and an email client shows it above everything else.
+  // subject is the envelope both sit in, and an email client shows it above everything else.
   if (subject) {
     const marker = `<assunto>${subject}</assunto>`;
     body = body ? `${marker}\n${body}` : marker;

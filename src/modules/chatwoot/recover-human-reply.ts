@@ -25,29 +25,13 @@ import { responderCoversMessage } from "./responder-coverage";
 import { isHumanReplyShape } from "./stranded-delivery";
 
 // Folding back into the contact's memory the colleague's reply an ingestion lost. The ledger names
-// every colleague's reply at INSERT (`humanReplyMessageId`, written for the takeover's fence), so the
-// words can be read back over REST by id and rebuilt (./recover-payload.ts).
-
-// Not the delivery recovery, which replays the WHOLE delivery and claims the row from `DEAD`: `DEAD`
-// is the worklist of customers who wrote and were never answered, where a colleague's reply does not
-// belong, and a replay re-runs the takeover, the gates and, on a creation, a turn, taking back a
-// conversation that may have been handed to the bot meanwhile just to recover a memory append. So
-// this is a kind of its own, armed beside the takeover recovery, and the two retry independently: a
-// `not-owed` takeover must not abort the memory, and a failed memory arm must not re-run the toggle.
-
-// Re-decided NOW rather than carried (the job outlives the pass that armed it), like
-// ./recover-takeover.ts: the route's provider half, before any network (`device` is also an
-// unreserved provider's echo of our OWN reply, which would file the agent's words as an attendant's);
-// whether the route remembers at all (`route_remembers = false` cannot tell a failed enqueue from a
-// route that never folds anything in, such as a `test` agent, so the agent is asked, as the receiver
-// asks it); and the contact-inbox, which keys the thread.
-
-// The read is fenced like the delivery recovery's (`rebuiltInbound` there): a message that comes back
-// from REST as anything but a colleague's reply is a degraded response (a missing `message_type`
-// normalizes to "other"), and ingesting it would append something nobody wrote, so it is refused as
-// `unreachable`. No age ceiling: this writes to a memory, not to the customer, and a reply the agent
-// cannot see is a hole in the attendance whenever the next customer message arrives.
-
+// every colleague's reply at INSERT (`humanReplyMessageId`), so the words are read back over REST by
+// id and rebuilt (./recover-payload.ts). A kind of its own beside the takeover recovery, never the
+// delivery recovery, and the two retry independently. Re-decided NOW, like ./recover-takeover.ts: the
+// route's provider half before any network, whether the route remembers at all, and the
+// contact-inbox, which keys the thread. A read that comes back as anything but a colleague's reply
+// is refused as `unreachable`, and there is no age ceiling. Why each: docs/chatwoot.md, "Webhook
+// receiver", on the human-reply recovery.
 const RECOVERY_KIND = "HUMAN_REPLY_RECOVERY" as const;
 
 function sysCtx(tenantId: bigint): TenantContext {
@@ -111,7 +95,7 @@ export async function armHumanReplyRecovery(
 
 export type HumanReplyRecoveryOutcome =
   // The append is queued. Not "appended": the ingest job owns that decision, and it is the same job
-  // the live path would have armed — including its own dedup, which is what makes a row stranded
+  // the live path would have armed, including its own dedup, which is what makes a row stranded
   // AFTER a successful ingestion cost nothing (../../graph/ingest.ts, `ingestVerdict`).
   | "remembered"
   // Nothing was owed, or nothing is owed any more. Every refusal that is a VERDICT rather than a
@@ -131,7 +115,7 @@ export type HumanReplyRecoveryOutcome =
   // arming its ingestion leaves the same row with the reply already in memory, so telling the operator
   // the words were lost would be an instruction to duplicate them.
   | "undecided"
-  // The enqueue failed — which is the very failure this recovery exists for, happening again.
+  // The enqueue failed, which is the very failure this recovery exists for, happening again.
   | "failed";
 
 export interface RecoverHumanReplyParams {
@@ -178,7 +162,7 @@ export async function recoverStrandedHumanReply(
   const messageId = row.humanReplyMessageId;
 
   // The conversation's own inbox and the agent bound to it, keyed by the CONVERSATION rather than by
-  // a payload inbox id, because there is no payload — the same read the takeover recovery makes.
+  // a payload inbox id, because there is no payload: the same read the takeover recovery makes.
   const bound = await runScopedOn(base, sysCtx(tenantId), async (db) => {
     const conv = await db.conversation.findUnique({
       where: {
@@ -192,7 +176,7 @@ export async function recoverStrandedHumanReply(
         id: true,
         inboxId: true,
         contactInboxId: true,
-        // WHO HOLDS IT, which is half of the answer to "was this an observer's route?" — see the
+        // WHO HOLDS IT, which is half of the answer to "was this an observer's route?"; see the
         // exception below. The mirror is the only source here: there is no payload to prefer, which
         // is the same fallback the receiver makes for a silent one.
         assigneeType: true,
@@ -217,13 +201,6 @@ export async function recoverStrandedHumanReply(
       },
     });
     if (!inbox?.agentId) return null;
-    // NOTE: the route's own agent, resolved the way the receiver's `resolveRoute` does: a WATCHER's
-    // runtime comes from the bot the delivery arrived on (the bot IS the route), a RESPONDER's from the
-    // INBOX, never the bot. Chatwoot fans a message to the conversation's assigned bot and the inbox's,
-    // so `routeAgentBotId` can name another persona that holds the conversation; asked through the bot
-    // on both routes, a `test` or switched-off assigned agent (or a responder rebind) would discard an
-    // append the inbox's responder owed.
-
     // NOTE: `routeObserved` has a third value: the claim states the role, so a delivery stranded
     // before its claim carries null, and `role-unstated` is one of the verdicts that arm this. Read as
     // `false`, an observer's append beside a `test` or switched-off responder would be discarded for
@@ -271,6 +248,12 @@ export async function recoverStrandedHumanReply(
             createdAt: { lte: row.receivedAt },
           },
         })) > 0);
+    // NOTE: the route's own agent, resolved the way the receiver's `resolveRoute` does: a WATCHER's
+    // runtime comes from the bot the delivery arrived on (the bot IS the route), a RESPONDER's from the
+    // INBOX, never the bot. Chatwoot fans a message to the conversation's assigned bot and the inbox's,
+    // so `routeAgentBotId` can name another persona that holds the conversation; asked through the bot
+    // on both routes, a `test` or switched-off assigned agent (or a responder rebind) would discard an
+    // append the inbox's responder owed.
     const routeAgentId = observed ? routeBotAgentId : inbox.agentId;
     if (routeAgentId === null) return null;
     const agent = await db.agent.findUnique({
@@ -303,7 +286,7 @@ export async function recoverStrandedHumanReply(
         : null;
     return {
       contactInboxId: conv.contactInboxId,
-      // The MIRROR's row id, which is what a flow-log line hangs on — the reports an operator reads
+      // The MIRROR's row id, which is what a flow-log line hangs on: the reports an operator reads
       // are keyed by it, not by Chatwoot's display id.
       conversationRowId: conv.id,
       agentId: routeAgentId,
@@ -481,7 +464,7 @@ export async function recoverStrandedHumanReply(
       ...(params.makeClient ? { makeClient: params.makeClient } : {}),
     });
     // `before` anchors the page that ENDS at this id, so the message is in it whatever the
-    // conversation's length — the same read the delivery recovery makes for the same reason.
+    // conversation's length, the same read the delivery recovery makes for the same reason.
     raw = await client.getMessages(conversationId, { before: messageId + 1 });
   } catch (e) {
     logger.warn(
@@ -518,7 +501,7 @@ export async function recoverStrandedHumanReply(
   }
 
   // REBUILT THROUGH THE SAME BUILDER THE OTHER RECOVERY USES, so the two cannot drift about what a
-  // webhook body looks like — the REST and webhook spellings differ in both fields this depends on
+  // webhook body looks like: the REST and webhook spellings differ in both fields this depends on
   // (`message_type` is an integer there and an enum string on the wire), and `normalizeChatwootEvent`
   // is the one reader that reconciles them.
   //
@@ -594,7 +577,7 @@ export async function recoverStrandedHumanReply(
   if (!text.trim()) return "not-owed";
 
   // ASKED AGAIN, IMMEDIATELY BEFORE THE ARM, because the read above happened before a REST round
-  // trip and a `/reset` inside that stretch is exactly the one this fence exists for — the command
+  // trip and a `/reset` inside that stretch is exactly the one this fence exists for: the command
   // revokes what is queued, and this would queue after it. It does not CLOSE the window: the reset
   // can still land between this read and the enqueue, and what bounds that residue is the command's
   // own critical section, which holds the thread row and refuses while an append is in flight
@@ -777,8 +760,8 @@ async function humanReplyRecoveryHandler(
 }
 
 // NO DEAD-LETTER HOOK OF ITS OWN, for the reason both neighbours state: `dispatchDeadLetter` already
-// announces every kind's death with the kind, the job id and the dedupe key — which here IS the
-// ledger row id — and takes its level from `JOB_DEATH_LEVEL`.
+// announces every kind's death with the kind, the job id and the dedupe key (which here IS the
+// ledger row id), and takes its level from `JOB_DEATH_LEVEL`.
 let registered = false;
 export function registerHumanReplyRecoveryHandler(): void {
   if (registered) return;

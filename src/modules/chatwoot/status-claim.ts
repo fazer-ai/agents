@@ -2,32 +2,10 @@
  * The local status claim: what a status write made on THIS side announces about itself, so a payload
  * serialized before it cannot walk it back. Pure: no DB, no clock of its own; the writers stamp what
  * these functions compute, and `decideConversationWrites` and the takeover's fence ask them what a
- * stored pair means. Why a version cannot do this job, what a claim refuses and why only a write that
- * moves FIRST can take one: docs/chatwoot.md, "A person answering the customer ends the attendance".
+ * stored pair means. Why a version cannot do this job, why a claim refuses ONE status, outlives the
+ * reconcile and ends only at its deadline, and why only a write that moves FIRST can take one:
+ * docs/chatwoot.md, "A person answering the customer ends the attendance".
  */
-
-// A version cannot do this job: a customer message advances `updated_at` on its own account
-// (`set_conversation_activity`), so a snapshot serialized just BEFORE our toggle carries a higher
-// version than the state we decided on, exactly like one serialized after it.
-
-// A claim refuses ONE status, the one it replaces: a payload stating anything else is news, and an
-// operator resolving inside the claim produces one event we ack and Chatwoot never redelivers, so a
-// blanket fence would lose that resolve for good.
-
-// A claim outlives the reconcile because the reopen exception rides a message payload and compares
-// whole seconds against the status mark, so a message frozen in the same second as the toggle would
-// win even against the version the reconcile just stamped.
-
-// Nothing ends a claim early: a toggle that throws is an UNKNOWN outcome (Chatwoot may have committed
-// and lost the response), and releasing there lets a snapshot put the agent back into a conversation
-// the platform handed over. The cost is a delay until the deadline, the same for a deferred version
-// that nothing ever stamps.
-
-// On a Chatwoot older than 4.0.2 no version arrives, so nothing refused inside a claim is adjudicated
-// and a hand-back made in the window stays refused until the deadline: the safe direction, since
-// applying a snapshot we cannot place is the defect the claim exists for, and the reason the deadline
-// is tens of seconds. There is a deadline at all because a claim whose process died is one no writer
-// can end.
 
 // Long enough to outlast the critical section it fences plus the deliveries already in flight when
 // it was taken, and no longer: past that the transition is over and the fence is still up. The terms

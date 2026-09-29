@@ -1,23 +1,10 @@
-// In-process cache for the receiver's route-token resolution. The ack path must not depend on
-// Postgres being healthy, and must not promise more than Postgres can deliver.
-//
-// Chatwoot gives the receiver ~5s (`WEBHOOK_TIMEOUT`) and escalates the conversation
-// `pending -> open` when it misses, taking the bot off a conversation it was about to answer. Resolving
-// the bot is an interactive transaction (RLS needs `set_config`), which pool pressure can stretch past
-// that budget for a row that almost never changes.
-
-// But a 200 is a promise: Chatwoot does not retry a 2xx and the payload is not stored (docs/chatwoot.md,
-// "Webhook receiver"), so acking from a cached row while Postgres is down loses the event in silence,
-// which is worse than the escalation. The cache answers only what the process can still back up:
-//   1. inside the TTL              -> served, no questions
-//   2. past it, last lookup OK     -> served, and refreshed behind the ack
-//   3. past it, last lookup FAILED -> miss: the ack blocks and fails honestly, and Chatwoot's own
-//                                     retry ladder carries the event instead
-// Rule 3 keeps rule 2 truthful at no cost to the case rule 2 exists for: an idle, healthy instance.
-
-// Lives in its own module so the writers that have to invalidate it (provisioning, instance
-// connect/disconnect, deletion) can reach it without importing the receiver, which imports them.
-
+// In-process cache for the receiver's route-token resolution. Chatwoot gives the ack ~5s
+// (`WEBHOOK_TIMEOUT`) before escalating the conversation `pending -> open`, and resolving the bot is
+// an interactive transaction (RLS needs `set_config`) that pool pressure can stretch past that. But
+// a 2xx is never retried and the payload is not stored, so it serves only what the process can still
+// back: inside the TTL; past it while the last lookup succeeded (refreshed behind the ack); after a
+// FAILED lookup never, so the ack fails onto Chatwoot's retry ladder (docs/chatwoot.md, "Webhook
+// receiver"). Its own module because the receiver imports the writers that invalidate it.
 // How long a resolution is served without questioning it.
 export const ROUTE_TOKEN_CACHE_TTL_MS = 30_000;
 
@@ -185,7 +172,7 @@ export function routeTokenRefreshInFlight(
 // Wait on the refresh in flight, if any, for at most `timeoutMs`. Rejects on the refresh's own
 // failure (see trackRouteTokenRefresh) and rejects on the bound, which are the same answer to the
 // caller: this ack cannot be honoured, so let Chatwoot redeliver. The overrunning refresh is detached
-// on the way out — a hang that stayed registered would put every later delivery for this token behind
+// on the way out: a hang that stayed registered would put every later delivery for this token behind
 // a promise that never answers.
 export async function awaitRouteTokenRefresh(
   routeTokenHash: string,
@@ -234,8 +221,8 @@ export function trackRouteTokenRefresh(
   if (existing) return existing;
   let p: Promise<void>;
   p = run().finally(() => {
-    // BY IDENTITY, not by key. This refresh can be detached before it settles — an invalidation
-    // retires it, or a waiter's bound drops it — and a later request registers its own under the same
+    // BY IDENTITY, not by key. This refresh can be detached before it settles (an invalidation
+    // retires it, or a waiter's bound drops it), and a later request registers its own under the same
     // key. Deleting by key here would remove THAT one while its lookup is still running, leaving the
     // map empty and the request after it opening a third.
     if (s.refreshing.get(routeTokenHash) === p) {
@@ -253,7 +240,7 @@ export function invalidateRouteTokenCache(routeTokenHash?: string): void {
   const s = store();
   s.generation++;
   // The refresh in flight goes with them. It began before the writer committed, so the answer it is
-  // about to produce is about the world this invalidation just retired — and a request arriving after
+  // about to produce is about the world this invalidation just retired, and a request arriving after
   // the commit would otherwise wait on it, and inherit its failure, for a question nobody is asking
   // any more. Detached, not cancelled: the lookup runs to completion and its write is refused by the
   // generation guard.

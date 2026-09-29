@@ -35,7 +35,7 @@ describe("the app shell contains its own scrolling", () => {
   // shell is pinned to the viewport, so anything that outgrows it can only show up as a second
   // scrollbar rather than as a longer page.
   test("the shell is pinned to the viewport and hides its own overflow", () => {
-    // NOTE: not `\bh-dvh\b`: a hyphen is a word boundary, so that also matches `min-h-dvh`, which sets
+    // Not `\bh-dvh\b`: a hyphen is a word boundary, so that also matches `min-h-dvh`, which sets
     // a FLOOR rather than a height and lets the shell grow past the viewport.
     const shell = classLists(source).find((c) =>
       /(?<![\w-])h-dvh(?![\w-])/.test(c),

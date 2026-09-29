@@ -25,7 +25,7 @@ export function resolveInboundAuthConfig(
   config: Record<string, unknown>,
 ): Required<InboundAuthConfig> {
   const entry = getCatalogEntry(catalogType);
-  // NOTE: A string is the operator's answer, `""` included: dropping it would send the gate the
+  // A string is the operator's answer, `""` included: dropping it would send the gate the
   // DEFAULT name, the one thing its refusal exists to prevent. Usability is the gate's call. A
   // non-string falls through: it is not an answer, and the gate would have nothing to compare.
   const override = (v: unknown): string | undefined =>

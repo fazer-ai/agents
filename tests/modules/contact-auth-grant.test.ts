@@ -518,7 +518,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
     const held = new Promise<void>((r) => {
       release = r;
     });
-    // NOTE: resolved from INSIDE the slow request, so the refusal below starts once the first check
+    // Resolved from INSIDE the slow request, so the refusal below starts once the first check
     // has provably reached its endpoint; ordering by timing lets a race test pass for the wrong reason.
     const reached = new Promise<void>((r) => {
       entered = r;
@@ -645,7 +645,7 @@ describe.skipIf(!dbUp)("contact authorization: reusing a verdict", () => {
 
     // The allow is in flight first, so its check started before the refusal's.
     const allowInFlight = ask({ cfg: cfg(), fetchImpl: slowAllow });
-    // NOTE: the refusal's DELETE is entered and held there: the row is already doomed and the
+    // The refusal's DELETE is entered and held there: the row is already doomed and the
     // database has not been told yet.
     const denial = ask({
       cfg: cfg({ mode: "perMessage" }),

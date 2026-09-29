@@ -267,7 +267,7 @@ describe.skipIf(!dbUp)("the webhook gate leaves a trail", () => {
       where: { tenantId, chatwootConversationId: 9107 },
       data: { status: "resolved", chatwootStatusAt: T + 3600 },
     });
-    // NOTE: the stranded message, serialized a minute BEFORE that resolve. Behind the status mark
+    // The stranded message, serialized a minute BEFORE that resolve. Behind the status mark
     // on its own clock, so the reopen exception refuses it and the mirror stays `resolved`.
     //
     // The spy is taken HERE, around the one delivery whose line this is about, and restored in a

@@ -332,7 +332,7 @@ function throwSites(
 // passing a computed message INTO such a class, since that call site names no key.
 async function computedSiteRes(): Promise<RegExp[]> {
   const classes = await errorClasses();
-  // NOTE: anything in the message position that is not a literal (identifier, member chain, call),
+  // Anything in the message position that is not a literal (identifier, member chain, call),
   // not starting with a quote or backtick (the other reader's subject); `[^;]` bounds it to its own
   // statement. On a nested call the lazy match may stop early, which only shortens the report.
   const COMPUTED = '(?<msg>[^\\s;"`][^;]*?)';
@@ -378,7 +378,7 @@ function keysThatCannotCarryTheirReason(
 const SAY_LESS_GRANDFATHERED: readonly string[] = [];
 
 describe("the error catalog cannot be bypassed", () => {
-  // NOTE: `src` holds no cast, so a detector matching NOTHING would pass unchanged: the predicate is
+  // `src` holds no cast, so a detector matching NOTHING would pass unchanged: the predicate is
   // proven against a body that contains one before it is pointed at the tree.
   const castsIn = (body: string): boolean =>
     body.includes("as ErrorTranslationKey");
@@ -398,7 +398,7 @@ describe("the error catalog cannot be bypassed", () => {
     expect(offenders).toEqual([]);
   });
 
-  // NOTE: the spelling rule. A literal that LOOKS like a key and resolves to nothing is a typo or a
+  // The spelling rule. A literal that LOOKS like a key and resolves to nothing is a typo or a
   // token one side invented. These three are stored values, not keys: `KnowledgeDocument.error` rows
   // may still carry the old dotted spelling, which the console maps onto today's tokens
   // (src/client/lib/knowledgeDocs.ts). Registering them would put a second dot in the API catalog.
@@ -409,7 +409,7 @@ describe("the error catalog cannot be bypassed", () => {
     "errors.embedding.credential_empty",
   ];
 
-  // NOTE: a function with the control below: `src` holds no unregistered literal, so a sweep that
+  // A function with the control below: `src` holds no unregistered literal, so a sweep that
   // skipped every key would pass over the tree unchanged.
   const unregisteredLiterals = (
     body: string,
@@ -683,7 +683,7 @@ describe("both languages answer, and answer differently", () => {
       "k",
       "l",
     ]);
-    // NOTE: the captured MESSAGE must keep its `${…}`, or the say-less rule goes silent. Asserted as
+    // The captured MESSAGE must keep its `${…}`, or the say-less rule goes silent. Asserted as
     // a CHARACTER CODE (36 is `$`): an expectation built from `dollar` would move with the fixture.
     const captured = [...(into.get("b") ?? [])][0] ?? "";
     expect(captured.charCodeAt(captured.indexOf("{") - 1)).toBe(36);
@@ -793,7 +793,7 @@ describe("both languages answer, and answer differently", () => {
     expect(computed.size).toBeGreaterThan(3);
   });
 
-  // NOTE: WHAT THE READER CANNOT SEE, and why each may stay invisible. A blind spot is a number
+  // WHAT THE READER CANNOT SEE, and why each may stay invisible. A blind spot is a number
   // nobody knows; this ledger makes it a decision. It is COMPARED to the sweep, not subtracted, so
   // it needs no size pin: appending a key the reader CAN see fails as loudly as forgetting one.
   const UNSEEN_BY_THE_READER: readonly string[] = [
@@ -858,7 +858,7 @@ describe("both languages answer, and answer differently", () => {
     );
   });
 
-  // NOTE: A SUBCLASS IS A THROW SITE WITH NO ARGUMENTS. `throw new UnauthorizedError()` names no
+  // A SUBCLASS IS A THROW SITE WITH NO ARGUMENTS. `throw new UnauthorizedError()` names no
   // key, so a keyless class answers in English whatever the caller's language, invisibly to every
   // call-site sweep. The waived one is argued at the class: a 503 the client retries, never shows.
   const KEYLESS_BY_DESIGN: readonly string[] = ["ServiceUnavailableError"];
@@ -921,7 +921,7 @@ describe("both languages answer, and answer differently", () => {
   test("the untranslated, keyless and say-less ledgers may only shrink", () => {
     expectWaiverLedger("ALLOWED_UNTRANSLATED", ALLOWED_UNTRANSLATED, 0);
     expectWaiverLedger("KEYLESS_BY_DESIGN", KEYLESS_BY_DESIGN, 1);
-    // NOTE: PER EDITION, asked of the CATALOG: the waived Pro-only keys leave the Free tree with
+    // PER EDITION, asked of the CATALOG: the waived Pro-only keys leave the Free tree with
     // their waivers. Not `IS_FREE` (reads "full" in a derived Free tree, the Dockerfile sets it),
     // not this file's `@full-only` markers (stripped in Pro too), not a hand-kept list (a second
     // ledger). The key read is a waived one, so renaming it turns the pin red in the full tree.
@@ -1028,7 +1028,7 @@ describe("a registered key still has to say something", () => {
 // POSITION: a single-line throw, `undefined` passed to reach a later argument, and an EMPTY bag
 // (`params: {}`) all hand nothing over.
 describe("a key that interpolates is thrown with the values", () => {
-  // NOTE: the names an object literal binds, in BOTH spellings: `{ field: bad.what }` and
+  // The names an object literal binds, in BOTH spellings: `{ field: bad.what }` and
   // `{ field }` are the same fact, and a sweep knowing only one passes over half its subject. A
   // spread answers `null`: unknown, not fine, so a refusal spreading into its bag is not approved.
   function bagNames(inner: string): Set<string> | null {
@@ -1080,7 +1080,7 @@ describe("a key that interpolates is thrown with the values", () => {
     return null;
   }
 
-  // NOTE: every place the key is WRITTEN, not every place it is thrown: a key used as a comparison
+  // Every place the key is WRITTEN, not every place it is thrown: a key used as a comparison
   // token carries no bag either. The ledger comments spell the key in single quotes, so they are
   // not sites and need no exception.
   function keySites(body: string, key: string): (Set<string> | null)[] {

@@ -149,7 +149,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
         agentId: forazinho.id,
       },
     });
-    // NOTE: MODO TESTE: a rota que NÃO ingere continuamente (`ingestsContinuously("test")` é falso),
+    // MODO TESTE: a rota que NÃO ingere continuamente (`ingestsContinuously("test")` é falso),
     // e por isso a única em que o dever gravado na linha não tem como ser honrado se o portão da
     // ingestão só olhar a rota.
     const emTeste = await suDb.agent.create({
@@ -369,7 +369,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     };
   }
 
-  // NOTE: A conversa devolvida ao bot, o único passo entre o encalhe e o replay; nenhuma mensagem
+  // A conversa devolvida ao bot, o único passo entre o encalhe e o replay; nenhuma mensagem
   // nova é precisa para o replay postar.
   async function handBackToBot(convId: number) {
     await suDb.conversation.updateMany({
@@ -527,7 +527,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     );
     markTurnInFlight(graphThreadId);
     const postado: string[] = [];
-    // NOTE: Num objeto e não num `let`: a atribuição mora numa closure, e o TS mantém o `null`
+    // Num objeto e não num `let`: a atribuição mora numa closure, e o TS mantém o `null`
     // estreitado no ponto da asserção (`TS2769`).
     const visto = { desfecho: null as string | null };
     const run = processChatwootDelivery({
@@ -931,7 +931,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       where: { id: delivery.id },
       data: { status: "DEAD" },
     });
-    // NOTE: O STUB PRECISA DEVOLVER O ÁUDIO: o replay RECONSTRÓI a mensagem lendo a página do
+    // O STUB PRECISA DEVOLVER O ÁUDIO: o replay RECONSTRÓI a mensagem lendo a página do
     // Chatwoot, então uma página sem o anexo devolve uma mensagem vazia e a entrega é pulada antes
     // de chegar ao ponto que este teste mede.
     const enviadas: string[] = [];
@@ -1093,7 +1093,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     await handBackToBot(convId);
 
     const stub = stubChatwoot(convId, messageId, texto);
-    // NOTE: Quantas vezes um modelo foi construído, que é quantos turnos de fato rodaram. Sem isso,
+    // Quantas vezes um modelo foi construído, que é quantos turnos de fato rodaram. Sem isso,
     // uma implementação que deixa o turno rodar e só barra o envio no fim passa igual, e a conversa
     // carrega um turno inteiro (ferramentas, custo, marcas) por uma mensagem que ninguém pediu.
     const turnos = { built: 0 };
@@ -1133,7 +1133,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
       },
       select: { dedupeKey: true },
     });
-    // NOTE: E A MARCA ANDA ATÉ ELA. Sem isto a linha fecharia com a mensagem ainda abaixo do
+    // E A MARCA ANDA ATÉ ELA. Sem isto a linha fecharia com a mensagem ainda abaixo do
     // watermark, e com o debounce ligado a rajada seguinte a coalesceria: o turno responderia a
     // mensagem da era humana por outra porta.
     const marca = await suDb.conversation.findFirstOrThrow({
@@ -1273,7 +1273,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     expect(status).toBe("PROCESSING");
     // E ela diz o que aquela passada devia.
     expect(owesMemoryOnly).toBe(true);
-    // NOTE: AS DUAS COISAS, E ELAS SÃO SEPARADAS. Aqui a conversa continua sendo do BOT: quando o
+    // AS DUAS COISAS, E ELAS SÃO SEPARADAS. Aqui a conversa continua sendo do BOT: quando o
     // expediente abrir, um flush do debounce coalesce a partir da marca, e o que tira esta mensagem
     // da RESPOSTA daquela rajada é a dispensa que a nomeia. Uma recusa de responder é uma decisão
     // sobre a resposta, e `selectOpenMessages` a lê por `purpose`, então ela não fecha a mensagem
@@ -1389,7 +1389,7 @@ describe.skipIf(!dbUp)("a replay that owes memory only", () => {
     });
     expect(daOutraRota.status).toBe("PROCESSING");
 
-    // NOTE: E A LINHA VIVA TEM QUE PODER RESPONDER, que é uma asserção diferente de a linha existir.
+    // E A LINHA VIVA TEM QUE PODER RESPONDER, que é uma asserção diferente de a linha existir.
     // A marca é da CONVERSA: andar com ela aqui escreve uma dispensa que nomeia a mensagem, e o turno
     // da outra rota seria recusado pelo `claimReplyBurst` depois, com a linha em `PROCESSING`
     // parecendo viva e o cliente sem resposta. As duas leituras abaixo são as duas entradas daquela

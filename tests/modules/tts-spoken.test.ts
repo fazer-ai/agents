@@ -103,7 +103,7 @@ describe("planSpokenReply", () => {
     });
   }
 
-  // NOTE: the item written is the only copy of the destination the customer gets,
+  // The item written is the only copy of the destination the customer gets,
   // so it has to survive the characters around it.
   const exact: Array<{ name: string; text: string; written: string[] }> = [
     {

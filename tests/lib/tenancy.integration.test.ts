@@ -10,7 +10,7 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 // uses its own clients so it is unaffected by the global prisma module mock other unit
 // tests install. Skips when no DB is reachable (e.g. CI without the dev container).
 
-// NOTE: tests/setup.ts overrides DATABASE_URL with a dummy to keep unit tests off any
+// tests/setup.ts overrides DATABASE_URL with a dummy to keep unit tests off any
 // real DB, so the app-role connection comes from TEST_APP_DATABASE_URL instead. Bun
 // expands ${POSTGRES_PORT} in .env at load time, so the values arrive resolved.
 const appUrl = process.env.TEST_APP_DATABASE_URL;
@@ -46,7 +46,7 @@ let t2 = 0n;
 describe.skipIf(!dbUp)("tenancy isolation (RLS)", () => {
   beforeAll(async () => {
     if (!su) return;
-    // NOTE: superuser bypasses RLS: seed two tenants, an instance each, a conversation each.
+    // Superuser bypasses RLS: seed two tenants, an instance each, a conversation each.
     const a = await su.tenant.create({
       data: { name: "ISO-A", slug: `iso-a-${process.pid}` },
     });

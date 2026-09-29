@@ -75,7 +75,7 @@ describe("one malformed window does not take the whole schedule with it", () => 
 });
 
 describe("a stored schedule cannot be larger than a written one", () => {
-  // NOTE: the write path caps windows and exceptions, and the import does not go through it. The
+  // The write path caps windows and exceptions, and the import does not go through it. The
   // cap is asked again HERE because the reader is what every consumer shares: the rendered weekly
   // summary goes into the agent's system prompt once per variable name, and it grows linearly with
   // the count (about 2,600 chars at 200 windows, 65,000 at 5,000).

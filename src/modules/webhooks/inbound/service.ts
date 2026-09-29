@@ -248,7 +248,7 @@ export async function receiveInbound(
     };
   }
 
-  // NOTE: An identity field the row cannot carry is NOT repaired or cut: `ref\u0000` repaired to
+  // An identity field the row cannot carry is NOT repaired or cut: `ref\u0000` repaired to
   // `ref` could match an unrelated conversation's ref and credit a payment there, and two ids could
   // collapse into one `dedupeKey`. It takes the fail-closed path instead (a durable FAILED record and
   // a 2xx, which stops the sender's retries). The payload, display only, IS repaired (below).
@@ -327,7 +327,7 @@ async function persistFailed(
         select: { id: true },
       }),
     );
-  // NOTE: announced only on a REAL insert: a provider retrying an unprocessable body lands on the
+  // Announced only on a REAL insert: a provider retrying an unprocessable body lands on the
   // dedupe key and gets its row back, and announcing there would report one dropped event as many.
   // The emit is OUTSIDE the try: a throw inside it reads as "not a unique violation" and would turn a
   // persisted delivery into a 500 for the provider.
@@ -478,7 +478,7 @@ export async function processInboundDelivery(
   params: ProcessParams,
 ): Promise<"processed" | "skipped"> {
   const base = params.base ?? basePrisma;
-  // NOTE: set inside the claim below, emitted AFTER it commits: a line written from inside the
+  // Set inside the claim below, emitted AFTER it commits: a line written from inside the
   // scope would survive a rollback of the very write it reports.
   let exhausted: bigint | null | undefined;
   const plan: ProcessPlan = await runScopedOn(
@@ -490,7 +490,7 @@ export async function processInboundDelivery(
       // redeliveries. Staleness is measured from the CURRENT claim (`claimedAt`), since `receivedAt`
       // is never refreshed.
 
-      // NOTE: a row with no `claimedAt` was claimed by a replica that does not stamp, and reading it
+      // A row with no `claimedAt` was claimed by a replica that does not stamp, and reading it
       // as stale would take a live claim, so it falls back to `receivedAt`. The fallback stops being
       // reachable once every replica stamps, and it is what lets the column ship in one release
       // instead of the two an expand/contract would need.
@@ -508,7 +508,7 @@ export async function processInboundDelivery(
         },
       });
       if (claimed.count === 0) {
-        // NOTE: Either not reclaimable (done / freshly PROCESSING) or the attempt cap is exhausted,
+        // Either not reclaimable (done / freshly PROCESSING) or the attempt cap is exhausted,
         // which moves it to a terminal FAILED. The PROCESSING half carries the SAME staleness rule
         // as the claim: the last attempt, running RIGHT NOW, is `attempts = MAX`, and a duplicate
         // webhook must not dead-letter work still in flight.
@@ -591,7 +591,7 @@ export async function processInboundDelivery(
       }
 
       if (kind === "agent_nudge") {
-        // NOTE: Correlate externalId → thread here (DB); defer the network turn to Phase B. An
+        // Correlate externalId → thread here (DB); defer the network turn to Phase B. An
         // uncorrelated nudge has nothing to act on — mark processed and stop.
         //
         // A GENERIC ref correlates only on the instance that minted it; every other source keeps
@@ -667,7 +667,7 @@ export async function processInboundDelivery(
   if (plan.kind === "skip") return "skipped";
   if (plan.kind === "done") return "processed";
 
-  // NOTE: Phase B: agent_nudge network turn outside the tx, then mark PROCESSED. BEST-EFFORT: the
+  // Phase B: agent_nudge network turn outside the tx, then mark PROCESSED. BEST-EFFORT: the
   // outcome is not consulted, since the durable barrier is the ConversionEvent from Phase A. A
   // failed or refused nudge still ends PROCESSED, so neither the sweep nor a redelivery re-runs it
   // (the gap is recorded in docs/integrations.md).

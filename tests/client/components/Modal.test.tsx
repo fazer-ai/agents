@@ -18,7 +18,7 @@ function ControlledModal({
   closeOnOutsideClick?: boolean;
 }) {
   const modal = useModalController();
-  // NOTE: fire open() exactly once on mount. `modal` identity changes whenever
+  // Fire open() exactly once on mount. `modal` identity changes whenever
   // internal state flips, so depending on it would re-open the dialog after
   // Esc closes it and break the test.
   const openedRef = useRef(false);

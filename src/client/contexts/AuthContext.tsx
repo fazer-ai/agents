@@ -78,7 +78,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }>({ configured: false, mode: "off" });
   const [loading, setLoading] = useState(true);
 
-  // NOTE: THE ONLY CALLER OF `setUser`, so what has to happen on every transition to unauthenticated
+  // THE ONLY CALLER OF `setUser`, so what has to happen on every transition to unauthenticated
   // is written once, where the transition IS. The tool editor keeps the last sample response in memory
   // (`client/lib/toolSample`), the customer's data, which the next sign-in on this tab must not be
   // offered. The paths that end a session are the explicit logout below, a 401 on any request and the
@@ -97,7 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const clearUser = useCallback(() => applyUser(null), [applyUser]);
 
-  // NOTE: Shared /me fetch used at boot and for explicit refreshes (e.g. after
+  // Shared /me fetch used at boot and for explicit refreshes (e.g. after
   // a /setup 409, where the server flipped to "setup complete" but this client
   // still has the stale `setupRequired=true` and would otherwise loop through
   // SetupGate). Returns `true` when the server gave a definitive answer (a 200
@@ -135,7 +135,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (data.ttsCheck) setTtsCheck(data.ttsCheck);
         return true;
       }
-      // NOTE: Eden types `error` as `null` for /me (the route declares no
+      // Eden types `error` as `null` for /me (the route declares no
       // non-2xx responses), but the framework still surfaces a real error
       // object on a 5xx or network failure at runtime, hence the cast. A 4xx is
       // a definitive client-side answer (stop); 5xx/unknown is transient.
@@ -157,7 +157,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
 
-    // NOTE: the server is briefly unreachable during `bun dev --hot` reloads and network blips in
+    // The server is briefly unreachable during `bun dev --hot` reloads and network blips in
     // production, and treating a failed /me at boot as "logged out" would redirect to /login (via
     // ProtectedRoute) with the auth cookie still valid. So network/5xx retries with a short backoff
     // (~4.5s worst case); only a 200 (user or null) or a 4xx ends the check.
@@ -184,7 +184,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [clearUser]);
 
   const login = (loggedInUser: User) => {
-    // NOTE: A SUPER_ADMIN (tenantId null) with no active tenant selected yet would let the dashboard
+    // A SUPER_ADMIN (tenantId null) with no active tenant selected yet would let the dashboard
     // mount and fire tenant-scoped calls (agents, metrics, approvals) with no X-Tenant-Id BEFORE the
     // async /me refresh seeds the selector → 400 on first paint. The boot/reload path avoids this by
     // awaiting /me before clearing `loading`; /setup avoids it by seeding the tenant synchronously from

@@ -26,7 +26,7 @@ import {
 
 const HASHED_ASSET_PATTERN = /-[a-z0-9]{8,}\.[\w]+$/i;
 
-// NOTE: SPA catch-all for BrowserRouter. Dev hands Elysia the HTMLBundle
+// SPA catch-all for BrowserRouter. Dev hands Elysia the HTMLBundle
 // from public/index.html so Bun's bundler resolves the <script> reference
 // and HMR keeps working on deep routes; prod serves the pre-built
 // dist/index.html via Bun.file. Without this, refreshes on /settings,

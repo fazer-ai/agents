@@ -94,7 +94,7 @@ const validParamName = (kind: string): string | undefined =>
 const ELSEWHERE = "https://elsewhere.invalid";
 
 describe("nothing writes a base URL past the rule", () => {
-  // NOTE: the rule is a helper, and a helper only holds the sites that call it. This counts the
+  // The rule is a helper, and a helper only holds the sites that call it. This counts the
   // vault-entry WRITES in `src/` and pins them to the one file the helper lives in: a fourth write
   // path — an OAuth callback storing a discovered endpoint, an import restoring an export — would
   // set `baseUrl` without ever passing the kind, and no test of the three current boundaries would
@@ -116,7 +116,7 @@ describe("nothing writes a base URL past the rule", () => {
 });
 
 describe("nothing reads a base URL past the gate", () => {
-  // NOTE: the write-side sweep above has a read-side twin, because gating the resolvers is not
+  // The write-side sweep above has a read-side twin, because gating the resolvers is not
   // enough: `assemble.ts` and `test-run.ts` build their OWN vault query and would copy `baseUrl`
   // straight into `credentialBaseUrl`, so a relative HTTP tool would dial the stray host. A ledger rather than a rule, because two of these files are
   // supposed to read the row raw — the audit projection and the console listing — and the point is
@@ -146,7 +146,7 @@ describe("nothing reads a base URL past the gate", () => {
     expect(found.size).toBeGreaterThan(3);
   });
 
-  // NOTE: the CLIENT half. A page that DECIDES with this value (locking a field, enabling Save,
+  // The CLIENT half. A page that DECIDES with this value (locking a field, enabling Save,
   // accepting a relative template) has to use the dialable one; a page that DISPLAYS the row, or
   // edits the row itself, keeps the raw value on purpose.
   const CLIENT_LEDGER: Record<
@@ -314,7 +314,7 @@ describe.skipIf(!dbUp)("vault: a base URL the kind cannot use", () => {
   }
 
   test("the redirect the issue describes is refused, and the kind that exists for it is not", async () => {
-    // NOTE: the sharpest case: an `openai` credential carrying a base URL the console never shows.
+    // The sharpest case: an `openai` credential carrying a base URL the console never shows.
     // `src/graph/prepare.ts` hands `credentialBaseUrl ?? mc.baseURL` to the model client, so every
     // turn's key would go to that host. `openai_compatible` legitimately does this, so the refusal names it.
     const e = await refusal(() =>
@@ -379,7 +379,7 @@ describe.skipIf(!dbUp)("vault: a base URL the kind cannot use", () => {
   });
 
   test("the MCP dry run refuses it too, so the preview cannot promise what apply rejects", async () => {
-    // NOTE: `credential_create` defaults to dry_run and answers BEFORE reaching the core, so a rule
+    // `credential_create` defaults to dry_run and answers BEFORE reaching the core, so a rule
     // the core learns later is a rule the preview promises away. Both halves have to refuse, and the
     // apply half must not create a row.
     const p = {
@@ -406,7 +406,7 @@ describe.skipIf(!dbUp)("vault: a base URL the kind cannot use", () => {
   });
 
   test("the MCP dry run still previews the config that works", async () => {
-    // NOTE: the control for the case above — the guard has to refuse the dead field and nothing
+    // The control for the case above — the guard has to refuse the dead field and nothing
     // else, or it is the preview lying in the other direction.
     const p = {
       tenantId,
@@ -458,7 +458,7 @@ describe.skipIf(!dbUp)("vault: a base URL the kind cannot use", () => {
   });
 
   test("a row that already carries a dead base URL is KEPT and never dialled", async () => {
-    // NOTE: the refusal covers what a write introduces, and covering only that would leave every
+    // The refusal covers what a write introduces, and covering only that would leave every
     // install the rule was written for still redirecting — the model path, vision, STT, TTS, the
     // HTTP-tool base and the MCP connection URL read this field off the RESOLVED entry without
     // asking the kind. So the resolve is gated too.
@@ -486,7 +486,7 @@ describe.skipIf(!dbUp)("vault: a base URL the kind cannot use", () => {
       tryResolveVaultEntry(db, ref),
     );
     expect(entry?.baseUrl).toBeNull();
-    // NOTE: and the listing — the surface an operator reads — still shows it.
+    // And the listing — the surface an operator reads — still shows it.
     const listed = await runScopedOn(appDb, ctx(), (db) => listVaultInfos(db));
     expect(listed.find((e) => e.name === "bu-dialled")?.baseUrl).toBe(
       ELSEWHERE,
@@ -502,7 +502,7 @@ describe.skipIf(!dbUp)("vault: a base URL the kind cannot use", () => {
   });
 
   test("a kind that DOES take one keeps dialling it", async () => {
-    // NOTE: the control for the gate above. It has to cut the dead field and nothing else.
+    // The control for the gate above. It has to cut the dead field and nothing else.
     const { id } = await createVaultEntry(
       ctx(),
       {
@@ -523,7 +523,7 @@ describe.skipIf(!dbUp)("vault: a base URL the kind cannot use", () => {
   });
 
   test("a row that already carries a dead base URL stays editable, and can be cleared", async () => {
-    // NOTE: The refusal covers what a write INTRODUCES. Rows written before it exists keep their
+    // The refusal covers what a write INTRODUCES. Rows written before it exists keep their
     // stray value, and a save that does not touch the field must still go through, or the rule
     // strands exactly the entries it was written for. Clearing it has to work for the same reason:
     // it is the only repair a caller has.

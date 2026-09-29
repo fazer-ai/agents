@@ -35,7 +35,7 @@ if (appUrl && suUrl) {
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
-// NOTE: loopback on the discard port, NOT a hostname. The best-effort provisioning call inside
+// Loopback on the discard port, NOT a hostname. The best-effort provisioning call inside
 // setConnectedAccounts reaches out with this base URL; a real hostname made the test depend on DNS
 // (it "passed" only because the name failed to resolve), and a public IP literal has nowhere to
 // fail fast, so the connect hung until the 5s test timeout. Loopback is refused by the SSRF guard

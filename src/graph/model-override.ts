@@ -168,7 +168,7 @@ export function resolveModelOverride(
     return NOT_RUNNABLE(provider, "endpoint_unsupported");
   }
 
-  // NOTE: the agent's key is reusable at the same DESTINATION, vendor AND host: an overridden endpoint
+  // The agent's key is reusable at the same DESTINATION, vendor AND host: an overridden endpoint
   // on the agent's own provider is somewhere the key was never issued for (reachable from the editor,
   // which shows the endpoint for openai-compatible with the key optional). A proxy on purpose is
   // supported by naming the credential and the endpoint it is for.

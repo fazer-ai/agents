@@ -35,7 +35,7 @@ let maxTrackedContacts = 10_000;
 let refusalProtectionMs: number = CONTACT_AUTH_TIMEOUT_MAX_MS;
 let sweepTimer: ReturnType<typeof setTimeout> | undefined;
 
-// NOTE: Test-only, so the eviction rule can be exercised without ten thousand contacts and without
+// Test-only, so the eviction rule can be exercised without ten thousand contacts and without
 // waiting out the protection window. Production never calls these.
 export function setMaxTrackedContactsForTest(n: number): void {
   maxTrackedContacts = n;
@@ -153,7 +153,7 @@ export async function retryUnconfirmedWrite(
   await dropContactAuthGrant(base, key, { signal });
 }
 
-// NOTE: Test isolation only; production clears an entry by finally landing the delete, or by the
+// Test isolation only; production clears an entry by finally landing the delete, or by the
 // eviction above.
 export function clearContactAuthGrantState(): void {
   known.clear();
@@ -226,7 +226,7 @@ export async function readCredentialStamp(
   signal?: AbortSignal,
 ): Promise<CredentialStamp> {
   if (!ref) return { ok: true, stamp: null };
-  // NOTE: the reader's parse, shared with every other resolver (readVaultRefId). It keeps the
+  // The reader's parse, shared with every other resolver (readVaultRefId). It keeps the
   // lenient spellings a stored ref may already carry and refuses the one this `try` could not see:
   // an id past 2^63-1 CONVERTS, so the catch never ran and the value reached the `findUnique`
   // below as a bind error. A ref that names no entry stands as its own stamp, as before.

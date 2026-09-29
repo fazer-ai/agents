@@ -283,7 +283,7 @@ export async function updateEmbeddingSettings(
   patch: Partial<EmbeddingSettings>,
   base: PrismaClient = basePrisma,
 ): Promise<EmbeddingSettings> {
-  // NOTE: `vault:<id>`, in this tenant, canonically spelled, like every other ref column; a stored
+  // `vault:<id>`, in this tenant, canonically spelled, like every other ref column; a stored
   // entry NAME fails indexing with nothing visibly wrong. `…For` checks the kind too: this key is
   // POSTed to the embedding provider as a plain string, so a wrong kind (the Chatwoot credential)
   // would send the knowledge base to that host. The block holds one field, so naming it IS changing it.
@@ -472,7 +472,7 @@ export async function updateCompanySettings(
       project: (before, after) => {
         const b = parseCompanySettings(before);
         const a = parseCompanySettings(after);
-        // NOTE: No exclusion for the logo half: `CompanyUpdateInput` omits both of its fields and the merge
+        // No exclusion for the logo half: `CompanyUpdateInput` omits both of its fields and the merge
         // carries them over, so they cannot differ here.
         const changed = (
           Object.keys(COMPANY_DEFAULTS) as (keyof CompanySettings)[]
@@ -599,7 +599,7 @@ export async function updateSpendCeiling(
       // how a save in dollars retires a block written in tokens (`legacyTokens`).
       // not-caller-input: the STORED block merged with the patch, so a failure here is not necessarily the caller's
       const stored = spendCeilingSettingsSchema.parse({ ...current, ...patch });
-      // NOTE: ...unless the patch names no dollar field and the block is still in tokens: a partial API
+      // ...unless the patch names no dollar field and the block is still in tokens: a partial API
       // patch (say, only the sentence) would otherwise store a dollar block of synthesized zeroes and drop
       // the warning that the old ceiling is no longer enforced.
       const touchesUsd =

@@ -137,7 +137,7 @@ export function bodyViolation(s: Schema): { path: string[]; bad: unknown } {
     const type = sub?.type;
     if (type === "string") return { path: [key], bad: 42 };
     if (type !== undefined) return { path: [key], bad: "zzz" };
-    // NOTE: a UNION is permissive for the junk `violation` looks for (a STRING outside the members)
+    // A UNION is permissive for the junk `violation` looks for (a STRING outside the members)
     // and still refuses a type no member declares: `POST /v1/vault/:id/test` takes `string | null`
     // as its only body property, so it takes any string and answers 422 for a number.
     const members = (sub?.anyOf ?? []) as Schema[];
@@ -396,7 +396,7 @@ describe("a route that can answer 422 declares it", () => {
   });
 
   test("the shape predicate agrees with what the routes answered", () => {
-    // NOTE: a route whose declared schemas refuse nothing a caller can send must not answer 422, and one
+    // A route whose declared schemas refuse nothing a caller can send must not answer 422, and one
     // that can be violated must. Divergence either way means the generator misses a violation,
     // which is how a sweep goes quietly blind.
     const shapeSaysYes = measured.filter((r) => r.refusableByShape);

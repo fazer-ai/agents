@@ -8,7 +8,7 @@ setupPrismaMock();
 const app = (await import("@/app")).default;
 
 describe("MCP OAuth discovery (RFC 8414 / 9728) at the root", () => {
-  // NOTE: Pin DCR open (the shipped default) so a developer .env with MCP_DCR_ENABLED=false cannot turn
+  // Pin DCR open (the shipped default) so a developer .env with MCP_DCR_ENABLED=false cannot turn
   // these into false negatives; the parsing of the default itself is asserted in mcp-dcr.test.ts.
   const originalDcr = config.mcpDcrEnabled;
   beforeAll(() => {

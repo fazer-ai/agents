@@ -1186,7 +1186,7 @@ export function assertPendingVaultEntryCreatable(
     );
   }
 
-  // NOTE: the SAME helper the create path uses, not a second spelling of it.
+  // The SAME helper the create path uses, not a second spelling of it.
   const normalizedBaseUrl = normalizeBaseUrlForKind(
     input.baseUrl,
     normalizedKind,
@@ -1247,7 +1247,7 @@ export async function ensurePendingVaultEntryOn(
   ctx: TenantContext,
   input: CreatePendingVaultEntryInput,
 ): Promise<{ id: bigint; ref: string; created: boolean }> {
-  // NOTE: not re-asked here. A `ScopedDb` only comes out of `runScopedOn`, which refuses a null
+  // Not re-asked here. A `ScopedDb` only comes out of `runScopedOn`, which refuses a null
   // tenant before it opens the transaction, so by the time this holds one the question is answered.
   const tenantId = ctx.tenantId as bigint;
   const {
@@ -1389,7 +1389,7 @@ export async function updateVaultEntry(
     });
     const beforeProj = auditProjection(entry);
     const afterProj = auditProjection(after);
-    // NOTE: Over the declared list, so a column added to it later is compared without anyone having
+    // Over the declared list, so a column added to it later is compared without anyone having
     // to remember this line; `secret` is the one whose comparison cannot be a column comparison.
     const undisclosed = UNDISCLOSED.some((c) =>
       c === "secret"

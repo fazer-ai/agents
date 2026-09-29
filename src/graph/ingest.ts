@@ -70,12 +70,12 @@ export function ingestedMessages(
   // about the message, not about where the thread is.
   sentAt?: Date | null,
 ): BaseMessage[] {
-  // NOTE: ids derived from the Chatwoot message make a retry safe: the checkpointer append and our
+  // Ids derived from the Chatwoot message make a retry safe: the checkpointer append and our
   // row write are not atomic, and the reducer replaces a same-id message in place, so a retried job
   // rewrites instead of appending again. The divider written with its message needs its own id.
   const id = messageId === undefined ? undefined : `ingest:${messageId}`;
   const dividerId = id === undefined ? undefined : `${id}:divider`;
-  // NOTE: a divider names the attendance it opens, so it cannot be written by a message that is not
+  // A divider names the attendance it opens, so it cannot be written by a message that is not
   // claiming one.
   const divides = writeDivider && conversationId !== null;
   if (role === "human_agent") {
@@ -156,7 +156,7 @@ export async function ingestMessageIntoThread(
   const checkpointer = params.checkpointer ?? (await getCheckpointer());
   const graph = buildThreadStateGraph(checkpointer);
 
-  // NOTE: serialized by the process-local queue, not a transaction-scoped advisory lock: this section
+  // Serialized by the process-local queue, not a transaction-scoped advisory lock: this section
   // talks to the checkpointer's SEPARATE pool, and a Prisma transaction held across those round-trips
   // drains the main pool until every query, the webhook ack included, times out. The row read and
   // write are short transactions of their own, and the queue orders them. The durable half of the
@@ -173,7 +173,7 @@ export async function ingestMessageIntoThread(
           contactInboxId,
         },
       };
-      // NOTE: never re-append a message already folded in. Membership in the ids this direction
+      // Never re-append a message already folded in. Membership in the ids this direction
       // remembers, not a highest-id mark (ids arrive out of order, ./ingest-dedup.ts), and one set per
       // direction, since an attendant answering a voice note can land before the note itself. This
       // cheap look can only say "already done" (the sets only grow); everything else is decided from
@@ -215,7 +215,7 @@ export async function ingestMessageIntoThread(
         writeClaim = held;
       }
 
-      // NOTE: read AFTER the claim: while this call waits on a claim another replica's append holds, a
+      // Read AFTER the claim: while this call waits on a claim another replica's append holds, a
       // row read earlier goes stale, and every decision below comes from it (dedupe sets, frontier,
       // stamp); a stale copy treats a delayed lower id as the newest and restores the older marker.
       // The turn side orders it the same way (../graph/runtime.ts).
@@ -232,7 +232,7 @@ export async function ingestMessageIntoThread(
         }),
       );
 
-      // NOTE: the episode boundary, asked in here for the same reason as the stand-down. `/reset`
+      // The episode boundary, asked in here for the same reason as the stand-down. `/reset`
       // revokes every queued `INGEST_MESSAGE` for the thread in its critical section, but cannot revoke
       // a job armed AFTER that (the receiver's own arm racing the command, or a stranded reply's
       // recovery, ../modules/chatwoot/recover-human-reply.ts); here it cannot go stale, since the
@@ -253,7 +253,7 @@ export async function ingestMessageIntoThread(
         return { outcome: "skipped" as const, closedConversationId: null };
       }
 
-      // NOTE: the same question, now on the row this call is entitled to trust. Another append may
+      // The same question, now on the row this call is entitled to trust. Another append may
       // have folded this very id in while this one waited for the claim.
       const recent =
         params.role === "human_agent"
@@ -321,7 +321,7 @@ export async function ingestMessageIntoThread(
         return { outcome: "skipped" as const, closedConversationId: null };
       }
 
-      // NOTE: a late arrival does not move the frontier, and the frontier is the THREAD'S (the newest
+      // A late arrival does not move the frontier, and the frontier is the THREAD'S (the newest
       // id either writer folded in): the marks go in as a pair, since reading only one direction's
       // lets a delayed customer message close the live conversation an attendant just opened. The rule
       // lives in ./attendance-boundary.ts.
@@ -330,12 +330,12 @@ export async function ingestMessageIntoThread(
         messageId,
       );
 
-      // NOTE: which attendance this message belongs to, one decision shared with the reactive turn and
+      // Which attendance this message belongs to, one decision shared with the reactive turn and
       // the nudge (./attendance-boundary.ts). Human-agent messages count as a start: an agent who opens
       // the conversation sends its first message, which would otherwise sit inside the PREVIOUS
       // attendance and be summarized away with it.
       const prevConv = row?.lastConversationId ?? null;
-      // NOTE: asked of the ROW, not only of this process. On the deferring path the answer is false
+      // Asked of the ROW, not only of this process. On the deferring path the answer is false
       // by construction (holding the write claim means no turn holds the thread), and it is the
       // OTHER path this matters on: a caller that appends inline gets the cross-process answer
       // instead of its own replica's.
@@ -372,7 +372,7 @@ export async function ingestMessageIntoThread(
             attendanceAlreadyStarted: alreadyStarted,
           });
 
-      // NOTE: a retry repairing its own half-done attempt must not rewrite the message: the append and
+      // A retry repairing its own half-done attempt must not rewrite the message: the append and
       // the row write are not atomic, and on attempt 2 the claim sees this conversation's stamp, so
       // `writeDivider` is false and the derived id would REPLACE the divider-bearing message with a
       // plain one. So an id already in the channel skips the append; only the row write is owed. Asked

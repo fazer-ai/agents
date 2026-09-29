@@ -108,7 +108,7 @@ test("switching the type drops a name conflict the new pair never had", async ()
 test.each(["publicKey", "baseUrl"])(
   "a %s refused in .env mode is read out, not marked on a hidden input",
   async (field) => {
-    // NOTE: Langfuse opens in paste mode: the per-key boxes are replaced by one `.env` textarea, so
+    // Langfuse opens in paste mode: the per-key boxes are replaced by one `.env` textarea, so
     // `publicKey` (the name `assertNoSurroundingWhitespace` refuses by) has no control on screen, and
     // declaring it would place the sentence on nothing and keep the toast quiet.
     const reason = `refused: ${field}`;

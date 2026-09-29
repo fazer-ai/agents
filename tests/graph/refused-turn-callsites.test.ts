@@ -30,7 +30,7 @@ const TURN_REFUSALS = [
 // because the anchor must be sought in the stripped text: a comment naming the closure would drag
 // every pre-invoke refusal into range, and the floor would count a `refuse(` in prose as routed.
 export function refuseSection(source: string): string | null {
-  // NOTE: Two views, and the offset crosses between them. The anchor is found in the fully stripped
+  // Two views, and the offset crosses between them. The anchor is found in the fully stripped
   // text, because a string or a comment spelling the closure would start the section above the real
   // one. The section is the comment-stripped text, because the pattern downstream READS a string
   // literal. They line up because the scan replaces removed characters in place.
@@ -45,7 +45,7 @@ export function bareRefusalsAfterTheRollback(
   const code = refuseSection(source);
   if (code === null) return ["the `refuse` closure is gone"];
   const any = outcomes.join("|");
-  // NOTE: Comments are stripped first. Collapsing whitespace makes a statement one string and prose
+  // Comments are stripped first. Collapsing whitespace makes a statement one string and prose
   // has no `;`, so a "returning" in a NOTE above a routed refusal would pair with its literal and
   // report a site that does not exist. `withoutComments` rather than `codeOnly` because the pattern
   // READS a string literal. Routed calls stop being candidates, so a match is a spelling left behind.

@@ -326,7 +326,7 @@ describe("no playground module builds a tenant context of its own", () => {
     for await (const rel of new Glob("**/*.ts").scan(
       "src/modules/playground",
     )) {
-      // NOTE: `withoutComments`, not `codeOnly`: the predicate matches ON a literal
+      // `withoutComments`, not `codeOnly`: the predicate matches ON a literal
       // (`role: "TENANT_ADMIN"`), so blanking string contents would hide the offender and silence
       // the sweep, which a control calling the predicate on unstripped text cannot see.
       const src = withoutComments(

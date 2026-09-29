@@ -24,7 +24,7 @@ interface DataBoundaryProps {
   children: ReactNode;
 }
 
-// NOTE: Static keys so the default skeleton rows don't key off the array index.
+// Static keys so the default skeleton rows don't key off the array index.
 const DEFAULT_SKELETON_KEYS = [
   "db-skeleton-0",
   "db-skeleton-1",

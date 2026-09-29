@@ -247,11 +247,11 @@ function decidedToStaySilentAlone(history: BaseMessage[]): boolean {
 // tools step will produce nothing and the round after it sees exactly what this one saw. See the
 // call site for why this is asked of the calls and not of the step's output.
 function repeatsAnsweredCalls(history: BaseMessage[]): boolean {
-  // NOTE: no check on the message TYPE: only an assistant turn carries `tool_calls`, so anything else
+  // No check on the message TYPE: only an assistant turn carries `tool_calls`, so anything else
   // falls out at the empty list below.
   const calls = (history.at(-1) as AIMessage | undefined)?.tool_calls ?? [];
   if (calls.length === 0) return false;
-  // NOTE: THIS TURN'S answers, and the bound is load-bearing: a call id is only unique within the
+  // THIS TURN'S answers, and the bound is load-bearing: a call id is only unique within the
   // request that minted it, and a model that reuses one across turns (a stub reusing `call_attr`, a
   // provider numbering from zero) would otherwise look like it was repeating a call it never made here.
   const answered = new Set<string>();
@@ -504,7 +504,7 @@ export function buildAgentGraph({
 }: BuildAgentGraphParams) {
   const hasTools = !!tools && tools.length > 0;
   const llm = hasTools ? (model.bindTools?.(tools) ?? model) : model;
-  // NOTE: bound to the SAME toolset, or the fallback would answer a question the primary was asked
+  // Bound to the SAME toolset, or the fallback would answer a question the primary was asked
   // with tools it cannot call; the tool-call budget below counts calls, not models.
   const fallbackLlm =
     fallback && hasTools
@@ -512,7 +512,7 @@ export function buildAgentGraph({
       : fallback?.model;
   const max = maxToolCalls ?? DEFAULT_MAX_TOOL_CALLS;
 
-  // NOTE: Every model that can receive this turn's history, not just the one that starts it: the
+  // Every model that can receive this turn's history, not just the one that starts it: the
   // fallback takes over mid-invocation and is handed the same array, so a turn kept for the primary
   // alone would reach the second vendor unrenderable. See `isEmptyAssistantTurn`.
   const destinations: ReadonlySet<string> = new Set(
@@ -520,24 +520,24 @@ export function buildAgentGraph({
       (p): p is string => typeof p === "string" && p.length > 0,
     ),
   );
-  // NOTE: EVERY destination, for the same reason as above: the fallback is handed the same messages.
+  // EVERY destination, for the same reason as above: the fallback is handed the same messages.
   const lateSystemAccepted =
     destinations.size > 0 &&
     [...destinations].every((d) => LATE_SYSTEM_MESSAGE.has(d));
 
-  // NOTE: once the fallback has the turn, it keeps it. A tool call routes back through this node, and
+  // Once the fallback has the turn, it keeps it. A tool call routes back through this node, and
   // asking the failing primary again every round would add a warn and up to its full deadline PER
   // ROUND, defeating the fallback's point. A closure, not a state channel: this graph is built inside
   // the turn and invoked once, so the variable IS "this invocation", while graph state would persist
   // through the checkpointer and demote the primary for every later turn on the conversation.
   let fallbackHasTheTurn = false;
 
-  // NOTE: once per turn, by the same closure argument. The cap is one EVENT whose handlers write an
+  // Once per turn, by the same closure argument. The cap is one EVENT whose handlers write an
   // operator line and can page, but it can be reached twice: a parallel batch with `skip_reply` is not
   // terminal and `skip_reply` stays bound at the cap, so the reaffirmation round re-enters the terminal
   // branch and would report it again with a bigger count.
   let toolLimitReported = false;
-  // NOTE: once per turn, by the same closure argument: the silence retry runs at most once in this
+  // Once per turn, by the same closure argument: the silence retry runs at most once in this
   // invocation, however many rounds follow it.
   let silenceRetried = false;
   const reportToolLimit = (info: {
@@ -550,7 +550,7 @@ export function buildAgentGraph({
   };
 
   const agentNodeBody = async (state: typeof MessagesAnnotation.State) => {
-    // NOTE: exactly one system message, and it must be first: prepend the configured prompt and drop
+    // Exactly one system message, and it must be first: prepend the configured prompt and drop
     // any that leaked into the history (a nudge persisted as a SystemMessage). Google rejects a second
     // one ("System messages are only permitted as the first passed message"). The one exception is
     // sent, never persisted, and only where it is accepted: see `LATE_SYSTEM_MESSAGE`.
@@ -558,7 +558,7 @@ export function buildAgentGraph({
       (m) => m.getType() !== "system" && !isEmptyAssistantTurn(m, destinations),
     );
 
-    // NOTE: Bound the history BEFORE the tool-call budget below, so both read the same window. The
+    // Bound the history BEFORE the tool-call budget below, so both read the same window. The
     // window always keeps the last human message and everything after it, so the tool count is not
     // affected by the trim; this ordering is about the two never disagreeing.
     const history = applyHistoryCeiling(
@@ -568,29 +568,29 @@ export function buildAgentGraph({
       historyDates,
     );
 
-    // NOTE: tool-call budget for this turn. Hard limit reached: invoke the RAW model (no tools bound),
+    // Tool-call budget for this turn. Hard limit reached: invoke the RAW model (no tools bound),
     // so the response carries no tool_calls and toolsCondition routes to END. Approaching it (N-2):
     // append a "wrap up" instruction but keep tools available for the imprescindible case.
     const toolCalls = hasTools ? toolCallsSinceLastHuman(history) : 0;
     const hardLimit = hasTools && toolCalls >= max;
     const staySilent = hasTools && justDecidedToStaySilent(history);
-    // NOTE: the decision, taken alone, for the REST of the turn (see the function).
+    // The decision, taken alone, for the REST of the turn (see the function).
     const silentTurn = hasTools && decidedToStaySilentAlone(history);
-    // NOTE: only the message that ends the turn, the one carrying no calls: a message still requesting
+    // Only the message that ends the turn, the one carrying no calls: a message still requesting
     // tools is not what the runtime posts, and a preamble beside an ordinary call is left alone (the
     // same line `silenceNarration` draws). `narration` covers the text beside the decision itself.
     const silenced = (m: BaseMessage): BaseMessage =>
       silentTurn && ((m as AIMessage).tool_calls?.length ?? 0) === 0
         ? withoutText(m)
         : m;
-    // NOTE: the decision sticks without ending the turn: `silentTurn` keeps the wrap-up suppressed,
+    // The decision sticks without ending the turn: `silentTurn` keeps the wrap-up suppressed,
     // stops the hard limit forcing an answer, and takes the final text out in code. The count is
     // untouched, which bounds a model looping on `skip_reply`: at the budget the raw model runs with
     // no tools, so `toolsCondition` routes to END. The narration is blanked the moment the decision is
     // seen: on a PARALLEL batch the calling message is not the end of the turn, and a companion's
     // extra round would leave it standing. Undelivered either way: the runtime posts the LAST message.
     const narration = staySilent ? silenceNarration(history) : [];
-    // NOTE: the turn ends where the information ends, in three cases. A lone `skip_reply` asked for
+    // The turn ends where the information ends, in three cases. A lone `skip_reply` asked for
     // again right after one adds nothing a further round could act on (see `reaffirmedSilenceAlone`).
     // A turn that decided silence alone and spent its budget can neither act nor speak, so a model call
     // would only buy text this path blanks. And the stall: `ToolNode` skips a call whose id already has
@@ -612,7 +612,7 @@ export function buildAgentGraph({
         ],
       };
     }
-    // NOTE: `staySilent` is needed here: on a PARALLEL batch there IS a round after the decision, and
+    // `staySilent` is needed here: on a PARALLEL batch there IS a round after the decision, and
     // "Conclua agora: responda ao cliente" is the exact opposite of what the model just chose.
     const softLimit =
       hasTools &&
@@ -623,18 +623,18 @@ export function buildAgentGraph({
       !silentTurn &&
       toolCalls >= Math.max(1, max - 2);
 
-    // NOTE: on an observation the budget is the same, but the sentence after it says what the turn can
+    // On an observation the budget is the same, but the sentence after it says what the turn can
     // still do: the wrap-up exists to land the turn, and an instruction the frame forbids is one the
     // model has to argue with first.
     const wrapUpText = noReplyChannel
       ? `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: se ainda falta registrar algo, use a última ferramenta; se não, encerre sem escrever nada.`
       : `[Sistema] Você já usou ${toolCalls} de ${max} ferramentas permitidas neste turno. Conclua agora: responda ao cliente com as informações que já tem. Só use outra ferramenta se for absolutamente imprescindível.`;
-    // NOTE: the spoken-reply notice rides with the wrap-up, first. Only the callers that deliver a reply
+    // The spoken-reply notice rides with the wrap-up, first. Only the callers that deliver a reply
     // which can be spoken pass one, so an observation never carries it.
     const noticeText = spokenNotice?.()?.trim();
     const notice = noticeText ? [noticeText] : [];
     const lateTexts = [...notice, ...(softLimit ? [wrapUpText] : [])];
-    // NOTE: the wrap-up travels after the history where every destination takes a system message
+    // The wrap-up travels after the history where every destination takes a system message
     // there, inside the system prompt elsewhere, and in a human message never. After the history keeps
     // the cached prefix: a line appended to the system prompt changes the prefix at the first message,
     // and the round pays a cache WRITE on the whole prompt where a read was available. A SYSTEM message
@@ -649,7 +649,7 @@ export function buildAgentGraph({
     if (hardLimit) {
       reportToolLimit({ maxToolCalls: max, toolCalls });
     }
-    // NOTE: the hard limit must not talk a decision out of itself. Its path invokes the model with no
+    // The hard limit must not talk a decision out of itself. Its path invokes the model with no
     // tools to force a text answer, and a parallel batch with `skip_reply` is not terminal, so a model
     // that chose silence could be made to write. So the budget keeps `skip_reply` alone bound: the
     // model sees the companion's result and either reaffirms silence (terminal, so no loop) or answers,
@@ -669,7 +669,7 @@ export function buildAgentGraph({
         ? (fallback.model.bindTools?.(silenceOnly) ?? fallback.model)
         : fallback?.model;
 
-    // NOTE: SENT without the narration, not merely persisted without it: the blanking above is a
+    // SENT without the narration, not merely persisted without it: the blanking above is a
     // reducer update that lands AFTER this call, so a parallel batch's extra round would reach the model
     // still carrying the sentence the customer never received, for it to lean on or repeat.
     const sent = narration.length
@@ -711,7 +711,7 @@ export function buildAgentGraph({
           }
         : null;
 
-    // NOTE: one question to the model, the fallback's rules included. A function because the silence
+    // One question to the model, the fallback's rules included. A function because the silence
     // retry below asks it a second time, with different messages, under the same rules.
     const ask = async (msgs: BaseMessage[]): Promise<BaseMessage> => {
       const second = secondFor(msgs);
@@ -802,7 +802,7 @@ export function buildAgentGraph({
       silenceRetried = true;
       const canSkip = (tools ?? []).some((t) => t.name === SKIP_REPLY_TOOL);
       const text = silenceRetryText(canSkip);
-      // NOTE: it travels where the tool budget's wrap-up does, for the same reasons: after the history
+      // It travels where the tool budget's wrap-up does, for the same reasons: after the history
       // as a system message where every destination keeps one there, inside the one system prompt
       // everywhere else, and in a human message never. The empty answer is NOT sent back: it said
       // nothing, and an empty assistant turn is the shape some providers refuse. Neither is persisted:
@@ -816,7 +816,7 @@ export function buildAgentGraph({
     return { messages: [...narration, silenced(response)] };
   };
 
-  // NOTE: the node as the graph runs it. A model call ended by the job's deadline fails with whatever
+  // The node as the graph runs it. A model call ended by the job's deadline fails with whatever
   // the provider layer made of the abort ("timeout", or "provider error"); the run is reported with
   // the job's own error instead, which is ours to publish and names the deadline.
   const agentNode = async (state: typeof MessagesAnnotation.State) => {
@@ -830,12 +830,12 @@ export function buildAgentGraph({
     }
   };
 
-  // NOTE: once per turn, the same closure argument the flags above make. It says the tool boundary
+  // Once per turn, the same closure argument the flags above make. It says the tool boundary
   // refused this turn's calls, which is what routes the graph to END instead of back to the model.
   let calledOffAtTools = false;
   const toolNode = hasTools ? new ToolNode(tools) : null;
 
-  // NOTE: the refusal is a tool result, and the turn ends on it. Routing away from the tool node would
+  // The refusal is a tool result, and the turn ends on it. Routing away from the tool node would
   // leave `tool_calls` no `ToolMessage` answers, which `@langchain/openai` replays so the vendor
   // rejects every later turn; answering "refused" into the model invites it to call again up to the
   // recursion limit. It refuses by RETURNING: the assistant turn with the calls is already
@@ -846,7 +846,7 @@ export function buildAgentGraph({
     state: typeof MessagesAnnotation.State,
   ): Promise<{ messages: BaseMessage[] } | null> => {
     if (!stillWanted && !jobSignal) return null;
-    // NOTE: no guard on an empty list: `toolsCondition` routes here only when the last message is an
+    // No guard on an empty list: `toolsCondition` routes here only when the last message is an
     // assistant turn carrying tool calls.
     const last = state.messages.at(-1);
     const calls =
@@ -860,7 +860,7 @@ export function buildAgentGraph({
           );
           return true;
         });
-    // NOTE: a run its job's deadline ended is called off like any other, and it is read AFTER the
+    // A run its job's deadline ended is called off like any other, and it is read AFTER the
     // fence, whose reads are the stretch a deadline can fire in.
     const wanted = fenceSays && !jobSignal?.aborted;
     if (wanted) return null;

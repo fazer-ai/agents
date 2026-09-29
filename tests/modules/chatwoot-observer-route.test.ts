@@ -1532,7 +1532,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       status: "open",
     });
     expect(customerFacing()).toEqual([]);
-    // NOTE: Folded in under the inbox's RESPONDER, which is what the assigned bot's route does with
+    // Folded in under the inbox's RESPONDER, which is what the assigned bot's route does with
     // a message no turn covers, never under the monitoring bot whose route this is. A linha desta
     // mensagem tem chave própria: as faixas de `contactInboxId` e `messageId` se sobrepõem, então
     // substring do payload casa linhas de outras mensagens.
@@ -1564,7 +1564,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       assigneeId: OBSERVER_BOT,
       status: "open",
     });
-    // NOTE: The message is folded in under the RESPONDER, which is what the assigned bot's route
+    // The message is folded in under the RESPONDER, which is what the assigned bot's route
     // does with a conversation no turn covers, never under the watcher, whose route this is not. A
     // linha desta mensagem tem chave própria: as faixas de `contactInboxId` e `messageId` se
     // sobrepõem, então substring do payload casa linhas de outras mensagens.
@@ -1612,7 +1612,7 @@ describe.skipIf(!dbUp)("a delivery on an observer's route", () => {
       status: "open",
     });
     expect(customerFacing()).toEqual([]);
-    // NOTE: The route is the assigned bot's, so the message is the RESPONDER's to remember. A linha
+    // The route is the assigned bot's, so the message is the RESPONDER's to remember. A linha
     // desta mensagem tem chave própria: as faixas de `contactInboxId` e `messageId` se sobrepõem,
     // então substring do payload casa linhas de outras mensagens.
     const armed = await ingestRowFor(messageId);

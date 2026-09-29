@@ -21,7 +21,7 @@ let server: ListeningApp["server"] | undefined;
 
 beforeAll(async () => {
   (globalThis as { Response: typeof Response }).Response = BunResponse;
-  // NOTE: `buildApp()` installs the same hooks in the same order as src/app.ts's default export.
+  // `buildApp()` installs the same hooks in the same order as src/app.ts's default export.
   // A fresh instance, not the singleton: a route plus a `listen` on the shared export leaks into
   // every later file, whose `handle()` calls then answer 500.
   const app = await buildApp();
@@ -105,7 +105,7 @@ describe("rate-limit metering (what a rejected request costs)", () => {
   // reads `statusCode: 404` as a route that never existed and charges a second time, so this reads 2.
   // The effect at the ceiling is pinned below.
   test("a matched route that throws a 404 is charged once, not twice", async () => {
-    // NOTE: status first, because a fall-through to the SPA catch-all also costs 1 and would keep
+    // Status first, because a fall-through to the SPA catch-all also costs 1 and would keep
     // this green without a matched route. The probe is registered on this file's own app before any
     // request compiles it.
     const answered = await send("GET", "/__metering/thrown-404");

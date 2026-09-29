@@ -527,7 +527,7 @@ describe.skipIf(!dbUp)(
       expect(
         (s.toolGuidance as Record<string, string>).set_custom_attribute,
       ).toBe("Só o estágio do lead.");
-      // NOTE: THE EFFECT ON THE MODEL, through the REAL reader rather than a re-read of the column:
+      // THE EFFECT ON THE MODEL, through the REAL reader rather than a re-read of the column:
       // `readToolGuidance` is what `prepare` appends to the tool's description.
       const note = readToolGuidance(s).set_labels;
       expect(note).toBe(NOTE_FIXED);

@@ -168,7 +168,7 @@ function StageRow({ row }: { row: LogItem }) {
           {(() => {
             const detail = row.detail as Record<string, unknown> | null;
             if (!detail || Object.keys(detail).length === 0) return null;
-            // NOTE: The resolved system prompt reads as a wall of escaped JSON in the generic dump, so surface
+            // The resolved system prompt reads as a wall of escaped JSON in the generic dump, so surface
             // it as readable text; the remaining keys keep the JSON view.
             const sysPrompt =
               typeof detail.systemPrompt === "string"
@@ -400,7 +400,7 @@ export function LogsPage() {
   }, [load]);
 
   const groups = useMemo(() => groupByTurn(items), [items]);
-  // NOTE: The scope chip for a `turnId` names the group exactly as its own card does
+  // The scope chip for a `turnId` names the group exactly as its own card does
   // (`logGroupTitle`) and adds the id. Matched by id rather than taken as the first group: between a
   // URL change and its response the rows still belong to the PREVIOUS filter. No match is the id alone.
   const scopedTurnLabel = useMemo(() => {

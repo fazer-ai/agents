@@ -314,7 +314,7 @@ describe("withoutLoneSilenceTool — our tool is never the only one", () => {
       { name: "cep" },
     ]);
     expect(followupSilenceChannel(granted, withOther)).toBe("tool");
-    // NOTE: ...and the agent whose own tool holds the name reaches the same answer by the other
+    // ...and the agent whose own tool holds the name reaches the same answer by the other
     // road: the grant fires, so the tool left under this name is OURS, and when it is the whole
     // toolset the drop takes it out, so the directive falls back to the sentinel.
     const theirs = withFollowupSilenceChannel({
@@ -324,7 +324,7 @@ describe("withoutLoneSilenceTool — our tool is never the only one", () => {
     const kept = withoutLoneSilenceTool(theirs, [{ name: SKIP_REPLY_TOOL }]);
     expect(kept).toHaveLength(0);
     expect(followupSilenceChannel(theirs, kept)).toBe("sentinel");
-    // NOTE: And with anything else beside it the channel is real: same agent, one ordinary tool more.
+    // And with anything else beside it the channel is real: same agent, one ordinary tool more.
     const alongside = withoutLoneSilenceTool(theirs, [
       { name: SKIP_REPLY_TOOL },
       { name: "cep" },
@@ -554,7 +554,7 @@ describe("withFollowupSilenceChannel", () => {
     expect(withFollowupSilenceChannel(cfg).nativeToolsAllow).toEqual([
       SKIP_REPLY_TOOL,
     ]);
-    // NOTE: …and with natives revoked their tool is dropped whatever the grant does.
+    // …and with natives revoked their tool is dropped whatever the grant does.
     const noneBuilt = new Set<string>();
     const { tools, dropped } = dropDuplicateToolNames(
       [{ name: SKIP_REPLY_TOOL } as never],

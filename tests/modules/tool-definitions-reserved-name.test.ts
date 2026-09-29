@@ -144,7 +144,7 @@ describe.skipIf(!dbUp)("an HTTP tool cannot take a native tool's name", () => {
       appDb,
     );
     expect(updated.label).toBe("Buscar na base");
-    // NOTE: ...and a real move onto that same RAG name is still refused.
+    // ...and a real move onto that same RAG name is still refused.
     const other = await createToolDefinition(
       ctx(),
       toolInput("outra_ferramenta") as never,

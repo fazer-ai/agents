@@ -143,7 +143,7 @@ export async function agentCreate(
 
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // The core's own question, asked INSIDE the branch because the apply reaches the core,
       // which asks it again; above the branch it would be a second lookup that can disagree.
       const { businessHoursId, followUpHoursId } = assertAgentCreatable(input);
       // NOTE: ADVISORY, since this one READS. It takes the ids the line above PARSED, so the
@@ -228,7 +228,7 @@ export async function agentUpdate(
     }
     const target = `agent:${id}`;
     if (args.dry_run !== false) {
-      // NOTE: the rules `updateAgent` applies past the not-found path, so the preview refuses what
+      // The rules `updateAgent` applies past the not-found path, so the preview refuses what
       // the apply refuses.
       const { rest, businessHoursId, followUpHoursId } =
         assertAgentUpdatable(patch);
@@ -323,7 +323,7 @@ export async function agentImport(
   // mode). Credentials absent in this tenant are created as PENDING placeholders on apply (the ref
   // stays wired); the operator only fills each secret afterward (deep-link → vault) — write nothing now.
   if (args.dry_run !== false) {
-    // NOTE: the apply itself, rolled back (transfer.ts), so these warnings are the ones the
+    // The apply itself, rolled back (transfer.ts), so these warnings are the ones the
     // operator will get. A separate copy of the import's naming and reuse decisions would drift
     // from them.
     const rehearsal = await importAgent(ctx, args.export, base, {
@@ -521,7 +521,7 @@ export async function buildToolPatch(
   if (args.headers !== undefined) patch.headers = args.headers;
   if (args.input_schema !== undefined) patch.inputSchema = args.input_schema;
   if (args.output_schema !== undefined) {
-    // NOTE: refused here and not only in the service, for the reason the body check below gives: a
+    // Refused here and not only in the service, for the reason the body check below gives: a
     // dry run never calls the service, so a template the apply would reject was previewed back
     // intact and with no warning. Only a DECLARED template is judged — anything else in this column
     // (including a real JSON Schema, which this argument has accepted unvalidated since it existed)
@@ -536,7 +536,7 @@ export async function buildToolPatch(
   }
   if (args.query !== undefined) patch.query = args.query;
   if (args.body !== undefined) {
-    // NOTE: refused here and not only in the service: a dry run never calls the service, so a body
+    // Refused here and not only in the service: a dry run never calls the service, so a body
     // the apply rejects would otherwise preview back intact.
     const badBody = unsupportedBodyShape(args.body);
     if (badBody) return { fail: err(badBody) };
@@ -674,7 +674,7 @@ export async function toolCreate(
     urlTemplate: args.url_template,
     allowedHosts: args.allowed_hosts,
   } as ToolDefinitionCreate;
-  // NOTE: surface what the service will canonicalize (JSON-Schema input_schema, single-brace
+  // Surface what the service will canonicalize (JSON-Schema input_schema, single-brace
   // {var}) so the author sees the converted shape and probable typos in the preview.
   const norm = normalizeToolShapes({
     urlTemplate: input.urlTemplate,
@@ -685,7 +685,7 @@ export async function toolCreate(
   });
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // The core's own question, asked INSIDE the branch because the apply reaches the core,
       // which asks it again; above the branch it would be a second lookup that can disagree.
       const parsed = assertToolDefinitionCreatable(input);
       // NOTE: ADVISORY: it reads outside the apply's transaction, so the name can be taken
@@ -709,7 +709,7 @@ export async function toolCreate(
         parsed.conversationRefIntegrationId,
         base,
       );
-      // NOTE: INSIDE the branch, like the two checks above it and for a plainer reason: the apply
+      // INSIDE the branch, like the two checks above it and for a plainer reason: the apply
       // recomputes this from the row it wrote, so reading the vault out here was a scoped
       // transaction whose answer that path throws away.
       const wiring = await credentialWiringWarning(
@@ -734,7 +734,7 @@ export async function toolCreate(
     }
     const created = await createToolDefinition(ctx, input, base);
     const target = `tool:${created.id}`;
-    // NOTE: recomputed from the row that was CREATED, for the reason the update path gives: the
+    // Recomputed from the row that was CREATED, for the reason the update path gives: the
     // preview's vault read happens before the write, and a credential's param name or base URL can
     // change in between — the response would then describe wiring that is already not the wiring.
     const appliedWiring = await appliedWiringWarning(
@@ -776,7 +776,7 @@ export async function toolUpdate(
   }
   try {
     const current = await getToolDefinition(ctx, id, base);
-    // NOTE: preview the canonical form the service will store (JSON-Schema input_schema converted,
+    // Preview the canonical form the service will store (JSON-Schema input_schema converted,
     // single-brace {var} normalized against the effective field set) plus probable-typo warnings.
     const norm = normalizeToolShapes(
       {
@@ -807,7 +807,7 @@ export async function toolUpdate(
     }
     const target = `tool:${id}`;
     if (args.dry_run !== false) {
-      // NOTE: the core's questions about a PATCH, advisory here and authoritative inside the apply:
+      // The core's questions about a PATCH, advisory here and authoritative inside the apply:
       // the shape (which canonicalizes the name, so the diff shows what is STORED) and, for a
       // rename, name availability. `id` and `current.name` are excluded: keeping your own name is
       // not a collision.
@@ -851,7 +851,7 @@ export async function toolUpdate(
           base,
         );
       }
-      // NOTE: the EFFECTIVE row, patch over stored, because a patch that only attaches a credential
+      // The EFFECTIVE row, patch over stored, because a patch that only attaches a credential
       // says nothing about the templates and a patch that only rewrites a template says nothing
       // about the credential. Judging either half alone is how this warning would fire on a tool
       // that is wired and stay silent on one that is not.
@@ -887,7 +887,7 @@ export async function toolUpdate(
     const appliedProj: Record<string, unknown> = {};
     for (const k of keys)
       appliedProj[k] = (updated as unknown as Record<string, unknown>)[k];
-    // NOTE: recomputed from the row the write RETURNED, like `appliedProj` beside it, rather than
+    // Recomputed from the row the write RETURNED, like `appliedProj` beside it, rather than
     // reused from the preview. The preview reads outside the write's transaction, so a second
     // administrator can change the credential or a template in between — and the response would
     // then report a diff of the row that was written next to a warning about the row that was read.
@@ -997,7 +997,7 @@ export async function mcpConnectionCreate(
   } as McpConnectionCreate;
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // The core's own question, asked INSIDE the branch because the apply reaches the core,
       // which asks it again; above the branch it would be a second lookup that can disagree.
       const parsed = await assertMcpConnectionCreatable(input);
       // NOTE: ADVISORY: it reads outside the apply's transaction, so the name can be taken

@@ -192,7 +192,7 @@ describe.skipIf(!dbUp)(
       );
       expect(patched.label).toBe("renamed");
 
-      // NOTE: But writing that same shape back IS refused, since that write is the one being judged.
+      // But writing that same shape back IS refused, since that write is the one being judged.
       const err = await updateToolDefinition(
         ctx(),
         BigInt(created.id),

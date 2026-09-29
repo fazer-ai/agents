@@ -17,7 +17,7 @@ export const integrationsController = new Elysia({
 }).post(
   "/inbound/:routeToken",
   async ({ params, request }) => {
-    // NOTE: read the RAW body (HMAC strategies sign the exact bytes; re-serializing the parsed
+    // Read the RAW body (HMAC strategies sign the exact bytes; re-serializing the parsed
     // JSON would not match). We never declare/access `body`, so Elysia does not pre-parse it.
     const rawBody = await request.text();
     const result = await receiveInbound({

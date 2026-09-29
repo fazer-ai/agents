@@ -354,7 +354,7 @@ describe.skipIf(!dbUp)(
         where: { id: BigInt(ignored.id) },
         data: { type: "discord" },
       });
-      // NOTE: a legacy row can hold a secret typed where a reference belongs. `readableVaultRef` refuses
+      // A legacy row can hold a secret typed where a reference belongs. `readableVaultRef` refuses
       // to publish it, and the state has to say why.
       const unreadable = await mk("unreadable", {});
       await suDb.alertChannel.update({

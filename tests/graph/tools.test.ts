@@ -127,7 +127,7 @@ describe("native tools", () => {
     expect(silentTurn.toLowerCase()).not.toContain("stay silent");
     expect(silentTurn).toContain("nothing is sent to them");
 
-    // NOTE: and on the OTHER shape, the one that carries `assignTo`, so a mutation making the field
+    // And on the OTHER shape, the one that carries `assignTo`, so a mutation making the field
     // optional on this branch alone cannot survive the suite.
     const routing = byName(
       buildNativeTools({
@@ -152,7 +152,7 @@ describe("native tools", () => {
   });
 
   test("a MUTED turn is not told to write a message the transfer will not send", () => {
-    // NOTE: the line is RECORDED on `handoffState` for the caller to deliver, and an observation
+    // The line is RECORDED on `handoffState` for the caller to deliver, and an observation
     // has no `handoffState` and throws its final output away: the transfer happens and the customer
     // hears nothing. Promising otherwise makes the model hand over believing they were answered.
     const { client } = recordingClient();
@@ -179,7 +179,7 @@ describe("native tools", () => {
   });
 
   test("the delta names the scope's own labels, not the conversation's", () => {
-    // NOTE: the delta applies to the SCOPE the call chooses, so a description that always named the
+    // The delta applies to the SCOPE the call chooses, so a description that always named the
     // conversation's labels would show a `contact` call the wrong list, and invite copying them onto
     // the contact. The listing is per scope and labelled with it, and the prose never says
     // "conversation".
@@ -212,7 +212,7 @@ describe("native tools", () => {
   });
 
   test("a ONE-SHOT allowlist grants what it names, not what the first candidate leaves", () => {
-    // NOTE: the parameter is an `Iterable<string>`, and a generator is spent by whoever reads it
+    // The parameter is an `Iterable<string>`, and a generator is spent by whoever reads it
     // first. Read once per candidate, it would be exhausted while testing a tool nobody granted,
     // and the agent would come up with an empty toolset, silently, with every grant in place.
     const { client } = recordingClient();
@@ -582,7 +582,7 @@ describe("native tools", () => {
   });
 
   test("a /reset landing while resolve_conversation reads does NOT close the conversation", async () => {
-    // NOTE: the close reads the live status first (a WAIT), and the graph's ask at the tool
+    // The close reads the live status first (a WAIT), and the graph's ask at the tool
     // boundary happened before it. An observation holds no thread claim, so `/reset` can land in
     // that window, and a close is not something a later turn undoes. Same rule set_labels applies
     // in its queue.
@@ -628,7 +628,7 @@ describe("native tools", () => {
   });
 
   test("without a note there is no wait, so the handoff is unchanged", async () => {
-    // NOTE: the fence is asked only where a wait happened. A handoff with no summary writes straight
+    // The fence is asked only where a wait happened. A handoff with no summary writes straight
     // through.
     const { client, calls } = recordingClient();
     const tools = buildNativeTools({
@@ -1142,7 +1142,7 @@ describe("native tools", () => {
     });
 
     test("a guarded label standing on the scope is KEPT in next, and is no longer hidden", () => {
-      // NOTE: `next` carries it because it is on the conversation. There is no separate `visible`
+      // `next` carries it because it is on the conversation. There is no separate `visible`
       // projection: the model is shown everything, one list.
       const out = applyLabelDelta(
         ["lead"],
@@ -1175,7 +1175,7 @@ describe("native tools", () => {
         return {};
       },
     } as unknown as ChatwootClient;
-    // NOTE: `vip` is not named, so it is not touched, and no snapshot of what the model saw has to
+    // `vip` is not named, so it is not touched, and no snapshot of what the model saw has to
     // be consulted to know that.
     const tools = buildNativeTools({ client, conversationId: 9 });
     const out = String(
@@ -1233,7 +1233,7 @@ describe("native tools", () => {
   });
 
   test("set_labels refuses to remove a guarded label, and names the refusal", async () => {
-    // NOTE: the case above protects a label the model never named. This one it names explicitly,
+    // The case above protects a label the model never named. This one it names explicitly,
     // and only the guard keeps it. The model SEES the guarded label, so it will ask; an answer that
     // stayed silent would be a false statement the model reads back out of its own transcript one
     // call later, which is why the report says which one it refused.
@@ -1265,7 +1265,7 @@ describe("native tools", () => {
   });
 
   test("a call that names neither side is refused, and writes nothing", async () => {
-    // NOTE: an empty delta is the absence of a request, and honouring it would be inventing one.
+    // An empty delta is the absence of a request, and honouring it would be inventing one.
     // The refusal is what tells the model to name what it wants.
     const setCalls: unknown[][] = [];
     const client = {
@@ -1288,7 +1288,7 @@ describe("native tools", () => {
   });
 
   test("the retired `labels` list is refused BY NAME, not silently dropped", async () => {
-    // NOTE: operator prose in five free-text fields can still describe the retired full-list shape,
+    // Operator prose in five free-text fields can still describe the retired full-list shape,
     // and a model following that prose sends `{labels: [...]}`. A strict
     // schema would strip the key and leave an empty delta, so the call would answer "already as
     // requested" and the model would record a classification that was never written.
@@ -1372,7 +1372,7 @@ describe("native tools", () => {
   });
 
   test("a label the model was never shown is removable the moment it names it", async () => {
-    // NOTE: `urgente` lands between the turn's read and the first call. Not naming it keeps it,
+    // `urgente` lands between the turn's read and the first call. Not naming it keeps it,
     // naming it removes it, and neither answer depends on what the model was shown.
     let current: string[] = ["urgente"];
     const setCalls: unknown[][] = [];
@@ -1464,7 +1464,7 @@ describe("native tools", () => {
       },
     );
     const tool = byName(guarded, "set_labels");
-    // NOTE: the batch metadata LangGraph itself supplies: the two calls of a batch carry the same
+    // The batch metadata LangGraph itself supplies: the two calls of a batch carry the same
     // `langgraph_step`, the next batch a different one.
     const batch = {
       metadata: {
@@ -1529,7 +1529,7 @@ describe("native tools", () => {
   });
 
   test("a label added to the card mid-turn survives, like in the other two scopes", async () => {
-    // NOTE: "not named, not touched" has to hold for the card itself, not for a turn-prep snapshot
+    // "not named, not touched" has to hold for the card itself, not for a turn-prep snapshot
     // of it, or a label put on it while the model was generating is erased by the next write. One
     // GET by id at write time covers it: the id is in hand here, unlike at prep.
     const setCalls: unknown[][] = [];
@@ -1554,7 +1554,7 @@ describe("native tools", () => {
   });
 
   test("a card that cannot be read refuses the write instead of using the snapshot", async () => {
-    // NOTE: falling back to the snapshot would erase such a label silently, on the one path where
+    // Falling back to the snapshot would erase such a label silently, on the one path where
     // nobody is looking. The conversation scope answers an unreadable state the same way.
     let setCount = 0;
     const client = {
@@ -1582,7 +1582,7 @@ describe("native tools", () => {
   });
 
   test("a card write withdrawn during the fresh read does not land", async () => {
-    // NOTE: the task scope's fresh read is a WAIT, exactly like the GET the other two scopes do:
+    // The task scope's fresh read is a WAIT, exactly like the GET the other two scopes do:
     // `/reset` can retire the run while it is in flight, so the graph's dispatch check cannot be the
     // last word before the POST. The fence is asked AFTER the read, not before it.
     let setCount = 0;
@@ -1642,7 +1642,7 @@ describe("native tools", () => {
   });
 
   test("a swap whose add is guarded writes NOTHING, and says the removal was held", async () => {
-    // NOTE: A REMOVAL IS NOT APPLIED WHEN THE GUARD REFUSED ANY ADDITION OF THE SAME CALL, or a
+    // A REMOVAL IS NOT APPLIED WHEN THE GUARD REFUSED ANY ADDITION OF THE SAME CALL, or a
     // mutually exclusive taxonomy ends the turn with NO category. ONLY REMOVALS ARE HELD: a fully
     // atomic call would stop `add: ["cancelamento", "reembolso"]` (with `cancelamento` guarded) from
     // writing `reembolso`, and a guarded REMOVE from letting its addition through. So the "both
@@ -1682,7 +1682,7 @@ describe("native tools", () => {
   });
 
   test("a swap whose remove is guarded lands the addition alone, and says so", async () => {
-    // NOTE: the mirror, and the other state the single write exists to prevent: both categories at
+    // The mirror, and the other state the single write exists to prevent: both categories at
     // once.
     const posts: unknown[][] = [];
     const client = {
@@ -1711,7 +1711,7 @@ describe("native tools", () => {
   });
 
   test("a guard that holds the whole taxonomy refuses both halves and writes nothing", async () => {
-    // NOTE: the configuration that is actually correct: every mutually-exclusive value guarded.
+    // The configuration that is actually correct: every mutually-exclusive value guarded.
     // Both halves fall, no POST goes out, and the two refusals are reported. The half-write lives in
     // an INCOMPLETE list.
     let posts = 0;
@@ -1739,7 +1739,7 @@ describe("native tools", () => {
   });
 
   test("a free addition alongside a refused one lands, and the removal is STILL held", async () => {
-    // NOTE: the rule is over ANY refused addition, not a wholly refused `add`. "Classify it and
+    // The rule is over ANY refused addition, not a wholly refused `add`. "Classify it and
     // mark it urgent" produces `add: [category, "urgente"]`; under the narrow rule the guard would
     // catch only the category, the `add` would not fall ENTIRELY, and the removal would land alone,
     // leaving the conversation with no category.
@@ -1833,7 +1833,7 @@ describe("native tools", () => {
   });
 
   test("the rule is about the guard REFUSING an addition, not about the addition having no effect", async () => {
-    // NOTE: `add: ["a"]` where `a` is already standing asks for something and moves nothing, and
+    // `add: ["a"]` where `a` is already standing asks for something and moves nothing, and
     // naming a label already present is a legitimate request. Conditioning the hold on "nothing was
     // actually added" instead of "the guard refused an addition" would turn that redundant request
     // into a block on every removal beside it.
@@ -1857,7 +1857,7 @@ describe("native tools", () => {
   });
 
   test("a held call holds its WHOLE removal, guarded half and free half alike", async () => {
-    // NOTE: the free half goes nowhere either. The removal was asked for as one request, and
+    // The free half goes nowhere either. The removal was asked for as one request, and
     // applying the part the guard happens not to cover would leave the conversation in a state
     // nobody asked for, which is what the rule exists to stop. Both labels are named back, because
     // the model wrote both and cannot guess where either ended up.
@@ -1947,7 +1947,7 @@ describe("native tools", () => {
   });
 
   test("reaffirming a guarded label that is already there does not hold the swap", async () => {
-    // NOTE: a guarded label that is already standing (an observer's `agente-off`) is visible, so a
+    // A guarded label that is already standing (an observer's `agente-off`) is visible, so a
     // model may reaffirm it beside an ordinary swap. Holding the removal there would end the turn
     // with BOTH categories. The refused addition asked for nothing: naming a present label moves
     // nothing under the delta, so there is no exchange for the removal to be in service of.
@@ -2159,7 +2159,7 @@ describe("native tools", () => {
   });
 
   test("a /reset landing while the contact labels are read stops the contact write", async () => {
-    // NOTE: the GET above is a wait exactly like the queue the conversation scope waits on, and
+    // The GET above is a wait exactly like the queue the conversation scope waits on, and
     // this scope has no queue to ask inside. A contact label outlives the conversation it was
     // written from, so a write admitted at the tool boundary and landing after `/reset` is the one
     // that survives longest.
@@ -2826,7 +2826,7 @@ describe("no native tool takes code from the model", () => {
 });
 
 describe("what the model is shown has a ceiling", () => {
-  // NOTE: a conversation's own label set is the one list an automation can grow without an
+  // A conversation's own label set is the one list an automation can grow without an
   // operator looking. Uncapped it lands in the observer's prompt and TWICE in this tool's
   // description, so a bulk-labelled conversation can push the whole tick past the provider's
   // context limit, and every retry of it fails the same way.
@@ -2849,7 +2849,7 @@ describe("what the model is shown has a ceiling", () => {
   });
 
   test("what falls off the end is untouched, because nothing unnamed is touched", async () => {
-    // NOTE: a ceiling is safe because a label the call does not name is not touched: the cut is a
+    // A ceiling is safe because a label the call does not name is not touched: the cut is a
     // display decision with no reach into the write at all.
     const setCalls: unknown[][] = [];
     const client = {
@@ -2917,7 +2917,7 @@ describe("what the model is shown has a ceiling", () => {
 });
 
 describe("a muted turn is not offered what it cannot complete", () => {
-  // NOTE: the observer runs the ordinary toolset, and two of those tools are entirely
+  // The observer runs the ordinary toolset, and two of those tools are entirely
   // customer-facing: the reaction's POST is refused at the muted transport, and the image is
   // delivered by a turn an observation does not have. Each costs a model round and answers with a
   // failure the operator reads as a broken integration.
@@ -3042,7 +3042,7 @@ describe("the fence rule, over every native tool", () => {
         },
       },
     ) as unknown as ChatwootClient;
-    // NOTE: the database is a wait like any other: `set_custom_attribute` and `set_labels` reach
+    // The database is a wait like any other: `set_custom_attribute` and `set_labels` reach
     // their contact scope through one.
     const tx = {
       // The scoped transaction opens with a `set_config` of its own; it is plumbing every scoped

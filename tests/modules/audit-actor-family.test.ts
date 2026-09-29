@@ -470,7 +470,7 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
   });
 
   test("a cross-tenant id never takes the lock it is about to be refused for", async () => {
-    // NOTE: `users` and `invitations` are global, so an unscoped `FOR UPDATE` by id locks a row the
+    // `users` and `invitations` are global, so an unscoped `FOR UPDATE` by id locks a row the
     // caller has no business touching, BEFORE the scoped read decides it is a 404. A tenant admin could
     // then hold another tenant's user row for the length of their own transaction, and somebody
     // else's role change, deletion or login write waits behind it.
@@ -663,7 +663,7 @@ describe.skipIf(!dbUp)("the actor family records its own changes", () => {
   });
 
   test("every recorded mutation reads its `before` under the row's own lock", async () => {
-    // NOTE: per FUNCTION, not per module: a fence counting locks across a file passes while one of
+    // Per FUNCTION, not per module: a fence counting locks across a file passes while one of
     // its mutations has none, because a sibling still carries one.
     //
     // The lock is what makes the recorded `before` the value this write actually replaced. Without

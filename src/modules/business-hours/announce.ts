@@ -31,7 +31,7 @@ export function nextOpening(schedule: Schedule | null, at: Date): NextOpening {
   return when === null ? { kind: "never" } : { kind: "at", when };
 }
 
-// NOTE: Intl gives the localized weekday name so we don't need per-language i18n keys.
+// Intl gives the localized weekday name so we don't need per-language i18n keys.
 // 2024-01-07 is a Sunday, so day index 0..6 maps directly.
 function dayName(day: number, locale: string): string {
   const ref = new Date(2024, 0, 7 + day);

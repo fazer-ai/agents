@@ -16,7 +16,7 @@ const VALID = {
 
 describe("a tool-keyed block survives the merge", () => {
   test("an invalid entry REPLACES rather than erases, so the operator can still see it", () => {
-    // NOTE: A write-back of the reader's filtered output would leave `{}`, the bad entry and the good one it
+    // A write-back of the reader's filtered output would leave `{}`, the bad entry and the good one it
     // replaced both gone. The merge is not where this is refused (that is assertSettingsToolPreconditions,
     // on the patch, before the merge; see the e2e that pins it); what the merge must not do is DELETE. A
     // stored bad entry is one the operator can see and fix; a deleted one is a guard that vanished.
@@ -35,7 +35,7 @@ describe("a tool-keyed block survives the merge", () => {
   });
 
   test("an untouched unparseable entry survives an unrelated update", () => {
-    // NOTE: A debounce change must not delete a precondition it never mentioned. The write boundary leaves a
+    // A debounce change must not delete a precondition it never mentioned. The write boundary leaves a
     // bad entry already stored alone, precisely because the field the operator would have to fix is not
     // the field they came to edit.
     const merged = mergeBehaviorSettings(
@@ -58,7 +58,7 @@ describe("a tool-keyed block survives the merge", () => {
   });
 
   test("omitting equals CLEARS it, because each tool's value is replaced whole", () => {
-    // NOTE: A generic deep merge would keep `equals: "yes"`, so a caller following the schema's own
+    // A generic deep merge would keep `equals: "yes"`, so a caller following the schema's own
     // instruction ("omit to require any non-blank value") would silently keep a value-specific rule, the
     // opposite of what they asked for, on a guard.
     const merged = mergeBehaviorSettings(
@@ -72,7 +72,7 @@ describe("a tool-keyed block survives the merge", () => {
   });
 
   test("null removes one tool's entry, and leaves its siblings", () => {
-    // NOTE: Removing a rule needs its own spelling: an empty object deep-merged into the old one changes
+    // Removing a rule needs its own spelling: an empty object deep-merged into the old one changes
     // nothing.
     const merged = mergeBehaviorSettings(
       {
@@ -128,7 +128,7 @@ describe("a stored block of the wrong SHAPE does not become keys", () => {
   });
 
   test("so the patch REPAIRS the block instead of being blocked by it", () => {
-    // NOTE: The point is not tidiness: an array was never valid configuration (the reader ignores it whole),
+    // The point is not tidiness: an array was never valid configuration (the reader ignores it whole),
     // so the only question is whether MCP can write over it.
     const merged = mergeBehaviorSettings(
       { toolPreconditions: ["nonsense"] } as never,

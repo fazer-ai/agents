@@ -194,7 +194,7 @@ function fileNameFrom(attachments: unknown): string | null {
   return null;
 }
 
-// NOTE: Raw REST attachments → the shared location extractor (the same fields the webhook mapper
+// Raw REST attachments → the shared location extractor (the same fields the webhook mapper
 // reads: coordinates_lat / coordinates_long / fallback_title).
 function locationFrom(attachments: unknown): RenderableLocation | null {
   if (!Array.isArray(attachments)) return null;

@@ -872,7 +872,7 @@ describe.skipIf(!dbUp)("scheduler", () => {
     expect((await statusOf(id)).status).toBe("DEAD");
   });
 
-  // NOTE: a job that fails on every try (a Chatwoot that is down), measured by how long after
+  // A job that fails on every try (a Chatwoot that is down), measured by how long after
   // its first run it goes DEAD, with each retry claimed exactly when it falls due. The recoveries are
   // armed once and nothing re-arms them, so this span is the whole outage they can outlast.
   async function deathAfterMs(kind: SchedulerJobKind, key: string) {

@@ -228,7 +228,7 @@ describe.skipIf(!dbUp)("failed-turn note", () => {
       adminToken: encryptJson("ADMIN"),
     });
     instanceId = inst.id;
-    // NOTE: A REAL vault entry, so the turn gets as far as the model call: the double answers that
+    // A REAL vault entry, so the turn gets as far as the model call: the double answers that
     // call 401 (it authenticates like Chatwoot and knows no OpenAI route), and THAT is the death
     // this suite is about. A dangling ref would not die, it would be the orderly "no-agent" silence.
     const llmKey = await suDb.vaultEntry.create({

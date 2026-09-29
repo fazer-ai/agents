@@ -407,7 +407,7 @@ function dedupeWarnings(ws: ImportWarning[]): ImportWarning[] {
   const seen = new Set<string>();
   const out: ImportWarning[] = [];
   for (const w of ws) {
-    // NOTE: The TARGET is part of the identity: two warnings with the same code and rendered params
+    // The TARGET is part of the identity: two warnings with the same code and rendered params
     // can be about different components (a clipped name param makes two bases look alike). The
     // duplicates this exists for (one credential referenced from several paths) share the target.
     const key = `${w.code}|${JSON.stringify(w.params ?? {})}|${JSON.stringify(
@@ -497,7 +497,7 @@ export function remapCredRefs(
     if (mapped === null) delete mc.credentialRef;
     else mc.credentialRef = mapped;
   }
-  // NOTE: each pass returns a NEW root and the next one reads it, since two paths share the `tts`
+  // Each pass returns a NEW root and the next one reads it, since two paths share the `tts`
   // block and the second must see the first one's rewrite.
   let st: Record<string, unknown> = { ...settings };
   for (const { path } of SETTINGS_CREDENTIAL_PATHS) {
@@ -749,7 +749,7 @@ export async function exportAgent(
       const httpRows = httpIds.length
         ? await db.toolDefinition.findMany({ where: { id: { in: httpIds } } })
         : [];
-      // NOTE: The GENERIC instances the bundled tools hand `{{conversation_ref}}` for travel with them:
+      // The GENERIC instances the bundled tools hand `{{conversation_ref}}` for travel with them:
       // nothing grants a GENERIC to an agent, so the grant walk above never finds them, and a tool
       // imported without its instance refuses every call at the destination.
       const refIntegrationIds = httpRows
@@ -1214,7 +1214,7 @@ export async function importAgent(
         refByName.set(name, null);
         continue;
       }
-      // NOTE: The name the vault would STORE (the write trims), so the lookup below and the insert
+      // The name the vault would STORE (the write trims), so the lookup below and the insert
       // agree on which row a spelling like ` cred ` means.
       const storedName = storedVaultName(name);
       if (storedName === null) {
@@ -1226,14 +1226,14 @@ export async function importAgent(
         refByName.set(name, null);
         continue;
       }
-      // NOTE: On `db`, inside the import's transaction: a separate connection cannot see what the
+      // On `db`, inside the import's transaction: a separate connection cannot see what the
       // import already wrote, so a credential named twice under trim-equivalent spellings would read
       // as missing again and collide on insert.
       const resolution = await resolveVaultRefByNameOn(db, storedName, kind);
       if (resolution.status === "found") {
         refByName.set(name, resolution.ref);
       } else {
-        // NOTE: Not in the target tenant yet: create a reference-only PENDING vault entry (name + kind)
+        // Not in the target tenant yet: create a reference-only PENDING vault entry (name + kind)
         // and KEEP the ref wired, so the operator only fills the secret. Some kinds cannot be pending
         // (managed OAuth, or ones needing a baseUrl/paramName the export lacks) and leave the field
         // unset. That is asked BEFORE the write, by the write's own guard, never by catching the write:
@@ -1285,7 +1285,7 @@ export async function importAgent(
       },
     );
 
-    // NOTE: Every credential the bags ended up wired to, judged against what the FIELD reads it as.
+    // Every credential the bags ended up wired to, judged against what the FIELD reads it as.
     // Only an import reaches this (the direct write refuses the pairing): a bundle can name a
     // `google_oauth` entry on the model and the (name, kind) lookup matches it. Warned, not refused
     // (one field would reject the whole bundle) and not unset (the entry exists, and the ref is the
@@ -1322,7 +1322,7 @@ export async function importAgent(
       });
     }
 
-    // NOTE: The protected-label list over its ceiling is clamped for the same reasons, and one more:
+    // The protected-label list over its ceiling is clamped for the same reasons, and one more:
     // `readProtectedLabels` stops AT the ceiling, so a longer stored list would show the operator
     // guards that guard nothing. The imported agent lands disabled and in test mode for review.
     const dropped = clampProtectedLabelsInPlace(settings);
@@ -1402,7 +1402,7 @@ export async function importAgent(
         ),
       ),
     );
-    // NOTE: What create would refuse (a closed value outside its domain, half a fallback, a tool guard
+    // What create would refuse (a closed value outside its domain, half a fallback, a tool guard
     // that cannot parse), asked of the bag AS IT WILL BE STORED, after the renames and strips above.
     // Named one by one up to a point and counted past it: a bundle can carry thousands of entries.
     const unusable = dropUnusableImportedSettingsInPlace(storable);
@@ -1751,7 +1751,7 @@ function renamedLabel(
   // ceiling has its stem trimmed before `_N` is appended (renamedToolName), so counting from the
   // bundled name starts past the end.
   const suffixed = `${bundledLabel} ${storedName.slice(storedName.lastIndexOf("_") + 1)}`;
-  // NOTE: Then the only question that matters is asked of the RESULT: a label at the 64 ceiling with
+  // Then the only question that matters is asked of the RESULT: a label at the 64 ceiling with
   // ` 2` appended normalizes back to 64 characters with the suffix CUT, deriving the name the row
   // could not take, and the tool could not be saved again. Clipped first, since TOOL_LABEL_MAX trims
   // on the way to the column and can break the derivation too. The stored name always derives
@@ -1896,7 +1896,7 @@ async function createMissingComponents(
   // concurrent tool create could commit into that table between the question and the insert
   // (namespace.ts). One acquisition covers every name this import claims.
   await lockToolNames(db);
-  // NOTE: The `send_<slug>` tools the bundle's own templates will publish, carried by the tool loops
+  // The `send_<slug>` tools the bundle's own templates will publish, carried by the tool loops
   // because the templates are inserted after them. Only templates that will actually CLAIM one: a
   // template the loop below skips publishes nothing, and a tool renamed off its name would be renamed
   // for nothing. The questions are that loop's own, asked here BEFORE the tool loops write, the only
@@ -1953,12 +1953,12 @@ async function createMissingComponents(
   // chosen: a component the loop then skips (an unsupported method) writes no row, and holding its
   // name would push the next one off it for nothing.
   const claimed = new Set<string>();
-  // NOTE: One stored name per bundle name: the second occurrence of a native-named component (a
+  // One stored name per bundle name: the second occurrence of a native-named component (a
   // hand-edited file) finds the first one's row and reuses it, instead of choosing another suffix.
   const chosen = new Map<string, string>();
   const conversationRefWiring: { tool: string; integration: string }[] = [];
   for (const tdef of components.httpTools) {
-    // NOTE: A bundle authored before a native took the name. The assembly reserves every native name,
+    // A bundle authored before a native took the name. The assembly reserves every native name,
     // so a tool stored under one would never reach the model, and this path writes past the service
     // that refuses it. Stored under `<name>_N`, warned, so the operator learns the name a prompt may
     // still use. A name a stored CODE tool holds moves the same way (`storedToolName`): the two kinds
@@ -1985,7 +1985,7 @@ async function createMissingComponents(
     const label = clipLabel(
       renamedLabel(tdef.name, name, blankFallback(tdef.label, name)),
     );
-    // NOTE: Recorded once a row under the new name EXISTS (written below, or found by the pre-check or
+    // Recorded once a row under the new name EXISTS (written below, or found by the pre-check or
     // the race) and not before: a component the checks skip must not be announced as imported.
     const landed = (): void => {
       // Before the early return: a component stored under its OWN name occupies it just as much as
@@ -2000,7 +2000,7 @@ async function createMissingComponents(
         target: { kind: "tool", name },
       });
     };
-    // NOTE: Reuse is decided by the MODEL-FACING name, not the stored spelling: a row written as `Foo`
+    // Reuse is decided by the MODEL-FACING name, not the stored spelling: a row written as `Foo`
     // answers to `foo`, and an exact lookup would insert a SECOND row under the name the model sees
     // (namespace.ts). Same resolution the grant uses, so "reuse" names ONE row.
     const reuse = await toolUnderModelName(db, name, "http");
@@ -2026,7 +2026,7 @@ async function createMissingComponents(
       });
       continue;
     }
-    // NOTE: The import writes straight to the DB, so it canonicalizes authoring shapes too (a bundle
+    // The import writes straight to the DB, so it canonicalizes authoring shapes too (a bundle
     // from an older instance may carry JSON-Schema inputSchema or single-brace placeholders). An
     // unsupported body shape is CANONICALIZED, not refused: `canonicalBodyShape` returns what
     // `parseBody` already executed, so the request is byte-identical. Blanking it to `{}` would switch
@@ -2060,7 +2060,7 @@ async function createMissingComponents(
         target: { kind: "tool", name },
       });
     }
-    // NOTE: And the pairing the write asks, on the row about to be stored. A relative template (`/...`)
+    // And the pairing the write asks, on the row about to be stored. A relative template (`/...`)
     // with no credential base URL makes `buildHttpTool` THROW out of `buildHttpTools`, a bare `.map`
     // in the toolset literal, so the agent would lose every tool, not just this one. So it is
     // skipped, not left to be completed later like a pending credential.
@@ -2075,7 +2075,7 @@ async function createMissingComponents(
       });
       continue;
     }
-    // NOTE: `createMany({ skipDuplicates })` rather than `create`: a concurrent writer can commit
+    // `createMany({ skipDuplicates })` rather than `create`: a concurrent writer can commit
     // between the pre-check and this insert, and a P2002 would abort the import's single
     // `runScopedOn` transaction and every statement after it.
     const { count } = await db.toolDefinition.createMany({
@@ -2211,7 +2211,7 @@ async function createMissingComponents(
       });
       continue;
     }
-    // NOTE: the import writes straight to the DB (not via the service), so the schema is
+    // The import writes straight to the DB (not via the service), so the schema is
     // canonicalized here the way the service canonicalizes it: a hand-edited bundle may carry a
     // JSON-Schema-shaped one, and the runtime reads the compact field map.
     const { shapes, warnings: schemaWarnings } = normalizeToolShapes({
@@ -2243,7 +2243,7 @@ async function createMissingComponents(
         target: { kind: "codeTool", name },
       });
     }
-    // NOTE: `createMany({ skipDuplicates })` for the reason the HTTP loop gives: a lost race on
+    // `createMany({ skipDuplicates })` for the reason the HTTP loop gives: a lost race on
     // `@@unique([tenantId, name])` would abort the import's transaction.
     const { count } = await db.codeToolDefinition.createMany({
       data: [
@@ -2302,7 +2302,7 @@ async function createMissingComponents(
         continue;
       }
     }
-    // NOTE: `createMany({ skipDuplicates })` for the same reason as the loop above: a lost race on
+    // `createMany({ skipDuplicates })` for the same reason as the loop above: a lost race on
     // `@@unique([tenantId, name])` would abort the import's transaction.
     const { count } = await db.mcpServerConnection.createMany({
       data: [
@@ -2366,7 +2366,7 @@ async function createMissingComponents(
       i.config as Record<string, unknown>,
       configWarnings,
     );
-    // NOTE: `createMany({ skipDuplicates })` for the same reason as the loops above, on
+    // `createMany({ skipDuplicates })` for the same reason as the loops above, on
     // `@@unique([tenantId, catalogType, name])`. `routeTokenHash` is unique too and covered by the
     // ON CONFLICT, but it is 32 fresh random bytes hashed, so a skip here is the name, in practice.
     const { count } = await db.integrationInstance.createMany({
@@ -2443,7 +2443,7 @@ async function createMissingComponents(
       });
       continue;
     }
-    // NOTE: Through the same reader the name reservation above used, so the two passes agree on
+    // Through the same reader the name reservation above used, so the two passes agree on
     // which templates are importable; disagreeing would move a tool off `send_<slug>` for a template
     // this loop then skips.
     const read = readBundledTemplate(tpl);
@@ -2493,7 +2493,7 @@ async function createMissingComponents(
       });
       continue;
     }
-    // NOTE: `createMany({ skipDuplicates })` rather than `create`: both pre-checks can answer "free"
+    // `createMany({ skipDuplicates })` rather than `create`: both pre-checks can answer "free"
     // and a writer (a second import, a console save) commit before this insert, and a P2002 aborts
     // the ONE `runScopedOn` transaction the entire import runs in, losing the agent, tools and bases.
     // A `catch` around the insert cannot help, since the transaction is already dead; `ON CONFLICT
@@ -2825,7 +2825,7 @@ function renameNativeToolKeys(
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
     return settings;
   const bag = settings as Record<string, unknown>;
-  // NOTE: Two moves, and the order matters. A bundle can carry BOTH a custom tool named `set_labels`
+  // Two moves, and the order matters. A bundle can carry BOTH a custom tool named `set_labels`
   // and the native under its old name; in one pass the native's rule finds `set_labels` taken and is
   // discarded, and the custom tool's rule stays on a key that now names the native. Settling the
   // custom rename first empties the key. The bundle's own name is the key (what `RenamedComponents`
@@ -2882,7 +2882,7 @@ async function buildGrantRows(
   for (const g of tools) {
     switch (g.source) {
       case "NATIVE": {
-        // NOTE: A name this build's catalog does not carry is dropped, and said (a bundle from an
+        // A name this build's catalog does not carry is dropped, and said (a bundle from an
         // older release may name a retired native like `run_code`); failing the whole bundle would be
         // the trade this file rejects. The row lands even when nothing survives the filter: an
         // explicit empty allowlist means NO natives, and no row at all would mean ALL of them.
@@ -2966,7 +2966,7 @@ async function buildGrantRows(
         // and an exact lookup would drop the grant with `httpGrantNotFound` for a tool that is
         // right there (namespace.ts).
         const wanted = renamed.httpTools.get(g.tool) ?? g.tool;
-        // NOTE: WHICH row, not "is the name taken": a destination can hold `Foo` and `foo` from before
+        // WHICH row, not "is the name taken": a destination can hold `Foo` and `foo` from before
         // the unique index was case-insensitive, and binding the wrong one hands the agent another
         // endpoint with another credential. Ambiguity is reported, never resolved by picking.
         const match = await toolUnderModelName(db, wanted, "http");

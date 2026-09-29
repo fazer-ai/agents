@@ -96,7 +96,7 @@ export interface ReplyParts {
 export function splitReplyParts(text: string, cfg: SplitConfig): ReplyParts {
   const trimmed = text.trim();
   if (!trimmed) return { chunks: [], seps: [] };
-  // NOTE: capturing groups keep the delimiters, so the original can be reassembled exactly.
+  // Capturing groups keep the delimiters, so the original can be reassembled exactly.
   const paraParts = trimmed.split(/(\n{2,})/);
   const chunks: string[] = [];
   const seps: string[] = [];
@@ -106,14 +106,14 @@ export function splitReplyParts(text: string, cfg: SplitConfig): ReplyParts {
   };
   for (let pi = 0; pi < paraParts.length; pi += 2) {
     const p = (paraParts[pi] ?? "").trim();
-    // NOTE: the run of newlines the model typed, not always exactly two.
+    // The run of newlines the model typed, not always exactly two.
     const paraSep = pi === 0 ? "" : (paraParts[pi - 1] ?? "\n\n");
     if (!p) continue;
     if (p.length <= cfg.maxChars) {
       push(p, paraSep);
       continue;
     }
-    // NOTE: over-long paragraph: accumulate sentences up to maxChars. Later chunks continue the same
+    // Over-long paragraph: accumulate sentences up to maxChars. Later chunks continue the same
     // paragraph, so they rejoin with the whitespace that stood between those sentences.
     const sentParts = p.split(/((?<=[.!?…])\s+)/);
     let buf = "";
@@ -223,7 +223,7 @@ export async function deliverReply(
     async () => {
       if (!cfg.enabled) {
         const sendId = crypto.randomUUID();
-        // NOTE: the same function on a one-element array: split off is one chunk, not a second rule.
+        // The same function on a one-element array: split off is one chunk, not a second rule.
         // NOTE: the model's text is escaped for Chatwoot's Liquid and the signature is not.
         const [single = literal(reply)] = signature
           ? attachSignature(
@@ -238,7 +238,7 @@ export async function deliverReply(
           await client.sendMessage(conversationId, single, { sendId });
           return { delivered: 1, failed: false, unproven: false };
         } catch (e) {
-          // NOTE: nothing is resent on this path, but the verdict still decides whether the turn may run
+          // Nothing is resent on this path, but the verdict still decides whether the turn may run
           // again, which does not depend on how many balloons the reply had.
           const verdict = await accountForRejectedSend(
             client,
@@ -256,7 +256,7 @@ export async function deliverReply(
         }
       }
       const { chunks: rawChunks, seps } = splitReplyParts(reply, cfg);
-      // NOTE: `seps` stays aligned because attaching never changes the count. Each balloon is escaped for
+      // `seps` stays aligned because attaching never changes the count. Each balloon is escaped for
       // Chatwoot's Liquid after the cut, so the cut never lands inside an escape, and the signature is
       // attached as the operator wrote it.
       const chunks = signature
@@ -265,11 +265,11 @@ export async function deliverReply(
       let delivered = 0;
       let failed = false;
       let unproven = false;
-      // NOTE: how far back a read-back has to look, fed only by sends that returned an id. It bounds cost
+      // How far back a read-back has to look, fed only by sends that returned an id. It bounds cost
       // only: identity decides, and null just means paging to the ceiling. A pre-send read to establish
       // it would tax every reply, and a short one is exactly what an overloaded Chatwoot misses.
       let boundary: number | null = anchor;
-      // NOTE: the one place a delivery is recorded, and each delivery is also a new boundary. A confirmer
+      // The one place a delivery is recorded, and each delivery is also a new boundary. A confirmer
       // that counts without advancing it leaves a stale boundary: with chunks `A / B / B`, a middle `B`
       // found under a rejection would make the final `B` match it. The retry call sites have no later
       // reader but use it anyway, so "delivered" has one spelling.
@@ -288,7 +288,7 @@ export async function deliverReply(
           // Paced by what the customer reads, not by the escape's extra syntax.
           await sleep(typingDelayMs(asRendered(chunk), cfg));
           if (await calledOff()) break;
-          // NOTE: minted before the request, because the send that times out never returns anything.
+          // Minted before the request, because the send that times out never returns anything.
           const sendId = crypto.randomUUID();
           try {
             const res = await client.sendMessage(conversationId, chunk, {
@@ -296,7 +296,7 @@ export async function deliverReply(
             });
             noteDelivered(createdMessageId(res));
           } catch (e) {
-            // NOTE: a rejected send is not an undelivered one. The 15s deadline (../chatwoot/client.ts) can
+            // A rejected send is not an undelivered one. The 15s deadline (../chatwoot/client.ts) can
             // reject with the message already written, and neither a 502 nor a 500 says whether it was. So
             // this reads the conversation back and looks for the chunk; blindly retrying would duplicate.
             const verdict = await accountForRejectedSend(
@@ -321,7 +321,7 @@ export async function deliverReply(
               unproven = true;
             }
             const from = verdict.known && verdict.id === null ? i : i + 1;
-            // NOTE: built from the raw balloons and signed once; with `frequency: "all"` joining the signed
+            // Built from the raw balloons and signed once; with `frequency: "all"` joining the signed
             // chunks would put the badge several times inside one message.
             const owedRaw = rawChunks
               .slice(from)
@@ -330,7 +330,7 @@ export async function deliverReply(
                 "",
               );
             if (!owedRaw) break;
-            // NOTE: the retry is signed iff the balloons it replaces were, the one rule that cannot disagree
+            // The retry is signed iff the balloons it replaces were, the one rule that cannot disagree
             // with the balloon pass (a conditional on frequency would re-sign a model copy the merge made
             // inexact). It also covers `once`: a landed top-signed first balloon is not among them.
             const owedWasSigned = rawChunks
@@ -348,7 +348,7 @@ export async function deliverReply(
                     literal,
                   )[0] ?? literal(owedRaw))
                 : literal(owedRaw);
-            // NOTE: same 15s deadline, so it can be rejected after being accepted like any other send.
+            // Same 15s deadline, so it can be rejected after being accepted like any other send.
             const retrySendId = crypto.randomUUID();
             try {
               noteDelivered(
@@ -359,7 +359,7 @@ export async function deliverReply(
                 ),
               );
             } catch (retryErr) {
-              // NOTE: just as ambiguous as the first rejection, and a bare `failed` would make `runLoadedTurn`
+              // Just as ambiguous as the first rejection, and a bare `failed` would make `runLoadedTurn`
               // throw and re-run a turn whose reply the customer may already have.
               const retryVerdict = await accountForRejectedSend(
                 client,
@@ -466,11 +466,11 @@ async function findLandedMessage(
         before === undefined ? undefined : { before },
         remaining,
       );
-      // NOTE: counted on the response, not the parsed rows: the parser folds an empty page, a non-list
+      // Counted on the response, not the parsed rows: the parser folds an empty page, a non-list
       // body and a page of unreadable rows into the same empty array.
       const carried = chatwootMessageListLength(raw);
       const rows = parseChatwootMessages(raw);
-      // NOTE: found is asked first, before the page's quality: the id was minted for this send alone, so
+      // Found is asked first, before the page's quality: the id was minted for this send alone, so
       // a row carrying it is the message whatever its neighbours are.
       const hit = rows.find((m) => m.sendId === sendId);
       if (hit !== undefined) {
@@ -478,7 +478,7 @@ async function findLandedMessage(
         if (typeof hit.id === "number") noteLandedMessage(client, hit.id);
         return { known: true, id: hit.id };
       }
-      // NOTE: absence may only rest on a page read whole: an entry this build could not parse might be
+      // Absence may only rest on a page read whole: an entry this build could not parse might be
       // the message. A non-list response never equals a row count, so it needs no arm of its own.
       const readWhole = rows.length === carried;
       if (!readWhole) return { known: false };

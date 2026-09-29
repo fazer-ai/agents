@@ -119,7 +119,7 @@ export const HighlightedTemplateField = forwardRef<
       b.scrollTop = el.scrollTop;
       b.scrollLeft = el.scrollLeft;
     };
-    // NOTE: both layers reserve the scrollbar's gutter so their content boxes stay the same width. The
+    // Both layers reserve the scrollbar's gutter so their content boxes stay the same width. The
     // textarea is a scroll container whose bar eats its content box while the `overflow: hidden`
     // backdrop keeps the full width, so without it the layers wrap at different columns and the caret
     // drifts from the glyph the operator sees. The SCROLLBAR decides, not the OS (a macOS "always show"

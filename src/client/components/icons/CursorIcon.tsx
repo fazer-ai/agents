@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-// NOTE: Cursor editor brand mark — identifies the Cursor option in the MCP client selector. `currentColor` so it picks up `text-text-primary` from parent classes like the other monochrome provider icons.
+// Cursor editor brand mark — identifies the Cursor option in the MCP client selector. `currentColor` so it picks up `text-text-primary` from parent classes like the other monochrome provider icons.
 export function CursorIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg

@@ -1178,13 +1178,13 @@ describe("a save that lands after the sample's life ended", () => {
 // TWO SOURCE FENCES, and they say so: what they can answer for is a grammar, not intent.
 describe("the two seams that have to clear it", () => {
   const DELETE_CALL = /\.v1\.tools\(\s*\{[^}]*\}\s*\)\s*\.delete\(/;
-  // NOTE: the STATE SETTER, not any particular argument to it, and not the logout request: a 401 and
+  // The STATE SETTER, not any particular argument to it, and not the logout request: a 401 and
   // the socket's auth-loss close end a session without one, and `/me` ends it through
   // `setUser(data.user ?? null)`, not `setUser(null)`. So this counts calls to the raw setter and
   // requires exactly one: the chokepoint that owns what a transition costs.
   const SETS_USER = /setUser\(/g;
 
-  // NOTE: `codeOnly` rather than a stripper written here: comments AND string contents out, as the
+  // `codeOnly` rather than a stripper written here: comments AND string contents out, as the
   // repo's fence over sweeps requires (`tests/lib/source-text.test.ts`). What is matched is a code
   // SHAPE, so a literal spelling it is prose by another name.
   //
@@ -1313,7 +1313,7 @@ describe("the two seams that have to clear it", () => {
     expect(request).toBeGreaterThan(-1);
     expect(write).toBeGreaterThan(-1);
     expect(read).toBeLessThan(request);
-    // NOTE: and the first suspension after the read is the request itself. Eden evaluates its
+    // And the first suspension after the read is the request itself. Eden evaluates its
     // `headers` callback INSIDE the call expression, synchronously, so another tab's `localStorage`
     // write cannot land between the two reads; an `await` in between would open that window.
     const firstAwait = save.indexOf("await", read);
@@ -1356,7 +1356,7 @@ describe("the two seams that have to clear it", () => {
     // a caller from handing it a constant (`true` in place of that argument). A stable grammar: it
     // says the question is asked, not how.
     expect(save).toInclude("sampleShapeRef");
-    // NOTE: and it is read before the request, like the ticket. Everything else the continuation uses
+    // And it is read before the request, like the ticket. Everything else the continuation uses
     // is a value this closure captured when Save was pressed; the marker is a REF, so reading it at the
     // end would get the next opening's answer after a dismiss-and-reopen.
     const shapeRead = save.indexOf("sampleShapeRef.current");
@@ -1382,7 +1382,7 @@ describe("the two seams that have to clear it", () => {
     expect(request).toBeGreaterThan(-1);
     expect(write).toBeGreaterThan(-1);
     expect(read).toBeLessThan(request);
-    // NOTE: and the first suspension after the read is the request itself. Eden evaluates its
+    // And the first suspension after the read is the request itself. Eden evaluates its
     // `headers` callback INSIDE the call expression, synchronously, so another tab's `localStorage`
     // write cannot land between the two reads; an `await` in between would open that window.
     const firstAwait = body.indexOf("await", read);
@@ -1411,7 +1411,7 @@ describe("the two seams that have to clear it", () => {
     expect(
       CLEARS.test(strip(`${forgets}\n// forgetToolSample(t.id) here`)),
     ).toBe(false);
-    // NOTE: neither is the import that survives deleting the call.
+    // Neither is the import that survives deleting the call.
     const importOnly = `import { forgetToolSample } from "@/client/lib/toolSample";\n${forgets}`;
     expect(CLEARS.test(strip(importOnly))).toBe(false);
     // And a real call counts.

@@ -41,7 +41,7 @@ export function testDbNameFor(base: string, checkoutRoot: string): string {
   if (new RegExp(`_[0-9a-f]{${HASH_CHARS}}${hash}${SUFFIX}$`).test(base)) {
     return base;
   }
-  // NOTE: the derived name always ends in `_test`: tests/setup.ts and scripts/test-db-setup.ts refuse
+  // The derived name always ends in `_test`: tests/setup.ts and scripts/test-db-setup.ts refuse
   // any target that does not. BOTH halves are hashed (hashing only the checkout merged every base of
   // a long-named checkout into one database), over the ORIGINAL base, since `identifierSafe` maps
   // `foo-bar_test` and `foo_bar_test` to the same text. The checkout's hash stays SEPARATE and last:
@@ -50,7 +50,7 @@ export function testDbNameFor(base: string, checkoutRoot: string): string {
   const stemText = identifierSafe(rawStem);
   const tail = `_${shortHash(rawStem)}${hash}${SUFFIX}`;
   const room = MAX_IDENTIFIER_BYTES - tail.length;
-  // NOTE: the base first: it is what tells two databases of the SAME checkout apart, so it is the half
+  // The base first: it is what tells two databases of the SAME checkout apart, so it is the half
   // whose truncation costs the most to a reader.
   const stem = stemText.slice(0, Math.max(0, room - 1));
   const slug = identifierSafe(basename(root)).slice(

@@ -167,7 +167,7 @@ export function buildPlaygroundTrace(
   messages: BaseMessage[],
   labels: TraceLabelOpts = {},
 ): TraceEntry[] {
-  // NOTE: The checkpointer accumulates the whole thread; restrict to THIS turn, everything after
+  // The checkpointer accumulates the whole thread; restrict to THIS turn, everything after
   // the last turn-opening message. A normal turn opens with the human message we just sent; a
   // follow-up turn opens with the injected nudge SystemMessage. Either way it is the latest
   // human/system message. Then drop the trailing reply (surfaced separately).
@@ -219,7 +219,7 @@ export function buildPlaygroundTrace(
       const sources = extractSources(tm.artifact);
       const name = tm.name ?? null;
       const mocked = !!(name && labels.mockedNames?.has(name));
-      // NOTE: A mock takes precedence over the simulated label (the operator's mock overrode the no-op).
+      // A mock takes precedence over the simulated label (the operator's mock overrode the no-op).
       const simulated = !mocked && !!(name && labels.simulatedNames?.has(name));
       entries.push({
         type: "tool_result",
@@ -263,7 +263,7 @@ export function collectTraceSources(trace: TraceEntry[]): TraceSource[] {
   for (const e of trace) {
     if (e.type !== "tool_result" || !e.sources) continue;
     for (const s of e.sources) {
-      // NOTE: Dedup by document (one doc may contribute several chunks) so each source shows once.
+      // Dedup by document (one doc may contribute several chunks) so each source shows once.
       const key = `${s.knowledgeBaseId ?? s.kb}#${s.documentId ?? s.chunkId}`;
       if (seen.has(key)) continue;
       seen.add(key);

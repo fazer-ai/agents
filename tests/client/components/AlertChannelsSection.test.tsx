@@ -64,7 +64,7 @@ function channel(over: Record<string, unknown> = {}) {
 }
 
 describe("AlertChannelsSection", () => {
-  // NOTE: stubbing `globalThis.fetch` rather than the api module: `mock.module` is global to the
+  // Stubbing `globalThis.fetch` rather than the api module: `mock.module` is global to the
   // process and leaks into whatever else shares the worker. The stub is process-global too, so
   // every call is recorded WITH its url and the assertions look up the one the form is responsible
   // for: a stray request from elsewhere lands in `calls` where it can be named instead of
@@ -395,14 +395,14 @@ describe("AlertChannelsSection", () => {
   });
 
   test("a delivered sample on a DISABLED channel does not read as watching", async () => {
-    // NOTE: the operator tests before enabling, which is the normal order; a green toast alone
+    // The operator tests before enabling, which is the normal order; a green toast alone
     // would leave them believing production is watched by a channel that is off.
     const text = await pressTest({ enabled: false });
     expect(/still disabled|continua desabilitado/i.test(text)).toBe(true);
   });
 
   test("a delivered sample that went out UNSIGNED says that instead of success", async () => {
-    // NOTE: the destination took it, so the channel is reachable, and a receiver that verifies
+    // The destination took it, so the channel is reachable, and a receiver that verifies
     // signatures will still drop every real alert.
     const text = await pressTest({
       signed: false,

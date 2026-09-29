@@ -308,7 +308,7 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
       },
       select: { id: true },
     });
-    // NOTE: The inbox with a responder AND a watcher. The binding is stamped NOW, which forces
+    // The inbox with a responder AND a watcher. The binding is stamped NOW, which forces
     // `responderCoversMessage` past its clock shortcuts and onto the ledger: a binding older than the
     // event answers "covered" without looking, and the test would prove nothing about the sibling lookup.
     const responder = await suDb.agent.create({
@@ -899,7 +899,7 @@ describe.skipIf(!dbUp)("late media reaches memory", () => {
     ]) {
       expect(after).toContain(guard);
     }
-    // NOTE: O `retryArm` é o terceiro, e é procurado pelo CORPO e não por uma linha: o formatter quebra a lista
+    // O `retryArm` é o terceiro, e é procurado pelo CORPO e não por uma linha: o formatter quebra a lista
     // de disjuntos em várias linhas, e uma cerca por linha reprovaria por FORMA. O que se prende é
     // `carriesTranscription` estar dentro do argumento, ou seja, o valor lido ali é o de depois do eager
     // pass.

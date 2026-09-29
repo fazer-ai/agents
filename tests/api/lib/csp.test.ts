@@ -108,7 +108,7 @@ describe("buildCspDirectives", () => {
   });
 
   test("dev mode adds 'unsafe-inline' and 'unsafe-eval' to script-src", () => {
-    // NOTE: The Bun dev server injects runtime scripts (visibility/unref
+    // The Bun dev server injects runtime scripts (visibility/unref
     // pings) into the served HTML whose hash is not knowable from disk.
     // Without these unsafe directives in dev, every page load would
     // generate a false-positive CSP violation.

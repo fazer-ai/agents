@@ -27,7 +27,7 @@ function bearer(req: Request): string | null {
   return auth.startsWith("Bearer ") ? auth.slice(7).trim() : null;
 }
 
-// NOTE: Doc-only 405 shared by the not-offered GET/DELETE stubs below, carrying the `Allow` header
+// Doc-only 405 shared by the not-offered GET/DELETE stubs below, carrying the `Allow` header
 // the handlers always set.
 const methodNotAllowedResponse: ResponseDoc = {
   ...jsonResponse(

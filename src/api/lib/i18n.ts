@@ -12,7 +12,7 @@ interface RequestContext {
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
 
-// NOTE: own instance, NOT the i18next singleton — the client bundle inits the singleton with the
+// Own instance, NOT the i18next singleton — the client bundle inits the singleton with the
 // CLIENT locales, and any context where both coexist (bun test workers) would clobber the server
 // resources (silently falling back to defaultValue).
 // The two catalogs by locale, for reading a key's TEMPLATE before it is rendered.
@@ -53,7 +53,7 @@ export function translate(
   return translateWithLocale(locale, key, defaultValue);
 }
 
-// NOTE: explicit-locale variant for contexts where the request ALS may not be in scope
+// Explicit-locale variant for contexts where the request ALS may not be in scope
 // (e.g. Elysia's `onError`, which derives the locale straight from the Accept-Language header).
 export function translateWithLocale(
   locale: Locale,
@@ -61,7 +61,7 @@ export function translateWithLocale(
   defaultValue?: string,
   params?: Record<string, string | number>,
 ): string {
-  // NOTE: a placeholder the caller never supplied survives i18next untouched (`Unknown timezone:
+  // A placeholder the caller never supplied survives i18next untouched (`Unknown timezone:
   // {{timezone}}.`), worse than the English fallback the throw site already interpolated, and
   // nothing throws or logs. Asked of the TEMPLATE, never of the rendered string: an interpolated
   // value can legitimately hold braces (a document-template refusal quotes `{{cliente}}`).

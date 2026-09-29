@@ -84,7 +84,7 @@ export function templateSource(
     const write = templateWriteAt(doc, ctx.pos);
     if (write === null) return null;
     const offer = templateOfferAt(doc, ctx.pos, sample);
-    // NOTE: after `{{#each ` only a list renders, so only lists are offered there. A scalar field
+    // After `{{#each ` only a list renders, so only lists are offered there. A scalar field
     // picked into a block writes something the save refuses, over a value that was sitting right
     // there.
     const options: Completion[] =
@@ -132,14 +132,14 @@ export function templateSource(
 // next typing would land there (`{{cliente.nome{{#each resultados}}}}`).
 function applying(path: string) {
   return (view: EditorView, _c: Completion, from: number, to: number) => {
-    // NOTE: asked AGAIN, against the document as it stands at acceptance, rather than closing over
+    // Asked AGAIN, against the document as it stands at acceptance, rather than closing over
     // the answer the offer was built from. `validFor` keeps one result alive while the operator types,
     // so an offer computed against `{{}}` is applied against `{{cli}}`: a captured close position would
     // be short, putting the caret inside the token, and one captured past a DELETION would exceed the
     // document and make the dispatch throw.
     const write = templateWriteAt(view.state.doc.toString(), to);
     const insert = write?.closeAt == null ? `${path}}}` : path;
-    // NOTE: through the end of the path already in the token, which the filter range above is not
+    // Through the end of the path already in the token, which the filter range above is not
     // allowed to cover. Never before the caret, so a document that moved out from under the offer
     // degrades to replacing what was typed.
     const end = Math.max(write?.pathEnd ?? to, to);

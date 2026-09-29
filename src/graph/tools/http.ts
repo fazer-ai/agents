@@ -412,7 +412,7 @@ async function registerDeclaredAppointment(
     const { ms, exists } = zonedWallClock(local, tz);
     // `exists` answers the SPRING-FORWARD half: an hour the zone skipped is not a time at all.
     if (!exists || !Number.isFinite(ms)) return null;
-    // NOTE: And this answers the FALL-BACK half, which `exists` cannot see: `01:30` on a fall-back
+    // And this answers the FALL-BACK half, which `exists` cannot see: `01:30` on a fall-back
     // night happens TWICE, and zonedWallClock returns whichever it lands on, so the second occurrence
     // would book and remind an hour early. Two instants rendering the same wall clock is the test.
     // The cost is one ambiguous hour a year for an offset-less API: reported as an unresolved start
@@ -547,7 +547,7 @@ export function buildHttpTool(
   deps: HttpToolDeps,
 ): StructuredToolInterface {
   const baseContext = deps.context ?? {};
-  // NOTE: self-heal shapes that skipped write-time normalization (legacy rows, or rows written
+  // Self-heal shapes that skipped write-time normalization (legacy rows, or rows written
   // straight to the DB): a JSON-Schema-shaped inputSchema becomes the compact map and known
   // single-brace {var} placeholders become {{var}}, so such rows work without re-creation.
   const { shapes } = normalizeToolShapes(
@@ -609,7 +609,7 @@ export function buildHttpTool(
   return failableTool(
     async (rawInput: Record<string, unknown>) => {
       let input = rawInput;
-      // NOTE: 0a. `{{conversation_ref}}`, minted BEFORE anything is sent (the ack included)
+      // 0a. `{{conversation_ref}}`, minted BEFORE anything is sent (the ack included)
       // and before the request, because the receiver may call back while this call is still running
       // and the ref has to correlate by then. Every refusal here sends nothing, and says why in the
       // words the model can pass on.
@@ -722,7 +722,7 @@ export function buildHttpTool(
       const pathFields = placeholderNames(effectiveTemplate);
       const isAiFieldName = (n: string): boolean =>
         fields.some((f) => f.name === n && f.source !== "fixed");
-      // NOTE: a URL placeholder that resolves to nothing produces a request that cannot be right (an
+      // A URL placeholder that resolves to nothing produces a request that cannot be right (an
       // empty path segment / dangling query value). Instead of silently sending it, tell the model
       // which value is missing so it can retry with the field (or explain what it needs).
       const missingUrlNames = new Set<string>();
@@ -732,7 +732,7 @@ export function buildHttpTool(
           missingUrlNames.add(n);
           return undefined;
         }
-        // NOTE: a fixed field whose own {{secret}}/context dependency was unavailable resolved to
+        // A fixed field whose own {{secret}}/context dependency was unavailable resolved to
         // "" above; surface the missing dependency instead of fetching an incomplete URL. AI input
         // never shadows a fixed name (the schema excludes fixed fields), so the map lookup is safe.
         const missingDeps = !(n in input && input[n] != null)
@@ -754,7 +754,7 @@ export function buildHttpTool(
             400,
           );
         }
-        // NOTE: context variables, fixed-field dependencies and unknown tokens are injected by the
+        // Context variables, fixed-field dependencies and unknown tokens are injected by the
         // platform, never supplied by the model, so those also throw; the retry message is reserved
         // for placeholders the model can actually provide (AI-source input fields).
         const nonInput = [...missingUrlNames].filter((n) => !isAiFieldName(n));
@@ -839,7 +839,7 @@ export function buildHttpTool(
         if (bodyCfg.mode === "raw") {
           body = interpolate(bodyCfg.raw, lookupWithSecret);
         } else if (bodyCfg.mode === "kv") {
-          // NOTE: Explicit key/value rows. A LONE {{aiField}} the model supplied keeps its original
+          // Explicit key/value rows. A LONE {{aiField}} the model supplied keeps its original
           // type; a known aiField the model OMITTED is skipped (never emit ""); anything else
           // interpolates to a string. Null-prototype because `payload[k] = v` with k "__proto__" on
           // a plain object hits the inherited setter and JSON.stringify silently drops the row.
@@ -862,7 +862,7 @@ export function buildHttpTool(
           }
           body = JSON.stringify(payload);
         } else {
-          // NOTE: Legacy "fields": assemble JSON from the non-path input fields (AI input keeps its
+          // Legacy "fields": assemble JSON from the non-path input fields (AI input keeps its
           // type; a fixed field contributes its interpolated value). Null-prototype, same "__proto__" silent-drop reason as the kv branch above.
           const payload: Record<string, unknown> = Object.create(null);
           for (const f of fields) {
@@ -939,7 +939,7 @@ export function buildHttpTool(
       );
 
       const text = responseBody.text;
-      // NOTE: THE PROJECTION runs BEFORE the clip: the fields a template wants can sit past the
+      // THE PROJECTION runs BEFORE the clip: the fields a template wants can sit past the
       // clip point, where rendering after the cut could never reach them. The clip still applies
       // to the rendered text as a backstop (many tokens, or one long value, can overrun).
       const rendered = projectResponse(def, deps, res.status, text);
@@ -951,7 +951,7 @@ export function buildHttpTool(
       // that deliberately does not apply here, where "declare a template" would be wrong.
       if (modelBody.length > maxChars) {
         const templated = rendered.text !== null;
-        // NOTE: A SECOND CUT, upstream: past the read cap the body arrives truncated, so JSON stops
+        // A SECOND CUT, upstream: past the read cap the body arrives truncated, so JSON stops
         // parsing and the template reports "not JSON". Without this branch the advice would blame
         // a sound template and report the cap instead of the provider's real size.
         const capped = responseBody.chars > text.length;
@@ -984,7 +984,7 @@ export function buildHttpTool(
           ),
         });
       }
-      // NOTE: By default every non-2xx is an integration failure worth alerting on (a broken
+      // By default every non-2xx is an integration failure worth alerting on (a broken
       // credential, an outage, a rejected payload) unless the operator declared this status a result
       // for this tool. The model sees the same "HTTP <status>" body either way.
       const resultText = `HTTP ${res.status}\n${trimmed}`;

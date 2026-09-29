@@ -538,7 +538,7 @@ describe("isDeviceAttendantMessage (issue #430)", () => {
       ...over,
     });
 
-  // NOTE: The shape a live fork delivers: outgoing, sender-less, and marked.
+  // The shape a live fork delivers: outgoing, sender-less, and marked.
   const device = (over: Record<string, unknown> = {}) =>
     outgoing({
       content_attributes: {
@@ -814,7 +814,7 @@ describe("shouldBotHandle (attribution = source of truth)", () => {
 
 describe("parseInboxList", () => {
   test("parses the live chatwoot-pro shape ({ payload: [...] })", () => {
-    // NOTE: Field names as the chatwoot-pro fork serializes them.
+    // Field names as the chatwoot-pro fork serializes them.
     const raw = {
       payload: [
         // Official WhatsApp carries a `provider` (drives the 24h service-window gate).

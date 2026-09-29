@@ -145,7 +145,7 @@ export function decideConversationWrites(
 ): StateDecision {
   const eventAt = payload.activityAt ?? now;
 
-  // NOTE: whether the payload ANSWERS the pairing question, which is not the same as speaking about
+  // Whether the payload ANSWERS the pairing question, which is not the same as speaking about
   // it. A stated pairing always answers; a stated NIL only when there was something to clear. The
   // fork ships the key on every conversation, and the column is NULL for every episode older than it,
   // so reading nil as an answer would stamp the mark on every live conversation at once after the
@@ -189,7 +189,7 @@ export function decideConversationWrites(
     payload.version != null &&
     payload.version < row.redirectOriginAt;
 
-  // NOTE: out-of-order guard, on the axis the event itself offers. A conversation event carrying a
+  // Out-of-order guard, on the axis the event itself offers. A conversation event carrying a
   // version is judged by that version ONLY, never by `last_activity_at`: a handoff event delayed past
   // the human's first message carries the older value and would be discarded while being the newest
   // word. A version against a row with none (every conversation live at the migration) applies for
@@ -225,7 +225,7 @@ export function decideConversationWrites(
     };
   }
 
-  // NOTE: `>=`, not `>`. An equal version is the same conversation row, so re-applying it is
+  // `>=`, not `>`. An equal version is the same conversation row, so re-applying it is
   // idempotent, while REJECTING it is not: Chatwoot emits several events for one write
   // (conversation_updated + conversation_status_changed), and the one that arrives second is
   // frequently the one carrying `meta`. Under `>` the first delivery would win and its companion's
@@ -233,7 +233,7 @@ export function decideConversationWrites(
   const statusOrdered = payload.fromConversationEvent && !olderThanStatus;
   const assigneeOrdered = payload.fromConversationEvent && !olderThanAssignee;
 
-  // NOTE: a REOPEN is ordered too, on the only axis a message payload has, because it is faithful
+  // A REOPEN is ordered too, on the only axis a message payload has, because it is faithful
   // only AT ITS OWN INSTANT: every payload is a snapshot of an earlier moment (frozen at enqueue, or
   // rebuilt by a delivery recovery from earlier reads), so a message serialized BEFORE an operator's
   // resolve and delivered after would walk the status back to `pending` and get answered. Compared
@@ -264,7 +264,7 @@ export function decideConversationWrites(
   const writeStatus = claim === "apply" && (statusOrdered || reopenOrdered);
   const status = writeStatus ? payload.status : null;
 
-  // NOTE: One rule for the EQUAL-version case, so the outcome cannot depend on delivery order. A
+  // One rule for the EQUAL-version case, so the outcome cannot depend on delivery order. A
   // real unassignment is its own write and always arrives strictly greater; every payload is
   // serialized from ONE conversation object, so companions of a single write agree by
   // construction. A disagreement therefore means one witness is degraded, and `null` is the
@@ -280,7 +280,7 @@ export function decideConversationWrites(
     assigneeOrdered &&
     !(sameVersion && payload.assigneeType == null && row.assigneeType != null);
 
-  // NOTE: A mark moves when the field it belongs to is WRITTEN, and only forward. Unconditionally,
+  // A mark moves when the field it belongs to is WRITTEN, and only forward. Unconditionally,
   // not "only if the value changed": the mirror frequently has not SEEN the change (when a resolve
   // is itself delayed, the row still reads `open` as the reopen lands), and withholding the version
   // on that basis leaves the delayed resolve looking newer than the mark. What keeps that safe is
@@ -291,7 +291,7 @@ export function decideConversationWrites(
   const advances = (mark: number | null): number | null =>
     advancesFrom(mark, payload.version);
 
-  // NOTE: `>=` again, and not only for idempotence: the fork records the pairing and then dispatches
+  // `>=` again, and not only for idempotence: the fork records the pairing and then dispatches
   // the conversation_updated it causes, so that write's companions and every message snapshot
   // serialized from the same row version agree by construction, and rejecting an equal version would
   // let delivery order pick between identical readings. A payload with NO version (Chatwoot < 4.0.2)

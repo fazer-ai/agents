@@ -329,7 +329,7 @@ describe("the scan removes prose and keeps code", () => {
   // The other side of the object-vs-block rule, and the one a naive "`}` ends a value" would break: a
   // `{` written where a value was NOT expected is a block, so the `/` after it still opens a regex.
   test("a block's closing brace does not end a value", () => {
-    // NOTE: Probed through a QUOTE, not a comment: comments go before the `/` decision either way.
+    // Probed through a QUOTE, not a comment: comments go before the `/` decision either way.
     // A regex holding a quote tells block from object, since read as a division it opens a string
     // and eats the rest of its line.
     const block =
@@ -368,7 +368,7 @@ describe("the scan removes prose and keeps code", () => {
     expect(codeOnly("f();")).toBe("f();");
   });
 
-  // NOTE: ON THE SAME LINE, the point of this table. A regex the scan opens by mistake runs to the end of
+  // ON THE SAME LINE, the point of this table. A regex the scan opens by mistake runs to the end of
   // its LINE, so a cut on the NEXT line survives either way and proves nothing; the trailing comment
   // is what makes the misread observable. These rows turn on a quote or a comment, not on a second
   // slash, so backing out a regex that reaches the newline does not mask them.
@@ -552,7 +552,7 @@ describe("an unterminated literal is reported rather than swallowed", () => {
 // Extracted so it can be shown an offender. The suspect is sought in `withoutComments`, NOT in
 // `codeOnly`, where a misread `/` has ALREADY blanked its line and the shape could never be found.
 export function slashesAfterAParenthesis(source: string): string[] {
-  // NOTE: Comments out (a `)` before a `/` in prose is not code), literals kept, and the scan's own
+  // Comments out (a `)` before a `/` in prose is not code), literals kept, and the scan's own
   // `/` decisions NOT applied. Today `codeOnly` gives the same answer (a `/` after `)` is read as a
   // division and never blanked), but the next shape to be misread would hide from it.
   const code = withoutComments(source);
@@ -562,7 +562,7 @@ export function slashesAfterAParenthesis(source: string): string[] {
   // call.
   for (const m of code.matchAll(/\)\s*\/(?![/*=>])/g)) {
     const at = m.index ?? 0;
-    // NOTE: Only a reading that CLOSES on its line can cost anything: one that reaches the newline
+    // Only a reading that CLOSES on its line can cost anything: one that reaches the newline
     // is backed out by the scan. This asks only "is there another slash", not the scan's regex walk:
     // honouring `[/]` or `\/` can only find FEWER slashes, and the two differ only on an unterminated
     // regex containing `[/`, which is not valid source.
@@ -571,7 +571,7 @@ export function slashesAfterAParenthesis(source: string): string[] {
     if (!code.slice(slash + 1, eol === -1 ? code.length : eol).includes("/")) {
       continue;
     }
-    // NOTE: a regex the scan read correctly ends with its own `/` and flags, AGAINST the `)`
+    // A regex the scan read correctly ends with its own `/` and flags, AGAINST the `)`
     // (`/foo(bar)/g`), so no whitespace is allowed before it: `) / ` would read as a regex end with
     // zero flags and hide the case above.
     const after = code.slice(at + 1);
@@ -645,7 +645,7 @@ describe("the heuristic's known miss is not in the tree", () => {
     expect(codeOnly(plain)).not.toContain("s.slice");
     expect(unterminatedLiteral(plain)).toBeNull();
 
-    // NOTE: a quote inside the misread regex opens a string, which costs the REST OF THAT LINE: a
+    // A quote inside the misread regex opens a string, which costs the REST OF THAT LINE: a
     // string stops at the newline, so the damage never reaches the next one.
     const quoted =
       'if (x) /["]/.test(y); sanitizeErrorMessage(err);\nconst a = 1;\n';
@@ -669,11 +669,11 @@ describe("every Glob sweep over src/ counts through the scan", () => {
     for await (const rel of new Glob("**/*.{ts,tsx}").scan("tests")) {
       const path = `tests/${rel}`;
       if (path === "tests/utils/source-text.ts") continue;
-      // NOTE: `withoutComments`, not `codeOnly`: the thing looked for IS a string literal, and
+      // `withoutComments`, not `codeOnly`: the thing looked for IS a string literal, and
       // `codeOnly` would blank the `"src"` being matched, returning an empty sweep list that reads
       // exactly like a clean tree.
       const code = withoutComments(await Bun.file(path).text());
-      // NOTE: TWO SPELLINGS, hence a pattern: `scan("src")` puts the directory in the call;
+      // TWO SPELLINGS, hence a pattern: `scan("src")` puts the directory in the call;
       // `new Glob("src/**/*.ts").scan(".")` puts it in the GLOB and walks from the repo root, as
       // `provider-boundary-sweep.test.ts` does.
       const globsSrc =
@@ -684,7 +684,7 @@ describe("every Glob sweep over src/ counts through the scan", () => {
       // a fence that accuses everything.
       if (!/Bun\.file\([^)]*\)[\s\S]{0,20}\.text\(\)/.test(code)) continue;
       sweeps.push(path);
-      // NOTE: THE IMPORT, NOT THE NAME: `refusal-callsites.test.ts` defines a LOCAL `codeOnly`,
+      // THE IMPORT, NOT THE NAME: `refusal-callsites.test.ts` defines a LOCAL `codeOnly`,
       // which a name match would read as adoption. ONE EXEMPTION, a proved one: `caller-id-spelling`
       // blanks non-code itself and keys its ledger on the argument's TEXT, so stripped source would
       // rewrite its keys. The exemption is not a name on a list: the test below drives that file's

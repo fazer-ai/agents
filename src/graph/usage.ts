@@ -332,7 +332,7 @@ async function priceRow(
       "usage: tenant prices unreadable, pricing from the table",
     );
   }
-  // NOTE: The tenant's own price first, because it is what the account says it pays; then what
+  // The tenant's own price first, because it is what the account says it pays; then what
   // OpenRouter said it charged; then the table.
   const priced = priceCall(provider, model, tokens, new Date(), overrides);
   if (isTenantPrice(priced.priceTable) || reported === null) return priced;
@@ -461,7 +461,7 @@ export function extractTokenUsage(output: LLMResult): TokenUsage {
   }
   const u = out.usage;
   if (u && (u.input_tokens != null || u.output_tokens != null)) {
-    // NOTE: Anthropic raw exposes cache read/write as their own counters, and they are ADDITIVE
+    // Anthropic raw exposes cache read/write as their own counters, and they are ADDITIVE
     // here. `input_tokens` is documented as the tokens that were NOT read from or used to create a
     // cache, so the billed input is the sum of the three. That is the opposite of what this row means by
     // `cachedReadTokens` (a discounted SUBSET of `promptTokens`), which is why the sum happens here
@@ -714,7 +714,7 @@ export class UsageCapture extends BaseCallbackHandler {
       cachedReadTokens,
       cacheCreationTokens,
     } = extractTokenUsage(output);
-    // NOTE: The pair, never one half: a named model is priced as its own provider's or not at all.
+    // The pair, never one half: a named model is priced as its own provider's or not at all.
     const named = this.runModel.get(runId);
     const model = named ?? this.model;
     const provider =

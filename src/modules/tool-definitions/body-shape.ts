@@ -122,7 +122,7 @@ export function canonicalBodyShape(body: unknown): Record<string, unknown> {
     return { mode: "raw", raw: typeof body.raw === "string" ? body.raw : "" };
   }
   if (body.mode === "kv") {
-    // NOTE: rows are kept in order and NOT deduplicated by key. Two rows on the same trimmed key are
+    // Rows are kept in order and NOT deduplicated by key. Two rows on the same trimmed key are
     // a deliberate fallback idiom — a row whose value is a lone {{aiField}} is SKIPPED when the model
     // omitted that field, so an earlier constant survives as the default — and which of them wins is
     // decided per call by the model's own arguments. Nothing static can mirror that, so nothing here

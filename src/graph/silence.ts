@@ -50,7 +50,7 @@ export function customerFacingReply(raw: string): CustomerFacingReply {
   const trimmed = raw.trim();
   const carriesToken = trimmed.includes(SENTINEL);
   const wroteText = trimmed.length > 0;
-  // NOTE: "reduces ENTIRELY to the marker" is the whole test, never a strip of the token wherever it
+  // "reduces ENTIRELY to the marker" is the whole test, never a strip of the token wherever it
   // appears: `docs/graph.md` rejects editing a real answer (the citation-marker precedent), trading a
   // rare cosmetic leak for silent data loss. Wrapping quotes and repetition are the same reply.
   const bare = trimmed
@@ -105,7 +105,7 @@ export function proactiveReply(raw: string): CustomerFacingReply {
       wroteText: raw.trim().length > 0,
     };
   }
-  // NOTE: a real follow-up still loses a stray token, deliberately unlike the reactive rule: on this
+  // A real follow-up still loses a stray token, deliberately unlike the reactive rule: on this
   // path the token can come from our own instruction, while on the reactive side it can only come
   // from a transcript, where editing the answer is the data loss `docs/graph.md` prohibits.
   const drafted = customerFacingReply(raw);

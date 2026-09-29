@@ -56,7 +56,7 @@ export async function runCompactionTick(
   const claim = deps.claim ?? claimDueCompactionJobs;
   const run = deps.run ?? runClaimed;
   const reap = deps.reap ?? reapStaleJobs;
-  // NOTE: the reap runs even with nothing to claim: this lane is the only reaper of its own kind.
+  // The reap runs even with nothing to claim: this lane is the only reaper of its own kind.
   const reaped = await reap(
     staleMs,
     base,

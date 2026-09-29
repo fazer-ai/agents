@@ -95,7 +95,7 @@ describe.skipIf(!dbUp)(
 
     test("an overlap alone is measured against the STORED chunk size", async () => {
       const id = await freshBase();
-      // NOTE: the row is 1000/200, so the ceiling is 500. The old branch compared against a constant
+      // The row is 1000/200, so the ceiling is 500. The old branch compared against a constant
       // 4000.
       const r = await apply(id, { chunk_overlap: 4000 });
       expect(r.ok).toBe(false);
@@ -107,7 +107,7 @@ describe.skipIf(!dbUp)(
       const id = await freshBase();
       const wide = await apply(id, { chunk_size: 8000, chunk_overlap: 4000 });
       expect(wide.ok).toBe(true);
-      // NOTE: shrinking the chunk alone would leave overlap 4000 against a ceiling of 100.
+      // Shrinking the chunk alone would leave overlap 4000 against a ceiling of 100.
       const r = await apply(id, { chunk_size: 200 });
       expect(r.ok).toBe(false);
       expect(await stored(id)).toEqual({ chunkSize: 8000, chunkOverlap: 4000 });
@@ -148,7 +148,7 @@ describe.skipIf(!dbUp)(
       expect(applied.ok).toBe(true);
       expect(await stored(id)).toEqual({ chunkSize: 200, chunkOverlap: 4000 });
 
-      // NOTE: the other half of the same sentence. Touching either number on that row IS a chunking
+      // The other half of the same sentence. Touching either number on that row IS a chunking
       // patch, so it is judged, and the pair it would leave is still illegal.
       const half = await apply(id, { chunk_overlap: 300 });
       expect(half.ok).toBe(false);

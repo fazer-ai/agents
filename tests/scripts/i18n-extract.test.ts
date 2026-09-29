@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runI18nExtract } from "../../scripts/i18n-extract";
 
-// NOTE: mkdir/mkdtemp/rm still use node:fs/promises because Bun has no
+// mkdir/mkdtemp/rm still use node:fs/promises because Bun has no
 // equivalents yet; file writes use Bun.write per the project guideline.
 async function makeFixture(source: string) {
   const dir = await mkdtemp(join(tmpdir(), "i18n-extract-"));

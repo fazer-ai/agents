@@ -189,7 +189,7 @@ export async function upsertJobRows(
   },
 ): Promise<number> {
   if (params.rows.length === 0) return 0;
-  // NOTE: The rows travel as TWO ARRAYS and not as N tuples, because a tuple list carries one bind
+  // The rows travel as TWO ARRAYS and not as N tuples, because a tuple list carries one bind
   // parameter per column per row and Postgres refuses a statement with more than 65535 of them: at
   // five per row this breaks at 13108 documents, and nothing upstream caps how many a base may hold
   // (an import creates them in bulk). The whole reindex would fail on the statement that arms it,
@@ -275,7 +275,7 @@ export async function enqueueJobUnlessClaimed(
         })
       : null;
     if (later && (await params.leaveLaterRun?.(later))) return false;
-    // NOTE: a row whose handler still runs counts as claimed even after its deadline re-pended it:
+    // A row whose handler still runs counts as claimed even after its deadline re-pended it:
     // re-armed under it, that handler's committed work could no longer be written. Same set every
     // claim excludes.
     const running = runningJobIds();
@@ -397,7 +397,7 @@ export async function retireJobsByDedupeKeyOn(
   keepEpisode?: { originDisplayId: number | null },
 ): Promise<number> {
   const stamp = JSON.stringify({ cancelledAt: new Date().toISOString() });
-  // NOTE: a cleared pairing names the episode `null`, which is a real episode with work of its own,
+  // A cleared pairing names the episode `null`, which is a real episode with work of its own,
   // distinct from no `keepEpisode` at all (which retires everything).
   const keeps = keepEpisode !== undefined;
   const keepOrigin =
@@ -604,7 +604,7 @@ async function announceErasedDeathsOrThrow(
   base: PrismaClient,
 ): Promise<void> {
   if (deaths.length === 0) return;
-  // NOTE: the deletion is confirmed by the commit log. The caller's own view is unreliable (an aborted
+  // The deletion is confirmed by the commit log. The caller's own view is unreliable (an aborted
   // block accepts COMMIT and replies ROLLBACK without an error), and an absent row only proves someone
   // deleted it. Only `committed` earns a line: a lost line leaves the death findable, a duplicate
   // cannot be retracted. `in progress` means the caller announced too early. One query per xid,
@@ -623,7 +623,7 @@ async function announceErasedDeathsOrThrow(
       status.set(xid, null);
     }
   }
-  // NOTE: and the row must still be gone, since a `ROLLBACK TO SAVEPOINT` can undo the DELETE inside a
+  // And the row must still be gone, since a `ROLLBACK TO SAVEPOINT` can undo the DELETE inside a
   // transaction that commits; each check covers what the other cannot. Known gap: a third actor (a
   // second revoke deleting the restored row) satisfies the row check. It stays closed only while
   // /reset is the sole caller, serialized per thread by `withKeyedQueue` in one process; a second
@@ -692,7 +692,7 @@ export async function revokeJobsByKeyPrefixOn(
   atOrBelowMessageId?: number,
 ): Promise<{ count: number; erasedDeaths: ErasedDeath[] }> {
   {
-    // NOTE: no `status` here on purpose: the delete spells its statuses in raw SQL (DEAD included) and
+    // No `status` here on purpose: the delete spells its statuses in raw SQL (DEAD included) and
     // the retire overrides them, so a status in this shared shape would decide nothing.
     const where = {
       kind,
@@ -701,7 +701,7 @@ export async function revokeJobsByKeyPrefixOn(
     // NOTE: deleted when the kind is delete-on-done: a revoked ingestion can never reach `completeJob`
     // (no claim matches), so a DONE row would hold the encrypted body forever on a table nothing sweeps.
     if (JOB_DELETE_ON_DONE[kind]) {
-      // NOTE: a deleted DEAD row may be the only record of a death, so this statement returns the
+      // A deleted DEAD row may be the only record of a death, so this statement returns the
       // deaths nobody announced (see DEAD_LETTER_ANNOUNCED) for the caller to announce after commit.
       // One statement with RETURNING, so no concurrent announcer slips in between. The stamp is tested
       // in RETURNING, not WHERE: a DELETE blocked on the announcer's UPDATE re-evaluates WHERE, and a
@@ -799,7 +799,7 @@ export function claimSql(
   // Share the slots between tenants instead of oldest-first. Only the debounce lane asks for it.
   share?: boolean,
 ): Prisma.Sql {
-  // NOTE: the prefix branch (the turn barrier) takes future-dated rows, since a job deferred for a
+  // The prefix branch (the turn barrier) takes future-dated rows, since a job deferred for a
   // previous turn is exactly what a starting turn is missing, but not rows in failure backoff, or
   // back-to-back turns would burn all attempts in seconds. The two are told apart by `last_error`
   // (a backoff carries its error, a stood-down row does not), not by `attempts`. A row left here is
@@ -818,7 +818,7 @@ export function claimSql(
     excludeIds && excludeIds.length > 0
       ? Prisma.sql`AND id NOT IN (${Prisma.join(excludeIds)})`
       : Prisma.empty;
-  // NOTE: shared ranking: each due row ranks by its tenant's rows in flight (`excludeIds` of this
+  // Shared ranking: each due row ranks by its tenant's rows in flight (`excludeIds` of this
   // lane's kinds) plus its place in that tenant's queue, lowest first, ties to the older row. One
   // tenant's burst queues behind itself; a lone tenant still takes every slot. Ranked without the lock,
   // then locked (Postgres refuses FOR UPDATE with a window function). The lock step repeats every

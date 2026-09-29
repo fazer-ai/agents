@@ -52,7 +52,7 @@ const STATUS_DESCRIPTION: Record<number, string> = {
   502: "Bad gateway — an upstream dependency failed.",
 };
 
-// NOTE: The per-status error body shared by `errors(...)` and `errorResponse(...)`, so the two
+// The per-status error body shared by `errors(...)` and `errorResponse(...)`, so the two
 // builders can never drift apart in the published spec.
 function errorSchema(status: number): typeof ErrorResponse {
   return t.Object(
@@ -97,7 +97,7 @@ export function doc(
   return description ? { summary, description } : { summary };
 }
 
-// NOTE: Doc-only `detail.responses` entries for routes that declare no `response` schema
+// Doc-only `detail.responses` entries for routes that declare no `response` schema
 // (single-status routes: always-200 acks, the HTML OAuth popups, the /v1/mcp 405 stubs). OpenAPI
 // requires at least one response per operation, so without these the published spec fails
 // validation. Living under `detail` keeps them pure documentation — declaring a `response` schema
@@ -119,7 +119,7 @@ export function jsonResponse(
   };
 }
 
-// NOTE: The OAuth popup callbacks: every status carries HTML (the page postMessages the result to
+// The OAuth popup callbacks: every status carries HTML (the page postMessages the result to
 // its opener and self-closes), so the standard JSON error map does not apply.
 export function htmlResponse(description: string): ResponseDoc {
   return {
@@ -128,7 +128,7 @@ export function htmlResponse(description: string): ResponseDoc {
   };
 }
 
-// NOTE: Doc-only twin of one `errors(...)` entry, for routes that must document BOTH a success and
+// Doc-only twin of one `errors(...)` entry, for routes that must document BOTH a success and
 // error statuses inside `detail.responses` (the openapi plugin replaces `responses` wholesale when
 // a `response` schema is present, so mixing `response: errors(...)` with a `detail` 200 drops the
 // 200). Reuses `errorSchema` so the published spec stays byte-uniform with `errors(...)`.

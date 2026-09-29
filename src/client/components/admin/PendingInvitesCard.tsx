@@ -5,7 +5,7 @@ import { Badge, Button, Card, Skeleton } from "@/client/components";
 import { api } from "@/client/lib/api";
 import { formatDate } from "@/client/lib/utils";
 
-// NOTE: Static keys so the skeleton rows don't key off the array index.
+// Static keys so the skeleton rows don't key off the array index.
 const INVITE_SKELETON_KEYS = ["invite-0", "invite-1", "invite-2"];
 
 // Lists invited-but-not-yet-activated users (pending/expired invitations) so they are visible

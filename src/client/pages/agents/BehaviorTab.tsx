@@ -181,7 +181,7 @@ interface SttState {
   baseURL: string;
 }
 
-// NOTE: The contact authorization gate (agent.settings.contactAuth). Numbers stay text so a
+// The contact authorization gate (agent.settings.contactAuth). Numbers stay text so a
 // half-typed value survives editing; the runtime reader clamps on read and the save normalizes.
 export interface ContactAuthState extends ContactAuthRuleForm {
   enabled: boolean;
@@ -310,13 +310,13 @@ export interface ModelFallbackState {
   baseURL: string;
 }
 
-// NOTE: Mirrors agent.settings.takeover / readTakeoverConfig. Its own block rather than a field on
+// Mirrors agent.settings.takeover / readTakeoverConfig. Its own block rather than a field on
 // `handoff`, because the Tools tab REPLACES that one wholesale on every save.
 export interface TakeoverState {
   onHumanReply: boolean;
 }
 
-// NOTE: Which Chatwoot custom attributes the agent sees the CURRENT VALUES of (one key list per
+// Which Chatwoot custom attributes the agent sees the CURRENT VALUES of (one key list per
 // scope). Mirrors agent.settings.attributeContext / readAttributeContextConfig.
 interface AttributeContextState {
   conversation: string[];
@@ -617,7 +617,7 @@ function TtsOptionPicker({
   );
 }
 
-// NOTE: Chatwoot attribute definition (Eden-derived), for the attribute-context pickers below.
+// Chatwoot attribute definition (Eden-derived), for the attribute-context pickers below.
 type InboxCustomAttribute = NonNullable<
   Awaited<
     ReturnType<
@@ -626,7 +626,7 @@ type InboxCustomAttribute = NonNullable<
   >["data"]
 >["attributes"][number];
 
-// NOTE: The three attribute pickers (conversation / contact / kanban card). Each lists the account's
+// The three attribute pickers (conversation / contact / kanban card). Each lists the account's
 // definitions for that scope, and still accepts a typed key the listing doesn't know (an unreachable
 // Chatwoot, or an attribute created after this page loaded) — the runtime only needs the key.
 function AttributeContextPickers({
@@ -798,7 +798,7 @@ function ContactAuthTeamSelect({
   // offers teams in.
   const instanceId =
     accounts.length === 1 ? (accounts[0]?.instanceId ?? "") : "";
-  // NOTE: A Chatwoot team id means something inside ONE account, so the ACCOUNT RECORDED NEXT TO IT
+  // A Chatwoot team id means something inside ONE account, so the ACCOUNT RECORDED NEXT TO IT
   // decides whether a stored target is usable, the same rule as `teamTargetUsable` in
   // modules/chatwoot/webhook.ts. Counting accounts is only the fallback for a value stored without
   // one; judged by the count alone, an agent with one inbox per account would lose its team here.
@@ -1162,7 +1162,7 @@ export function BehaviorTab({
   onOpenPlayground,
 }: BehaviorTabProps) {
   const { t, i18n } = useTranslation();
-  // NOTE: Whether this install runs the audio detector, and its default mode.
+  // Whether this install runs the audio detector, and its default mode.
   const ttsCheck = useTtsCheckInfo();
   const checkModeLabel = (m: TtsCheckMode) =>
     m === "enforce"
@@ -1171,7 +1171,7 @@ export function BehaviorTab({
         ? t("editor.ttsCheckShadow", "Record only")
         : t("editor.ttsCheckOff", "Off");
 
-  // NOTE: The signature's "insert variable" helper, the same affordance as the prompt editor's
+  // The signature's "insert variable" helper, the same affordance as the prompt editor's
   // (`HighlightedPromptEditor` forwards its ref to the inner <textarea> for it). Context vars only:
   // a time or schedule name would make the signature change on every message, the one property the
   // feature exists to remove.
@@ -1187,7 +1187,7 @@ export function BehaviorTab({
       Math.max(0, (el.selectionEnd ?? 0) - (el.selectionStart ?? 0)),
     );
   }, []);
-  // NOTE: What is left before the cap. A chip whose token does not fit is DISABLED rather than
+  // What is left before the cap. A chip whose token does not fit is DISABLED rather than
   // clipped: clipping cuts the TAIL of what the operator already wrote, far from the caret, with
   // nothing on screen connecting the two.
   const signatureRoom =
@@ -1247,7 +1247,7 @@ export function BehaviorTab({
     });
   }
 
-  // NOTE: the `enabled` guards are load-bearing, not defensive. Each block is HIDDEN when its
+  // The `enabled` guards are load-bearing, not defensive. Each block is HIDDEN when its
   // feature is off, so a leftover openai-compatible provider with no endpoint would disable Save for
   // the whole tab with nothing on screen to explain it — including the save that turns the feature
   // off. A disabled feature cannot be misconfigured.
@@ -1257,7 +1257,7 @@ export function BehaviorTab({
     !sttCredBaseUrl &&
     !isValidHttpUrl(stt.baseURL);
 
-  // NOTE: The saved config's size switch expires on its own, so an editor left open past the
+  // The saved config's size switch expires on its own, so an editor left open past the
   // deadline would keep saying full detail is recorded after the runtime stopped. The state is
   // re-derived once, exactly when the window closes.
   const [judgedAt, setJudgedAt] = useState(() => serverNowDate());
@@ -1316,7 +1316,7 @@ export function BehaviorTab({
     return on;
   }, [savedObservability, langfuseSendContent, judgedAt, t]);
 
-  // NOTE: Required while the gate is on: an enabled gate with no URL fails closed on every message.
+  // Required while the gate is on: an enabled gate with no URL fails closed on every message.
   // A `user:pass@` URL is refused as the reader refuses it (credentials belong in the vault), or the
   // save would succeed on a field the runtime reads as unconfigured. See docs/contact-auth.md.
   const contactAuthUrlHasCredentials = (() => {
@@ -1327,7 +1327,7 @@ export function BehaviorTab({
       return false;
     }
   })();
-  // NOTE: With a local rule the endpoint is never asked, so an empty URL is not an error.
+  // With a local rule the endpoint is never asked, so an empty URL is not an error.
   const contactAuthUsesRule = contactAuth.ruleKind !== "";
   const contactAuthRuleBad =
     contactAuth.enabled && contactAuthRuleInvalid(contactAuth);
@@ -1404,7 +1404,7 @@ export function BehaviorTab({
     credentialRef: modelFallback.credentialRef,
     baseURL: modelFallback.baseURL,
   };
-  // NOTE: A fallback is CONFIGURED once a destination is named, and every check below reads this
+  // A fallback is CONFIGURED once a destination is named, and every check below reads this
   // flag, including the endpoint ones, so it has to be the backend's own predicate: a model-less
   // `openai-compatible` fallback is configured, and its base URL must still be checked.
   const fallbackConfigured = fallbackIsConfigured(modelFallback);
@@ -1466,7 +1466,7 @@ export function BehaviorTab({
     return name && name !== code ? `${name} (${code})` : code;
   };
 
-  // NOTE: Section index: the left-rail nav + scroll-spy track these in order. Labels reuse the section
+  // Section index: the left-rail nav + scroll-spy track these in order. Labels reuse the section
   // titles; icons are thematic.
   const sections = [
     {

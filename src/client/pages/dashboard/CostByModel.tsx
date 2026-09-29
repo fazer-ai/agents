@@ -31,7 +31,7 @@ function DivergenceMarker({ c }: { c: Comparison }) {
   const { t, i18n } = useTranslation();
   const pct = Math.round(COST_DIVERGENCE_RELATIVE * 100);
   const floor = usd(i18n.language, COST_DIVERGENCE_FLOOR_USD);
-  // NOTE: A group is several ledger models Langfuse cannot tell apart, compared as one.
+  // A group is several ledger models Langfuse cannot tell apart, compared as one.
   const model = c.ledgerModels.join(", ");
   const grouped = c.ledgerModels.length > 1;
   const renamed = c.langfuseModels.some((n) => !c.ledgerModels.includes(n));

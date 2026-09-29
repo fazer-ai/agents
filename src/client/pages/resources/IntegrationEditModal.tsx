@@ -594,7 +594,7 @@ export function IntegrationEditModal({
   const { showToast } = useToast();
   const tokenModal = useModalController<{ url: string }>();
   const rotateConfirm = useModalController<ConfirmPayload>();
-  // NOTE: The instance's inbound webhook token, read back on edit so the operator can copy the URL
+  // The instance's inbound webhook token, read back on edit so the operator can copy the URL
   // again. When it is null the STATUS says why: "absent" (nothing was ever stored — an instance
   // older than this feature) vs "unreadable" (a blob the key can no longer decrypt). Both are fixed
   // by rotating, but pointing at the wrong cause sends the operator hunting in the wrong place.
@@ -901,7 +901,7 @@ export function IntegrationEditModal({
     showToast(t("common.copied", "Copied"), "success");
   }
 
-  // NOTE: Rotation is destructive from the provider's point of view — the old URL stops resolving
+  // Rotation is destructive from the provider's point of view — the old URL stops resolving
   // the moment this commits, so the confirm spells that out instead of a generic "are you sure".
   function askRotate() {
     rotateConfirm.open({

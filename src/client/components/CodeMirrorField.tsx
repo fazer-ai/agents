@@ -212,22 +212,22 @@ export function CodeMirrorField({
   const view = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
-  // NOTE: through a ref for the same reason `onChange` is: the caller writes this inline, so it is a
+  // Through a ref for the same reason `onChange` is: the caller writes this inline, so it is a
   // fresh function every render, and listing it as a build dependency would tear the editor down
   // per keystroke of the form around it.
   const onViewRef = useRef(onView);
   onViewRef.current = onView;
   const field = useFormField();
-  // NOTE: a compartment so the caller can change what the editor IS (a renamed argument reconfiguring
+  // A compartment so the caller can change what the editor IS (a renamed argument reconfiguring
   // a completion source, a language switching under the same document) without the editor being
   // rebuilt, which would drop the cursor and the undo history with it.
   const extSlot = useMemo(() => new Compartment(), []);
-  // NOTE: a second compartment for the same reason: the label, the invalid state and the
+  // A second compartment for the same reason: the label, the invalid state and the
   // description all change while the editor stays mounted, and `contentAttributes` is read at
   // construction. Without it the attributes freeze at whatever they were when the body first
   // rendered, which for `aria-invalid` means never.
   const attrsSlot = useMemo(() => new Compartment(), []);
-  // NOTE: and a third, for the same event the completion source reconfigures for. The placeholder is
+  // And a third, for the same event the completion source reconfigures for. The placeholder is
   // console text (`starterCode(t)`), so it changes when the operator switches the language with the
   // modal open, and as a lifecycle dependency that switch would rebuild the whole view, dropping the
   // cursor, selection and undo history mid-body. The cap is NOT one of these: it is a constant of the
@@ -238,16 +238,16 @@ export function CodeMirrorField({
   // write the same 0 is a render pass for nothing.
   const [refusedExcess, setRefusedExcess] = useState(0);
   const refused = useRef(0);
-  // NOTE: the label and the description go on the element CodeMirror gives the textbox role to, not
+  // The label and the description go on the element CodeMirror gives the textbox role to, not
   // on the wrapper below. A wrapper `div` has no role, so `aria-label` on it is dropped by the
   // accessibility tree and the field reads as unlabelled.
   const label = rest["aria-label"];
-  // NOTE: the same counter `<Textarea>` renders: the change filter REFUSES an edit at the cap, so
+  // The same counter `<Textarea>` renders: the change filter REFUSES an edit at the cap, so
   // without it the field stops accepting characters with nothing on screen saying why. Same threshold
   // as the textarea's, so the warning arrives before the wall, and the same over-limit line for a body
   // that arrived past the cap and has to be edited down.
   const count = value.length;
-  // NOTE: the NUMBER, not the object. It is what the change filter needs and what the editor is built
+  // The NUMBER, not the object. It is what the change filter needs and what the editor is built
   // against, so depending on the object would rebuild the whole view (cursor and undo history
   // included) every time the caller rendered a fresh one. The two sentences are read at render and
   // never from inside the view.
@@ -256,7 +256,7 @@ export function CodeMirrorField({
   const showCount =
     capMax !== undefined &&
     (refusedExcess > 0 || count >= capMax * COUNTER_FROM);
-  // NOTE: the over-limit line is the only thing on screen that says why this body cannot be saved,
+  // The over-limit line is the only thing on screen that says why this body cannot be saved,
   // so it has to reach the accessibility tree the way `<Textarea>`'s does: an id the textbox points
   // at, plus `aria-invalid` on the textbox itself. Both live on CodeMirror's contenteditable, which
   // is the element carrying the `textbox` role.
@@ -335,7 +335,7 @@ export function CodeMirrorField({
     });
     view.current = v;
     onViewRef.current?.(v);
-    // NOTE: Escape belongs to the completion popup while it is open. The dialog around this editor
+    // Escape belongs to the completion popup while it is open. The dialog around this editor
     // closes on Escape, and Radix hears it first (capture phase on `document`), so the editor
     // cannot stop the event: it declares the claim and `<Modal>` cancels the dismissal. The popup
     // itself is closed here, because a claim that only reported would leave it open when the press

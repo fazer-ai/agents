@@ -607,7 +607,7 @@ describe("Gemini tool declarations", () => {
   );
 
   test("nesting past the depth cap travels untransformed instead of throwing", () => {
-    // NOTE: pins the documented degradation. Past MAX_DEPTH the subtree is left exactly as it
+    // Pins the documented degradation. Past MAX_DEPTH the subtree is left exactly as it
     // arrived, rather than a stack overflow on a hostile schema.
     let deep: Record<string, unknown> = {
       type: "array",
@@ -641,7 +641,7 @@ describe("Gemini tool declarations", () => {
   });
 
   test("the shared schema is not mutated, so other providers keep theirs", () => {
-    // NOTE: toJsonSchema memoizes per schema and hands back the SAME object every time, so an
+    // toJsonSchema memoizes per schema and hands back the SAME object every time, so an
     // in-place edit here would corrupt what ChatOpenAI/ChatAnthropic declare for the rest of the
     // process — a cross-provider break that no Gemini test would ever show.
     const before = structuredClone(

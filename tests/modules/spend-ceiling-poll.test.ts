@@ -147,7 +147,7 @@ function langfuseStub(
     if (typeof answer === "number") {
       return new Response("{}", { status: answer });
     }
-    // NOTE: a fixture that says nothing about `avg_totalCost` is a fully priced group (avg = sum /
+    // A fixture that says nothing about `avg_totalCost` is a fully priced group (avg = sum /
     // count), so the older fixtures keep their meaning; a mixed group says its own avg.
     const data = (answer ?? []).map((r) => {
       const row = r as Record<string, unknown>;
@@ -901,7 +901,7 @@ describe.skipIf(!dbUp)("the spend ceiling poll", () => {
       expect(switched?.projectKey).toBe(projectKeyOf(BASE_URL, "proj-b"));
       expect(Number(switched?.carriedUsd)).toBe(40);
       expect(switched?.carriedTracedCalls).toBe(40);
-      // NOTE: and the switch is said once: the old credential is gone with it, so
+      // And the switch is said once: the old credential is gone with it, so
       // spend that reached the old project after its last reading is not counted, and only the
       // operator can act on that.
       const said = async () => {

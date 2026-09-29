@@ -85,7 +85,7 @@ export function buildTimeline(
   // Whether the thread has older messages still to page in.
   olderPending = false,
 ): Timeline {
-  // NOTE: A proactive send whose bubble can be found draws no trail line: the bubble carries a badge
+  // A proactive send whose bubble can be found draws no trail line: the bubble carries a badge
   // instead; one whose bubble cannot be found keeps a marker, so nothing is lost. A line that recorded
   // the Chatwoot id of the message it sent badges only that message (none if it sent none). A line
   // with no recorded id falls back to a guess: the first unclaimed outgoing message from five seconds
@@ -101,7 +101,7 @@ export function buildTimeline(
   const sortedFollowUps = [...followUpEntries].sort(
     (a, b) => Date.parse(a.at) - Date.parse(b.at),
   );
-  // NOTE: Every id a recorded entry names is reserved before an unrecorded line guesses, so a
+  // Every id a recorded entry names is reserved before an unrecorded line guesses, so a
   // guess's time window cannot take the bubble a recorded line names.
   const reserved = new Set(
     followUpEntries.flatMap((e) =>
@@ -171,7 +171,7 @@ export function buildTimeline(
       entry: e,
     });
   });
-  // NOTE: What each turn spent sits at the foot of the last message the turn created that is on
+  // What each turn spent sits at the foot of the last message the turn created that is on
   // screen; a turn with none (silent, messages not loaded or never recorded) keeps its own line at the
   // time of its last billed call, so the header's total stays accounted for. While older messages are
   // still to page in, a line older than the oldest loaded message waits for them rather than stacking

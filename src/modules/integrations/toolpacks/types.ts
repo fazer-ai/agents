@@ -109,7 +109,7 @@ export interface ToolpackCtx {
   onSideEffectError?: SideEffectErrorReporter;
 }
 
-// NOTE: The single declaration of the side-effect reporter contract — shared by ToolpackCtx (here),
+// The single declaration of the side-effect reporter contract — shared by ToolpackCtx (here),
 // the native ToolCtx, and prepare.ts's structural mirror of it, so the three cannot drift apart.
 export type SideEffectErrorReporter = (e: {
   tool: string;
@@ -233,7 +233,7 @@ export function fencedFetch(
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     // Only an explicit `false` stops it: a fence that could not answer is not a withdrawal.
     if (!(await stillWanted().catch(() => true))) {
-      // NOTE: ...and only while the dispatch is still EMPTY. A pack tool can be several requests
+      // ...and only while the dispatch is still EMPTY. A pack tool can be several requests
       // (`asaas_create_pix_charge` POSTs the charge, then GETs its QR code), and reporting a
       // refusal after the charge exists would let the scheduler retry and charge twice:
       // at-most-once for the effects beats at-least-once for a classification (docs/chatwoot.md).

@@ -294,7 +294,7 @@ describe("flattenOntoWhite", () => {
   });
 
   test("flattening BEFORE the resize is what keeps the cutout edge from darkening", () => {
-    // NOTE: flatten BEFORE fit. Two opaque red pixels and one transparent black (what iOS leaves
+    // Flatten BEFORE fit. Two opaque red pixels and one transparent black (what iOS leaves
     // under a cutout), downscaled to two so the second box straddles the edge: flatten-then-fit gives
     // (237, 142, 142); fit-then-flatten averages colour AND alpha first and gives (183, 135, 135),
     // a dark fringe on every cutout.
@@ -348,7 +348,7 @@ describe("flattenOntoWhite", () => {
   });
 
   test("premultiplied colour is not scaled by its alpha a second time", async () => {
-    // NOTE: libheif answers `is_premultiplied_alpha()` and hands back colour already multiplied by
+    // Libheif answers `is_premultiplied_alpha()` and hands back colour already multiplied by
     // the alpha; the straight-alpha formula multiplies again and darkens everything translucent. On
     // the fixture's (100, 0, 0, 128): premultiplied gives 100 + 255 * (1 - 128/255) = 227, straight
     // gives 177, fifty levels of red lost on every cutout edge with nothing looking broken.
@@ -366,7 +366,7 @@ describe("flattenOntoWhite", () => {
   });
 
   test("the two files decode to the SAME bytes, so only the flag can tell them apart", async () => {
-    // NOTE: the same PNG encoded with and without `--premultiplied-alpha` decodes byte-identical, so
+    // The same PNG encoded with and without `--premultiplied-alpha` decodes byte-identical, so
     // nothing in the pixels says which formula is owed: without the flag there is no information.
     const asArrayBuffer = (b: Buffer) =>
       b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
@@ -546,7 +546,7 @@ describe("heic-to-jpeg", () => {
   });
 
   test("the wasm binary is a replaceable file on disk, and the path is overridable", () => {
-    // NOTE: THE LICENSING SHAPE, asserted. libheif is LGPL-3.0 in a proprietary product, and §4(d)(1) of
+    // THE LICENSING SHAPE, asserted. libheif is LGPL-3.0 in a proprietary product, and §4(d)(1) of
     // that licence asks for a mechanism that "will operate properly with a modified version of the
     // Library that is interface-compatible". A 1.9 MB JavaScript file with the binary base64'd
     // inside it — what `libheif-js/wasm-bundle` ships, and what this module deliberately does not
@@ -651,7 +651,7 @@ describe("heic-to-jpeg", () => {
   });
 
   test("a rejected file leaves NOTHING behind in the wasm heap", async () => {
-    // NOTE: a malformed file throws after the decoder is built and must still release it. The probe
+    // A malformed file throws after the decoder is built and must still release it. The probe
     // is a malloc(1) against libheif's own heap: the pointer it returns is the boundary of what is
     // allocated, so two probes with the allocation released in between are equal, and any residual
     // shows up as the difference.
@@ -674,7 +674,7 @@ describe("heic-to-jpeg", () => {
   });
 
   test("every image handle is released, on every path out, and before the context", async () => {
-    // NOTE: freeing the CONTEXT does not free the image handles, and a handle retains the decoded
+    // Freeing the CONTEXT does not free the image handles, and a handle retains the decoded
     // image, so the wasm heap grows with every conversion that skips `image.free()`. Asserted by
     // standing in for the library: a real heap reading takes a minute of decoding, and the ORDER is
     // part of the contract (a handle holds a reference into the context, so the context goes last).
@@ -719,7 +719,7 @@ describe("heic-to-jpeg", () => {
   });
 
   test("converts the image the file DESIGNATES, not the one stored first", async () => {
-    // NOTE: a HEIC may carry several top-level images and name one in its `pitm` box; libheif returns
+    // A HEIC may carry several top-level images and name one in its `pitm` box; libheif returns
     // them in storage order. Taking the first yields a successful extraction of the wrong picture,
     // with nothing downstream looking wrong. The fixture's `pitm` designates the red one, neither the
     // first nor the last.
@@ -746,7 +746,7 @@ describe("heic-to-jpeg", () => {
   });
 
   test("images with nothing designated convert the first instead of reading as empty", async () => {
-    // NOTE: the fallback is NOT for a file with no `pitm` (libheif refuses that with `No 'pitm' box`
+    // The fallback is NOT for a file with no `pitm` (libheif refuses that with `No 'pitm' box`
     // and zero images). It answers a library that returns images without designating one, which this
     // version never does, hence the stand-in; without it that case throws "heic carries no image
     // frame". Driven through `runMediaConverter`, because the selection lives in the converter.
@@ -807,7 +807,7 @@ describe("heic-to-jpeg", () => {
   });
 
   test("a crop cannot shrink the file past the pixel cap", async () => {
-    // NOTE: with a `clap` crop, `get_width`/`get_height` report the CROPPED size while the decode
+    // With a `clap` crop, `get_width`/`get_height` report the CROPPED size while the decode
     // materialises the whole stored image, so a 1x1 crop over 100 Mpx walks past a cap on the
     // reported size. The cap reads the size out of the file because, on the installed build,
     // `heif_image_handle_get_ispe_width` returns 0 and `heif_context_set_maximum_image_size_limit`
@@ -835,7 +835,7 @@ describe("heic-to-jpeg", () => {
   });
 
   test("an extended-size box does not blind the cap", async () => {
-    // NOTE: BMFF states a box size three ways (`n`, `0` for "to the end of the file", `1` for "the
+    // BMFF states a box size three ways (`n`, `0` for "to the end of the file", `1` for "the
     // real size is the 64 bits after the type"). A walker that only understands the first stops at
     // the others and reports "no declared size", which must not fall back to the cropped dimensions.
     const ext = CLAP_EXT.buffer.slice(
@@ -879,7 +879,7 @@ describe("heic-to-jpeg", () => {
   });
 
   test("an extended-size ftyp still carries a brand, eight bytes later", async () => {
-    // NOTE: offset 8 is the brand only when the header ends there: with `size == 1` the real size
+    // Offset 8 is the brand only when the header ends there: with `size == 1` the real size
     // takes the next 64 bits and the brand sits at 16. Misread, the file below (which libheif decodes)
     // reads as `carries brand "   "`, a source mismatch that hands the original HEIC to a provider
     // that refuses it, and the attachment stops being read.
@@ -910,7 +910,7 @@ describe("heic-to-jpeg", () => {
   });
 
   test("an ispe that understates the coded image is refused by the decoder, not decoded", async () => {
-    // NOTE: both numbers the cap reads come from `ispe`, while a decode's cost is set by the HEVC
+    // Both numbers the cap reads come from `ispe`, while a decode's cost is set by the HEVC
     // bitstream, so a file declaring 1x1 and coding 2000x2000 passes any cap. libheif closes that: it
     // compares coded against signalled dimensions and refuses BEFORE decoding (no heap growth). This
     // pins that property of the dependency, which an upgrade could change: the file below is admitted
@@ -1007,7 +1007,7 @@ describe("heic-to-jpeg", () => {
   });
 
   test("a JPEG carrying an accepted brand at offset 8 is a MISMATCH, not a broken HEIC", async () => {
-    // NOTE: offset 8 is the major brand only when offset 4 says `ftyp`; a JPEG whose first marker is
+    // Offset 8 is the major brand only when offset 4 says `ftyp`; a JPEG whose first marker is
     // a comment puts the comment's payload exactly there. Misread, the file is called a broken HEIC
     // and skipped, although the vendor reads it by sniffing.
     const real = new Uint8Array(
@@ -1036,7 +1036,7 @@ describe("heic-to-jpeg", () => {
   });
 
   test("the operator's line names WHICH of the three things the file is", async () => {
-    // NOTE: the three ways of not being a convertible HEIC are different facts on the line. Reported
+    // The three ways of not being a convertible HEIC are different facts on the line. Reported
     // as one, a 703-byte JPEG reads as `<too short>` and sends the reader after a truncated upload.
     const message = async (bytes: ArrayBuffer) => {
       const out: unknown = await runMediaConverter("heic-to-jpeg", bytes).catch(

@@ -25,7 +25,7 @@ export {
 
 import { parseDbId } from "@/lib/db-id";
 
-// NOTE: fail-closed cross-tenant gate. SUPER_ADMIN may target any tenant (the actual
+// Fail-closed cross-tenant gate. SUPER_ADMIN may target any tenant (the actual
 // data access still goes through asSuperAdmin, which is audited). Everyone else may only
 // touch their own tenant; a mismatch or missing target is Forbidden.
 export function authorize(
@@ -57,7 +57,7 @@ export function resolveRequestTenantContext(
   if (!user) return { context: null, anomaly: false };
 
   if (user.role === "SUPER_ADMIN") {
-    // NOTE: `parseDbId`, not `BigInt` in a try: BigInt accepts `0x7`, `+7` and ` 7 ` as tenant 7
+    // `parseDbId`, not `BigInt` in a try: BigInt accepts `0x7`, `+7` and ` 7 ` as tenant 7
     // and ids past 2^63-1 that Postgres then refuses. Same rule as the route ids in src/api.
     //
     // Truthiness, not `!== undefined`: the console OMITS the header when nothing is selected
@@ -77,7 +77,7 @@ export function resolveRequestTenantContext(
     };
   }
 
-  // NOTE: for a PERSON the selector was already resolved against their memberships before this point
+  // For a PERSON the selector was already resolved against their memberships before this point
   // (src/api/lib/auth.ts), so `user.tenantId` is the tenant it chose and a mismatch here
   // can only come from a principal bound to one tenant: an API key. For that one the header is not
   // honored at all, so its SHAPE decides nothing, and refusing on it would turn a forgeable value

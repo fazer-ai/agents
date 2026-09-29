@@ -2199,7 +2199,7 @@ describe.skipIf(!dbUp)("the observer binding", () => {
       },
       select: { id: true },
     });
-    // NOTE: What the table held AT THE MOMENT the bot was being provisioned, the window in which a
+    // What the table held AT THE MOMENT the bot was being provisioned, the window in which a
     // row written before provisioning would stand for a call that had not asked Chatwoot anything.
     let rowsWhileProvisioning = -1;
     const fetchImpl = (async (url: string, init?: RequestInit) => {

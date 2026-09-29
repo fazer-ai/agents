@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-// NOTE: OpenAI brand "rosette" mark — identifies the Codex CLI option in the MCP client selector. OpenAI's mark is deliberately monochrome (no brand color), so it stays `currentColor` and inherits `text-text-primary` from the parent, adapting to the light/dark theme — unlike the colored brand marks (Claude coral, Antigravity multicolor) that bake in literal hex.
+// OpenAI brand "rosette" mark — identifies the Codex CLI option in the MCP client selector. OpenAI's mark is deliberately monochrome (no brand color), so it stays `currentColor` and inherits `text-text-primary` from the parent, adapting to the light/dark theme — unlike the colored brand marks (Claude coral, Antigravity multicolor) that bake in literal hex.
 export function CodexIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg

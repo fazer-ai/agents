@@ -808,7 +808,7 @@ describe("google calendar toolpack — event date shaping + default timezone", (
   // A patch that sets only dateTime leaves the all-day `date` on the event, and Google rejects an
   // event carrying both (HTTP 400). Both directions must null the field they replace.
   test("update: all-day → timed nulls the date field", async () => {
-    // NOTE: an existing all-day event can still be MOVED onto a bookable slot, and the patch has to
+    // An existing all-day event can still be MOVED onto a bookable slot, and the patch has to
     // clear the `date` it replaces (Google rejects an event carrying both, HTTP 400).
     const { impl, calls } = stubWriteFetch({
       id: "ev_5",
@@ -1451,7 +1451,7 @@ describe("google calendar toolpack — Meet room on create", () => {
   });
 
   test("a pending room is re-read once so the reply still carries meetLink", async () => {
-    // NOTE: the POST answers without hangoutLink (createRequest still pending); one follow-up GET has it.
+    // The POST answers without hangoutLink (createRequest still pending); one follow-up GET has it.
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const pending = {
       ...CREATED,
@@ -1676,7 +1676,7 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
   });
 
   test("a single calendar is NOT capped, even past the aggregate ceiling", async () => {
-    // NOTE: at the 5-minute floor a near-24h range yields ~287 starts, past the 250 an aggregate query
+    // At the 5-minute floor a near-24h range yields ~287 starts, past the 250 an aggregate query
     // is bound to (a small window would never reach the ceiling this claims does not apply).
     const { impl } = stubFetch(200, { calendars: { [ANA]: { busy: [] } } });
     const out = (await toolFor(
@@ -1750,7 +1750,7 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
   });
 
   test("an afternoon is still offered: several calendars are not cut to their first few starts", async () => {
-    // NOTE: at the default 15-minute grain an eight-slot-per-calendar bound would expose under two
+    // At the default 15-minute grain an eight-slot-per-calendar bound would expose under two
     // hours, so "do you have anything after lunch?" answers no while the afternoon
     // is free. Nothing may truncate the range.
     const { impl } = stubFetch(200, {
@@ -1775,7 +1775,7 @@ describe("google calendar toolpack — aggregated availability (issue #100)", ()
   });
 
   test("the query is BATCHED across every allowed calendar", async () => {
-    // NOTE: Google's calendarExpansionMax of 50 is a PER-REQUEST ceiling, so batching satisfies it;
+    // Google's calendarExpansionMax of 50 is a PER-REQUEST ceiling, so batching satisfies it;
     // trimming the allowlist at 50 would report as unavailable calendars one more batch covers.
     const many = Array.from({ length: 50 }, (_, i) => `c${i}@x`);
     const { impl, calls } = stubFetch(200, {

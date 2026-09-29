@@ -16,11 +16,11 @@ import { makeConfig } from "../utils/agent-config";
 // signal (the Google one).
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-// NOTE: the suite's DOM preload replaces the global `Response`, and Bun's socket layer does not
+// The suite's DOM preload replaces the global `Response`, and Bun's socket layer does not
 // recognise that one (it answers its own placeholder page). tests/dom-setup.ts keeps Bun's.
 const BunResponse = (globalThis as unknown as { BunResponse: typeof Response })
   .BunResponse;
-// NOTE: and its `fetch` applies same-origin, so every call is preceded by a preflight that has to be
+// And its `fetch` applies same-origin, so every call is preceded by a preflight that has to be
 // answered, and every answer has to carry the headers, or the body never reaches the adapter.
 const CORS = {
   "access-control-allow-origin": "*",

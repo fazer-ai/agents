@@ -77,7 +77,7 @@ describe("extractText", () => {
   });
 
   test("pdf: extracts the text of a real one-page document", async () => {
-    // NOTE: the loader passes unpdf the bytes, not its own `PDFDocumentProxy`: unpdf only destroys
+    // The loader passes unpdf the bytes, not its own `PDFDocumentProxy`: unpdf only destroys
     // documents it created ("caller-supplied proxies keep their lifecycle with the caller"), so a
     // proxy would keep one parsed PDF alive per upload. This proves both routes extract the same.
     const objs = [

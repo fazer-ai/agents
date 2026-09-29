@@ -565,7 +565,7 @@ export async function tenantSettingsUpdate(
       await updatePriceOverrides(ctx, prices, base);
     }
     const after = await getTenantSettings(ctx, base);
-    // NOTE: each block writer above records its own row, so a call touching both leaves TWO where
+    // Each block writer above records its own row, so a call touching both leaves TWO where
     // this tool used to leave one summarizing both. Same shape the console has always produced.
     // Project stored vault:<id> refs back to NAMES for the response (never a secret value).
     const embName = after.embedding.credentialRef

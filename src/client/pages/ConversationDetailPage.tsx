@@ -1076,7 +1076,7 @@ export function ConversationDetailPage() {
   // After returning a conversation to the AI we reveal a "Respond now" action (it can answer the
   // pending tail immediately instead of waiting for the next inbound message). Reset once used.
   const [offerReengage, setOfferReengage] = useState(false);
-  // NOTE: Re-engaging fires a proactive turn at the customer, so its route asks `TENANT_ADMIN`, while
+  // Re-engaging fires a proactive turn at the customer, so its route asks `TENANT_ADMIN`, while
   // this page is deliberately open to attendants for operating the conversation. Offering the button
   // to someone the route refuses is a 403 per click.
   const { user } = useAuth();
@@ -1377,7 +1377,7 @@ export function ConversationDetailPage() {
       canLoadOlder,
     ],
   );
-  // NOTE: Resolve a reply's quoted message: map id to message, so a bubble that quotes another can show a
+  // Resolve a reply's quoted message: map id to message, so a bubble that quotes another can show a
   // WhatsApp-style preview when the referenced message is in the loaded window.
   const messagesById = useMemo(() => {
     const map = new Map<number, Message>();
@@ -1464,7 +1464,7 @@ export function ConversationDetailPage() {
     }
   }
 
-  // NOTE: Re-engage: re-fire the agent turn over the unanswered tail, without waiting for a new customer
+  // Re-engage: re-fire the agent turn over the unanswered tail, without waiting for a new customer
   // message. Toast reflects the outcome (posted / gate held by a human / contact not authorized /
   // nothing to answer).
   async function reengage() {
@@ -1556,7 +1556,7 @@ export function ConversationDetailPage() {
   // places that genuinely mean a person (the header's assignee line).
   const heldByOther = conv?.heldByAnotherParty === true;
   const isHuman = conv?.assigneeType === "User";
-  // NOTE: Whether anything ANSWERS this inbox: a responder bound, switched on, with a bot, and not in
+  // Whether anything ANSWERS this inbox: a responder bound, switched on, with a bot, and not in
   // monitoring mode. Return, reopen and respond now are offered only then, because without one the
   // server refuses them (409, `no-agent`) and the button only fails.
   const responderAnswers =
@@ -1568,7 +1568,7 @@ export function ConversationDetailPage() {
     // otherwise (`errors.returnAgentTestSilent`). `testActivatedAt` is already the episode's answer, the
     // same question the server asks, so activation through a redirect sibling keeps the button.
     (conv.agentMode !== "test" || conv.testActivatedAt != null);
-  // NOTE: WHY the actions are missing, derived from fields the detail already carries (no call), so the
+  // WHY the actions are missing, derived from fields the detail already carries (no call), so the
   // operator can tell a deliberate rule from a bug. Two strings: a `label` short enough for the action
   // row (a full sentence wraps the flex row of buttons) and the remediation behind the row's `?`.
   // No responder at all is covered too: the panel above prints a generic "AI" or a person's name there,

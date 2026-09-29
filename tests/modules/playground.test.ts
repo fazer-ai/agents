@@ -483,7 +483,7 @@ describe.skipIf(!dbUp)("playground", () => {
     }
   });
 
-  // NOTE: the playground asks production's plan, so its "answer in audio" switch tells the model the
+  // The playground asks production's plan, so its "answer in audio" switch tells the model the
   // same thing a customer's voice note does, and the model's choice of text is honoured the same.
   async function withAudioAgent(
     extra: Record<string, unknown>,

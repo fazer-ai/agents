@@ -193,7 +193,7 @@ describe.skipIf(!dbUp)("tts", () => {
         agentId: agent.id,
       },
     });
-    // NOTE: a second inbox on a channel that refuses Ogg/Opus (Meta's Instagram messaging accepts audio
+    // A second inbox on a channel that refuses Ogg/Opus (Meta's Instagram messaging accepts audio
     // only as aac/m4a/wav/mp4) — the reply container must follow the channel.
     const igInbox = await suDb.inbox.create({
       data: {

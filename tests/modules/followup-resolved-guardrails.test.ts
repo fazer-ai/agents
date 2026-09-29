@@ -830,7 +830,7 @@ describe.skipIf(!dbUp)("follow-up em conversa resolvida — guardrails", () => {
     const s = stubClient(() => {
       throw new Error("chatwoot indisponível");
     });
-    // NOTE: Um job que já tinha sido adiado pela cadência carrega a versão da configuração.
+    // Um job que já tinha sido adiado pela cadência carrega a versão da configuração.
     const job = jobFor(CONV);
     job.payload = { ...job.payload, deferredUnder: "1:0" };
     const result = await followUpHandler(job, appDb, handlerDeps(s));

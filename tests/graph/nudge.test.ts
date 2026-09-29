@@ -393,7 +393,7 @@ function stub() {
   const resolved: number[] = [];
   // What each status call asked for, beside `resolved`, which only names the conversation.
   const statuses: Array<[number, string]> = [];
-  // NOTE: The approved HSM sends. Reachable from the moderated branch because the service-window
+  // The approved HSM sends. Reachable from the moderated branch because the service-window
   // mode is read after the judge.
   const templates: Array<[number, string]> = [];
   // Ordered log of side effects, so a test can assert message-before-resolve.
@@ -408,7 +408,7 @@ function stub() {
     sendPrivateNote: async (c: number, t: string) => {
       notes.push([c, t]);
       order.push("note");
-      // NOTE: Chatwoot answers a create with the row it made.
+      // Chatwoot answers a create with the row it made.
       const id = 88_000 + notes.length;
       noteIds.push(id);
       return { id };
@@ -587,7 +587,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     await appDb.$disconnect();
   });
 
-  // NOTE: The agent schedules a job and then resolves the conversation; the job's event comes back
+  // The agent schedules a job and then resolves the conversation; the job's event comes back
   // later. `deliverToResolved` lets it reach the customer WITHOUT reopening, while a person's
   // conversation (assignee a User), a close nobody on our side made, and a handed-off one (`open`)
   // stay notes.
@@ -652,7 +652,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(conv.status).toBe("resolved");
   });
 
-  // NOTE: Where a person holds the conversation the event is theirs to deliver, so it reaches them
+  // Where a person holds the conversation the event is theirs to deliver, so it reaches them
   // as it arrived and no model is asked: the model here would answer with the silence sentinel,
   // dropping a live report without a trace.
   const heldNote = [`${OPERATOR_EVENT_NOTE_PREFIX}Entraram 120 de 400.`];
@@ -734,7 +734,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(outcome).toBe("messaged");
     expect(s.messages).toEqual([[900, "Pagamento confirmado!"]]);
     expect(s.notes).toEqual([]);
-    // NOTE: Our side spoke, and it answered no customer message: the reply marks stay put.
+    // Our side spoke, and it answered no customer message: the reply marks stay put.
     const spoke = await speechOf(900);
     expect(spoke.lastProactiveAt).not.toBeNull();
     expect(spoke.lastRepliedAt).toBeNull();
@@ -781,7 +781,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     ]);
   });
 
-  // NOTE: The line records where the turn came from and the message it sent, so the console neither
+  // The line records where the turn came from and the message it sent, so the console neither
   // infers "Follow-up" from the source nor guesses the bubble by time.
   async function originLine(convId: number) {
     for (let i = 0; i < 30; i++) {
@@ -1632,7 +1632,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       instanceId,
       contactInboxId,
     );
-    // NOTE: Fails ONLY the transaction that writes the sidecar row, on the way OUT: that write is
+    // Fails ONLY the transaction that writes the sidecar row, on the way OUT: that write is
     // the one piece of work that runs AFTER the mark is set. Failing by count would trip on one of
     // the transactions the nudge opens before the section, abort before the claim, and pass with
     // the release deleted.
@@ -1697,7 +1697,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(isTurnInFlight(graphThreadId)).toBe(false);
   });
 
-  // NOTE: A follow-up that stays quiet because the conversation needs a person hands it to `open`
+  // A follow-up that stays quiet because the conversation needs a person hands it to `open`
   // with a note, and the ladder's own resolve does not close it behind that. `acknowledged` is the
   // ordinary quiet follow-up and changes nothing about it.
   class NudgeSkipModel {
@@ -1748,7 +1748,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.messages).toEqual([]);
     expect(s.statuses).toEqual([[9661, "open"]]);
     expect(s.notes).toEqual([[9661, skipHandoverNote("needs_human", null)]]);
-    // NOTE: A silent turn writes no outcome line, and still closes on one, naming the note it left.
+    // A silent turn writes no outcome line, and still closes on one, naming the note it left.
     const closing = await closingLine(9661);
     expect(typeof closing.turnMs).toBe("number");
     expect(closing.sentMessageIds).toEqual(s.noteIds);
@@ -2095,7 +2095,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       },
     });
     expect(outcome).toBe("messaged");
-    // NOTE: The graph ran on the contact-inbox thread (the SAME key reactive turns use), NOT the
+    // The graph ran on the contact-inbox thread (the SAME key reactive turns use), NOT the
     // per-conversation thread, so the follow-up shares the turns' memory.
     const ci = await saver.get({
       configurable: {
@@ -2399,7 +2399,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       THREAD_STATE_NODE,
     );
     const s = stub();
-    // NOTE: The takeover lands after the run is past every gate that would refuse it EARLY, so the
+    // The takeover lands after the run is past every gate that would refuse it EARLY, so the
     // note's absence below is the note's own probe. Two reads answer bot-owned: the pre-gate probe,
     // and the post-wait ownership gate before the model's TOOLS run. The third read is the note's,
     // and it reports the person. The mirror row seeded above still says the bot owns it, because
@@ -3384,7 +3384,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
   test("the agent's own resolve on a nudge turn is recorded as the agent's", async () => {
     await seedConv(9942, null);
     const s = stub();
-    // NOTE: The live read the tool makes before closing still finds the conversation ours, so the
+    // The live read the tool makes before closing still finds the conversation ours, so the
     // close IS the agent's. Its version is what the floor has to carry: the caller's pre-generation
     // snapshot is older, and a floor taken from it would date the stamp to the wrong moment.
     const LIVE_AT = 1_700_500_000.75;
@@ -4039,7 +4039,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(outcome).toBe("messaged");
     let logged = false;
     for (let i = 0; i < 30 && !logged; i++) {
-      // NOTE: Scoped to this nudge's own thread: the tests in this file share the tenant, and
+      // Scoped to this nudge's own thread: the tests in this file share the tenant, and
       // `outcome`/`step` are values several of them write, so a poll filtered by tenant alone can
       // exit on a neighbour's row and report a trail this turn never left.
       const rows = await flowLogRows(suDb, {
@@ -4376,7 +4376,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
     expect(s.resolved).toEqual([9963]);
   });
 
-  // NOTE: A follow-up is a message the customer never asked for, so the proactive path screens it
+  // A follow-up is a message the customer never asked for, so the proactive path screens it
   // with the guardrails like every other customer-facing text.
   const GUARD_MODEL = "guard-sentinel-nudge";
 
@@ -4787,7 +4787,7 @@ describe.skipIf(!dbUp)("runAgentNudge", () => {
       async () => {
         await seedConv(9972, null);
         const s = stub();
-        // NOTE: Only the ownership read is broken, and only its SECOND call: the first decides the
+        // Only the ownership read is broken, and only its SECOND call: the first decides the
         // turn may post at all, and breaking it would test a different branch. The hand-back note
         // takes a read with this same projection, but only when a note is owed; this thread carries
         // no handoff, so it asks for none.

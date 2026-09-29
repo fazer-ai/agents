@@ -501,7 +501,7 @@ async function buildPlaygroundGraph(params: {
   // Which names are OURS in this turn's toolset rather than the operator's — the question every rule
   // below asks, and the one a name alone cannot answer.
   const protocol = inertToolsFor(loaded);
-  // NOTE: wrapped again after the swap: `applyToolMocks` replaces a mocked tool with a fresh `tool()`,
+  // Wrapped again after the swap: `applyToolMocks` replaces a mocked tool with a fresh `tool()`,
   // losing the wrapper that records schema refusals. Wrapping is idempotent, so unmocked tools keep
   // the single wrapper `buildToolset` gave them.
   const mocked = logSchemaRefusals(
@@ -696,7 +696,7 @@ async function runPlaygroundTurnOnce(
       ? params.threadId
       : newPlaygroundThreadId(tenantId, agentId);
 
-  // NOTE: one id correlates the ExecutionLog turn, the tool-call logs, the Langfuse trace and the
+  // One id correlates the ExecutionLog turn, the tool-call logs, the Langfuse trace and the
   // ledger rows.
   const turnId = params.turnId ?? crypto.randomUUID();
   // Execution-flow telemetry, tagged source=playground so it never pages an alert channel and stays
@@ -710,7 +710,7 @@ async function runPlaygroundTurnOnce(
     threadId,
     base,
   };
-  // NOTE: the agent is resolved before the spend ceiling is asked: a missing agent or unrunnable
+  // The agent is resolved before the spend ceiling is asked: a missing agent or unrunnable
   // model is a 404/400, never a 429 for a call that could not happen. The read is reused below.
   const loadedConfig = await loadPlaygroundConfig({
     ctx,
@@ -724,7 +724,7 @@ async function runPlaygroundTurnOnce(
   // silence the agent for customers, and the two ledgers are already told apart by `source`.
   await assertPlaygroundSpendCeiling({ tenantId, base, flow });
 
-  // NOTE: the reply's modality, decided once and by production's function, with the
+  // The reply's modality, decided once and by production's function, with the
   // operator's "answer in audio" switch standing in for the customer's voice note. No channel: the
   // playground plays the audio itself, in the default container.
   const plannedAudio = plannedReplyIsAudio(loadedConfig.ttsConfig, {
@@ -812,7 +812,7 @@ async function runPlaygroundTurnOnce(
   // `buildPlaygroundGraph` just now, and every callback above only fires during `graph.invoke`.
   flow.fullDetail = loaded.fullDetail;
 
-  // NOTE: the SAME guardrail gate the inbox path runs; announcements land in the trace, since there
+  // The SAME guardrail gate the inbox path runs; announcements land in the trace, since there
   // is no conversation to put a note on. The human message id is minted before the screening (a
   // blocked turn links media to it), for every turn (a transcript note points at it), and it IS the
   // turn id: every turn leaves it in the thread, so a reopened session finds each turn's usage by it.
@@ -891,7 +891,7 @@ async function runPlaygroundTurnOnce(
   // Everything screened before the graph belongs ahead of the graph's own entries in the trace.
   const beforeGraph = gTrace.length;
 
-  // NOTE: dated with the instant the playground says it was written, simulation included, so
+  // Dated with the instant the playground says it was written, simulation included, so
   // an operator testing "the customer comes back a week later" sees the history the way a real turn
   // would send it.
   const human = new HumanMessage({
@@ -928,7 +928,7 @@ async function runPlaygroundTurnOnce(
     if (e instanceof AppError) throw e;
     throw toPlaygroundInvokeError(e);
   }
-  // NOTE: screen the reply BEFORE anything renders it, so the TTS synthesizes what would be delivered.
+  // Screen the reply BEFORE anything renders it, so the TTS synthesizes what would be delivered.
   // Same sentinel rule as the inbox's reactive path, so a reproduced silence token is not rendered.
   const draftedTurn = customerFacingReply(lastAssistantText(result.messages));
   const raw = draftedTurn.text;
@@ -1010,7 +1010,7 @@ async function runPlaygroundTurnOnce(
   // TTS reply: the agent's mode decides (mirror/preference), or the manual toggle forces it. Audio
   // is best-effort — synthesis failure falls back to the text reply.
   let ttsMediaId: string | undefined;
-  // NOTE: the same plan production delivers by: the operator hears no URL or e-mail,
+  // The same plan production delivers by: the operator hears no URL or e-mail,
   // and a reply that is only the introduction of its link, or one built to be read (too long, a
   // list, a run of prices), gets no audio. The items stay in `reply`.
   const spoken = planAudioReply(reply ?? "", loaded.ttsConfig);
@@ -1022,7 +1022,7 @@ async function runPlaygroundTurnOnce(
         params.userSentAudio ?? false,
         loaded.contactVoiceReply,
       ));
-  // NOTE: the model chose text: the same line production writes, and no synthesis. Checked before
+  // The model chose text: the same line production writes, and no synthesis. Checked before
   // the too-long-for-audio gate, which only measures a reply still going as audio.
   const chosenText = asked && replyChoice.textChosen;
   if (chosenText) {
@@ -1085,7 +1085,7 @@ async function runPlaygroundTurnOnce(
     }
   }
 
-  // NOTE: signed only here, on the way to the operator's screen, by production's own function: not
+  // Signed only here, on the way to the operator's screen, by production's own function: not
   // in the thread (production signs at delivery) and not in the TTS text (production's audio branch
   // is unsigned). See docs/signature.md.
   const previewSig = signatureFor(
@@ -1176,7 +1176,7 @@ async function runPlaygroundFollowupOnce(
       ? params.threadId
       : newPlaygroundThreadId(tenantId, agentId);
 
-  // NOTE: the entry point minted the turn id, so a failure is reported under the same one. Tagged
+  // The entry point minted the turn id, so a failure is reported under the same one. Tagged
   // source=playground (never pages an alert channel, stays out of the dashboard); built before the
   // graph because the graph's retry callback writes to it.
   const flow: FlowContext = {
@@ -1187,7 +1187,7 @@ async function runPlaygroundFollowupOnce(
     threadId,
     base,
   };
-  // NOTE: the agent is resolved before the spend ceiling is asked: a missing agent or unrunnable
+  // The agent is resolved before the spend ceiling is asked: a missing agent or unrunnable
   // model is a 404/400, never a 429 for a call that could not happen. The read is reused below.
   // The SAME widening production applies: the directive asks for `skip_reply`, which is
   // operator-revocable, and without it the simulation replies where production stays silent.
@@ -1371,7 +1371,7 @@ async function runPlaygroundFollowupOnce(
       );
     }
   }
-  // NOTE: OUTPUT direction only, exactly as the inbox's proactive path: a follow-up answers
+  // OUTPUT direction only, exactly as the inbox's proactive path: a follow-up answers
   // no question, so there is no customer message for the relevance check to judge, and the gate
   // drops that check structurally when none is passed. A `silent` verdict reads as silence here for
   // the same reason it does in production — the customer gets nothing either way.
@@ -1424,7 +1424,7 @@ async function runPlaygroundFollowupOnce(
   }
   // Bump the session (or create one titled by the first message if the follow-up is the first turn).
   await upsertPlaygroundSession(base, ctx, agentId, threadId, "");
-  // NOTE: signed like the reactive turn, since `runAgentNudge` signs the proactive message too.
+  // Signed like the reactive turn, since `runAgentNudge` signs the proactive message too.
   // `attachSignature` declines the empty case, so a silent or suppressed follow-up stays as it was.
   const followUpSig = signatureFor(
     loaded.signatureConfig,
@@ -1454,7 +1454,7 @@ async function normalizeAudioUpload(
   if (file.size > MAX_AUDIO_BYTES) {
     throw new AppError("audio too large", 413, "errors.audioTooLarge");
   }
-  // NOTE: Bun derives a multipart File's content-type from the filename extension, not the
+  // Bun derives a multipart File's content-type from the filename extension, not the
   // browser-set `type`. MediaRecorder voice notes are `.webm`, which maps to `video/webm` (webm
   // is a video-container MIME even when it carries only an audio track), so an audio-only
   // recording legitimately arrives as `video/webm`. Accept it alongside `audio/*`, then normalize
@@ -1535,7 +1535,7 @@ export async function runPlaygroundAudioTurn(
   params: PlaygroundAudioParams,
 ): Promise<PlaygroundAudioResult> {
   const { ctx, agentId, file } = params;
-  // NOTE: the voice note's transcription runs before the turn, so the turn's id and thread are
+  // The voice note's transcription runs before the turn, so the turn's id and thread are
   // settled here, and a failure in either step is reported as the same turn.
   const threadId = resolvePlaygroundThread(
     params.threadId,

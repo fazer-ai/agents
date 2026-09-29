@@ -320,7 +320,7 @@ export async function deleteWebhookSubscription(
   id: bigint,
   base: PrismaClient = basePrisma,
 ): Promise<void> {
-  // NOTE: The delivery FK is ON DELETE CASCADE at the database (20260727000000_init), so what keeps
+  // The delivery FK is ON DELETE CASCADE at the database (20260727000000_init), so what keeps
   // this from silently dropping rows the worker is mid-delivery is THIS function, not the
   // constraint: clear the subscription's deliveries first inside the same scoped tx (RLS-fenced),
   // then remove the subscription. Operator-initiated, so dropping its delivery ledger is

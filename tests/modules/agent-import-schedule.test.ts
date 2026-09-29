@@ -136,7 +136,7 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
   });
 
   test("a clean bundle is stored verbatim and warns about nothing", async () => {
-    // NOTE: the control. Without it every assertion below is also satisfied by an import that
+    // The control. Without it every assertion below is also satisfied by an import that
     // drops everything, or by one that warns unconditionally.
     const name = `limpa-${process.pid}`;
     const { row, warnings, linkedTo } = await importSchedule(name, WEEK);
@@ -154,7 +154,7 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
     // Stored cleaned, so the console shows what the runtime will actually honour and an
     // edit-and-save round trip cannot resurrect the entry.
     expect(row.windows).toEqual(WEEK);
-    // NOTE: the agent is still CLOSED at 03:00, asserted through the gate the webhook runs: "the
+    // The agent is still CLOSED at 03:00, asserted through the gate the webhook runs: "the
     // schedule can close" is only a proxy for "the agent is silenced and the away note is posted".
     const schedule = parseSchedule(
       row as unknown as {
@@ -230,7 +230,7 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
   });
 
   test("an exception stored exactly as written warns about nothing", async () => {
-    // NOTE: the control for the two above: the per-entry check must not fire on a clean entry, or
+    // The control for the two above: the per-entry check must not fire on a clean entry, or
     // the warning becomes noise.
     const name = `intacta-${process.pid}`;
     const clean = {
@@ -277,7 +277,7 @@ describe.skipIf(!dbUp)("importing a schedule with unreadable entries", () => {
   });
 
   test("exceptions past the cap are refused by the WRITER, and named", async () => {
-    // NOTE: the reader does not truncate these (a dropped closure widens availability), so this
+    // The reader does not truncate these (a dropped closure widens availability), so this
     // bound exists only here, where the operator is told the count.
     const name = `muitas-${process.pid}`;
     const many = Array.from({ length: MAX_SCHEDULE_EXCEPTIONS + 12 }, () => ({

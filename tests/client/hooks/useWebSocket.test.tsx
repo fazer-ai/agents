@@ -100,7 +100,7 @@ function makeFactory() {
   return mock(() => makeFake());
 }
 
-// NOTE: happy-dom does not own `document.hidden` as a regular property, so
+// Happy-dom does not own `document.hidden` as a regular property, so
 // tests that override it via `Object.defineProperty` must restore the
 // original descriptor (or delete the override when none existed) to avoid
 // leaking visibility state into later tests, which would silently flip
@@ -259,7 +259,7 @@ describe("useWebSocket", () => {
     window.addEventListener("auth:unauthorized", handler);
 
     try {
-      // NOTE: `baseDelayMs: 0` forces the backoff to compute a zero delay,
+      // `baseDelayMs: 0` forces the backoff to compute a zero delay,
       // so any reconnect that the hook *would* schedule fires on the next
       // macrotask. We flush one macrotask after the close and assert that
       // no additional `factory()` call happened — a structural check that
@@ -310,7 +310,7 @@ describe("useWebSocket", () => {
   });
 
   test("status moves to 'error' after maxAttempts failed reconnects", async () => {
-    // NOTE: We close *without* opening, so `attemptRef` is never reset.
+    // We close *without* opening, so `attemptRef` is never reset.
     // With maxAttempts=2, the 3rd close in sequence trips the limit branch.
     const factory = makeFactory();
     const { result } = renderHook(() =>
@@ -495,7 +495,7 @@ describe("useWebSocket", () => {
     await waitFor(() => {
       expect(result.current.status).toBe("disconnected");
     });
-    // NOTE: Simulate hidden : visible cycle. The hook is parked at
+    // Simulate hidden : visible cycle. The hook is parked at
     // "disconnected" with autoReconnect=false; visibility must not
     // resurrect it.
     const visibility = withDocumentHidden();

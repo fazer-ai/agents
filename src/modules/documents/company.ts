@@ -195,7 +195,7 @@ export async function setCompanyLogo(
       { allowed: LOGO_ALLOWED_FORMATS },
     );
   }
-  // NOTE: Dimensions decide, not bytes: a small file can declare enough pixels to exhaust the
+  // Dimensions decide, not bytes: a small file can declare enough pixels to exhaust the
   // process on every render, for every tenant. An image we cannot measure is refused too, with its
   // own message, since the fix there is re-exporting, not shrinking.
   const pixels = logoPixels(bytes, ext);
@@ -214,7 +214,7 @@ export async function setCompanyLogo(
       { max: LOGO_MAX_PIXELS, dimensions: `${LOGO_MAX_SIDE}×${LOGO_MAX_SIDE}` },
     );
   }
-  // NOTE: ONE NAME PER UPLOAD: the configured file is never overwritten, and the row write is what
+  // ONE NAME PER UPLOAD: the configured file is never overwritten, and the row write is what
   // starts referencing the new one. So no reader sees a half-written file, overlapping uploads never
   // share a path, and a failure needs no compensation beyond "is this key referenced?".
   const key = logoKeyFor(ctx.tenantId, ext);
@@ -309,7 +309,7 @@ export async function readCompanyLogo(
   if (!company.logoKey) return null;
   const format = logoExtOf(company.logoKey);
   if (!format) return null;
-  // NOTE: The read itself can fail (a concurrent clear unlinks the file), and every reason the bytes
+  // The read itself can fail (a concurrent clear unlinks the file), and every reason the bytes
   // are unavailable must come out as the same null, never a rejection that aborts the render. No
   // test can schedule that unlink; the property is structural: one exit, and it is null.
   const bytes = await Bun.file(logoPath(company.logoKey))

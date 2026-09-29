@@ -173,7 +173,7 @@ async function seedTenant(slug: string): Promise<{ id: bigint; kb: bigint }> {
     data: { name: slug, slug: `${slug}-${process.pid}` },
   });
   tenants.push(t.id);
-  // NOTE: the credential carries the baseURL (resolveEmbeddingStatus reads it off the secret), which is
+  // The credential carries the baseURL (resolveEmbeddingStatus reads it off the secret), which is
   // what points the ingest at the double above without unlocking the settings block.
   const cred = await suDb.vaultEntry.create({
     data: {
@@ -302,7 +302,7 @@ describe.skipIf(!dbUp)(
       };
       await runIngest(id, doc.id);
 
-      // NOTE: The in-flight run must not have published: the row still carries the operator's re-index
+      // The in-flight run must not have published: the row still carries the operator's re-index
       // marker, which is the only thing that makes the re-armed job do any work.
       const midway = await readDoc(id, doc.id);
       expect(midway.content).toBe("EDITED TEXT");
@@ -387,7 +387,7 @@ describe.skipIf(!dbUp)(
         base: appDb,
       });
 
-      // NOTE: There is no network in this gap, so it needs a seam rather than the embedding double. The
+      // There is no network in this gap, so it needs a seam rather than the embedding double. The
       // knowledge-base config read sits inside it, right after the document read.
       let fired = false;
       const hooked = appDb.$extends({

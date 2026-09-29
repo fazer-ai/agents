@@ -330,7 +330,7 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
     // attempt, stamp last_error on the conversation and eventually dead-letter a burst whose only
     // problem was arriving at a busy moment.
     expect(b.outcome).toBe("reschedule");
-    // NOTE: and the burst is not written twice into the agent's permanent memory, which two
+    // And the burst is not written twice into the agent's permanent memory, which two
     // concurrent read-modify-writes produce as a channel of [burst, burst, answer].
     const bursts = canal.filter((m) =>
       String(m.content).includes("quanto custa?"),
@@ -347,7 +347,7 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
   }, 30_000);
 
   test("past the ceiling it answers anyway rather than deferring forever", async () => {
-    // NOTE: a burst that opened past the ceiling has held its thread longer than any legitimate
+    // A burst that opened past the ceiling has held its thread longer than any legitimate
     // turn. The ceiling is a DEADLINE on burstStartedAt because both counters are unusable:
     // `rescheduleJob` zeroes `attempts` and `armDebounce` replaces the payload a counter would live
     // in. SIX MINUTES IS A LITERAL ON PURPOSE, not DEFER_CEILING_MS + 1: importing the constant
@@ -453,7 +453,7 @@ describe.skipIf(!dbUp)("two flushes on one thread", () => {
   }, 30_000);
 
   test("the deferral deadline survives a re-arm while the flush is claimed", async () => {
-    // NOTE: a message arriving while the flush is CLAIMED opens a new burst by design with a fresh
+    // A message arriving while the flush is CLAIMED opens a new burst by design with a fresh
     // `burstStartedAt`, so a deadline anchored there would be pushed forward by every arrival and a
     // customer who kept typing at a wedged thread would never be answered.
     const thread = threadOf(4248);

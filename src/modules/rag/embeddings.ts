@@ -154,7 +154,7 @@ async function embedCompatibleBatch(
   deps: EmbeddingDeps,
   signal: AbortSignal,
 ): Promise<number[][]> {
-  // NOTE: Checked BEFORE EVERY FETCH, not once per document: a tenant-controlled hostname can resolve
+  // Checked BEFORE EVERY FETCH, not once per document: a tenant-controlled hostname can resolve
   // publicly for the check and privately later, and a document is many batches with retries. This
   // narrows the DNS-rebinding window rather than closing it (`fetch` resolves again), like the custom
   // HTTP tool (`graph/tools/http.ts`).
@@ -216,7 +216,7 @@ async function embedCompatibleBatch(
       "embedding provider returned the wrong vector count",
     );
   }
-  // NOTE: Two acceptable shapes: NO item carries an index (positional order, as the SDK path reads
+  // Two acceptable shapes: NO item carries an index (positional order, as the SDK path reads
   // it), or every one does and they form exactly 0..n-1. A partial set or a non-permutation leaves
   // no order to recover, so it is refused rather than guessed: a guess publishes vectors against the
   // wrong chunks. Only an ABSENT index licenses positional order; `"1"` or `null` is not absent.
@@ -425,7 +425,7 @@ export async function embedQuery(
   deps: EmbeddingDeps = {},
 ): Promise<number[]> {
   const baseURL = cfg.baseURL;
-  // NOTE: one loop for both paths, so the SDK path is held to the same two deadlines; retrying inside
+  // One loop for both paths, so the SDK path is held to the same two deadlines; retrying inside
   // LangChain would leave neither ours to set.
   const vector = await throughProvider(() =>
     withTransientRetry(

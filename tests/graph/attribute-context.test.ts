@@ -203,7 +203,7 @@ describe.skipIf(!dbUp)("attribute context in the system prompt", () => {
     const tool = tools.find((t) => t.name === "set_custom_attribute");
     if (!tool) throw new Error("set_custom_attribute missing");
 
-    // NOTE: A turn's tool calls run CONCURRENTLY in the tool node, so the mirror write-through has
+    // A turn's tool calls run CONCURRENTLY in the tool node, so the mirror write-through has
     // to merge in ONE statement. A read-modify-write drops keys here: every call would read the
     // same starting bag and the last writer would win with only its own key.
     const keys = Array.from({ length: 10 }, (_, i) => `campo_${i}`);
@@ -219,7 +219,7 @@ describe.skipIf(!dbUp)("attribute context in the system prompt", () => {
   });
 
   test("after a burst, what the operator sees and what the agent reads agree", async () => {
-    // NOTE: The test above stubs the Chatwoot call, so it proves only OUR bag survives a burst.
+    // The test above stubs the Chatwoot call, so it proves only OUR bag survives a burst.
     // Chatwoot's side can diverge (every key mirrored, one kept) and nothing reconciles it, since
     // agent bots never receive contact_updated. Both views are asserted here, against a Chatwoot
     // that replaces the bag exactly as the deployed fork does.
@@ -297,7 +297,7 @@ describe.skipIf(!dbUp)("attribute context in the system prompt", () => {
   });
 
   test("the write-through barrier is pinned to UTC, not the session timezone", async () => {
-    // NOTE: `custom_attributes_at` is TIMESTAMP (no zone) holding UTC; bare NOW() is timestamptz.
+    // `custom_attributes_at` is TIMESTAMP (no zone) holding UTC; bare NOW() is timestamptz.
     // Mixing them makes GREATEST resolve through the SESSION TimeZone, which nothing in the deploy
     // pins. Under UTC-3 the stored value reads as 3h in the FUTURE and wins, so the barrier never
     // advances and a pre-write snapshot walks straight through the compare-and-set.

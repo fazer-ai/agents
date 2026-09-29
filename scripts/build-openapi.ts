@@ -34,7 +34,7 @@ const API_SERVER = {
 
 type OpenApiDoc = { servers?: unknown } & Record<string, unknown>;
 
-// NOTE: TypeBox emits modern JSON Schema (`patternProperties` for Record<string, X>, and
+// TypeBox emits modern JSON Schema (`patternProperties` for Record<string, X>, and
 // `anyOf: [X, {type: "null"}]` for nullable unions), neither of which exists in OpenAPI 3.0 —
 // that dialect predates JSON Schema 2020-12. The plugin still labels the document 3.0.3, so
 // every such schema is a hard validation error and Swagger UI flags the spec as invalid.
@@ -43,7 +43,7 @@ type OpenApiDoc = { servers?: unknown } & Record<string, unknown>;
 // the key pattern; `type: "null"` -> `nullable` is 3.0-only vocabulary).
 const OPENAPI_VERSION = "3.1.0";
 
-// NOTE: Keys the generator emits that are not OpenAPI in any dialect, so they stay invalid even
+// Keys the generator emits that are not OpenAPI in any dialect, so they stay invalid even
 // under 3.1: `nullable` is 3.0-only vocabulary (dropped in 3.1) and is redundant here anyway —
 // every occurrence sits beside an `anyOf` that already carries `{type: "null"}`, so removing it
 // loses nothing. `maxSize` (TypeBox file constraint) and `ws` (Elysia WebSocket route) have no
@@ -83,7 +83,7 @@ function stripTrailingSlashes(
   return out;
 }
 
-// NOTE: For a body-less response (`t.Void()`, e.g. the 302 on the MCP authorize endpoint) the plugin
+// For a body-less response (`t.Void()`, e.g. the 302 on the MCP authorize endpoint) the plugin
 // emits the bare schema as `content` — `{"type": "void", …}` — but OpenAPI's `content` is a map of
 // MEDIA TYPES, so that shape is invalid in every dialect. A response with no body simply omits
 // `content`, which is what this restores. Detection: a real media-type map has "/" in its keys. For a

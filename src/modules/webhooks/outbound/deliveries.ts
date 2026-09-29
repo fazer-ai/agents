@@ -216,7 +216,7 @@ export async function requeueWebhookDelivery(
   base: PrismaClient = basePrisma,
 ): Promise<WebhookDeliveryDto> {
   const { row, before } = await runScopedOn(base, ctx, async (db) => {
-    // NOTE: `FOR UPDATE` is the design, not an optimisation: another operator and the WORKER both
+    // `FOR UPDATE` is the design, not an optimisation: another operator and the WORKER both
     // write this row, and without the lock the status refused on and the count logged could be
     // stale by the time they are said. RLS is active here, so a foreign id selects nothing (404).
     const locked = await db.$queryRaw<

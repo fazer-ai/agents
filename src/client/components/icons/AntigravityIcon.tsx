@@ -1,6 +1,6 @@
 import { type SVGProps, useId } from "react";
 
-// NOTE: Official Google Antigravity brand mark — a distinct upward "arch"/A glyph (evoking
+// Official Google Antigravity brand mark — a distinct upward "arch"/A glyph (evoking
 // lift / weightlessness), NOT the Gemini four-pointed spark. Solid blue base (#3186FF) with
 // Google's multicolor (yellow/red/green/blue) soft blurred glows clipped to the glyph via an
 // alpha mask. Reproduced from the official logo SVG (antigravity.google press asset). Brand

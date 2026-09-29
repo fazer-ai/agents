@@ -332,7 +332,7 @@ describe("preconditionFlowEvent", () => {
   });
 
   test("the error's CLASS travels, never its message", () => {
-    // NOTE: a driver's own TypeError message carries the request that failed, credentials included,
+    // A driver's own TypeError message carries the request that failed, credentials included,
     // and this detail is rendered in the console.
     const ev = preconditionFlowEvent({
       tool: "handoff_to_human",
@@ -382,7 +382,7 @@ describe("unmatchedPreconditionEvent", () => {
 
 describe("the effect-free mark and the guard", () => {
   test("a guarded tool is still the tool it wraps, mark included", async () => {
-    // NOTE: an imported settings bag can carry a precondition on a NON-native name, and the runtime
+    // An imported settings bag can carry a precondition on a NON-native name, and the runtime
     // guards whatever tool still answers to it, `search_knowledge` included. The guard delegates by
     // prototype, so the RAG builder's mark is inherited; a wrapper that stops delegating would drop
     // it, and the observer's tick would count a read as an effect and lose its retry.

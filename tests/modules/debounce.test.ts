@@ -2783,7 +2783,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       where: { id },
       data: { replyClaimFloorMessageId: 0 },
     });
-    // NOTE: Message 1's delivery, killed by a process crash: exactly what re-reading the thread
+    // Message 1's delivery, killed by a process crash: exactly what re-reading the thread
     // rescues, and what this refusal has to close.
     const presa = await suDb.chatwootWebhookDelivery.create({
       data: {
@@ -2831,7 +2831,7 @@ describe.skipIf(!dbUp)("debounce", () => {
     });
     // NOTE: The bot does not talk over the person.
     expect(sent).toEqual([]);
-    // NOTE: And the burst is CLOSED: the mark passes it.
+    // And the burst is CLOSED: the mark passes it.
     const conv = await suDb.conversation.findUniqueOrThrow({
       where: { id },
       select: { lastHandledMessageId: true },
@@ -2854,7 +2854,7 @@ describe.skipIf(!dbUp)("debounce", () => {
         })
       ).status,
     ).toBe("PROCESSED");
-    // NOTE: AND THE LINE THAT CLOSES THE LOSS SAYS WHICH OF THE TWO HAPPENED. The loss alert
+    // AND THE LINE THAT CLOSES THE LOSS SAYS WHICH OF THE TWO HAPPENED. The loss alert
     // already fired and cannot be recalled, so this line is all the operator has to learn how it
     // ended. We answered nothing here: `answered_late` would hand them a resolution nobody wrote,
     // which is why settlement tells `answered` from `consumed`.
@@ -3073,7 +3073,7 @@ describe.skipIf(!dbUp)("debounce", () => {
         where: { tenantId, source: "inbox" },
       });
     }
-    // NOTE: With budget again, the withdrawn request is not run.
+    // With budget again, the withdrawn request is not run.
     const model = new CaptureReplyModel(REPLY);
     await flushDebounceJob({
       job: jobFor(convId, { lastMessageId: 2 }),
@@ -3102,7 +3102,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       where: { id },
       data: { replyClaimFloorMessageId: 0 },
     });
-    // NOTE: The orphan's delivery, stuck and reported as a loss.
+    // The orphan's delivery, stuck and reported as a loss.
     const reported = await suDb.chatwootWebhookDelivery.create({
       data: {
         tenantId,
@@ -3219,7 +3219,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       },
       select: { id: true },
     });
-    // NOTE: The orphan the refusal really CONSUMES, below the mark and with no row at all.
+    // The orphan the refusal really CONSUMES, below the mark and with no row at all.
     const daOrfa = await suDb.chatwootWebhookDelivery.create({
       data: {
         tenantId,
@@ -3455,7 +3455,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       select: { id: true },
     });
     const sent: Array<[number, string]> = [];
-    // NOTE: 2 and our notice arrive DURING the model call, the real window: everything the gate
+    // 2 and our notice arrive DURING the model call, the real window: everything the gate
     // re-reads afterwards is the state after them.
     let midTurn = false;
     const model = new SideEffectModel(async () => {
@@ -4037,7 +4037,7 @@ describe.skipIf(!dbUp)("debounce", () => {
   });
 
   test("a flush retires the ledger row of a message it rescued", async () => {
-    // NOTE: Message 1's delivery died mid-processing, so its ledger row sits non-terminal with
+    // Message 1's delivery died mid-processing, so its ledger row sits non-terminal with
     // nothing working it. Message 2 arms a flush that re-reads the WHOLE thread from Chatwoot, so
     // message 1 is in the burst and gets answered. No watermark can express that afterwards, so the
     // turn says so on the row, and the sweep's classifier needs no watermark arithmetic.
@@ -4244,7 +4244,7 @@ describe.skipIf(!dbUp)("debounce", () => {
   });
 
   test("a flush stopped by a closed gate settles the ledger too", async () => {
-    // NOTE: The gate exits decide before any Chatwoot fetch: they advance the watermark from the
+    // The gate exits decide before any Chatwoot fetch: they advance the watermark from the
     // payload's own lastMessageId and return. A delivery that armed this flush and then died is
     // sitting PROCESSING, and left there it becomes a reported loss for a message the product
     // deliberately declined to answer (a human holds the conversation).
@@ -4402,7 +4402,7 @@ describe.skipIf(!dbUp)("debounce", () => {
   });
 
   test("a gate closed by ANOTHER BOT leaves the ledger alone", async () => {
-    // NOTE: The same exit, closed by the one state whose settlement may not widen. Chatwoot fans a
+    // The same exit, closed by the one state whose settlement may not widen. Chatwoot fans a
     // message to up to two routes (`agent_bots_for`: the assignee bot and the inbox's bot, each
     // with its own delivery id), so a message in this burst can have a SECOND ledger row,
     // `PROCESSING` for the bot that now owns the conversation. A range write turns it `PROCESSED`,
@@ -4660,7 +4660,7 @@ describe.skipIf(!dbUp)("debounce", () => {
   });
 
   test("a flush leaves a strand the burst did NOT contain alone", async () => {
-    // NOTE: Message 1's delivery died. Message 2 arrived while the conversation was human-owned, so
+    // Message 1's delivery died. Message 2 arrived while the conversation was human-owned, so
     // the webhook advanced the handled watermark past BOTH without answering either. Message 3 then
     // arms a flush whose burst floor is the watermark, so the burst is {3}: nothing covered message
     // 1, and its row stays non-terminal to say so. Any rule that reads a watermark closes this row,
@@ -4728,7 +4728,7 @@ describe.skipIf(!dbUp)("debounce", () => {
   });
 
   test("a flush CORRECTS a row already reported as a loss, and says so", async () => {
-    // NOTE: The RECORD is the flow line, written once and never rewritten; `WHERE status = 'DEAD'`
+    // The RECORD is the flow line, written once and never rewritten; `WHERE status = 'DEAD'`
     // is the WORKLIST, and it answers "who is still unanswered". A turn that ran over the message
     // is direct evidence against a verdict the sweep reached by inference, so the row leaves the
     // worklist. That happens when the sweep fires between a turn posting and the retirement, or
@@ -5832,7 +5832,7 @@ describe.skipIf(!dbUp)("debounce", () => {
     });
 
     test("a refused contact closes the orphan below the mark too", async () => {
-      // NOTE: The gate decides BEFORE any Chatwoot fetch, so it cannot name the members and writes
+      // The gate decides BEFORE any Chatwoot fetch, so it cannot name the members and writes
       // the range. The orphan sits BELOW the mark, so a range starting at the mark leaves it
       // rowless: it comes back as owed once authorization returns, and the next turn runs a request
       // this gate already discarded. The range starts at the era floor, where a missing row starts
@@ -5869,7 +5869,7 @@ describe.skipIf(!dbUp)("debounce", () => {
         },
       });
       expect(sent).toEqual([]);
-      // NOTE: Authorization is back: the discarded request is not run.
+      // Authorization is back: the discarded request is not run.
       const model = new CaptureReplyModel(REPLY);
       await flushDebounceJob({
         job: jobFor(convId, { lastMessageId: 2 }),
@@ -5894,7 +5894,7 @@ describe.skipIf(!dbUp)("debounce", () => {
     });
 
     test("a refused contact closes the ledger row of the orphan too", async () => {
-      // NOTE: The dispensal and the ledger share one lower bound, the era floor: a ledger starting
+      // The dispensal and the ledger share one lower bound, the era floor: a ledger starting
       // at the mark would leave the orphan's delivery stuck, reported as an unattended loss and
       // eligible for recovery after the refusal already decided it.
       const convId = 954;
@@ -6009,7 +6009,7 @@ describe.skipIf(!dbUp)("debounce", () => {
         select: { id: true },
       });
       const sent: Array<[number, string]> = [];
-      // NOTE: The point is the MODEL running, not the reply going out: the post gate's CAS already
+      // The point is the MODEL running, not the reply going out: the post gate's CAS already
       // withholds a reply whose watermark moved, so asserting on `sent` alone passes without this
       // fence. Counting the model separates "did not answer" from "never ran", and a turn that ran
       // spent tokens and may have called side-effecting tools.
@@ -7170,7 +7170,7 @@ describe.skipIf(!dbUp)("debounce", () => {
       expect(sent).toEqual([]);
       // The retry that a throw would arm is what would send that picture again.
       expect(await watermarkOf(923)).toBe(7);
-      // NOTE: AND THE THIRD SHAPE OF A PARTIAL DELIVERY: the customer holds the picture and none of
+      // AND THE THIRD SHAPE OF A PARTIAL DELIVERY: the customer holds the picture and none of
       // the words. "Not a failed turn" and "nothing to tell the operator" are different facts, and
       // a clean post would make the flush CLEAR whatever badge the conversation carries.
       const conv = await suDb.conversation.findFirstOrThrow({

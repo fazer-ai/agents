@@ -258,7 +258,7 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
       wanted = false;
       return new Response('{"authorized":true}', { status: 200 });
     });
-    // NOTE: recorded per ask is whether the ASK ITSELF is inside a Prisma transaction, not how many
+    // Recorded per ask is whether the ASK ITSELF is inside a Prisma transaction, not how many
     // exist, which counts `emitFlowEvent`'s fire-and-forget write on the same client and fails
     // whenever that INSERT is in flight (`tests/utils/counting-base.ts`). The thread claim holds no
     // transaction, so the ask is free to open its own scope: an ask inside a pinned one would fail

@@ -245,7 +245,7 @@ export const oauthGoogleCallbackController = new Elysia({
         if (state.userId !== String(user.id)) {
           return htmlError(401, "state_user_mismatch", origin);
         }
-        // NOTE: the user must be TENANT_ADMIN (or SUPER_ADMIN) in the STATE's tenant, not the
+        // The user must be TENANT_ADMIN (or SUPER_ADMIN) in the STATE's tenant, not the
         // callback request's: this navigation carries no tenant selector, so the session runs under
         // the person's default membership, which need not be the tenant the flow started from.
         const stateTenantId = parseDbId(state.tenantId);

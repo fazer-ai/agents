@@ -45,7 +45,7 @@ function everyCappedPath(): string[] {
 
 describe("editorTargetFor", () => {
   test("every capped field either has a place in the editor or is one of the ten with no control", () => {
-    // NOTE: every capped field with a textarea must be mapped, e.g. `availability.awayMessage` and
+    // Every capped field with a textarea must be mapped, e.g. `availability.awayMessage` and
     // `contactAuth.denyMessage` on the Behavior tab; otherwise the warning says the console has no
     // field for it.
     const unplaced = everyCappedPath().filter(
@@ -197,7 +197,7 @@ describe("hasNoConsoleControl", () => {
 
 describe("editorRefusalFields", () => {
   test("every credential the server can refuse is owned by the editor", () => {
-    // NOTE: the other direction: every path in SETTINGS_CREDENTIAL_PATHS must reach the editor's own
+    // The other direction: every path in SETTINGS_CREDENTIAL_PATHS must reach the editor's own
     // list (e.g. `settings.modelFallback.credentialRef`), or the server could refuse a field this page
     // neither marks nor announces. Asserted against the SERVER's list, which is the one that grows.
     const { owned } = editorRefusalFields(view());
@@ -237,7 +237,7 @@ describe("editorRefusalFields", () => {
   });
 
   test("a control behind an off switch is owned and NOT drawn", () => {
-    // NOTE: not about when the refusal arrives: the operator can turn Vision off while its credential
+    // Not about when the refusal arrives: the operator can turn Vision off while its credential
     // refusal is standing, so the mark is held on a control no longer in the DOM, and only `drawn`
     // saying so gets the sentence back on screen.
     const off = editorRefusalFields(view({ visionEnabled: false }));
@@ -252,7 +252,7 @@ describe("editorRefusalFields", () => {
   });
 
   test("each switch answers for its own controls and nobody else's", () => {
-    // NOTE: A table rather than one case, because the failure this guards is a wire crossed between two
+    // A table rather than one case, because the failure this guards is a wire crossed between two
     // switches: a field that disappears when the wrong section is turned off is exactly as silent as
     // one that never disappears.
     const cases: Array<[Partial<EditorControlsShown>, string[]]> = [
@@ -342,7 +342,7 @@ describe("sentFromPatch", () => {
   const OWNED = editorRefusalFields(view()).owned;
 
   test("a settings block carried by a switched-off section still counts as sent", () => {
-    // NOTE: guardrails off, the block still on the wire. Without it the refusal is marked with no
+    // Guardrails off, the block still on the wire. Without it the refusal is marked with no
     // staleness comparison, so the server's sentence lands under whatever the operator typed while
     // the request was out.
     const sent = sentFromPatch(

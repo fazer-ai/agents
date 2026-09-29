@@ -65,7 +65,7 @@ describe.skipIf(!dbUp)("rag sql (pgvector)", () => {
       },
     });
     kb1 = kb.id;
-    // NOTE: knowledge_chunks requires a document_id FK after the knowledge_documents migration.
+    // knowledge_chunks requires a document_id FK after the knowledge_documents migration.
     const doc = await suDb.knowledgeDocument.create({
       data: {
         tenantId: t1,

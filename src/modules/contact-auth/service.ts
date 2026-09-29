@@ -155,7 +155,7 @@ export async function authorizeContact(
   const { verdict, shared } = await singleFlight(
     key,
     async (): Promise<ContactAuthVerdict> => {
-      // NOTE: Read inside the single-flight, so a burst resolves the identity once too. Everything
+      // Read inside the single-flight, so a burst resolves the identity once too. Everything
       // under `contact` is what Chatwoot mirrored; nothing the customer typed can stand in for it.
       const contact = await runScopedOn(base, sysCtx(tenantId), (db) =>
         db.contact.findUnique({
@@ -211,7 +211,7 @@ export async function authorizeContact(
       // listed, which is what it is.
       if (rule) return allowlistVerdict(rule, phone, identifier);
       if (!cfg.url) return { outcome: "error", reason: "not_configured" };
-      // NOTE: the stored verdict, read after the identity (a grant is about the identity the mirror
+      // The stored verdict, read after the identity (a grant is about the identity the mirror
       // holds now) and before the credential, so a reuse costs neither the vault read nor a
       // managed-OAuth refresh.
       const grantKey = { tenantId, agentId, contactId: contactDbId };
@@ -269,7 +269,7 @@ export async function authorizeContact(
         if (cfg.credentialRef) {
           let timedOut = false;
           try {
-            // NOTE: Outside any tx: a managed-OAuth entry may refresh its token here. Under the
+            // Outside any tx: a managed-OAuth entry may refresh its token here. Under the
             // signal, so a refresh that hangs spends the gate's budget instead of its own.
             const resolve =
               params.resolveCredential ?? resolveInjectableCredentialEntry;

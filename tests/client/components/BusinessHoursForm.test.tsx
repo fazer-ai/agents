@@ -22,14 +22,14 @@ const EXCEPTIONS = [
 ];
 
 describe("BusinessHoursForm", () => {
-  // NOTE: stubbing `globalThis.fetch` rather than the api module: `mock.module` is global to the
+  // Stubbing `globalThis.fetch` rather than the api module: `mock.module` is global to the
   // process and leaks into whatever else shares the worker. The fetch stub is process-global too,
   // so it records whatever ANYTHING in the worker sends; every call is kept WITH ITS URL and the
   // assertions look up the one the form is responsible for, so a stray request can be named instead
   // of overwriting the answer.
   const realFetch = globalThis.fetch;
   const calls: { method: string; url: string; body: unknown }[] = [];
-  // NOTE: matches the collection route too, because `POST /api/v1/business-hours` is what the form
+  // Matches the collection route too, because `POST /api/v1/business-hours` is what the form
   // sends in CREATE mode: narrowing to `/business-hours/7` would turn a wrongly-taken create branch
   // into a timeout with nothing to read. The assertions require exactly ONE call and then name it.
   const businessHoursCalls = () =>

@@ -54,7 +54,7 @@ export async function tenantGet(
   const base = deps.base ?? basePrisma;
   const ctx = adminGate(principal);
   if ("ok" in ctx) return ctx;
-  // NOTE: the same parser every other MCP surface uses. A `try`/`catch` around `BigInt` catches
+  // The same parser every other MCP surface uses. A `try`/`catch` around `BigInt` catches
   // the spelling half and misses the range half, which is the half that reaches the database.
   const id = parseMcpId(args.tenant_id, "tenant_id");
   if (typeof id !== "bigint") return id;
@@ -75,7 +75,7 @@ export async function tenantCreate(
   if ("ok" in ctx) return ctx;
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // The core's own question, asked INSIDE the branch because the apply reaches the core,
       // which asks it again; above the branch it would be a second lookup that can disagree.
       const parsed = assertTenantCreatable({
         name: args.name,

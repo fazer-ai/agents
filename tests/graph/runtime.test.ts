@@ -552,7 +552,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(suppressed).toHaveLength(1);
     expect(suppressed[0]?.level).toBe("warn");
 
-    // NOTE: And the token is not left in the thread to feed itself. The raw message was
+    // And the token is not left in the thread to feed itself. The raw message was
     // already checkpointed, the thread is shared per contact-inbox, and the next turn reading one
     // more sentinel answer is what reinforces the condition that produced this one.
     const held = await threadChannel(saver9454, 9454);
@@ -660,7 +660,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
     const saver = new MemorySaver();
     const sent: Array<[number, string]> = [];
-    // NOTE: The other replica is ALREADY reading this thread, on the row and not in this process's
+    // The other replica is ALREADY reading this thread, on the row and not in this process's
     // Map, so only the durable half answers. A turn that joined it would have to defer its own
     // rollback (a removal the other invoke is about to undo leaves a checkpoint that lies), so it waits.
     const otherReplica = await markTurnOwning(owner, appDb);
@@ -1028,7 +1028,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     // The customer's own message is untouched by the marker.
     expect(String(messages[3]?.content)).not.toContain("nova conversa");
     expect(String(messages[3]?.content)).toBe(String(messages[0]?.content));
-    // NOTE: And the boundary is one the CUT can find. Recognition is by metadata, not by the text
+    // And the boundary is one the CUT can find. Recognition is by metadata, not by the text
     // above, so a divider written without it would read as an ordinary turn and the first attendance
     // would never be compactable: the producer and the consumer only meet if this passes.
     const cut = selectClosedPrefix(messages as unknown as BaseMessage[], {
@@ -1202,7 +1202,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         })
       ).lastHandledMessageId,
     ).toBeNull();
-    // NOTE: E O OPERADOR VÊ. Todo portão que fecha nesta pergunta escreve a MESMA linha, porque quem
+    // E O OPERADOR VÊ. Todo portão que fecha nesta pergunta escreve a MESMA linha, porque quem
     // filtra o log por um desfecho tem que receber todos eles; sem ela a conversa some do rastro de
     // handoff. `emitFlowEvent` é fire-and-forget, daí o poll.
     let handoff: unknown = null;
@@ -1732,7 +1732,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       }),
     ).toBe(1);
 
-    // NOTE: The marker advanced, and this turn is the one that moved it: there is no second turn
+    // The marker advanced, and this turn is the one that moved it: there is no second turn
     // here. Deferring the boundary to whatever comes next would leave it unclaimed when no next turn
     // comes.
     const after = await suDb.agentThread.findUniqueOrThrow({
@@ -2099,7 +2099,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     }
     expect(resolvedLogged).toBe(true);
 
-    // NOTE: The agent calling resolve_conversation is the ONE closing the Resolution funnel
+    // The agent calling resolve_conversation is the ONE closing the Resolution funnel
     // counts, and it is only distinguishable from the five that are not because the origin is
     // recorded here. The row is read after the flow event above, so the write has had its turn.
     const resolvedRow = await suDb.conversation.findFirstOrThrow({
@@ -2777,7 +2777,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: 9726 },
     });
-    // NOTE: O carimbo da chamada é provisório por construção: quando `skip_reply` rodou, a
+    // O carimbo da chamada é provisório por construção: quando `skip_reply` rodou, a
     // transferência ainda não tinha acontecido. A linha é buscada pelo nome: o turno grava duas
     // linhas `tool`, e a ordem em que chegam à tabela não é a das chamadas (cada escrita é disparada
     // sem espera), então "a primeira linha tool" seria qualquer uma das duas.
@@ -2805,7 +2805,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     const marcador = trail.find((e) => e.name === "skip_reply");
     expect(marcador?.turnDelivered).toBe(true);
 
-    // NOTE: A trilha lê uma JANELA (as 60 linhas mais novas de `tool`/`generate`), e o fato do turno
+    // A trilha lê uma JANELA (as 60 linhas mais novas de `tool`/`generate`), e o fato do turno
     // só governa o marcador se couber nela junto com a linha da decisão. Isso depende de o fato ser
     // gravado DEPOIS dela, e `emitFlowEvent` não espera a escrita, então a ordem é verificada aqui,
     // num turno de verdade. A linha é procurada, nunca tomada por ordem: um turno escreve várias
@@ -3176,7 +3176,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     ]);
     expect(outcome).toBe("empty");
 
-    // NOTE: AND THE WORDS ARE OUT OF THE THREAD. The text was checkpointed by the invoke
+    // AND THE WORDS ARE OUT OF THE THREAD. The text was checkpointed by the invoke
     // that produced it, the thread is shared per contact-inbox, and a later turn reading it would
     // believe the customer was answered. The transfer itself stays: the tool call and its result are
     // the record of what actually happened.
@@ -3870,7 +3870,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(warned?.resolveDiscarded).toBe(false);
   });
 
-  // NOTE: The reply can be written in the same assistant message as a tool call, with the turn then
+  // The reply can be written in the same assistant message as a tool call, with the turn then
   // ending on an empty message; posting only the LAST assistant message would drop that answer and
   // read the turn as an unexplained silence. `resolve_conversation` invites it: its result says the
   // close waits for "your final reply", and a model that already wrote it reads that as done.
@@ -4139,7 +4139,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(calls.filter(([op]) => op === "sendMessage")).toEqual([]);
   });
 
-  // NOTE: A turn that ends with nothing for the customer, no handoff and no `skip_reply` is asked once
+  // A turn that ends with nothing for the customer, no handoff and no `skip_reply` is asked once
   // more, in the same round, with a late instruction naming both exits. Most such turns are correct
   // but undeclared silences after a thank-you, a few are customers owed an answer; the retry recovers
   // both without making anyone answer a thank-you.
@@ -4827,7 +4827,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(outcome).toBe("taken-over");
     // Neither the label nor anything else reached the conversation the person now holds.
     expect(calls).toEqual([]);
-    // NOTE: And the trail says the gate closed, from the read that refused.
+    // And the trail says the gate closed, from the read that refused.
     const closedLines = await flowLogRows(suDb, {
       where: {
         tenantId,
@@ -5491,7 +5491,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     );
   });
 
-  // NOTE: The model is TOLD when its reply will be spoken, and may choose text for it. What it
+  // The model is TOLD when its reply will be spoken, and may choose text for it. What it
   // is told is a property of the request, so every test here reads the request the model received.
   const NOTICE_ON = { spokenNotice: true };
 
@@ -6422,7 +6422,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
           `${dir}/${storageKey(tenantId, row?.id ?? 0n)}`,
         ).exists(),
       ).toBe(true);
-      // NOTE: And the trail names the tool the operator granted, not a constant: an operator
+      // And the trail names the tool the operator granted, not a constant: an operator
       // filtering for it has to find the line it produced. Scoped AND polled: `emitFlowEvent` is
       // fire-and-forget, so the `send_orcamento` line may not have landed on the first read.
       let named = false;
@@ -7072,7 +7072,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   test("issue #49: a newer incoming message mid-turn supersedes the direct reply", async () => {
     await seedConversation(970, null);
     const sent: Array<[number, string]> = [];
-    // NOTE: The shouldPost re-fetch sees a newer incoming message (id 2) than the trigger (id 1).
+    // The shouldPost re-fetch sees a newer incoming message (id 2) than the trigger (id 1).
     const client = {
       getMessages: async () => ({
         payload: [
@@ -7104,7 +7104,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("superseded");
     expect(sent).toEqual([]);
-    // NOTE: Superseded leaves the watermark for the newer message's own turn.
+    // Superseded leaves the watermark for the newer message's own turn.
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: 970 },
       select: { lastHandledMessageId: true },
@@ -7659,7 +7659,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       },
       THREAD_STATE_NODE,
     );
-    // NOTE: Another invoke is already reading this channel, so this turn waits it out rather than
+    // Another invoke is already reading this channel, so this turn waits it out rather than
     // appending beside it. The note still has to reach the model of THIS turn: the customer is
     // waiting on a transfer with no ending.
     const owner = {
@@ -7714,7 +7714,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     expect(channel.filter(([, t]) => t === HUMAN_HANDBACK_NOTE)).toHaveLength(
       1,
     );
-    // NOTE: AND IT IS A DURABLE APPEND, which the wait makes safe: `updateState` writes the note in a
+    // AND IT IS A DURABLE APPEND, which the wait makes safe: `updateState` writes the note in a
     // checkpoint of its own, before the customer's message exists. With no older invoke left to erase
     // it, the note survives even a turn that dies before its invoke.
     const withNote: string[][] = [];
@@ -8111,7 +8111,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
     });
     expect(outcome).toBe("superseded");
     expect(sent).toEqual([]);
-    // NOTE: The CAS must also never move the watermark BACKWARDS (5 → 1), which would let the
+    // The CAS must also never move the watermark BACKWARDS (5 → 1), which would let the
     // messages in between be handled a second time.
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: 971 },
@@ -8123,7 +8123,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
   test("issue #49: a newer attachment-only message (voice note) also supersedes the direct reply", async () => {
     await seedConversation(973, null);
     const sent: Array<[number, string]> = [];
-    // NOTE: The newer message carries no text at all — only an audio attachment.
+    // The newer message carries no text at all — only an audio attachment.
     const client = {
       getMessages: async () => ({
         payload: [
@@ -9033,7 +9033,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
         rationale: "abuse",
         suggestedReply: "GEN-IN-REPLY",
       });
-      // NOTE: A newer customer message (id 2) landed while the guardrail was screening id 1.
+      // A newer customer message (id 2) landed while the guardrail was screening id 1.
       const client = {
         getMessages: async () => ({
           payload: [
@@ -9659,7 +9659,7 @@ describe.skipIf(!dbUp)("runAgentTurn", () => {
       // The customer still gets answered: moderation failing is not the customer's problem.
       expect(sent).toEqual([[952, REPLY]]);
 
-      // NOTE: ...and the console says so where the feature was turned on. The chain under test is
+      // ...and the console says so where the feature was turned on. The chain under test is
       // the whole one: the vendor refuses the call, the turn records a guardrail failure, the health
       // read counts it, and the editor's configuration-warning panel raises a line for it. Ending at
       // the log row would assert a proxy: the operator learns nothing from a row alone.

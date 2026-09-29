@@ -211,7 +211,7 @@ describe.skipIf(!dbUp)("a tool dropped for a duplicate name", () => {
 
   test("names a tool once, however many claimants lost it", async () => {
     const turnId = crypto.randomUUID();
-    // NOTE: THREE claimants, two losers, ONE name. `dropDuplicateToolNames` returns the name once per
+    // THREE claimants, two losers, ONE name. `dropDuplicateToolNames` returns the name once per
     // tool it dropped, so the raw list reads `["dup", "dup"]`, which on the Logs page looks like two
     // separate problems to chase. This is the only case that fails if the dedupe is removed.
     const tools = await buildToolset(config(), ctx(), {

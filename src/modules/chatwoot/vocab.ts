@@ -27,7 +27,7 @@ export async function loadChatwootVocab(
 ): Promise<ChatwootVocab> {
   const hit = cache.get(cacheKey);
   if (hit && hit.expires > now) return hit.value;
-  // NOTE: a labels-only entry still in date answers the labels half. The observation tick reads the
+  // A labels-only entry still in date answers the labels half. The observation tick reads the
   // labels alone and `buildToolset` asks for the pair moments later, so without this the same catalog
   // is fetched twice per TTL, sequentially, inside the same observation deadline.
   const warm = labelCache.get(cacheKey);

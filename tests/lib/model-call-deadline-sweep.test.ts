@@ -44,7 +44,7 @@ describe("every runModelCall under src/ names its deadline", () => {
   });
 
   test("the sweep sees the calls it is about", async () => {
-    // NOTE: if this drops to zero the sweep is looking at nothing.
+    // If this drops to zero the sweep is looking at nothing.
     let calls = 0;
     const { Glob } = await import("bun");
     for await (const file of new Glob("src/**/*.ts").scan(".")) {

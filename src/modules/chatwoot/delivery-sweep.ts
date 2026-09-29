@@ -199,7 +199,7 @@ export async function retireCoveredDeliveries(
                 },
         };
 
-  // NOTE: two writes, not a transaction (nor with the preceding watermark advance): every window
+  // Two writes, not a transaction (nor with the preceding watermark advance): every window
   // between them leaves a state that is wrong and visible, never a quiet loss, and a transaction
   // would span `writeFlowEvent`'s alert dispatch to somebody else's endpoint. PROCESSING first: the
   // other order lets the sweep's PROCESSING -> DEAD land between them and leaves the row DEAD for
@@ -245,7 +245,7 @@ export async function retireCoveredDeliveries(
     });
   }
 
-  // NOTE: and the rows that need a closing line, the ones that were DEAD. One UPDATE naming DEAD in
+  // And the rows that need a closing line, the ones that were DEAD. One UPDATE naming DEAD in
   // its predicate and returning what it moved, because a read first would race the sweep both ways
   // (a correction lost, or written twice). DEAD is corrected, not contradicted: the sweep's verdict
   // is an inference and a turn over the message is direct evidence. The loss line stays; the one
@@ -469,7 +469,7 @@ export async function sweepStrandedDeliveries(
     raced: 0,
   };
 
-  // NOTE: both non-terminal states strand: a death between insert and CAS leaves PENDING, and a
+  // Both non-terminal states strand: a death between insert and CAS leaves PENDING, and a
   // redelivery rarely comes since Chatwoot holds a 200. The staleness cutoff is in the query, not
   // only the classifier, because the batch is capped: ordered by `received_at` alone, recently
   // reclaimed old rows would fill every slot and starve a real strand. Both arms are the
@@ -517,7 +517,7 @@ export async function sweepStrandedDeliveries(
     // NOTE: unreachable through the query, kept because the rule is the classifier's: two
     // statements of one threshold, and this is where they would be caught disagreeing.
     if (verdict === "in-flight") continue;
-    // NOTE: the mirror is read only for a row going in the loss list (the only verdict that writes
+    // The mirror is read only for a row going in the loss list (the only verdict that writes
     // a line). A throwing read must not cost the report, since `record` marks the row terminal
     // first; null is "could not tell", said out loud.
     const mirror =
@@ -619,7 +619,7 @@ async function record(
     // never runs, the next human reply takes the conversation over on its own.
     if (verdict === "observer-strand") {
       counts.observerStrands += 1;
-      // NOTE: what this line may claim. Beside a responder of ours, its own delivery folds the reply
+      // What this line may claim. Beside a responder of ours, its own delivery folds the reply
       // into the shared memory, so nothing was lost; with none, the observer's memory is the only
       // one. `route_remembers = false` (also what a failed arm writes) cannot close the row benign,
       // only keep the line from asserting a loss; it names both readings. The binding is read now,

@@ -64,7 +64,7 @@ export async function dispenseMessagesFromReply(params: {
   if (wanted.length === 0) return;
   const base = params.base ?? basePrisma;
   await runScopedOn(base, sysCtx(params.tenantId), async (db) => {
-    // NOTE: lock the parent row first, with `FOR UPDATE` like `advanceHandledWatermark`: the child
+    // Lock the parent row first, with `FOR UPDATE` like `advanceHandledWatermark`: the child
     // insert takes `KEY SHARE` on the conversation and `claimReplyBurst` holds `FOR UPDATE` on it, so
     // both paths must take the parent the same way. Reads the same columns as `claimReplyBurst`
     // because it must also decide which side of the floor each message falls on.
@@ -85,13 +85,13 @@ export async function dispenseMessagesFromReply(params: {
     // `claimReplyBurst`).
     if (row === undefined) return;
 
-    // NOTE: the dispensal opens the per-message era when it has not begun. This is the only writer
+    // The dispensal opens the per-message era when it has not begun. This is the only writer
     // of a `DISPENSED` row that does not move the mark, so without a floor the row would be invisible
     // to `readSelectionState` yet still hit by the unique index in `claimReplyBurst`, which would
     // refuse every later burst containing it as `partial`, in a loop. The floor is the same max of
     // the two scalars `claimReplyBurst` computes.
     const floor = row.floor ?? Math.max(row.handled ?? 0, row.claimed ?? 0);
-    // NOTE: nothing at or below the floor: the scalars already decided those (a redelivery from the
+    // Nothing at or below the floor: the scalars already decided those (a redelivery from the
     // old era, say), and a row there would recreate the invisible conflict above.
     const ids = wanted.filter((m) => m > floor);
     if (ids.length === 0) return;
@@ -144,7 +144,7 @@ export async function advanceHandledWatermark(
       },
       data: { lastHandledMessageId: params.toMessageId },
     });
-    // NOTE: written whether or not the CAS won. A stale advance loses the mark to a newer decision,
+    // Written whether or not the CAS won. A stale advance loses the mark to a newer decision,
     // but the decision this call reports still happened, and skipping the row would leave a message
     // it deliberately left unanswered with no record.
     const d = params.dispensed;
@@ -198,7 +198,7 @@ export async function claimReplyBurst(params: {
   base?: PrismaClient;
 }): Promise<ReplyClaimOutcome> {
   const base = params.base ?? basePrisma;
-  // NOTE: ascending, so two turns inserting overlapping sets wait on each other in one order instead
+  // Ascending, so two turns inserting overlapping sets wait on each other in one order instead
   // of deadlocking; deduplicated so a repeated id cannot make the insert count disagree with the set.
   let partial = false;
   const ids = [...new Set(params.messageIds)].sort((a, b) => a - b);
@@ -229,7 +229,7 @@ export async function claimReplyBurst(params: {
       // NOTE: conversation deleted under a running turn: nothing may be posted for it.
       if (row === undefined) return { won: false, reason: "claimed" };
 
-      // NOTE: the per-message floor decides which era answers. At or below it no rows exist, so the
+      // The per-message floor decides which era answers. At or below it no rows exist, so the
       // scalars answer in full (which keeps a redelivery from before the table from being answered
       // twice); above it the absence of a row is evidence, because every decision there writes one.
       const floor = row.floor;
@@ -253,7 +253,7 @@ export async function claimReplyBurst(params: {
         return { won: false, reason: "handled" };
       }
 
-      // NOTE: membership of the actual ids, not overlap with the interval they span: a burst is not
+      // Membership of the actual ids, not overlap with the interval they span: a burst is not
       // dense, so a range can intersect its hull without covering any member. Counted per message so
       // a partial cover is reported as `partial` and the caller reschedules the rest. Ranges are
       // exclusive at the lower end, as `retireCoveredDeliveries` computes them.
@@ -275,7 +275,7 @@ export async function claimReplyBurst(params: {
         };
       }
 
-      // NOTE: the exclusion is the unique index, not a comparison: overlapping sets collide
+      // The exclusion is the unique index, not a comparison: overlapping sets collide
       // atomically, disjoint sets both pass.
       const inserted = overturnsSilence
         ? // NOTE: the one write that overturns a row: a DISPENSED row becomes CLAIMED because the
@@ -424,7 +424,7 @@ export async function readSelectionState(params: {
     const claimed = new Set(
       rows.filter((r) => r.reason === "CLAIMED").map((r) => r.messageId),
     );
-    // NOTE: any reason other than `CLAIMED` counts as dispensed, the forgiving direction for both
+    // Any reason other than `CLAIMED` counts as dispensed, the forgiving direction for both
     // questions: the reply stands down, and the observer re-ingests (which is deduplicated).
     const dispensed = new Set(
       rows.filter((r) => r.reason !== "CLAIMED").map((r) => r.messageId),
@@ -530,7 +530,7 @@ export function selectOpenMessages(
   const forReply = params.purpose === "reply";
   const closedByOther = forReply ? foreignReplyBoundary(pageArray, params) : 0;
   if (perMessage === null) {
-    // NOTE: the foreign-reply fence applies before the per-message era too: the scalars never see
+    // The foreign-reply fence applies before the per-message era too: the scalars never see
     // outgoing messages, and a burst carrying a message a person answered would be refused whole by
     // the post gate, including the newer message nobody touched, on every later flush.
     const floorHere =
@@ -539,7 +539,7 @@ export function selectOpenMessages(
           ? closedByOther
           : null
         : Math.max(scalarFloor, closedByOther);
-    // NOTE: imports are fenced here too: a backfill that landed above the mark has no row to close
+    // Imports are fenced here too: a backfill that landed above the mark has no row to close
     // it.
     const desta = pendingIncoming(pageArray, floorHere);
     return forReply ? desta.filter((m) => !m.imported) : desta;

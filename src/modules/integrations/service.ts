@@ -304,7 +304,7 @@ const INSTANCE_SELECT = {
   updatedAt: true,
 } as const;
 
-// NOTE: Why the three states are distinct. A blob that fails to decrypt does NOT throw here —
+// Why the three states are distinct. A blob that fails to decrypt does NOT throw here —
 // nothing downstream makes a security decision on this value (it is an address for the operator to
 // copy), and throwing would 500 the edit modal of every integration on the instance. But it must
 // not collapse into `absent` either: that would tell the operator "this predates the feature" when
@@ -373,7 +373,7 @@ export async function listIntegrationInstances(
   return rows.map(toInstanceDto);
 }
 
-// NOTE: The only read that returns the decrypted routeToken — this is what backs the webhook URL
+// The only read that returns the decrypted routeToken — this is what backs the webhook URL
 // field in the editor. Keep it out of the list (see IntegrationInstanceDto.routeToken).
 export async function getIntegrationInstance(
   ctx: TenantContext,
@@ -467,7 +467,7 @@ export async function updateIntegrationInstance(
   });
 }
 
-// NOTE: Mints a NEW inbound route token, invalidating the old URL the instant it commits. Two
+// Mints a NEW inbound route token, invalidating the old URL the instant it commits. Two
 // reasons it exists: an instance created before `routeToken` was stored has no readable URL (only
 // the hash survives), and a leaked URL needs a way out. The caller must warn the operator that the
 // provider's dashboard has to be updated — nothing else can reach the old address afterwards.

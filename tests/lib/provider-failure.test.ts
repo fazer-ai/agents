@@ -24,7 +24,7 @@ describe("providerFailure", () => {
     expect(tokenised).not.toContain("invalid_request_error");
     expect(tokenised).toBe("HTTP 400");
 
-    // NOTE: The status is read from the client's NUMBER field only, never from the text: a 4xx-shaped
+    // The status is read from the client's NUMBER field only, never from the text: a 4xx-shaped
     // number in a message that echoes the transcript is more often the customer's PIN or invoice
     // total, and naming a status the provider never returned sends the operator to the wrong fix.
     const rethrown = providerFailure(
@@ -33,7 +33,7 @@ describe("providerFailure", () => {
     expect(rethrown).not.toContain(marker);
     expect(rethrown).toBe("provider error");
 
-    // NOTE: `name` reads like the SDK's class but is a plain writable property, so a wrapper can put a
+    // `name` reads like the SDK's class but is a plain writable property, so a wrapper can put a
     // BARE transcript-derived token in it that a shape test would pass. Like `code` and `type`, it is
     // not read.
     const wrapped = providerFailure(
@@ -42,7 +42,7 @@ describe("providerFailure", () => {
     expect(wrapped).not.toContain(marker);
     expect(wrapped).toBe("HTTP 500");
 
-    // NOTE: `status` is admissible because the client PARSED it into a number, which cannot carry a
+    // `status` is admissible because the client PARSED it into a number, which cannot carry a
     // transcript, so the type check is the whole guarantee. Google's error body puts a string in
     // `status` (`INVALID_ARGUMENT`), so a wrapper copying that field lands server text in it.
     const stringStatus = providerFailure(
@@ -112,7 +112,7 @@ describe("providerFailure", () => {
       ).toBe("timeout");
     }
 
-    // NOTE: Both SDKs raise a CLASS (`APIConnectionTimeoutError`) and leave `name` at "Error" with no
+    // Both SDKs raise a CLASS (`APIConnectionTimeoutError`) and leave `name` at "Error" with no
     // status, so reading `name` alone reports a real timeout as "provider error". Matched by suffix,
     // so the next client needs no entry.
     class APIConnectionTimeoutError extends Error {}

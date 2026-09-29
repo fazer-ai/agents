@@ -18,7 +18,7 @@ describe("the namespace lock is taken before any row lock", () => {
   for (const [file, table] of PATHS) {
     test(file, () => {
       const src = readFileSync(file, "utf8");
-      // NOTE: EVERY row lock in the file, not the first: the delete path takes the lock for a different reason
+      // EVERY row lock in the file, not the first: the delete path takes the lock for a different reason
       // than the update (an import resolves a grant and inserts under it, and a delete committing in that
       // window fails a foreign key already read, aborting the whole import), and a fence that only read
       // the first would go green while the delete raced.

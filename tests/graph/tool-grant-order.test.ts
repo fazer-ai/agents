@@ -197,7 +197,7 @@ describe.skipIf(!dbUp)("the order a turn reads an agent's grants in", () => {
   });
 
   test("and the order does not follow the database's collation", async () => {
-    // NOTE: The comparison is done in code, by UTF-16 code unit, and not as `ORDER BY name`: SQL
+    // The comparison is done in code, by UTF-16 code unit, and not as `ORDER BY name`: SQL
     // would compare under the database's collation, and a bundle exported from one deployment is
     // imported into another. On these two names `en_US.utf8` (this test database) orders
     // "…connection a" before "…connection B" and `C` orders them the other way round, so under
@@ -236,7 +236,7 @@ describe.skipIf(!dbUp)("the order a turn reads an agent's grants in", () => {
       upper.id,
       lower.id,
     ]);
-    // NOTE: and the two really do contest one name, so the order decides who gets the plain one.
+    // And the two really do contest one name, so the order decides who gets the plain one.
     const byServer = await exposedNameByServer();
     expect(byServer["Acme CRM production connection B"]).toBe(
       "mcp__acme_crm_production_connecti__search",
@@ -246,7 +246,7 @@ describe.skipIf(!dbUp)("the order a turn reads an agent's grants in", () => {
   });
 
   test("and where no name is contested, the order is invisible either way", async () => {
-    // NOTE: ordering the read renames nothing for an agent whose connections do not contest a name:
+    // Ordering the read renames nothing for an agent whose connections do not contest a name:
     // every tool is `mcp__<slug>__<tool>` whoever is assembled first. The collision case above
     // cannot speak for the installs with no collision, which is almost all of them.
     const distinct = await suDb.mcpServerConnection.create({

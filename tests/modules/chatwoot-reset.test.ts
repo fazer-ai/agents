@@ -1308,7 +1308,7 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    // NOTE: the takeover the mirror has not heard about yet, the ordinary case: the cleanup is a
+    // The takeover the mirror has not heard about yet, the ordinary case: the cleanup is a
     // dozen calls long and the row learns of an assignment only from Chatwoot's webhook, so the
     // stale holder compared to itself would unassign the human who just took over. Chatwoot serves
     // the takeover; nothing writes it to the mirror. `seedHolder` sets the mirror's holder, since a
@@ -1894,7 +1894,7 @@ describe.skipIf(!dbUp)(
         },
       });
       const widgetThread = `${tenantId}:${instanceId}:44`;
-      // NOTE: what a real episode leaves behind: the entry side's redirect anchors and the widget
+      // What a real episode leaves behind: the entry side's redirect anchors and the widget
       // side's link watermark. Nothing here can derive which chat opened from which entry, so the
       // rows are not named as a pair and every test below acts on one conversation.
       const sentAt = new Date(Date.now() - 60_000);
@@ -2343,7 +2343,7 @@ describe.skipIf(!dbUp)(
           .map((c) => (c.body as { content?: string })?.content ?? "")
           .join(" ");
         expect(ack).toContain("memória");
-        // NOTE: o carimbo da limpeza volta com a recusa: ele é escrito na transação deste passo,
+        // O carimbo da limpeza volta com a recusa: ele é escrito na transação deste passo,
         // antes de `clearContactMemory`, justamente para ser desfeito quando o passo recusa. A
         // cerca da ingestão o lê como prova de que a memória foi esvaziada, e uma prova que
         // sobrevive à recusa descartaria a resposta de um colega de uma memória intacta. O carimbo
@@ -3366,7 +3366,7 @@ describe.skipIf(!dbUp)(
     // A clear that never returned removed nothing this side can name, and NULL says exactly that:
     // the labels are still standing, so their activity lines are still true and must not be hidden.
     test("a clear that failed records no set instead of claiming one", async () => {
-      // NOTE: after a healthy reset, which is the arrangement that matters: the boundary moves on
+      // After a healthy reset, which is the arrangement that matters: the boundary moves on
       // every command and the set is written only when the clear succeeds, so a column left alone
       // here would pair this reset's boundary with the previous reset's set, and the observer would
       // hide genuine removals instead of falling back to the order cut. Nulling the column by hand

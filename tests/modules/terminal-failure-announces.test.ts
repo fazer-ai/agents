@@ -224,7 +224,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
   // ── THE SCHEDULER: the biggest half, per kind ──
 
   test("the test harness puts the registry back, including when it was empty", async () => {
-    // NOTE: WEBHOOK_RETRY has no production handler (nothing registers or enqueues it), so a restore
+    // WEBHOOK_RETRY has no production handler (nothing registers or enqueues it), so a restore
     // that only re-registers a PREVIOUS handler leaks the stub into another file's scheduler test,
     // order-dependently. The absent state is SET UP, not assumed: ./scheduler.test.ts installs a stub
     // for this kind and does not put it back. Whatever was there goes back at the end.
@@ -616,7 +616,7 @@ describe.skipIf(!dbUp)("a terminal failure announces itself", () => {
         attempts: 7,
       },
     });
-    // NOTE: the claim above is one cycle; this holds it over many. Without the guard each death arms
+    // The claim above is one cycle; this holds it over many. Without the guard each death arms
     // one new delivery (cycle 6 leaves 6 DEAD + 1 PENDING and six lines), for as long as the channel
     // stays broken.
     const census: number[] = [];

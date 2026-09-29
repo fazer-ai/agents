@@ -168,7 +168,7 @@ describe("the console arms for less than the ceiling, and the gap is the skew it
 // Two more states that change with nothing being clicked, both about the SAME frozen instant.
 describe("the editor re-judges the window instead of freezing at mount", () => {
   test("a deadline armed later is not measured against a stale instant", () => {
-    // NOTE: the tab was opened this morning; the operator arms the mode this evening. Judged against the
+    // The tab was opened this morning; the operator arms the mode this evening. Judged against the
     // mount-time instant, the fresh deadline reads as more than the ceiling ahead (the reader's own
     // far-side bound), and the warning would stay silent for the whole window just armed.
     const mounted = new Date();
@@ -207,7 +207,7 @@ describe("the editor re-judges the window instead of freezing at mount", () => {
   });
 
   test("the switch is derived from the deadline, and from the FORM's", () => {
-    // NOTE: derived, because frozen at the read the switch stays checked past its own deadline and
+    // Derived, because frozen at the read the switch stays checked past its own deadline and
     // needs two clicks to re-arm. And from the FORM's deadline, not the saved one: the switch holds
     // the operator's unsaved choice, and the saved deadline would spring it back off.
     const at = SOURCE.indexOf("checked={isFullDetailWindowOpen(");
@@ -296,7 +296,7 @@ describe("the debug window is judged on the server's clock, not the browser's", 
 
 describe("the editor says which deadline it is talking about", () => {
   test("`Save to apply` is gated on the form deadline differing from the saved one", () => {
-    // NOTE: an armed-and-saved window must not say "Save to apply": that would contradict the
+    // An armed-and-saved window must not say "Save to apply": that would contradict the
     // warning above it (which speaks for the server) and blur a RUNNING mode with a typed one.
     const at = SOURCE.indexOf(
       "{isFullDetailWindowOpen(observability.fullDetailUntil, judgedAt)",

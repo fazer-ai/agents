@@ -538,7 +538,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("the customer writing in the window does NOT refuse the recovery", async () => {
-    // NOTE: WHY THE RECOVERY CARRIES NO VERSION. The live takeover refuses a payload whose version
+    // WHY THE RECOVERY CARRIES NO VERSION. The live takeover refuses a payload whose version
     // is behind the row's status mark, which is how a hand-back outranks a reply already sent. In
     // the recovery that check would refuse here: `chatwootStatusAt` advances on every payload that
     // DECLARES a status, so the customer's own next message moves it, and a conversation the
@@ -654,7 +654,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("the ROUTE's bot is what the recovery asks ownership about", async () => {
-    // NOTE: Chatwoot fans one message to up to two bot routes (the conversation's assignee bot AND
+    // Chatwoot fans one message to up to two bot routes (the conversation's assignee bot AND
     // the inbox's), and only the route holding the conversation passes the gate. This delivery
     // arrived on the assignee bot's route (OTHER_BOT holds the conversation); deriving the identity
     // from the inbox persona would ask a stricter question than the delivery did and refuse, with
@@ -696,7 +696,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("an attempt whose toggle threw is finished, not refused", async () => {
-    // NOTE: The claim is written BEFORE the toggle, so a toggle that throws leaves the row `open`
+    // The claim is written BEFORE the toggle, so a toggle that throws leaves the row `open`
     // under a live claim while Chatwoot still says `pending`. Asked again, the ownership fence would
     // read our own write as somebody else moving the conversation and stand down, spending the
     // scheduler's retry on a verdict that can never change, deleting the job, and leaving Chatwoot
@@ -749,7 +749,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a finished takeover leaves the operator the same trail a live one does", async () => {
-    // NOTE: The sweep deliberately writes no line for an owed takeover (nothing was lost, so nothing
+    // The sweep deliberately writes no line for an owed takeover (nothing was lost, so nothing
     // may page anybody), which makes the `handoff` line the takeover itself writes the ONLY durable
     // record that a person took this conversation. The recovery therefore runs the same unit rather
     // than a second implementation, or the operator is left with an agent that stopped answering
@@ -790,7 +790,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a claim long past its deadline is still the write this recovery finishes", async () => {
-    // NOTE: Arithmetic rather than judgement: the claim stands for 45 seconds (STATUS_CLAIM_TTL_MS)
+    // Arithmetic rather than judgement: the claim stands for 45 seconds (STATUS_CLAIM_TTL_MS)
     // and the sweep calls a delivery stranded only after 30 minutes (STALE_AFTER_MS), so a retry
     // gated on a LIVE claim could never run on a real strand. This is the shape a real one has:
     // `open` on the row, the claim expired long ago, and Chatwoot never told. The authority is the
@@ -815,7 +815,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a conversation the mirror has never seen is retried, not answered", async () => {
-    // NOTE: A delivery that died before the mirror write leaves no local row, and everything this
+    // A delivery that died before the mirror write leaves no local row, and everything this
     // path needs hangs off it: the inbox, the agent, and the row the claim is a CAS on. Read as
     // `not-owed` the job completes, the delete-on-done row is gone, and the conversation's only
     // recovery disappears with it. It is not an answer: the next event on that conversation creates
@@ -868,7 +868,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("the retry reads Chatwoot before it writes, and stands down on a resolve", async () => {
-    // NOTE: Between the failed attempt and this retry an operator can resolve or snooze the
+    // Between the failed attempt and this retry an operator can resolve or snooze the
     // conversation while their webhook is still in flight: the row still says `open` under our
     // claim while Chatwoot has moved on. An unconditional toggle would reopen what they just closed,
     // breaking the attribution invariant this module is built on.
@@ -889,7 +889,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a first attempt whose RESPONSE was lost is finished, not refused", async () => {
-    // NOTE: Chatwoot committed the transition and only the answer was lost, so the conversation is
+    // Chatwoot committed the transition and only the answer was lost, so the conversation is
     // already `open` there: the one status a takeover being DECIDED would refuse and one being
     // FINISHED must accept, since it is our own write coming back. What remains owed is the
     // version, which the reconcile writes through the claim it named. The toggle still runs (a
@@ -912,7 +912,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a conversation Chatwoot reassigned is not toggled out of somebody else's queue", async () => {
-    // NOTE: The row says `open` under our claim and Chatwoot still says `pending`, the signature of
+    // The row says `open` under our claim and Chatwoot still says `pending`, the signature of
     // the lost write, but `pending` at Chatwoot is also where a conversation sits after being handed
     // to ANOTHER bot or person; a check that read only the status would toggle it open on their
     // behalf. The possession half of the fence is the same predicate in both modes; only the STATUS
@@ -984,7 +984,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a fence that stood down is an answer, not a failure", async () => {
-    // NOTE: The preliminary ownership read is not a lock: Chatwoot can move the conversation between
+    // The preliminary ownership read is not a lock: Chatwoot can move the conversation between
     // it and the fence's own read, and the fence correctly refuses then. Mapped to `failed` that
     // would spend the backoff ladder and dead-letter a job about a conversation that owes nothing.
     // Driven through the ONE reading the preliminary check cannot make: the fence asks Chatwoot
@@ -1044,7 +1044,7 @@ describe.skipIf(!dbUp)("recovering a takeover a process death lost", () => {
   });
 
   test("a toggle that fails keeps the claim and reports the failure", async () => {
-    // NOTE: The same answer the live path gives: a failed call is an UNKNOWN outcome, not a refusal
+    // The same answer the live path gives: a failed call is an UNKNOWN outcome, not a refusal
     // (Chatwoot may commit the transition and lose the response), so releasing the claim would put
     // the agent straight back into a conversation the platform HAS handed over.
     const convId = 9109;

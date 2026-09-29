@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { FormField, Textarea } from "@/client/components";
 import { readSendImageConfig } from "@/modules/images/settings";
 
-// NOTE: Mirrors agent.settings.sendImage (modules/images/settings). Edited as one host per line and
+// Mirrors agent.settings.sendImage (modules/images/settings). Edited as one host per line and
 // stored as an array; the reader normalizes, de-duplicates and caps it.
 export interface SendImageState {
   allowedHosts: string;

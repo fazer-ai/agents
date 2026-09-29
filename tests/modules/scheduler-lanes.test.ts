@@ -531,7 +531,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
   });
 
   test("provider-spending kinds are bounded; the cheap ones are not", async () => {
-    // NOTE: the bound a concurrent drain needs: without it, twenty due follow-ups could hold every
+    // The bound a concurrent drain needs: without it, twenty due follow-ups could hold every
     // permit in the process-wide model semaphore while a customer's reply queues behind a nudge.
     // The bound is INJECTED and the workload is a constant: deriving either from
     // AGENT_MODEL_CONCURRENCY would assert whatever the machine is configured to (at 400 the bound
@@ -752,7 +752,7 @@ describe.skipIf(!dbUp)("scheduler lanes", () => {
   });
 
   test("a write that cannot reach the database is logged, and the batch still drains", async () => {
-    // NOTE: `allSettled` has to have its results read. runClaimed swallows a HANDLER's error (it
+    // `allSettled` has to have its results read. runClaimed swallows a HANDLER's error (it
     // fails the job instead), so a rejection here is the database being unreachable under
     // completeJob, with the row left CLAIMED for the reaper; discarded, that is a job silently stuck
     // for minutes with nothing in the log saying why.

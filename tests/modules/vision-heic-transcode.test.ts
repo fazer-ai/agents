@@ -64,7 +64,7 @@ function openaiFetch() {
     const uri = body.messages?.[0]?.content?.[1]?.image_url?.url ?? "";
     const mime = /^data:([^;]+);base64,/.exec(uri)?.[1] ?? "";
     mimes.push(mime);
-    // NOTE: SNIFFED, not read off the label, because the vendor sniffs: the same PNG bytes announced
+    // SNIFFED, not read off the label, because the vendor sniffs: the same PNG bytes announced
     // as `image/png` or `image/heic` both answer 200. A fake that trusted the data URI would reject a
     // request the vendor accepts, which is the regression the mislabelled-PNG case below guards.
     const data = Buffer.from(uri.slice(uri.indexOf(",") + 1), "base64");
@@ -338,7 +338,7 @@ describe.skipIf(!dbUp)("heic transcode before the vision call", () => {
   });
 
   test("an attachment whose declared type lied is still read, not dropped", async () => {
-    // NOTE: Chatwoot serves whatever content type the uploader's server declared, and the vendors
+    // Chatwoot serves whatever content type the uploader's server declared, and the vendors
     // sniff bytes (a PNG announced as `image/heic` answers 200). So a failed conversion must not skip
     // when the failure is "these bytes were never that type": the attachment is still read.
     const png = Buffer.from(

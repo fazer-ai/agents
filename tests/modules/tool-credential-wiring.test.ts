@@ -94,7 +94,7 @@ async function secretLeft(w: Wiring): Promise<boolean> {
     resolveCredential: async () => SECRET,
     fetchImpl: stubFetch(captured),
   });
-  // NOTE: a REQUIRED ai field is supplied, because zod refuses the call without it — which is the
+  // A REQUIRED ai field is supplied, because zod refuses the call without it — which is the
   // very reason its row always overwrites. Everything optional is left out, so the runtime takes the
   // omission branch the table is reading.
   const input: Record<string, unknown> = {};
@@ -910,7 +910,7 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).toBeNull();
 
-    // NOTE: the same reasoning, for the other template the executor refuses. The definition schema
+    // The same reasoning, for the other template the executor refuses. The definition schema
     // accepts `not-a-url`; the throw comes at CALL time, where the origin is pinned — which is still
     // before any request, and is why this pairing gets no warning either.
     const broken = buildHttpTool(
@@ -935,7 +935,7 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).toBeNull();
 
-    // NOTE: and the third shape the executor refuses: a URL placeholder naming no field, no fixed
+    // And the third shape the executor refuses: a URL placeholder naming no field, no fixed
     // value and no context variable. It throws on every call, for every model input.
     const orphan = buildHttpTool(
       asDef({
@@ -960,7 +960,7 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).toBeNull();
 
-    // NOTE: and the fourth: a URL that names a FIXED field whose own value depends on something
+    // And the fourth: a URL that names a FIXED field whose own value depends on something
     // unavailable. The field exists, so it looks resolvable, and the runtime still throws — it
     // records the dependency and refuses to fetch an incomplete segment.
     const orphanDep = buildHttpTool(
@@ -991,7 +991,7 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).toBeNull();
 
-    // NOTE: and the fifth: a placeholder inside the ORIGIN. The runtime pins the origin from the
+    // And the fifth: a placeholder inside the ORIGIN. The runtime pins the origin from the
     // neutralized template and throws when the real one differs, so this template never fetches
     // however the field resolves.
     const moving = buildHttpTool(
@@ -1022,7 +1022,7 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).toBeNull();
 
-    // NOTE: and the ack argument is the runtime's ONLY when the tool has an ack. Without one it is
+    // And the ack argument is the runtime's ONLY when the tool has an ack. Without one it is
     // a name nothing declares, and the call throws like any other orphan.
     const noAck = buildHttpTool(
       asDef({
@@ -1047,7 +1047,7 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).toBeNull();
 
-    // NOTE: and the sixth: a host the tool's own allowlist does not name. The check runs before the
+    // And the sixth: a host the tool's own allowlist does not name. The check runs before the
     // fetch and throws, so no request leaves however the credential is wired.
     const blocked = buildHttpTool(
       asDef({
@@ -1084,7 +1084,7 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).not.toBeNull();
 
-    // NOTE: and the seventh: a protocol the SSRF guard refuses. `ftp://` parses, the schema stores
+    // And the seventh: a protocol the SSRF guard refuses. `ftp://` parses, the schema stores
     // it, and the guard runs on the final URL immediately before the fetch.
     const wrongScheme = buildHttpTool(
       {
@@ -1140,7 +1140,7 @@ describe("the scanner answers what the runtime does", () => {
       ),
     ).not.toBeNull();
 
-    // NOTE: and a declared internal target lifts both refusals too, for that host and
+    // And a declared internal target lifts both refusals too, for that host and
     // port and only when the tool's allowedHosts names it, as the guard does. The wrong port is a
     // refusal of its own, so it claims nothing, and it is shown on an https name the older checks
     // would pass: on http or a blocked literal they would refuse it anyway.
@@ -1221,7 +1221,7 @@ describe("the scanner answers what the runtime does", () => {
   });
 
   test("a fragment does not reach the upstream, which is why the table cuts it", async () => {
-    // NOTE: the PREMISE behind the row above, checked on a real socket, because the stub fetch
+    // The PREMISE behind the row above, checked on a real socket, because the stub fetch
     // the table runs on cannot show it: `fetchImpl` is handed the whole URL string. A real socket is
     // what says whether the bytes leave, and `req.url` on the server side is the request TARGET the
     // client put on the wire.
@@ -1253,7 +1253,7 @@ describe("the scanner answers what the runtime does", () => {
   });
 
   test("the table is not all one answer", () => {
-    // NOTE: the floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
+    // The floor. Every assertion above is `toBe(w.reaches)`, so a table that drifted to a
     // single verdict would still pass while proving nothing about the boundary between them.
     const reaching = CASES.filter((c) => c.reaches).length;
     expect(reaching).toBeGreaterThan(29);
@@ -1282,7 +1282,7 @@ describe("which kinds the warning is about", () => {
   });
 
   test("a header name nothing can set gets a sentence of its own", () => {
-    // NOTE: neither of the other two fits. The credential DOES inject, and nothing shadows it — the
+    // Neither of the other two fits. The credential DOES inject, and nothing shadows it — the
     // assignment reaches an inherited setter and creates no header. Telling this operator to remove
     // a conflicting header names one that does not exist.
     const w =
@@ -1301,7 +1301,7 @@ describe("which kinds the warning is about", () => {
   });
 
   test("a shadowed injection gets its OWN sentence, not the generic advice", () => {
-    // NOTE: the operator already did what the other sentence advises — picked an injecting type and
+    // The operator already did what the other sentence advises — picked an injecting type and
     // attached it. What stops the credential is the value the request carries at the target, and a
     // warning that names the credential instead of the header sends them to fix the wrong thing.
     const w =
@@ -1524,7 +1524,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("a single-brace {secret} is judged AFTER normalization, not before", async () => {
-    // NOTE: the write stores `{{secret}}` here — `normalizeToolShapes` rewrites the single brace
+    // The write stores `{{secret}}` here — `normalizeToolShapes` rewrites the single brace
     // because "secret" is a name it knows. Scanning the raw argument would warn about a tool that
     // is wired the instant it is stored, and the operator would have nothing to fix.
     const r = await create({
@@ -1542,7 +1542,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("where a header credential lands is read off the ENTRY, not guessed", async () => {
-    // NOTE: `header` is the one kind whose injection target is operator-supplied, so the answer to
+    // `header` is the one kind whose injection target is operator-supplied, so the answer to
     // "does this credential reach the request" is in the vault row and nowhere else. Without the
     // stored param name the writer cannot resolve an injection at all, and every tool holding one of
     // these credentials would be reported as unwired.
@@ -1550,7 +1550,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
     expect(clean.ok).toBe(true);
     expect(wiringWarning(clean)).toHaveLength(0);
 
-    // NOTE: and the other side of the same read — the operator wrote that header themselves, so the
+    // And the other side of the same read — the operator wrote that header themselves, so the
     // runtime leaves their value alone and the credential never leaves. Different casing, because
     // the runtime compares case-insensitively and a warning that missed this would be a warning
     // about a header the operator can see.
@@ -1563,7 +1563,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("the credential's own base URL is part of the request, and is read off the entry", async () => {
-    // NOTE: a RELATIVE template gets that base prepended before anything is interpolated, so a
+    // A RELATIVE template gets that base prepended before anything is interpolated, so a
     // {{secret}} stored in the base is sent — and the tool row alone cannot say so. Without the base
     // in the facts the writer would report a working tool as unwired.
     const relative = await create({
@@ -1573,7 +1573,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
     expect(relative.ok).toBe(true);
     expect(wiringWarning(relative)).toHaveLength(0);
 
-    // NOTE: the control — an ABSOLUTE template ignores the base entirely, so the same credential is
+    // The control — an ABSOLUTE template ignores the base entirely, so the same credential is
     // dead on this tool.
     const absolute = await create({ credential_ref: basedRef });
     expect(absolute.ok).toBe(true);
@@ -1581,7 +1581,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("the apply's warning describes the row it WROTE, not the row it read", async () => {
-    // NOTE: the preview reads outside the write's transaction. A second administrator landing in
+    // The preview reads outside the write's transaction. A second administrator landing in
     // that window changes what the write lands on, and the response would otherwise report a diff of
     // the row that was written next to a warning about the row that was read.
     //
@@ -1633,7 +1633,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("the create's warning describes the credential as it was WRITTEN against", async () => {
-    // NOTE: the same window as the update above, on the other write. The preview resolves the
+    // The same window as the update above, on the other write. The preview resolves the
     // credential's facts before `createToolDefinition` runs, and a second administrator can rename
     // the param that decides whether this tool's own header shadows the injection. Opened
     // deliberately: the extension fires on the create itself, after the vault has been read.
@@ -1685,7 +1685,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("a credential ref that names no row gets no wiring advice", async () => {
-    // NOTE: the entry was deleted after the tool was wired to it. Reading the miss as a legacy
+    // The entry was deleted after the tool was wired to it. Reading the miss as a legacy
     // `generic` would hand the operator remediation for the wrong problem: the credential is not
     // unwired, it is gone, and config-health is what reports that.
     const gone = (
@@ -1717,7 +1717,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("a post-commit read that fails does not undo the write", async () => {
-    // NOTE: the warning is recomputed AFTER `createToolDefinition` commits, and that read is a
+    // The warning is recomputed AFTER `createToolDefinition` commits, and that read is a
     // scoped vault transaction like any other — a pool timeout or a transient error there would
     // otherwise answer `ok: false` for a tool that exists, and the caller's retry would meet a name
     // conflict. docs/mcp.md states the rule for config-health, and it is the same rule.
@@ -1763,7 +1763,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("clearing the ack message is not the same as leaving it alone", async () => {
-    // NOTE: `ack_message: null` CLEARS it, and the applied row then declares no `__wait_message` at
+    // `ack_message: null` CLEARS it, and the applied row then declares no `__wait_message` at
     // all. Reading the cleared field as "unchanged" would restore an ack the write is removing, and
     // the preview would report a credential shadowed by an argument that will not exist.
     const created = await create({
@@ -1789,7 +1789,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("a legacy base URL is not prepended, so the relative tool it fed is not judged", async () => {
-    // NOTE: the write cannot create this row, and an upgraded database has them. The gate makes the
+    // The write cannot create this row, and an upgraded database has them. The gate makes the
     // resolve answer `null`, so a RELATIVE tool wired to one builds no request at all, and a warning
     // about an unauthenticated request would describe something that cannot happen. Reading the
     // STORED value would put the old host back and judge the tool against it.
@@ -1803,7 +1803,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
       },
       select: { id: true },
     });
-    // NOTE: the tool sets its own `Authorization`, which is what makes an `openai` credential
+    // The tool sets its own `Authorization`, which is what makes an `openai` credential
     // reportable at all — it injects a bearer, and the operator's own header wins. Without that the
     // credential is wired whatever the base is, and the row proves nothing.
     //
@@ -1835,14 +1835,14 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("no credential attached, no warning", async () => {
-    // NOTE: most tools need none. A warning here would fire on nearly every write.
+    // Most tools need none. A warning here would fire on nearly every write.
     const r = await create({});
     expect(r.ok).toBe(true);
     expect(wiringWarning(r)).toHaveLength(0);
   });
 
   test("attaching the credential to a stored tool judges the STORED templates", async () => {
-    // NOTE: the patch says nothing about the templates. Judging the patch alone would find no
+    // The patch says nothing about the templates. Judging the patch alone would find no
     // {{secret}} in an empty object and warn about every tool, or find none to judge and warn about
     // nothing — which is the same bug read from either end.
     const created = await create({ dry_run: false });
@@ -1860,7 +1860,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("rewriting a template away from {{secret}} judges the STORED credential", async () => {
-    // NOTE: the mirror of the case above, and the reason the effective row is patch-over-stored
+    // The mirror of the case above, and the reason the effective row is patch-over-stored
     // rather than either one: here the patch carries the templates and the credential is the half
     // that only exists in the row.
     const created = await create({
@@ -1883,7 +1883,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("a legacy single-brace {secret} in the stored row is not reported as unwired", async () => {
-    // NOTE: the write normalizes, so this row cannot be produced through the write — it is what a
+    // The write normalizes, so this row cannot be produced through the write — it is what a
     // build older than that normalization left behind. `buildHttpTool` normalizes at BUILD time, so
     // the secret IS sent; a warning here would tell the operator to fix a tool that works, on an
     // update that never touched the template.
@@ -1907,7 +1907,7 @@ describe.skipIf(!dbUp)("tool_create / tool_update say so", () => {
   });
 
   test("a patch that touches neither still reads the row, and stays quiet on a wired tool", async () => {
-    // NOTE: the control for the two above. A rename must not start warning about a tool whose
+    // The control for the two above. A rename must not start warning about a tool whose
     // wiring nobody touched.
     const created = await create({
       credential_ref: genericRef,

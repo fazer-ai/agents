@@ -192,7 +192,7 @@ describe.skipIf(!dbUp)(
     });
 
     test("a MET condition is still stopped by the fence, and the turn's own wiring hands it in", async () => {
-      // NOTE: the read above is a wait between the graph's ask at dispatch and the call it
+      // The read above is a wait between the graph's ask at dispatch and the call it
       // authorises, so a tool whose first act is a WRITE loses that cover once a precondition is
       // configured on it. Asked through `buildToolset` rather than `guardedTool` because the fence's
       // ARGUMENT POSITION is what a unit test cannot see: passed one slot over, the wrapper reads

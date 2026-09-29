@@ -18,7 +18,7 @@ export function SidebarResizer() {
   const pointerIdRef = useRef<number | null>(null);
   const dragStartWidthRef = useRef<number | null>(null);
   const dragStartCollapsedRef = useRef<boolean>(false);
-  // NOTE: when setPointerCapture throws (older Safari), we wire up
+  // When setPointerCapture throws (older Safari), we wire up
   // document-level listeners instead so the drag still tracks the pointer
   // after it leaves the 2px grip. This ref holds the detach function until
   // the drag ends.

@@ -64,7 +64,7 @@ export type CodeToolListed = NonNullable<CodeToolsData>["tools"][number];
 // gates on non-empty code), but the shape is the thing a first-time author most needs to see. Its
 // comments are the first text an author reads, so they are TRANSLATED; the code around them is not.
 export function starterCode(t: TFunction): string {
-  // NOTE: One line: the key that opens the completion list, the one thing the editor cannot reveal.
+  // One line: the key that opens the completion list, the one thing the editor cannot reveal.
   // What `input` and `context` hold is in that list, in the `?` beside the field, and in the
   // completions' descriptions, not in a body the author is about to delete.
   const hint = t(

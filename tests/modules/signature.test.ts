@@ -239,7 +239,7 @@ describe("alreadySigned: a tail check across the whole reply, not containment", 
 });
 
 describe("signatureFor: on or off, and the variables", () => {
-  // NOTE: `enabled: true`: these cases are about what an ON signature renders.
+  // `enabled: true`: these cases are about what an ON signature renders.
   const cfg = { ...SIGNATURE_DEFAULTS, enabled: true, text: SIG };
 
   test("one text, on every channel: the config carries no channel at all", () => {
@@ -992,7 +992,7 @@ describe("frequency: every message of the turn, or one of them", () => {
   // closed with the same closing wrote two copies, each of which the splitter may have cut.
   test("all: a multi-balloon copy at EACH end is left whole, and only the body is signed", () => {
     const MULTI = "Alex\n\nMinha Empresa";
-    // NOTE: what `splitReplyParts` returns on `MULTI + "\n\nResposta.\n\n" + MULTI`.
+    // What `splitReplyParts` returns on `MULTI + "\n\nResposta.\n\n" + MULTI`.
     const chunks = [
       "Alex",
       "Minha Empresa",
@@ -1024,7 +1024,7 @@ describe("frequency: every message of the turn, or one of them", () => {
   // the balloon would go out bare, which is worse than a second copy.
   test("all: a whole copy merged into a balloon with prose is recognised", () => {
     const INDENTED = "Alex\n\n  Minha Empresa";
-    // NOTE: what `splitReplyParts` returns at maxChunks 2.
+    // What `splitReplyParts` returns at maxChunks 2.
     const chunks = ["Bom dia.", "Resposta.\n\nAlex\n\nMinha Empresa"];
     expect(
       attachSignature(
@@ -1074,7 +1074,7 @@ describe("frequency: every message of the turn, or one of them", () => {
   test("all: a signature the splitter cut BY SENTENCE is recognised in both balloons", () => {
     const LONG =
       "Atenciosamente, Alex da Minha Empresa. Estamos aqui de segunda a sexta, das nove as seis.";
-    // NOTE: what `splitReplyParts` returns for this reply at maxChars 80.
+    // What `splitReplyParts` returns for this reply at maxChars 80.
     const chunks = [
       "Atenciosamente, Alex da Minha Empresa.",
       "Estamos aqui de segunda a sexta, das nove as seis.",
@@ -1091,7 +1091,7 @@ describe("frequency: every message of the turn, or one of them", () => {
 
   test("all: a separator run the merge kept is still the same copy", () => {
     const WIDE = "Alex\n\n\n  Minha Empresa";
-    // NOTE: the merge keeps the original "\n\n\n" and trims the indentation.
+    // The merge keeps the original "\n\n\n" and trims the indentation.
     const chunks = ["Bom dia.", "Alex\n\n\nMinha Empresa"];
     expect(
       attachSignature(
@@ -1109,7 +1109,7 @@ describe("frequency: every message of the turn, or one of them", () => {
   // cannot, so it compares like with like: the signature put through the same normalisation.
   test("all: a copy merged at the ceiling is recognised despite the lost indentation", () => {
     const INDENTED = "Alex\n\n  Minha Empresa";
-    // NOTE: what `splitReplyParts` returns for this reply at maxChunks 2.
+    // What `splitReplyParts` returns for this reply at maxChunks 2.
     const chunks = ["Bom dia.", "Alex\n\nMinha Empresa"];
     expect(
       attachSignature(

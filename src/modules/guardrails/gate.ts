@@ -335,7 +335,7 @@ export function buildGuardrailGate(p: GuardrailGateParams): GuardrailGate {
         : { kind: "clean" };
       return { d, r: { direction, outcome: d.kind } };
     }
-    // NOTE: The turn trail and the operator note report what the guardrail DID, not what it was
+    // The turn trail and the operator note report what the guardrail DID, not what it was
     // configured to do. `generated` with no replacement in hand sends the template — when the model
     // returns none, and on the input direction every time (see ./analyze.ts) — and an operator
     // reading "generated" on a line where the template went out is reading the config back, not the

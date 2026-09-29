@@ -651,7 +651,7 @@ describe.skipIf(!dbUp)(
       expect(after?.claimSeq).toBe(deferred?.claimSeq);
       expect(s.sent).toEqual([]);
 
-      // NOTE: The operator shortens the cadence after the deferral. The instant the handler computed no longer
+      // The operator shortens the cadence after the deferral. The instant the handler computed no longer
       // holds, so the next pass re-arms the row now instead of waiting it out.
       const slow = await suDb.agent.findFirstOrThrow({
         where: { tenantId, name: "slow" },

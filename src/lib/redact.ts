@@ -151,7 +151,7 @@ export function redactSecretsDeep(
   if (typeof value === "object") {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
-      // NOTE: The KEY gets the same repair as the values. A key is written by whoever produced the
+      // The KEY gets the same repair as the values. A key is written by whoever produced the
       // object (a model's tool-call arguments, a third party's JSON response), and one orphan half
       // anywhere in the document is enough for Postgres to refuse the whole `jsonb` write.
       //

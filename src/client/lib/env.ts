@@ -1,4 +1,4 @@
-// NOTE: This module is the only place in the client allowed to read
+// This module is the only place in the client allowed to read
 // `process.env.BUN_PUBLIC_*`. The literal `process.env.BUN_PUBLIC_X` is
 // inlined at build time via `define` in `build.ts`; in dev the browser has
 // no `process` global, so a bare read throws `ReferenceError`. Centralizing

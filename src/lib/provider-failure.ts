@@ -58,7 +58,7 @@ function namesATimeout(err: unknown): boolean {
 
 export function providerFailure(err: unknown, timedOut = false): string {
   if (timedOut || namesATimeout(err)) return "timeout";
-  // NOTE: no `instanceof Error` guard of its own: `statusOf` asks that question already, so a second
+  // No `instanceof Error` guard of its own: `statusOf` asks that question already, so a second
   // copy here would be a clause no input can reach.
   const status = statusOf(err);
   return status === null ? "provider error" : `HTTP ${status}`;

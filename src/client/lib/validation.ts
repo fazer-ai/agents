@@ -10,7 +10,7 @@ export function isValidHttpUrl(raw: string): boolean {
   }
 }
 
-// NOTE: validates URL template fields: empty → ok; starts with "/" (relative) → ok; starts with
+// Validates URL template fields: empty → ok; starts with "/" (relative) → ok; starts with
 // "http(s)://" → ok; anything else → invalid. new URL() is intentionally not used here because
 // templates contain {placeholders} that would make new URL() throw.
 export function isValidUrlTemplate(raw: string): boolean {

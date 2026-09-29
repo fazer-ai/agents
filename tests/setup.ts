@@ -34,7 +34,7 @@ configure({ asyncUtilTimeout: 5_000 });
 process.env.NODE_ENV = "test";
 process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/test";
 
-// NOTE: Integration tests run against a DEDICATED test database, identified SOLELY by
+// Integration tests run against a DEDICATED test database, identified SOLELY by
 // TEST_MIGRATION_DATABASE_URL (superuser). MIGRATION_DATABASE_URL and TEST_APP_DATABASE_URL are
 // FORCED onto it here, at preload, before any test module reads them, overriding the shell too (a
 // dev shell often exports them at the DEV DB, and Bun gives exported env precedence over `.env`).
@@ -50,7 +50,7 @@ if (testSuUrl) {
       `TEST_MIGRATION_DATABASE_URL must point at a *_test database (got "${declared}") — refusing to run the destructive test suite against it.`,
     );
   }
-  // NOTE: The `.env` name is the BASE, not the target. Every checkout on a machine copies one `.env`,
+  // The `.env` name is the BASE, not the target. Every checkout on a machine copies one `.env`,
   // so a constant name would put them all on one database, where a migration applied from any of them
   // stays applied under all the others (./db-name.ts, tests/lib/test-db-identity.test.ts). The guard
   // above still reads the DECLARED name: it is a statement about what the developer pointed at.
@@ -79,7 +79,7 @@ if (testSuUrl) {
 const missing = missingDbConfig(process.env);
 if (missing) throw new Error(`tests: ${missing}`);
 if (process.env[DB_GATE_OPT_OUT] !== "1") {
-  // NOTE: BOTH connections: a guarded file's `describe.skipIf(!dbUp)` probes the migration role AND
+  // BOTH connections: a guarded file's `describe.skipIf(!dbUp)` probes the migration role AND
   // the app role, which authenticate differently, so probing only the first passes a run whose app
   // role cannot log in and skips the same blocks just as silently. The URLs read here are the ones
   // forced above. Imported HERE, not at the top: `generated/prisma` is gitignored and `bun install`
@@ -106,7 +106,7 @@ if (process.env[DB_GATE_OPT_OUT] !== "1") {
     }
   }
 
-  // NOTE: AND WHETHER IT IS THIS TREE'S DATABASE. The probes above prove a database ANSWERS; this asks
+  // AND WHETHER IT IS THIS TREE'S DATABASE. The probes above prove a database ANSWERS; this asks
   // whether its schema is the one prisma/migrations describes, in both directions, so a stale schema
   // is named up front instead of read off dozens of failures in code nobody broke.
   const suUrl = process.env.MIGRATION_DATABASE_URL as string;

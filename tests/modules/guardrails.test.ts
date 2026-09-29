@@ -614,7 +614,7 @@ describe("analyzeGuardrail", () => {
           suggestedReply: reply,
         });
 
-      // NOTE: each half reports a REAL policy key, the way the prompt asks for. A half's own name
+      // Each half reports a REAL policy key, the way the prompt asks for. A half's own name
       // ("policies") is not a key the prompt defines, and the merge would be asserted over a category
       // that cannot occur.
       const HALF_CATEGORY = {

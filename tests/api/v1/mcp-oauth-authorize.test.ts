@@ -24,7 +24,7 @@ describe("GET /api/v1/mcp/oauth/authorize without a session", () => {
     const location = res.headers.get("location") ?? "";
     expect(location.startsWith("/login?redirect=")).toBe(true);
 
-    // NOTE: The destination round-trips the full authorize URL (query included) as ONE encoded value, and
+    // The destination round-trips the full authorize URL (query included) as ONE encoded value, and
     // stays a single-leading-slash local path — LoginPage rejects anything else.
     const target =
       new URLSearchParams(location.slice("/login?".length)).get("redirect") ??

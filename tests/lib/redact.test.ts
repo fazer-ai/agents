@@ -101,7 +101,7 @@ describe("the scrub reads past the cut", () => {
   test.each(SECRETS)(
     "a %s token cut one character short is redacted, not published",
     (_label, secret) => {
-      // NOTE: The space is load-bearing: every pattern but the JWT anchors on `\b`, and a token
+      // The space is load-bearing: every pattern but the JWT anchors on `\b`, and a token
       // glued to a word character never matches, so without it the test would pass either way.
       const head = `${"h".repeat(40)} `;
       const allowed = head.length + secret.length - 1;
@@ -134,7 +134,7 @@ describe("the scrub reads past the cut", () => {
   );
 
   test("the same holds with no budget at all, at the ordinary cap", () => {
-    // NOTE: `MAX_STRING` cuts at 2,000 whether or not a budget is in play, so the order matters on
+    // `MAX_STRING` cuts at 2,000 whether or not a budget is in play, so the order matters on
     // every line that stores a long enough string, not only in debug mode.
     const secret = `sk-${"E".repeat(16)}`;
     const head = `${"h".repeat(2_000 - secret.length)} `;
@@ -152,7 +152,7 @@ describe("the scrub reads past the cut", () => {
   });
 
   test("a redaction that shrinks the string below the cap still marks it cut", () => {
-    // NOTE: A 203-character credential comes out as the ten-character placeholder, so the RESULT is
+    // A 203-character credential comes out as the ten-character placeholder, so the RESULT is
     // under the cap while the input was not and everything past the scan window was dropped.
     // Deciding the marker on the result would call that complete.
     const out = redactSecretsDeep({ v: `sk-${"K".repeat(200)}` }, 0, 40, {
@@ -175,7 +175,7 @@ describe("the scrub reads past the cut", () => {
   });
 
   test("`sanitizeErrorMessage` gets the same order, and always did", () => {
-    // NOTE: It routes through the shared repair, scrub, cut function, which keeps the two surfaces
+    // It routes through the shared repair, scrub, cut function, which keeps the two surfaces
     // from drifting apart.
     const secret = `sk-${"H".repeat(16)}`;
     const out = sanitizeErrorMessage(
@@ -246,7 +246,7 @@ describe("a JWT cut anywhere is still recognised", () => {
 
 describe("the scan window is bounded, and the bound is visible", () => {
   test("a base64 blob mid-sentence is NOT a cut token, and survives", () => {
-    // NOTE: A JOSE header on its own is public metadata, not a credential, and an unanchored `eyJ…`
+    // A JOSE header on its own is public metadata, not a credential, and an unanchored `eyJ…`
     // rule would take every base64 blob in a tool result with it: a log that redacts the diagnosis
     // is a log nobody can read.
     const v = "config eyJhbGciOiJIUzI1NiJ9 loaded";
@@ -312,7 +312,7 @@ describe("a deleted character does not come out of the margin", () => {
   });
 
   test("a lone surrogate is replaced, not deleted, so it costs the margin nothing", () => {
-    // NOTE: The window counts only NULs as deleted, so this pins that one orphan half becomes one
+    // The window counts only NULs as deleted, so this pins that one orphan half becomes one
     // U+FFFD; if it ever deleted, the margin would be short and nothing else would say so. Same
     // geometry as the NUL case: the token is only redacted if the window reached past the cut.
     const v = `${"\ud800".repeat(64)}${"h".repeat(1_917)} ${token}`;

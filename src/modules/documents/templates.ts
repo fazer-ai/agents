@@ -296,7 +296,7 @@ export async function documentTemplateWriteProblem(
   // (a patch that touches only the description, say).
   if (slug === undefined && name === undefined) return null;
   if (slug !== undefined) {
-    // NOTE: Only when the slug MOVES, as in the apply: an existing collision predates this rule and a
+    // Only when the slug MOVES, as in the apply: an existing collision predates this rule and a
     // full-state client sends the unchanged slug on every patch, so the preview must not refuse it.
     const storedSlug =
       opts.excludeId === undefined
@@ -647,7 +647,7 @@ export async function createDocumentTemplate(
   base: PrismaClient = basePrisma,
 ): Promise<DocumentTemplateDto> {
   const name = parseTemplateName(input.name);
-  // NOTE: Derived only when the slug is genuinely ABSENT: an explicit "" is a malformed identifier
+  // Derived only when the slug is genuinely ABSENT: an explicit "" is a malformed identifier
   // the caller wrote, refused here as the dry run (`??`) refuses it.
   const derived = input.slug === undefined;
   if (input.blockText !== undefined) {
@@ -867,7 +867,7 @@ export function patchedContent(
       authored,
     });
   } catch (e) {
-    // NOTE: A stored block of an unknown TYPE fails the parse, and saving what parsed would drop it,
+    // A stored block of an unknown TYPE fails the parse, and saving what parsed would drop it,
     // so the patch is refused with its own reason. Only when the STORED content is unreadable, so a
     // failure caused by the caller's own input is not blamed on a newer version.
     const storedUnreadable =
@@ -954,7 +954,7 @@ async function patched(
       data.fields = rawFields as unknown as Prisma.InputJsonValue;
     }
     if (patch.style !== undefined) {
-      // NOTE: Written back over the raw stored style, taking ONLY the properties the patch
+      // Written back over the raw stored style, taking ONLY the properties the patch
       // addressed. Spreading the whole parsed style is not equivalent: the parse fills every
       // property it could not read with a default, so a `font` a newer build wrote would become
       // "sans" on any style save, downgrading a setting the operator cannot even see. Storage is

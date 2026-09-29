@@ -190,7 +190,7 @@ describe.skipIf(!dbUp)("listConversations", () => {
   });
 
   test("an unknown status is REFUSED, not ignored", async () => {
-    // NOTE: dropping an unknown status would answer a request narrowed to one status with the
+    // Dropping an unknown status would answer a request narrowed to one status with the
     // tenant's whole list, and the caller could not tell that from a status matching everything.
     let err: unknown = null;
     try {

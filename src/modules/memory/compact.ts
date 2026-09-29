@@ -175,7 +175,7 @@ export async function runCompaction(
     instanceId,
     contactInboxId,
   );
-  // NOTE: the thread's owner is asked of the ROW, not only of this process: a turn runs wherever the
+  // The thread's owner is asked of the ROW, not only of this process: a turn runs wherever the
   // webhook landed, and an in-process registry would read a busy thread as free.
   const owner = { tenantId, instanceId, contactInboxId, graphThreadId };
 
@@ -189,7 +189,7 @@ export async function runCompaction(
     if (!agent || !readMemoryConfig(agent.settings).compaction.enabled) {
       return "off" as const;
     }
-    // NOTE: a conversation reopened inside the grace window is not a closed attendance; the
+    // A conversation reopened inside the grace window is not a closed attendance; the
     // boundary trigger picks it up later. It is not a reason to stop: an owed rewrite still lands.
     let reopened = false;
     if (reason === "resolved") {
@@ -205,7 +205,7 @@ export async function runCompaction(
       });
       if (conv && conv.status !== "resolved") reopened = true;
     }
-    // NOTE: which conversation the thread is on now: a new attendance opened inside the grace window
+    // Which conversation the thread is on now: a new attendance opened inside the grace window
     // leaves the resolved one resolved, and closing the whole thread would summarize the live one.
     const thread = await db.agentThread.findUnique({
       where: {
@@ -259,7 +259,7 @@ export async function runCompaction(
     };
   }
 
-  // NOTE: generation fence, first half. The AgentThread row id says which generation of this thread
+  // Generation fence, first half. The AgentThread row id says which generation of this thread
   // the job belongs to (second half at the write). No row means /reset wiped the thread, and any
   // channel residue (an earlier invoke saving, a nudge) must not be summarized back into memory.
   // Read after the drain, which creates the row for a thread with real messages owed: whatever is
@@ -296,7 +296,7 @@ export async function runCompaction(
   const messages = ((state.values as { messages?: BaseMessage[] } | undefined)
     ?.messages ?? []) as BaseMessage[];
 
-  // NOTE: whether the thread is still ON this conversation, asked of the last stamp rather than
+  // Whether the thread is still ON this conversation, asked of the last stamp rather than
   // AgentThread.lastConversationId: a skipped boundary claim leaves the marker naming a conversation
   // the thread has left. Threads with no stamps still answer from the marker.
   let lastStamp: number | null = null;
@@ -320,7 +320,7 @@ export async function runCompaction(
       !loaded.reopened && reason === "resolved" && attendanceIsCurrent,
   });
 
-  // NOTE: a summary row whose turns are STILL in the thread is owed its rewrite (the row commits
+  // A summary row whose turns are STILL in the thread is owed its rewrite (the row commits
   // first, so a deferral leaves one behind). It is applied FIRST and only up to where it ends, at no
   // generation cost; otherwise a wider cut would pay to describe those turns again. The rest compacts
   // on the next pass.
@@ -347,7 +347,7 @@ export async function runCompaction(
         open: messages.slice(owedIndex + 1),
       }
     : natural;
-  // NOTE: which attendance the folded segment belongs to, read off the segment, not the payload: an
+  // Which attendance the folded segment belongs to, read off the segment, not the payload: an
   // owed row describes an OLDER attendance, and a claimed job's cut can reach past the attendance its
   // payload names. The chunk's last stamp is where it ends; threads without stamps use the payload.
   let closedStamp: number | null = null;
@@ -363,12 +363,12 @@ export async function runCompaction(
   const segmentConversationId = owedIsPending
     ? (owed?.conversationId ?? conversationId)
     : (closedStamp ?? conversationId);
-  // NOTE: the last turn in the cut is the segment's identity: a reopened conversation's second cut
+  // The last turn in the cut is the segment's identity: a reopened conversation's second cut
   // writes its OWN row, and a retry of the same cut costs nothing. Absent, it is guarantee 3 of 3
   // against compacting twice: an already compacted thread has an empty closed chunk and stops here.
   const lastMessageId = cut.closed.at(-1)?.id;
   if (!lastMessageId) return { outcome: "done" };
-  // NOTE: dated by the SEGMENT's conversation, not the job's clock (it can run months later) nor the
+  // Dated by the SEGMENT's conversation, not the job's clock (it can run months later) nor the
   // payload's conversation.
   const segment = await runScopedOn(base, sysCtx(tenantId), (db) =>
     db.conversation.findUnique({
@@ -402,7 +402,7 @@ export async function runCompaction(
   if (existing) {
     summary = existing.summary;
   } else {
-    // NOTE: everything inherited from the agent comes back through the resolver BY NAME, never a
+    // Everything inherited from the agent comes back through the resolver BY NAME, never a
     // spread of `cfg.mc`, which would carry unknown fields (a credentialRef) across a provider switch.
     const resolved = resolveModelOverride(
       cfg.memoryCompactionOverride,
@@ -429,7 +429,7 @@ export async function runCompaction(
         error: "memory compaction model: credential_not_found",
       };
     }
-    // NOTE: same VENDOR is not enough to carry the agent's sampling: `reasoningEffort` is picked for
+    // Same VENDOR is not enough to carry the agent's sampling: `reasoningEffort` is picked for
     // one model id and turns into a /v1/responses call another model can refuse.
     const sameModel =
       resolved.provider === cfg.mc.provider && resolved.model === cfg.mc.model;
@@ -454,7 +454,7 @@ export async function runCompaction(
         : {}),
     };
     const makeModel = deps.makeModel ?? createChatModel;
-    // NOTE: createChatModel throws synchronously on some configurations (openai-compatible with no
+    // createChatModel throws synchronously on some configurations (openai-compatible with no
     // base URL); this one is separately editable, so the throw becomes a named failure.
     let model: BaseChatModel;
     try {
@@ -467,7 +467,7 @@ export async function runCompaction(
         }`,
       };
     }
-    // NOTE: outside every lock: holding one across a provider round-trip would block ingestion.
+    // Outside every lock: holding one across a provider round-trip would block ingestion.
     // Carries the turn's usage/trace handlers under its own node, since the call is billed.
     const result = await summarizeAttendance(
       model,
@@ -496,7 +496,7 @@ export async function runCompaction(
   if (summary) {
     const wrote = await withKeyedQueue(`ingest:${graphThreadId}`, () =>
       runScopedOn(base, sysCtx(tenantId), async (db) => {
-        // NOTE: generation fence, second half: the row is gone, so a /reset ran mid-call.
+        // Generation fence, second half: the row is gone, so a /reset ran mid-call.
         const stillThere = await db.agentThread.count({
           where: { id: threadRowId },
         });
@@ -529,7 +529,7 @@ export async function runCompaction(
     }
   }
 
-  // NOTE: the critical section ingestion also enters. A graph TURN does not, which is why the update
+  // The critical section ingestion also enters. A graph TURN does not, which is why the update
   // names the messages it removes. A process-local queue, not an advisory lock: the section spans
   // the checkpointer's separate pool, and a Prisma transaction held across it drains the main pool.
   const rewrite = await withKeyedQueue(`ingest:${graphThreadId}`, async () => {
@@ -547,7 +547,7 @@ export async function runCompaction(
     for (let i = 0; i < consumed.length; i++) {
       if (current[i]?.id !== consumed[i]?.id) return "changed" as const;
     }
-    // NOTE: only what the head can render: rows are kept forever, so newest-first with a limit, then
+    // Only what the head can render: rows are kept forever, so newest-first with a limit, then
     // back to chronological order.
     const rows = (
       await runScopedOn(base, sysCtx(tenantId), (db) =>
@@ -567,14 +567,14 @@ export async function runCompaction(
         }),
       )
     ).reverse();
-    // NOTE: what the summarized stretch ended in. The deleted messages are the only place the
+    // What the summarized stretch ended in. The deleted messages are the only place the
     // hand-back decision reads its evidence, so an empty head is kept when that stamp needs a carrier
     // (see renderEmptyMemoryHead).
     const owedHandback = owesHandbackNote(consumed);
     const head =
       renderMemoryHead(rows, cfg.timezone) ??
       (owedHandback ? renderEmptyMemoryHead() : null);
-    // NOTE: removes BY ID and never clears the channel: a graph TURN takes no lock and may append in
+    // Removes BY ID and never clears the channel: a graph TURN takes no lock and may append in
     // this window. The head reuses the id of the FIRST message it replaces, which keeps it at the
     // front (the reducer replaces same-id in place and appends unknown ids).
     const survivorId = consumed[0]?.id;
@@ -678,7 +678,7 @@ export async function announceDeadCompaction(
   const { instanceId, contactInboxId, conversationId, agentId, reason } =
     payload;
   const read = await runScopedOn(base, sysCtx(job.tenantId), async (db) => {
-    // NOTE: re-read rather than trust the dead-letter: `armCompaction` may have upserted this row
+    // Re-read rather than trust the dead-letter: `armCompaction` may have upserted this row
     // back to PENDING (the key is the THREAD), and a still-broken configuration announces on that arm.
     // This narrows the window without closing it: the trail write is fire-and-forget.
     const row = await db.schedulerJob.findUnique({

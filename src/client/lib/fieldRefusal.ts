@@ -73,7 +73,7 @@ export function placeRefusal(
   const { field, message } = refusal;
   if (!field) return { toast: message };
   const drawn = resolveName(field, rendered);
-  // NOTE: `owned` is only consulted for a name `rendered` did not answer, so a form that draws
+  // `owned` is only consulted for a name `rendered` did not answer, so a form that draws
   // everything it owns never reaches it.
   const declared = drawn ?? resolveName(field, form.owned ?? rendered);
   if (declared === undefined) return { toast: message };

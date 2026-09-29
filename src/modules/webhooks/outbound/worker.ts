@@ -65,7 +65,7 @@ interface ClaimedDelivery {
 
 type DeliveryOutcome = "delivered" | "retried" | "dead";
 
-// NOTE: system worker context. tenantId pins the RLS scope for the row's own tenant; role is
+// System worker context. tenantId pins the RLS scope for the row's own tenant; role is
 // only carried for the TenantContext shape (no authorization decision is made off it here).
 function sysCtx(tenantId: bigint): TenantContext {
   return { tenantId, userId: null, role: "TENANT_ADMIN" };
@@ -261,7 +261,7 @@ async function deliverClaimed(
     return finalizeDead(base, d, d.attempts + 1, errMsg(err), null);
   }
 
-  // NOTE: Per-tenant signing secret, through a tenant-scoped read (RLS active, least privilege). A
+  // Per-tenant signing secret, through a tenant-scoped read (RLS active, least privilege). A
   // read that THROWS is transient, so it falls through to retry/backoff. A ref that does not resolve
   // still sends, UNSIGNED, so a receiver that does not verify keeps working, and the row carries
   // `unsignedReason` naming which credential problem the operator has to fix.
@@ -368,7 +368,7 @@ interface WorkerState {
   running: boolean;
 }
 
-// NOTE: the state lives on globalThis (not a module `let`) so `bun --hot` re-evaluating this
+// The state lives on globalThis (not a module `let`) so `bun --hot` re-evaluating this
 // module does not orphan the old interval and spawn a phantom second worker.
 function workerState(): WorkerState {
   const g = globalThis as unknown as Record<symbol, WorkerState | undefined>;

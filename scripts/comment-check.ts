@@ -1,6 +1,7 @@
 // Checks the files named on the command line against the comment ledger, the same way the sweep
 // does, and prints each offending block. Run by the editor hook on every write, so a history
-// citation or an over-long block is reported where it is written, not at the end of the suite.
+// citation, an over-long block or a tagged docstring is reported where it is written, not at the end
+// of the suite.
 import { resolve } from "node:path";
 import { COMMENT_LEDGER } from "../tests/lib/comment-ledger";
 import {
@@ -9,6 +10,7 @@ import {
   commentBlocks,
   overCeiling,
   SWEPT_ROOTS,
+  taggedDocstrings,
 } from "../tests/utils/comment-blocks";
 
 const root = resolve(import.meta.dir, "..");
@@ -23,7 +25,14 @@ for (const arg of process.argv.slice(2)) {
   if (rel.endsWith(".d.ts") || rel === "tests/lib/comment-ledger.ts") continue;
   const file = Bun.file(resolve(root, rel));
   if (!(await file.exists())) continue;
-  const blocks = commentBlocks(await file.text());
+  const src = await file.text();
+  for (const line of taggedDocstrings(src)) {
+    failed = true;
+    console.error(
+      `${rel}: line ${line}: a comment directly above a declaration documents it and takes no NOTE: (CLAUDE.md, "Where the tag goes")`,
+    );
+  }
+  const blocks = commentBlocks(src);
   const prov = blocks.filter(citesProvenance);
   const long = blocks.filter(overCeiling);
   const [maxProv, maxLong] = COMMENT_LEDGER[rel] ?? [0, 0];

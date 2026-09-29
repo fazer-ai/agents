@@ -42,7 +42,7 @@ export async function drainPendingIngest(
 ): Promise<IngestDrainOutcome> {
   const prefix = ingestKeyPrefix(graphThreadId);
   try {
-    // NOTE: reap our own kind first (see ../modules/scheduler/service.ts on lanes with their own
+    // Reap our own kind first (see ../modules/scheduler/service.ts on lanes with their own
     // worker): with the shared scheduler off nothing else re-pends a row a dead process left CLAIMED,
     // and a CLAIMED row counts as owed below, so one crash would make every later compaction on the
     // thread reschedule forever. Reaping from two places is harmless: the second finds it re-pended.
@@ -56,7 +56,7 @@ export async function drainPendingIngest(
     // NOTE: no hook is registered for this kind, so this loops over an empty list. It is here so a
     // kind that later says what its own loss means does not have to find this line first.
     await announceReaped(reaped, base);
-    // NOTE: every row this drain touched, kept out of the next pass. The claim already honours backoff
+    // Every row this drain touched, kept out of the next pass. The claim already honours backoff
     // for a failed row (../modules/scheduler/service.ts), but a job that DEFERRED for a turn carries
     // no error and stays claimable, so without this it would be claimed and deferred once per pass,
     // five times over, inside a customer's turn.

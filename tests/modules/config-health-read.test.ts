@@ -97,7 +97,7 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
         data: { name: "CHB", slug: `ch-b-${process.pid}` },
       })
     ).id;
-    // NOTE: A reference-only entry: `credential_create` over MCP writes exactly this, and the operator is
+    // A reference-only entry: `credential_create` over MCP writes exactly this, and the operator is
     // supposed to fill the secret afterwards; nothing else on the MCP path says it is still pending.
     const pending = await suDb.vaultEntry.create({
       data: {
@@ -698,7 +698,7 @@ describe.skipIf(!dbUp)("agent configuration health", () => {
       expect(start).toBeGreaterThan(0);
       // The registration block, up to the handler: description plus input schema.
       const description = source.slice(start, start + 2000);
-      // NOTE: A SET COMPARISON against the documented shape line, not "is each field mentioned somewhere":
+      // A SET COMPARISON against the documented shape line, not "is each field mentioned somewhere":
       // the description names these fields more than once, so a presence check passes with one occurrence
       // wrong.
       const shape = description.match(/Returns `\{ health: \{([^}]*)\}/);

@@ -182,17 +182,17 @@ export async function exportAudit(
   // budget before any row and still report `truncated: false`.
   if (maxBytes < headerBytes) badQueryParam("maxBytes");
   const lines: string[] = [];
-  // NOTE: bytes, not `.length` (UTF-16 code units): the budget bounds a UTF-8 download, and non-ASCII
+  // Bytes, not `.length` (UTF-16 code units): the budget bounds a UTF-8 download, and non-ASCII
   // text runs up to 3x its code-unit count.
   let bytes = Buffer.byteLength(header, "utf8");
   let truncatedBy: "rows" | "bytes" | null = null;
-  // NOTE: newest first, walked by the same `(created_at, id)` keyset the page uses, so the file holds
+  // Newest first, walked by the same `(created_at, id)` keyset the page uses, so the file holds
   // the rows the screen holds in the screen's order; an `id`-ordered walk would drift from it.
   let cursor: { createdAt: Date; id: bigint } | null = null;
-  // NOTE: the widest row of the last trip, which is what sizes the next one (see BATCH_PROBE above).
+  // The widest row of the last trip, which is what sizes the next one (see BATCH_PROBE above).
   let widest = 0;
   let batch = BATCH_PROBE;
-  // NOTE: where the trail ended when the export started, so the file is one snapshot. `created_at`
+  // Where the trail ended when the export started, so the file is one snapshot. `created_at`
   // comes from the writer's clock, so a lagging replica's row can land below the cursor; the id is the
   // only monotonic thing. It is a bound, not an MVCC snapshot: a transaction already open with a lower
   // id can still commit into a later trip (closing that means one REPEATABLE READ across every trip,
@@ -214,7 +214,7 @@ export async function exportAudit(
   const highWater = highWaterFrom(row);
   while (truncatedBy === null) {
     const want = Math.min(batch, maxRows - lines.length);
-    // NOTE: one extra row per trip answers "is there more?" without a second count over a growing table.
+    // One extra row per trip answers "is there more?" without a second count over a growing table.
     const rows: Row[] = await readInScope(base, ctx, scope, (db) =>
       db.auditLog.findMany({
         where: {
@@ -239,7 +239,7 @@ export async function exportAudit(
     widest = 0;
     for (const r of rows.slice(0, want)) {
       const line = toLine(r);
-      // NOTE: +2 for the CRLF this line will be joined with. Checked BEFORE appending, so the file never
+      // +2 for the CRLF this line will be joined with. Checked BEFORE appending, so the file never
       // exceeds the budget it reports having respected -- and a row is kept whole or not at all,
       // which is also why nothing here cuts a string and no character can be split in half.
       const size = Buffer.byteLength(line, "utf8") + 2;

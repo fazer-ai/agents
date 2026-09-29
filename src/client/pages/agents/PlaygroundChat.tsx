@@ -1112,7 +1112,7 @@ function MovingWaveform({
     const color = canvas
       ? getComputedStyle(canvas).color || "#3b82f6"
       : "#3b82f6";
-    // NOTE: Fixed spacing between bars (in CSS px) so each bar stays the SAME thickness at any width:
+    // Fixed spacing between bars (in CSS px) so each bar stays the SAME thickness at any width:
     // a wider panel shows MORE bars, not fatter ones.
     const PITCH = 7;
     let peaks: number[] = [];

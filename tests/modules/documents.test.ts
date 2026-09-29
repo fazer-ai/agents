@@ -813,7 +813,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
       select: { templateId: true },
     });
     expect(row?.templateId).toBeNull();
-    // NOTE: The PDF is published by renaming a temporary into place, so a reader never sees a half-written
+    // The PDF is published by renaming a temporary into place, so a reader never sees a half-written
     // file. The window itself is not reachable from a single-process test (see
     // src/modules/documents/issue.ts), but the residue is: a successful issuance leaves no `.part` behind.
     const litter = await readdir(`${DIR}/${tenantA}`).catch(() => []);
@@ -989,7 +989,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
         appDb,
       ),
     ).rejects.toThrow(/tagline/);
-    // NOTE: A preview has to show what the SAVE would produce, so it merges a partial style the way the patch
+    // A preview has to show what the SAVE would produce, so it merges a partial style the way the patch
     // does. Replacing outright renders a saved template without its footer while saving the same patch
     // keeps it: the preview approving a document the apply would not make.
     const saved = await getDocumentTemplate(ctx(tenantA), templateId, appDb);
@@ -1264,7 +1264,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
       expect((failed as AppError).statusCode).toBe(400);
       expect((failed as AppError).message).toContain("name");
     }
-    // NOTE: The same question on the update path.
+    // The same question on the update path.
     const tpl = await createDocumentTemplate(
       ctx(tenantA),
       { name: "Nomeado", blocks: MINIMAL_BLOCKS, fields: [] },
@@ -2246,7 +2246,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
       },
     }) as unknown as PrismaClient;
 
-    // NOTE: ...and the caller returns the PUBLISHED bytes, not its own render: the logo is read live, so the two
+    // ...and the caller returns the PUBLISHED bytes, not its own render: the logo is read live, so the two
     // can differ, and returning its own render would attach one PDF to a reply while the download link
     // served another. This holds whether the claim was won or lost: what is on disk is the document.
     const loser = await issueDocument({
@@ -2419,7 +2419,7 @@ describe.skipIf(!dbUp)("document templates + issuance", () => {
   // wrong design: the rollback runs after its transaction ends, outside the lock, and two failed
   // uploads compensating in the wrong order leave an uncommitted image as the live letterhead.
   test("a failed logo write leaves the previous letterhead in place", async () => {
-    // NOTE: setCompanyLogo reads config.documentsStorageDir directly — there is no dir to inject —
+    // setCompanyLogo reads config.documentsStorageDir directly — there is no dir to inject —
     // so this test writes into the configured one. Everything it asserts is therefore scoped to its
     // OWN tenant's keys: the directory is shared with other runs, and a stale file from one of them
     // is not this test's subject. It cleans up after itself at the end.

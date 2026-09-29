@@ -106,7 +106,7 @@ export function KnowledgeSourceSection({
   // one, or for a section already closed, is dropped (docs/modals.md, the modal session).
   const current = useRef<string | null>(baseId);
   const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // NOTE: Generations, as docs/modals.md prescribes for a modal that fetches. Every read bumps
+  // Generations, as docs/modals.md prescribes for a modal that fetches. Every read bumps
   // `readGen` and only the newest one may write, so a polling read still out when a removal re-reads
   // cannot land after it and bring the removed source back. `pollGen` is bumped by every stop, so a
   // tick whose read was out when polling stopped does not schedule another.
@@ -153,7 +153,7 @@ export function KnowledgeSourceSection({
   // the scheduler finishes later reaches the screen without the operator reloading.
   const pollUntilRun = useCallback(
     (since: number | null) => {
-      // NOTE: Asked for by an action whose request outlived the section (a save or a sync answered
+      // Asked for by an action whose request outlived the section (a save or a sync answered
       // after the modal closed): there is nothing left to show the outcome on.
       const asked = current.current;
       if (asked === null) return;

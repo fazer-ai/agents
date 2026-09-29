@@ -98,7 +98,7 @@ export async function conversationReturn(
         note: "Returns the conversation to the bot (unassigns human, status pending). Calls Chatwoot.",
       });
     }
-    // NOTE: the INJECTED factory here too, so both halves read the same Chatwoot.
+    // The INJECTED factory here too, so both halves read the same Chatwoot.
     const outcome = await returnConversationToAgent(
       ctx,
       id,

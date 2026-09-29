@@ -83,7 +83,7 @@ export async function codeToolCreate(
   if (!args.description) return err("description is required");
   if (!args.code) return err("code is required");
   const built = buildCodeToolPatch(args);
-  // NOTE: the defaults the service would fill (label from the identifier, an empty schema, enabled)
+  // The defaults the service would fill (label from the identifier, an empty schema, enabled)
   // are filled here instead, so the preview carries every column the row will, not only the ones
   // the caller named.
   const input: CodeToolCreate = {
@@ -99,7 +99,7 @@ export async function codeToolCreate(
     built.warnings.length > 0 ? { schemaWarnings: built.warnings } : {};
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own questions, asked INSIDE the branch because the apply asks them again.
+      // The core's own questions, asked INSIDE the branch because the apply asks them again.
       // The preview shows the PARSED result: the parser trims the label and description.
       const parsed = assertCodeToolCreatable(input);
       // NOTE: ADVISORY: it reads outside the apply's transaction, so the name can be taken
@@ -155,7 +155,7 @@ export async function codeToolUpdate(
     }
     const target = `code_tool:${id}`;
     if (args.dry_run !== false) {
-      // NOTE: the patch the apply would parse, parsed here, so a rename the pattern refuses is not
+      // The patch the apply would parse, parsed here, so a rename the pattern refuses is not
       // previewed as a diff. It judges the INPUT only; name availability is asked below.
       const parsed = assertCodeToolPatchValid(built.patch);
       // NOTE: `updateCodeTool` asks whether a new name is free. ADVISORY, like the create's, and
@@ -172,7 +172,7 @@ export async function codeToolUpdate(
           current.name,
         );
       }
-      // NOTE: checked only when the patch carries a body, which is when the apply checks it: a patch
+      // Checked only when the patch carries a body, which is when the apply checks it: a patch
       // that leaves the body alone reports `[]` from both, and the stored body's own warnings are
       // code_tool_get's to show.
       const warnings =

@@ -38,7 +38,7 @@ const BREAK = /\r\n?|\n/;
 
 function spotAt(text: string, offset: number): JsonSpot {
   const before = text.slice(0, offset);
-  // NOTE: whichever comes last, which for a CRLF pair is the `\n` and leaves the column starting
+  // Whichever comes last, which for a CRLF pair is the `\n` and leaves the column starting
   // after both.
   const lastBreak = Math.max(
     before.lastIndexOf("\n"),
@@ -92,13 +92,13 @@ export function firstJsonProblem(text: string): JsonSpot | null {
   const tree = parser.parse(body);
   const error = firstErrorNode(tree);
   if (error) return spotAt(text, inText(text, body, lead, error.from));
-  // NOTE: an error NODE is not the only way to be broken. A tree with no error node still has a
+  // An error NODE is not the only way to be broken. A tree with no error node still has a
   // shape, and two values pasted back to back parse as a first value plus something the grammar has
   // no room for; `JSON.parse` refuses that too, and so does the picker that reads this field. Asking
   // the top node for exactly one child is what covers it, and it covers the empty document in the
   // same breath.
   const top = tree.topNode;
-  // NOTE: counted through the cursor and not by name. `JsonText` holds values and nothing else, so
+  // Counted through the cursor and not by name. `JsonText` holds values and nothing else, so
   // every child is one, and asking for the names this file knows about would miss a literal the
   // grammar spells some other way.
   let values = 0;
@@ -135,7 +135,7 @@ export function reindentJson(text: string): Reindent {
   const tree = parser.parse(body);
   const top = tree.topNode.firstChild;
   if (!top) return { ok: false, why: "unreadable" };
-  // NOTE: written into a budget rather than measured afterwards. The point of the ceiling is to not
+  // Written into a budget rather than measured afterwards. The point of the ceiling is to not
   // BUILD the thing, and a check on the finished string has already spent the memory it was meant
   // to refuse.
   const out: string[] = [];

@@ -2424,7 +2424,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     expect(model.boundRounds.map(carriesWrapUp)).toEqual([false, true, true]);
   });
 
-  // NOTE: The wrap-up is an instruction, so it travels in a role a customer cannot type into:
+  // The wrap-up is an instruction, so it travels in a role a customer cannot type into:
   // "[Sistema] ..." in a chat message arrives as a human message, and a real instruction sent the
   // same way would be indistinguishable from it. Checked on every path below, whatever else
   // differs.
@@ -2463,7 +2463,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
     return { rounds: model.boundRounds, result };
   };
 
-  // NOTE: An observation turn has nobody to answer: its frame says any text it writes reaches
+  // An observation turn has nobody to answer: its frame says any text it writes reaches
   // nowhere and its client is muted. The budget is the same, the sentence after it is not.
   const REPLY_SENTENCE = "responda ao cliente";
   const roundWithWrapUp = (rounds: BaseMessage[][]) => {
@@ -2500,7 +2500,7 @@ describe("agentNode tool-call limit (soft+hard)", () => {
       undefined,
       true,
     );
-    // NOTE: inside the system prompt here, and still without the reply sentence.
+    // Inside the system prompt here, and still without the reply sentence.
     const prompt = contentToText(rounds[1]?.[0]?.content ?? "");
     expect(prompt).toContain(WRAP_UP);
     expect(prompt).not.toContain(REPLY_SENTENCE);

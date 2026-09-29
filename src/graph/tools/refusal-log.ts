@@ -184,7 +184,7 @@ export function logSchemaRefusals(
       return inner;
     }
     const d = declarationOf(inner);
-    // NOTE: DELEGATION through the prototype, not a second `tool()`. See `guardedTool`'s note: the
+    // DELEGATION through the prototype, not a second `tool()`. See `guardedTool`'s note: the
     // prototype carries name, description and schema unchanged, only `invoke` is shadowed, and a
     // call that parses reaches exactly the run it would have had without any of this (including its
     // ToolFlowLogger line, which is what keeps a refusal and an execution countable side by side).

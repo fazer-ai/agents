@@ -55,7 +55,7 @@ export function handlers(src: string): {
   // (a comment inside a body-less button handler can name a declared field).
   code: string;
 }[] {
-  // NOTE: bounded by its own closing brace, not by where the next handler starts: slicing to the
+  // Bounded by its own closing brace, not by where the next handler starts: slicing to the
   // next head makes the LAST handler of a nested component swallow everything after it, so a
   // callback that awaits nothing would read as a write of a function declared below it.
   const code = codeSkeleton(src);
@@ -304,7 +304,7 @@ export function halfUsedHolders(src: string): string[] {
   const registerCaptures =
     !!register &&
     new RegExp(`\\b${register}\\[[^\\]]+\\]\\??\\.capture\\(`).test(src);
-  // NOTE: `.at\b` rather than `.at(`: a page with several holders passes the method as a REFERENCE
+  // `.at\b` rather than `.at(`: a page with several holders passes the method as a REFERENCE
   // (`refusals[s].at`) to an aggregate, and requiring the call site would force a worse shape.
   const registerReads =
     !!register &&
@@ -428,7 +428,7 @@ export function uncleanedHolders(src: string): string[] {
   const out: string[] = [];
   for (const m of src.matchAll(/const (\w+) = useFieldRefusal\(([^;]*?)\);/g)) {
     const holder = m[1] as string;
-    // NOTE: DIALOGS, and deliberately not every state a holder is gated on. An inline editor needs
+    // DIALOGS, and deliberately not every state a holder is gated on. An inline editor needs
     // the same per-session clear (`startEdit` re-seeds from a record), but asking every gating state
     // would also clear on the vault's manual/`.env` toggle and DELETE a correct mark. Telling a
     // session from a view switch needs to know what the setter re-seeds, which no heuristic here
@@ -681,7 +681,7 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("a handler ends at its own brace, not at the next declaration", () => {
-    // NOTE: a nested component's last handler must not swallow everything after it, which would read
+    // A nested component's last handler must not swallow everything after it, which would read
     // a callback that awaits nothing as a write of a function declared below.
     const src = `
   async function select(next: string | null) {
@@ -700,7 +700,7 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("a declared name inside a COMMENT is not a form write", () => {
-    // NOTE: a button that sends no body at all, whose only mention of a declared name is a comment
+    // A button that sends no body at all, whose only mention of a declared name is a comment
     // inside it.
     const src = `
       const F = ["title", "text"] as const;
@@ -867,7 +867,7 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("the second holder of a file is asked the same question", () => {
-    // NOTE: two forms, and the one that is wrong is not the one declared first.
+    // Two forms, and the one that is wrong is not the one declared first.
     const src = `
       const A = ["name"] as const;
       const B = ["name", "slug"] as const;
@@ -893,7 +893,7 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("a list chosen by a condition is read on both branches", () => {
-    // NOTE: the shape almost every holder has, and the one an identifier-or-array reader answers `[]`
+    // The shape almost every holder has, and the one an identifier-or-array reader answers `[]`
     // for, which would leave the whole check green and blind.
     const src = `
       const A = ["name", "slug"] as const;
@@ -904,7 +904,7 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("a condition's own strings are not fields", () => {
-    // NOTE: `addTab === "texto"` names a tab; reading the expression's literals flat would demand a
+    // `addTab === "texto"` names a tab; reading the expression's literals flat would demand a
     // control for it.
     const src = `
       const DOC = ["title"] as const;
@@ -926,7 +926,7 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("an inline field list is read, not skipped", () => {
-    // NOTE: `CredentialForm` builds its list from the secret type it is drawing; an identifier-only
+    // `CredentialForm` builds its list from the secret type it is drawing; an identifier-only
     // reader returns nothing for it.
     const src = `
       const refusal = useFieldRefusal([
@@ -1146,7 +1146,7 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("a holder inside a modal is cleared when the modal opens", () => {
-    // NOTE: no ledger under this one: the holder says which dialog it belongs to, and the ones that
+    // No ledger under this one: the holder says which dialog it belongs to, and the ones that
     // name none are simply not asked.
     const uncleaned = sources(ROOT).flatMap((f) =>
       uncleanedHolders(readFileSync(f, "utf8")).map(
@@ -1174,7 +1174,7 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("every always-on-screen entry describes a holder that still exists", () => {
-    // NOTE: both directions, like the other ledgers here: an entry for a holder that has since
+    // Both directions, like the other ledgers here: an entry for a holder that has since
     // started answering with an expression describes code that is not there, and would go on
     // waiving whatever took its place.
     const flagged = new Set(
@@ -1225,7 +1225,7 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("a page's form is flagged too, and answers in the ledger", () => {
-    // NOTE: the inversion: a bare list is the exception, not the default. A form that really does draw all
+    // The inversion: a bare list is the exception, not the default. A form that really does draw all
     // of them says so once, by name, in ALWAYS_ON_SCREEN: a sentence someone wrote, not a shape a
     // regex guessed.
     const src = `
@@ -1236,7 +1236,7 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("an inline editor guards its readings like any dialog", () => {
-    // NOTE: no dialog, no tab, and the two inputs are as absent as any modal's while `editingId` is
+    // No dialog, no tab, and the two inputs are as absent as any modal's while `editingId` is
     // null.
     const src = `
       const refusal = useFieldRefusal(APPROVAL_FIELDS);
@@ -1271,7 +1271,7 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("one cleared opening does not vouch for another", () => {
-    // NOTE: the path the operator uses: the deep-link path clears, the button beside it does not,
+    // The path the operator uses: the deep-link path clears, the button beside it does not,
     // and the mark comes back on the value it refused.
     const src = `
       const connectRefusal = useFieldRefusal(F, connectModal.isOpen);

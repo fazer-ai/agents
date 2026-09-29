@@ -8,7 +8,7 @@ export type ConnectionStatus =
   | "reconnecting"
   | "error";
 
-// NOTE: Duck-typed shape that matches `EdenWS<Schema>` from
+// Duck-typed shape that matches `EdenWS<Schema>` from
 // `@elysiajs/eden`. We do not import `EdenWS` directly because it isn't part
 // of the top-level package export; relying on the public surface (send, on,
 // close, ws) keeps us robust against internal restructuring of the eden
@@ -50,13 +50,13 @@ export interface UseWebSocketResult<TIn, TOut> {
 }
 
 const AUTH_LOST_CLOSE_CODES = new Set([4401, 4402]);
-// NOTE: Codes the server uses to signal "do not retry": 1008 is sent on
+// Codes the server uses to signal "do not retry": 1008 is sent on
 // policy violations (per-user connection cap, invalid message). Reconnecting
 // from these would dogpile the same rejection the server just made — surface
 // it as an error instead and let the user act (refresh, log out, reduce
 // tabs) rather than burning the retry budget on a permanent reject.
 const TERMINAL_CLOSE_CODES = new Set([1008]);
-// NOTE: Cap on close-before-open events for a single hook instance.
+// Cap on close-before-open events for a single hook instance.
 // Failing to even complete the WS handshake is almost always permanent
 // in the lifetime of a tab (auth lost, server unreachable, origin
 // blocked); short-circuit after a few attempts instead of running
@@ -91,7 +91,7 @@ export function useWebSocket<TIn, TOut>(
   options: UseWebSocketOptions<TOut> = {},
 ): UseWebSocketResult<TIn, TOut> {
   const opts = { ...DEFAULTS, ...options };
-  // NOTE: Only the two flags that gate effect setup are destructured here;
+  // Only the two flags that gate effect setup are destructured here;
   // the rest are read through `optsRef.current` inside the close handler so
   // they stay live across re-renders without re-running the effect.
   const { enabled, pauseWhenHidden } = opts;
@@ -109,7 +109,7 @@ export function useWebSocket<TIn, TOut>(
   const pageHiddenRef = useRef(false);
   const subscribeRef = useRef(subscribe);
   const enabledRef = useRef(enabled);
-  // NOTE: Keep latest callbacks in refs so we don't re-open the socket
+  // Keep latest callbacks in refs so we don't re-open the socket
   // on each render that produces fresh function identities.
   const optsRef = useRef(opts);
   optsRef.current = opts;
@@ -136,14 +136,14 @@ export function useWebSocket<TIn, TOut>(
       return;
     }
     socketRef.current = socket;
-    // NOTE: Closure-captured per-socket flag: lets the close handler
+    // Closure-captured per-socket flag: lets the close handler
     // tell apart "we never finished the handshake" (auth/network/origin
     // /etc.) from "we were connected and then dropped" (server restart,
     // idle timeout, user navigated). The two paths cap retries
     // differently.
     let opened = false;
 
-    // NOTE: each socket's listeners guard against `socketRef.current` pointing at a *different* socket.
+    // Each socket's listeners guard against `socketRef.current` pointing at a *different* socket.
     // During `reconnect()` the old socket's close handler runs a tick later, when the ref already holds
     // the new one, and would otherwise schedule a duplicate reconnect and open a third socket. With the
     // ref null (manual close, unmount) the handler proceeds: the `intentionallyClosedRef` branch below

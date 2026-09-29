@@ -7,7 +7,7 @@ import {
   registerRateLimitMiddleware,
 } from "@/api/middlewares/rateLimit";
 
-// NOTE: tests/setup.ts captures Bun's native Response before happy-dom replaces it globally, and
+// tests/setup.ts captures Bun's native Response before happy-dom replaces it globally, and
 // Bun.serve does not recognize the spec one. Restored for the duration of this file only, the same
 // way tests/api/features/realtime does it. Requests go through `Bun.fetch` for the mirror-image
 // reason: the global `fetch` is happy-dom's, which enforces the Same Origin Policy against the

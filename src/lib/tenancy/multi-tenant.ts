@@ -7,12 +7,12 @@ import {
 import type { ScopedDb, TenantContext } from "./context";
 import { FLEET_ROLE_FN } from "./fleet-role";
 
-// NOTE: the closure-extended `$extends` client is not the bare PrismaClient type, but it
+// The closure-extended `$extends` client is not the bare PrismaClient type, but it
 // still exposes `$transaction`. Accept anything transaction-capable for the *On helpers so
 // tests can pass their own client without depending on the (mockable) singleton.
 type TransactionCapable = Pick<PrismaClient, "$extends" | "$transaction">;
 
-// NOTE: models that carry a tenant_id we auto-inject on write. Excludes global/identity
+// Models that carry a tenant_id we auto-inject on write. Excludes global/identity
 // tables (User, AuditLog, McpOAuth*) and Tenant (no tenant_id column). RLS is the hard
 // boundary; this extension only supplies tenant_id on insert (so WITH CHECK passes and
 // callers need not pass it) and overrides any caller-supplied tenant_id (anti-spoof).
@@ -63,7 +63,7 @@ function withTenant<T>(data: T, tenantId: bigint): T {
   return { ...(data as object), tenantId } as T;
 }
 
-// NOTE: closure-bound to a fixed tenantId (validated approach: reading the tenant from
+// Closure-bound to a fixed tenantId (validated approach: reading the tenant from
 // AsyncLocalStorage inside the callback is unreliable on `create`).
 function makeScopedExtension(tenantId: bigint) {
   return Prisma.defineExtension({

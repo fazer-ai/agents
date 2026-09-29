@@ -147,7 +147,7 @@ export async function runModelCall<T>(
 ): Promise<T> {
   const fallback = opts?.fallback;
   const deadlineMs = opts?.deadlineMs ?? config.agent.modelCallTimeoutMs;
-  // NOTE: one attempt at one model, with the single recovery LangChain cannot make, applied to BOTH
+  // One attempt at one model, with the single recovery LangChain cannot make, applied to BOTH
   // models: the fallback answers in the primary's place, and an intermittent empty completion would
   // cost it the turn the same way. The deadline is armed per ATTEMPT and inside the permit: a retry
   // gets a fresh one, and time queueing on the semaphore is not spent from it.
@@ -171,7 +171,7 @@ export async function runModelCall<T>(
     }
   };
 
-  // NOTE: armed before the queue and cleared as the permit is granted. A permit that is free now is
+  // Armed before the queue and cleared as the permit is granted. A permit that is free now is
   // granted in the next microtask, long before any timer can fire, so an uncontended call reports
   // nothing.
   const onPermitWait = opts?.onPermitWait;
@@ -197,7 +197,7 @@ export async function runModelCall<T>(
   try {
     return await sem().run(async () => {
       clearTimeout(waitTimer);
-      // NOTE: reached with the error the PROVIDER raised, which is why the decision lives here and
+      // Reached with the error the PROVIDER raised, which is why the decision lives here and
       // not at the call site: after `describeProviderFault`, "timeout" is a message on an Error named
       // "Error", so a predicate asking the SDK's question would answer no to the case it exists for.
       const failed = async (err: unknown): Promise<T> => {
@@ -217,7 +217,7 @@ export async function runModelCall<T>(
             fallback.deadlineMs,
           );
         } catch (fallbackErr) {
-          // NOTE: the fallback is the last thing there is, so what it failed with is what the turn
+          // The fallback is the last thing there is, so what it failed with is what the turn
           // reports. Redacted the same way: a second vendor's prose is no safer than the first's.
           const out = describeProviderFault(fallbackErr);
           fallback.onFallbackFailed?.({

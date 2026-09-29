@@ -157,7 +157,7 @@ function itemSpans(text: string): Span[] {
 // its recipient: `?subject=…` makes it neither the address nor a URI a chat client opens, and out
 // of the URI its percent escapes would name another mailbox (`foo%2Bbar@` is `foo+bar@`).
 function target(mailto: string | undefined, destination: string): string {
-  // NOTE: one pass, so what one replacement produces is never read as markdown again (`&amp;#x26;` is
+  // One pass, so what one replacement produces is never read as markdown again (`&amp;#x26;` is
   // `&#x26;`, `\&amp;` is `&amp;`).
   const decoded = destination.replace(
     /\\([!-/:-@[-`{-~])|&(amp|lt|gt|quot);|&#(?:([0-9]{1,7})|[xX]([0-9a-fA-F]{1,6}));/g,

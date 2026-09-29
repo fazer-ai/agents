@@ -79,7 +79,7 @@ describe("every provider boundary answers for the other end's text", () => {
     for (const [file, discharge] of Object.entries(BOUNDARIES)) {
       const src = codeOnly(await Bun.file(file).text());
       if (discharge === "throughProvider") {
-        // NOTE: per ENTRY POINT, not per file: a file-level check is satisfied by a module with two
+        // Per ENTRY POINT, not per file: a file-level check is satisfied by a module with two
         // exported calls and only one of them wrapped (the half-converted shape).
         const entries = src.split(/export async function /).slice(1);
         if (entries.length === 0) {

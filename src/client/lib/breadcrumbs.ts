@@ -21,7 +21,7 @@ interface DynamicRoute {
   };
 }
 
-// NOTE: Static routes are matched by exact prefix during the walk, so adding a
+// Static routes are matched by exact prefix during the walk, so adding a
 // new page here makes it appear automatically in the trail.
 // t('nav.agents', 'Agents')
 // t('editor.tab.general', 'General')
@@ -116,7 +116,7 @@ const STATIC_ROUTES: StaticRoute[] = [
   },
 ];
 
-// NOTE: Dynamic routes are matched when a prefix has no static entry. The
+// Dynamic routes are matched when a prefix has no static entry. The
 // resolver receives the RegExp match so it can surface the captured segment
 // (e.g. a user email) as the default label.
 // Tab segment → its editor label (defaults mirror editor.tab.* in the locales).
@@ -194,7 +194,7 @@ export function buildBreadcrumbs(
     });
   }
 
-  // NOTE: the isLast flag above is based on the raw segment index, so a path
+  // The isLast flag above is based on the raw segment index, so a path
   // like `/settings/unknown` still marks the `settings` crumb as non-last and
   // keeps it clickable. Override the final *matched* crumb to always be
   // non-navigable — the user is already there as far as breadcrumbs care.

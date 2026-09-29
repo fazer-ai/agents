@@ -242,7 +242,7 @@ export async function reengageConversation(
     resolved.contactInboxId,
   );
   const contactInboxId = resolved.contactInboxId;
-  // NOTE: Uma recusa sem rastro lê no flowlog como um clique que nunca aconteceu, e "a thread estava
+  // Uma recusa sem rastro lê no flowlog como um clique que nunca aconteceu, e "a thread estava
   // tomada" e "o clique não chegou" mandam investigar coisas diferentes. `skipped`, não `error`: um
   // turno estava rodando e este clique cedeu a vez, que é o desfecho correto.
   const recusaOcupada = (onde: "cedo" | "adjacente"): ReengageResult => {
@@ -294,7 +294,7 @@ export async function reengageConversation(
     conversationDbId: resolved.convDbId,
     base,
   });
-  // NOTE: Already spoken for is not part of the tail. The burst comes from the channel, not a
+  // Already spoken for is not part of the tail. The burst comes from the channel, not a
   // watermark, so a claim whose send failed leaves its message in the tail with a row on it; the
   // all-or-nothing claim would roll back this click and every later one, taking the newer unanswered
   // message with it. A dispensal is left alone: overturning those is what the button is for.
@@ -319,7 +319,7 @@ export async function reengageConversation(
   };
   const selectTail = authCfg.enabled
     ? async (messages: ChatwootMessageRow[]) => {
-        // NOTE: With the gate on, the tail drops what something else handled DURING this call: a
+        // With the gate on, the tail drops what something else handled DURING this call: a
         // message refused while the authorization round-trip ran has the watermark past it but no
         // outgoing message after it, so it would reach the model. Only that window (above the entry
         // mark, under the fresh one): at or below the entry mark predates the click and stays, since a
@@ -353,7 +353,7 @@ export async function reengageConversation(
     base,
     makeClient: deps.makeClient,
   });
-  // NOTE: The fork keeps a customer's reaction on the default page only when the message it reacts to
+  // The fork keeps a customer's reaction on the default page only when the message it reacts to
   // is among that page's last twenty, and this click has no arm that saw the webhook, so it always
   // asks the catch-up read from the mark the operator is looking past. With no mark there is no floor,
   // and the default page alone is read.
@@ -412,7 +412,7 @@ export async function reengageConversation(
   );
   if (ceiling.state === "over") return { outcome: "over-ceiling" };
 
-  // NOTE: The contact-authorization gate (docs/contact-auth.md) applies because this runs the model and
+  // The contact-authorization gate (docs/contact-auth.md) applies because this runs the model and
   // sends: the operator's click is not the authorization, and the tail may be unanswered precisely
   // because it was refused, or the contact revoked since. A refusal is only reported to the operator
   // (there is no customer message for the refusal copy or a handoff to answer) and logged, so the
@@ -478,7 +478,7 @@ export async function reengageConversation(
     if (!stillOurs) return { outcome: "gate-closed" };
   }
 
-  // NOTE: Adjacente ao invoke, e não na entrada: entre as duas correm o preview, o teto de gasto, a
+  // Adjacente ao invoke, e não na entrada: entre as duas correm o preview, o teto de gasto, a
   // autorização (até dez segundos) e a releitura do assignee, e o turno que uma checagem na entrada
   // ignorasse é o que está escrevendo no canal agora. `turnOwnsThread` pergunta ao processo E à linha,
   // e uma leitura que falha conta como ocupado. Sem `contact_inbox_id` não há claim durável (a linha é

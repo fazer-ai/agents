@@ -59,7 +59,7 @@ export const isMcpTransport = (request: Request): boolean => {
   return path === "/api/v1/mcp" || path === "/api/v1/mcp/";
 };
 
-// NOTE: `max` is a parameter only so a test can drive the REAL middleware at a reachable budget;
+// `max` is a parameter only so a test can drive the REAL middleware at a reachable budget;
 // production always takes the default. Exercising the shipped limiter is the point — a test that
 // rebuilt an equivalent one would pass while this one was mounted without a generator.
 export const rateLimitMiddleware = (

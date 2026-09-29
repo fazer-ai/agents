@@ -172,7 +172,7 @@ test("a failed refresh shows the reason the server sent", async () => {
     await i18n.changeLanguage("pt-BR");
   });
 
-  // NOTE: both sentences are searched for, in both languages: the refresh here is the one the language
+  // Both sentences are searched for, in both languages: the refresh here is the one the language
   // switch caused, so the fallback comes out in pt-BR. Searching only for English would fail by
   // TIMEOUT, unable to tell "the wrong sentence" from "no toast at all".
   const anyToast = /letterheads|Could not refresh|atualizar esta página/;

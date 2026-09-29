@@ -84,7 +84,7 @@ const realReengage = { ...reengage };
 // principal would produce a row nobody can be held to, and the row itself is measured against the
 // service in `tests/modules/reengage.test.ts`.
 let reengageCtx: TenantContext | null = null;
-// NOTE: read through a function. The only writer is the mock callback below, which TypeScript's
+// Read through a function. The only writer is the mock callback below, which TypeScript's
 // control-flow analysis does not see from the assertion's scope, so a direct read narrows to `never`.
 const readReengageCtx = () => reengageCtx;
 

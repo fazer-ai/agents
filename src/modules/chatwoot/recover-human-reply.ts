@@ -201,7 +201,7 @@ export async function recoverStrandedHumanReply(
       },
     });
     if (!inbox?.agentId) return null;
-    // NOTE: `routeObserved` has a third value: the claim states the role, so a delivery stranded
+    // `routeObserved` has a third value: the claim states the role, so a delivery stranded
     // before its claim carries null, and `role-unstated` is one of the verdicts that arm this. Read as
     // `false`, an observer's append beside a `test` or switched-off responder would be discarded for
     // good. The role is recovered from what survives: `routeAgentBotId` (written at INSERT) and whether
@@ -220,7 +220,7 @@ export async function recoverStrandedHumanReply(
               select: { agentId: true },
             })
           )?.agentId ?? null);
-    // NOTE: holding the conversation ends the question, row or no row. The fork delivers to the
+    // Holding the conversation ends the question, row or no row. The fork delivers to the
     // conversation's assignee bot too, and an agent that answered this inbox before becoming its
     // watcher keeps what it was assigned; `observerRuntimeForRoute` refuses to call that route an
     // observer's whenever the inbox has a responder, as it does here by construction. Recovered as an
@@ -248,7 +248,7 @@ export async function recoverStrandedHumanReply(
             createdAt: { lte: row.receivedAt },
           },
         })) > 0);
-    // NOTE: the route's own agent, resolved the way the receiver's `resolveRoute` does: a WATCHER's
+    // The route's own agent, resolved the way the receiver's `resolveRoute` does: a WATCHER's
     // runtime comes from the bot the delivery arrived on (the bot IS the route), a RESPONDER's from the
     // INBOX, never the bot. Chatwoot fans a message to the conversation's assigned bot and the inbox's,
     // so `routeAgentBotId` can name another persona that holds the conversation; asked through the bot
@@ -261,14 +261,14 @@ export async function recoverStrandedHumanReply(
       select: { mode: true, enabled: true, settings: true },
     });
     if (!agent) return null;
-    // NOTE: whether a responder of ours answers this inbox, the other half of the watcher's own
+    // Whether a responder of ours answers this inbox, the other half of the watcher's own
     // condition: an observer beside a responder shares its memory and folds into it; one with none
     // folds nothing. Asked of the inbox's binding, the same reading `routeRemembers` makes.
     const responder = await db.agent.findUnique({
       where: { id: inbox.agentId },
       select: { enabled: true, mode: true, settings: true },
     });
-    // NOTE: the responder's bot, which names its route in the ledger: whether it received this
+    // The responder's bot, which names its route in the ledger: whether it received this
     // message is asked of its own delivery row. Read only on a watcher's route, the one place it
     // decides anything.
     const responderBotId =
@@ -355,7 +355,7 @@ export async function recoverStrandedHumanReply(
   ) {
     return "not-owed";
   }
-  // NOTE: whether this route remembers at all, asked of the agent and not of the row (see the
+  // Whether this route remembers at all, asked of the agent and not of the row (see the
   // header), and per route like the receiver's `routeRemembers`. On a WATCHER's route the mode is not
   // asked, only the switch, plus whether a responder of ours answers the inbox (its thread is the
   // memory the watcher folds into); on the responder's own route it is the mode. Read as the
@@ -394,7 +394,7 @@ export async function recoverStrandedHumanReply(
     return "not-owed";
   }
 
-  // NOTE: whether the append can still land at all. The thread remembers the last `INGEST_ID_WINDOW`
+  // Whether the append can still land at all. The thread remembers the last `INGEST_ID_WINDOW`
   // ids per direction, and once that window is SATURATED an id below its floor is `ancient`:
   // `ingestMessageIntoThread` refuses it SUCCESSFULLY, so the job completes and nothing says the
   // words never landed. Asked HERE, where it can still be said: `duplicate` is the happy answer for a
@@ -559,7 +559,7 @@ export async function recoverStrandedHumanReply(
     return "unreachable";
   }
 
-  // NOTE: the ATTENDANT's renderer, the one the receiver picks for this role: the eager media pass
+  // The ATTENDANT's renderer, the one the receiver picks for this role: the eager media pass
   // never runs on an outgoing message, and the customer-facing markers would tell the agent to ask
   // its own colleague to retype a file. A voice note gets its words folded in: an audio reply carries
   // its own transcription, and the marker alone reads as an attendant who sent a file in silence.
@@ -598,7 +598,7 @@ export async function recoverStrandedHumanReply(
     return "not-owed";
   }
 
-  // NOTE: whose memory it is filed under, the rule the live path applies (`memoryOwner` in
+  // Whose memory it is filed under, the rule the live path applies (`memoryOwner` in
   // ./webhook.ts). Both stranded rows of one reply arm the same job, the later arm replacing the
   // payload, and the payload's agent decides whose compaction settings summarise the attendance.
   // Under the responder whenever it received the message and remembers continuously, so both rows

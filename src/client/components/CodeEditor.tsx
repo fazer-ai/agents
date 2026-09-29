@@ -117,12 +117,12 @@ function bracketApply(name: string) {
     to: number,
   ) => {
     const doc = view.state.doc;
-    // NOTE: back over the whitespace the source's regex allows after the dot, because the range
+    // Back over the whitespace the source's regex allows after the dot, because the range
     // starts at the NAME: `input.  ord` replaced from `ord` alone would leave `input.  ["order-id"]`.
     let dot = from;
     while (dot > 0 && /\s/.test(doc.sliceString(dot - 1, dot))) dot--;
     const afterDot = dot >= 1 && doc.sliceString(dot - 1, dot) === ".";
-    // NOTE: `?.` survives, because `input?["x"]` is a conditional expression and `input?.["x"]` is
+    // `?.` survives, because `input?["x"]` is a conditional expression and `input?.["x"]` is
     // the access. The two characters are always adjacent when they reach here: the source's regex
     // allows whitespace before the `?` and after the `.`, never between them.
     const optional =
@@ -229,7 +229,7 @@ export function hoverInfo(
     if (objectNode?.name !== "VariableName") continue;
     const root = state.doc.sliceString(objectNode.from, objectNode.to);
     if (root !== "context" && root !== "input") continue;
-    // NOTE: A quoted subscript carries its quotes AND its escapes; the label never does, so stripping the
+    // A quoted subscript carries its quotes AND its escapes; the label never does, so stripping the
     // quotes is not enough. The editor writes such escapes itself: an argument named `sa"id` completes
     // through `bracketApply` as `input["sa\"id"]`, which only decoding matches back to the name.
     const name = quoted ? decodeStringLiteral(text) : text;
@@ -435,7 +435,7 @@ export function sourceFor(
 ): (ctx: CompletionContext) => CompletionResult | null {
   return (ctx) => {
     if (inNotCode(ctx)) return null;
-    // NOTE: after a DOT, and the dot is what makes this cheap: no parse, no scope analysis, just the two
+    // After a DOT, and the dot is what makes this cheap: no parse, no scope analysis, just the two
     // roots this sandbox actually has. `context ?. name` and `context.  name` are the same request,
     // so the whitespace the formatter may leave is allowed on both sides of the dot.
     const dotted = ctx.matchBefore(
@@ -447,7 +447,7 @@ export function sourceFor(
         : "input";
       const options = completionsFor(path, argumentNames, t);
       if (options.length === 0) return null;
-      // NOTE: the replaced range starts after the LAST dot, so accepting a completion never eats the
+      // The replaced range starts after the LAST dot, so accepting a completion never eats the
       // `context.` the operator already typed. A name that is not an identifier is the exception,
       // and it eats the dot itself in `bracketApply`.
       const afterDot = dotted.text.lastIndexOf(".") + 1;
@@ -505,7 +505,7 @@ export function CodeEditor({
   const { t, i18n } = useTranslation();
   const names = useMemo(() => [...argumentNames], [argumentNames]);
   const namesKey = namesKeyOf(names);
-  // NOTE: `namesKey` and not `names`: the parent rebuilds that array on every render, and this memo IS
+  // `namesKey` and not `names`: the parent rebuilds that array on every render, and this memo IS
   // the reconfiguration trigger (`CodeMirrorField` reconfigures on its identity), so a fresh array
   // would reconfigure per render. The language is here because the popup's own text has to follow a
   // language switch without the operator reopening the modal.

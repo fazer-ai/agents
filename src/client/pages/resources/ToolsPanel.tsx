@@ -111,7 +111,7 @@ export function ToolsPanel() {
   async function confirmDelete() {
     const target = deleteModal.payload;
     if (!target) return;
-    // NOTE: read BEFORE the request, as the save does: the tenant selector lives in `localStorage`
+    // Read BEFORE the request, as the save does: the tenant selector lives in `localStorage`
     // and another tab can move it while this is in flight, so the clearing must land in the scope
     // this delete was sent under.
     const ticket = sampleTicket();

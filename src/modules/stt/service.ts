@@ -160,7 +160,7 @@ async function transcribeOnce(
     );
     return skip("credential_not_found");
   }
-  // NOTE: credential baseUrl takes precedence over the agent config baseURL (config is a fallback).
+  // Credential baseUrl takes precedence over the agent config baseURL (config is a fallback).
   // The requiresBaseURL check uses the effective value so a credential-stored URL satisfies the guard.
   const effectiveBaseURL = entry.baseUrl ?? cfg.baseURL;
   if (provider.requiresBaseURL && !effectiveBaseURL) {
@@ -172,7 +172,7 @@ async function transcribeOnce(
     base,
     makeClient: params.deps?.makeClient,
   });
-  // NOTE: the download sits OUTSIDE the withFlowStage span below, so without this a failure leaves no
+  // The download sits OUTSIDE the withFlowStage span below, so without this a failure leaves no
   // `stt` line to explain a turn that answered "não consegui ouvir". Emit the stage line, then re-throw (the caller decides; see the contract
   // above). `retryOnMissing` absorbs Chatwoot's write race on a fresh voice note.
   let bytes: ArrayBuffer;

@@ -518,7 +518,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(detail.messageId).toBe(messageId);
     expect(detail.knownToMirror).toBe(true);
 
-    // NOTE: The other half: a recovery is armed for this exact row. Armed HERE or nowhere: the
+    // The other half: a recovery is armed for this exact row. Armed HERE or nowhere: the
     // sweep's query reads PENDING and PROCESSING, so from this moment on the row is invisible to
     // every later pass.
     const job = await suDb.schedulerJob.findFirst({
@@ -633,7 +633,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("records a PENDING strand too, which the CAS never reached", async () => {
-    // NOTE: The ack is spent before the ledger row is written, so a death between the insert and
+    // The ack is spent before the ledger row is written, so a death between the insert and
     // the CAS leaves PENDING. Letting a redelivery through to the CAS only helps when one arrives,
     // and Chatwoot holds a 200, so usually none does.
     const convId = 8803;
@@ -791,7 +791,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("closes an event that could never carry a message, ids or no ids", async () => {
-    // NOTE: `webwidget_triggered` is the Agent Bot event whose body is a CONTACT_INBOX: a top-level
+    // `webwidget_triggered` is the Agent Bot event whose body is a CONTACT_INBOX: a top-level
     // `id` (the contact_inbox id) and no `conversation` key. `normalize.ts` reads a conversation id
     // only from the shapes that ARE a conversation or a message, so it reaches the ledger with both
     // ids null and, if the process dies before the claim, no claim stamp: byte for byte the
@@ -901,7 +901,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("retires the row before writing the line that pages an operator", async () => {
-    // NOTE: ORDERING. `writeFlowEvent` DISPATCHES the alert as it writes (Discord, a webhook,
+    // ORDERING. `writeFlowEvent` DISPATCHES the alert as it writes (Discord, a webhook,
     // somebody's phone) and nothing can retract that. Written before the CAS, the sweep would page
     // an operator every time a redelivery claimed the row in between, a designed path here. No seam
     // makes the flow write fail against a real database without faking the client out from under
@@ -1044,7 +1044,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("the DIRECT path retires its own row as soon as the reply is out", async () => {
-    // NOTE: A process dying between `runAgentTurn`'s inline post and tx2 (the ingestion pass, the
+    // A process dying between `runAgentTurn`'s inline post and tx2 (the ingestion pass, the
     // compaction arming, the watermark tail) leaves PROCESSING on a message the customer already
     // has an answer to, which the sweep would report as a loss. Observed through a SECOND ledger
     // row for the same message: `retireCoveredDeliveries` is a blind write by conversation and
@@ -1201,7 +1201,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     const sent: Array<[number, string]> = [];
     let sends = 0;
     let nextId = 9000;
-    // NOTE: Holds what it accepted and answers a read, the way the fork does: the reconciliation
+    // Holds what it accepted and answers a read, the way the fork does: the reconciliation
     // after a failed send asks whether the balloon landed, and a stub answering an empty page is a
     // DEGRADED read, not a conversation with nothing in it.
     const stored: Array<{ id: number; content: string; type: number }> = [
@@ -1394,7 +1394,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("a SUPERSEDED direct turn still settles: the graph ran over the message", async () => {
-    // NOTE: `superseded` on the DIRECT path differs from the flush, and this test holds the two
+    // `superseded` on the DIRECT path differs from the flush, and this test holds the two
     // apart. On the flush it hands the burst to a re-armed flush that answers the same messages, so
     // the rows stay open for that run. Here nothing is re-armed: the graph already wrote the thread
     // state, the post gate found a newer incoming id and stood down, and the NEWER message's
@@ -1510,7 +1510,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("naming no messages at all is not a call anyone can write", () => {
-    // NOTE: A COMPILE-time guard, held by `bun check` rather than by this run: the two ways to say
+    // A COMPILE-time guard, held by `bun check` rather than by this run: the two ways to say
     // what a decision covered are a union, so the third combination (neither the burst nor the
     // range) does not typecheck. It is the dangerous one: a filter of `{ chatwootInstanceId,
     // conversationId }` retires every non-terminal row on the conversation and closes whatever loss
@@ -1530,7 +1530,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("a wide settlement never closes a TRANSCRIPTION's row", async () => {
-    // NOTE: The observer's rule below, applied to the other row that answers nobody. The
+    // The observer's rule below, applied to the other row that answers nobody. The
     // transcribed `message_updated` names its message, so without the event in the filter it
     // matches the wide scope; the two are deliveries of the SAME message racing, and the creation's
     // settlement would close the update before its ingestion is armed. An enqueue failure or a
@@ -1648,7 +1648,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("an OBSERVER still settles its OWN row", async () => {
-    // NOTE: The exclusion belongs to the wide scope alone. A single-row settlement already names
+    // The exclusion belongs to the wide scope alone. A single-row settlement already names
     // the row it may touch, and the observer's own (the one path that settles after recording
     // `routeObserved: true`) is that shape: requiring `false` there would match nothing, leaving a
     // handled delivery on the worklist for the sweep to report and replay whenever a process exits
@@ -1686,7 +1686,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("a gate taken because ANOTHER BOT holds it settles only our own row", async () => {
-    // NOTE: Chatwoot fans one message to up to TWO bot routes (`agent_bots_for` returns the
+    // Chatwoot fans one message to up to TWO bot routes (`agent_bots_for` returns the
     // assignee bot and the inbox's active bot, each with its own `delivery_id`), so a message can
     // hold two ledger rows. On the losing route the gate closes because ANOTHER PARTY holds the
     // conversation, which says nothing about the message: that bot's delivery may be running, and
@@ -1786,7 +1786,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("a gate advances the watermark before it settles the row", async () => {
-    // NOTE: Two writes that are not a transaction, ordered at the SOURCE because no end state shows
+    // Two writes that are not a transaction, ordered at the SOURCE because no end state shows
     // which ran first. Settle first, and a death between them leaves the row terminal with the
     // watermark still below the message: the sweep no longer sees it, and a later flush
     // re-coalesces from that watermark and ANSWERS a message a gate deliberately suppressed.
@@ -1805,7 +1805,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("retires the PROCESSING rows before it looks for DEAD ones", async () => {
-    // NOTE: The order of the two writes, asserted at the SOURCE: the interleaving it guards against
+    // The order of the two writes, asserted at the SOURCE: the interleaving it guards against
     // is another process's write landing between them, which no end state shows. With DEAD first,
     // the sweep's PROCESSING -> DEAD landing between them makes both statements miss, and the row
     // stays DEAD, reported as unanswered, with no owner left to run tx2. This way round the same
@@ -2332,7 +2332,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("the correction does NOT page, and the reason is written down", async () => {
-    // NOTE: The gap, pinned so it stays a decision. A channel's `minLevel` defaults to "error": the
+    // The gap, pinned so it stays a decision. A channel's `minLevel` defaults to "error": the
     // loss pages, and the `warn` that closes it reaches only the Logs page. Routing it as "error"
     // is worse: `dispatchAlertsForEvent` coalesces a pending delivery by (channel, stage, level),
     // so a correction inside the loss alert's window INCREMENTS it and the operator gets a bigger
@@ -2394,7 +2394,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("a redelivery of a LEGACY row fills in what that row could not record", async () => {
-    // NOTE: A legacy row carries neither id, and the CAS after a redelivery stamps `claimed_at` on
+    // A legacy row carries neither id, and the CAS after a redelivery stamps `claimed_at` on
     // it: exactly the signature the sweep reads as "this build wrote it, so its nulls mean what
     // they say". Left empty, a redelivery of a legacy row turns a lost customer message into one
     // the sweep closes as carrying none.
@@ -2427,7 +2427,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(row.conversationId).toBe(convId);
     expect(row.inboundMessageId).toBe(messageId);
 
-    // NOTE: The shape is filled by the same rule and from the same list, so a column added later
+    // The shape is filled by the same rule and from the same list, so a column added later
     // cannot be left out of it. Asserted on a SECOND legacy row because this one carries a customer
     // message: the shape is read only where the answer would otherwise be benign, so filling it on
     // a row that owes a turn would be untestable through the verdict.
@@ -2888,7 +2888,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("a strand that owed a takeover is closed, unreported, and armed for recovery", async () => {
-    // NOTE: The row a process death leaves when its delivery carried a COLLEAGUE's reply:
+    // The row a process death leaves when its delivery carried a COLLEAGUE's reply:
     // `message_created`, no inbound message id, and the payload's shape. Three assertions, each a
     // way the neighbouring verdicts are wrong here: PROCESSED and not DEAD (a colleague's reply
     // belongs on no loss worklist), no line (`writeFlowEvent` DISPATCHES as it writes, so a line

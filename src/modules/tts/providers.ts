@@ -9,7 +9,7 @@ import { pcmToWav } from "./wav";
 
 const TTS_TIMEOUT_MS = 60_000;
 
-// NOTE: the audio container the reply is delivered in, decided per destination channel by pickTtsFormat.
+// The audio container the reply is delivered in, decided per destination channel by pickTtsFormat.
 export type TtsOutputFormat = "ogg_opus" | "aac" | "wav" | "mp3";
 
 export interface TtsRequest {
@@ -63,12 +63,12 @@ export class TtsError extends Error {
   }
 }
 
-// NOTE: a provider error body is not a safe thing to keep (free-text messages carry account/billing
+// A provider error body is not a safe thing to keep (free-text messages carry account/billing
 // detail and echoed credentials), but the machine-readable STATUS inside it is: `voice_not_found`,
 // `invalid_api_key`, `quota_exceeded` each end a debugging session in one line. Known shapes:
 // ElevenLabs `{detail: {status}}`, OpenAI/OpenRouter `{error: {code|type}}`.
 const MAX_ERROR_BODY = 8_192;
-// NOTE: the guard that keeps prose out by construction — a code is a slug, a message has spaces and
+// The guard that keeps prose out by construction — a code is a slug, a message has spaces and
 // punctuation. A body whose "code" field holds a sentence is dropped rather than logged.
 const ERROR_CODE_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
@@ -76,7 +76,7 @@ function pickErrorCode(value: unknown): string | null {
   return typeof value === "string" && ERROR_CODE_RE.test(value) ? value : null;
 }
 
-// NOTE: reads at most `max` bytes and cancels the stream past that, instead of `res.text()`, which
+// Reads at most `max` bytes and cancels the stream past that, instead of `res.text()`, which
 // buffers the WHOLE body before any size check — a chunked error body has no declared length, so an
 // unbounded one would be fully materialized just to be discarded.
 async function readCappedText(
@@ -106,7 +106,7 @@ async function readCappedText(
   return new TextDecoder().decode(joined);
 }
 
-// NOTE: reads the provider's error code off a failed response. Never throws and never returns free text:
+// Reads the provider's error code off a failed response. Never throws and never returns free text:
 // a body that is absent, oversized, not JSON, or carries no slug-shaped code yields null.
 export async function readProviderErrorCode(
   res: Response,
@@ -132,7 +132,7 @@ export async function readProviderErrorCode(
   }
 }
 
-// NOTE: Chatwoot infers file_type "audio" from the audio/* mime + the extension, and `is_recorded_audio`
+// Chatwoot infers file_type "audio" from the audio/* mime + the extension, and `is_recorded_audio`
 // marks it as a recording; baileys then sends Ogg/Opus to WhatsApp as a PTT voice note.
 const RESULT_BY_FORMAT: Record<
   TtsOutputFormat,
@@ -144,7 +144,7 @@ const RESULT_BY_FORMAT: Record<
   mp3: { mime: "audio/mpeg", fileName: "reply.mp3" },
 };
 
-// NOTE: picks the container for the destination channel. Instagram (Meta messaging) accepts audio only as
+// Picks the container for the destination channel. Instagram (Meta messaging) accepts audio only as
 // aac/m4a/wav/mp4 — ogg and mp3 are refused by the send job AFTER Chatwoot already shows the message
 // as sent, so the customer silently never receives the reply. Every other channel keeps the
 // WhatsApp-first default: Ogg/Opus (native PTT voice note) when the provider can emit it, else the
@@ -162,7 +162,7 @@ export function pickTtsFormat(
   return provider.formats.includes("ogg_opus") ? "ogg_opus" : "mp3";
 }
 
-// NOTE: OpenAI speech: POST /audio/speech; response_format maps 1:1 from the requested container ("opus"
+// OpenAI speech: POST /audio/speech; response_format maps 1:1 from the requested container ("opus"
 // returns an Ogg-Opus stream, the WhatsApp voice-note format; "aac" serves Instagram natively).
 const OPENAI_FORMAT: Record<TtsOutputFormat, string> = {
   ogg_opus: "opus",
@@ -193,7 +193,7 @@ async function openaiSynthesize(req: TtsRequest): Promise<TtsResult> {
   return { audio: await res.arrayBuffer(), ...RESULT_BY_FORMAT[req.format] };
 }
 
-// NOTE: ElevenLabs text-to-speech: POST /text-to-speech/{voice_id}?output_format=…. Opus output was added
+// ElevenLabs text-to-speech: POST /text-to-speech/{voice_id}?output_format=…. Opus output was added
 // 2025-03; 48kHz/64kbps is ample for a voice note. There is no aac/wav output, so the "wav"
 // container is served as pcm_24000 (raw 16-bit mono PCM, available on every plan tier) wrapped in a
 // RIFF header locally — a 44-byte header write, no transcode.
@@ -271,7 +271,7 @@ async function elevenlabsSynthesize(req: TtsRequest): Promise<TtsResult> {
   return { audio: raw, ...RESULT_BY_FORMAT[req.format] };
 }
 
-// NOTE: OpenRouter speech: dedicated audio API (launched 2026-05-01), POST /audio/speech. Unlike openai/
+// OpenRouter speech: dedicated audio API (launched 2026-05-01), POST /audio/speech. Unlike openai/
 // elevenlabs it has NO Opus output option (only "mp3"/"pcm", and pcm's sample rate varies per routed
 // model, so it cannot be safely wrapped), so the reply arrives at WhatsApp as a plain file
 // attachment instead of a native voice note (PTT) — surfaced as a warning in the editor — and

@@ -61,7 +61,7 @@ async function asaasFetch(
   const assertSafe = ctx.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(url);
   const doFetch = ctx.fetchImpl ?? fetch;
-  // NOTE: The cap is on what is READ, not a slice of what was already read: `.text()` buffers the
+  // The cap is on what is READ, not a slice of what was already read: `.text()` buffers the
   // whole body before any limit applies.
   const { res, body } = await fetchBounded(
     url,
@@ -124,7 +124,7 @@ const PIX_CHARGE_SCHEMA = z.object({
     .describe("Due date as YYYY-MM-DD (optional; defaults to today)"),
 });
 
-// NOTE: field order is the arg order the UI projection renders (argsFromZod iterates the shape).
+// Field order is the arg order the UI projection renders (argsFromZod iterates the shape).
 // Exactly one id is required, enforced in code (not .refine) so the model gets a short
 // instructive message instead of a zod validation dump.
 const PAYMENT_STATUS_SCHEMA = z.object({
@@ -315,7 +315,7 @@ function buildCreatePixChargeTool(
             `The payment provider rejected the customer lookup (HTTP ${found.status}).`,
           );
         }
-        // NOTE: A malformed 2xx body must also fail the call (asaasFetch yields json: null on an
+        // A malformed 2xx body must also fail the call (asaasFetch yields json: null on an
         // unparseable body) — only a valid data array may reach the create branch, and a non-empty
         // one must carry a string id, otherwise a parse glitch would duplicate the customer.
         const json = found.json as { data?: unknown } | null;
@@ -326,7 +326,7 @@ function buildCreatePixChargeTool(
           );
         }
         const first = (json.data as Array<{ id?: unknown }>)[0]?.id;
-        // NOTE: A blank ("" / whitespace) id must count as missing — it would leave customerId
+        // A blank ("" / whitespace) id must count as missing — it would leave customerId
         // falsy and reach the create branch anyway.
         const firstId = typeof first === "string" ? first.trim() : "";
         if (json.data.length > 0 && !firstId) {

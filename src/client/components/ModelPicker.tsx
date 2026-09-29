@@ -80,7 +80,7 @@ export function ModelPicker({
 }: Props) {
   const { t } = useTranslation();
   const key = cacheKey(provider, credentialRef, baseURL, capability);
-  // NOTE: an empty field still shows this text, so it has to be the model the runtime would actually
+  // An empty field still shows this text, so it has to be the model the runtime would actually
   // use; only chat has a per-provider table here. A caller's placeholder wins even when it is "": the
   // vision and STT tabs pass `X_DEFAULT_MODEL[provider] ?? ""`, and openai-compatible holds "" because
   // no default exists and the endpoint needs a named model, so promising "provider default" would

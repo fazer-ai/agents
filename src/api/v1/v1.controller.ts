@@ -55,7 +55,7 @@ import { getTenant, listTenants, type TenantUpdate } from "./tenants.service";
 // translate('errors.returnResponderChanged', 'The responder of this inbox changed while the conversation was being returned; try again.')
 // translate('errors.tenantConfirmMismatch', 'The name confirmation does not match.')
 
-// NOTE: requireAuth guarantees a user, and tenancyPlugin derives tenantContext from it, so
+// requireAuth guarantees a user, and tenancyPlugin derives tenantContext from it, so
 // a null context here is an impossible state — throw (handled by onError as 403) rather
 // than return an error body, keeping each success response a single shape for the treaty.
 function ctxOrThrow(ctx: TenantContext | null): TenantContext {

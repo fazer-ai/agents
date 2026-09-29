@@ -361,7 +361,7 @@ export async function loadToolSelections(
     });
   }
 
-  // NOTE: resolve the predefined secret type (kind) of each HTTP tool's credential in one batch, so
+  // Resolve the predefined secret type (kind) of each HTTP tool's credential in one batch, so
   // the runtime can auto-inject the auth header/param without the operator wiring {{secret}}.
   const refs = [
     ...new Set(

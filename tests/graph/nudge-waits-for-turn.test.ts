@@ -307,7 +307,7 @@ describe.skipIf(!dbUp)(
       await Promise.all([turno, nudge]);
       // A entrega aconteceu: o cliente leu RESP-N.
       expect(s.messages.map(([, t]) => t)).toEqual(["RESP-N"]);
-      // NOTE: A PROVA: o thread lembra dela. Sem a espera o canal termina sem RESP-N, porque o invoke
+      // A PROVA: o thread lembra dela. Sem a espera o canal termina sem RESP-N, porque o invoke
       // do reativo termina em segundo e salva o canal de antes do nudge.
       const canal = await channelOf(checkpointer, graphThreadId);
       expect(canal.some((t) => t.includes("RESP-N"))).toBe(true);

@@ -309,7 +309,7 @@ function bodyTemplates(body: unknown, ai: AiFields): string[] {
   if (!isPlainObject(body)) return [];
   if (body.mode === "raw" && typeof body.raw === "string") return [body.raw];
   if (body.mode === "kv" && Array.isArray(body.rows)) {
-    // NOTE: Collapsed by TRIMMED key, last one winning, as `payload[k] = …` does; an empty key emits
+    // Collapsed by TRIMMED key, last one winning, as `payload[k] = …` does; an empty key emits
     // nothing. Except a later LONE placeholder naming an AI field: the runtime skips it when the model
     // omits it, leaving the earlier value, so both survive here.
     const byKey = new Map<string, string[]>();
@@ -320,7 +320,7 @@ function bodyTemplates(body: unknown, ai: AiFields): string[] {
       // COERCED, not skipped: `parseBody` turns a non-string value into `""`, and that row still
       // overwrites the one before it. Skipping it kept a `{{secret}}` the request no longer carries.
       const rowValue = typeof r.value === "string" ? r.value : "";
-      // NOTE: Two independent questions. WHAT IT SENDS: a lone placeholder naming a declared AI field
+      // Two independent questions. WHAT IT SENDS: a lone placeholder naming a declared AI field
       // is filled by the model, never the vault, so it does not count as using the credential. WHETHER
       // IT OVERWRITES: only an OPTIONAL one may be omitted and leave the earlier row's value.
       const lone = rowValue.match(LONE_PLACEHOLDER)?.[1];
@@ -414,7 +414,7 @@ function buildsARequest(
   internalTargets: readonly InternalTarget[],
 ): boolean {
   if (typeof urlTemplate !== "string") return false;
-  // NOTE: The ORIGIN is pinned: `buildHttpTool` throws when interpolation alters it, so a placeholder
+  // The ORIGIN is pinned: `buildHttpTool` throws when interpolation alters it, so a placeholder
   // in the scheme, host or port is a tool that never fetches (the two sentinels show where it sits).
   // Of the SSRF guard's refusals, two are decidable here: a non-https protocol, and a literal address
   // in a blocked range; both lift when `config.ssrf.allowPrivateTargets` does, as the guard reads it.
@@ -723,7 +723,7 @@ export function unusedCredentialWarning(
     return `the attached credential is never sent: a "${kind}" credential injects into the "${verdict.name}" header, and that name cannot be set on a request — the assignment reaches an inherited setter and creates no header at all, silently. Give the credential another param name; nothing about this tool can make that one arrive.`;
   }
   if (verdict.state === "shadowed") {
-    // NOTE: a DIFFERENT sentence, and the reason is that the other one's advice is wrong here. This
+    // A DIFFERENT sentence, and the reason is that the other one's advice is wrong here. This
     // operator picked an injecting type and attached it correctly; what stops it is the value the
     // request already carries at the target, which the runtime deliberately leaves alone. Telling
     // them to "attach a credential whose type injects it" names something they already did.

@@ -172,7 +172,7 @@ describe.skipIf(!dbUp)("alert worker", () => {
         status: url.includes("/retry") ? 500 : 204,
       })) as unknown as typeof fetch;
     const t = Date.now();
-    // NOTE: The backoff is FULL jitter, `floor(random() * 2000)` on the first retry, so 0 is a legitimate
+    // The backoff is FULL jitter, `floor(random() * 2000)` on the first retry, so 0 is a legitimate
     // draw about 1 run in 2000 and asserting `> t` against a live `Math.random` would flake. An immediate
     // retry is a valid outcome of the documented algorithm (the tick interval absorbs one), so the draw
     // is pinned here rather than a floor being added to production for a test's benefit.
@@ -325,7 +325,7 @@ describe.skipIf(!dbUp)("alert worker", () => {
       where: { id: dead },
       data: { status: "DEAD", attempts: 5 },
     });
-    // NOTE: Only this test's URL is counted. The claim is a batch and a sibling's row can ride along (a retry
+    // Only this test's URL is counted. The claim is a batch and a sibling's row can ride along (a retry
     // whose backoff comes due mid-file), so a global counter would assert on other tests' traffic.
     let posts = 0;
     const counting = (async (url: string) => {

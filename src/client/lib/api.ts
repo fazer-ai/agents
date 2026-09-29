@@ -5,7 +5,7 @@ import i18n from "@/client/lib/i18n";
 import { noteServerDate } from "@/client/lib/serverClock";
 import { recoverFromRejectedSelector } from "@/client/lib/tenantSelectorRecovery";
 
-// NOTE: `parseDate: false` disables Eden treaty's default JSON reviver that
+// `parseDate: false` disables Eden treaty's default JSON reviver that
 // auto-converts any string matching an ISO 8601 / RFC 1123 / dd-mm-yyyy regex
 // into a `Date`. The conversion is invisible to the type system (Eden infers
 // the wire-format shape, where `Date` already flattens to `string`), so call
@@ -18,7 +18,7 @@ export const api = treaty<App>(window.location.origin, {
     const headers: Record<string, string> = {
       "Accept-Language": i18n.language,
     };
-    // NOTE: the selected tenant: any tenant for a SUPER_ADMIN, one of the person's memberships
+    // The selected tenant: any tenant for a SUPER_ADMIN, one of the person's memberships
     // otherwise. Sent unconditionally; a value the session may not use is refused with the id named,
     // and `recoverFromRejectedSelector` below drops it.
     const tenantId = getActiveTenantId();

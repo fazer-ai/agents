@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-// NOTE: Anthropic Claude "sunburst" mark in its official brand coral (#D97757). The brand color is baked in as literal hex (it doesn't flip with our light/dark theme and reads well on both), so this icon ignores the parent's `text-*` color, unlike the monochrome provider marks (Codex/Copilot/Cursor) that still inherit via `currentColor`. Used to identify the Claude Code option in the MCP client selector.
+// Anthropic Claude "sunburst" mark in its official brand coral (#D97757). The brand color is baked in as literal hex (it doesn't flip with our light/dark theme and reads well on both), so this icon ignores the parent's `text-*` color, unlike the monochrome provider marks (Codex/Copilot/Cursor) that still inherit via `currentColor`. Used to identify the Claude Code option in the MCP client selector.
 export function ClaudeIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg

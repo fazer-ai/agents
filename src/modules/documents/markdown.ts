@@ -31,7 +31,7 @@ export function parseInline(text: string): InlineSpan[] {
   const spans: InlineSpan[] = [];
   let buffer = "";
   let bold = false;
-  // NOTE: The TOKEN that opened the current italic, not a boolean: in `_3 * 4_` the asterisk must
+  // The TOKEN that opened the current italic, not a boolean: in `_3 * 4_` the asterisk must
   // not close the underscore. While an italic is open the OTHER token is literal, since nested
   // emphasis has no representation and guessing wrong would change the text itself.
   let italicToken: string | null = null;

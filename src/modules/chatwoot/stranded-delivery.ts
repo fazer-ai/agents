@@ -113,7 +113,7 @@ export function classifyStrandedDelivery(
   const age =
     policy.now.getTime() - (row.claimedAt ?? row.receivedAt).getTime();
   if (age < policy.staleAfterMs) return "in-flight";
-  // NOTE: an event that could never have owed a turn never lost one. Asked BEFORE the fence below
+  // An event that could never have owed a turn never lost one. Asked BEFORE the fence below
   // because the event name is the one column no migration added, so this answers for older builds'
   // rows too. `AgentBotListener` dispatches seven events (`conversation_resolved`, `_opened`,
   // `_status_changed`, `_updated`, `message_created`, `message_updated`, `webwidget_triggered`), and

@@ -1766,7 +1766,7 @@ describe.skipIf(!dbUp)(
     });
 
     describe("the inbound watermark is monotonic, not ordered with the state", () => {
-      // NOTE: A stale delivery loses the order of the conversation's STATE. `lastInboundAt` is the
+      // A stale delivery loses the order of the conversation's STATE. `lastInboundAt` is the
       // time of a CUSTOMER MESSAGE (it anchors the follow-up "new episode" gate and the WhatsApp 24h
       // window), so the stale branch moves it when the payload really is ahead of what is stored and
       // never moves it back. A recovered delivery can land stale (its conversation's activity moved

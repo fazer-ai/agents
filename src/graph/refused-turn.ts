@@ -106,7 +106,7 @@ export function planTurnRollback(
   // by the caller because only the toolset knows which tool a name resolved to.
   inertTools: ReadonlySet<string> = new Set(),
 ): RollbackPlan {
-  // NOTE: the LAST one, not the first: the thread can already carry the directive of an earlier nudge that
+  // The LAST one, not the first: the thread can already carry the directive of an earlier nudge that
   // ended silent, and that one belongs to a turn nobody refused. Everything from here on is what
   // this invoke appended, because the invoke loads the channel and then adds its own to the end.
   let start = -1;
@@ -211,7 +211,7 @@ export async function undoRefusedTurn(params: {
     if (isTurnInFlight(graphThreadId)) {
       return { action: "keep", reason: "another-invoke-is-reading" };
     }
-    // NOTE: before the Map mark, forced: `claimIngestWrite` asks `isTurnInFlight` itself, so marking
+    // Before the Map mark, forced: `claimIngestWrite` asks `isTurnInFlight` itself, so marking
     // first would refuse on account of the caller. Same order as ingest.ts (queue, then claim), which
     // is why the two cannot deadlock.
     let write: IngestWriteClaim | null = null;

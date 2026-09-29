@@ -22,7 +22,7 @@ function holder(): Holder {
 }
 
 async function init(): Promise<PostgresSaver> {
-  // NOTE: build the pool ourselves (mirrors PostgresSaver.fromConnString) so we can set `max` — the
+  // Build the pool ourselves (mirrors PostgresSaver.fromConnString) so we can set `max` — the
   // checkpointer is touched during every graph.invoke, so it needs the same headroom as the main
   // Prisma pool (config.dbPoolMax) or it becomes the bottleneck under concurrent turns.
   const saver = new PostgresSaver(

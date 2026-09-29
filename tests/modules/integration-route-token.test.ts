@@ -91,7 +91,7 @@ describe.skipIf(!dbUp)("integration route token", () => {
     expect(one.routeToken).toBe(created.routeToken as string);
     expect(one.routeTokenStatus).toBe("present");
 
-    // NOTE: The list backs a screen that shows no URL, so it must not ship N tokens to the browser.
+    // The list backs a screen that shows no URL, so it must not ship N tokens to the browser.
     const many = await listIntegrationInstances(ctx(), appDb);
     const row = many.find((i) => i.id === String(created.id));
     expect(row?.routeToken).toBeNull();
@@ -220,7 +220,7 @@ describe.skipIf(!dbUp)("integration route token", () => {
     ).rejects.toBeInstanceOf(AppError);
   });
 
-  // NOTE: Two of `config`'s keys are read back as HEADER NAMES, so the write asks whether they are ones: a
+  // Two of `config`'s keys are read back as HEADER NAMES, so the write asks whether they are ones: a
   // trailing space would answer every delivery 500 instead of the uniform 401, and the provider would
   // retry a request that can never succeed. Refused rather than trimmed, like vault values: `x tok` has
   // to be refused regardless of trimming, and the operator typing into raw JSON has no other feedback.

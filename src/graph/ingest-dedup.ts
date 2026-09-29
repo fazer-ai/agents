@@ -47,7 +47,7 @@ export function rememberIngested(
 ): number[] {
   const next = [...recent, messageId];
   if (next.length <= INGEST_ID_WINDOW) return next;
-  // NOTE: only ONE has to go, and `indexOf` on the minimum drops a single copy, which the migration's
+  // Only ONE has to go, and `indexOf` on the minimum drops a single copy, which the migration's
   // saturated fill depends on, since every one of its entries is the same id.
   const lowest = Math.min(...next);
   next.splice(next.indexOf(lowest), 1);

@@ -159,7 +159,7 @@ describe("what the observer reads", () => {
   });
 
   test("a note that closes the notes block is stripped, like one that closes the transcript", () => {
-    // NOTE: the notes block is the one whose content people write: a colleague pasting a prompt
+    // The notes block is the one whose content people write: a colleague pasting a prompt
     // they were debugging, or a note quoting a customer. A closing tag inside it would end the
     // block early and everything after would read as if it were outside the notes.
     const notes = notesFromRows(
@@ -183,7 +183,7 @@ describe("what the observer reads", () => {
   });
 
   test("a label that closes the labels block is stripped too", () => {
-    // NOTE: `set_labels` sends the model's own strings to Chatwoot, and Chatwoot's tag list accepts
+    // `set_labels` sends the model's own strings to Chatwoot, and Chatwoot's tag list accepts
     // what the account's label catalog would refuse, so a label can carry this block's closing tag
     // and end it early, with everything after read as instruction rather than data.
     const text = observeTurnText(
@@ -197,7 +197,7 @@ describe("what the observer reads", () => {
   });
 
   test("the notes block says the window is its scope, in the text and in the tag", () => {
-    // NOTE: the rows are the WINDOW's rows: a conversation with more public messages after a note
+    // The rows are the WINDOW's rows: a conversation with more public messages after a note
     // than the window is wide never fetches that note. Paging further would cost extra Chatwoot
     // reads on every tick of every conversation with no notes, which is most of them, so the block
     // states its scope instead of implying a completeness it does not have.
@@ -232,7 +232,7 @@ describe("what the observer reads", () => {
   });
 
   test("the frame says an external effect leaves no trace here, and asks for the note", () => {
-    // NOTE: a tick is stateless by design: its own thread, an in-memory checkpointer, a transcript
+    // A tick is stateless by design: its own thread, an in-memory checkpointer, a transcript
     // rebuilt from Chatwoot. Labels and notes ARE on the conversation, so "what did I already do" is
     // answerable for them. An action whose effect lands elsewhere (an HTTP call, a booking, a
     // charge) leaves nothing here, and the next burst reads an overlapping window with the same

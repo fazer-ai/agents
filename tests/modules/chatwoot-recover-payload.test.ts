@@ -135,7 +135,7 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
   });
 
   test("the customer's own clock travels, so the 24h window is not moved by the rescue", () => {
-    // NOTE: the mirror advances `lastInboundAt` from this and falls back to `now` without it. A
+    // The mirror advances `lastInboundAt` from this and falls back to `now` without it. A
     // recovery runs at least a staleness window late, so the fallback would push the WhatsApp window
     // forward, in the unsafe direction: a later proactive send would read as in-window when it is not.
     const e = normalizeChatwootEvent(rebuilt());
@@ -169,14 +169,14 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
   });
 
   test("the redirect episode travels, because its consumer reads the event", () => {
-    // NOTE: the fork renders `redirect_origin_display_id` only from `EventDataPresenter` (the
+    // The fork renders `redirect_origin_display_id` only from `EventDataPresenter` (the
     // webhook path), never on the REST conversation show, so the mirror is its only source here.
     // `processChatwootDelivery` arms the REDIRECT_FOLLOWUP ladder from the event, not the row:
     // omitted, the ladder would message and resolve whichever sibling the mirror last knew.
     const e = normalizeChatwootEvent(rebuilt({ redirectOriginDisplayId: 991 }));
     expect(e?.redirectOriginDisplayId).toBe(991);
 
-    // NOTE: the key is present even with no pairing: its absence means "this instance does not
+    // The key is present even with no pairing: its absence means "this instance does not
     // speak about pairings" to the normalizer.
     const none = normalizeChatwootEvent(
       rebuilt({ redirectOriginDisplayId: null }),
@@ -185,7 +185,7 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
   });
 
   test("a voice note already transcribed travels with its transcription", () => {
-    // NOTE: for `file_type: audio`, `Attachment#push_event_data` renders `transcribed_text` at the
+    // For `file_type: audio`, `Attachment#push_event_data` renders `transcribed_text` at the
     // top level and the REST view calls the same method, so the field sits where the normalizer
     // reads it. The eager-STT pass then reuses it ("never re-transcribe"), and the attachment is
     // carried through untouched rather than remapped, the same bytes a live delivery gets.
@@ -208,7 +208,7 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
   });
 
   test("the one field the two sources spell differently cannot decide anything", () => {
-    // NOTE: `Contact#webhook_data` emits no `type` key, while REST stamps `type: "contact"`. The
+    // `Contact#webhook_data` emits no `type` key, while REST stamps `type: "contact"`. The
     // rebuild keeps the REST value rather than erasing it (on an outgoing message it says a human
     // typed it). Inert here by reachability: the only reader, `isHumanAgentMessage`, needs an
     // outgoing message, and a recovery only rebuilds the inbound one `inboundMessageId` names.
@@ -230,7 +230,7 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
   });
 
   test("a message that is NOT the customer's stays that way", () => {
-    // NOTE: the event is always `message_created`, but the message type has to travel, or the bot's
+    // The event is always `message_created`, but the message type has to travel, or the bot's
     // own reply coming back around would read as a customer message and drive a turn answering itself.
     const e = normalizeChatwootEvent(rebuilt({ messageType: 1 }));
     expect(e?.message?.messageType).toBe("outgoing");
@@ -238,7 +238,7 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
   });
 
   test("an unassigned conversation says so, rather than saying nothing", () => {
-    // NOTE: to the mirror, `undefined` means "not mentioned, keep what you have" and `null` a real
+    // To the mirror, `undefined` means "not mentioned, keep what you have" and `null` a real
     // unassign. A recovery read the mirror, so it always says, or the ownership gate would judge the
     // conversation by the value this body came from.
     const e = normalizeChatwootEvent(
@@ -256,7 +256,7 @@ describe("rebuilding the body a stranded delivery no longer has", () => {
   });
 
   test("the status is the mirror's, because the gate asks about NOW", () => {
-    // NOTE: a conversation a human opened while the row sat stranded must reach the gate as `open`,
+    // A conversation a human opened while the row sat stranded must reach the gate as `open`,
     // which closes it; the status as of the strand would answer over the human.
     const e = normalizeChatwootEvent(rebuilt({ status: "open" }));
     expect(e?.status).toBe("open");

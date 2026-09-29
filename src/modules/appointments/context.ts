@@ -33,7 +33,7 @@ function cleanText(v: unknown, max: number): string | null {
   return clipText(s, max) || null;
 }
 
-// NOTE: Date.parse rolls impossible calendar dates over ("2026-02-30" parses as March 2). A startISO
+// Date.parse rolls impossible calendar dates over ("2026-02-30" parses as March 2). A startISO
 // can reach us from the model's own tool input, so the roll-over is rejected up front: NaN, like
 // garbage. A start nobody can read yields no record at all (see record.ts), which is the same place
 // every reader lands anyway.
@@ -41,7 +41,7 @@ function hasImpossibleDateParts(startISO: string): boolean {
   const m = /^(\d{4})-(\d{2})-(\d{2})(?:[Tt ]|$)/.exec(startISO);
   if (!m) return false;
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  // NOTE: setUTCFullYear, not Date.UTC. Date.UTC maps years 0-99 to 1900-1999, which would flag
+  // setUTCFullYear, not Date.UTC. Date.UTC maps years 0-99 to 1900-1999, which would flag
   // valid ancient dates ("0099-02-28") as impossible.
   const roundTrip = new Date(0);
   roundTrip.setUTCFullYear(y, mo - 1, d);
@@ -151,7 +151,7 @@ export function buildAppointmentContextSection(
   const foreign = hasForeign
     ? " Os agendamentos que trazem source foram criados por outro sistema e as ferramentas do Google Calendar NÃO os alcançam: para alterar um deles use a ferramenta específica daquele sistema, se você tiver uma, e nunca calendar_update_event ou calendar_cancel_event."
     : "";
-  // NOTE: Português como o resto deste bloco, que é prosa nossa no prompt de sistema e não texto que o
+  // Português como o resto deste bloco, que é prosa nossa no prompt de sistema e não texto que o
   // agente copia para o cliente: a palavra que ele escreve continua sendo a do idioma da conversa.
   const agora = `Momento atual deste atendimento: ${formatParts(
     flooredLocalParts(now, timezone, TIME_ROUND_MINUTES),

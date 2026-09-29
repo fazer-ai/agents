@@ -32,7 +32,7 @@ describe("parseExpectedUpdatedAt (optimistic-concurrency precondition boundary)"
 
 describe("splitAgentUpdateBody (PATCH body → patch + precondition)", () => {
   test("strips expectedUpdatedAt so the strict update schema never sees it (regression)", () => {
-    // NOTE: updateAgent's strict zod schema refuses an extra key (`unrecognized_keys`), so the split
+    // updateAgent's strict zod schema refuses an extra key (`unrecognized_keys`), so the split
     // hands the service a clean patch plus the precondition as a separate Date.
     const { patch, expectedUpdatedAt } = splitAgentUpdateBody({
       systemPrompt: "x",

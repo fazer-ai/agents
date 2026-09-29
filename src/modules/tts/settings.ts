@@ -75,7 +75,7 @@ export function readTtsConfig(settings: unknown): TtsConfig {
 // adapters use that null to omit their settings object entirely, so an untouched agent's request body
 // stays byte-identical to what it was before this feature existed.
 export function voiceSettingsOf(cfg: TtsConfig): TtsVoiceSettings | null {
-  // NOTE: coerce undefined to null before the emptiness test — the fields are optional on the type
+  // Coerce undefined to null before the emptiness test — the fields are optional on the type
   // (so every pre-existing TtsConfig literal still compiles) and `undefined !== null` would otherwise
   // read an untouched config as "the operator set something".
   const v: TtsVoiceSettings = {

@@ -320,7 +320,7 @@ describe("prepare — a draft cannot widen what is recorded", () => {
       new URL("../../", import.meta.url).pathname,
     )) {
       if (f.endsWith("modules/flowlog/settings.ts")) continue; // the definition
-      // NOTE: Through the scan, so a comment naming the reader is not counted as a call to it.
+      // Through the scan, so a comment naming the reader is not counted as a call to it.
       const src = codeOnly(
         await Bun.file(new URL(`../../${f}`, import.meta.url)).text(),
       );

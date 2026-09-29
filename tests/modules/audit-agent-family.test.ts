@@ -105,13 +105,13 @@ export function lockedBeforeSnapshot(
   body: string,
   snapshot: string,
 ): "locked" | "unlocked" | "not found" {
-  // NOTE: comment lines are dropped FIRST: `updateAgent` explains its lock in a NOTE above taking
+  // Comment lines are dropped FIRST: `updateAgent` explains its lock in a NOTE above taking
   // it, so a scan of the raw text finds "FOR UPDATE" in the prose and reports every order as locked.
   const code = body
     .split("\n")
     .filter((l) => !l.trim().startsWith("//"))
     .join("\n");
-  // NOTE: the UPDATE family, both spellings: the fence is about a lock that SERIALIZES the write,
+  // The UPDATE family, both spellings: the fence is about a lock that SERIALIZES the write,
   // and `FOR NO KEY UPDATE` conflicts with itself like `FOR UPDATE` does. The SHARE family does NOT
   // count: two writers can hold it at once, so a snapshot read under one is still a race.
   const lock = code.search(/FOR (?:NO KEY )?UPDATE/);
@@ -121,7 +121,7 @@ export function lockedBeforeSnapshot(
 }
 
 function bodyOf(src: string, fn: string): string {
-  // NOTE: both spellings: the functions this file reads mix `export function` and
+  // Both spellings: the functions this file reads mix `export function` and
   // `export async function`, and anchoring on one would throw rather than fail an assertion.
   const start = [`export async function ${fn}(`, `export function ${fn}(`]
     .map((a) => src.indexOf(a))
@@ -133,7 +133,7 @@ function bodyOf(src: string, fn: string): string {
 
 describe("the audit snapshot is read under the write's lock", () => {
   test("the predicate catches the order this PR was reviewed for", () => {
-    // NOTE: positive control: the snapshot read before the lock, and after it.
+    // Positive control: the snapshot read before the lock, and after it.
     const wrong = "const before = read(SNAP);\nawait sql`… FOR UPDATE`;";
     const right = "await sql`… FOR UPDATE`;\nconst before = read(SNAP);";
     expect(lockedBeforeSnapshot(wrong, "SNAP")).toBe("unlocked");
@@ -152,7 +152,7 @@ describe("the audit snapshot is read under the write's lock", () => {
         "SNAP",
       ),
     ).toBe("not found");
-    // NOTE: and prose that names the pattern, which a text-level fence would misread.
+    // And prose that names the pattern, which a text-level fence would misread.
     const commented = `// the FOR UPDATE below serializes it\n${wrong}`;
     expect(lockedBeforeSnapshot(commented, "SNAP")).toBe("unlocked");
   });
@@ -216,7 +216,7 @@ describe("the two snapshots are canonicalized at ONE instant", () => {
   });
 
   test("the clock is read ONCE for the whole comparison", async () => {
-    // NOTE: structural, like the lock ordering below: the race's window is the gap between two
+    // Structural, like the lock ordering below: the race's window is the gap between two
     // synchronous calls, so a behavioural test passes on the broken code every time.
     const src = Bun.file("src/modules/agents/audit-projection.ts");
     const body = bodyOf(await src.text(), "agentUpdateAudit");
@@ -456,7 +456,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("the third transport leaves the same row, differing only in how it authenticated", async () => {
-    // NOTE: the console (`user`) and MCP (`mcp`) are exercised above; this is the Bearer key.
+    // The console (`user`) and MCP (`mcp`) are exercised above; this is the Bearer key.
     // Asserted at the SERVICE: resolving a Bearer token to an `api_key` context is proven in
     // `audit-seam.test.ts` ("a Bearer API key is attributed as one"); what this family adds is that
     // its rows carry whatever the context says.
@@ -716,7 +716,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("a settings edit the readers clamp to the same value leaves no row", async () => {
-    // NOTE: raw-different, canonically equal: `debounce.windowSeconds` of 1 and of 2 both read as
+    // Raw-different, canonically equal: `debounce.windowSeconds` of 1 and of 2 both read as
     // 3. This is NOT the unread-configuration case, and the distinction is the one the
     // residue draws: `windowSeconds` is a field the readers see, so it is not in the residue, and
     // what moved is a value the platform then replaced. Nothing the runtime does changed and nothing
@@ -767,7 +767,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("a block named like a prototype member is not swallowed by the comparison", async () => {
-    // NOTE: a names-based filter on `k in resolved` walks the prototype (`"constructor" in
+    // A names-based filter on `k in resolved` walks the prototype (`"constructor" in
     // resolved` is true), so a stored block by that name would vanish from the trail. A whole-value
     // comparison has no key iteration and therefore no such corner.
     const agent = await seedAgent({ settings: { constructor: { a: 1 } } });
@@ -1015,7 +1015,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("whitespace around the endpoint does not smuggle the credential past the rule", async () => {
-    // NOTE: `z.string().url()` validates through `new URL`, which ignores surrounding whitespace,
+    // `z.string().url()` validates through `new URL`, which ignores surrounding whitespace,
     // and `validateModelConfigForWrite` discards the parsed result, so the space reaches the column and
     // an anchored test on the raw string would answer "not an endpoint".
     const agent = await seedAgent({
@@ -1048,7 +1048,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("a stored block named __proto__ is not swallowed by the residue map", async () => {
-    // NOTE: `out[k] = v` is not an assignment for that key: it invokes the legacy prototype setter
+    // `out[k] = v` is not an assignment for that key: it invokes the legacy prototype setter
     // and creates no own property, so both residues would serialize empty and the write would vanish.
     //
     // Seeded through SQL because the app cannot produce this state: Prisma drops an own
@@ -1164,7 +1164,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("correcting an accidentally pasted credential is not refused by the trail", async () => {
-    // NOTE: the audit shares the mutation's transaction, so a throw while building the row would
+    // The audit shares the mutation's transaction, so a throw while building the row would
     // roll back exactly the write that REMOVES the credential.
     const agent = await seedAgent({
       systemPrompt: "https://u:hunter2@prompts.example.com/p",
@@ -1370,7 +1370,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("a model config that omits `model` and one that sends it empty are the same", async () => {
-    // NOTE: the schema defaults `model` to `""`, so both resolve identically at runtime. A picker
+    // The schema defaults `model` to `""`, so both resolve identically at runtime. A picker
     // that preserved missing-versus-empty would file an `agent.update` for a save that changed
     // nothing.
     const agent = await seedAgent({
@@ -1446,7 +1446,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("embedded userinfo is caught under any scheme, and an ordinary link is not", async () => {
-    // NOTE: both ways: `user:pass@` does not fire on a prompt that merely links to
+    // Both ways: `user:pass@` does not fire on a prompt that merely links to
     // `…/faq?secao=cancelamento`, and it does fire on an `ftp://` credential. A rule that also
     // matched an embedded QUERY could not separate those two, and it drops the WHOLE field.
     const agent = await seedAgent({
@@ -1578,7 +1578,7 @@ describe.skipIf(!dbUp)("the agent family records its own changes", () => {
   });
 
   test("a tool precondition named __proto__ stays in the canonical view", async () => {
-    // NOTE: `readToolPreconditions` builds its map with `Object.create(null)` and keys it by TOOL
+    // `readToolPreconditions` builds its map with `Object.create(null)` and keys it by TOOL
     // NAME, so that key arrives as an OWN property of the reader's output. A plain assignment in the
     // projection walk would drop it, taking an ACTIVE runtime precondition out of the canonical view,
     // so its removal would read as "unread configuration" instead of as the change it is.

@@ -34,7 +34,7 @@ test.each(THROUGH_THE_BOUND)("%s reads its body under the bound", async (f) => {
 });
 
 test("the one file that reaches the same property another way still does", async () => {
-  // NOTE: named so it is not "fixed" into the list above, and so the list is not read as "everything
+  // Named so it is not "fixed" into the list above, and so the list is not read as "everything
   // else is unbounded". `AbortSignal.timeout()` stays armed through the body read, so there is no
   // timer to clear too early.
   const src = code(await Bun.file("src/modules/chatwoot/client.ts").text());

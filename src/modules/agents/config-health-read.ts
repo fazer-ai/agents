@@ -129,7 +129,7 @@ export async function readAgentConfigHealth(
       .filter((e) => e.status === "pending")
       .map((e) => formatVaultRef(e.id)),
   );
-  // NOTE: An entry that exists and is filled can still not serve its field, by its TYPE or by a value
+  // An entry that exists and is filled can still not serve its field, by its TYPE or by a value
   // that type does not describe. Read from the same rows as the three above, so the answers agree.
   const refFacts = new Map(
     vault.map((e) => [
@@ -137,7 +137,7 @@ export async function readAgentConfigHealth(
       { kind: e.kind, valueFitsKind: e.valueFitsKind },
     ]),
   );
-  // NOTE: the DIALABLE one, not the stored one. `listVaultInfos` reports the row as it is, so the
+  // The DIALABLE one, not the stored one. `listVaultInfos` reports the row as it is, so the
   // console can show a base URL sitting on a kind whose form never rendered the field; what the
   // runtime will actually use is the resolved value, and this block answers for the runtime.
   const baseUrlByRef = new Map(

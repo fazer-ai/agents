@@ -47,7 +47,7 @@ export function contextToSend(
     const v = collected[name] ?? "";
     if (v !== "") out[name] = v;
   }
-  // NOTE: Outside the loop because `names` comes from a SCAN of the body, which misses reads like
+  // Outside the loop because `names` comes from a SCAN of the body, which misses reads like
   // `const { agent_name } = context`; the runtime spreads the key unconditionally regardless.
   const typed = collected.agent_name ?? "";
   out.agent_name = typed !== "" ? typed : agentNameDefault;
@@ -129,7 +129,7 @@ export function CodeToolTestModal({
   // The conversation variables, which no model supplies and no dialog can guess. Collected the way
   // the HTTP tool's dialog collects the `{{names}}` its template mentions.
   const [context, setContext] = useState<Record<string, string>>({});
-  // NOTE: The zone `Date`, TIMEZONE and NOW_LOCAL run in. It is the AGENT's at run time and the
+  // The zone `Date`, TIMEZONE and NOW_LOCAL run in. It is the AGENT's at run time and the
   // dialog has no agent, so it is asked rather than assumed: silently using the browser's would let a
   // date-reading body pass here and behave differently in production. The browser's is the first
   // guess because it is the one the operator can sanity-check.

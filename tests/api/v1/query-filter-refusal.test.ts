@@ -243,7 +243,7 @@ describe("the admin tenant filter, which only a SUPER_ADMIN can send", () => {
     }
   }
 
-  // NOTE: Every caller of the shared `resolveScope`, since each one can answer this 400.
+  // Every caller of the shared `resolveScope`, since each one can answer this 400.
   const SUPER_ADMIN_ROUTES = [
     "/admin/users",
     "/admin/stats",

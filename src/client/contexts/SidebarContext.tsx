@@ -13,7 +13,7 @@ export const SIDEBAR_MIN_WIDTH = 200;
 export const SIDEBAR_MAX_WIDTH = 400;
 export const SIDEBAR_DEFAULT_WIDTH = 256;
 export const SIDEBAR_COLLAPSED_WIDTH = 64;
-// NOTE: Drags below MIN_WIDTH snap to collapsed; drags at or above MIN_WIDTH
+// Drags below MIN_WIDTH snap to collapsed; drags at or above MIN_WIDTH
 // expand to the pointer position (clamped). Keeping the snap equal to
 // MIN_WIDTH avoids a dead range (150..200) that would otherwise be stored and
 // then clamped up on reload.

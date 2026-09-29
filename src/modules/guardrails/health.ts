@@ -61,7 +61,7 @@ export async function readGuardrailHealth(
     if (!agent) {
       throw new NotFoundError("agent not found", "errors.agentNotFound");
     }
-    // NOTE: newest row FIRST, then a count bounded by its timestamp: rows commit from other
+    // Newest row FIRST, then a count bounded by its timestamp: rows commit from other
     // transactions at READ COMMITTED, and this order makes the count a superset of the quoted row
     // (counting first could report "2 failures" beside the third's error). Newest by createdAt, not
     // id: `now()` is the transaction start, so an earlier turn can take a higher id. id breaks ties.

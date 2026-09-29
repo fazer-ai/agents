@@ -41,7 +41,7 @@ export function readLimitsConfig(settings: unknown): LimitsConfig {
       ? Math.min(MAX_TOOL_CALLS, Math.max(MIN_TOOL_CALLS, Math.round(v)))
       : DEFAULT_MAX_TOOL_CALLS;
 
-  // NOTE: Absent, non-numeric, zero and negative all mean OFF. Clamping 0 up to the minimum would
+  // Absent, non-numeric, zero and negative all mean OFF. Clamping 0 up to the minimum would
   // turn "no ceiling" into "the tightest ceiling available", which is the opposite of the intent
   // and unrecoverable from the editor, where an emptied field is what an operator types to disable.
   const raw = bag.maxHistoryTokens;

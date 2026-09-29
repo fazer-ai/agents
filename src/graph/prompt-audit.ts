@@ -49,7 +49,7 @@ export function buildPromptAudit(args: {
   // The blocks appended to the finished prompt, in the order they were appended.
   sections: readonly AuditedSection[];
 }): string {
-  // NOTE: a schedule variable is kept in full once per rendering, then collapsed to the masked form.
+  // A schedule variable is kept in full once per rendering, then collapsed to the masked form.
   // A rendered schedule can be over 100 times its placeholder, so repeating it in full would push the
   // audit past the debug mode's ceiling and truncate the very field it shows.
   const spent = new Set<string>();
@@ -60,7 +60,7 @@ export function buildPromptAudit(args: {
     wrap: (resolved, name) => {
       if (name in args.vars) return auditedPromptVar(name, resolved);
       if (!SCHEDULE_VAR_NAMES.has(name)) return resolved;
-      // NOTE: keyed on the rendering, not the name: with a format suffix, `{{next_open_at:YYYY}}` and
+      // Keyed on the rendering, not the name: with a format suffix, `{{next_open_at:YYYY}}` and
       // `{{next_open_at:HH:mm}}` answer different things, and collapsing the second drops an answer.
       const seen = `${name}\u0000${resolved}`;
       if (spent.has(seen)) return auditedPromptVar(name, resolved);

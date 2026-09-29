@@ -188,7 +188,7 @@ describe.skipIf(!dbUp)("a provider that cannot take the turn", () => {
       select: { id: true },
     });
     primaryAgentId = withFallback.id;
-    // NOTE: the same agent minus the fallback block. The two differ in that one setting only, so the
+    // The same agent minus the fallback block. The two differ in that one setting only, so the
     // pair proves what the fallback buys.
     const without = await suDb.agent.create({
       data: {

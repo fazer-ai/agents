@@ -151,7 +151,7 @@ export function useKnowledgeManager(opts: {
   const createModal = useModalController();
   const editModal = useModalController<Base>();
   const docsModal = useModalController<BaseRef>();
-  // NOTE: whether the open base mirrors a help center: its synced documents are then the
+  // Whether the open base mirrors a help center: its synced documents are then the
   // source's to change, and the API refuses an edit or a delete with a 409.
   const [docsHaveSource, setDocsHaveSource] = useState(false);
   // The last answer about it for the open base, and when its last run landed; null until the section
@@ -370,7 +370,7 @@ export function useKnowledgeManager(opts: {
     return () => clearInterval(id);
   }, [docsModal.isOpen]);
 
-  // NOTE: asks the workspace-scoped endpoint, not a base's document list: the question has nothing
+  // Asks the workspace-scoped endpoint, not a base's document list: the question has nothing
   // to do with which base is open.
   async function recheckBlock() {
     const ticket = claimBlockAnswer();
@@ -591,7 +591,7 @@ export function useKnowledgeManager(opts: {
       if (docsModal.payload) await reloadDocs(docsModal.payload.id);
       void onChanged();
     } catch (e) {
-      // NOTE: the server's own message when it sent one: a refusal naming the field and the
+      // The server's own message when it sent one: a refusal naming the field and the
       // character is the part the operator can act on, shown at the input it named when this form
       // draws one.
       const toast = addDocRefusal.capture(
@@ -640,7 +640,7 @@ export function useKnowledgeManager(opts: {
     useTitle: boolean,
   ): Promise<{ status: number; message?: string } | undefined> {
     try {
-      // NOTE: the treaty serializes a File body as multipart AND injects the
+      // The treaty serializes a File body as multipart AND injects the
       // X-Tenant-Id header (SUPER_ADMIN target tenant); a raw fetch here 500s
       // for super admins because the tenant gate never resolves a target.
       const { error: err } = await api.api.v1.knowledge
@@ -1040,7 +1040,7 @@ export function useKnowledgeManager(opts: {
       );
     }
     if (doc.status === "UNINDEXED") {
-      // NOTE: imported-but-never-indexed: a deliberate waiting state (warning tint), not an error (no red).
+      // Imported-but-never-indexed: a deliberate waiting state (warning tint), not an error (no red).
       // While the workspace is blocked it is NOT merely waiting — nothing the operator does on this
       // screen will index it until a credential is sorted out — so the badge says which of the two
       // this is instead of reading identically in both cases. Keyed off the CURRENT

@@ -587,7 +587,7 @@ export function buildMcpServer(principal: VerifiedToken): McpServer {
         eff,
       ) => {
         try {
-          // NOTE: The principal's OWN context, not an id rebuilt from it. A fleet token resolved
+          // The principal's OWN context, not an id rebuilt from it. A fleet token resolved
           // its `tenant` selector on the way in and keeps SUPER_ADMIN, so the scoped boundary
           // verifies the target again and a tenant deleted in between answers a refusal rather than
           // an empty playground.

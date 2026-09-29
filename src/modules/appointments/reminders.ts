@@ -74,7 +74,7 @@ export function computeReminderJobs(
   offsetsHours: number[],
   now: Date,
 ): ReminderJob[] {
-  // NOTE: parseStartMs, never a bare Date.parse: arming and liveness of the SAME appointment have
+  // parseStartMs, never a bare Date.parse: arming and liveness of the SAME appointment have
   // to read one parser, or a start the record refuses ("2026-02-30") would still arm reminders.
   const startMs = parseStartMs(startISO);
   if (!Number.isFinite(startMs)) return [];
@@ -217,10 +217,10 @@ export async function appointmentBooked(
 ): Promise<AppointmentBookedResult> {
   let remindersArmed = 0;
   let armError: unknown;
-  // NOTE: Set inside the try, read after it: the record below is skipped when a record-only
+  // Set inside the try, read after it: the record below is skipped when a record-only
   // RESCHEDULE failed to clean up, and "never got far enough to know" must read as "it moved".
   let movedUnderRecordOnly = args.recordOnly === true;
-  // NOTE: Judged ONCE, before either half. An unreadable start is not a re-statement: the record
+  // Judged ONCE, before either half. An unreadable start is not a re-statement: the record
   // refuses it, so retiring here would strand the previous booking with its reminders gone.
   const startReadable = Number.isFinite(parseStartMs(args.startISO));
   try {
@@ -343,7 +343,7 @@ async function retireReminderJobs(
   // cancel the stamp stands alone, and an unmoved token lets the in-flight run's `rescheduleJob` CAS
   // merge its retry counter forward.
   await runScopedOn(base, sysCtx(tenantId), async (db) => {
-    // NOTE: LIKE needs its own escaping (Google recurrence ids carry `_`).
+    // LIKE needs its own escaping (Google recurrence ids carry `_`).
     const likePrefix = `${reminderPrefix(provider, eventId).replace(
       /[\\%_]/g,
       "\\$&",
@@ -499,7 +499,7 @@ export function reminderTemporalGrounding(startISO: string, now: Date): string {
   const nowMs = now.getTime();
   if (!Number.isFinite(startMs) || startMs <= nowMs) return "";
   const offset = statedLocalOffsetMinutes(startISO);
-  // NOTE: For an all-day or offset-less start the instant is a placeholder for ordering, so a
+  // For an all-day or offset-less start the instant is a placeholder for ordering, so a
   // distance there would be the placeholder talking, not the appointment.
   const distance = ALL_DAY_OR_LOCAL.test(startISO)
     ? null
@@ -507,7 +507,7 @@ export function reminderTemporalGrounding(startISO: string, now: Date): string {
   const day = offset === null ? null : relativeDay(startMs, nowMs, offset);
   // NOTE: `offset !== null` is redundant with `day`, but the narrowing is not: `sentOn` needs it.
   if (day && distance && offset !== null) {
-    // NOTE: DATED, because this turn is persisted in the thread and a "today" in it is still there
+    // DATED, because this turn is persisted in the thread and a "today" in it is still there
     // tomorrow. The date is the appointment's LOCAL one (the offset that decided the day).
     const sentOn = new Date(nowMs + offset * 60_000).toISOString().slice(0, 10);
     return ` This reminder is being sent on ${sentOn} in the appointment's own time zone, and the appointment falls ${day}, starting in about ${distance}; word the day and time in the conversation's language, from these values and never from what was said earlier in the conversation.`;
@@ -530,7 +530,7 @@ export function reminderNudge(a: ReminderNudgeArgs): AgentNudge {
   const tools = wantsConfirmation
     ? " If they confirm, call calendar_confirm_appointment with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value)."
     : " If they ask to reschedule or cancel, use calendar_update_event / calendar_cancel_event with eventId set to the event_id value from the fenced data line (and calendarId set to the calendar_id value).";
-  // NOTE: Names no tool and asserts no absence: the operator may have granted this booking system's
+  // Names no tool and asserts no absence: the operator may have granted this booking system's
   // own tool this turn, so a flat "you have no tool" could be false.
   const noTools = wantsConfirmation
     ? " Record what they answer in your reply, and mark the appointment as confirmed with this booking system's own tool if you have one."
@@ -674,11 +674,11 @@ export async function appointmentReminderHandler(
     );
     return { outcome: "done" };
   }
-  // NOTE: Null survives all the way to the nudge's refs (see ReminderNudgeArgs.calendarId).
+  // Null survives all the way to the nudge's refs (see ReminderNudgeArgs.calendarId).
   const calendarId = typeof p.calendarId === "string" ? p.calendarId : null;
   const credentialRef =
     typeof p.credentialRef === "string" ? p.credentialRef : null;
-  // NOTE: Absent on rows armed before providers existed, all of them Google.
+  // Absent on rows armed before providers existed, all of them Google.
   const provider =
     typeof p.provider === "string" && p.provider
       ? p.provider
@@ -688,14 +688,14 @@ export async function appointmentReminderHandler(
   const askConfirmation = p.askConfirmation === true;
   const tenantId = job.tenantId;
 
-  // NOTE: Retired while it sat claimed? Cancels reach PENDING rows only, so the fence is the
+  // Retired while it sat claimed? Cancels reach PENDING rows only, so the fence is the
   // `cancelledAt` stamp every cancel puts on claimed rows too, re-read here rather than trusted from
   // the claim-time payload. A read that fails does NOT suppress a legitimately armed reminder.
   // The clock is read FRESH on every call (the appointment ceiling is re-judged across a long model
   // call); a test passes a fixed one through deps to assert a calendar day deterministically.
   const nowMs = (): number => (deps?.now?.() ?? new Date()).getTime();
   const retired = (): Promise<boolean> => jobRetired(job, base);
-  // NOTE: Strict at the thread claim, where guessing wrong recreates state /reset cleared (see
+  // Strict at the thread claim, where guessing wrong recreates state /reset cleared (see
   // jobRetiredStrict). The two asks above it can afford the lenient answer.
   const retiredStrict = (): Promise<boolean> => jobRetiredStrict(job, base);
 
@@ -703,7 +703,7 @@ export async function appointmentReminderHandler(
   // it, is where the window closes on a /reset that lands during that call.
   if (await retired()) return { outcome: "done" };
 
-  // NOTE: Skip an event cancelled, deleted or already started (e.g. edited directly in Google); a
+  // Skip an event cancelled, deleted or already started (e.g. edited directly in Google); a
   // transient lookup failure still nudges. Summary: live Google value, then snapshot, then generic.
   let summary =
     typeof p.summary === "string" && p.summary ? p.summary : "your appointment";

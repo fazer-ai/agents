@@ -48,7 +48,7 @@ export const mockQueryRaw =
   mock<() => Promise<Array<Record<string, number>>>>();
 export const mockExecuteRaw = mock<() => Promise<number>>();
 
-// NOTE: one place to keep the default async return values so declarations
+// One place to keep the default async return values so declarations
 // and `resetPrismaMocks` can't drift out of sync. `mockReset()` clears the
 // impl, which would leave the mock returning `undefined` and silently break
 // any test that relied on the default.

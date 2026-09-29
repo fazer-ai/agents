@@ -112,7 +112,7 @@ export async function synthesizeReply(
     return null;
   };
 
-  // NOTE: The checks that need no network, in the order a skip reports them, shared with the turn's plan
+  // The checks that need no network, in the order a skip reports them, shared with the turn's plan
   // (./modality.ts) so a reply these refuse was never announced as spoken.
   // NOTE: they run BEFORE the paid rewrite below, so an unsupported combination burns no call. No
   // format = the provider cannot emit anything this channel accepts (openrouter on Instagram): Meta
@@ -153,7 +153,7 @@ export async function synthesizeReply(
     );
     return skip("credential_not_found");
   }
-  // NOTE: credential baseUrl takes precedence over the agent config baseURL (config is a fallback).
+  // Credential baseUrl takes precedence over the agent config baseURL (config is a fallback).
   // The requiresBaseURL check uses the effective value so a credential-stored URL satisfies the guard.
   const effectiveBaseURL = entry.baseUrl ?? cfg.baseURL;
   if (provider.requiresBaseURL && !effectiveBaseURL) {
@@ -218,7 +218,7 @@ export async function synthesizeReply(
   // Synthesized ONCE per attempt from the same `speech`: a regeneration repeats the synthesis and
   // never the rewrite above, which is a billed model call whose output did not change.
   let out = await synth(1);
-  // NOTE: the deployment owns the detector; the agent may pick what the check does with it, and one
+  // The deployment owns the detector; the agent may pick what the check does with it, and one
   // that never picked follows the deployment's mode.
   const deployment = params.check ?? config.ttsCheck;
   const check: TtsCheckConfig = {

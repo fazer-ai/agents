@@ -176,7 +176,7 @@ export const authPlugin = new Elysia({ name: "auth" })
         return null;
       }
 
-      // NOTE: re-resolve role+tenant from the DB on every request (stale tokens never grant elevated
+      // Re-resolve role+tenant from the DB on every request (stale tokens never grant elevated
       // access; a moved/demoted user loses it at once). A DB failure HERE is TRANSIENT (pool
       // reconnecting, a brief outage), NOT proof the session is invalid: throw 503 so the request is
       // retryable, never a null user the client reads as a logout (bouncing the operator to /login on
@@ -218,7 +218,7 @@ export const authPlugin = new Elysia({ name: "auth" })
         return { ...person, tenantId: null, role: "SUPER_ADMIN", memberships };
       }
 
-      // NOTE: fail-closed. A person with no membership has no tenant to run under, and is treated as
+      // Fail-closed. A person with no membership has no tenant to run under, and is treated as
       // unauthenticated rather than degraded to a tenant-less session. A selector outside their
       // memberships is refused with the id it named, so the console drops it.
       const current = resolveMembership(memberships, headers["x-tenant-id"]);

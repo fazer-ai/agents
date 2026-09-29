@@ -112,7 +112,7 @@ async function open() {
 // By its LABEL, not by the value it happens to hold: matching by value can silently fall back to
 // the first input on the form, typing into the name and asserting about the tool field.
 function toolInput(): HTMLInputElement {
-  // NOTE: through `htmlFor`, because a <FormField> label POINTS at its control instead of wrapping
+  // Through `htmlFor`, because a <FormField> label POINTS at its control instead of wrapping
   // it: a wrapping label forwards a click on any non-interactive descendant (the help `?`) to the
   // control.
   const label = Array.from(document.querySelectorAll("label")).find((l) =>

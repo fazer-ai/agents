@@ -82,7 +82,7 @@ describe("SupportModal", () => {
 
   test("footer close button closes the modal", () => {
     render(<ControlledSupportModal />);
-    // NOTE: two buttons match /close/i (header X and footer Close). Take the
+    // Two buttons match /close/i (header X and footer Close). Take the
     // footer one, which renders inside the dialog footer region.
     const closeButtons = screen.getAllByRole("button", { name: /^close$/i });
     fireEvent.click(closeButtons[closeButtons.length - 1] as HTMLButtonElement);

@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, mock, test } from "bun:test";
 
-// NOTE: Capture the real config eagerly so we can put it back on the module
+// Capture the real config eagerly so we can put it back on the module
 // graph after the production-config scenarios run. Without this, the
 // mocked config leaks into every test file that runs later in the same
 // process and silently breaks them.
@@ -10,7 +10,7 @@ afterAll(() => {
   mock.module("@/config", () => ({ default: originalConfig }));
 });
 
-// NOTE: `@/api/lib/origin` reads `config.env` and `config.corsOrigin` at
+// `@/api/lib/origin` reads `config.env` and `config.corsOrigin` at
 // top-level initialization, so to exercise the production branch we have to
 // remount the module with a substituted config and a fresh import URL.
 interface OriginConfigOverrides {

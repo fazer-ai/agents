@@ -17,7 +17,7 @@ import type { ElementType, SVGProps } from "react";
 import { GithubIcon } from "@/client/components/icons/GithubIcon";
 import { isAdminRole } from "@/client/lib/roles";
 
-// NOTE: ElementType (not ComponentType) so it fits lucide's ForwardRefExotic
+// ElementType (not ComponentType) so it fits lucide's ForwardRefExotic
 // components, inline React icons, and `<img>`-based brand marks without
 // per-item casts.
 export type NavItemIcon = ElementType<{
@@ -152,7 +152,7 @@ export interface SupportContact {
   icon: ElementType<SVGProps<SVGSVGElement>>;
 }
 
-// NOTE: SUPPORT_LINK renders above SECONDARY_LINKS with a "Need help?" label
+// SUPPORT_LINK renders above SECONDARY_LINKS with a "Need help?" label
 // and opens a modal with the email + copy-to-clipboard action (instead of
 // a raw mailto: link, which is unreliable when the user has no mail client).
 // The email itself is i18n-driven so projects can route support to a

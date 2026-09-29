@@ -501,7 +501,7 @@ describe.skipIf(!dbUp)("tier-3 chatwoot management + inbox binding", () => {
       "missing",
     );
 
-    // NOTE: ...AND A ROW CHATWOOT NEVER CONFIRMED IS NOT ACTIVE EITHER. A process dying between the
+    // ...AND A ROW CHATWOOT NEVER CONFIRMED IS NOT ACTIVE EITHER. A process dying between the
     // pending insert and the stamp leaves a row nothing settles, and the persona's BOT still exists
     // (for its other inbox). Reported active, the console would show the binding healthy and offer
     // no repair, while the observe tick retries against a binding that never landed.
@@ -1512,7 +1512,7 @@ describe.skipIf(!dbUp)("tier-3 conversation ops (stub client)", () => {
       expect(outcome).toBe("returned");
       expect(stub.calls.toggleStatus).toEqual(["pending"]);
       expect(stub.calls.inboxAgentBotId).toEqual([92]);
-      // NOTE: ...AND THE MIRROR LEARNS WHERE IT IS. The reconcile after a hand-back writes status and
+      // ...AND THE MIRROR LEARNS WHERE IT IS. The reconcile after a hand-back writes status and
       // assignee, never `inboxId`, so a delayed or lost transfer webhook would leave the row naming
       // the inbox the conversation LEFT, and the console's "Respond now" would have the ORIGIN inbox's
       // persona reply on a conversation that is not its own.

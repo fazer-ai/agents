@@ -140,7 +140,7 @@ describe("a 404 about the tenant selector the session is carrying", () => {
   });
 
   test("the body is the one it answers today", async () => {
-    // NOTE: the signal rides beside the body, not in it: readers of this refusal keep the same
+    // The signal rides beside the body, not in it: readers of this refusal keep the same
     // keys, and `field` stays for refusals about an input.
     const { body } = await refusal("/__refusal/ambient-tenant", "en");
     expect(body).toEqual({ error: "Tenant not found" });
@@ -155,7 +155,7 @@ describe("a 404 about the tenant selector the session is carrying", () => {
   });
 
   test("a 404 about a tenant the REQUEST named carries no such id", async () => {
-    // NOTE: same status, key and sentence, and the browser must not touch its selection over it.
+    // Same status, key and sentence, and the browser must not touch its selection over it.
     const { status, rejected, body } = await refusal(
       "/__refusal/named-tenant",
       "en",
@@ -380,7 +380,7 @@ describe("a request refused before the handler keeps its own answer", () => {
 // does not move and Elysia seeds from the thrown value's own `status`: without the arm syncing it,
 // the wire says 500 and the log says 401, a failure nothing on the wire shows.
 describe("the access log records the status actually answered", () => {
-  // NOTE: `onAfterResponse` runs after `handle` resolves, so poll for the line and THROW when it
+  // `onAfterResponse` runs after `handle` resolves, so poll for the line and THROW when it
   // never arrives: a bare timeout would turn a missing log into a wording mismatch.
   const loggedStatusFor = async (path: string): Promise<string> => {
     const spy = spyOn(logger, "info");

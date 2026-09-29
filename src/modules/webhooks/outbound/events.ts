@@ -9,7 +9,7 @@ import { instanceIdentity } from "@/lib/instance";
 // instance. `data` is an allowlisted projection per event — only ids, status, counters and
 // money values. NEVER message bodies, contact PII (name/phone/email), tokens, or raw entities.
 
-// NOTE: "heartbeat" is a periodic liveness ping. Unlike the other events (emitted at a domain seam),
+// "heartbeat" is a periodic liveness ping. Unlike the other events (emitted at a domain seam),
 // it is produced by a self-re-arming per-tenant SchedulerJob (kind HEARTBEAT) in outbound/heartbeat.ts,
 // armed lazily only while the tenant has an enabled "heartbeat" subscription (see syncTenantHeartbeat)
 // and self-terminating otherwise. Cadence: config.heartbeat.intervalMs (HEARTBEAT_INTERVAL_MS).

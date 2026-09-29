@@ -438,7 +438,7 @@ describe("runToolTest — the same request the saved tool would make", () => {
 // could be noticed are timing rather than content.
 describe("runToolTest — the capture wrapper is invisible to the runtime", () => {
   test("a body that arrives after the bound ends the call, wrapper or no wrapper", async () => {
-    // NOTE: there is one bound, over the whole exchange (a bound on the HEADERS alone lets the runtime
+    // There is one bound, over the whole exchange (a bound on the HEADERS alone lets the runtime
     // answer `HTTP 200` where the preview aborts), so both sides end together and the clone ends with
     // them. A short timeout on `buildHttpTool`, not `runToolTest`: the real bound is ten seconds and
     // the property is the ORDERING, not the number.
@@ -460,7 +460,7 @@ describe("runToolTest — the capture wrapper is invisible to the runtime", () =
         { status: 200, headers: { "content-type": "application/json" } },
       )) as unknown as typeof fetch;
 
-    // NOTE: what `test-run.ts` hands `buildHttpTool`, read out of the file so this cannot pass against a
+    // What `test-run.ts` hands `buildHttpTool`, read out of the file so this cannot pass against a
     // wrapper the module no longer uses.
     const src = await Bun.file(
       "src/modules/tool-definitions/test-run.ts",
@@ -546,7 +546,7 @@ describe("runToolTest — the capture wrapper is invisible to the runtime", () =
   test.each([204, 205, 304])(
     "a bodyless %i is handed back as the response it was",
     async (status) => {
-      // NOTE: the wrapper does not rebuild the Response: Bun accepts an empty body on a null-body
+      // The wrapper does not rebuild the Response: Bun accepts an empty body on a null-body
       // status where the spec does not, so a rebuild would not throw here, but it is a second object
       // to keep faithful.
       const r = await runToolTest(

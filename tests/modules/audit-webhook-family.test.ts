@@ -483,7 +483,7 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
   });
 
   test("clearing a subscription secret the row cannot name still writes a row", async () => {
-    // NOTE: legacy rows of `webhook_subscriptions.secret_ref`, like the alert one, can hold a value
+    // Legacy rows of `webhook_subscriptions.secret_ref`, like the alert one, can hold a value
     // that names no vault entry, which the read redacts. Redacted, it reads as null on BOTH sides of
     // a clear, so without `secretRefOpaque` the save that removed a signing secret writes no row.
     const created = await createWebhookSubscription(

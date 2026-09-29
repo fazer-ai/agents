@@ -145,7 +145,7 @@ describe("accepting an answer", () => {
       changes: { from: number; to: number; insert: string };
       selection: { anchor: number };
     }[] = [];
-    // NOTE: the apply re-reads the document from the view's state at acceptance rather than trusting
+    // The apply re-reads the document from the view's state at acceptance rather than trusting
     // what the offer was built from.
     const view = {
       state: EditorState.create({ doc }),

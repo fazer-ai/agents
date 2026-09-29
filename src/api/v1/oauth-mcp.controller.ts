@@ -335,7 +335,7 @@ export const oauthMcpCallbackController = new Elysia({
         if (state.userId !== String(user.id)) {
           return htmlError(401, "state_user_mismatch", origin);
         }
-        // NOTE: The role held in the STATE's tenant, not the callback request's: this navigation carries no
+        // The role held in the STATE's tenant, not the callback request's: this navigation carries no
         // tenant selector, so the session runs under the person's default membership, which need not
         // be the tenant the flow was started from.
         const stateTenantId = parseDbId(state.tenantId);

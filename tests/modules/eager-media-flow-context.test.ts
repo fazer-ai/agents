@@ -124,7 +124,7 @@ describe.skipIf(!dbUp)("the eager-media flow context", () => {
     });
     sparseConversationDbId = sparse.id;
 
-    // NOTE: `runEagerMedia` has a SECOND call site, on the answer path: a test-mode agent whose episode is
+    // `runEagerMedia` has a SECOND call site, on the answer path: a test-mode agent whose episode is
     // already activated passes the gate and only then gets its media analysed. It hands over the same
     // three ids from a different expression (`rt?.agentId ?? null`), so it needs its own fixture: with
     // the first one's ids it would pass on the wrong row. Debounce is on so the delivery arms a job

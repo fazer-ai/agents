@@ -141,7 +141,7 @@ describe.skipIf(!dbUp)(
       expect(r.requests.length).toBe(1);
     });
 
-    // NOTE: The ack is a message the turn put in front of the customer, and nothing else in the turn
+    // The ack is a message the turn put in front of the customer, and nothing else in the turn
     // state knows (it counts no balloon, queues no attachment): without this record a turn that said
     // "just a moment" and then called `skip_reply` reads as having decided not to respond. Recorded
     // where the send happens, the only place that knows it happened.
@@ -198,7 +198,7 @@ describe.skipIf(!dbUp)(
     });
 
     test("the fence reaches the HTTP tool itself, not only the ack", async () => {
-      // NOTE: The wiring, which a unit test of `buildHttpTool` cannot see: `buildToolset` has to hand the
+      // The wiring, which a unit test of `buildHttpTool` cannot see: `buildToolset` has to hand the
       // fence down. Without an ack there is nothing else that could stop the request, so a call
       // that sends anyway is the toolset not forwarding it.
       const cfg = config() as unknown as Record<string, unknown>;
@@ -295,7 +295,7 @@ describe.skipIf(!dbUp)(
     });
 
     test("a MUTED turn is not offered a document tool either", async () => {
-      // NOTE: A document is an attachment to the customer: without a turnState to queue into it refuses
+      // A document is an attachment to the customer: without a turnState to queue into it refuses
       // every call, and with one it would deliver through the very send the muted client exists to
       // refuse. Same reading the native toolset and the toolpacks make.
       const cfg = config() as unknown as Record<string, unknown>;
@@ -329,7 +329,7 @@ describe.skipIf(!dbUp)(
     });
 
     test("a MUTED turn has no ack at all, and the tool runs", async () => {
-      // NOTE: The ack is a message in front of the customer, and the muted transport refuses one by
+      // The ack is a message in front of the customer, and the muted transport refuses one by
       // design, so an observation must not arm an ack it cannot deliver: that would log a failed send
       // before every slow tool and tell the operator an integration is broken.
       const r = await run(true, true);

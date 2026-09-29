@@ -60,7 +60,7 @@ function getCdnOrigin(): string | null {
     }
     return null;
   }
-  // NOTE: Normalize both sides via URL so a trailing slash or path in
+  // Normalize both sides via URL so a trailing slash or path in
   // PUBLIC_URL does not cause a false mismatch against the CDN origin.
   let publicOrigin: string;
   try {
@@ -83,7 +83,7 @@ export function buildCspDirectives(
 ): Record<string, string[]> {
   const cdn = opts.cdnOrigin ? [opts.cdnOrigin] : [];
   const gsi = opts.googleOAuthEnabled ? [GSI_ORIGIN] : [];
-  // NOTE: In dev, allow 'unsafe-inline'/'unsafe-eval' in script-src so the
+  // In dev, allow 'unsafe-inline'/'unsafe-eval' in script-src so the
   // Bun dev server's injected runtime scripts (visibility/unref pings, HMR)
   // do not fire false-positive CSP violations on every page load. Hashes
   // still pin scripts strictly in production.

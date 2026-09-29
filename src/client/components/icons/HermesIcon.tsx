@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-// NOTE: Hermes Agent (Nous Research) brand mark — identifies the Hermes option in the MCP client selector. Monochrome, so it stays `currentColor` and inherits `text-text-primary` from the parent like the other monochrome provider marks (Codex/Copilot/Cursor). Vector from @lobehub/icons (lobehub/lobe-icons, HermesAgent).
+// Hermes Agent (Nous Research) brand mark — identifies the Hermes option in the MCP client selector. Monochrome, so it stays `currentColor` and inherits `text-text-primary` from the parent like the other monochrome provider marks (Codex/Copilot/Cursor). Vector from @lobehub/icons (lobehub/lobe-icons, HermesAgent).
 export function HermesIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg

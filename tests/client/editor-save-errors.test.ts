@@ -79,7 +79,7 @@ describe("agent editor save errors", () => {
     expect(body).toContain("refusalRef.current");
     expect(body).not.toContain("refusal.field");
 
-    // NOTE: every settling path goes through it: six saves and six discards. `channelRedirect`
+    // Every settling path goes through it: six saves and six discards. `channelRedirect`
     // appears twice: it settles on its own successful save and on its discard.
     const settled = [
       ...SRC.matchAll(/(?<!function )settleRefusalFor\(([^)]*)\)/g),
@@ -166,7 +166,7 @@ describe("agent editor save errors", () => {
   });
 
   test("nothing the holder hands back is dropped", () => {
-    // NOTE: routed on what the hook did with the refusal, not on `editorTargetFor(named)`: a mapped
+    // Routed on what the hook did with the refusal, not on `editorTargetFor(named)`: a mapped
     // name can still fail to be placed (the value was edited during the request, the follow-up step
     // no longer exists), and routing on the name would then drop the sentence with no mark to show.
     const body = between(SRC, "function answerRefusal", "\n  }");
@@ -183,7 +183,7 @@ describe("agent editor save errors", () => {
   });
 
   test("the banner is brought into view, once per sentence", () => {
-    // NOTE: it sits above the tabs and the button that produced it does not: Behavior and Tools are
+    // It sits above the tabs and the button that produced it does not: Behavior and Tools are
     // long and their Save lives in a sticky bar at the bottom, so without the scroll a sighted
     // operator sees nothing answer. `role="alert"` covers the screen reader; this is the other half.
     const effect = between(
@@ -202,7 +202,7 @@ describe("agent editor save errors", () => {
   });
 
   test("every mark is read from the one place that holds its value", () => {
-    // NOTE: `at` compares against the value the mark was placed on, which came from `currentRef`
+    // `at` compares against the value the mark was placed on, which came from `currentRef`
     // (normalized the way the wire is). A reading that re-derives it from the state variable would
     // drift from it, e.g. surrounding whitespace would match nothing and lose the inline error.
     // Balanced, because one reading nests a call (`followUpStepField(i)`) and a lazy regex would stop
@@ -231,7 +231,7 @@ describe("agent editor save errors", () => {
   });
 
   test("what the boxes hold is normalized the way the wire is", () => {
-    // NOTE: `sent` is read off the patch and `current` off this map, so a value the patch trims and the map
+    // `sent` is read off the patch and `current` off this map, so a value the patch trims and the map
     // keeps raw reads as "edited while the request was out", and the refusal lands in the banner
     // instead of on the textarea it is about, over nothing but surrounding whitespace.
     const body = between(SRC, "currentRef.current = {", "\n  };");
@@ -262,7 +262,7 @@ describe("agent editor save errors", () => {
   });
 
   test("the protected-label ceiling is checked BEFORE the grants PUT", () => {
-    // NOTE: the grants PUT goes first, so a PATCH refused for an over-ceiling guard would leave
+    // The grants PUT goes first, so a PATCH refused for an over-ceiling guard would leave
     // `set_labels` enabled with the protection the operator typed not stored: the tool armed and
     // the fence missing, the one ordering that must not happen.
     const save = after(SRC, "async function saveTools");
@@ -291,7 +291,7 @@ describe("agent editor save errors", () => {
       "saveGuardrails",
       "saveTools",
     ]);
-    // NOTE: the holder is often under a qualified name (`cloneRefusal`), because a page with two forms needs
+    // The holder is often under a qualified name (`cloneRefusal`), because a page with two forms needs
     // one per form. `refusal.capture` answers the server's sentence, or null once it is already
     // rendered at the input it names: routing through it still shows what the server said.
     // Followed through a NAME, because the routing is written once (`answerRefusal` captures and
@@ -363,7 +363,7 @@ describe("one refusal per form that writes", () => {
   });
 
   test("every holder is asked before a control is left unmarked", () => {
-    // NOTE: behaviour, not shape: a source check on the loop's text survives narrowing the loop to
+    // Behaviour, not shape: a source check on the loop's text survives narrowing the loop to
     // its first entry. The rule lives in `firstRefusalAt` and is asked to answer.
     const silent = () => null;
     const says = (what: string) => () => what;
@@ -413,7 +413,7 @@ describe("one refusal per form that writes", () => {
   });
 
   test("the form that only toasted its refusal now answers like the others", () => {
-    // NOTE: `saveChannelRedirect` writes the whole settings bag, so its catch routes the refusal
+    // `saveChannelRedirect` writes the whole settings bag, so its catch routes the refusal
     // like every other save: a bare toast would leave a value this editor draws with no mark and
     // nothing to jump to.
     const body = between(SRC, "async function saveChannelRedirect", "\n  }");
@@ -423,7 +423,7 @@ describe("one refusal per form that writes", () => {
     // Snapshotted before the request goes out, never read from the live ref in the catch: comparing
     // `currentRef` with itself there can never fire the staleness check.
     expect(body).toContain("sent = sentFor(patch)");
-    // NOTE: and it is not a toast, which takes the only copy of the reason away after five seconds
+    // And it is not a toast, which takes the only copy of the reason away after five seconds
     // while the input is still refused. Asserted against what the catch actually READS, so a toast
     // reintroduced beside `answerRefusal` fails here.
     const cr = between(SRC, "async function saveChannelRedirect", "\n  }");

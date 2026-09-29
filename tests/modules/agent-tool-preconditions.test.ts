@@ -338,7 +338,7 @@ describe("round 1: a condition that would be silently weaker is refused", () => 
   ])(
     "refuses the whole condition when `equals` is %s, instead of dropping it",
     (_label, equals) => {
-      // NOTE: dropping `equals` would turn "the attribute must be X" into "the attribute must
+      // Dropping `equals` would turn "the attribute must be X" into "the attribute must
       // exist", which is a weaker rule than the operator wrote, and weaker in silence.
       const settings = {
         toolPreconditions: {

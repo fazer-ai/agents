@@ -48,7 +48,7 @@ test("the same refusal is toasted once the form draws nothing", () => {
 });
 
 test("a name the form has stopped drawing is toasted, not marked", () => {
-  // NOTE: a single "form on screen" boolean cannot answer this: the form is there, this one control
+  // A single "form on screen" boolean cannot answer this: the form is there, this one control
   // is not. The vault swaps its per-key inputs for a `.env` textarea, the setup screen draws
   // its token box only where enforcement is on, the add-content dialog keeps its text box on one of
   // two tabs. A mark on any of those is written and never rendered.
@@ -67,7 +67,7 @@ test("a name the form has stopped drawing is toasted, not marked", () => {
 });
 
 test("the answer follows the render, not the one the request started in", () => {
-  // NOTE: why it is a ref: the operator dismisses the modal DURING the save, so the list the
+  // Why it is a ref: the operator dismisses the modal DURING the save, so the list the
   // handler closed over still names every input and the only true answer is the current one.
   const { result, rerender } = renderHook(
     ({ open }: { open: boolean }) => useFieldRefusal(open ? FIELDS : []),
@@ -82,7 +82,7 @@ test("the answer follows the render, not the one the request started in", () => 
 });
 
 test("a caller that words the refusal itself keeps its turn", () => {
-  // NOTE: an empty fallback is how ChannelsPage says it has a better sentence than the server (it
+  // An empty fallback is how ChannelsPage says it has a better sentence than the server (it
   // names the affordance, disconnect first). The hook has no words of its own here, so raising an
   // empty toast and reporting "told them" would be a silence.
   const { result } = renderHook(() => useFieldRefusal([]), { wrapper });

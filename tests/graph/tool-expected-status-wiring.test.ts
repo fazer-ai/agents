@@ -90,7 +90,7 @@ async function invokeLoadedTool(tenantId: bigint, agentId: bigint) {
   const sel = await runScopedOn(appDb, ctx(tenantId), (db) =>
     loadToolSelections(db, agentId),
   );
-  // NOTE: `buildHttpTools` (the plural form a turn uses) takes no fetch injection; the singular
+  // `buildHttpTools` (the plural form a turn uses) takes no fetch injection; the singular
   // builder does, but would skip the mapping under test. So the global is swapped for the call and
   // restored right after.
   const realFetch = globalThis.fetch;

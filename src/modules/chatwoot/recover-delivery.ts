@@ -303,7 +303,7 @@ async function runRecovery(params: {
   now: Date;
 }): Promise<RecoveryOutcome> {
   const { base, row, instanceId, conversationId, messageId } = params;
-  // NOTE: whether this replay could post a reply, which decides three reads and refusals below. It
+  // Whether this replay could post a reply, which decides three reads and refusals below. It
   // cannot on an OBSERVER's route (it posts nothing by construction), on a `message_updated` (no turn
   // anywhere, so memory only), or where the stranded pass owed memory only because a person held the
   // conversation or a gate had silenced the message; that last one is read off the row, where the
@@ -351,7 +351,7 @@ async function runRecovery(params: {
   // whether they still may. A row this old with no mirror row is not going to grow one.
   if (!conv) return "unrecoverable";
 
-  // NOTE: two reads off the account. The conversation's state cannot come from the mirror: the
+  // Two reads off the account. The conversation's state cannot come from the mirror: the
   // delivery that would have mirrored this message is the one that died. An incoming message on a
   // `resolved` conversation reopens it (`pending` on a bot inbox, `open` otherwise) while the mirror
   // still says `resolved`, and a stale `resolved` in the body makes `shouldBotHandle` refuse, the row
@@ -491,7 +491,7 @@ async function runRecovery(params: {
       );
       return "unrecoverable";
     }
-    // NOTE: a customer who wrote again cannot be answered about the older message. Live,
+    // A customer who wrote again cannot be answered about the older message. Live,
     // `shouldPost` withholds the reply and the newer message's delivery carries it; for a recovery
     // that delivery already ran and answered the newer message only (a direct turn feeds the graph
     // its OWN trigger text), so the replay would spend a model call, post nothing and close the loss
@@ -500,7 +500,7 @@ async function runRecovery(params: {
     // note moves the conversation forward without answering anything.
     const newest = maxIncomingId(recent, messageId);
     if (newest > messageId) {
-      // NOTE: which of the two cases, said out loud, because they read the same from the row and an
+      // Which of the two cases, said out loud, because they read the same from the row and an
       // operator does different things about them. The newer message's delivery is NOT dead: it ran
       // or is running and carries the reply. Or its row is DEAD TOO, a stranded BURST: the newest
       // row's recovery answers the conversation, and this older message's TEXT never reaches a model
@@ -535,7 +535,7 @@ async function runRecovery(params: {
   // answer, and no number of retries will change that.
   if (!message) return "unrecoverable";
 
-  // NOTE: the route comes from the MESSAGE rather than the mirror. `Conversation.inboxId` is null
+  // The route comes from the MESSAGE rather than the mirror. `Conversation.inboxId` is null
   // for a conversation whose first mirrored event named no inbox, and the delivery that would have
   // taught it one is the row being recovered; a body with no `inbox_id` makes `runAgentTurn` return
   // "skipped", closing the loss with the customer still waiting. Every message the index serializes
@@ -558,7 +558,7 @@ async function runRecovery(params: {
     );
     return "unreachable";
   }
-  // NOTE: the local row for THAT inbox, where the bound agent, its mode and the name live. Always
+  // The local row for THAT inbox, where the bound agent, its mode and the name live. Always
   // re-read, never the snapshot loaded with the conversation: an operator can rebind the same inbox
   // during the two REST reads, and the stale persona's bot would make the ownership gate consume the
   // message without replying. The agent's MODE comes in the same scoped transaction, because whether
@@ -598,7 +598,7 @@ async function runRecovery(params: {
   const agentId = inbox?.agentId ?? null;
   const agentMode = route.mode;
 
-  // NOTE: the route's role, as the receiver recorded it. An observer's delivery is nameable by
+  // The route's role, as the receiver recorded it. An observer's delivery is nameable by
   // nothing else (the inbox names the responder, or nobody), and nothing after the fact can answer:
   // the observer row is written only once Chatwoot agrees, and a binding that moved since is about a
   // different moment. A row with no role takes the inbox's own derivation. A Chatwoot bot id is
@@ -627,7 +627,7 @@ async function runRecovery(params: {
     }
     observerRouteBotId = routeBotId;
   }
-  // NOTE: which bot answers, derived rather than stored: Chatwoot fans one message to up to two bot
+  // Which bot answers, derived rather than stored: Chatwoot fans one message to up to two bot
   // routes (the conversation's assignee bot and the inbox's), so the route it came from is not who
   // should answer now; if the conversation moved to another bot, the ownership gate closes on that.
   // `agentBotChatwootId` is the repo's one answer, and it does not decrypt the token. Asked HERE,
@@ -657,7 +657,7 @@ async function runRecovery(params: {
     );
     return "unrecoverable";
   }
-  // NOTE: and bot equality is evidence only while the binding is OLDER than the delivery: one bot
+  // And bot equality is evidence only while the binding is OLDER than the delivery: one bot
   // serves every role its agent holds, so an observer re-bound as the responder keeps its Chatwoot
   // id, and the test above would read the responder's role off a binding that did not exist at
   // receipt, ending in a late reply. It refuses only where TWO facts agree: the stamp alone refuses
@@ -682,7 +682,7 @@ async function runRecovery(params: {
     );
     return "unrecoverable";
   }
-  // NOTE: and the ledger's own route, for a replay that only remembers. A transcription replay passes
+  // And the ledger's own route, for a replay that only remembers. A transcription replay passes
   // the identity fence below because it posts nothing, but the id is also the left-hand side of the
   // ownership comparison: null, it goes LOOSE, a conversation another AgentBot holds reads as ours,
   // and the delivery path skips the ingestion this replay exists for. Replaying who the delivery
@@ -708,7 +708,7 @@ async function runRecovery(params: {
     );
   }
 
-  // NOTE: re-read rather than carried from the load at the top: a webhook during the REST reads can
+  // Re-read rather than carried from the load at the top: a webhook during the REST reads can
   // move `contactInboxId` (./mirror.ts writes it on an unversioned event), and the body and the
   // fence's graph key must come from the SAME reading, or the recovery fences one thread and runs on
   // another, and the old pairing in the body can be written back. Nothing between here and the fence
@@ -827,7 +827,7 @@ async function runRecovery(params: {
     return "unrecoverable";
   }
 
-  // NOTE: still an inbound message, or the read was degraded: `inboundMessageId` is written for
+  // Still an inbound message, or the read was degraded: `inboundMessageId` is written for
   // nothing else, so a rebuild that comes out as anything else (a missing `message_type` normalizes
   // to "other") is a REST response that lost something, and handing it on would run no turn yet close
   // the loss. Either shape the ledger can name, asked as the classifier asks it: a creation must
@@ -867,7 +867,7 @@ async function runRecovery(params: {
     return "unrecoverable";
   }
 
-  // NOTE: the fence is asked AGAIN just before the handoff (below): two REST reads and a reconcile
+  // The fence is asked AGAIN just before the handoff (below): two REST reads and a reconcile
   // gave a live delivery, which does not consult the recovery claim, time to start a turn. BOTH keys,
   // the pair `/reset` asks in ./webhook.ts: the conversation key a turn takes at its top, and this
   // GRAPH key, which a follow-up NUDGE claims while posting (../../graph/nudge.ts). The graph half is
@@ -934,14 +934,14 @@ async function runRecovery(params: {
     return "deferred";
   }
 
-  // NOTE: the row is put back if the delivery path throws, because the claim has already happened: a
+  // The row is put back if the delivery path throws, because the claim has already happened: a
   // scoped query that cannot reach the database escapes AFTER the CAS and leaves the row PROCESSING
   // with nothing holding it, so the next attempt answers `superseded` and the row waits thirty
   // minutes for the sweep, time it may not have against the age ceiling. Safe because this pass OWNS
   // the row (it won the CAS, and the write is guarded on the state it left), and `unreachable` rather
   // than a rethrow, so the scheduler's backoff runs and the retry finds a DEAD row to claim.
   let outcome: Awaited<ReturnType<typeof processChatwootDelivery>>;
-  // NOTE: a turn that threw is not an answer, and the delivery path's `"processed"` is about the ROW:
+  // A turn that threw is not an answer, and the delivery path's `"processed"` is about the ROW:
   // honest live, where the failure is recorded and announced, but for a recovery it would close the
   // loss on a customer nobody replied to. Asked for explicitly (`onDirectTurn`) rather than read back
   // off the world, since a recorded error or a missing outgoing message describes a MOMENT, not this
@@ -952,7 +952,7 @@ async function runRecovery(params: {
   // status that is not `pending`, a control command consumed), and the gate's decision IS the answer
   // to whether this message is still owed a reply.
   let turnOutcome: string | null = null;
-  // NOTE: what the ingestion answered; null means it never ran. A memory-only replay reports no turn,
+  // What the ingestion answered; null means it never ran. A memory-only replay reports no turn,
   // so `turnOutcome` stays null and passes every settlement test below, which is wrong for one that
   // also remembered nobody: an inbox unbound, switched off or flipped to test mode during the wait
   // reaches no ingestion branch, and the delivery still comes back `"processed"`.
@@ -1041,21 +1041,21 @@ async function runRecovery(params: {
   // and the CAS. The winner is running it, so this pass has nothing left to do and nothing to retry.
   if (outcome !== "processed") return "superseded";
 
-  // NOTE: the turn ran and left this message UNSETTLED unless its outcome is in `TURN_SETTLED`, a
+  // The turn ran and left this message UNSETTLED unless its outcome is in `TURN_SETTLED`, a
   // POSITIVE list because the honest default for an outcome nobody considered is "still owed".
   // `superseded` does not settle: live, the newer message's delivery carries the reply, but here it
   // can have finished before this turn ingested the stranded text. `empty` does not: the row exists
   // because the customer was left waiting. `no-agent` / `agent-unavailable` write their own
   // operator-facing line and must not take the message off that operator's worklist.
   const turnUnsettled = turnOutcome !== null && !TURN_SETTLED.has(turnOutcome);
-  // NOTE: and the memory-only replay is unsettled when nothing looked at the message: a route with
+  // And the memory-only replay is unsettled when nothing looked at the message: a route with
   // continuous ingestion must have decided (`queued` remembered it, `nothing` is the gate needing
   // nothing, `no-thread` has nowhere to hold it, `covered` is the responder already having it).
   // Silence is no route having asked, so the row goes back to DEAD for an inbox bound and switched
   // on again. Only for the replay that posts nothing; where a turn was owed, `TURN_SETTLED` answers.
   const memoryUnsettled = !replayPosts && ingestOutcome === null;
   if (turnThrew || turnUnsettled || memoryUnsettled) {
-    // NOTE: the row goes BACK to DEAD, the same repair as for a throw: it left the worklist at the
+    // The row goes BACK to DEAD, the same repair as for a throw: it left the worklist at the
     // claim and the customer is still owed. The attempt stays spent, so `MAX_RECOVERY_ATTEMPTS`
     // bounds the retrying. From PROCESSED, the state nothing revisits (the sweep reads PENDING and
     // PROCESSING), so a write that cannot land is said at `error`, naming the row. No closing line,
@@ -1096,7 +1096,7 @@ async function runRecovery(params: {
     return turnThrew || memoryUnsettled ? "unreachable" : "superseded";
   }
 
-  // NOTE: the line that closes the loss, written HERE: `retireCoveredDeliveries` corrects only rows
+  // The line that closes the loss, written HERE: `retireCoveredDeliveries` corrects only rows
   // it moves out of `DEAD` itself, and this row left `DEAD` at the claim, so without this it leaves
   // the worklist with the operator's page about it still open. "recovered" rather than "answered" or
   // "consumed", because with coalescing on the reply is the flush's, minutes from now. `warn`, like

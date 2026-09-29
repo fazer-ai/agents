@@ -83,7 +83,7 @@ describe("MCP channels gate (no DB)", () => {
   });
 
   test("deployment_connect dry-run refuses a malformed base_url", async () => {
-    // NOTE: what is answerable with NO database: a base URL that is not a URL needs nothing to refuse.
+    // What is answerable with NO database: a base URL that is not a URL needs nothing to refuse.
     // The preview reads the tenant's current deployment to refuse a server switch, so a successful
     // preview belongs in the DB block below.
     const r = await deploymentConnect(principal({}), {
@@ -225,7 +225,7 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
   // read has already come back empty.
   test("a deployment created after the early check is still refused", async () => {
     let reads = 0;
-    // NOTE: `$transaction` has to be wrapped, not just the delegate. Both reads go through
+    // `$transaction` has to be wrapped, not just the delegate. Both reads go through
     // `runScopedOn`, so they are issued on the TRANSACTION handle and a proxy on the client's own
     // `chatwootDeployment` never sees either of them — it counts zero and the test passes for the
     // wrong reason.
@@ -299,7 +299,7 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
   });
 
   test("deployment_connect dry-run with a raw token previews, creates nothing", async () => {
-    // NOTE: tenantB, not tenantA. `tenantA` is seeded with a deployment at chat.example.com, so
+    // tenantB, not tenantA. `tenantA` is seeded with a deployment at chat.example.com, so
     // previewing a connect to a DIFFERENT server is a switch, which the preview refuses like the apply.
     // This test is about the token and the absent row, so it needs the tenant that has nothing connected.
     const r = await deploymentConnect(
@@ -441,7 +441,7 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
   });
 
   test("inbox_bind dry-run previews current vs new agent (no network)", async () => {
-    // NOTE: A REAL agent, and it is not decoration: the preview asks the two questions the write asks past
+    // A REAL agent, and it is not decoration: the preview asks the two questions the write asks past
     // existence (the account is connected, and the agent being bound exists), and a literal id naming
     // nothing would read back "would bind", the write the apply refuses.
     const target = await suDb.agent.create({
@@ -619,7 +619,7 @@ describe.skipIf(!dbUp)("MCP channel tools (DB)", () => {
     });
     expect(after).not.toBeNull();
     expect(after?.disconnectedAt).not.toBeNull();
-    // NOTE: Scoped to THIS instance, not to the tenant: the row is written by the service, so another test in
+    // Scoped to THIS instance, not to the tenant: the row is written by the service, so another test in
     // this file disconnecting another account leaves one too. One row for one apply is still the claim,
     // and the target is what says which apply.
     const audits = await suDb.auditLog.count({

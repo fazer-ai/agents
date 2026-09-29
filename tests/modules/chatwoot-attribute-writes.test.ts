@@ -15,7 +15,7 @@ const client = (fetchImpl: typeof fetch) =>
 
 describe("custom attribute writes against endpoints that replace", () => {
   test("a conversation write keeps the keys already in the bag", async () => {
-    // NOTE: the deterministic half, visible without a burst: the tool sends ONE key and the
+    // The deterministic half, visible without a burst: the tool sends ONE key and the
     // endpoint assigns the whole hash, so a plain write would erase every other attribute.
     const cw = fakeChatwootAttributeStore(5, {
       conversations: { 61: { origem: "Instagram" } },
@@ -78,7 +78,7 @@ describe("custom attribute writes against endpoints that replace", () => {
   });
 
   test("the conversation read uses the admin token, the write the bot token", async () => {
-    // NOTE: `conversations#show` is bot-accessible only in Chatwoot builds from 2026-06-05 on, so a
+    // `conversations#show` is bot-accessible only in Chatwoot builds from 2026-06-05 on, so a
     // bot-token read 401s on older instances and takes the write down with it. The write stays on
     // the bot token (`custom_attributes` is in the bot allowlist) so it is attributed to the persona.
     const cw = fakeChatwootAttributeStore(5);

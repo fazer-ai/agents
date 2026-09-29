@@ -98,7 +98,7 @@ describe("planTurnRollback", () => {
       };
     })(),
     (() => {
-      // NOTE: `skip_reply` acts on NOTHING: it IS the decision to stay quiet. Counting it as an act
+      // `skip_reply` acts on NOTHING: it IS the decision to stay quiet. Counting it as an act
       // would pin the directive and its tool result in shared memory after a `/reset`, a takeover or
       // any post-generation refusal, the residue this planner exists to clear.
       const produced = [
@@ -134,7 +134,7 @@ describe("planTurnRollback", () => {
       };
     })(),
     (() => {
-      // NOTE: The TOOL RESULT on its own, because the AI message that requested it can be trimmed out
+      // The TOOL RESULT on its own, because the AI message that requested it can be trimmed out
       // of a slice and would otherwise carry the verdict alone.
       const produced = [nudge("n1"), toolResult("t1", "ok", "skip_reply")];
       return {
@@ -156,7 +156,7 @@ describe("planTurnRollback", () => {
       };
     })(),
     (() => {
-      // NOTE: A NAME is not an identity: `toolDefinitionCreateSchema` reserves none of the
+      // A NAME is not an identity: `toolDefinitionCreateSchema` reserves none of the
       // native names, so an agent with native tools disabled can grant a custom HTTP tool called
       // `skip_reply` that really calls something. The caller names what was inert; here nothing was,
       // and the turn is kept even though the messages look identical to the case above.
@@ -270,7 +270,7 @@ describe("planTurnRollback", () => {
       };
     })(),
     (() => {
-      // NOTE: The graph's tool boundary refused the call, so nothing reached the world and the turn is
+      // The graph's tool boundary refused the call, so nothing reached the world and the turn is
       // as removable as a silent one. Neither the tool's NAME (whatever the operator granted) nor the
       // content (any tool may return it) answers; the marker the graph writes on its refusal does.
       const produced = [
@@ -287,7 +287,7 @@ describe("planTurnRollback", () => {
       };
     })(),
     (() => {
-      // NOTE: A provider may emit a call with no id (LangChain types it optional) and the refusal then
+      // A provider may emit a call with no id (LangChain types it optional) and the refusal then
       // carries `""`, which matches no call. Pairing by id is the wrong axis: the boundary refuses a
       // BATCH, so what answers is the position.
       const produced = [
@@ -308,7 +308,7 @@ describe("planTurnRollback", () => {
       };
     })(),
     (() => {
-      // NOTE: ONLY OUR OWN REFUSAL makes a calling turn inert. This is the row where reading the
+      // ONLY OUR OWN REFUSAL makes a calling turn inert. This is the row where reading the
       // position without the MARKER fails: a calling turn whose result is simply absent may well
       // have gone out, and for a write nothing can undo the conservative answer is to keep the slice.
       const produced = [nudge("n1"), calling("a1", "set_labels"), a("a2", "")];
@@ -384,7 +384,7 @@ describe("planReactiveTurnRollback", () => {
       };
     })(),
     (() => {
-      // NOTE: The row the proactive table answers the other way. The transfer really happened and no
+      // The row the proactive table answers the other way. The transfer really happened and no
       // removal undoes it, so its record stays, but the closing line was never sent and must go.
       const produced = [
         h("h1", "quero falar com alguém"),

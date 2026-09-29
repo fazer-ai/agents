@@ -194,7 +194,7 @@ describe.each(Object.entries(LOCALES))(
         ...new Bun.Glob("src/client/**/*.{ts,tsx}").scanSync("."),
         "src/modules/agents/config-health-message.ts",
       ];
-      // NOTE: two lenses over the same bytes, read through `tests/utils/source-text` as every sweep
+      // Two lenses over the same bytes, read through `tests/utils/source-text` as every sweep
       // over `src/` must. `withoutComments` keeps the string literals (where the KEY lives);
       // `codeOnly` blanks them (where `count` must NOT be found). Both blank in place, so one offset
       // addresses both.

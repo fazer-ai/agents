@@ -684,7 +684,7 @@ function fits(value: unknown, schema: JsonSchema): boolean {
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
         return false;
       }
-      // NOTE: A nested block with DECLARED properties is judged like the top level: an undeclared key there is
+      // A nested block with DECLARED properties is judged like the top level: an undeclared key there is
       // the same artifact, one level down (`embedding: { credentialRef }` against a block publishing
       // `credential_ref`). A block with no `properties` is free-form by design (tool headers, a body) and
       // passes.
@@ -834,7 +834,7 @@ describe.skipIf(!dbUp)(
             ),
           }).toEqual({ row: label, previewed: "refused" });
         }
-        // NOTE: the control, and it runs first on purpose. A row whose apply SUCCEEDS has nothing to
+        // The control, and it runs first on purpose. A row whose apply SUCCEEDS has nothing to
         // disagree about — the comparison below would pass forever measuring nothing, and the row
         // would have created a real record getting there. A row that CRASHES is worse: it is the
         // harness failing, dressed as the tool refusing.
@@ -1128,7 +1128,7 @@ describe.skipIf(!dbUp)("a preflight covers its core's whole judgement", () => {
     expect(one.transactions).toBeGreaterThan(0);
     expect(many.transactions).toBe(one.transactions);
 
-    // NOTE: And the other axis, which the assertion above cannot see: each id is a BIND PARAMETER, and Postgres
+    // And the other axis, which the assertion above cannot see: each id is a BIND PARAMETER, and Postgres
     // takes at most 32767. Past it the query raises "The query parameter limit supported by your database
     // is exceeded", a CRASH, not a refusal, on input the published schema accepts, on the preview as much
     // as on the apply. So the ids are chunked, still inside one privileged transaction.
@@ -1448,7 +1448,7 @@ describe.skipIf(!dbUp)(
           secret: encryptJson({ clientId: "a", clientSecret: "b" }),
         },
       });
-      // NOTE: a COMPLETE model config. `{ credentialRef }` alone is refused by the schema on its own shape,
+      // A COMPLETE model config. `{ credentialRef }` alone is refused by the schema on its own shape,
       // so both halves would say no and the row would measure nothing, the same artifact the
       // schema-conformance guard catches for table rows.
       const r = await both(
@@ -2074,7 +2074,7 @@ describe.skipIf(!dbUp)(
         },
       });
       const ids = Array.from({ length: 40_000 }, (_, i) => String(900_000 + i));
-      // NOTE: The COUNT of queries too, because the chunking has an obvious wrong shape: asking all forty chunks
+      // The COUNT of queries too, because the chunking has an obvious wrong shape: asking all forty chunks
       // and comparing the total at the end answers the same refusal after 40 round trips, and no verdict
       // assertion can tell the two apart. `$extends` is wrapped for the same reason the claim-check probe
       // above wraps it: `runScopedOn` issues everything on the client it returns.
@@ -2322,7 +2322,7 @@ describe.skipIf(!dbUp)(
           status: "open",
         },
       });
-      // NOTE: A CLIENT, because both halves read the conversation from Chatwoot before answering: the inbox a
+      // A CLIENT, because both halves read the conversation from Chatwoot before answering: the inbox a
       // hand-back is judged against is the one Chatwoot names, so neither half may refuse on the mirror's
       // row before asking. It answers inbox 9, the row seeded above, which is the case this test is about:
       // nothing moved, and nothing answers the inbox it is on.

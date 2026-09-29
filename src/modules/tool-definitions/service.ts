@@ -346,7 +346,7 @@ async function assertNameFree(
   // that was legal when created must not be refused.
   currentName?: string,
 ): Promise<void> {
-  // NOTE: compared through the DERIVATION, not as text: a legacy `Search_Knowledge` and the
+  // Compared through the DERIVATION, not as text: a legacy `Search_Knowledge` and the
   // console's `normalizeToolName(label)` are one identity to the model. `undefined` is a CREATE and
   // stays separate, because `normalizeToolName("")` answers `"tool"`.
   const moving =
@@ -633,7 +633,7 @@ export async function createToolDefinition(
   }
   const tenantId = ctx.tenantId;
   const data = assertToolDefinitionCreatable(input);
-  // NOTE: canonicalize programmatic authoring shapes (JSON-Schema inputSchema, single-brace
+  // Canonicalize programmatic authoring shapes (JSON-Schema inputSchema, single-brace
   // {var}) so storage always holds what the runtime executes.
   const { shapes } = normalizeToolShapes({
     urlTemplate: data.urlTemplate,
@@ -723,7 +723,7 @@ export async function updateToolDefinition(
       );
     }
     if (data.name) await assertNameFree(db, data.name, id, current.name);
-    // NOTE: canonicalize the patched shapes; the current row supplies the rest so the placeholder
+    // Canonicalize the patched shapes; the current row supplies the rest so the placeholder
     // allowlist sees the effective field set on partial updates.
     const { shapes } = normalizeToolShapes(
       {

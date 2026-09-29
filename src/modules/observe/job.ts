@@ -208,7 +208,7 @@ export async function armObserve(
           where: { kind: "OBSERVE", dedupeKey },
           select: { status: true, payload: true },
         });
-        // NOTE: a PENDING row is the burst this message joins only when it IS a burst: a customer
+        // A PENDING row is the burst this message joins only when it IS a burst: a customer
         // reopening before a resolve's tick is claimed opens a NEW burst, which would otherwise
         // inherit the resolve's `burstStartedAt` and run at once. ONE TICK PER RESOLUTION (see
         // `mark`), read whatever the row's status. AT OR BELOW, not equal: the mark only moves
@@ -556,13 +556,13 @@ export function afterResetNarration(
 ): ChatwootMessageRow[] {
   if (resetBoundary === null) return fetched;
   const rows = fetched.filter((r) => r.id > resetBoundary);
-  // NOTE: THE TWO CUTS ARE JOINED: the set answers for the titles THIS reset removed, at any id;
+  // THE TWO CUTS ARE JOINED: the set answers for the titles THIS reset removed, at any id;
   // the ack's row for everything the command wrote before it, which alone covers a PREVIOUS reset's
   // late removal line. Its price: a colleague's label change between the command and its ack is
   // lost.
   const marker = resetAckSendId(resetBoundary);
   const ack = rows.find((r) => r.sendId === marker);
-  // NOTE: ...AND THE ORDER CUT IS APPLIED LAST, after the walk reads every row past the boundary:
+  // ...AND THE ORDER CUT IS APPLIED LAST, after the walk reads every row past the boundary:
   // the cleanup's removal line usually sits BELOW the ack, and cutting first would leave its titles
   // unspent.
   const orderCut = (r: ChatwootMessageRow) =>
@@ -599,7 +599,7 @@ export function afterResetNarration(
     if (!reachesCommand)
       for (const r0 of readings)
         if (r0.kind === "added") for (const t of r0.titles) pending.delete(t);
-    // NOTE: ...AND ONLY A REMOVAL CAN BE THE CLEANUP'S OWN LINE, so an addition whose Sidekiq job
+    // ...AND ONLY A REMOVAL CAN BE THE CLEANUP'S OWN LINE, so an addition whose Sidekiq job
     // landed out of order cannot spend the title and let the real removal through.
     const removal = readings.find(
       (r0) => r0.kind === "removed" && r0.titles.every((t) => pending.has(t)),
@@ -623,7 +623,7 @@ export function labelHistoryFromRows(
     vocabulary.map((l) => l.trim()).filter((l) => l !== ""),
   );
   if (known.size === 0) return { lines: [], omitted: 0 };
-  // NOTE: a row too long to SCAN is a row nobody read, so it is counted like one too long to SHOW
+  // A row too long to SCAN is a row nobody read, so it is counted like one too long to SHOW
   // (`set_labels` takes an unbounded list, so this application produces such rows). The guard is
   // checked FIRST and stays silent: a count appearing only on conversations carrying a guarded
   // label would itself narrate that label.
@@ -652,7 +652,7 @@ export function labelHistoryFromRows(
       return readings.some((r) => r.titles.every((t) => known.has(t)));
     })
     .sort((a, b) => a.id - b.id);
-  // NOTE: THE CAP HIDES CHANGES TOO: `escopo="janela-lida"` says where the block looked, not that
+  // THE CAP HIDES CHANGES TOO: `escopo="janela-lida"` says where the block looked, not that
   // all it found is in it, so what the cap removes is counted like anything else nobody could show.
   const capped = Math.max(0, recognised.length - limit);
   const changes = recognised
@@ -663,7 +663,7 @@ export function labelHistoryFromRows(
         .replace(/\s*\n\s*/g, " "),
     )
     .filter((t) => t.length > 0);
-  // NOTE: WHOLE OR NOT AT ALL: a clipped sentence drops later labels and, in a verb-final language
+  // WHOLE OR NOT AT ALL: a clipped sentence drops later labels and, in a verb-final language
   // ("Hans hat vip, …, x hinzugefügt"), the verb. An over-long line is left out and counted.
   const lines = changes.filter((t) => t.length <= LABEL_CHANGE_MAX_CHARS);
   return { lines, omitted: changes.length - lines.length + unread + capped };
@@ -955,12 +955,12 @@ export async function runObserve(
     threadId,
     base,
   };
-  // NOTE: WHAT THE OBSERVATION WROTE, so the line can say it: Chatwoot keeps no history of a label
+  // WHAT THE OBSERVATION WROTE, so the line can say it: Chatwoot keeps no history of a label
   // write. Collected from the tool, filtered to the operator's vocabulary (label-writes.ts),
   // because the `tool` line carries values only under `logToolValues`, which logs every tool's
   // arguments.
   const labelWrites: LabelWrite[] = [];
-  // NOTE: declared above `line` because every exit after a write carries it: a committed label is
+  // Declared above `line` because every exit after a write carries it: a committed label is
   // never retried, so a line without it loses the write. Absent on exits before any tool ran.
   const line = (
     status: "ok" | "error" | "skipped",
@@ -990,7 +990,7 @@ export async function runObserve(
   }
 
   const bot = await loadAgentBot(tenantId, instanceId, agentId, base);
-  // NOTE: MUTED: this is where the guarantee that a watcher never answers lives. `loadAgentConfig`
+  // MUTED: this is where the guarantee that a watcher never answers lives. `loadAgentConfig`
   // keeps refusing monitoring agents for every customer-facing caller; here `ignoreMode` plus a
   // client that cannot post to the customer lets the ordinary graph run. THE TICK'S DEADLINE covers
   // all that follows and, through `expiresOn`, any write a tool handler is still making when it
@@ -1023,7 +1023,7 @@ export async function runObserve(
   // the opposite of what the operator was told happened. Applied before the quote resolver is
   // built, so a reply quoting a pre-reset message does not reintroduce its text either.
   const resetBoundary = conv?.resetAtMessageId ?? null;
-  // NOTE: a `Json?` column, READ rather than trusted: NULL is a reset that made no claim, and
+  // A `Json?` column, READ rather than trusted: NULL is a reset that made no claim, and
   // anything but an array of strings is a row this build did not write.
   const resetCleared = stringArrayOrNull(conv?.resetClearedLabels);
   const rows =
@@ -1043,7 +1043,7 @@ export async function runObserve(
     );
     return { outcome: "done" };
   }
-  // NOTE: ONE READ, for the prompt block AND `set_labels`' baseline: the tool diffs against what
+  // ONE READ, for the prompt block AND `set_labels`' baseline: the tool diffs against what
   // the model was SHOWN, so two reads could turn a label repeated to keep it into an ADDITION.
   // Tolerated when it fails, as `buildToolset` does (prepare.ts): a watcher may not touch labels at
   // all. `null`, not `[]`: "no labels" would let the model clear everything.
@@ -1058,19 +1058,19 @@ export async function runObserve(
       e instanceof Error ? e.message : String(e),
     );
   }
-  // NOTE: THE PROMPT BLOCK SHOWS THE GUARDED LABELS, as the tool does (it shows them and refuses to
+  // THE PROMPT BLOCK SHOWS THE GUARDED LABELS, as the tool does (it shows them and refuses to
   // move them): the same projection the tool renders (label-view.ts).
   const currentForPrompt =
     current === null ? null : modelVisibleLabels(current);
 
-  // NOTE: read here, not beside `notes`, because it is a request every exit above would waste. The
+  // Read here, not beside `notes`, because it is a request every exit above would waste. The
   // labels ALONE, not the toolset's vocabulary: that is two requests under one `Promise.all`, and a
   // down attribute endpoint would stall every tick. `null` makes the block say it could not read.
   const vocabLabels = await loadChatwootLabels(
     client,
     `${tenantId}:${instanceId}`,
   ).catch(() => null);
-  // NOTE: THE CONVERSATION'S OWN LABELS JOIN THE INDEX: a tag attached through `set_labels` creates
+  // THE CONVERSATION'S OWN LABELS JOIN THE INDEX: a tag attached through `set_labels` creates
   // no `Label` row, so an invented title is only on the conversation. A title invented, applied and
   // removed between two ticks is in neither list, a miss chosen over inventing a decision.
   const labelChanges = labelHistoryFromRows(
@@ -1084,16 +1084,16 @@ export async function runObserve(
     LABEL_CHANGES_MAX,
   );
 
-  // NOTE: THE TURN ITSELF, the ordinary graph: with a muted client a watcher is the ordinary agent
+  // THE TURN ITSELF, the ordinary graph: with a muted client a watcher is the ordinary agent
   // (tools, MCP, knowledge) that cannot answer the customer; classifying is `set_labels` in its
   // prompt.
   const checkpointer = deps.checkpointer ?? new MemorySaver();
-  // NOTE: A THREAD OF ITS OWN, per agent, never the conversation's: the responder's memory lives on
+  // A THREAD OF ITS OWN, per agent, never the conversation's: the responder's memory lives on
   // `chatwootThreadId(...)`, and invoking with that id would checkpoint the watcher's turn into it.
   // In-memory by default, so an observation is reproducible from the conversation alone.
   const graphThreadId = `${threadId}:observer:${agentId}`;
 
-  // NOTE: THE FENCES are asked at every tool HOP (`buildAgentGraph({stillWanted})`, as the nudge
+  // THE FENCES are asked at every tool HOP (`buildAgentGraph({stillWanted})`, as the nudge
   // does), since a turn has as many writes as tool calls. Each returns a REASON, and `unreadable`
   // stays apart from `no`: a withdrawal completes the job, a failed read retries with backoff
   // (nothing else re-arms the row, and a resolve happens once), paying the model call again under
@@ -1109,7 +1109,7 @@ export async function runObserve(
           : "agent_no_longer_observes";
       return false;
     }
-    // NOTE: ONE ROW ANSWERS BOTH QUESTIONS: re-reading the switch and mode here narrows the window
+    // ONE ROW ANSWERS BOTH QUESTIONS: re-reading the switch and mode here narrows the window
     // to this read, and catches an agent deleted mid-turn, which a `settings`-only select read as
     // no config.
     const monNow = await runScopedOn(base, sysCtx(tenantId), (db) =>
@@ -1266,7 +1266,7 @@ export async function runObserve(
     return { outcome: "fail", error: `observe: ${msg}` };
   }
 
-  // NOTE: WHETHER ANYTHING IRREVERSIBLE HAS ALREADY HAPPENED: a retry re-runs the WHOLE stateless
+  // WHETHER ANYTHING IRREVERSIBLE HAS ALREADY HAPPENED: a retry re-runs the WHOLE stateless
   // turn, so a tick that already invoked a tool does not retry (at-most-once for effects that reach
   // other systems). Only tools that can leave something behind count: utility natives and
   // `skip_reply` are exempt by name (a native's name is reserved), the knowledge search by identity
@@ -1280,7 +1280,7 @@ export async function runObserve(
   let toolsRan = 0;
   // Dispatches that answered without writing anything. `toolsRan - noEffect` is what committed.
   let noEffect = 0;
-  // NOTE: ...AND ONLY FOR A TOOL THIS COUNTER COUNTS: an effect-free tool never incremented
+  // ...AND ONLY FOR A TOOL THIS COUNTER COUNTS: an effect-free tool never incremented
   // `toolsRan`, so its no-effect report would hide a sibling's real write. The name is unique
   // across every source.
   const counted = new Set<string>();
@@ -1289,7 +1289,7 @@ export async function runObserve(
     // permitted call reaches exactly the run it would have had.
     const seen = Object.create(t) as typeof t;
     seen.invoke = (async (input: unknown, config?: unknown) => {
-      // NOTE: BEFORE the call, because the count has to exist when the invoke THREW after its
+      // BEFORE the call, because the count has to exist when the invoke THREW after its
       // write. What did NOT happen is reported by the handler through `onNoEffect`, counted apart
       // because one of those exits throws and never comes back through this wrapper.
       const countsHere = !effectFreeNames.has(t.name) && !isEffectFreeTool(t);
@@ -1373,7 +1373,7 @@ export async function runObserve(
     };
   }
 
-  // NOTE: GATED IMMEDIATELY BEFORE THE BILLED CALL (spend-ceiling/coverage.ts names this node), so
+  // GATED IMMEDIATELY BEFORE THE BILLED CALL (spend-ceiling/coverage.ts names this node), so
   // an exit that was never going to spend is not reported as a tenant hitting its budget.
   const ceiling = await spendCeilingVerdict({
     tenantId,
@@ -1499,7 +1499,7 @@ export async function runObserve(
     // node, and whatever that surfaces as, the exception is not what went wrong — the world moved.
     // Whether the tick is DONE or retried is the fence's own answer, not this catch's.
     if (refusal !== null) return endOnRefusal(refusal);
-    // NOTE: A FAILURE AFTER A TOOL RAN ENDS THE TICK: `error` when the scheduler will retry, `warn`
+    // A FAILURE AFTER A TOOL RAN ENDS THE TICK: `error` when the scheduler will retry, `warn`
     // when a retry would repeat a commit. A dispatch that never settled (the deadline rejected the
     // invoke) counts as committed, because counting a no-op costs one observation and not counting
     // a write repeats it. An `on_resolve` agent has no next burst, the declared price

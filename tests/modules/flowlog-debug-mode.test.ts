@@ -241,7 +241,7 @@ describe("readDebugModes — one condition, three switches", () => {
 });
 
 describe("the debug ceiling is derived from what the API already accepts", () => {
-  // NOTE: These two numbers are the justification for DEBUG_MAX_STRING, pinned so the constant cannot outlive
+  // These two numbers are the justification for DEBUG_MAX_STRING, pinned so the constant cannot outlive
   // the figures it was chosen from.
   const VARS = {
     canal: "x".repeat(1234),
@@ -888,7 +888,7 @@ describe("a schedule variable expands once, not once per occurrence", () => {
   });
 
   test("the reserved allowance is a MARGIN, and what is past it degrades rather than breaks", () => {
-    // NOTE: This input is UNREACHABLE by construction and is built by hand for that reason: `parseWindows`
+    // This input is UNREACHABLE by construction and is built by hand for that reason: `parseWindows`
     // caps what any stored schedule surfaces at `MAX_SCHEDULE_WINDOWS`, so no row renders past the
     // allowance reserved above. What it pins is the ceiling's own fallback: past the reserve the field is
     // CUT, with no throw and no unbounded row, for whatever outgrows the reserve next. That is what makes
@@ -1026,7 +1026,7 @@ describe("the MCP dry run answers the same as the apply", () => {
   });
 
   test("an update with an oversized variant answers, it does not throw", async () => {
-    // NOTE: `mapVariants` validates, so on the update path it has to run inside the try: a tool that throws
+    // `mapVariants` validates, so on the update path it has to run inside the try: a tool that throws
     // answers the caller with an exception instead of the `{ ok: false, error }` every other refusal on
     // this surface produces.
     const res = await experimentUpdate(principal, {

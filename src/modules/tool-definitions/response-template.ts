@@ -391,7 +391,7 @@ export function templateOfferAt(
   if (block === null) {
     return { block: null, leaves: sample.leaves, lists: sample.lists };
   }
-  // NOTE: the item leaves ARE derived here, because they depend on which block the caret is in and
+  // The item leaves ARE derived here, because they depend on which block the caret is in and
   // the caret moves between keystrokes. Bounded by the same caps the picker uses.
   const items = templateListAt(sample.body, block);
   return {
@@ -443,11 +443,11 @@ export function templateWriteAt(
   if (/[\r\n]/.test(typed) || typed.includes("}}")) return null;
   // NOTE: `{{/each}}` names nothing, so there is nothing to offer inside it.
   if (typed.startsWith("/")) return null;
-  // NOTE: the whitespace the GRAMMAR allows (`{{ campo }}`, `{{ #each xs }}`) is not part of what is
+  // The whitespace the GRAMMAR allows (`{{ campo }}`, `{{ #each xs }}`) is not part of what is
   // being typed: in the prefix CodeMirror filters on, it would filter every path out.
   const lead = /^[ \t]*/.exec(typed)?.[0].length ?? 0;
   const body = typed.slice(lead);
-  // NOTE: `[ \t]+`, the separator `BLOCK` itself requires, not `*`: with `*`, completing right after
+  // `[ \t]+`, the separator `BLOCK` itself requires, not `*`: with `*`, completing right after
   // `each` writes `{{#eachresultados}}`, which the Save gate refuses. `closeBrackets` answers a typed
   // `{{` with `{{}}`, so the caret lands exactly there.
   const each = /^#each[ \t]+/.exec(body);
@@ -458,7 +458,7 @@ export function templateWriteAt(
   if (!each && body.startsWith("#")) return null;
   const kind = each ? "list" : "path";
   const from = open + 2 + lead + (each ? each[0].length : 0);
-  // NOTE: the token may be closed by braces the operator typed OR by the ones already sitting there
+  // The token may be closed by braces the operator typed OR by the ones already sitting there
   // from an earlier edit; either way the answer is the same, and what decides it is the next `}}`
   // on this line, before any other `{{`.
   const after = template.slice(cursor);
@@ -732,7 +732,7 @@ export function renderResponseTemplate(
       continue;
     }
     const node = resolveTemplatePath(body, seg.path);
-    // NOTE: A standalone `{{/each}}` took its line ending with it, and every item puts one back. A
+    // A standalone `{{/each}}` took its line ending with it, and every item puts one back. A
     // MARKER standing in for the items does not, so the block owes that ending to whatever follows
     // (else `(none)Done`); an inline block owes nothing.
     const eol = seg.body.endsWith("\r\n")
@@ -772,7 +772,7 @@ export function renderResponseTemplate(
         },
       );
       const after = node.length - index - 1;
-      // NOTE: The count AND the line ending it carries, or a standalone block lands one character
+      // The count AND the line ending it carries, or a standalone block lands one character
       // past the budget on exactly the row length that fills it.
       const reserve =
         after > 0 ? moreItemsMarker(after).length + eol.length : 0;

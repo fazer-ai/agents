@@ -203,7 +203,7 @@ export function buildDocumentTools(
         }
         turnState.documentsInFlight++;
         const order = turnState.attachmentsSeq++;
-        // NOTE: one clock read for the whole issuance. The key carries a calendar day and the document
+        // One clock read for the whole issuance. The key carries a calendar day and the document
         // prints one; two reads straddling midnight would disagree and a later retry would issue a
         // SECOND numbered document. Not testable (a frozen clock cannot cross a day between two
         // statements), so the property is structural: one read, handed to both consumers.

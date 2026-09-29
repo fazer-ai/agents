@@ -298,7 +298,7 @@ describe.skipIf(!dbUp)(
     test("a thread owned by another process is not invoked, and the burst survives", async () => {
       const graphThreadId = contactInboxThreadId(tenantId, instanceId, CI_HELD);
       await holdThread(CI_HELD, graphThreadId);
-      // NOTE: THE PRECONDITION FIRST, on the same key the flush computes. Without it a wrong key
+      // THE PRECONDITION FIRST, on the same key the flush computes. Without it a wrong key
       // would make every assertion below pass for the wrong reason: "nobody owns a thread I am not
       // asking about" is not the same statement as "the flush honours the owner".
       const rowSaysHeld = await turnOwnsThread(
@@ -311,7 +311,7 @@ describe.skipIf(!dbUp)(
         appDb,
       );
       const { calls, sent } = await runFlush(CONV_HELD);
-      // NOTE: and the burst has to still be OWED: a flush that answered would also advance the
+      // And the burst has to still be OWED: a flush that answered would also advance the
       // watermark, leaving the messages gone AND marked handled.
       const [conv] = await suDb.$queryRawUnsafe<{ handled: number | null }[]>(
         `SELECT last_handled_message_id AS handled FROM conversations

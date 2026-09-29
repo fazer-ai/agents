@@ -158,7 +158,7 @@ function makeRenderer(vm: QuickJSContext): {
       if (r.error) {
         return { ok: false, error: r.error };
       }
-      // NOTE: the length is read off the VM string without copying it, and a result the VM side did
+      // The length is read off the VM string without copying it, and a result the VM side did
       // not cut is refused rather than copied: copying it would put an unbounded string in the
       // host's heap, past the fence on "bounded before it crosses".
       const lengthHandle = vm.getProp(r.value, "length");
@@ -239,7 +239,7 @@ function installConsole(
   maxChars: number,
 ): void {
   const emit = vm.newFunction("__emit", (line: QuickJSHandle) => {
-    // NOTE: The length is read off the VM string without copying it, and a line the VM side did
+    // The length is read off the VM string without copying it, and a line the VM side did
     // not cut is refused rather than copied: that is the fence on "bounded before it crosses",
     // and what the test for it looks for.
     const lengthHandle = vm.getProp(line, "length");
@@ -702,7 +702,7 @@ function withSourceLine(
   offset: number,
 ): ThrownValue {
   const e = error;
-  // NOTE: A SyntaxError carries `lineNumber`; a runtime error carries the line in the first frame of
+  // A SyntaxError carries `lineNumber`; a runtime error carries the line in the first frame of
   // its stack (`at <eval> (snippet.js:2:5)`).
   const fromStack =
     typeof e.stack === "string"
@@ -716,7 +716,7 @@ function withSourceLine(
         : undefined;
   if (reported === undefined) return error;
   const lines = code.split("\n");
-  // NOTE: In function-body mode an error at the end of the body (an unfinished `input.cpf.`, an
+  // In function-body mode an error at the end of the body (an unfinished `input.cpf.`, an
   // unclosed brace) is reported on the wrapper's closing line, past the body; it lands on the
   // body's last line instead.
   const line =
@@ -801,7 +801,7 @@ function run(req: SandboxRequest): SandboxReply {
       const rendered = render(out.value, req.maxChars);
       out.value.dispose();
       if (!rendered.ok) {
-        // NOTE: the body threw WHILE its value was being read (a getter, a proxy trap): the same
+        // The body threw WHILE its value was being read (a getter, a proxy trap): the same
         // failure as a `throw` in the body, not a value, or the agent reads "[object Object]" as a
         // successful verdict with nobody alerted.
         const thrown = errors.read(rendered.error) as ThrownValue;
@@ -821,7 +821,7 @@ function run(req: SandboxRequest): SandboxReply {
       };
     }
     const e = out.error as ThrownValue;
-    // NOTE: The name is the snippet's too (`e.name = "x".repeat(1e6)` is one assignment), so it is
+    // The name is the snippet's too (`e.name = "x".repeat(1e6)` is one assignment), so it is
     // bounded like the message; a real error name is an identifier.
     const name = clip(e.name, ERROR_NAME_MAX_CHARS);
     const message = e.message;

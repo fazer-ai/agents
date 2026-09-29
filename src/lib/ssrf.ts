@@ -265,7 +265,7 @@ export async function assertSafeOutboundUrl(
     return url;
   }
 
-  // NOTE: a PERMANENT not-found is the same answer as an empty result (the host does not exist) and
+  // A PERMANENT not-found is the same answer as an empty result (the host does not exist) and
   // leaves as the same 400, not a 500 for a mistyped URL. Everything else propagates: `EAI_AGAIN` or
   // a timeout means the RESOLVER failed, and a 400 would tell the caller not to retry a valid name.
   let addresses: { address: string }[];

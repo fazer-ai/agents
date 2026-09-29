@@ -207,7 +207,7 @@ function emailFromIdToken(idToken: string | undefined): string {
 async function postToken(
   body: Record<string, string>,
 ): Promise<GoogleTokenResponse> {
-  // NOTE: one bound over the whole exchange, body included: a body read after the timer is cleared
+  // One bound over the whole exchange, body included: a body read after the timer is cleared
   // has nothing to end it if it stalls.
   const { res, body: responseBody } = await fetchBounded(
     TOKEN_ENDPOINT,

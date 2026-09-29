@@ -193,7 +193,7 @@ function searchTool(ctx: RagToolCtx) {
       limit?: number;
       knowledge_base?: string;
     }) => {
-      // NOTE: How many times the query embedding had to be asked again, for the tool line: a
+      // How many times the query embedding had to be asked again, for the tool line: a
       // slow search is then attributed to the provider on the line itself, not guessed at.
       let retries = 0;
       const hits = await searchKnowledge({

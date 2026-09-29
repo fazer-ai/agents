@@ -54,7 +54,7 @@ describe("the offset comes off the response, and only when it is readable", () =
   test("`serverNowDate` is the same instant as a Date", () => {
     const ahead = new Date(Date.now() + 600_000);
     noteServerDate(withDate(ahead.toUTCString()));
-    // NOTE: both read the browser clock, so an unfrozen one can tick between the two calls and the
+    // Both read the browser clock, so an unfrozen one can tick between the two calls and the
     // comparison fails by a millisecond.
     const now = spyOn(Date, "now").mockReturnValue(Date.now());
     try {

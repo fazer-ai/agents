@@ -20,7 +20,7 @@ import {
 // into CLEAN is a message delivered unscreened under a guardrail the operator believes is running.
 
 describe("how each provider is asked for the verdict", () => {
-  // NOTE: Each row is how the endpoint behaves, not an assumption. What a wrong row costs is not symmetric: a
+  // Each row is how the endpoint behaves, not an assumption. What a wrong row costs is not symmetric: a
   // provider wrongly on "prose" keeps the unconstrained behaviour, while one asked in the wrong dialect
   // is refused on every screen and only survives it because a refused request is remade in prose.
   const table: Record<(typeof MODEL_PROVIDERS)[number], VerdictAskMode> = {

@@ -3,7 +3,7 @@ import logger from "@/api/lib/logger";
 import prisma from "@/api/lib/prisma";
 import config from "@/config";
 
-// NOTE: In-memory state is a UX optimization so /auth/me and the signup gates
+// In-memory state is a UX optimization so /auth/me and the signup gates
 // can answer "is setup still pending?" without a query on the happy path. It is
 // NOT the race guard: the atomic insert in createInitialAdmin (advisory lock +
 // re-check) is what guarantees a single bootstrap, correct even across

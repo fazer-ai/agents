@@ -1218,7 +1218,7 @@ const UNDISCLOSED = [] as const;`).has("name"),
 // inbound auth strategy is a policy an operator changes — so relations are told apart by being
 // declared as `model` in the same schema.
 export function mutableColumns(schema: string, model: string): string[] {
-  // NOTE: an ALLOWLIST of what counts, not a denylist of what does not. Told the other way round ("a
+  // An ALLOWLIST of what counts, not a denylist of what does not. Told the other way round ("a
   // type that is a model in this schema is a relation"), the predicate quietly admits any type it
   // does not recognise, and a relation to a model declared elsewhere, or a type this file has not
   // heard of, becomes a column the fence then demands a projection for. Enums are on the list

@@ -39,7 +39,7 @@ export function selectClosedPrefix(
   // NOTE: invariant 4: the caller vouches the conversation ended, so there is no open attendance.
   if (opts.currentAttendanceClosed) return { head, closed: body, open: [] };
 
-  // NOTE: the open attendance starts at the first message of the LAST stamped conversation's last
+  // The open attendance starts at the first message of the LAST stamped conversation's last
   // RUN. Asking for the start lets assistant replies go unstamped (each sits after its stamped human
   // turn). The run and not the first occurrence: a reopened conversation leaves stamps 1 … 2 … 1, and
   // the first `1` would close nothing, ever.

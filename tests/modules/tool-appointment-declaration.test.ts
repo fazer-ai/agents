@@ -273,7 +273,7 @@ describe("sampleLeaves", () => {
   });
 
   test("reaching the cap ENDS the traversal, it does not just stop pushing", () => {
-    // NOTE: the cap is only a bound if it stops the walk. Counted on the LOOP, not on the leaves: with
+    // The cap is only a bound if it stops the walk. Counted on the LOOP, not on the leaves: with
     // each recursive call merely returning, the container is still enumerated end to end, which for
     // a pasted 50k-row response is the browser freezing while the operator waits. The Proxy counts
     // the index reads the traversal actually performs.

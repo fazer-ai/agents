@@ -268,7 +268,7 @@ export async function runClaimed(
     failureWritten = r;
   });
   markRunning(job.id);
-  // NOTE: the async wrapper turns a synchronous throw into a rejection, so the row always leaves the
+  // The async wrapper turns a synchronous throw into a rejection, so the row always leaves the
   // running set.
   const running = (async () =>
     handler(job, base, {
@@ -478,7 +478,7 @@ export async function runSchedulerTick(
     opts.tenantId,
   );
   await announceReaped(reaped, base);
-  // NOTE: two claims, one drain. Fixed-rate kinds take the batch; traffic-proportional ones take a
+  // Two claims, one drain. Fixed-rate kinds take the batch; traffic-proportional ones take a
   // quarter on top (../scheduler/lanes.ts, JOB_TRAFFIC_PROPORTIONAL). One claim ordered by run_at
   // would be filled by ingestion rows armed for `now`, and an appointment reminder would never be
   // claimed. A quarter suffices: every reader of a memory thread drains it first, so the tick is only
@@ -487,7 +487,7 @@ export async function runSchedulerTick(
   const providerConcurrency =
     opts.providerConcurrency ??
     sharedProviderConcurrency(config.agent.modelConcurrency);
-  // NOTE: a third claim, for the observe lane: OBSERVE's latency is read live, so it cannot wait
+  // A third claim, for the observe lane: OBSERVE's latency is read live, so it cannot wait
   // behind ingestion in the traffic share. Its limit is sized to the provider bound below, minus the
   // provider-spending rows the first two claims took, so it only spends permits the lane already had.
   const earlier = [
@@ -511,14 +511,14 @@ export async function runSchedulerTick(
       opts.tenantId,
     )),
   ];
-  // NOTE: the batch drains concurrently so short jobs do not queue behind long ones (an appointment
+  // The batch drains concurrently so short jobs do not queue behind long ones (an appointment
   // reminder must arrive before something). It gives up FIFO within a batch, which only shows when the
   // scheduler is hours behind. allSettled: runClaimed never re-throws, but a stray throw must not stall
   // the tick. Kinds that spend provider capacity go through a bound, the rest do not: bounding the whole
   // drain puts a heartbeat behind a nudge, and leaving them unbounded lets a batch hold every model
   // permit while a customer's reply waits (JOB_SPENDS_PROVIDER).
   const gate = new Semaphore(providerConcurrency);
-  // NOTE: the deadline follows the stale window THIS tick reaps with, so neither can be passed in
+  // The deadline follows the stale window THIS tick reaps with, so neither can be passed in
   // without the other.
   const deadlineMs = jobDeadlineMs(opts.staleMs);
   const settled = await Promise.allSettled(

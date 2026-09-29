@@ -315,7 +315,7 @@ describe.skipIf(!dbUp)("the eager vision pass", () => {
         toRenderable({ ...row, imageDescription: "[a.jpg] comprovante" }),
       ),
     ).toContain('<anexos-nao-lidos quantidade="10">');
-    // NOTE: without one, the tried files are still named with their cause, and the image marker does
+    // Without one, the tried files are still named with their cause, and the image marker does
     // not ask for the file on its own: one request, not two.
     const semLeitura = renderInboundMessage(toRenderable(row));
     expect(semLeitura).toContain('motivo="falha"');

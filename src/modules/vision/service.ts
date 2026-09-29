@@ -123,11 +123,11 @@ export async function extractWithRetry(args: {
   signal?: AbortSignal;
 }): Promise<VisionResult> {
   const { kind } = args.req;
-  // NOTE: A `baseURL` means the operator chose the endpoint, so the latency is their hardware's and
+  // A `baseURL` means the operator chose the endpoint, so the latency is their hardware's and
   // none of our measurements describe it — the ceiling stands down and the attempt keeps the total.
   const customEndpoint = args.req.baseURL !== null;
   const sleep = args.sleep ?? realSleep;
-  // NOTE: `performance.now`, not `Date.now`: this is a hard deadline, and a wall clock can move
+  // `performance.now`, not `Date.now`: this is a hard deadline, and a wall clock can move
   // BACKWARD (an NTP correction, a VM resuming from a snapshot — this project has seen the Docker
   // VM's clock drift after sleep). A negative elapsed would hand an attempt more than the total has
   // left. The monotonic source cannot, and only differences are read here, so its arbitrary origin
@@ -151,7 +151,7 @@ export async function extractWithRetry(args: {
     )
       break;
     if (delayMs > 0) await sleep(delayMs);
-    // NOTE: The second is the one the provider gets, and it is read AFTER the wait: `sleep` is what
+    // The second is the one the provider gets, and it is read AFTER the wait: `sleep` is what
     // a stalled or suspended process oversleeps, and a deadline computed from the nominal delay
     // would hand that process time the total no longer has.
     const budgetMs = attemptBudgetMs({
@@ -486,7 +486,7 @@ async function extractInboundOnce(
   )
     return skip("document_not_supported");
 
-  // NOTE: THE SPEND CEILING, asked here because vision runs BEFORE the webhook's gates, and only
+  // THE SPEND CEILING, asked here because vision runs BEFORE the webhook's gates, and only
   // once the call is known to be possible: a refusal must mean spend was what stood in the way, so
   // the conversion (which can refuse on its own) runs first. It announces the warning and not the
   // refusal; why is in docs/spend-ceiling.md ("Vision asks for itself").

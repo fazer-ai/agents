@@ -159,7 +159,7 @@ describe("the fleet keys section", () => {
     const fleet = screen.getByTestId("api-keys-fleet");
     expect(within(tenant).queryByText(mark) !== null).toBe(true);
     expect(within(fleet).queryByText(mark) === null).toBe(true);
-    // NOTE: the rotation guidance rides the shared Tooltip on a focusable trigger, so the keyboard
+    // The rotation guidance rides the shared Tooltip on a focusable trigger, so the keyboard
     // reaches it; never the native `title` attribute, which no keyboard or touch opens.
     const badge = within(tenant).getByText(mark);
     expect(badge.closest("button") !== null).toBe(true);

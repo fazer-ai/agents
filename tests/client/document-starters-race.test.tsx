@@ -177,7 +177,7 @@ describe("creating from a starter is one request", () => {
     return view;
   }
 
-  // NOTE: "Use" does not create: it moves to the naming step, because names are unique per account and
+  // "Use" does not create: it moves to the naming step, because names are unique per account and
   // the name is what the agent's tool is called. The request comes from Create, so that is where the
   // in-flight rules live.
   async function pickFirstStarter() {

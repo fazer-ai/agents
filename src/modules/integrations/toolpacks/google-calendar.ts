@@ -92,7 +92,7 @@ function resolveBlockingCalendarIds(config: Record<string, unknown>): string[] {
   return Array.from(new Set(ids));
 }
 
-// NOTE: whether calendar_create_event asks Google for a Meet room. ON by default: an agent that books a
+// Whether calendar_create_event asks Google for a Meet room. ON by default: an agent that books a
 // "call" must hand the customer a real meeting room, not the calendar page (htmlLink). Operators who
 // use the calendar purely as a busy-block turn it off in the integration config. When the connected
 // account cannot create Meet rooms, Google keeps the event and just omits the conference (no error).
@@ -439,7 +439,7 @@ async function gcalFetch(
   const assertSafe = ctx.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(url);
   const doFetch = ctx.fetchImpl ?? fetch;
-  // NOTE: The cap is on what is READ, not a slice of what was already read: `.text()` buffers the
+  // The cap is on what is READ, not a slice of what was already read: `.text()` buffers the
   // whole body before any limit applies.
   const { res, body } = await fetchBounded(
     url,
@@ -697,14 +697,14 @@ async function readBusySources(
   token: string,
   ctx: ToolpackCtx,
 ): Promise<BusySources> {
-  // NOTE: freeBusy takes N calendars per request and keys the answer by id, so the whole clinic
+  // freeBusy takes N calendars per request and keys the answer by id, so the whole clinic
   // costs at most five requests (see FREEBUSY_BATCH_SIZE and MAX_AGGREGATE_CALENDARS), not one
   // per professional the way the model had to do it before.
   const batches: string[][] = [];
   for (let i = 0; i < calendarIds.length; i += FREEBUSY_BATCH_SIZE) {
     batches.push(calendarIds.slice(i, i + FREEBUSY_BATCH_SIZE));
   }
-  // NOTE: allSettled, not all: gcalFetch THROWS on a timeout or a network error, and a single
+  // allSettled, not all: gcalFetch THROWS on a timeout or a network error, and a single
   // rejection would discard every batch that answered fine. Non-2xx already degraded per batch;
   // a thrown one has to degrade the same way or the contract is a coin flip on failure mode.
   // Concurrency needs no separate bound: MAX_AGGREGATE_CALENDARS caps this at five requests.
@@ -726,7 +726,7 @@ async function readBusySources(
       ),
     ),
   );
-  // NOTE: A batch that failed contributes no entries, so its calendars fall through the same
+  // A batch that failed contributes no entries, so its calendars fall through the same
   // "unreadable" path as a calendar Google refused individually. Only a total failure surfaces
   // the HTTP status, which keeps the single-batch case answering exactly as it always did.
   const calendars: Record<string, unknown> = {};
@@ -765,7 +765,7 @@ async function readBusySources(
       ),
     };
   }
-  // NOTE: Per-calendar outcome. freeBusy answers 200 and reports a calendar it could not read as a
+  // Per-calendar outcome. freeBusy answers 200 and reports a calendar it could not read as a
   // per-calendar `errors` array (a revoked share, a deleted calendar), so the failure is INSIDE a
   // successful response. Such a calendar is dropped, never carried with an empty busy list: empty
   // busy means "free all day", and offering a professional whose bookings we cannot see is a
@@ -1286,7 +1286,7 @@ function buildCreateEventTool(
           logger.warn({ err }, "gcal: meet-link re-read failed");
         }
       }
-      // NOTE: Tell the platform an appointment now stands here (best-effort; unwired on the
+      // Tell the platform an appointment now stands here (best-effort; unwired on the
       // playground). The reminder POLICY comes from THIS integration's config; the RECORD is
       // written either way, because the follow-up pause, the console indicator and the agent's
       // prompt read it. startISO from the canonical response, then the input.
@@ -1379,7 +1379,7 @@ function buildUpdateEventTool(
       }
       const ownerEv = (owner.json ?? {}) as Record<string, unknown>;
       if (eventStamp(ownerEv) !== stamp) return FOREIGN_EVENT;
-      // NOTE: A move is judged by the same rule a create is, and only a move. "A move" is the
+      // A move is judged by the same rule a create is, and only a move. "A move" is the
       // INSTANTS differing, not the fields being present: a caller resending the current times
       // while renaming would otherwise be refused for a past time, the minimum notice, or
       // since-changed service hours.

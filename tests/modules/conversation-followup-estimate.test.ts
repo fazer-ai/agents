@@ -242,7 +242,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
     });
     convBusinessHours = c3.id;
 
-    // NOTE: Same business-hours agent, with a PENDING FOLLOWUP job whose runAt is outside the
+    // Same business-hours agent, with a PENDING FOLLOWUP job whose runAt is outside the
     // window: what the sweep leaves behind (it enqueues step 0 with runAt=now and re-arms it every
     // pass) until the worker claims and reschedules it. The estimate is still pushed to the next
     // open window, never the job's raw runAt.
@@ -514,7 +514,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       startISO: new Date(Date.now() + 2 * 3_600_000).toISOString(),
     });
 
-    // NOTE: A third persona whose opt-out is PER STEP: step 0 fires through an appointment (a
+    // A third persona whose opt-out is PER STEP: step 0 fires through an appointment (a
     // payment-deadline chase), step 1 does not (ordinary re-engagement). The agent-wide
     // `pauseWhileAppointment` stays ON, which is the whole point.
     const stepOptOutAgent = await suDb.agent.create({
@@ -600,7 +600,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       },
     });
 
-    // NOTE: A new episode opened by OUR reply. The inbound webhook cancels the pending job when the
+    // A new episode opened by OUR reply. The inbound webhook cancels the pending job when the
     // customer opens an episode, but our reply (a re-enable, for example) cancels nothing, so the
     // late-step job stays pending while the handler already drops it as a new episode. The console
     // has to reach the same answer.
@@ -633,7 +633,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       },
     });
 
-    // NOTE: The countdown starts from OUR reply when it is newer than the mirrored event.
+    // The countdown starts from OUR reply when it is newer than the mirrored event.
     // `lastEventAt` comes from Chatwoot and only advances when our message's webhook returns; a
     // conversation recovered from the backlog has it days old, and a console measuring from it
     // shows an overdue follow-up to a customer who was just answered.
@@ -661,7 +661,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       RESPONDIDA_AS.getTime() + 2 * 60_000,
     ).toISOString();
 
-    // NOTE: The same floor for a PROACTIVE send. A reminder that just went out (whose webhook has
+    // The same floor for a PROACTIVE send. A reminder that just went out (whose webhook has
     // not returned) is the latest thing in the conversation, and the console counts from it, as the
     // handler and the sweep do.
     const PROATIVO_AS = new Date("2026-06-18T23:30:00Z");
@@ -687,7 +687,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       PROATIVO_AS.getTime() + 2 * 60_000,
     ).toISOString();
 
-    // NOTE: Both states at once: the operator shortened the sequence (the pending job points at a
+    // Both states at once: the operator shortened the sequence (the pending job points at a
     // step that no longer exists) AND our reply opened a new episode. "Nothing scheduled" is right
     // for the old job and wrong for the conversation: the sweep restarts from step 0 and the
     // console says so.
@@ -720,7 +720,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
       },
     });
 
-    // NOTE: A PENDING job the handler drops at claim time. A multi-step sequence leaves one armed
+    // A PENDING job the handler drops at claim time. A multi-step sequence leaves one armed
     // between steps with runAt days out, and nothing cancels it when the ground shifts.
     const twoStepSettings = {
       followUp: {
@@ -1047,7 +1047,7 @@ describe.skipIf(!dbUp)("getConversationDetail — follow-up estimate", () => {
         payload: { threadId: `${tenant}:${inst}:355`, stepIndex: 1 },
       },
     });
-    // NOTE: The ESTIMATOR's activation fence, the branch where suppressing the doomed job lands.
+    // The ESTIMATOR's activation fence, the branch where suppressing the doomed job lands.
     // The persona was armed after this conversation's last movement, so the sweep never enqueues
     // anything here and the screen cannot promise a step. Without this fixture, removing the fence
     // fails nothing.

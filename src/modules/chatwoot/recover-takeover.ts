@@ -106,7 +106,7 @@ export async function recoverStrandedTakeover(
   if (!row || row.conversationId === null) return "not-owed";
   const instanceId = row.chatwootInstanceId;
   const conversationId = row.conversationId;
-  // NOTE: ONE reading of the column, handed to the resolver rather than checked twice: an unknown
+  // ONE reading of the column, handed to the resolver rather than checked twice: an unknown
   // shape and none recorded are the same answer, and `resolveHumanReplyRoute` gives it for `null`.
   // This is the TYPE gate, not a runtime one (the resolver compares against the two literals, and a
   // mutation deleting this narrowing leaves the suite green); it keeps a raw String out of a typed
@@ -195,7 +195,7 @@ export async function recoverStrandedTakeover(
   if (bound.mode !== "production") return "not-owed";
   if (!readTakeoverConfig(bound.settings).onHumanReply) return "not-owed";
 
-  // NOTE: the route's bot, carried on the row, because ownership is asked ABOUT an identity and the
+  // The route's bot, carried on the row, because ownership is asked ABOUT an identity and the
   // two routes differ: Chatwoot fans a message to the conversation's assignee bot and the inbox's,
   // and only the route holding the conversation passes the gate, so an identity from the inbox would
   // refuse the takeover on a conversation another persona's bot holds. Rows an older build wrote carry
@@ -212,7 +212,7 @@ export async function recoverStrandedTakeover(
   // person who opened it left Chatwoot `open`). `pending` as the replaced status says this `open`
   // came from this takeover rather than from some other claim.
   if (bound.status === "open" && bound.statusClaimFrom === "pending") {
-    // NOTE: FINISHING rather than deciding, through the SAME unit and not a second copy of it: asked
+    // FINISHING rather than deciding, through the SAME unit and not a second copy of it: asked
     // again, the ownership fence would read our own write as somebody else's and stand down, the job
     // would complete as an answer, and the delete-on-done row would take the only recovery with it.
     const finished = await runHumanReplyTakeover({
@@ -247,7 +247,7 @@ export async function recoverStrandedTakeover(
     return "recovered";
   }
 
-  // NOTE: a cheap first look, not the fence. The fence is inside the unit below and reads Chatwoot
+  // A cheap first look, not the fence. The fence is inside the unit below and reads Chatwoot
   // before it decides; this is the mirror answering the same question for free, so a conversation
   // somebody already moved on costs a query instead of an HTTP round trip. It can only ever refuse:
   // what it lets through is re-asked, of Chatwoot and of the mirror both, one statement before the write.

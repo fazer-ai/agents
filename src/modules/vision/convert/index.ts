@@ -132,7 +132,7 @@ function heicHeader(bytes: ArrayBuffer): HeicHeader {
   // NOTE: the box before the brand: a JPEG whose first marker is a comment can carry "heic" at
   // offset 8, and reading the brand alone would call it a broken HEIC and skip a readable file.
   if (ascii(bytes, 4) !== "ftyp") return { kind: "not-ftyp" };
-  // NOTE: with `size == 1` the real size occupies the next 64 bits, so the brand sits at 16 and
+  // With `size == 1` the real size occupies the next 64 bits, so the brand sits at 16 and
   // offset 8 holds the high half of a length.
   const header = new DataView(bytes).getUint32(0) === 1 ? 16 : 8;
   if (bytes.byteLength < header + 4) return { kind: "too-short" };
@@ -170,7 +170,7 @@ export function storedPixels(bytes: ArrayBuffer): number {
     while (i + 8 <= end) {
       const declared = v.getUint32(i);
       const type = ascii(bytes, i + 4);
-      // NOTE: the three ways a BMFF box states its size; stopping at `size == 1` would find no ispe
+      // The three ways a BMFF box states its size; stopping at `size == 1` would find no ispe
       // and hand the cap back to the cropped dimensions.
       //   0  the box runs to the end of the file
       //   1  the real size is the 64-bit value after the type
@@ -222,7 +222,7 @@ async function heicToJpeg(
     );
   const open = opts.withFrames ?? withHeicFrames;
   return await open(bytes, async (frames: readonly HeicFrame[]) => {
-    // NOTE: the PRIMARY image (`pitm`), not the first: libheif returns a collection in storage
+    // The PRIMARY image (`pitm`), not the first: libheif returns a collection in storage
     // order, and unlike a GIF's frames these are separate pictures with one designated. The fallback
     // to the first is unreachable with this libheif (a file without `pitm` yields zero images); it
     // keeps "carries no image frame" from being thrown about a file that has frames.
@@ -242,7 +242,7 @@ async function heicToJpeg(
       throw new MediaConversionError(
         "heic does not declare the size it stores, so the pixel cap cannot be applied",
       );
-    // NOTE: both numbers come from `ispe`, while decode cost comes from the HEVC bitstream. libheif
+    // Both numbers come from `ispe`, while decode cost comes from the HEVC bitstream. libheif
     // refuses coded dimensions that disagree with the signalled ones BEFORE decoding; that is the
     // dependency's property, pinned by a test.
     const pixels = Math.max(width * height, stored);

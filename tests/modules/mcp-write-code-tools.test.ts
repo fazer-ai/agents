@@ -302,7 +302,7 @@ describe.skipIf(!dbUp)("MCP code-tool tools (DB)", () => {
   });
 
   test("a rename the apply would refuse is refused by the dry run too, and keeping your own name is not a collision", async () => {
-    // NOTE: The one field of a patch whose verdict is not in the payload: without the availability check the
+    // The one field of a patch whose verdict is not in the payload: without the availability check the
     // preview would answer a confident diff for a write that always fails.
     const p = principal({ tenantId: tenantA });
     const row = await suDb.codeToolDefinition.findFirstOrThrow({
@@ -348,7 +348,7 @@ describe.skipIf(!dbUp)("MCP code-tool tools (DB)", () => {
   });
 
   test("a preview shows the values the apply would store, not the ones that were typed", async () => {
-    // NOTE: The parser trims the label and the description, so a preview echoing the raw arguments would
+    // The parser trims the label and the description, so a preview echoing the raw arguments would
     // promise a row the apply writes differently.
     const p = principal({ tenantId: tenantA });
     const padded = {

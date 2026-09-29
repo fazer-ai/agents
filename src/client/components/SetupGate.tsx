@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router";
 import { useAuth } from "@/client/contexts/AuthContext";
 
-// NOTE: Funnels traffic to /setup while the instance has no users (so the first
+// Funnels traffic to /setup while the instance has no users (so the first
 // account is always created as ADMIN there), and bounces off /setup once setup
 // is done. Auth data is already loaded when this renders (AuthProvider holds the
 // splash until loading resolves), so the synchronous <Navigate> causes no

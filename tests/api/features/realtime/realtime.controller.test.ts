@@ -8,7 +8,7 @@ const { realtimeController } = await import(
   "@/api/features/realtime/realtime.controller"
 );
 
-// NOTE: tests/setup.ts captures Bun's native WebSocket and Response classes
+// tests/setup.ts captures Bun's native WebSocket and Response classes
 // before happy-dom replaces them globally. Bun.serve needs the native
 // Response (happy-dom's spec one is unrecognized by Bun's TCP layer);
 // WebSocket tests need the Bun-only `{ headers }` constructor option that
@@ -22,7 +22,7 @@ const BunWebSocket = nativeGlobals.BunWebSocket;
 const BunResponse = nativeGlobals.BunResponse;
 const happyResponse = globalThis.Response;
 
-// NOTE: `Elysia.listen()` returns the Elysia instance whose runtime shape
+// `Elysia.listen()` returns the Elysia instance whose runtime shape
 // exposes the underlying `Bun.Server` via `.server`, but TS surfaces a wider
 // type that doesn't include `server`. Cast at the boundary.
 interface ListeningApp {
@@ -53,7 +53,7 @@ function tryConnect(
   extraHeaders: Record<string, string> = {},
 ): Promise<{ opened: boolean; closeCode: number }> {
   return new Promise((resolve, reject) => {
-    // NOTE: Bun extends WebSocket constructor with a `{ headers }` option.
+    // Bun extends WebSocket constructor with a `{ headers }` option.
     // Not part of the WHATWG WebSocket type, so we cast through `any`.
     const WS = BunWebSocket as unknown as new (
       url: string,

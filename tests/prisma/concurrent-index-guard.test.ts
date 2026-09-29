@@ -60,7 +60,7 @@ function sweep(files: File[]): {
     )) {
       builds.set(m[1] as string, name); // sorted, so the last write is the last build
     }
-    // NOTE: over `statementsOf`, the only right view here. Not `codeOf` (nor the DO-body-stripping
+    // Over `statementsOf`, the only right view here. Not `codeOf` (nor the DO-body-stripping
     // sweep in tenant-index-redundancy.test.ts): the table name lives in a string literal those strip.
     // Not raw SQL: a later file holding the check only IN A COMMENT would satisfy the fence.
     const declared = statementsOf(sql);
@@ -73,7 +73,7 @@ function sweep(files: File[]): {
   }
   const unguarded: string[] = [];
   for (const [table, lastBuild] of builds) {
-    // NOTE: LATER, not merely present: a guard before the build asks about a table the index is not on
+    // LATER, not merely present: a guard before the build asks about a table the index is not on
     // yet, and it can never be the same file, since a `DO $$` block puts the migration in an implicit
     // transaction, which `CREATE INDEX CONCURRENTLY` cannot share.
     const after = (asserts.get(table) ?? []).filter((a) => a > lastBuild);
@@ -291,7 +291,7 @@ describe("the concurrent-index guard", () => {
     expect(statements).toContain(
       "resolve --rolled-back 20260921120000_assert_conversation_indexes_valid",
     );
-    // NOTE: the message is a SEQUENCE of four steps, not a fork. With the final `resolve` inside one
+    // The message is a SEQUENCE of four steps, not a fork. With the final `resolve` inside one
     // branch, the other re-deploys into `P3009`; with exclusive branches, an index abandoned beside an
     // unrelated live build is waited on and never repaired, because the two states coexist.
     const steps = ["STEP 1", "STEP 2", "STEP 3", "STEP 4"].map((s) =>
@@ -322,7 +322,7 @@ describe("the concurrent-index guard", () => {
   });
 
   describe.skipIf(!dbUp)("against the catalog", () => {
-    // NOTE: a run that dies mid-forge leaves the probe index (disposable) and the REAL index invalid
+    // A run that dies mid-forge leaves the probe index (disposable) and the REAL index invalid
     // (not: the guard test would fail on debris instead of on the code). Reindexing it is the command
     // the message tells an operator to run, and it is idempotent on a valid index.
     const limpar = async () => {
@@ -379,7 +379,7 @@ describe("the concurrent-index guard", () => {
     });
 
     test("a REINDEX cannot save a unique index whose data violates it", async () => {
-      // NOTE: why the message carries that clause: on the index a duplicate-key build leaves, REINDEX
+      // Why the message carries that clause: on the index a duplicate-key build leaves, REINDEX
       // fails the same way AND adds a second invalid index (`..._ccnew`). On a scratch table of its own,
       // so nothing is forged on the real one.
       const T = "conversations_unique_reindex_probe";
@@ -415,7 +415,7 @@ describe("the concurrent-index guard", () => {
         // NOTE: ...and it leaves a SECOND corpse.
         expect(await dead()).toEqual([`${T}_v_idx`, `${T}_v_idx_ccnew`]);
 
-        // NOTE: the guarded index is non-unique, where the precondition always holds, and the test below
+        // The guarded index is non-unique, where the precondition always holds, and the test below
         // exercises that path on the real one.
         const real = await suDb.query<{ uniq: boolean }>(
           `SELECT i.indisunique AS uniq
@@ -430,7 +430,7 @@ describe("the concurrent-index guard", () => {
     });
 
     test("the recovery the message names gives the index back, not just a green deploy", async () => {
-      // NOTE: running the guard's SQL proves it raises, not that its sentence leads anywhere. Behind the
+      // Running the guard's SQL proves it raises, not that its sentence leads anywhere. Behind the
       // `--applied` door the build file never runs again, so an operator who drops the dead index ends
       // with NO index on this prefix and a green deploy. Exercised here on the REAL index.
       const guard = readFileSync(ASSERT_FILE, "utf8");

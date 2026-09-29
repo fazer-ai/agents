@@ -1,4 +1,4 @@
-// NOTE: Close codes for WebSocket connections. Pre-upgrade failures (e.g. a
+// Close codes for WebSocket connections. Pre-upgrade failures (e.g. a
 // 401 from `requireAuth`) surface in the browser as `CloseEvent.code: 1006`
 // regardless and cannot be customized. The custom 4xxx codes apply only when
 // the server closes the socket after the upgrade has succeeded.

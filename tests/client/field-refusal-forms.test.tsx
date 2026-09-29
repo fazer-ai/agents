@@ -153,7 +153,7 @@ test("a refusal about no input at all still reaches the operator", async () => {
 });
 
 test("a refusal that lands after the dialog is dismissed is still read out", () => {
-  // NOTE: the half a mounted check cannot answer. `useModalController` keeps this wrapper mounted
+  // The half a mounted check cannot answer. `useModalController` keeps this wrapper mounted
   // when the dialog closes, so the in-flight save comes back to a live component and a dismissed
   // form; placing the mark there, or handing the caller a sentence for that error line, are two
   // spellings of the same silence.

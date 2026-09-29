@@ -160,7 +160,7 @@ export async function summarizeAttendance(
   // remember. That is a legitimate empty summary, not a failure, so it must not carry `error`.
   if (!transcript.trim()) return { summary: "" };
 
-  // NOTE: held so `signal.aborted` can be read afterwards, the only reading of "it timed out" that
+  // Held so `signal.aborted` can be read afterwards, the only reading of "it timed out" that
   // does not come from someone else's error. `runModelCall` makes a signal per attempt after waiting
   // on the model semaphore (a signal made outside would spend its budget queueing), so this holds the
   // LAST attempt's signal, the one the error came from.

@@ -269,7 +269,7 @@ function mergeToolKeyedBlock(
   before: Record<string, unknown>,
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
-  // NOTE: An ARRAY prior is not a map (the reader ignores it whole), and enumerating it would yield
+  // An ARRAY prior is not a map (the reader ignores it whole), and enumerating it would yield
   // index keys; dropping it lets the patch repair the block.
   const prior = Array.isArray(before) ? {} : before;
   // NULL-PROTOTYPE, for the reason the runtime map is: a tool name is operator text, and `__proto__`
@@ -308,7 +308,7 @@ export function mergeBehaviorSettings(
     next[key] = TOOL_KEYED_BLOCKS.has(key)
       ? mergeToolKeyedBlock(before, sub)
       : mergeBlock(before, sub);
-    // NOTE: A value that is ONE decision (the contact gate's `kind`-tagged rule) is replaced, never
+    // A value that is ONE decision (the contact gate's `kind`-tagged rule) is replaced, never
     // merged into, or the stored rule would keep fields of the old one.
     const atomic = ATOMIC_FIELDS[key];
     if (atomic) {
@@ -322,7 +322,7 @@ export function mergeBehaviorSettings(
     }
   }
 
-  // NOTE: Write the normalized blocks back, derived from the key list so a new block cannot miss it.
+  // Write the normalized blocks back, derived from the key list so a new block cannot miss it.
   // The exceptions are handled after the loop.
   const normalized = readBehaviorSettings(next) as unknown as Record<
     string,

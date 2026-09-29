@@ -166,7 +166,7 @@ export async function fetchImageForDelivery(
 
   const body = res.body;
   if (!body) return { ok: false, reason: "not_an_image" };
-  // NOTE: Counted while reading and aborted past the cap — a content-length header is the same
+  // Counted while reading and aborted past the cap — a content-length header is the same
   // server's claim about itself, and a chunked response carries none at all.
   const chunks: Uint8Array[] = [];
   let total = 0;

@@ -265,7 +265,7 @@ describe.skipIf(!dbUp)("the mirrored first-response SLA", () => {
   });
 
   test("a conversation the mirror first meets mid-dialogue keeps the source's numbers", async () => {
-    // NOTE: no conversation_created is delivered here: an Agent Bot never gets one. The row is born
+    // No conversation_created is delivered here: an Agent Bot never gets one. The row is born
     // from a message that is NOT the conversation's first, and the readings it carries are still the
     // whole conversation's, because Chatwoot computed them from its messages table.
     const convId = 9812;

@@ -79,7 +79,7 @@ function normalizeTupleItems(node: unknown, depth = 0): unknown {
   const source = node as Record<string, unknown>;
   const isTuple = Array.isArray(source.items);
   const hasPrefixItems = "prefixItems" in source;
-  // NOTE: null prototype because the keys come from a third-party schema. `out.__proto__ = x` on a
+  // Null prototype because the keys come from a third-party schema. `out.__proto__ = x` on a
   // normal object runs the prototype setter instead of creating an own key, so a parameter legally
   // named `__proto__` would vanish from the declaration while `required` still demanded it.
   const out: Record<string, unknown> = Object.create(null);

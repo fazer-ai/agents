@@ -453,7 +453,7 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       select: { id: true },
     });
     foreignTeamAgentId = foreignTeam.id;
-    // NOTE: the reuse mode: a positive verdict is stored per contact and reused until it expires,
+    // The reuse mode: a positive verdict is stored per contact and reused until it expires,
     // so a burst of messages costs the operator's endpoint one lookup instead of five.
     const once = await suDb.agent.create({
       data: {
@@ -684,7 +684,7 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     // a varredura a encontra.
     expect(erro).not.toBe(null);
     expect(status).toBe("PROCESSING");
-    // NOTE: the watermark did not pass it either: a watermark above a message no memory holds hides
+    // The watermark did not pass it either: a watermark above a message no memory holds hides
     // the loss. The refusal to REPLY is written apart, at the gate (a dispensation per id), and that
     // is what keeps the business-hours flush from answering the silenced message.
     const conv = await suDb.conversation.findFirstOrThrow({

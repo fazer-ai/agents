@@ -1370,7 +1370,7 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   // console never produces. `unversionedReads` reaches that branch, which on a Chatwoot older than
   // 4.0.2 (no `updated_at` rendered) is every path.
   describe("an unversioned hand-back outranks a reply frozen before it", () => {
-    // NOTE: the click, with the delivery's payload captured BEFORE it: Chatwoot serialized the
+    // The click, with the delivery's payload captured BEFORE it: Chatwoot serialized the
     // reply, then the operator clicked, then the reply arrived.
     async function handBack(convId: number): Promise<string> {
       const row = await convRow(convId);

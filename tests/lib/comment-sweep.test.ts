@@ -11,6 +11,7 @@ import {
   renderLedger,
   staleEntries,
   sweptFiles,
+  taggedDocstrings,
 } from "@/tests/utils/comment-blocks";
 import { COMMENT_LEDGER } from "./comment-ledger";
 
@@ -198,6 +199,112 @@ describe("the line ceiling", () => {
     expect(commentBlocks("// we translate here before sending")).toHaveLength(
       1,
     );
+  });
+});
+
+describe("a comment above a declaration documents it, and takes no NOTE:", () => {
+  test("a tagged comment directly above a statement that declares a name", () => {
+    for (const decl of [
+      "const LIMIT = 3;",
+      "  let pending = 0;",
+      "export function run() {}",
+      "export default async function main() {}",
+      "export async function* rows() {}",
+      "class Queue {}",
+      "export abstract class Base {}",
+      "interface Row { id: number }",
+      "export type Id = string;",
+      "type Pair<T> = [T, T];",
+      "enum Mode { A }",
+      "declare const VERSION: string;",
+      "  const { a, b } = pick();",
+      "  const [first] = rows;",
+    ]) {
+      expect(taggedDocstrings(`// NOTE: why it exists.\n${decl}\n`)).toEqual([
+        1,
+      ]);
+    }
+    expect(
+      taggedDocstrings(
+        "/* NOTE: a block comment\n   over two lines */\nconst x = 1;\n",
+      ),
+    ).toEqual([1]);
+    expect(
+      taggedDocstrings(
+        "// NOTE: the first line carries the tag,\n// and the block ends here.\nconst x = 1;\n",
+      ),
+    ).toEqual([1]);
+  });
+
+  test("a directive between the docstring and the declaration does not hide it", () => {
+    expect(
+      taggedDocstrings(
+        "// NOTE: why it exists.\n// biome-ignore lint/x: reason\nconst x = 1;\n",
+      ),
+    ).toEqual([1]);
+    expect(
+      taggedDocstrings(
+        "// NOTE: the keys below.\n// t('a.b', 'A')\nconst x = 1;\n",
+      ),
+    ).toEqual([1]);
+  });
+
+  test("a trailing comment on the line above does not hide the run below it", () => {
+    expect(
+      taggedDocstrings(
+        "run(); // the call\n// NOTE: why it exists.\nconst x = 1;\n",
+      ),
+    ).toEqual([2]);
+  });
+
+  test("a comment-looking string is not a comment", () => {
+    expect(
+      taggedDocstrings("const a = `\n// NOTE: text\n`;\nconst x = 1;\n"),
+    ).toEqual([]);
+  });
+
+  test("an aside above a statement keeps its tag", () => {
+    for (const stmt of [
+      "  await flush();",
+      "  return rows;",
+      "  for (const row of rows) {}",
+      "  if (done) return;",
+      "  type = next;",
+      "  constant = 1;",
+      "  letters.push(x);",
+      "  classify(row);",
+    ]) {
+      expect(taggedDocstrings(`// NOTE: why.\n${stmt}\n`)).toEqual([]);
+    }
+  });
+
+  test("an untagged docstring, a trailing comment, a gap and a waiver are left alone", () => {
+    expect(taggedDocstrings("// Why it exists.\nconst x = 1;\n")).toEqual([]);
+    expect(taggedDocstrings("run(); // NOTE: aside\nconst x = 1;\n")).toEqual(
+      [],
+    );
+    expect(
+      taggedDocstrings("// NOTE: about the call above.\n\nconst x = 1;\n"),
+    ).toEqual([]);
+    expect(
+      taggedDocstrings(
+        "// NOTE: kept on purpose. comment-waiver: quoted by a test\nconst x = 1;\n",
+      ),
+    ).toEqual([]);
+    expect(taggedDocstrings("// TODO: split it.\nconst x = 1;\n")).toEqual([]);
+  });
+
+  test("no file in the tree tags a docstring", async () => {
+    const hits: string[] = [];
+    let scanned = 0;
+    for (const path of await sweptFiles()) {
+      const src = await Bun.file(path).text();
+      scanned += src.includes("NOTE:") ? 1 : 0;
+      for (const line of taggedDocstrings(src)) hits.push(`${path}:${line}`);
+    }
+    expect(hits).toEqual([]);
+    // NOTE: a scan that stopped finding files would pass the same way.
+    expect(scanned).toBeGreaterThan(500);
   });
 });
 

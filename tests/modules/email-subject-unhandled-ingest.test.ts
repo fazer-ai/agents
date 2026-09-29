@@ -193,7 +193,7 @@ describe.skipIf(!dbUp)("the email nobody answered still reaches memory", () => {
   });
 
   test("the text folded in is the text a turn would have read", async () => {
-    // NOTE: The reason this call site asks the shared mapping instead of spelling the shape a third time:
+    // The reason this call site asks the shared mapping instead of spelling the shape a third time:
     // memory and the turn must not describe the same message differently.
     const n = inboundEmail(6102, {
       content: "Enviado do meu iPhone",

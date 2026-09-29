@@ -213,7 +213,7 @@ export async function sendAlert(
     return stopped("url", alertErrMsg(err));
   }
 
-  // NOTE: Optional HMAC secret (generic webhook), resolved through a tenant-scoped read. A ref that
+  // Optional HMAC secret (generic webhook), resolved through a tenant-scoped read. A ref that
   // names nothing (deleted, or created and never filled) yields no secret and the send goes out
   // UNSIGNED rather than holding the alert back; `unsignedReason` carries which case it was.
   let secret: string | null = null;

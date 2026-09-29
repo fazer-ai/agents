@@ -180,7 +180,7 @@ describe("media annotations (issue #49)", () => {
       { transcribedText: "no limite" },
       t0,
     );
-    // NOTE: This is the instant the scheduled sweep wakes at; a strict `>` would keep the entry and
+    // This is the instant the scheduled sweep wakes at; a strict `>` would keep the entry and
     // re-arm a zero-delay timer forever instead of deleting it.
     const boundary = t0 + 15 * 60_000;
     const rows = [row({ id: 1 })];

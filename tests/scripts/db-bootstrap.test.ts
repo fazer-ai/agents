@@ -656,7 +656,7 @@ describe("planRoleProvisioning", () => {
     const source = await Bun.file(
       new URL("../../scripts/db-bootstrap.ts", import.meta.url).pathname,
     ).text();
-    // NOTE: Every gate, not "the" gate: a second gate arriving is not the thing to make red. The rule
+    // Every gate, not "the" gate: a second gate arriving is not the thing to make red. The rule
     // is that a 16-only spelling sits inside SOME `>= 160000` branch, so the ranges are collected.
     const gates: Array<[number, number]> = [];
     const gateRe = /if\s*\([^)]*>=\s*160000\)\s*\{/g;
@@ -775,7 +775,7 @@ describe.skipIf(!dbUp)(
         `CREATE ROLE ${ADMIN_ROLE} LOGIN PASSWORD '${ADMIN_PW}' CREATEROLE NOSUPERUSER NOBYPASSRLS`,
       );
       await db.query(`CREATE DATABASE ${PROBE_DB} OWNER ${ADMIN_ROLE}`);
-      // NOTE: pgvector is installed here by the SUPERUSER on purpose. `CREATE EXTENSION` is a separate
+      // Pgvector is installed here by the SUPERUSER on purpose. `CREATE EXTENSION` is a separate
       // privilege question with a separate answer (on RDS the master user may install it; a
       // non-superuser on a plain server may not), and not what this file measures. Leaving it out would
       // fail the script one statement earlier, on something unrelated.
@@ -1375,7 +1375,7 @@ describe.skipIf(!dbUp)(
       const { exitCode, stdout, stderr } = await runBootstrap(ROTATED_PW);
       expect(exitCode).toBe(0);
 
-      // NOTE: partial, and deliberately so: an administrator may only set an attribute it holds itself,
+      // Partial, and deliberately so: an administrator may only set an attribute it holds itself,
       // and this one has CREATEROLE and not CREATEDB. One statement each is what makes the half it
       // CAN do still happen; a combined statement would lose both to the one it is refused.
       const after = await onProbe(
@@ -1437,7 +1437,7 @@ describe.skipIf(!dbUp)(
       );
       expect(exitCode).toBe(0);
 
-      // NOTE: it skipped the schema rather than pretending: what makes that safe is that the runtime
+      // It skipped the schema rather than pretending: what makes that safe is that the runtime
       // role can create it itself, which is exactly what PostgresSaver.setup() does at boot.
       const before = await onProbe(
         superuserOnProbe,
@@ -1570,7 +1570,7 @@ describe.skipIf(!dbUp)(
       expect(exitCode).toBe(0);
       expect(`${stdout}${stderr}`).toContain("does not own");
 
-      // NOTE: to the effect, not to the exit code — the runtime role reads the table the
+      // To the effect, not to the exit code — the runtime role reads the table the
       // checkpointer reads first and writes the one it writes, on a table it does not own.
       const state = await onProbe(
         urlFor(APP_ROLE, ROTATED_PW, PROBE_DB),
@@ -1653,7 +1653,7 @@ describe.skipIf(!dbUp)(
       expect(exitCode).toBe(0);
       expect(`${stdout}${stderr}`).toContain("does not own");
 
-      // NOTE: not owned, but usable: the checkpointer's first read and its write both go through.
+      // Not owned, but usable: the checkpointer's first read and its write both go through.
       const worked = await onProbe(
         urlFor(UNREACHABLE_ROLE, APP_PW, PROBE_DB),
         async (c) => {
@@ -1796,7 +1796,7 @@ describe.skipIf(!dbUp)(
         await reader.query("BEGIN");
         await reader.query("SELECT v FROM langgraph.checkpoint_migrations");
 
-        // NOTE: PGOPTIONS reaches the subprocess's own session, so an ALTER that queues behind the
+        // PGOPTIONS reaches the subprocess's own session, so an ALTER that queues behind the
         // reader fails in seconds instead of hanging the suite.
         const started = Date.now();
         const { exitCode } = await runBootstrap(ROTATED_PW, APP_ROLE, {
@@ -1975,7 +1975,7 @@ describe.skipIf(!dbUp)(
       expect(`${stdout}${stderr}`).not.toContain("makes RLS a no-op");
       expect(exitCode).toBe(0);
 
-      // NOTE: to the catalog, because the catalog IS the effect here — RLS being enforced for this
+      // To the catalog, because the catalog IS the effect here — RLS being enforced for this
       // role is exactly "these two columns are false", and the boot guard reads the same ones.
       const attrs = (
         await db.query(

@@ -90,7 +90,7 @@ describe("stillWanted strictness, per call site", () => {
     },
   );
 
-  // NOTE: The claim waits out an append's lease and the row lock /reset holds, so the ask that
+  // The claim waits out an append's lease and the row lock /reset holds, so the ask that
   // authorizes the writes must come AFTER it; a strict ask in the wrong position fails silently. A
   // source walk because the call site in `runLoadedTurn` is not reachable from a test (the webhook
   // path passes `stillWanted: null`, the debounce job goes through the whole handler).

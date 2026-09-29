@@ -72,7 +72,7 @@ describe.skipIf(!dbUp)("a precondition refusal does not page anyone", () => {
     base: suDb,
   });
 
-  // NOTE: Built by the PRODUCTION constructor, not written out here. A hand-written literal would keep
+  // Built by the PRODUCTION constructor, not written out here. A hand-written literal would keep
   // passing after the mapping it is supposed to measure was changed — the level is exactly the field
   // under test, so a second copy of it is the one thing this file must not contain.
   const cond: ToolPrecondition = {

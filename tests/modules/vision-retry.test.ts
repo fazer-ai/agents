@@ -607,7 +607,7 @@ describe.skipIf(!dbUp)("vision retry", () => {
       if (rows.length < VISION_MAX_ATTEMPTS)
         await new Promise((r) => setTimeout(r, 20));
     }
-    // NOTE: sorted BY `attempt`, not row order: `emitFlowEvent` is fire-and-forget, so one turn's
+    // Sorted BY `attempt`, not row order: `emitFlowEvent` is fire-and-forget, so one turn's
     // lines race to the table and their ids do not carry the order. `attempt` does, which is why it
     // is on the line, and every positional assertion below reads this ordering.
     const details = rows

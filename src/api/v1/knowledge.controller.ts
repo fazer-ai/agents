@@ -181,7 +181,7 @@ export const knowledgeController = new Elysia({
       const ctx = ctxOrThrow(tenantContext);
       const id = requireDbId(params.id);
       const kb = await getKnowledgeBase({ ctx, id });
-      // NOTE: the base's help center source, if it has one: its config and the last run's outcome,
+      // The base's help center source, if it has one: its config and the last run's outcome,
       // which is where an operator reads a failed or suspicious sync.
       const source = await getSource(ctx, id);
       return {

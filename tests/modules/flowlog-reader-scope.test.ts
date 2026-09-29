@@ -61,7 +61,7 @@ function splitTopLevel(s: string): string[] {
 // one silently hands it the exemption. A marker on the call site moves with the call site.
 const MARKER = /\/\/\s*flowlog-scope:\s*(turn|agent|seeded|tenant-wide)\b/;
 
-// NOTE: the marker is looked for in the comment block IMMEDIATELY above the call — consecutive
+// The marker is looked for in the comment block IMMEDIATELY above the call — consecutive
 // comment/blank lines and nothing else — so it cannot be inherited from a neighbouring reader's
 // explanation several statements up.
 function markerAbove(source: string, line: number): Scoping | null {
@@ -82,7 +82,7 @@ function markerAbove(source: string, line: number): Scoping | null {
 // reads as `[tenantId]`), flagging readers that are in fact scoped.
 export function flowlogReaders(source: string): Reader[] {
   const out: Reader[] = [];
-  // NOTE: Both spellings, because the WAIT obligation puts readers on `flowLogRows` and friends, and a scan
+  // Both spellings, because the WAIT obligation puts readers on `flowLogRows` and friends, and a scan
   // of the raw client alone would report a tree with no readers as a tree with nothing to check. The
   // helper takes the client and then the SAME args object, so `where` still sits at the call site; that
   // is why the helper passes its args through instead of wrapping them away.
@@ -105,7 +105,7 @@ export function flowlogReaders(source: string): Reader[] {
       }
     }
     const line = source.slice(0, m.index).split("\n").length;
-    // NOTE: Inside the call OR in the comment block above it. The first is what survives the formatter, which
+    // Inside the call OR in the comment block above it. The first is what survives the formatter, which
     // can move a marker off `await suDb.executionLog.findFirst({` onto the `(` the wrapper opened; a
     // marker the formatter can detach is a marker that silently stops applying.
     const inside = MARKER.exec(args);
@@ -368,14 +368,14 @@ describe("the scan can actually tell a scoped reader from an unscoped one", () =
   });
 
   test("a shorthand key AFTER a value is still seen", () => {
-    // NOTE: `stage: "memory"` sits between the two keys, and a regex that consumes the separator loses
+    // `stage: "memory"` sits between the two keys, and a regex that consumes the separator loses
     // everything after the first pair.
     const [r] = flowlogReaders(SHORTHAND_AFTER_A_VALUE);
     expect(r?.keys).toEqual(["tenantId", "stage", "threadId"]);
   });
 
   test("agentId counts only where the ledger says the tests own an agent each", () => {
-    // NOTE: `agentId` accepted for every entry would let a reader in a file where every test drives ONE agent
+    // `agentId` accepted for every entry would let a reader in a file where every test drives ONE agent
     // pass the guard while answering with a neighbour's rows. The key is sufficient in
     // playground-guardrails and nowhere else, so the ledger decides, not the key.
     const [r] = flowlogReaders(BY_AGENT);

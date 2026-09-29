@@ -245,7 +245,7 @@ describe.skipIf(!dbUp)("stt", () => {
     });
     // NOTE: The transcription survives the lost write-back...
     expect(text).toBe(TRANSCRIPT);
-    // NOTE: ...and lands in the in-process annotation store so the flush overlay can read it.
+    // ...and lands in the in-process annotation store so the flush overlay can read it.
     const rows: ChatwootMessageRow[] = [
       {
         id: 60,
@@ -272,7 +272,7 @@ describe.skipIf(!dbUp)("stt", () => {
     ];
     overlayMediaAnnotations(tenantId, instanceId, rows);
     expect(rows[0]?.transcribedText).toBe(TRANSCRIPT);
-    // NOTE: The lost write-back is observable on the flow log (stt stage, warn, step write_back).
+    // The lost write-back is observable on the flow log (stt stage, warn, step write_back).
     let warned = false;
     for (let i = 0; i < 30 && !warned; i++) {
       const logs = await flowLogRows(suDb, {

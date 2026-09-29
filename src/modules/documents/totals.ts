@@ -70,10 +70,10 @@ export function computeTotals(
     (acc, item) => acc + cents(lineTotal(item)),
     0,
   );
-  // NOTE: NOT quantized on the way in: `cents()` IS the money quantization, so a lone amount needs
+  // NOT quantized on the way in: `cents()` IS the money quantization, so a lone amount needs
   // nothing more. The factors below differ because there a PRODUCT is taken before the rounding.
   const requestedDiscount = Math.max(0, cents(opts.discount ?? 0));
-  // NOTE: clamped to the subtotal, and the CLAMPED value is what comes back, so the rows the
+  // Clamped to the subtotal, and the CLAMPED value is what comes back, so the rows the
   // renderer prints add up to the total it prints. A discount larger than the subtotal is somebody's
   // mistake either way; a document whose own three numbers contradict each other is the worse way
   // for the customer to find out.

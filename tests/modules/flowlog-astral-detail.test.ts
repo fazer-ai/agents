@@ -145,7 +145,7 @@ describe.skipIf(!dbUp)("execution_logs.detail survives bad characters", () => {
   });
 
   test("a `__proto__` key does not put a field nobody wrote into the record", async () => {
-    // NOTE: The one case that is not a loss. `JSON.parse` yields `__proto__` as an own property, and assignment
+    // The one case that is not a loss. `JSON.parse` yields `__proto__` as an own property, and assignment
     // on that key invokes the legacy prototype setter instead of creating a field; Prisma serialises
     // INHERITED properties, so the contents would land as top-level fields ({"keep":"x","leaked":1}).
     // Asserted is the ABSENCE of `leaked`, not the presence of `__proto__`: Prisma drops that key on the

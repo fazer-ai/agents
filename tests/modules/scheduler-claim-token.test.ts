@@ -226,7 +226,7 @@ describe.skipIf(!dbUp)("scheduler claim token", () => {
   });
 
   test("a handler whose key is re-armed mid-run leaves the new arm runnable", async () => {
-    // NOTE: the end to end case, through the worker rather than through the three writes directly:
+    // The end to end case, through the worker rather than through the three writes directly:
     // the handler is what takes time, and the re-arm is what lands while it does. The observable
     // effect is that the arm is still there to be run afterwards, by anybody.
     let armedDuring = false;

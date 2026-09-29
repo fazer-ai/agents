@@ -67,7 +67,7 @@ function closesTag(source: string, at: number): boolean {
 function scan(source: string, { strings }: Options): Scanned {
   const out = source.split("");
   let open: Scanned["open"] = null;
-  // NOTE: BOTH OF THESE READ `out`, NEVER `source`: on raw text the member-access check would match
+  // BOTH OF THESE READ `out`, NEVER `source`: on raw text the member-access check would match
   // the full stop ending a comment's sentence (`…(RFC 4180).` above a `return /[",\n\r]/` turns that
   // regex into a division), reading prose as code. `out` has the comment already blanked.
   const before = (at: number, n: number) =>
@@ -135,7 +135,7 @@ function scan(source: string, { strings }: Options): Scanned {
     let i = from;
     let depth = 0;
     let endsValue = false;
-    // NOTE: Whether each open `{` began an OBJECT (a value) or a BLOCK. A `{` where a value was
+    // Whether each open `{` began an OBJECT (a value) or a BLOCK. A `{` where a value was
     // expected is an object, and its `}` ends a value: `<any>{} / 2` divides, while `if (x) { } …` does
     // not. Reading every `}` as a block would open a regex on that division and swallow the line.
     const braces: boolean[] = [];
@@ -180,7 +180,7 @@ function scan(source: string, { strings }: Options): Scanned {
         continue;
       }
       if (c === "/" && !endsValue) {
-        // NOTE: The DELIMITERS stay and the body goes, exactly like a string: `/sanitizeErrorMessage\(/` is
+        // The DELIMITERS stay and the body goes, exactly like a string: `/sanitizeErrorMessage\(/` is
         // a pattern that names a call, not a call. Skipping it also keeps a quote inside it from opening a
         // string.
         let j = i + 1;
@@ -296,7 +296,7 @@ function scan(source: string, { strings }: Options): Scanned {
       }
       if (c === "{") {
         if (stop === "brace") depth++;
-        // NOTE: A `{` where a VALUE was expected is an object, EXCEPT at a statement boundary, where nothing
+        // A `{` where a VALUE was expected is an object, EXCEPT at a statement boundary, where nothing
         // precedes it (otherwise `{}` on a fresh statement is an object and the regex after it a division).
         // The pending flag is consumed by the first brace in BLOCK position, and CLEARED there so it
         // cannot arrive at the next function in the file. A destructured parameter cannot eat it:

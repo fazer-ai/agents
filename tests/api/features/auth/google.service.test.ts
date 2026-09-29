@@ -57,7 +57,7 @@ const {
   GoogleRegistrationDisabledError,
 } = await import("@/api/features/auth/google.service");
 
-// NOTE: Use the real setup state machine (mock.module is process-global and
+// Use the real setup state machine (mock.module is process-global and
 // would leak into setup.service.test.ts).
 const { completeSetup, initSetupState } = await import(
   "@/api/features/auth/setup.service"

@@ -258,7 +258,7 @@ export function buildAuthorizationRequest(
     cfg.includeMessageText && identity.messageText?.trim()
       ? clipText(identity.messageText.trim(), MESSAGE_TEXT_MAX)
       : null;
-  // NOTE: The nesting IS the contract: `contact` is what Chatwoot mirrored (trusted context),
+  // The nesting IS the contract: `contact` is what Chatwoot mirrored (trusted context),
   // `message` is what the customer typed. An endpoint must never read identity out of `message`.
   const body = JSON.stringify({
     contact: {
@@ -358,7 +358,7 @@ export async function checkContactAuthorization(
       // tools make (prepare.ts): a local endpoint works in development, production stays https.
       assertSafeOutboundUrl(u, { allowHttp: config.ssrf.allowPrivateTargets }));
   const { url, init } = buildAuthorizationRequest(cfg, identity, credential);
-  // NOTE: The deadline is armed BEFORE the URL check, because that check resolves DNS. One
+  // The deadline is armed BEFORE the URL check, because that check resolves DNS. One
   // unreachable resolver would otherwise hold the pre-turn gate — and the webhook turn behind it —
   // for as long as the resolver takes, with `timeoutMs` only starting to count afterwards. The
   // budget covers every step that waits: the lookup, the fetch, and the body.
@@ -384,7 +384,7 @@ export async function checkContactAuthorization(
       redirect: "error",
       signal,
     });
-    // NOTE: The timer stays armed while the body is read: a server that answers the status line and
+    // The timer stays armed while the body is read: a server that answers the status line and
     // then stalls would otherwise hold the gate past its timeout.
     let body: string | null;
     try {

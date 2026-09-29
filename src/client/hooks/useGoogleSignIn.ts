@@ -21,7 +21,7 @@ export function useGoogleSignIn({
   const navigate = useNavigate();
   const { login } = useAuth();
   const [pending, setPending] = useState(false);
-  // NOTE: Synchronous lock so two rapid credential callbacks cannot both pass
+  // Synchronous lock so two rapid credential callbacks cannot both pass
   // the guard before React commits the `pending` state update.
   const inFlightRef = useRef(false);
 

@@ -120,10 +120,10 @@ export function localIsoNow(timezone: string, now: Date = new Date()): string {
   const fmt = zoneFormatter(resolveTimezone(timezone));
   const w = wallClock(fmt, now.getTime());
   const pad = (n: number, width = 2) => String(n).padStart(width, "0");
-  // NOTE: with the milliseconds, so `new Date(NOW_LOCAL)` is the instant itself, as the tool
+  // With the milliseconds, so `new Date(NOW_LOCAL)` is the instant itself, as the tool
   // description promises, rather than up to 999 ms before it.
   const ms = now.getTime() - Math.floor(now.getTime() / 1000) * 1000;
-  // NOTE: the expanded ISO 8601 year outside 0000 to 9999, the spelling `new Date` reads back.
+  // The expanded ISO 8601 year outside 0000 to 9999, the spelling `new Date` reads back.
   const year =
     w.year >= 0 && w.year <= 9999
       ? pad(w.year, 4)

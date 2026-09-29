@@ -130,7 +130,7 @@ function ConversationRow({ c, active }: { c: Conversation; active: boolean }) {
   );
 }
 
-// NOTE: Static keys so the skeleton rows don't key off the array index.
+// Static keys so the skeleton rows don't key off the array index.
 const CONV_SKELETON_KEYS = [
   "conv-0",
   "conv-1",
@@ -176,7 +176,7 @@ export function ConversationsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [status, setStatus] = useState("");
-  // NOTE: The agent filter lives in the URL, so a view narrowed to one persona can be linked and
+  // The agent filter lives in the URL, so a view narrowed to one persona can be linked and
   // survives a reload. Empty means every agent.
   const [searchParams, setSearchParams] = useSearchParams();
   const agentId = searchParams.get("agentId") ?? "";

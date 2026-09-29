@@ -144,7 +144,7 @@ export async function mirrorChatwootEvent(
   if (n.firstReplyCreatedAt != null)
     slaWrites.chatwootFirstReplyAt = n.firstReplyCreatedAt;
 
-  // NOTE: twice at most. The contact and inbox upserts run before the per-conversation lock, and
+  // Twice at most. The contact and inbox upserts run before the per-conversation lock, and
   // Prisma's upsert is a select then an insert, so two deliveries of one event (an observer's route
   // and the responder's) can both miss the row and one loses with a unique violation. P2002 aborts
   // the whole tx, so the retry reruns it: the upsert now takes its update path, and the mirror is
@@ -224,7 +224,7 @@ export async function mirrorChatwootEvent(
             : null,
           now,
         );
-        // NOTE: whether this event kills a recorded resolution origin, asked once for both exits
+        // Whether this event kills a recorded resolution origin, asked once for both exits
         // below (the stale branch returns before the update), so the rule is not stated twice. Why it
         // takes these three facts and not `decision.stale` is in `clearsResolutionOrigin`.
         const dropsResolutionOrigin =
@@ -243,7 +243,7 @@ export async function mirrorChatwootEvent(
             stampedAfterVersion: existing.resolvedByAt,
           });
 
-        // NOTE: the pairing is the redirect episode's identity, so a different one starts a new episode
+        // The pairing is the redirect episode's identity, so a different one starts a new episode
         // and the per-episode one-shots (`redirectLinkedAt` for the cross-link, `redirectClosedAt` for
         // the goodbye) belong to the old one. Asked of a previously STATED origin, not the stored
         // value: stored null means both "the fork never spoke" and "the fork said none", and being told
@@ -257,7 +257,7 @@ export async function mirrorChatwootEvent(
             existing.redirectOriginDisplayId != null) &&
           (n.redirectOriginDisplayId ?? null) !==
             existing.redirectOriginDisplayId;
-        // NOTE: written with the pairing wherever the pairing is written, the stale branch included
+        // Written with the pairing wherever the pairing is written, the stale branch included
         // (a column write does not move `last_activity_at`). Retiring the ladder is atomic with the
         // pairing write, inside a savepoint, and a failed retirement holds the pairing back so the old
         // episode's schedule is never handed to the new one. Why each of those is required:
@@ -302,7 +302,7 @@ export async function mirrorChatwootEvent(
             : {};
 
         if (existing && decision.stale) {
-          // NOTE: a stale event says nothing about the conversation's state, with three exceptions
+          // A stale event says nothing about the conversation's state, with three exceptions
           // written here because this branch returns before the update: a close of ours this ordering
           // refused, the redirect pairing (ordered by its own mark, see `decideConversationWrites`),
           // and the SLA pair (two immutable readings Chatwoot computed from its messages table, which
@@ -580,7 +580,7 @@ async function upsertContact(
     c.identifier ? { identifier: c.identifier } : {},
   );
 
-  // NOTE: keyed by instance too: a Chatwoot contact id is unique only inside one account, and two
+  // Keyed by instance too: a Chatwoot contact id is unique only inside one account, and two
   // accounts under one tenant can share an id.
   const row = await db.contact.upsert({
     where: {

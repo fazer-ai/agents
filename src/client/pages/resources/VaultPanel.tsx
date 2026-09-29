@@ -101,7 +101,7 @@ export function VaultPanel() {
     void load();
   }, [load]);
 
-  // NOTE: deeplink /resources/vault?fill=<id> opens the fill modal for a pending entry once the
+  // Deeplink /resources/vault?fill=<id> opens the fill modal for a pending entry once the
   // list is loaded, then strips the param so a re-render / back-nav doesn't re-open it.
   //
   // A MISS keeps the parameter and says so: the console resolves the tenant from localStorage, so a

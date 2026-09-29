@@ -60,7 +60,7 @@ export function flooredLocalParts(
 ): TimeParts {
   const p = partsInTimezone(date, timezone);
   if (!Number.isFinite(minutes) || minutes <= 0) return p;
-  // NOTE: MINUTES SINCE LOCAL MIDNIGHT, not the minute field: a slot of 120 flooring only the
+  // MINUTES SINCE LOCAL MIDNIGHT, not the minute field: a slot of 120 flooring only the
   // minutes would reset every hour and behave like 60, and 45 would mean something different in each
   // hour (`get_current_time` takes any positive integer here).
   const sinceMidnight = Number(p.HH) * 60 + Number(p.mm);

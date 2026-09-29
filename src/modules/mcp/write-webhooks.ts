@@ -339,7 +339,7 @@ export async function alertChannelCreate(
     secretRef = resolved.ref;
   }
   if (args.dry_run !== false) {
-    // NOTE: the core's own two questions. The URL is RESOLVED here, as the apply does, because the
+    // The core's own two questions. The URL is RESOLVED here, as the apply does, because the
     // destination is the value behind `url_ref`, and vetting the ref instead would approve
     // `not-a-url` or a loopback address. Only the verdict is returned, never the value.
     const urlValue = await resolveSecretValue(ctx, args.url_ref, base);
@@ -467,7 +467,7 @@ export async function alertChannelUpdate(
       afterProj[k] = nonSecret[k];
     }
     if (args.dry_run !== false) {
-      // NOTE: same pair as on create, on the patch: the stage list, and the VALUE behind a rotated
+      // Same pair as on create, on the patch: the stage list, and the VALUE behind a rotated
       // `url_ref`. Resolved only when the patch rotates it, so a rename reads no secret.
       let urlValue: string | undefined;
       if (urlRotated && args.url_ref !== undefined) {

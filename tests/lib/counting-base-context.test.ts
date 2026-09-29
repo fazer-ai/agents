@@ -32,7 +32,7 @@ describe("countingBase tells 'the caller is inside one' from 'one exists'", () =
     const blocked = new Promise<void>((r) => {
       release = r;
     });
-    // NOTE: started and NOT awaited, which is the shape of `emitFlowEvent`.
+    // Started and NOT awaited, which is the shape of `emitFlowEvent`.
     const detached = c.base.$transaction(async () => blocked);
     await Bun.sleep(0);
 

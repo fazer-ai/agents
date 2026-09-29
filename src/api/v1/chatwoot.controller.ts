@@ -17,7 +17,7 @@ export const chatwootController = new Elysia({
 }).post(
   "/webhook/:routeToken",
   async ({ params, request }) => {
-    // NOTE: read the RAW body: the HMAC signs the exact bytes Chatwoot sent; re-serializing the
+    // Read the RAW body: the HMAC signs the exact bytes Chatwoot sent; re-serializing the
     // parsed JSON would not match. We never declare/access `body`, so Elysia does not pre-parse.
     const rawBody = await request.text();
     const result = await receiveChatwootWebhook({

@@ -59,7 +59,7 @@ export async function resolveEmbeddingStatus(
 ): Promise<EmbeddingStatus> {
   const settings = await readEmbeddingSettings(db, tenantId);
   if (!settings.credentialRef) return { ok: false, reason: "not_configured" };
-  // NOTE: The three failures are distinguished from ONE read (see resolveVaultEntryState). A ref whose
+  // The three failures are distinguished from ONE read (see resolveVaultEntryState). A ref whose
   // row is gone is not "pending": telling the operator to fill a credential that no longer exists
   // sends them looking for a row that is not there, so it falls back to the reason a workspace that
   // never configured one gets. An ACTIVE row holding a blank secret is neither — it is `empty`, and
@@ -510,7 +510,7 @@ export async function listDocuments(
       select: { id: true },
     });
     if (!kb) throw new NotFoundError("knowledge base not found");
-    // NOTE: length(content) computes character count in Postgres without loading the content
+    // length(content) computes character count in Postgres without loading the content
     // column into the application layer. RLS is active via runScopedOn, so the GUC tenant fence
     // applies to this raw query too.
     const rows = await db.$queryRaw<DocumentListRow[]>`
@@ -580,7 +580,7 @@ export async function deleteDocument(
   await runScopedOn(base, ctx, async (db) => {
     if (opts.bySource) await holdSource(db, opts.bySource);
     else await refuseSyncedWrite(db, id);
-    // NOTE: Read with the row LOCKED before the delete, so the row describes the document actually
+    // Read with the row LOCKED before the delete, so the row describes the document actually
     // removed rather than a version an edit replaced in between.
     const existing = await readDocForAudit(db, id, null);
     const res = await db.knowledgeDocument.deleteMany({ where: { id } });
@@ -631,7 +631,7 @@ export async function updateDocument(
   const { doc, reingest } = await runScopedOn(base, ctx, async (db) => {
     if (params.bySource) await holdSource(db, params.bySource);
     else await refuseSyncedWrite(db, id);
-    // NOTE: LOCKED, because this reading is both the reingest decision and the row's `before`, and
+    // LOCKED, because this reading is both the reingest decision and the row's `before`, and
     // two overlapping edits would otherwise each compare against a text the other one replaced. The
     // comparison happens in the DATABASE, where the old text already is: what comes back is whether
     // it moved, not the previous body.
@@ -867,7 +867,7 @@ export async function reindexKnowledgeBase(
     if (!emb.ok) return { docs: targets, blocked: emb };
     // dry-run previews the count (below) without touching the docs.
     if (opts.dryRun) return { docs: targets, blocked: undefined };
-    // NOTE: WHICH documents the write moved, not which ones the listing above found. Two operators
+    // WHICH documents the write moved, not which ones the listing above found. Two operators
     // pressing reindex on the same base both read the same `targets`, and the second one moves none
     // of them: it must neither record a queue it did not fill NOR re-arm the jobs below, which is
     // why the ids come back from the UPDATE itself rather than from the snapshot.
@@ -937,7 +937,7 @@ async function runIngestJobForTenant(
 ): Promise<JobResult> {
   // 1. Load document + KB config (scoped read, no network).
   const loaded = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-    // NOTE: the content is deliberately NOT read here. It is read by the claim below, in the same
+    // The content is deliberately NOT read here. It is read by the claim below, in the same
     // transaction that takes the mark — see there for why the two cannot be separated.
     const doc = await db.knowledgeDocument.findUnique({
       where: { id: documentId },
@@ -990,7 +990,7 @@ async function runIngestJobForTenant(
     return { outcome: "done" };
   }
 
-  // NOTE: PENDING → PROCESSING marks the document as owned by THIS run, and the text to index is
+  // PENDING → PROCESSING marks the document as owned by THIS run, and the text to index is
   // read back under the same transaction. The two are one step because an edit landing between them
   // leaves the row PENDING — the value it already had — so a claim taken on separately-read text
   // still succeeds, and the run would go on to index text the document no longer has while holding
@@ -1021,7 +1021,7 @@ async function runIngestJobForTenant(
       chunkSize: kb.chunkSize,
       chunkOverlap: kb.chunkOverlap,
     });
-    // NOTE: The title rides in the vector, never in the chunk. It is read under the claim with the
+    // The title rides in the vector, never in the chunk. It is read under the claim with the
     // content, so a title edited mid-run re-arms the job exactly as a text edit does.
     const vectors = chunks.length
       ? await embedTexts(
@@ -1030,9 +1030,9 @@ async function runIngestJobForTenant(
         )
       : [];
 
-    // NOTE: step 4, publish — release the mark, then replace the chunks (one scoped transaction).
+    // Step 4, publish — release the mark, then replace the chunks (one scoped transaction).
     const published = await runScopedOn(base, sysCtx(tenantId), async (db) => {
-      // NOTE: only the run still holding the mark may publish. An edit during the embed sets the row
+      // Only the run still holding the mark may publish. An edit during the embed sets the row
       // back to PENDING, and an unconditional READY would erase that and index stale text. Releasing
       // BEFORE the chunk writes means a stale run writes nothing, and a live run holds the row lock
       // for the rest of the transaction, so no edit lands mid-write.
@@ -1063,7 +1063,7 @@ async function runIngestJobForTenant(
 
     return { outcome: "done" };
   } catch (err) {
-    // NOTE: A known AppError stores its i18n key so the UI can localize the reason; anything else
+    // A known AppError stores its i18n key so the UI can localize the reason; anything else
     // stores the message. `sanitizeErrorMessage` because `error` is a `text` column that refuses a NUL,
     // and the provider's answer is arbitrary.
     const message =
@@ -1071,7 +1071,7 @@ async function runIngestJobForTenant(
         ? err.translationKey
         : sanitizeErrorMessage(err, 500);
     logger.error({ err, documentId: String(documentId) }, "RAG ingest failed");
-    // NOTE: the same release, and for the same reason. A failure belongs to the content this run
+    // The same release, and for the same reason. A failure belongs to the content this run
     // read, so stamping it on a document that has since been edited both reports the wrong thing
     // and buries the re-index (FAILED is no more PENDING than READY is, and the re-armed job
     // returns on it). Leaving the row PENDING lets the re-armed job try the new content instead.

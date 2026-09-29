@@ -18,7 +18,7 @@ const MESSAGE_OVERHEAD_TOKENS = 4;
 
 export const countMessageTokens: TokenCounter = (message) => {
   let text = contentToText(message.content);
-  // NOTE: An AIMessage that only calls tools carries an EMPTY content and its whole payload in
+  // An AIMessage that only calls tools carries an EMPTY content and its whole payload in
   // tool_calls. Counting content alone (which is what LangChain's own counter does) scores the
   // heaviest messages of a tool-driven thread at zero.
   const calls = (message as { tool_calls?: unknown[] }).tool_calls;

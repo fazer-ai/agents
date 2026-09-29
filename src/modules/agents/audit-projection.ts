@@ -67,7 +67,7 @@ const CANONICAL: Partial<
   settings: (v, now) => jsonish(readBehaviorSettings(v, now)),
   modelConfig: (v) => {
     if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
-    // NOTE: PARSED when it parses, so the schema's defaults apply as the runtime sees them (`model`
+    // PARSED when it parses, so the schema's defaults apply as the runtime sees them (`model`
     // omitted and `model: ""` are the same configuration).
     const parsed = modelConfigSchema.safeParse(v);
     if (parsed.success) return parsed.data;

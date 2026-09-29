@@ -135,7 +135,7 @@ const has = (text: string | RegExp) =>
 // count, and a playground turn has no conversation, so dividing combined or playground-only cost by
 // it draws a cost per conversation those dollars never had.
 describe("the daily cost-per-conversation line", () => {
-  // NOTE: the day key is DERIVED, not written down: `buildCostTrend` builds its window from
+  // The day key is DERIVED, not written down: `buildCostTrend` builds its window from
   // `Date.now()`, so a hard-coded date falls out of the 7-day window as the calendar moves.
   const today = new Date();
   const key = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
@@ -182,7 +182,7 @@ describe("the spend ceiling on the dashboard", () => {
   // the card names its own period. The month comes from `periodStart`, formatted in UTC: the
   // instant is the month's UTC midnight, and a browser west of it would print the month before.
   test("the card names the calendar month, not the selected period", async () => {
-    // NOTE: pinned WEST of UTC: a locally-formatted label would tell Los Angeles the ceiling covers
+    // Pinned WEST of UTC: a locally-formatted label would tell Los Angeles the ceiling covers
     // August while the gate enforces September. The runner resolves to UTC, where the two agree, so
     // the zone is set here rather than inherited.
     const tz = process.env.TZ;
@@ -655,7 +655,7 @@ describe("the spend ceiling on the dashboard", () => {
       asked.push(url);
       if (url.includes("/spend-ceiling/usage")) {
         usageReads += 1;
-        // NOTE: while the switch is held, ITS OWN read (the first one) answers stale and every
+        // While the switch is held, ITS OWN read (the first one) answers stale and every
         // refresh after it answers fresh: that is the ordering the page has to survive.
         const isSwitchRead = holdNext && usageReads === holdFrom;
         return json({ instance: {}, ...(isSwitchRead ? stale : fresh) });

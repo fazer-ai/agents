@@ -145,7 +145,7 @@ describe.skipIf(!dbUp)("memory compaction: arming from the webhook", () => {
     };
   }
 
-  // NOTE: A conversation_* event carries the conversation's fields at the ROOT of the payload, not
+  // A conversation_* event carries the conversation's fields at the ROOT of the payload, not
   // nested under `conversation` the way a message event does (see normalize.ts).
   async function deliver(event: string, conversation: Record<string, unknown>) {
     deliverySeq += 1;
@@ -214,7 +214,7 @@ describe.skipIf(!dbUp)("memory compaction: arming from the webhook", () => {
     });
   }
 
-  // NOTE: A strictly increasing stamp, NOT the wall clock. The mirror orders writes by the
+  // A strictly increasing stamp, NOT the wall clock. The mirror orders writes by the
   // conversation's own `updated_at`, and two rounds landing inside the same second would make the
   // second one look stale — the mirror would drop it, no transition would be seen, and the test
   // would fail for a reason that has nothing to do with what it is testing.

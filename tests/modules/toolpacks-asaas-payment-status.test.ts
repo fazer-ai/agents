@@ -6,7 +6,7 @@ import type {
   ToolpackCtx,
 } from "@/modules/integrations/toolpacks/types";
 
-// NOTE: harness mirrored from toolpacks-asaas.test.ts on purpose — this suite covers the
+// Harness mirrored from toolpacks-asaas.test.ts on purpose — this suite covers the
 // payment-status surface (direct charges) and stays independent from that file.
 function stubFetch(status: number, json: unknown) {
   const calls: Array<{ url: string; init: RequestInit }> = [];

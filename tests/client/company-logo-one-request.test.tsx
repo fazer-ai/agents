@@ -140,7 +140,7 @@ test("a second logo write cannot start while one is in flight", async () => {
     .map((b) => (b as HTMLButtonElement).disabled);
   expect(enabled.some((d) => d === false)).toBe(false);
 
-  // NOTE: clicked the way an operator reaches them: the file picker is opened BY the upload button,
+  // Clicked the way an operator reaches them: the file picker is opened BY the upload button,
   // so dispatching a change on the hidden input would test a surface no click can reach.
   const removeButton = screen.queryByLabelText(/Delete|Excluir/);
   if (removeButton) fireEvent.click(removeButton);

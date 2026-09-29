@@ -39,7 +39,7 @@ describe("o portão do re-engage é um bloco síncrono", () => {
     const esperas = [...trecho.matchAll(/\bawait\b/g)];
     expect(esperas).toHaveLength(1);
 
-    // NOTE: e o único `await` permitido é o da própria leitura durável: um predicado `async`
+    // E o único `await` permitido é o da própria leitura durável: um predicado `async`
     // extraído mantém a contagem em 1 e só troca o nome.
     const unica = trecho.slice(esperas[0]?.index ?? 0);
     expect(unica.startsWith("await turnOwnsThread(")).toBe(true);

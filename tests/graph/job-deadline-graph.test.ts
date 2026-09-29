@@ -376,7 +376,7 @@ describe("a job's deadline inside the graph (issue #811)", () => {
   });
 
   test("every job kind whose handler runs a model turn hands the turn its job's signal", async () => {
-    // NOTE: The handlers are tested by calling them, which skips the registration, and a registration
+    // The handlers are tested by calling them, which skips the registration, and a registration
     // that wraps its handler is where the signal is easiest to drop. A kind that starts running a turn
     // has to be added to the list below, which is the point: it cannot join without being looked at.
     const turn = /\b(runAgentNudge|runLoadedTurn|runAgentTurn)\(/;

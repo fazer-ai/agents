@@ -202,7 +202,7 @@ describe.skipIf(!dbUp)("playground guardrails (issue #136)", () => {
       promptAdherence: false,
       answerRelevance: false,
     };
-    // NOTE: BOTH directions are declared on every agent, because both default to enabled: leaving
+    // BOTH directions are declared on every agent, because both default to enabled: leaving
     // one implicit lets it screen first and answer for the direction under test.
     const dir = (over: object = {}) => ({
       enabled: false,

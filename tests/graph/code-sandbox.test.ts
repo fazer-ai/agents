@@ -182,14 +182,14 @@ describe("runSandboxedCode", () => {
   // host-side from `wall - ms`, which also carries worker startup, dispatch, transfer and disposal.
   // A leftover below the setup interrupts the BODY; one above `setup + render` lets it fit unrenewed.
   test("a value built with the last of the budget is still rendered whole", async () => {
-    // NOTE: N is squeezed from both sides. The renewal installs a FIXED `RENDER_BUDGET_MS`, so a value
+    // N is squeezed from both sides. The renewal installs a FIXED `RENDER_BUDGET_MS`, so a value
     // too big fails even under a 30 s timeout; and the leftover granted to the render is about one
     // setup, which does not shrink with N, so a smaller fixture narrows the gap the test lives in.
     // 40k renders about 5x under the ceiling (240k does not render at all) and takes about 3.6x the
     // leftover that would let an unrenewed render through (a 20k fixture hides the defect from 30 ms).
     const N = 40_000;
     const CHARS = 20_000_000;
-    // NOTE: The render is timed from inside, on the interpreter's own clock: a getter on the first
+    // The render is timed from inside, on the interpreter's own clock: a getter on the first
     // element and one on the last bracket the walk (getters run when the renderer reaches them, fenced
     // by the next test), and their `console.log` comes back in the reply. No host-side span (spawn,
     // dispatch, transfer, disposal) enters it, which is why `wall - ms` is not used.
@@ -206,7 +206,7 @@ describe("runSandboxedCode", () => {
       return a && b ? Number(b.slice(1)) - Number(a.slice(1)) : null;
     };
 
-    // NOTE: The ceiling is a production constant and the render is machine work, so a slow enough
+    // The ceiling is a production constant and the render is machine work, so a slow enough
     // machine cannot render this fixture at all -- and it would fail as `InternalError`, which is
     // exactly what the defect looks like. Ask first, with the budget wide open so only the ceiling
     // can bite, and let a machine that cannot host the fixture say so in those words.
@@ -226,7 +226,7 @@ describe("runSandboxedCode", () => {
         timeoutMs: budgetMs,
         maxChars: CHARS,
       });
-      // NOTE: What the run itself says was left of the budget when the body returned, read off the run
+      // What the run itself says was left of the budget when the body returned, read off the run
       // that matters, never carried over from another one. A `limit` reply carries no `ms` at all
       // (the host drops it), so nothing here can read a number off an interrupted run by accident.
       const leftoverMs =
@@ -234,7 +234,7 @@ describe("runSandboxedCode", () => {
       return { out, leftoverMs };
     };
 
-    // NOTE: 64 ms only has to be survivable, several times a typical setup: whatever the leftover
+    // 64 ms only has to be survivable, several times a typical setup: whatever the leftover
     // turns out to be, the subtraction gives the setup. A slower machine doubles to 128, then 256; the
     // ceiling is a runaway guard, not a budget, and hitting it fails on the null rather than inventing
     // a number.
@@ -248,7 +248,7 @@ describe("runSandboxedCode", () => {
       expect(probe.leftoverMs).not.toBeNull();
       return calMs - (probe.leftoverMs as number);
     };
-    // NOTE: Twice, keeping the smaller, because the errors are not symmetric. A setup read too small
+    // Twice, keeping the smaller, because the errors are not symmetric. A setup read too small
     // makes the asserted run ask for too little, which comes back `limit` and the loop below corrects;
     // one read too large hands the render a leftover it should not have, and a render that fits cannot
     // be told from a renewed one (green over the defect). The first call also warms the interpreter,
@@ -256,7 +256,7 @@ describe("runSandboxedCode", () => {
     const firstSetupMs = await calibrate();
     const setupMs = Math.min(firstSetupMs, await calibrate());
 
-    // NOTE: A controller rather than a ladder: an overshoot reports its own leftover and is corrected
+    // A controller rather than a ladder: an overshoot reports its own leftover and is corrected
     // by exactly that much, an undershoot reports nothing and takes a step. Each worker sets itself up
     // at its own pace, so the assertion reads the asserted run's own clock, never the calibration's.
     // The endings differ: an interrupted BODY is kind "limit" with no `ms`, an interrupted RENDER is
@@ -284,7 +284,7 @@ describe("runSandboxedCode", () => {
     // `run()` before the deadline starts in `open()`) is part of the setup. So the render gets about one
     // setup of this worker, which scales with the machine the same way rendering 40k objects does.
     expect(leftoverMs as number).toBeLessThanOrEqual(TOL_MS);
-    // NOTE: The proof, both halves off the same run: `leftMs` bounds what the render could have had on
+    // The proof, both halves off the same run: `leftMs` bounds what the render could have had on
     // the ORIGINAL deadline (prefix + leftoverMs <= setup + leftoverMs = leftMs), and `renderMs` is what
     // it took on the interpreter's clock. A render longer than that bound means the value coming back
     // is the renewal's work; no timing is carried between workers and no host clock enters it.
@@ -722,7 +722,7 @@ describe("runSandboxedCode", () => {
   });
 
   test("the memory ceiling is the CONFIGURED one, not the interpreter's own heap maximum", async () => {
-    // NOTE: 800k JSValues fit under the default ceiling and not under 8 MB. Asserting the pair
+    // 800k JSValues fit under the default ceiling and not under 8 MB. Asserting the pair
     // is what tells "setMemoryLimit is wired" apart from "the WASM heap ran out eventually": an
     // unbounded push reports "out of memory" either way, just much later and much larger.
     const alloc = `new Array(800000).fill(1).length`;
@@ -736,7 +736,7 @@ describe("runSandboxedCode", () => {
   });
 
   test("runaway recursion is refused by the interpreter, and honest recursion is not", async () => {
-    // NOTE: The loop in front is the fence. The interrupt handler fires every 10k opcodes; without
+    // The loop in front is the fence. The interrupt handler fires every 10k opcodes; without
     // work before the recursion the engine's limit trips before the first one fires deep, and a budget
     // past the thread's native room would pass unnoticed. With it, the handler is entered near full
     // depth, where such a budget turns this reply into `aborted`.
@@ -745,7 +745,7 @@ describe("runSandboxedCode", () => {
       `${busy}function f(n) { return f(n + 1) }; f(0)`,
     );
     expect(runaway).toMatchObject({ kind: "limit", limit: "stack" });
-    // NOTE: ~1,340 frames fit under SANDBOX_STACK_BYTES, as the constant's comment says.
+    // ~1,340 frames fit under SANDBOX_STACK_BYTES, as the constant's comment says.
     const honest = await runSandboxedCode(
       `${busy}function f(n) { return n === 0 ? 0 : 1 + f(n - 1) }; f(1000)`,
     );
@@ -1085,7 +1085,7 @@ describe("localIsoNow", () => {
     for (const [tz] of rows) {
       expect(new Date(localIsoNow(tz, at)).getTime()).toBe(at.getTime());
     }
-    // NOTE: With the milliseconds, or the round trip lands up to 999 ms early.
+    // With the milliseconds, or the round trip lands up to 999 ms early.
     const withMs = new Date("2026-09-02T22:05:33.412Z");
     expect(localIsoNow("America/Sao_Paulo", withMs)).toBe(
       "2026-09-02T19:05:33.412-03:00",
@@ -1098,7 +1098,7 @@ describe("localIsoNow", () => {
 
 describe("SandboxQueue", () => {
   test("holds a burst to its limit, and every call still runs", async () => {
-    // NOTE: Six busy snippets through a gate of two: three batches of ~200 ms, not one. The elapsed
+    // Six busy snippets through a gate of two: three batches of ~200 ms, not one. The elapsed
     // time proves the gate exists; the outcomes prove nothing was dropped or misreported as the
     // sandbox failing to start.
     const queue = new SandboxQueue(2);

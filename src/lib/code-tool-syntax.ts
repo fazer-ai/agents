@@ -50,7 +50,7 @@ function syntaxWarning(e: unknown, lines: string[]): CodeSyntaxWarning {
   };
   const rawLine = typeof err.loc?.line === "number" ? err.loc.line : 1;
   const rawColumn = typeof err.loc?.column === "number" ? err.loc.column : 0;
-  // NOTE: One wrapper line above the body. An error at the END of the body (an unfinished
+  // One wrapper line above the body. An error at the END of the body (an unfinished
   // `input.cpf.`, an unclosed brace) is reported on the wrapper's closing line, past the body, and
   // lands at the end of the body's last line instead — the same clamp the sandbox applies to the
   // engine's line (code-sandbox.worker.ts withSourceLine).

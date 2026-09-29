@@ -55,7 +55,7 @@ async function driveFetch(
   const assertSafe = ctx.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(url);
   const doFetch = ctx.fetchImpl ?? fetch;
-  // NOTE: The cap is on what is READ, not a slice of what was already read: `.text()` buffers the
+  // The cap is on what is READ, not a slice of what was already read: `.text()` buffers the
   // whole body before any limit applies.
   const { res, body } = await fetchBounded(
     url,
@@ -91,7 +91,7 @@ async function driveDownload(
   const assertSafe = ctx.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(url);
   const doFetch = ctx.fetchImpl ?? fetch;
-  // NOTE: Byte-capped ON THE READ, so a huge file is refused without being held in memory. The two
+  // Byte-capped ON THE READ, so a huge file is refused without being held in memory. The two
   // cheap refusals happen BEFORE a byte is read (`readWhen`): a declared size over the cap is
   // turned down without pulling any of it, and a non-2xx body is an error page nothing here reads.
   const { res, body } = await fetchBoundedBytes(

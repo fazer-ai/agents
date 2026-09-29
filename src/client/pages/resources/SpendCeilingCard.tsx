@@ -96,7 +96,7 @@ export function SpendCeilingCard({
   const [usage, setUsage] = useState<Usage | null>(null);
   const [usageError, setUsageError] = useState(false);
   const [form, setForm] = useState<SpendCeiling>(value);
-  // NOTE: The dollar fields are edited as TEXT: a number written back on every keystroke turns a
+  // The dollar fields are edited as TEXT: a number written back on every keystroke turns a
   // cleared field into "0" (so 5 typed over it reads "05") and mangles a trailing point. The number
   // parsed from the text is what the save sends; the text is re-derived only when the settings
   // change underneath.
@@ -114,7 +114,7 @@ export function SpendCeilingCard({
     });
   }, [value]);
 
-  // NOTE: A read that settles after a newer one is dropped: the mount-time read and the one the
+  // A read that settles after a newer one is dropped: the mount-time read and the one the
   // Langfuse save asks for can overlap, and the older answer landing last would restore the pre-save
   // flag. Only the latest sequence number's answer, or failure, reaches the state.
   const readSeq = useRef(0);
@@ -138,7 +138,7 @@ export function SpendCeilingCard({
     void loadUsage();
   }, [loadUsage, reloadKey]);
 
-  // NOTE: The card re-reads while it stays open: the health beside each bar is computed per read, so
+  // The card re-reads while it stays open: the health beside each bar is computed per read, so
   // a card left mounted would keep saying "refreshed" from its first read. The period is the poll's
   // own, as the usage reports it.
   const refreshMs = usage?.pollIntervalMs ?? USAGE_RETRY_MS;
@@ -149,7 +149,7 @@ export function SpendCeilingCard({
 
   const set = <K extends keyof SpendCeiling>(k: K, v: SpendCeiling[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
-  // NOTE: Empty is zero (no ceiling on that half); anything else has to be a finite amount at or
+  // Empty is zero (no ceiling on that half); anything else has to be a finite amount at or
   // above zero. A negative one is REFUSED rather than stored as zero: zero means no ceiling, so
   // rounding "-1" to it would switch the protection off in silence.
   const parseUsd = (text: string): number | null => {
@@ -214,14 +214,14 @@ export function SpendCeilingCard({
     : "";
   const entry = (source: string) =>
     usage?.entries.find((e) => e.source === source);
-  // NOTE: The marker rides both reads; the settings prop is what the page holds after a save, so it
+  // The marker rides both reads; the settings prop is what the page holds after a save, so it
   // wins, explicit null included: a usage response read before a save in dollars can still carry
   // the marker, and `??` would let it revive the notice.
   const legacy =
     value.legacyTokens === undefined
       ? (usage?.legacyTokens ?? null)
       : value.legacyTokens;
-  // NOTE: Two reads can say "no Langfuse", as two sentences. The flag is the credential's PRESENT,
+  // Two reads can say "no Langfuse", as two sentences. The flag is the credential's PRESENT,
   // resolved on this request, and says whether the cost can be read, above the bars. A row's
   // sentinel is what the GATE acts on (it learns of a credential only at the next poll), so each bar
   // says from its own row whether calls go through.

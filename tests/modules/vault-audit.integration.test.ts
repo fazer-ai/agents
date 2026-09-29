@@ -374,7 +374,7 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
   });
 
   test("audit: records a row scoped to the tenant", async () => {
-    // NOTE: a synthetic action, because this asserts RLS scoping and nothing about the vocabulary. A
+    // A synthetic action, because this asserts RLS scoping and nothing about the vocabulary. A
     // real one like `tenant.update` is Full-only, so the Free tree would not compile while the master
     // tree stays green; only `bun run build:free` reads the derived tree.
     const ACTION = syntheticAction("vault_audit.scoped");

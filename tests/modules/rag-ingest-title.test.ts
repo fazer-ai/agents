@@ -150,7 +150,7 @@ async function seedTenant(slug: string): Promise<{ id: bigint; kb: bigint }> {
     data: { name: slug, slug: `${slug}-${process.pid}` },
   });
   tenants.push(t.id);
-  // NOTE: the credential carries the baseURL (resolveEmbeddingStatus reads it off the secret), which is
+  // The credential carries the baseURL (resolveEmbeddingStatus reads it off the secret), which is
   // what points the ingest at the double above without unlocking the settings block.
   const cred = await suDb.vaultEntry.create({
     data: {

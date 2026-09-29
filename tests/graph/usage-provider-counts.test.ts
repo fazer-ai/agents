@@ -12,7 +12,7 @@ import { UsageCapture, type UsageRow } from "@/graph/usage";
 // its vendor's raw response shape, the real client parses it, and the assertion is on the ROW the
 // ledger would write.
 
-// NOTE: happy-dom's `fetch` enforces same-origin (so every call is preflighted) and its `Response`
+// happy-dom's `fetch` enforces same-origin (so every call is preflighted) and its `Response`
 // is not the one Bun's socket layer recognises. Same two workarounds as
 // tests/modules/guardrail-constrained.test.ts.
 const CORS = {

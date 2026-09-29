@@ -33,7 +33,7 @@ import { getVisionProvider } from "@/modules/vision/providers";
 // field over at all is the question, and a hand-written `response_metadata` fixture would answer it
 // by assumption.
 
-// NOTE: happy-dom's `fetch` enforces same-origin and its `Response` is not Bun's. Same workarounds as
+// happy-dom's `fetch` enforces same-origin and its `Response` is not Bun's. Same workarounds as
 // tests/graph/usage-provider-counts.test.ts.
 const CORS = {
   "access-control-allow-origin": "*",

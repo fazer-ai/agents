@@ -55,7 +55,7 @@ function TenantPicker({
   const upgrade = useModalController();
   const active = activeId ?? "";
 
-  // NOTE: the fallback label means only what it says: the hook clears a stored id the list does not
+  // The fallback label means only what it says: the hook clears a stored id the list does not
   // have, so "Select tenant" is never the display for a dead selection.
   const activeName =
     tenants.find((tn) => tn.id === active)?.name ??

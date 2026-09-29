@@ -186,7 +186,7 @@ describe("the form is not editable while a save is in flight", () => {
       expect(patchBodies.length).toBe(1);
     });
 
-    // NOTE: asserted STRUCTURALLY: every editable control sits inside a disabled fieldset, which
+    // Asserted STRUCTURALLY: every editable control sits inside a disabled fieldset, which
     // disables its whole subtree (including controls added later). happy-dom does not compute that
     // inheritance (`el.disabled` reads each element's own attribute), so containment and the flag
     // are what is observed here.

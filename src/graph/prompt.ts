@@ -53,7 +53,7 @@ export interface PromptVarContext {
 
 export const VALUE_MAX = 120;
 
-// NOTE: Contact/inbox values are customer-controlled → drop control chars, newlines and half
+// Contact/inbox values are customer-controlled → drop control chars, newlines and half
 // characters (so a value can never forge multi-line "system" framing in the prompt, and can never
 // carry an unpaired surrogate), collapse whitespace, and bound length.
 // Exported as sanitizePromptValue because every OTHER customer-controlled string we splice into the
@@ -68,12 +68,12 @@ export function sanitizePromptValue(
   let out = "";
   for (const ch of v) {
     const code = ch.codePointAt(0) ?? 0;
-    // NOTE: C0 + DEL + C1. The C1 range matters as much as C0 and is easy to miss: U+0085 (NEL) is
+    // C0 + DEL + C1. The C1 range matters as much as C0 and is easy to miss: U+0085 (NEL) is
     // a line break to plenty of renderers and tokenizers, and JS `\s` does NOT match it, so the
     // collapse below would let it through and a value could still forge a new line of framing.
     const control =
       code < 0x20 || code === 0x7f || (code >= 0x80 && code <= 0x9f);
-    // NOTE: And half of a character. `for...of` yields a real astral character as ONE two-unit
+    // And half of a character. `for...of` yields a real astral character as ONE two-unit
     // string, so a single-unit one in the surrogate range never had its other half: it is not a
     // character at all, it is refused outright by Postgres inside a jsonb write (the same reason
     // clipText exists), and a provider replaces or rejects it. It can arrive that way from any

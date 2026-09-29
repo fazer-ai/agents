@@ -355,7 +355,7 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     expect(det(line as Row).phase).toBe("schema_refusal");
     expect(refusalOf(line as Row).params).toEqual(["customerMessage"]);
     expect(refusalOf(line as Row).issues).toEqual(["customerMessage: missing"]);
-    // NOTE: the refusal adds a line and replaces none. The call was refused, so nothing reached the
+    // The refusal adds a line and replaces none. The call was refused, so nothing reached the
     // customer and nothing chose that silence: the last `generate` line is a `warn`, after the
     // `info` line of the one retry the silence gets. All are `status: ok` (not an error of the
     // generation step); the level decides who hears about it.
@@ -376,7 +376,7 @@ describe.skipIf(!dbUp)("a tool call refused by its own schema", () => {
     // THE CONTROL AGAINST A FALSE POSITIVE: no attempt, no line. Counting `stage='tool'` rows of one
     // turn is what answers "did the model try to use a tool here", with no error text opened.
     expect(tools(b.rows).length).toBe(0);
-    // NOTE: no `tool` line: the model tried nothing AND answered nothing, which the operator is
+    // No `tool` line: the model tried nothing AND answered nothing, which the operator is
     // told about (the `warn`). Nobody on our side had spoken in this conversation, so the silence
     // also hands it to a person (the `handoff` line). The second `info` is the silence's one retry,
     // which the model answers with nothing.

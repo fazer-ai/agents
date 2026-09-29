@@ -101,7 +101,7 @@ describe("realtime.service", () => {
   });
 
   describe("presence ticker (shared)", () => {
-    // NOTE: The service owns ONE process-wide setInterval that publishes
+    // The service owns ONE process-wide setInterval that publishes
     // a presence tick to CHAT_GLOBAL. It is started on the 0→1 user
     // transition and stopped on the 1→0 transition so an idle server
     // keeps no live timer and the test suite does not leak intervals
@@ -479,7 +479,7 @@ describe("realtime.service", () => {
       role: "AGENT" as const,
     };
 
-    // NOTE: a person with several memberships picks the stream the same way the REST header
+    // A person with several memberships picks the stream the same way the REST header
     // picks the request's tenant. The upgrade carries no header, so the session arrives resolved to
     // the person's default, and the socket's own selector decides among ALL their memberships.
     const member = {

@@ -141,7 +141,7 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     ).settings as Record<string, Record<string, unknown>>;
     expect(stored.guardrails?.credentialRef).toBe(`vault:${keyId}`);
 
-    // NOTE: And back out as the NAME: a read handing back an id where it promises a name is what the
+    // And back out as the NAME: a read handing back an id where it promises a name is what the
     // credential-paths guard exists for.
     const got = await agentSettingsGet(
       principal(),
@@ -173,7 +173,7 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
   });
 
   test("a precondition on a tool name the runtime cannot guard is REFUSED, not stored", async () => {
-    // NOTE: The write boundary restricts these keys to the native catalog, and MCP must not be the way around
+    // The write boundary restricts these keys to the native catalog, and MCP must not be the way around
     // it: a rule on an MCP-namespaced name reads as protection and guards nothing.
     const r = await agentSettingsSet(
       principal(),
@@ -459,7 +459,7 @@ describe.skipIf(!dbUp)("the four blocks reach the agent through MCP", () => {
     ).diff;
     const after = diff?.guardrails?.after;
     expect(after).toBeDefined();
-    // NOTE: The preview must carry the WRITABLE shape. Asserted with the probe PROVEN to have arrived first:
+    // The preview must carry the WRITABLE shape. Asserted with the probe PROVEN to have arrived first:
     // `input?.checks ?? {}` is satisfied by `input` being undefined, so a check without the probe passes
     // against a mutation that removes the projection entirely.
     const input = (after as { input?: { checks?: Record<string, unknown> } })

@@ -349,7 +349,7 @@ describe.skipIf(!dbUp)("the webhook transports name who wrote", () => {
     );
     expect(text).not.toContain("RESTTOKEN");
 
-    // NOTE: The PATCH body declares `excludeAgentIds`, so the list reaches the service instead of
+    // The PATCH body declares `excludeAgentIds`, so the list reaches the service instead of
     // being refused or dropped by the route. An id naming no agent here is the service's own answer,
     // which only a field that got through can produce.
     const kept = await server.handle(

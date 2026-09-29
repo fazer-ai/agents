@@ -165,7 +165,7 @@ describe("the editor the operator actually gets", () => {
       />,
     );
     expect(counted()).toEqual(["101/100"]);
-    // NOTE: the editor HOLDS it. The cap refuses an edit, and a write from the prop is not an edit:
+    // The editor HOLDS it. The cap refuses an edit, and a write from the prop is not an edit:
     // refusing one would leave the counter saying 101 over a document still holding 80, and the
     // next keystroke would write that stale text back over a value never shown.
     const view = EditorView.findFromDOM(
@@ -930,7 +930,7 @@ describe("hover answers with the completion the list would have offered", () => 
     expect(
       askNamed(single, single.indexOf("contact_id") + 1, [])?.completion.label,
     ).toBe("contact_id");
-    // NOTE: every escape `JSON.stringify` can emit: an argument name can hold a control character
+    // Every escape `JSON.stringify` can emit: an argument name can hold a control character
     // (through the API), and the completion writes it as `\\r` or `\\u0007`.
     const control = "a\rb\u0007c";
     const written = `input[${JSON.stringify(control)}]`;

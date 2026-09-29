@@ -52,7 +52,7 @@ export function sweepMediaAnnotations(nowMs: number = Date.now()): void {
   }
 }
 
-// NOTE: Second, independent bound: a burst that outruns the TTL is capped by entry count. Map
+// Second, independent bound: a burst that outruns the TTL is capped by entry count. Map
 // iteration is insertion-ordered and stash() re-inserts on update, so the front is the oldest.
 function enforceSizeCap(): void {
   for (const map of [store, fileReads] as Map<string, unknown>[]) {
@@ -75,7 +75,7 @@ export function nextSweepDelayMs(nowMs: number = Date.now()): number | null {
   return Math.max(0, at + TTL_MS - nowMs);
 }
 
-// NOTE: One rescheduled timer, armed only while the store holds something and unref'd (same idiom
+// One rescheduled timer, armed only while the store holds something and unref'd (same idiom
 // as the alert worker) so a pending sweep never keeps the process alive at shutdown.
 function scheduleSweep(nowMs: number): void {
   if (sweepTimer) return;
@@ -170,7 +170,7 @@ export function fileReadFor(
   return { value: hit.value };
 }
 
-// NOTE: Test isolation only — production never clears the store wholesale (the TTL sweep does).
+// Test isolation only — production never clears the store wholesale (the TTL sweep does).
 export function clearMediaAnnotations(): void {
   store.clear();
   fileReads.clear();
@@ -180,7 +180,7 @@ export function clearMediaAnnotations(): void {
   }
 }
 
-// NOTE: How many annotations are actually RETAINED (not merely hidden from the overlay). Exposed so
+// How many annotations are actually RETAINED (not merely hidden from the overlay). Exposed so
 // the TTL-deletion contract is assertable.
 export function mediaAnnotationCount(): number {
   return store.size + fileReads.size;

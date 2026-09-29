@@ -90,7 +90,7 @@ describe("a muted Chatwoot client", () => {
   });
 
   test("refuses the typing indicator, which the fork forwards to the channel", async () => {
-    // NOTE: `channel_listener.rb` hands `conversation_typing_on` to the channel, so on WhatsApp
+    // `channel_listener.rb` hands `conversation_typing_on` to the channel, so on WhatsApp
     // the customer would watch a persona compose a reply that never comes.
     const { c, calls } = client(true);
     await expect(c.toggleTyping(9, true)).rejects.toBeInstanceOf(
@@ -108,7 +108,7 @@ describe("a muted Chatwoot client", () => {
   });
 
   test("the private-note exemption belongs to the message path alone", async () => {
-    // NOTE: a reaction has no private variant, so a body that carries the flag must not buy it a
+    // A reaction has no private variant, so a body that carries the flag must not buy it a
     // pass: the exemption is about a note to the team, not about a field name.
     const { c, calls } = client(true);
     const fetchImpl = (c as unknown as { fetchImpl: typeof fetch }).fetchImpl;
@@ -192,7 +192,7 @@ describe("a muted Chatwoot client", () => {
   });
 
   test("a request already in flight is cut by the deadline, without losing its own timeout", async () => {
-    // NOTE: the pre-dispatch check only stops a call that had not started. One already in flight
+    // The pre-dispatch check only stops a call that had not started. One already in flight
     // would run to the client's own `AbortSignal.timeout` and could land its effect (worst:
     // `recordResolutionOrigin`) after runObserve already reported the tick as failed.
     const seen: (AbortSignal | null | undefined)[] = [];
@@ -248,7 +248,7 @@ describe("a muted Chatwoot client", () => {
   });
 
   test("the client says whether it is muted, for effects the transport cannot see", async () => {
-    // NOTE: a scheduled reminder is armed now and delivered later by the inbox's responder with a
+    // A scheduled reminder is armed now and delivered later by the inbox's responder with a
     // client of its own, so the mute never reaches it. Callers ask this instead of being handed a
     // second flag that could disagree with the wrapper.
     const mk = (mute: boolean) =>
@@ -333,7 +333,7 @@ describe("a queued attribute write asks the fence at the last moment", () => {
   });
 
   test("a fence that says yes, and one that cannot answer, both write", async () => {
-    // NOTE: the control the negatives need; the second half is the rule every other fence follows:
+    // The control the negatives need; the second half is the rule every other fence follows:
     // an unreadable fence is not the operator saying no.
     const yes = flakyClient();
     await yes.c.setConversationCustomAttributes(

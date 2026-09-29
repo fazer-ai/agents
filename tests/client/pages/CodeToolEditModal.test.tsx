@@ -461,7 +461,7 @@ test("a save the server warned about says so in the toast, not only under the fi
 });
 
 test("reopening a tool whose body does not parse warns again, without an edit", async () => {
-  // NOTE: the opening clears the warnings, and reopening the same tool leaves the body identical,
+  // The opening clears the warnings, and reopening the same tool leaves the body identical,
   // so an effect keyed only on the text does not rerun and a broken body looks clean until typed
   // in.
   const realFetch = globalThis.fetch;
@@ -553,7 +553,7 @@ test("a save that lands after the dialog was dismissed does not close the next o
 });
 
 test("a save that FAILS after the dialog was dismissed does not mark the next one", async () => {
-  // NOTE: a refusal that arrives for a dialog that is gone has nowhere to land, and would put the
+  // A refusal that arrives for a dialog that is gone has nowhere to land, and would put the
   // previous tool's error on the form now open. This drives the RESPONSE branch (the client returns
   // a transport failure as `error` rather than throwing), and the `catch` beside it carries
   // the same guard for the exceptions the client does not convert.
@@ -628,7 +628,7 @@ test("the parser only runs while the dialog is open", () => {
 });
 
 test("a save in flight cannot be dismissed, and its finally belongs to its own opening", () => {
-  // NOTE: two guards over one hole, a save dismissed with Esc/X and reopened before it answers. The
+  // Two guards over one hole, a save dismissed with Esc/X and reopened before it answers. The
   // dialog refuses the dismissal (docs/modals.md), which makes the second guard unreachable from
   // the UI, hence a source fence: an unscoped `setSaving(false)` would leave the reopened form
   // disabled with nothing running, for as long as the first request takes.

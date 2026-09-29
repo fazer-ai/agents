@@ -78,13 +78,13 @@ function AlertChannelModal({
   const [url, setUrl] = useState("");
   const [minLevel, setMinLevel] = useState<"warn" | "error">("error");
   const [stages, setStages] = useState<Set<string>>(new Set());
-  // NOTE: agents whose lines never alert here. Sent whole on every save: the server accepts an id the
+  // Agents whose lines never alert here. Sent whole on every save: the server accepts an id the
   // channel already held even when its agent is gone, so an untouched list always saves.
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [agentOptions, setAgentOptions] = useState<AgentOption[] | null>(null);
   const [agentsFailed, setAgentsFailed] = useState(false);
   const [secretRef, setSecretRef] = useState("");
-  // NOTE: whether the operator touched the picker at all. The wire tells "left this alone" from "chose
+  // Whether the operator touched the picker at all. The wire tells "left this alone" from "chose
   // this" (an untouched field is OMITTED, a sent one is obeyed), and the VALUE cannot: a channel whose
   // stored ref names no vault entry arrives as `hasSecret` with no ref to show (`readableVaultRef` hides
   // it rather than publish whatever the column holds), so its picker opens empty and choosing "None"
@@ -586,7 +586,7 @@ export function AlertChannelsSection() {
   const [error, setError] = useState(false);
   const modal = useModalController<ChannelModalPayload>();
   const confirm = useModalController<ConfirmPayload>();
-  // NOTE: a SET, not the one id the webhooks list next door holds. With a single id, testing channel B
+  // A SET, not the one id the webhooks list next door holds. With a single id, testing channel B
   // while A is in flight re-enables A's button, and whichever request finishes first clears the
   // other's spinner while it still runs. Both cost a real external send: an enabled button invites a
   // second POST to a destination that has not answered the first, and an idle-looking button
@@ -642,7 +642,7 @@ export function AlertChannelsSection() {
     }
   };
 
-  // NOTE: short of this test send, the only way to learn whether a channel is wired correctly is to
+  // Short of this test send, the only way to learn whether a channel is wired correctly is to
   // wait for an incident and watch it not arrive.
   const runTest = async (ch: AlertChannel) => {
     startTesting(ch.id);

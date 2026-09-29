@@ -193,7 +193,7 @@ const baseAuthController = new Elysia({
 
       const { email, password } = body;
 
-      // NOTE: Look up the existing user first so users on a domain that was
+      // Look up the existing user first so users on a domain that was
       // later removed from ALLOWED_SIGNUP_DOMAINS still get the accurate
       // "email already in use" response instead of a misleading domain error.
       const existingUser = await getUserByEmail(email);
@@ -217,7 +217,7 @@ const baseAuthController = new Elysia({
         };
       }
 
-      // NOTE: a self-signup user must join a tenant; with none provisioned, keep the
+      // A self-signup user must join a tenant; with none provisioned, keep the
       // endpoint closed rather than create a tenant-less account.
       const tenantId = await resolveDefaultTenantId();
       if (tenantId === null) {
@@ -280,7 +280,7 @@ const baseAuthController = new Elysia({
       }
 
       const isValidPassword = await verifyPassword(password, row.passwordHash);
-      // NOTE: a person with no tenant to enter gets the same answer as a wrong password, after the
+      // A person with no tenant to enter gets the same answer as a wrong password, after the
       // password is checked: a distinct one would confirm the password to whoever guessed it.
       const user = isValidPassword ? sessionUserOf(row) : null;
       if (!user) {
@@ -346,7 +346,7 @@ const baseAuthController = new Elysia({
           ? await getTenantName(user.tenantId)
           : null;
 
-      // NOTE: the SUPER_ADMIN (tenantId null) has no membership to default to. Hand back the first
+      // The SUPER_ADMIN (tenantId null) has no membership to default to. Hand back the first
       // accessible tenant so the client can seed the selector on first login/reload instead of
       // dead-ending on an empty state. A member always runs under a membership, so needs no seed.
       const defaultTenantId =
@@ -358,7 +358,7 @@ const baseAuthController = new Elysia({
       // settings form vs the "you sign in with Google" note.
       const hasPassword = user ? await getUserHasPassword(user.id) : false;
 
-      // NOTE: every tenant the person belongs to, with the role held there. The console shows
+      // Every tenant the person belongs to, with the role held there. The console shows
       // its tenant selector when there is more than one; `tenantId` above is the one this request ran
       // under. Empty for the SUPER_ADMIN, who picks from the whole tenant list instead.
       const tenants =
@@ -743,7 +743,7 @@ const googleAuthController = baseAuthController.post(
   },
 );
 
-// NOTE: When Google OAuth is disabled, the `/google` route is not registered at
+// When Google OAuth is disabled, the `/google` route is not registered at
 // all so schema validation never runs and Elysia returns its standard 404.
 // The exported type is always the enabled-mode controller so that the
 // generated treaty client keeps `auth.google.post(...)` available; the

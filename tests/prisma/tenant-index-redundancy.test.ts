@@ -58,7 +58,7 @@ describe("a concurrent index drop is alone in its migration", () => {
     for (const name of readdirSync(dir)) {
       const file = `${dir}/${name}/migration.sql`;
       if (!existsSync(file)) continue;
-      // NOTE: TWO KINDS OF TEXT THAT ARE NOT STATEMENTS. A comment carries semicolons and can NAME the
+      // TWO KINDS OF TEXT THAT ARE NOT STATEMENTS. A comment carries semicolons and can NAME the
       // command it explains, so a header describing this rule would read as breaking it. A `DO $$ … $$`
       // block is ONE statement holding several semicolons (and here, a RAISE naming a command). Both are
       // stripped once, and what is left answers both questions: which file, and how many statements.

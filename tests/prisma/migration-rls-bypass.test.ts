@@ -343,7 +343,7 @@ describe.skipIf(!dbUp)("every data migration sets the RLS bypass", () => {
       UPDATE "agents" SET name = 'x';`;
     expect(tablesWrittenBy(both)).toEqual(["agents"]);
 
-    // NOTE: The shape existing migrations have: a function, and then a DO block that runs
+    // The shape existing migrations have: a function, and then a DO block that runs
     // during the migration. The second must survive the stripping of the first, or the rule stops
     // reading the very DML it is for.
     const functionThenDo = `${trigger}

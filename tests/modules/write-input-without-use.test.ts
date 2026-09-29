@@ -204,7 +204,7 @@ describe.skipIf(!dbUp)(
       return String(v);
     }
 
-    // NOTE: both halves of one tool, on one input. The apply is asked FIRST so a preview that wrote
+    // Both halves of one tool, on one input. The apply is asked FIRST so a preview that wrote
     // would leave the row this counts.
     async function halves(
       fn: (
@@ -300,7 +300,7 @@ describe.skipIf(!dbUp)(
         ...over,
       });
 
-      // NOTE: a credential that DOES supply a host, and one that does not because its kind ignores the
+      // A credential that DOES supply a host, and one that does not because its kind ignores the
       // column. The second is written straight through Prisma: the vault refuses a base URL on a kind
       // with no use for it, so that row only exists from before the rule, which is exactly what a
       // read-backed check has to answer about.
@@ -377,7 +377,7 @@ describe.skipIf(!dbUp)(
           }),
         ).toMatchObject({ applied: false, previewed: false });
 
-        // NOTE: a patch that names NEITHER is not a statement about the pairing: a row stored before
+        // A patch that names NEITHER is not a statement about the pairing: a row stored before
         // this rule stays editable through everything else.
         const legacy = await suDb.toolDefinition.create({
           data: {
@@ -881,7 +881,7 @@ describe.skipIf(!dbUp)(
           { name: "  cred_twice_501  ", kind: "generic" },
         ];
 
-        // NOTE: the preview first: it runs the apply, so a collision would take the dry run down too.
+        // The preview first: it runs the apply, so a collision would take the dry run down too.
         const preview = await agentImport(principal(), { export: b }, D);
         expect(preview.ok).toBe(true);
 
@@ -1013,7 +1013,7 @@ describe.skipIf(!dbUp)(
             (w) => w.code === "knowledgeBaseNameUnusable",
           ),
         ).toHaveLength(2);
-        // NOTE: the control in the same bundle: the usable one landed, so this is a skip and not a
+        // The control in the same bundle: the usable one landed, so this is a skip and not a
         // refusal of the whole components array. By NAME, not by tenant: earlier describes leave
         // their own bases in the same tenant.
         const bases = await suDb.knowledgeBase.findMany({
@@ -1377,7 +1377,7 @@ describe.skipIf(!dbUp)(
         await suDb.experiment.deleteMany({ where: { tenantId } });
       });
 
-      // NOTE: THE RACE, and why the lookup LOCKS: `Experiment.agentId` has no foreign key, and
+      // THE RACE, and why the lookup LOCKS: `Experiment.agentId` has no foreign key, and
       // `deleteAgent` (agent `FOR UPDATE`, null its experiments, delete) can slip between an unlocked
       // check and the insert at READ COMMITTED. Driven through the REAL write, since a test taking its
       // own lock says nothing about `assertAgentPresent`. NOTHING IS TIMED (a sleep is a false green

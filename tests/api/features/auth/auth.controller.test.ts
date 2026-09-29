@@ -20,7 +20,7 @@ import {
 
 setupPrismaMock();
 
-// NOTE: Drive the real setup state machine via its exported helpers instead of
+// Drive the real setup state machine via its exported helpers instead of
 // mocking it: Bun's mock.module is process-global, so a partial mock here would
 // leak into setup.service.test.ts (which needs the real module).
 const { authController } = await import("@/api/features/auth/auth.controller");
@@ -34,7 +34,7 @@ const createTestClient = () => {
 };
 
 describe("authController", () => {
-  // NOTE: `config` is a process-global singleton imported across test files in
+  // `config` is a process-global singleton imported across test files in
   // a single Bun process, so any mutation that escapes this file would leak to
   // others (order-dependent contamination). Snapshot once and restore on exit.
   const originalSignupEnabled = config.signupEnabled;
@@ -307,7 +307,7 @@ describe("authController", () => {
     });
 
     test("returns default flag values when setup is complete and signup is open", async () => {
-      // NOTE: beforeEach already left us in this state (signupEnabled=true,
+      // beforeEach already left us in this state (signupEnabled=true,
       // setupTokenRequired=false, completeSetup()); the assertion guards
       // against a future regression that ties the flags to the request user
       // or otherwise breaks the boot-state plumbing.

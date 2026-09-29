@@ -62,7 +62,7 @@ describe("CredentialForm never sends a param name a kind cannot use", () => {
   const posts = () =>
     calls.filter((c) => c.method === "POST" && !c.url.includes("/vault/test"));
 
-  // NOTE: the value input carries no placeholder on create (only on update, where blank keeps the
+  // The value input carries no placeholder on create (only on update, where blank keeps the
   // stored secret), so it is addressed by its type.
   const secretInput = (): HTMLElement => {
     const el = document.querySelector('input[type="password"]');
@@ -70,7 +70,7 @@ describe("CredentialForm never sends a param name a kind cannot use", () => {
     return el as HTMLElement;
   };
 
-  // NOTE: Radix opens on pointerdown with a real pointerType, not on click, and the FormField label
+  // Radix opens on pointerdown with a real pointerType, not on click, and the FormField label
   // carries the same accessible name as the trigger — so this asks for the BUTTON, and then reads
   // the option INSIDE the menu (an open menu takes the rest of the form out of the a11y tree).
   const pickType = async (label: string) => {
@@ -82,7 +82,7 @@ describe("CredentialForm never sends a param name a kind cannot use", () => {
       expect(screen.queryAllByRole("menu", { hidden: true }).length).toBe(1),
     );
     const menu = screen.getByRole("menu", { hidden: true });
-    // NOTE: by ROLE, not by text: the type list renders the label more than once (the row and its
+    // By ROLE, not by text: the type list renders the label more than once (the row and its
     // hint), and a bare text query is ambiguous.
     const item = within(menu)
       .getAllByRole("menuitem", { hidden: true })
@@ -106,7 +106,7 @@ describe("CredentialForm never sends a param name a kind cannot use", () => {
       </ToastProvider>,
     );
 
-    // NOTE: the input exists only because the type is `header` — that is the premise being tested.
+    // The input exists only because the type is `header` — that is the premise being tested.
     const paramInput = screen.getByPlaceholderText("X-API-Key");
     fireEvent.change(paramInput, { target: { value: "Authorization" } });
 

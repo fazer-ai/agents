@@ -791,7 +791,7 @@ describe.skipIf(!dbUp)(
       ) => {
         const url = typeof input === "string" ? input : input.toString();
         seen.push(url);
-        // NOTE: authenticates like Chatwoot does: a blank token is a 401 before any authorization
+        // Authenticates like Chatwoot does: a blank token is a 401 before any authorization
         // runs, and a stub that accepts anything would hide a request sent without one.
         const token =
           new Headers(init?.headers).get(CHATWOOT_AUTH_HEADER) ?? "";

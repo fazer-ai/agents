@@ -182,7 +182,7 @@ describe("what is printed is what is computed", () => {
       const v = lineTotal(item);
       expect(Math.abs(v * 100 - Math.round(v * 100))).toBeLessThan(1e-6);
     }
-    // NOTE: And exactly, not nearly. `0.07 * 100` is 7.000000000000001, so a cents() that MULTIPLIES instead of
+    // And exactly, not nearly. `0.07 * 100` is 7.000000000000001, so a cents() that MULTIPLIES instead of
     // shifting through the decimal hands back 0.07000000000000002, which is not an amount of money. (0.07,
     // 0.14, 0.28, 0.29, 0.55 and 0.56 are the first six two-decimal values with that property; most
     // multiply exactly, so an arbitrary example proves nothing.) One line absorbs the error on the way

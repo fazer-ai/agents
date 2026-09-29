@@ -118,7 +118,7 @@ function toastCount(): number {
 }
 
 test("a refusal that names an input this form renders lands on that input, once", async () => {
-  // NOTE: worded the way `updateCompanySettings` words it (tenant-settings/service.ts): the sentence names
+  // Worded the way `updateCompanySettings` words it (tenant-settings/service.ts): the sentence names
   // the character, and `field` names the patch key, the same string this form uses for the input.
   const reason =
     'document contains a character the document fonts cannot print: "😀"';
@@ -160,7 +160,7 @@ test("a refusal about an input this form does not render still reaches the opera
 });
 
 test("a refusal about no input at all is still a toast", async () => {
-  // NOTE: most refusals are not about one input (a 403, a 404, a conflict) and answer with no `field` at
+  // Most refusals are not about one input (a 403, a 404, a conflict) and answer with no `field` at
   // all. They go to the toast, unchanged by this mechanism.
   const reason = "this tenant is not allowed to change the letterhead";
   refusingPut({ error: reason });
@@ -356,7 +356,7 @@ function DismissableCompany({ gone }: { gone: boolean }) {
 }
 
 test("a refusal that arrives after the form is gone still reaches the operator", async () => {
-  // NOTE: this card is a modal body, and a save is slow enough for the operator to close the modal while
+  // This card is a modal body, and a save is slow enough for the operator to close the modal while
   // the request is out. Closing it unmounts the hook, so a mark would be written to state nobody
   // renders after `capture` had reported "it is on the control".
   const reason =

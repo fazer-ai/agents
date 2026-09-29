@@ -60,7 +60,7 @@ async function main() {
     process.exit(1);
   }
 
-  // NOTE: admin CLI connects via the migration/superuser URL so it can read the tenants
+  // Admin CLI connects via the migration/superuser URL so it can read the tenants
   // table and write users without RLS friction (it writes outside the /setup advisory lock).
   // Run via Bun, which expands ${POSTGRES_PORT} in .env at load time.
   const databaseUrl =
@@ -76,7 +76,7 @@ async function main() {
   });
 
   try {
-    // NOTE: TENANT_ADMIN of the first tenant when one exists; SUPER_ADMIN (no membership)
+    // TENANT_ADMIN of the first tenant when one exists; SUPER_ADMIN (no membership)
     // otherwise, so this can also bootstrap a fleet admin before /setup has run.
     const tenant = await prisma.tenant.findFirst({
       orderBy: { id: "asc" },

@@ -37,7 +37,7 @@ export function HelpPopover({
   contentClassName,
 }: HelpPopoverProps) {
   const { t } = useTranslation();
-  // NOTE: "Show help: History ceiling", ONE name for both the trigger and the box (Radix names the box
+  // "Show help: History ceiling", ONE name for both the trigger and the box (Radix names the box
   // nothing), so hearing the same words in and out ties the two together. COMPOSED rather than
   // interpolated: the subject arrives already translated, and interpolation would make every trigger's
   // name depend on a `t` that interpolates, which the leaking `react-i18next` stub of the client suites

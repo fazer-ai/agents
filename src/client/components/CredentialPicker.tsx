@@ -135,7 +135,7 @@ export function CredentialPicker({
   // biome-ignore lint/correctness/useExhaustiveDependencies: focus search on open; showSearchInput derived from entries
   useEffect(() => {
     if (open && showSearchInput) {
-      // NOTE: rAF defers until after Radix positions the floating panel and its own focus logic runs.
+      // rAF defers until after Radix positions the floating panel and its own focus logic runs.
       const id = requestAnimationFrame(() => searchRef.current?.focus());
       return () => cancelAnimationFrame(id);
     }
@@ -170,7 +170,7 @@ export function CredentialPicker({
     entries.find((e) => formatVaultRef(e.id) === canonicalVaultRef(value)) ??
     null;
   const unresolved = !selected && !!value;
-  // NOTE: the entry is there and its secret is not, which `credential_create` (MCP) and the vault's
+  // The entry is there and its secret is not, which `credential_create` (MCP) and the vault's
   // "add a reference now, fill it later" both produce on purpose. Only the agent's own credentials
   // have an alert for it (config-health), so the picker says it, once, for every referencing field.
   const unfilled = selected?.status === "pending";

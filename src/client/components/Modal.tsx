@@ -25,7 +25,7 @@ import { handOverEscape } from "./escapeClaim";
 // gap collapses to 1, which only matters if a z-indexed layer is ever put between a content and its
 // own overlay.
 const MODAL_DEPTH_STEP = 2;
-// NOTE: with base 80 and step 2, level 5 reaches --z-toast (90). Warn before
+// With base 80 and step 2, level 5 reaches --z-toast (90). Warn before
 // the collision so the conflict does not go silently wrong.
 const MODAL_MAX_DEPTH = 4;
 
@@ -56,7 +56,7 @@ function popModal(id: string): void {
   for (const l of modalStackListeners) l();
 }
 
-// NOTE: Wrap both branches in tuples to stop TS from distributing over union
+// Wrap both branches in tuples to stop TS from distributing over union
 // payload types. Without it, `T = Instance | null` collapses to a function
 // union whose parameter becomes `Instance & null` (i.e. `never`) and no call
 // typechecks.
@@ -78,7 +78,7 @@ const ModalControllerContext = createContext<ModalController<unknown> | null>(
   null,
 );
 
-// NOTE: Lets a modal body report whether it has unsaved changes. Each <Modal>
+// Lets a modal body report whether it has unsaved changes. Each <Modal>
 // provides its own; a body (or descendant) calls `useUnsavedChanges(isDirty)`
 // to register. The Modal aggregates all reporters and, when any is dirty,
 // intercepts a user-driven close (Esc/outside/X/Back) with a discard
@@ -107,7 +107,7 @@ export function useUnsavedChanges(isDirty: boolean) {
   useBeforeUnload(!ctx && isDirty);
 }
 
-// NOTE: Controller API — state lifted from the modal wrapper into a hook the
+// Controller API — state lifted from the modal wrapper into a hook the
 // parent owns. Payload is retained across `close()` so Radix can play its exit
 // animation with the last-opened data still rendered; it's only overwritten
 // on the next `open()`. Do NOT unmount the <Modal> via `{flag && <Modal/>}` —
@@ -157,7 +157,7 @@ export function useModal<T = void>(): ModalController<T> {
   return ctx as unknown as ModalController<T>;
 }
 
-// NOTE: the guard-aware close. Footer buttons rendered inside a <Modal> (e.g. a
+// The guard-aware close. Footer buttons rendered inside a <Modal> (e.g. a
 // "Cancel") MUST close through this, NOT through `modal.close()` — the latter is
 // a PROGRAMMATIC close that bypasses the unsaved-changes confirmation by design
 // (used by the parent after a successful save). `useModalClose()` funnels through
@@ -366,7 +366,7 @@ export function Modal({
 
   useBeforeUnload(guardActive);
   useBackGuard(guardActive, requestClose);
-  // NOTE: stackLevel (from the open-stack, already capped at MODAL_MAX_DEPTH) drives the z-index so
+  // stackLevel (from the open-stack, already capped at MODAL_MAX_DEPTH) drives the z-index so
   // deeper stacks keep escalating without colliding with the toast layer at level 5+. The overlay
   // sits one step below its own content so it dims the modal beneath. The warning below still fires
   // so the collision is visible during development.
@@ -383,7 +383,7 @@ export function Modal({
         }
       : undefined;
   const contentRef = useRef<HTMLDivElement>(null);
-  // NOTE: close only when BOTH the press and the release land outside the content, so a drag released
+  // Close only when BOTH the press and the release land outside the content, so a drag released
   // outside (a text selection) does not close. Driven by our own document pointerdown/pointerup
   // listeners, NOT Radix's `onPointerDownOutside`: Radix dispatches that after `pointerup`, so a latch
   // set there is one gesture stale and closes the modal on the NEXT, unrelated click. This ref records,

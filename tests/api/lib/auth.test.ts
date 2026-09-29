@@ -71,7 +71,7 @@ describe("authPlugin", () => {
       );
 
       expect(response.status).toBe(200);
-      // NOTE: happy-dom (registered via tests/setup.ts) strips `Set-Cookie`
+      // Happy-dom (registered via tests/setup.ts) strips `Set-Cookie`
       // from Response headers as a forbidden response header. The cookie
       // side effect is therefore only observable indirectly through the
       // JWT returned by `setAuthCookie`, which we assert below.

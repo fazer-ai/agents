@@ -153,7 +153,7 @@ export async function analyzeGuardrail(
       await runAnalysis(model, relevance, mode, callbacks),
     );
   }
-  // NOTE: In parallel: the operator is paying for a turn a customer is waiting on.
+  // In parallel: the operator is paying for a turn a customer is waiting on.
   const [byPolicy, byRelevance] = await Promise.all([
     runAnalysis(model, policies, mode, callbacks),
     runAnalysis(model, relevance, mode, callbacks).then(withoutReplacement),
@@ -248,7 +248,7 @@ async function runAnalysis(
   callbacks?: BaseCallbackHandler[],
 ): Promise<GuardrailVerdict> {
   const system = buildGuardrailSystemPrompt(params);
-  // NOTE: The customer's message rides at USER level, fenced and named, never inside the system prompt:
+  // The customer's message rides at USER level, fenced and named, never inside the system prompt:
   // there it would read as one more instruction from the operator, and the customer writes it. The
   // text under review keeps its bare shape, so a call with the check off is unchanged by the fence.
   const customer = fenceCustomerMessage(params);
@@ -256,7 +256,7 @@ async function runAnalysis(
   if (customer !== null) messages.push(new HumanMessage(customer));
   messages.push(new HumanMessage(params.text));
   try {
-    // NOTE: ONE deadline for the verdict, the refused-then-prose retry included: the signal alone is
+    // ONE deadline for the verdict, the refused-then-prose retry included: the signal alone is
     // dropped by the Google adapter, and a classifier on the customer's path must not hang.
     const { parsed, raw } = await runModelCall(
       (signal) => invokeForVerdict(model, mode, messages, signal, callbacks),

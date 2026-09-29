@@ -95,7 +95,7 @@ async function main() {
     process.exit(2);
   }
 
-  // NOTE: the migration/superuser URL, like the other maintenance scripts. The runner enters the
+  // The migration/superuser URL, like the other maintenance scripts. The runner enters the
   // fleet role per batch, so the runtime role's DATABASE_URL reaches every tenant too.
   const url = process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL;
   if (!url) {

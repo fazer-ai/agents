@@ -77,7 +77,7 @@ function toolOutputValue(output: unknown): unknown {
 // part WE wrote (a `toolFailure(...)` message, `HTTP 422` from ./tools/http.ts), and everything after
 // it came from the other end. `logToolValues` keeps the whole string, like the arguments and result.
 function failureCause(value: unknown, logValues: boolean): string {
-  // NOTE: `JSON.stringify` is TYPED as string but returns undefined for `undefined`, and this
+  // `JSON.stringify` is TYPED as string but returns undefined for `undefined`, and this
   // callback takes `unknown` from LangChain, so the coalesce is a runtime guard the type does not
   // give us.
   const text =

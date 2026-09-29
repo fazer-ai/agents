@@ -65,7 +65,7 @@ export function InviteUserModal({
   const currentRef = useRef(current);
   currentRef.current = current;
 
-  // NOTE: once the invite link is shown the work is saved, so the form is no longer dirty.
+  // Once the invite link is shown the work is saved, so the form is no longer dirty.
   const isDirty =
     !link &&
     (email.trim() !== "" || role !== "AGENT" || tenantId !== defaultTenantId);

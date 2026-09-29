@@ -372,7 +372,7 @@ describe.skipIf(!dbUp)(
       const job = await armar(CONV_PENDENTE, "PENDING");
       await clienteEscreve(CONV_PENDENTE, "oi, alguma novidade?");
 
-      // NOTE: A metade PENDING, aqui para que o cancelamento do job reivindicado não a leve junto. A GARANTIA
+      // A metade PENDING, aqui para que o cancelamento do job reivindicado não a leve junto. A GARANTIA
       // dela é o job não poder mais ser reivindicado, e isso se lê no status: a marca de aposentadoria é a
       // pergunta do handler EM VOO, que um job nunca reivindicado não chega a fazer.
       const row = await suDb.schedulerJob.findUniqueOrThrow({

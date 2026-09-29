@@ -552,7 +552,7 @@ describe.skipIf(!dbUp)("reengage: vision no anexo que nunca foi lido", () => {
       expect(res.outcome).toBe("posted");
       const turno = modelo.humanTexts.join("\n");
       expect(turno).toContain("Print do pedido 21607129");
-      // NOTE: o marcador some. Ele é a frase que manda o agente pedir de volta o que está dentro do
+      // O marcador some. Ele é a frase que manda o agente pedir de volta o que está dentro do
       // anexo que ninguém leu. LIDO DO RENDER, não transcrito aqui: um literal copiado vira asserção
       // sempre verdadeira no dia em que a frase muda.
       const marcadorSemExtracao = renderInboundMessage({

@@ -364,7 +364,7 @@ describe("templatePreviewFor — the rules are the runtime's, not a copy", () =>
   }
 
   test("a render that overruns the model's limit is previewed clipped", async () => {
-    // NOTE: two 2,000-character fields and a separator: the substitutions, not the template, are
+    // Two 2,000-character fields and a separator: the substitutions, not the template, are
     // what overrun. The runtime clips the PROJECTED body too, so the preview must as well.
     const body = JSON.stringify({ a: "x".repeat(2000), b: "y".repeat(2000) });
     const template = "{{a}}\n---\n{{b}}";
@@ -375,7 +375,7 @@ describe("templatePreviewFor — the rules are the runtime's, not a copy", () =>
   });
 
   test("a token-less template is previewed for a 204 with no body at all", async () => {
-    // NOTE: the sample field is EMPTY here, and still there is a preview: the runtime hands the
+    // The sample field is EMPTY here, and still there is a preview: the runtime hands the
     // model the operator's own text.
     const preview = templatePreviewFor({
       template: "Done. The booking is confirmed.",

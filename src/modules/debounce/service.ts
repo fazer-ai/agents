@@ -207,7 +207,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
         where: { kind: "DEBOUNCE", dedupeKey },
         select: { status: true, payload: true },
       });
-      // NOTE: The deferral deadline survives re-arms of a LIVE row (PENDING or CLAIMED), unlike
+      // The deferral deadline survives re-arms of a LIVE row (PENDING or CLAIMED), unlike
       // `burstStartedAt`, which a claim in flight resets: it measures how long the burst has waited
       // for a busy thread, which a customer typing again must not restart. A DONE or DEAD row carries
       // nothing, or the next burst would start out already past its deadline.
@@ -216,7 +216,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
       const deferringSince = stillLive
         ? readDeferringSince(existing.payload)
         : null;
-      // NOTE: A live PENDING row is the burst this message joins; anything else (no row, DONE,
+      // A live PENDING row is the burst this message joins; anything else (no row, DONE,
       // DEAD, or a claim in flight) means the previous flush is finished business and this message
       // opens a new burst. Every question below reads that one fact, so they cannot answer it
       // differently.
@@ -234,7 +234,7 @@ export async function armDebounce(params: ArmDebounceParams): Promise<Date> {
       const reactionArmed =
         params.reaction === true ||
         (stillLive && readReactionArmed(existing.payload));
-      // NOTE: Carried across a CLAIMED row too, like `deferringSince`: a text that arrives while the
+      // Carried across a CLAIMED row too, like `deferringSince`: a text that arrives while the
       // reaction's flush runs supersedes that turn, and the flush it arms would find its own text on
       // the page and never ask for the reaction.
       const prevReactionFrom = stillLive

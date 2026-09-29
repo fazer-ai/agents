@@ -681,7 +681,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(count).toBe(1);
   });
 
-  // NOTE: An appointment is a RECORD, not a projection of the reminder jobs, so a test that wants a
+  // An appointment is a RECORD, not a projection of the reminder jobs, so a test that wants a
   // conversation to be holding one writes the record. Where a job row also matters (a reminder that
   // already fired, one still claimed, one dead-lettered) the test writes that too, but the job does not
   // decide whether the appointment exists.
@@ -758,7 +758,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
     expect(s.sent.length).toBeGreaterThan(0);
   });
 
-  // NOTE: `pauseWhileAppointment` alone is one boolean for the whole agent, and it would conflate two opposite
+  // `pauseWhileAppointment` alone is one boolean for the whole agent, and it would conflate two opposite
   // things: a re-engagement nudge wants to be suppressed while a booking stands, and a payment-deadline
   // step wants the reverse (it only means anything WHILE the booking is unconfirmed, and it is the step
   // that later frees the slot). So a step can opt out of the pause on its own.
@@ -1707,7 +1707,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
-    // NOTE: The model-input fallback can leave startISO WITHOUT an offset. parseStartMs pins it to
+    // The model-input fallback can leave startISO WITHOUT an offset. parseStartMs pins it to
     // UTC once, at the write, and every reader compares the column it produced — so the sweep and
     // the handler's re-check cannot answer differently whatever the host and session zones are.
     const offsetLessFutureUtc = new Date(Date.now() + 2 * 3_600_000)
@@ -1843,7 +1843,7 @@ describe.skipIf(!dbUp)("followUpHandler — watermark guard", () => {
       lastInboundAt: new Date(Date.now() - 5 * 60_000),
       lastFollowUpAt: null,
     });
-    // NOTE: Feb 30 of NEXT year. Date.parse would roll it over to a FUTURE March 2 and suppress the
+    // Feb 30 of NEXT year. Date.parse would roll it over to a FUTURE March 2 and suppress the
     // follow-up; parseStartMs refuses it, so no appointment is recorded at all.
     const impossibleFuture = `${new Date().getUTCFullYear() + 1}-02-30T00:00:00Z`;
     expect(await seedAppointment(1049, "ev_x", impossibleFuture)).toBe(

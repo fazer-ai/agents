@@ -142,7 +142,7 @@ export function useVaultBaseUrls(): (ref: string) => string | null {
   return useCallback(
     (ref: string) => {
       if (!ref) return null;
-      // NOTE: the DIALABLE one. The listing reports the row as it is, so a stray base URL stays
+      // The DIALABLE one. The listing reports the row as it is, so a stray base URL stays
       // visible; what a page DECIDES with has to be what the runtime will use.
       const entry = entries.find(
         (e) => formatVaultRef(e.id) === canonicalVaultRef(ref),

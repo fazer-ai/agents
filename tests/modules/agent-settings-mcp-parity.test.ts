@@ -173,7 +173,7 @@ async function ownedBlocks(): Promise<{
 
 describe("every agent settings block reaches agent_settings_set", () => {
   test("the probe finds readers at all, and reads blocks from them", async () => {
-    // NOTE: the positive control: a discovery pass that finds NOTHING passes every assertion below,
+    // The positive control: a discovery pass that finds NOTHING passes every assertion below,
     // so a broken glob or a renamed directory would turn this file green while guarding nothing.
     const { owned } = await ownedBlocks();
     const blocks = new Set(owned.map((o) => o.block));
@@ -357,7 +357,7 @@ describe("toolGuidance and toolPreconditions publish the native catalog", () => 
   });
 
   test("a name added to the catalog needs no edit here", () => {
-    // NOTE: the shape is generated from NATIVE_TOOL_NAMES; this asserts the generation is wired,
+    // The shape is generated from NATIVE_TOOL_NAMES; this asserts the generation is wired,
     // since a hand-written list would pass the test above and go stale on the next native tool.
     const shape = (
       BEHAVIOR_PATCH_SHAPE.toolGuidance as unknown as {

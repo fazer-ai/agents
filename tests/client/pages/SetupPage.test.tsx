@@ -103,7 +103,7 @@ describe("SetupPage", () => {
   test("captures the ?token= query param and strips it from the URL", async () => {
     renderAt("/setup?token=abc123");
 
-    // NOTE: The token is held in component state and shown in the field, but
+    // The token is held in component state and shown in the field, but
     // the URL is cleaned on mount so it does not linger in history or in
     // Referer headers.
     const tokenInput = screen.getByLabelText("Setup token") as HTMLInputElement;

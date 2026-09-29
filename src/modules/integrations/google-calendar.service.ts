@@ -104,7 +104,7 @@ export async function listCredentialCalendars(
   const assertSafe = deps.assertSafe ?? assertSafeOutboundUrl;
   await assertSafe(GCAL_CALENDAR_LIST_URL);
   const doFetch = deps.fetchImpl ?? fetch;
-  // NOTE: The cap is on what is READ, not a slice of what was already read: `.text()` buffers the
+  // The cap is on what is READ, not a slice of what was already read: `.text()` buffers the
   // whole body before any limit applies.
   const { res, body } = await fetchBounded(
     GCAL_CALENDAR_LIST_URL,

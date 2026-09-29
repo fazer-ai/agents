@@ -94,7 +94,7 @@ export function sweepContactAuthNotices(nowMs: number = Date.now()): void {
   }
 }
 
-// NOTE: Second, independent bound: a burst that outruns every window is capped by entry count. Map
+// Second, independent bound: a burst that outruns every window is capped by entry count. Map
 // iteration is insertion-ordered and claim() re-inserts on renewal, so the front is the oldest.
 function enforceSizeCap(): void {
   while (notices.size > MAX_ENTRIES) {
@@ -113,7 +113,7 @@ export function nextSweepDelayMs(nowMs: number = Date.now()): number | null {
   return earliest === null ? null : Math.max(0, earliest - nowMs);
 }
 
-// NOTE: One timer, armed for the earliest lapse and re-armed when a newer entry lapses sooner,
+// One timer, armed for the earliest lapse and re-armed when a newer entry lapses sooner,
 // unref'd so a pending sweep never keeps the process alive at shutdown.
 function scheduleSweep(nowMs: number): void {
   const delay = nextSweepDelayMs(nowMs);
@@ -214,7 +214,7 @@ export function mediaRefusedHereThrough(key: string): number | null {
   return mediaRefusedHere.get(key) ?? null;
 }
 
-// NOTE: Test isolation only. Production never clears the state wholesale; the sweep does.
+// Test isolation only. Production never clears the state wholesale; the sweep does.
 export function clearContactAuthState(): void {
   notices.clear();
   inFlight.clear();
@@ -226,13 +226,13 @@ export function clearContactAuthState(): void {
   }
 }
 
-// NOTE: How many cooldowns are actually RETAINED (not merely lapsed but unswept ones hidden from
+// How many cooldowns are actually RETAINED (not merely lapsed but unswept ones hidden from
 // readers; those count until the sweep runs). Exposed so the sweep contract is assertable.
 export function contactAuthNoticeCount(): number {
   return notices.size;
 }
 
-// NOTE: Test-only view of what is retained, so a test can prove this module holds ids and
+// Test-only view of what is retained, so a test can prove this module holds ids and
 // timestamps and nothing anyone said.
 export function contactAuthNoticeEntries(): Array<{
   key: string;

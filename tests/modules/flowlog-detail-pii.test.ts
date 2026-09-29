@@ -623,7 +623,7 @@ describe.skipIf(!dbUp)(
           },
         }),
       ).rejects.toThrow();
-      // NOTE: Waited for by the line that carries the failure: the turn also closes on a `generate` line of its
+      // Waited for by the line that carries the failure: the turn also closes on a `generate` line of its
       // own, and the writes are not awaited, so either can land first.
       let rows = await turnRows(9605, ["generate"]);
       for (let i = 0; i < 200 && !rows.some((r) => r.errorMessage); i++) {

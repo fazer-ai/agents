@@ -251,7 +251,7 @@ export async function issueDocument(
     );
   }
 
-  // NOTE: `create`, not `createMany({ skipDuplicates })`, because the ROW is needed. Three scoped
+  // `create`, not `createMany({ skipDuplicates })`, because the ROW is needed. Three scoped
   // calls, not one: a P2002 ABORTS the PostgreSQL transaction it was raised in, so the winner must
   // be re-read outside the transaction that lost, or the second caller gets a 500.
   const created = await runScopedOn(base, ctx, (db) =>
@@ -455,7 +455,7 @@ async function finish(
     meta,
   });
   const key = storageKey(tenantId, row.id);
-  // NOTE: Written to a unique temporary name beside the target first (so the link below never
+  // Written to a unique temporary name beside the target first (so the link below never
   // crosses a filesystem): two renders of one key must not truncate a file already published. Tests
   // cover adoption and `.part` cleanup, not the truncation window itself.
   const finalPath = `${dir}/${key}`;
@@ -563,7 +563,7 @@ async function assignNumber(
   await db.$queryRaw`
     SELECT 1 FROM "document_templates" WHERE "id" = ${templateId} FOR UPDATE
   `;
-  // NOTE: The DOCUMENT row is claimed first (docs/documents.md, Issuing): a row is unnumbered for a
+  // The DOCUMENT row is claimed first (docs/documents.md, Issuing): a row is unnumbered for a
   // moment by design, and two callers healing it at once would render one PDF with no number.
   // Scoped by RLS like every other statement in this transaction, and the id is one we inserted.
   const claimed = await db.$queryRaw<{ number: number | null }[]>`

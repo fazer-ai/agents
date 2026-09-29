@@ -118,7 +118,7 @@ export function diffFields(
   return out;
 }
 
-// NOTE: service-layer ZodErrors must surface as a tool result (err), never bubble raw into the
+// Service-layer ZodErrors must surface as a tool result (err), never bubble raw into the
 // MCP SDK's generic exception envelope.
 function zodIssuesMessage(e: ZodError): string {
   return `validation failed: ${e.issues
@@ -513,7 +513,7 @@ export async function agentSettingsGet(
         slot.holder[slot.key] = await vaultNameByRef(ctx, ref, base);
       }
     }
-    // NOTE: the unified debug-mode warning, including the tenant-level switch that lives on another
+    // The unified debug-mode warning, including the tenant-level switch that lives on another
     // surface; one extra read here avoids a second copy of the condition.
     const debugModes = readDebugModes(
       agent.settings,
@@ -556,7 +556,7 @@ export async function agentSettingsSet(
   const agentId = parseMcpId(args.agent_id, "agent_id");
   if (typeof agentId !== "bigint") return agentId;
 
-  // NOTE: the keys come FROM THE SCHEMA, not from a list beside it, so a block published in the
+  // The keys come FROM THE SCHEMA, not from a list beside it, so a block published in the
   // schema cannot be dropped here; the refusal below names the same set. The cast is safe: `args`
   // was parsed against `BEHAVIOR_PATCH_SHAPE`, the shape that defines `patch`'s own type.
   const patch: BehaviorSettingsPatch = {};
@@ -651,7 +651,7 @@ export async function agentSettingsSet(
     // On the MERGED bag, not the patch: fields merge within a block, so a stored fence survives a
     // patch that touches the same block, and the preview must refuse what the apply would.
     assertResolveLabelsNotProtected(nextBag);
-    // NOTE: PROJECTED, like the read — the same question asked in a third place. A client is expected to
+    // PROJECTED, like the read — the same question asked in a third place. A client is expected to
     // reuse the preview's `after` (that is what a dry run is for), so a diff carrying the fields the
     // write refuses hands back a document that the apply rejects.
     const afterPreview = dropOutputOnlyInputFields(

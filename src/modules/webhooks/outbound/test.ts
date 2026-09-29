@@ -88,7 +88,7 @@ export async function sendWebhookTest(
     };
   }
 
-  // NOTE: THE PROBE MIRRORS THE WORKER. A configured-but-unresolvable secret still sends, unsigned,
+  // THE PROBE MIRRORS THE WORKER. A configured-but-unresolvable secret still sends, unsigned,
   // as the worker does, and reports `signed: false` with the sentence naming the credential problem:
   // a probe that takes a different path from the real send misreports the endpoint.
   let secret: string | null = null;

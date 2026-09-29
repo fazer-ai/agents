@@ -39,7 +39,7 @@ if (appUrl && suUrl) {
 const suDb = su as PrismaClient;
 const appDb = app as PrismaClient;
 
-// NOTE: loopback on the discard port, for the reason spelled out in chatwoot-account-uniqueness:
+// Loopback on the discard port, for the reason spelled out in chatwoot-account-uniqueness:
 // the best-effort provisioning call inside setConnectedAccounts reaches out with this base URL, and
 // only loopback is refused by the SSRF guard immediately and offline.
 const SERVER = "https://127.0.0.1:9";
@@ -137,7 +137,7 @@ describe.skipIf(!dbUp)("the accounts a deployment can be asked for", () => {
   });
 
   test("the cap is measured on the DEDUPLICATED array", async () => {
-    // NOTE: 600 entries naming 3 accounts is not 600 accounts, and the work either bound exists to
+    // 600 entries naming 3 accounts is not 600 accounts, and the work either bound exists to
     // limit is per distinct account.
     const repeated = Array.from(
       { length: 600 },

@@ -217,7 +217,7 @@ export async function runDebounceTick(
       }),
     ),
   ).then(() => {});
-  // NOTE: fewer than the free slots means everything due fitted, so nothing waits and the saturation
+  // Fewer than the free slots means everything due fitted, so nothing waits and the saturation
   // (if there was one) is over. Exactly as many leaves the lane full, with maybe more behind it.
   let reported = Promise.resolve();
   if (jobs.length < free) {

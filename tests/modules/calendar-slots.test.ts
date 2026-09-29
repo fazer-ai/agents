@@ -277,7 +277,7 @@ describe("computeAggregatedSlots", () => {
   });
 
   test("the WHOLE range survives for every calendar, never just its head", () => {
-    // NOTE: a per-calendar bound here (say, the first eight starts) turns "all bookable slots" into
+    // A per-calendar bound here (say, the first eight starts) turns "all bookable slots" into
     // "the first couple of hours", and an afternoon request comes back unavailable while the
     // afternoon is free.
     const slots = agg({

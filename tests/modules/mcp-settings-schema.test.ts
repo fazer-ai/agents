@@ -186,7 +186,7 @@ describe("agent_settings_set argument schema", () => {
   // `tools/list` drops what it cannot express.
   test("the published choices are the registry's own", async () => {
     const published = await publishedSchema();
-    // NOTE: compared as sets. The claim is membership — every provider the build registers is
+    // Compared as sets. The claim is membership — every provider the build registers is
     // offered, and nothing else is — and the registries are live arrays another test can reorder.
     const choices = (block: string, field: string) =>
       [...(keywordOf(published, block, field, "enum") as string[])].sort();
@@ -386,7 +386,7 @@ describe("agent_settings_set argument schema", () => {
     expect(parsed.success).toBe(true);
   });
 
-  // NOTE: What the readers DISCARD may be refused, and refusing it is the point: otherwise the call succeeds
+  // What the readers DISCARD may be refused, and refusing it is the point: otherwise the call succeeds
   // and stores a default nobody asked for.
   const discarded: [string, Record<string, unknown>][] = [
     ["a boolean spelled as a word", { debounce: { enabled: "yes" } }],

@@ -43,7 +43,7 @@ const suDb = su as PrismaClient;
 let tenantId = 0n;
 let instanceId = 0n;
 
-// NOTE: Scripted model: first call fires handoff_to_human, second call replies with text.
+// Scripted model: first call fires handoff_to_human, second call replies with text.
 class HandoffThenReplyModel {
   constructor(private reply: string) {}
   async invoke(): Promise<AIMessage> {
@@ -277,7 +277,7 @@ describe.skipIf(!dbUp)(
         "handoff_to_human",
       );
 
-      // NOTE: And it paged the minLevel:warn channel, so the failure is not invisible.
+      // And it paged the minLevel:warn channel, so the failure is not invisible.
       let delivery: { level: string | null } | null = null;
       for (let i = 0; i < 50 && !delivery; i++) {
         delivery = await suDb.alertDelivery.findFirst({

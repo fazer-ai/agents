@@ -712,7 +712,7 @@ describe.skipIf(!dbUp)("the ingestion job defers to a turn in flight", () => {
     await arm(400, "primeira da rajada");
     await arm(401, "segunda da rajada");
 
-    // NOTE: Claimed from the traffic-proportional half of the shared lane, so ingestion does not
+    // Claimed from the traffic-proportional half of the shared lane, so ingestion does not
     // compete with the fixed-rate kinds for the same batch (src/modules/scheduler/lanes.ts).
     const claimed = await claimDueTrafficJobs(50, appDb, new Date(), tenantId);
     // Read from the dedicated column, not from the JSON: the ciphertext of a contact's own words

@@ -292,7 +292,7 @@ export function CredentialForm({
 
   useEffect(() => {
     if (typeOpen) {
-      // NOTE: rAF defers until after Radix positions the floating panel and its own focus logic runs.
+      // rAF defers until after Radix positions the floating panel and its own focus logic runs.
       const id = requestAnimationFrame(() => typeSearchRef.current?.focus());
       return () => cancelAnimationFrame(id);
     }
@@ -464,7 +464,7 @@ export function CredentialForm({
     ),
   };
 
-  // NOTE: the refusal, at the input it names, in the server's own sentence: a 409 arrives localized for
+  // The refusal, at the input it names, in the server's own sentence: a 409 arrives localized for
   // the request's Accept-Language and names the type too, so a console override would only be a
   // shorter duplicate. The declared names include the per-field keys of a multi-field type (`api_key`,
   // `public_key`): `assertNoSurroundingWhitespace` refuses by the inner key.
@@ -665,7 +665,7 @@ export function CredentialForm({
   const genericTypes = GENERIC_TYPE_ORDER.filter(matchesTypeSearch);
   const noTypeResults = serviceTypes.length === 0 && genericTypes.length === 0;
 
-  // NOTE: the Save button reads "Save anyway" after a failed test, but only for a failure the operator
+  // The Save button reads "Save anyway" after a failed test, but only for a failure the operator
   // can decide to ignore. `surrounding_whitespace` is the write's own verdict, refused by
   // createVaultEntry/updateVaultEntry every time, so offering it advertises an action that cannot succeed.
   const testFailedRecoverably =

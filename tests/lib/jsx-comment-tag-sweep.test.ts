@@ -81,7 +81,7 @@ function auditTree(files: Array<[string, string]>): {
 describe("a comment in markup documents the element below it, and carries no NOTE:", () => {
   test("no JSX comment under src/ is tagged, and none is hidden from the scan", async () => {
     const { Glob } = await import("bun");
-    // NOTE: every `.tsx` in `src`, not just the client: `src/modules/documents/render.tsx` renders
+    // Every `.tsx` in `src`, not just the client: `src/modules/documents/render.tsx` renders
     // JSX that a glob rooted at the console would never see.
     const files: Array<[string, string]> = [];
     for await (const rel of new Glob("**/*.tsx").scan("src")) {
@@ -145,7 +145,7 @@ describe("the detector is not fooled by prose that spells the shape", () => {
       expect(isJsxComment(out, start, end)).toBe(false);
     }
 
-    // NOTE: ...and the container survives the same pass hugging, including the one after JSX text,
+    // ...and the container survives the same pass hugging, including the one after JSX text,
     // which a check on what precedes the brace would skip.
     const markup =
       "const el = (\n  <div>\n    label {/* NOTE: after text */}\n    <X />\n    {ok && <Y />}{/* NOTE: after a container */}\n  </div>\n);\n";

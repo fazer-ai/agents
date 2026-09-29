@@ -21,7 +21,7 @@ function safeLocalPath(raw: string | null): string {
   return raw;
 }
 
-// NOTE: The MCP OAuth authorization endpoint sends anonymous visitors here with itself as the return
+// The MCP OAuth authorization endpoint sends anonymous visitors here with itself as the return
 // destination. It is a SERVER route, not a SPA route, so react-router's navigate() would render a
 // dead SPA path instead of resuming the OAuth flow — it needs a real browser navigation. Kept to
 // this single exact path (never a general "/api/" prefix) so a crafted ?redirect= cannot turn login
@@ -55,7 +55,7 @@ export function LoginPage() {
     onError: setError,
   });
   const authPending = loading || googlePending;
-  // NOTE: Synchronous cross-method lock so a Google credential callback and a
+  // Synchronous cross-method lock so a Google credential callback and a
   // form submit cannot both pass their guards before React commits the pending
   // state update.
   const authInFlightRef = useRef(false);
@@ -63,7 +63,7 @@ export function LoginPage() {
   // early returns below, because a hook after a conditional return is not called on every render.
   const sentRef = useRef({ email, password });
   sentRef.current = { email, password };
-  // NOTE: Covers the already-logged-in visit and the Google callback (which only flips `user`); the
+  // Covers the already-logged-in visit and the Google callback (which only flips `user`); the
   // password path navigates from its own handler.
   const resumeServerFlow = user && isServerNavigation(redirectTo);
   useEffect(() => {

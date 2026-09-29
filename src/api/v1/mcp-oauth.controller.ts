@@ -416,7 +416,7 @@ export const mcpOAuthController = new Elysia({
       if (!sessionCtx?.userId) throw new UnauthorizedError();
       requireSession(sessionCtx);
       const userId = sessionCtx.userId;
-      // NOTE: the decision acts in the tenant the request was PARKED for, not the one the console
+      // The decision acts in the tenant the request was PARKED for, not the one the console
       // tab has selected: /authorize carries no selector, so it parked under the person's default
       // membership. They still have to belong there, with the role read now.
       let ctx = sessionCtx;
@@ -436,7 +436,7 @@ export const mcpOAuthController = new Elysia({
       // console's `X-Tenant-Id` SELECTOR must not decide which trail a decision joins.
       const scopeTenantId = ctx.role === "SUPER_ADMIN" ? null : ctx.tenantId;
 
-      // NOTE: one transaction for the decision and its audit row, so a granted consent cannot leave
+      // One transaction for the decision and its audit row, so a granted consent cannot leave
       // no trace. A denial is a mutation too: the consumption is the write, and the row belongs to it.
       const decided = await asPrincipalOn(basePrisma, ctx, async (db) => {
         const pending = await consumePendingAuthorization(

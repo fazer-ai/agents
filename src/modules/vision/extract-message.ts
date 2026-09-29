@@ -121,7 +121,7 @@ export async function extractMessageVisuals(params: {
   const { visuals: todos, tenantId, instanceId, messageId } = params;
   if (todos.length === 0) return null;
 
-  // NOTE: Anexos reais primeiro, com o teto. As imagens do corpo do e-mail vêm depois, em lotes do
+  // Anexos reais primeiro, com o teto. As imagens do corpo do e-mail vêm depois, em lotes do
   // que sobrou do teto: só se sabe que uma é ornamento depois de baixá-la, e ornamento não gasta
   // vaga, então cada lote devolve as vagas dos que foram ignorados ao lote seguinte.
   const anexos = todos.filter((v) => v.id !== null);
@@ -244,7 +244,7 @@ export async function extractMessageVisuals(params: {
   const imagens: string[] = [];
   const documentos: string[] = [];
   const unreadFiles: UnreadFile[] = [];
-  // NOTE: Ornamento do corpo do e-mail, ou imagem que não é deste Chatwoot: não foi enviada pelo
+  // Ornamento do corpo do e-mail, ou imagem que não é deste Chatwoot: não foi enviada pelo
   // cliente, então não é lida, não rotula as outras e não entra na contagem de não lidos.
   const doCliente = extraidos.flatMap(({ nome, r }) =>
     r === BODY_IMAGE_IGNORED ? [] : [{ nome, r }],
@@ -265,12 +265,12 @@ export async function extractMessageVisuals(params: {
   const descricao = imagens.length > 0 ? imagens.join("\n\n") : null;
   const documento = documentos.length > 0 ? documentos.join("\n\n") : null;
 
-  // NOTE: UM agregado por mensagem, depois do laço. Cada `extractInboundFile` stasharia o seu sob a
+  // UM agregado por mensagem, depois do laço. Cada `extractInboundFile` stasharia o seu sob a
   // MESMA chave de mensagem e a loja mescla campo a campo, então N extrações em paralelo deixariam
   // só a que terminou por último; e no Chatwoot upstream, onde a rota de write-back da meta não
   // existe, essa loja é o ÚNICO leitor do flush do debounce.
   const leuCorpo = todos.some((v) => v.id === null);
-  // NOTE: Uma mensagem que o prazo do chamador cortou sem ler nada não é stashada: a contagem de não
+  // Uma mensagem que o prazo do chamador cortou sem ler nada não é stashada: a contagem de não
   // lidos é a marca de TENTADA, e a nova tentativa do job tem que lê-la. Lida em parte, ela é
   // stashada como sempre, com o aviso dos arquivos que faltaram.
   const cortadaSemLeitura = params.signal?.aborted && !descricao && !documento;

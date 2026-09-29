@@ -41,7 +41,7 @@ type AdminStats = NonNullable<StatsResponse>["stats"];
 const SEARCH_DEBOUNCE_MS = 300;
 const selectCls =
   "rounded-lg border border-border bg-bg-tertiary px-3 py-2 text-sm text-text-primary focus:border-border-focus focus:outline-none";
-// NOTE: Static keys so the skeleton rows don't key off the array index.
+// Static keys so the skeleton rows don't key off the array index.
 const USER_SKELETON_KEYS = [
   "user-0",
   "user-1",
@@ -181,7 +181,7 @@ export function AdminUsersPage() {
       return;
     }
     const newRole = isAdminRole(user.role) ? "AGENT" : "TENANT_ADMIN";
-    // NOTE: The role is held per tenant: in the fleet view a person has a row per membership, and the
+    // The role is held per tenant: in the fleet view a person has a row per membership, and the
     // write names the one this row is. A tenant admin's write is fenced to their tenant.
     const { data, error } = await api.api.admin
       .users({ id: user.id })
@@ -217,7 +217,7 @@ export function AdminUsersPage() {
     }
   };
 
-  // NOTE: Irreversible (step-up password). The server refuses self-delete / last-admin and returns a
+  // Irreversible (step-up password). The server refuses self-delete / last-admin and returns a
   // localized message, surfaced in the toast. The fleet deletes the ACCOUNT; a tenant admin removes
   // the person from their tenant, and their account and other tenants stay.
   function openDeleteUser(user: AdminUser) {

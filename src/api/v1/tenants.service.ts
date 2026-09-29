@@ -80,7 +80,7 @@ export async function resolveTenantSelector(
   const sel = selector.trim();
   if (sel) {
     const row = await asSuperAdminOn(base, async (db) => {
-      // NOTE: `parseDbId`, not a digits test. A run of digits past 2^63-1 passes `/^\d+$/`,
+      // `parseDbId`, not a digits test. A run of digits past 2^63-1 passes `/^\d+$/`,
       // converts, and is refused by POSTGRES when the query binds it — a 500 on a lookup whose
       // other outcome is a 404. A selector that is not an id is simply tried as a slug.
       const asId = parseDbId(sel);

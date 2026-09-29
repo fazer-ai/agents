@@ -246,7 +246,7 @@ describe.skipIf(!dbUp)("a scope keeps an administrator", () => {
     }
   });
 
-  // NOTE: Run two writers so they read the scope at the same instant, and PROVE they did: both are parked on
+  // Run two writers so they read the scope at the same instant, and PROVE they did: both are parked on
   // rows a third transaction holds, both are asserted to be blocked by it, and only then is it
   // released. Started plain, the two just run one after the other on a quiet machine, and the race test
   // would pass against a tree that has the defect.

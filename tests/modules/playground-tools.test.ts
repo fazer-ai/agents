@@ -119,7 +119,7 @@ describe("applyToolMocks (P4)", () => {
       new Set([SKIP_REPLY_TOOL]),
     );
     const skip = mocked.find((t) => t.name === SKIP_REPLY_TOOL);
-    // NOTE: invoked as a TOOL CALL, as the graph does: the tool identifies itself with a mark only
+    // Invoked as a TOOL CALL, as the graph does: the tool identifies itself with a mark only
     // it can set, and there is no `tool_call_id` to hang one on otherwise.
     const out = (await skip?.invoke({
       type: "tool_call",

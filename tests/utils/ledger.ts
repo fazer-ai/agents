@@ -16,7 +16,7 @@ export function expectWaiverLedger(
     | Readonly<Record<string, unknown>>,
   pinned: number,
 ): void {
-  // NOTE: a `Set` reaches `Object.keys` as `[]`, so a ledger written as one would report size 0 and
+  // A `Set` reaches `Object.keys` as `[]`, so a ledger written as one would report size 0 and
   // pass every pin above zero silently. Two of the thirteen are Sets.
   const size = Array.isArray(ledger)
     ? ledger.length

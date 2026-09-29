@@ -56,7 +56,7 @@ export class ForbiddenError extends AppError {
   }
 }
 
-// NOTE: raised when a Pro-only mutation is reached in the Free edition. 403 with a user-facing i18n
+// Raised when a Pro-only mutation is reached in the Free edition. 403 with a user-facing i18n
 // key so the client can surface an upgrade prompt. Thrown by the Free-edition paired stubs that stand
 // in for Pro-only write modules (e.g. the tenants/branding admin services). Kept here (not in
 // edition.ts) so this module stays import-cycle-free.
@@ -66,7 +66,7 @@ export class ProEditionError extends AppError {
   }
 }
 
-// NOTE: a uniqueness/state conflict surfaced to the user (e.g. a duplicate tenant slug).
+// A uniqueness/state conflict surfaced to the user (e.g. a duplicate tenant slug).
 export class ConflictError extends AppError {
   constructor(
     message = "Conflict",
@@ -119,7 +119,7 @@ export class TenantSelectorRefusedError extends ForbiddenError {
   }
 }
 
-// NOTE: uniform 401 for the inbound receptor. An unknown/disabled route token and a bad
+// Uniform 401 for the inbound receptor. An unknown/disabled route token and a bad
 // auth signature must look identical (same status, same body) so the response never reveals
 // which token strings are live.
 export class UnauthorizedError extends AppError {
@@ -128,7 +128,7 @@ export class UnauthorizedError extends AppError {
   }
 }
 
-// NOTE: a transient infrastructure failure surfaced while verifying the session (e.g. the
+// A transient infrastructure failure surfaced while verifying the session (e.g. the
 // DB pool reconnecting during a dev hot-reload, a brief outage). 503 tells the client to
 // retry instead of treating the request as a logout — a null user from a swallowed DB error
 // is indistinguishable from a real "no session" and would bounce the operator to /login on

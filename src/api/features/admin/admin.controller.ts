@@ -179,7 +179,7 @@ export const adminController = new Elysia({
         set.status = 401;
         return { error: translate("errors.unauthorized", "Unauthorized") };
       }
-      // NOTE: the PARSED id, not the path segment. `parseDbId` accepts leading zeros, so `007`
+      // The PARSED id, not the path segment. `parseDbId` accepts leading zeros, so `007`
       // addresses row 7 while failing string equality against `"7"`, and comparing the raw segment
       // would let a caller past the guard that stops them locking themselves out.
       const targetId = requireDbId(params.id);

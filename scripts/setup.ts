@@ -8,7 +8,7 @@ const REPO_NAME = path.basename(ROOT);
 
 const SNAKE_REPO_NAME = REPO_NAME.replace(/-/g, "_");
 
-// NOTE: Order matters: longer/more specific markers must come first so they
+// Order matters: longer/more specific markers must come first so they
 // match before the general project-name substitution overwrites their prefix.
 const SUBSTITUTIONS: [string, string][] = [
   // Postgres database identifier (snake_case, must be a valid postgres identifier)

@@ -45,7 +45,7 @@ describe("PathPicker with nothing to offer", () => {
   });
 
   test("renders nothing when there is nothing to move the caret towards", () => {
-    // NOTE: the appointment pickers, and the template picker with no sample pasted.
+    // The appointment pickers, and the template picker with no sample pasted.
     const { container } = render(<PathPicker {...base} />);
     expect(container.innerHTML).toBe("");
   });

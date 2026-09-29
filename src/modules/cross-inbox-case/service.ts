@@ -521,7 +521,7 @@ async function run(
       if (verdict === "drop") subject = null;
     }
 
-    // NOTE: one case contact at a time, from the listing to the opening message. The outer queue is per
+    // One case contact at a time, from the listing to the opening message. The outer queue is per
     // ORIGIN, so two origins of one contact could both list before either creates and both send an
     // opening to the same continued case. Keyed by account, inbox and case contact, the second lists
     // after the first created and reads its case as continued.
@@ -677,7 +677,7 @@ async function run(
       await attempt("origin_link_note", () =>
         client.sendPrivateNote(origin, originLinkNote(caseUrl, inboxName)),
       );
-      // NOTE: labels are a read-modify-write of the whole set, so both writes go through the shared
+      // Labels are a read-modify-write of the whole set, so both writes go through the shared
       // label queue and READ inside it (a new case included: an automation can label it after create).
       // The operator's labels are checked against the account, the model's are not: an unknown label
       // is stored as a tag no folder lists, so it is left off and reported. An unreadable catalog keeps

@@ -744,7 +744,7 @@ const refuseProtoKey = <T extends z.ZodObject>(schema: T) =>
 // A map keyed BY THE NATIVE CATALOG, not an open record: both readers drop any other key, so "any
 // string" would accept a typo the turn then ignores (for a precondition, an unguarded tool).
 const nativeToolKeys = <T extends z.ZodTypeAny>(value: T) => {
-  // NOTE: ONE shared instance: distinct ones serialize as a full copy per key in the published
+  // ONE shared instance: distinct ones serialize as a full copy per key in the published
   // schema, which the model pays for on every conversation.
   const shared = value.optional();
   return refuseProtoKey(

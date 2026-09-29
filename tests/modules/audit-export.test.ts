@@ -382,7 +382,7 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
       for (let i = 0; i < 14; i++) {
         await seed(mine, "agent.update", `${TAG}:fat${i}`, { after: fat });
       }
-      // NOTE: one row's real size on this projection, read rather than assumed.
+      // One row's real size on this projection, read rather than assumed.
       const one = await exportAudit(ctx(), { maxRows: 1 }, appDb);
       const rowBytes = Buffer.byteLength(one.content, "utf8");
       const budget = rowBytes * 5;

@@ -140,7 +140,7 @@ describe.skipIf(!dbUp)("runAgentNudge: an agent that cannot author", () => {
       select: { id: true },
     });
 
-    // NOTE: The state under test: the agent is live and expected to answer, and its model
+    // The state under test: the agent is live and expected to answer, and its model
     // credential does not resolve. A vault id that was never created stands in for the three real
     // ways to reach it (deleted entry, still-pending entry, a bare name where a ref is required).
     const broken = await suDb.agent.create({

@@ -112,7 +112,7 @@ describe.skipIf(!dbUp)("a control command that did not run says so", () => {
 
     testAgentId = await mkAgent("Teste", "test");
     prodAgentId = await mkAgent("Producao", "production");
-    // NOTE: the agent with no Chatwoot identity: bound to an inbox, in test mode, and unable to
+    // The agent with no Chatwoot identity: bound to an inbox, in test mode, and unable to
     // speak anywhere, since every bot-token call it makes goes out with an empty token.
     const orphanAgentId = await mkAgent("SemPersona", "test");
     for (const agentId of [testAgentId, prodAgentId]) {

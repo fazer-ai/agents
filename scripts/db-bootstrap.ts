@@ -256,7 +256,7 @@ async function revokeForeignFleetAccess(client: Client, fleetRole: string) {
       "REVOKE ALL ON SCHEMA public FROM %I",
     ]) {
       try {
-        // NOTE: quoted by the server, because the name comes from the catalog and a syntax error
+        // Quoted by the server, because the name comes from the catalog and a syntax error
         // caught here would read as a permission problem while the access stayed in place.
         const stmt = (
           await client.query<{ stmt: string }>(
@@ -273,7 +273,7 @@ async function revokeForeignFleetAccess(client: Client, fleetRole: string) {
     }
   }
 
-  // NOTE: re-read, because a REVOKE by anyone but the GRANTOR removes nothing and reports success.
+  // Re-read, because a REVOKE by anyone but the GRANTOR removes nothing and reports success.
   // Reported, not thrown: in the SQL twin a refusal rolls the REVOKEs back with it, and
   // `src/lib/db-guard.ts` already refuses to serve on this condition.
   const left = (await foreignRoles()).filter((r) => r.privileges > 0);
@@ -311,12 +311,12 @@ async function provisionFleetRole(
   ident: string,
   serverVersionNum: number,
 ) {
-  // NOTE: the expression, not the `fazerai_fleet_role()` function: on a first install this runs
+  // The expression, not the `fazerai_fleet_role()` function: on a first install this runs
   // before `migrate deploy` creates it. `tests/lib/rls-policy-shape.test.ts` proves the two agree.
   const fleetRole = (
     await client.query<{ role: string }>(`SELECT ${FLEET_ROLE_EXPR} AS role`)
   ).rows[0]?.role as string;
-  // NOTE: safe to interpolate only because the derivation normalises the name to `[a-zA-Z0-9_]`,
+  // Safe to interpolate only because the derivation normalises the name to `[a-zA-Z0-9_]`,
   // so it cannot carry a quote.
   const fleet = `"${fleetRole}"`;
   await revokeForeignFleetAccess(client, fleetRole);
@@ -330,7 +330,7 @@ async function provisionFleetRole(
     END $$;
   `);
 
-  // NOTE: asked after the create-if-absent, of whatever role is actually there: one this script
+  // Asked after the create-if-absent, of whatever role is actually there: one this script
   // found rather than created is the case that matters.
   const fleetState = (
     await client.query<Record<string, boolean> & { reaches: string | null }>(
@@ -379,7 +379,7 @@ async function provisionFleetRole(
     await client.query(grant);
   }
 
-  // NOTE: membership is RECONCILED, not only added to: a database dropped and recreated under the
+  // Membership is RECONCILED, not only added to: a database dropped and recreated under the
   // same name derives the same fleet role, and the previous installation's memberships survive it.
   // The expected members are this runtime role and the administrator (for data migrations); any
   // other is revoked and named. `quote_ident` so a printed statement is one an operator can paste.
@@ -409,7 +409,7 @@ async function provisionFleetRole(
     ])
   ).rows[0]?.q as string;
 
-  // NOTE: a stray is kept only when the operator DECLARED it and it is still serving: an open session
+  // A stray is kept only when the operator DECLARED it and it is still serving: an open session
   // cannot tell a rotation's outgoing role from a stale installation's (see
   // `FLEET_ROLE_RETAINED_MEMBER_ENV`).
   const retained = retainedFleetMembers(
@@ -436,7 +436,7 @@ async function provisionFleetRole(
   const before = new Set(all.filter((r) => !spared(r)).map((r) => r.rolname));
   for (const rolname of before) {
     try {
-      // NOTE: quoted by the server, since a catalog name may contain a double quote and the catch
+      // Quoted by the server, since a catalog name may contain a double quote and the catch
       // would read the syntax error as a permission problem. CASCADE is required: a previous
       // administrator is a stray whose onward grant to the runtime role depends on it (`dependent
       // privileges exist`), and the GRANTs below re-make that grant.
@@ -454,7 +454,7 @@ async function provisionFleetRole(
     }
   }
 
-  // NOTE: re-read, because a REVOKE by someone who is not the GRANTOR removes nothing and reports
+  // Re-read, because a REVOKE by someone who is not the GRANTOR removes nothing and reports
   // success; since PostgreSQL 16 a membership is one row per grantor.
   const after = (await membersOf()).filter((r) => !spared(r));
   const remaining = new Set(after.map((r) => r.rolname));
@@ -469,7 +469,7 @@ async function provisionFleetRole(
   // NOTE: refuses, like the SQL twin: a surviving member can SET ROLE into the fleet role and read
   // every tenant, an active breach rather than a degraded feature.
   if (after.length > 0) {
-    // NOTE: by name, not by row, since a role granted by two grantors has two rows.
+    // By name, not by row, since a role granted by two grantors has two rows.
     const remaining = [...new Set(after.map((r) => r.quoted))];
     const names = remaining.join(", ");
     const statements = remaining
@@ -485,7 +485,7 @@ async function provisionFleetRole(
     );
   }
 
-  // NOTE: both grants are best-effort: the fleet role may be one this administrator did not create
+  // Both grants are best-effort: the fleet role may be one this administrator did not create
   // and holds no ADMIN over, which leaves tenant traffic working. The membership check below turns
   // the failure into a message naming the repair.
   const repair = fleetMembershipRepair(role, fleetRole, serverVersionNum);
@@ -524,7 +524,7 @@ async function provisionFleetRole(
     );
   }
 
-  // NOTE: on 16+ `MEMBER` ignores the membership's own SET option, so a grant with SET FALSE reads as
+  // On 16+ `MEMBER` ignores the membership's own SET option, so a grant with SET FALSE reads as
   // healthy; `SET` is asked there. Before 16 the privilege type does not exist and every membership
   // allows SET ROLE, so `MEMBER` is the right question.
   let capabilityQuery = `SELECT pg_has_role($1, $2, 'MEMBER') AS can_set_role,
@@ -584,7 +584,7 @@ async function provisionCheckpointerSchema(
   }
 
   if (schemaOwner !== undefined) {
-    // NOTE: grants on the schema AND its tables (a schema grant does not reach the tables), and
+    // Grants on the schema AND its tables (a schema grant does not reach the tables), and
     // FIRST: a table's new owner must hold CREATE on the schema, or the transfer loop rolls back.
     // Only tables are re-owned, and only those the administrator itself owns: OWNER TO strips the
     // previous owner at once, and a serving container on the old runtime role must keep them.
@@ -622,7 +622,7 @@ async function provisionCheckpointerSchema(
       adoptError ??= err;
     }
 
-    // NOTE: the outcome is decided by a privilege check, not by the absence of an error above: the
+    // The outcome is decided by a privilege check, not by the absence of an error above: the
     // runtime role may already hold what it needs from someone else. One has_table_privilege() per
     // privilege, because a comma-separated list is OR and would pass a read-only grant.
     const usable = (
@@ -666,7 +666,7 @@ async function provisionCheckpointerSchema(
           `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA langgraph TO "${role}";`,
       );
     }
-    // NOTE: NULL when every table is the runtime role's. A string rather than an array, because the
+    // NULL when every table is the runtime role's. A string rather than an array, because the
     // pg driver returns a scalar-subquery array as its Postgres literal.
     const foreignOwners = usable?.foreign_owners;
     if (foreignOwners) {
@@ -763,7 +763,7 @@ async function main() {
       password,
     ]);
 
-    // NOTE: `admin_superuser` and `server_version_num` decide nothing; they name the mode in the log.
+    // `admin_superuser` and `server_version_num` decide nothing; they name the mode in the log.
     const state = await client.query<{
       app_exists: boolean;
       app_superuser: boolean;
@@ -796,7 +796,7 @@ async function main() {
 
     await provisionRuntimeRole(client, role, ident, runtimeRole, plan);
 
-    // NOTE: re-read, since the demotion may have changed the answer. `pg_has_role(..., 'USAGE')`
+    // Re-read, since the demotion may have changed the answer. `pg_has_role(..., 'USAGE')`
     // rather than `pg_auth_members.inherit_option`, a PostgreSQL 16 column that would fail every
     // boot on older servers.
     const privileged = (

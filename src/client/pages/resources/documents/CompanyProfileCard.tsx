@@ -57,7 +57,7 @@ export function CompanyProfileCard({
   const formRef = useRef(form);
   formRef.current = form;
   const draft = form.draft;
-  // NOTE: the same `companyChanges` the save sends is what "unsaved" means for the nav guard (a
+  // The same `companyChanges` the save sends is what "unsaved" means for the nav guard (a
   // click on another tab, a tenant switch), so the two cannot disagree.
   const dirty = Object.keys(companyChanges(form)).length > 0;
   // The six patch keys ARE the six names the server refuses by: `updateCompanySettings` names the key
@@ -70,7 +70,7 @@ export function CompanyProfileCard({
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
 
-  // NOTE: ONE write to the company block at a time, across all three routes: each answers with the
+  // ONE write to the company block at a time, across all three routes: each answers with the
   // WHOLE block, so with two in flight the last to ANSWER wins, which can put back a superseded
   // logoKey (whose file is already deleted) or replaced text. Serialised rather than reconciled
   // with a generation counter, since each is a deliberate act; the flag names WHICH one for the
@@ -108,7 +108,7 @@ export function CompanyProfileCard({
       const { data, error } =
         await api.api.v1["tenant-settings"].company.put(sent);
       if (error || !data) {
-        // NOTE: the server's refusal NAMES the field and the character the document fonts cannot
+        // The server's refusal NAMES the field and the character the document fonts cannot
         // print, so it goes on that control. A sentence back means nothing this form renders (or no
         // server at all); null means it is already on the control. `sent` is compared with the
         // CURRENT draft (the ref), so a refusal about a value already replaced goes to a toast.
@@ -122,7 +122,7 @@ export function CompanyProfileCard({
         return;
       }
       refusal.clear();
-      // NOTE: the stored text becomes the baseline (`afterCompanySave`); text typed during the
+      // The stored text becomes the baseline (`afterCompanySave`); text typed during the
       // request stays unsaved. From the ref, not the closed-over `form`, and outside the updater,
       // which React expects to be pure and runs twice in development.
       const next = afterCompanySave(formRef.current, sent);
@@ -136,7 +136,7 @@ export function CompanyProfileCard({
       // the parent decides whether that opening is still the one on screen.
       if (clean) onSaved?.(session);
     } catch (e) {
-      // NOTE: Eden RESOLVES an HTTP error as `{ error }` and REJECTS on a transport failure. This
+      // Eden RESOLVES an HTTP error as `{ error }` and REJECTS on a transport failure. This
       // goes through `capture` too, so it stays the only writer of the held refusal.
       const toast = refusal.capture(
         e,
@@ -163,7 +163,7 @@ export function CompanyProfileCard({
   }
 
   async function upload(file: File) {
-    // NOTE: the server's refusal wins whenever there is one: this route enforces type, byte size
+    // The server's refusal wins whenever there is one: this route enforces type, byte size
     // AND pixel count, and the fallback names only the size (wrong for an 8000x8000 180 KB PNG).
     const failed = (e?: unknown) =>
       showToast(

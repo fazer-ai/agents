@@ -1682,7 +1682,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a failure after a READ-ONLY call still retries", async () => {
-    // NOTE: a calculator and a knowledge search leave nothing behind, so there is nothing a retry
+    // A calculator and a knowledge search leave nothing behind, so there is nothing a retry
     // would repeat, and refusing it there throws away the run for free, which for an `on_resolve`
     // observer is its only chance.
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
@@ -1727,7 +1727,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a tenant tool wearing the search_knowledge name counts as an effect", async () => {
-    // NOTE: the exemption is for the RAG SEARCH, and `search_knowledge` is not a name the assembly
+    // The exemption is for the RAG SEARCH, and `search_knowledge` is not a name the assembly
     // reserves (only natives are): RAG is assembled LAST, so a legacy tenant row carrying it wins
     // the name. Exempting by name would hand the exemption to whatever that row does, an HTTP POST
     // included, and the retry would send it twice.
@@ -1883,7 +1883,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("skip_reply beside a read-only call does not burn the retry", async () => {
-    // NOTE: `skip_reply` performs nothing: its RETURN is the whole tool. Alone it ends the turn, so
+    // `skip_reply` performs nothing: its RETURN is the whole tool. Alone it ends the turn, so
     // the case only exists beside a companion — and then the turn goes on to another model round,
     // which is where the transient lands. Counting the decision as an effect would discard the run
     // for free.
@@ -1935,7 +1935,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a call the precondition refused is not a commit", async () => {
-    // NOTE: the counter increments BEFORE dispatching, because it has to exist when the invoke
+    // The counter increments BEFORE dispatching, because it has to exist when the invoke
     // threw. A guarded call that was refused never reached the handler, so counting it as committed
     // would throw away a free retry, which for an `on_resolve` observer is its only pass.
     const before = await suDb.agent.findFirstOrThrow({
@@ -2012,7 +2012,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a labels read that fails does not take the tick with it", async () => {
-    // NOTE: a watcher does not have to be a classifier. One that only writes a private note has
+    // A watcher does not have to be a classifier. One that only writes a private note has
     // nothing to do with labels, and an uncaught throw on this read would end its tick before the
     // graph is invoked, retried whole and eventually dead-lettered over a read it never needed.
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
@@ -2067,7 +2067,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a fence that failed INSIDE the handler leaves the tick retryable", async () => {
-    // NOTE: the handler asks the fence again after its own read and before its own write. When that
+    // The handler asks the fence again after its own read and before its own write. When that
     // ask fails, the tool returns without writing, but the dispatch was already counted; the handler
     // reports what it did NOT do on a separate counter, or the tick would read itself as committed
     // and drop an observation a retry would recover for free.
@@ -2113,7 +2113,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a refused EFFECT-FREE tool does not cancel out a real write", async () => {
-    // NOTE: the counter does not count an effect-free dispatch, so a report from one must not
+    // The counter does not count an effect-free dispatch, so a report from one must not
     // subtract: otherwise a guarded `calculator` refusing in the same turn as a real `set_labels`
     // write reads as nothing committed, and the retry writes again.
     const before = await suDb.agent.findFirstOrThrow({
@@ -2191,7 +2191,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("a label call that changed nothing leaves the tick retryable", async () => {
-    // NOTE: no label moved, so no POST left: the dispatch was counted on the way in and the tick may
+    // No label moved, so no POST left: the dispatch was counted on the way in and the tick may
     // safely run again.
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     class SameLabelsThenDies {
@@ -2804,7 +2804,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   });
 
   test("an unreadable fence AFTER a write stops instead of retrying", async () => {
-    // NOTE: the retryable refusals exist because nothing re-arms the row on its own, but the fence
+    // The retryable refusals exist because nothing re-arms the row on its own, but the fence
     // is asked at EVERY hop, so an unreadable one can arrive after a write has already left. A
     // retry then repeats it, and for an HTTP POST or a booking that is the second charge.
     // At-most-once for the effects wins here exactly as it does for a model failure.
@@ -2980,7 +2980,7 @@ describe.skipIf(!dbUp)("the OBSERVE job", () => {
   test("a guarded label is shown where the model acts, and still survives the write", async () => {
     const log: ClientLog = { labelsWritten: [], notes: [], publicSends: 0 };
     __resetChatwootVocabCache();
-    // NOTE: the third model-facing place is the label HISTORY, the one that would name the guarded
+    // The third model-facing place is the label HISTORY, the one that would name the guarded
     // label in Chatwoot's own sentence. The vocabulary knows `agente-off`, so a line about it is
     // recognisable, and it has to drop out all the same.
     const client = stubClientWithVocab(

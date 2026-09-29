@@ -84,7 +84,7 @@ export function Popover({
   // because the pointer handlers read it from inside timers, where a state value would be the one
   // captured when the timer was armed.
   const pinned = useRef(false);
-  // NOTE: whether the close now arriving came from the TRIGGER's own click. Radix reports the trigger
+  // Whether the close now arriving came from the TRIGGER's own click. Radix reports the trigger
   // click, Escape and an outside click through the same `onOpenChange(false)`, and only the first may
   // pin: without this flag, Escape on a hover-opened box would pin it on screen.
   const fromTrigger = useRef(false);

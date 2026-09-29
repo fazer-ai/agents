@@ -163,7 +163,7 @@ export async function ingestHandler(
   if (!p) return { outcome: "done" };
   const tenantId = job.tenantId;
 
-  // NOTE: the deferral this job exists for, asked for with a flag rather than checked here. It has to
+  // The deferral this job exists for, asked for with a flag rather than checked here. It has to
   // be decided under the `ingest:<thread>` lock inside ./ingest.ts to be exclusive with a turn marking
   // itself; a check out here would only be staggered, since the turn can take the lock, mark itself
   // and release it between our check and the append.

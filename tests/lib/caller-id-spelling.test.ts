@@ -100,7 +100,7 @@ export function blankNonCode(src: string): string {
       if (out[i] !== "\n") out[i] = " ";
     }
   };
-  // NOTE: one frame per template literal being walked. `depth < 0` means the walk is in the
+  // One frame per template literal being walked. `depth < 0` means the walk is in the
   // template's TEXT (blank it); `depth >= 0` means it is inside a `${…}` hole, which is code and
   // stays. A stack because a hole can hold another template; blanking holes with the text would hide
   // `` `${BigInt(body.id)}` ``.
@@ -229,12 +229,12 @@ export function bigIntArgs(src: string): string[] {
       }
     }
     if (end !== -1) {
-      // NOTE: the trailing comma a formatter adds when the call wraps is not part of the argument, and a
+      // The trailing comma a formatter adds when the call wraps is not part of the argument, and a
       // waiver keyed with one would stop matching the day the line fits on one line again.
       const tidy = (text: string) =>
         text.replace(/\s+/g, " ").trim().replace(/,$/, "").trim();
       const arg = tidy(src.slice(at + 7, end));
-      // NOTE: WHOLLY a literal, judged on the blanked copy where a string's contents are spaces. An
+      // WHOLLY a literal, judged on the blanked copy where a string's contents are spaces. An
       // argument that starts with a literal is not a literal (`BigInt("0" + params.id)`). A template
       // literal never counts as one: either it interpolates, or it hides interpolation from this check.
       const blanked = tidy(code.slice(at + 7, end));

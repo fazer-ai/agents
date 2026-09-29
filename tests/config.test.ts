@@ -154,13 +154,13 @@ describe("numeric environment parsing", () => {
 describe("the timer bound is the runtime's, not a policy", () => {
   test("a delay above it is not honoured, it collapses to about a millisecond", async () => {
     const firedImmediately = await new Promise<boolean>((resolve) => {
-      // NOTE: if the runtime honoured this, the callback would be due in about 24.8 days.
+      // If the runtime honoured this, the callback would be due in about 24.8 days.
       const interval = setInterval(() => {
         clearInterval(interval);
         clearTimeout(guard);
         resolve(true);
       }, 2_147_483_648);
-      // NOTE: resolves false instead of hanging, so a runtime that starts honouring long delays fails
+      // Resolves false instead of hanging, so a runtime that starts honouring long delays fails
       // this test in two seconds rather than blocking the suite.
       const guard = setTimeout(() => {
         clearInterval(interval);

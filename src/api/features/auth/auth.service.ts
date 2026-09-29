@@ -10,7 +10,7 @@ function emailDomainMatches(email: string, domains: string[]): boolean {
   if (domains.length === 0) return false;
   const domain = email.trim().toLowerCase().split("@")[1];
   if (!domain) return false;
-  // NOTE: Defensive normalization in case the configured list is mutated
+  // Defensive normalization in case the configured list is mutated
   // outside of parseDomainList (e.g. tests).
   const normalized = new Set(
     domains
@@ -25,7 +25,7 @@ export function isEmailDomainAllowed(email: string): boolean {
   return emailDomainMatches(email, config.allowedSignupDomains);
 }
 
-// NOTE: `emailVerified` gates elevation: password signups never count as verified, so
+// `emailVerified` gates elevation: password signups never count as verified, so
 // anyone holding an admin-domain address still needs a verified channel (e.g. Google)
 // before being elevated to TENANT_ADMIN. SUPER_ADMIN is never granted via signup — only
 // through the first-run /setup flow.
@@ -130,7 +130,7 @@ export async function getUserByGoogleId(googleId: string) {
   });
 }
 
-// NOTE: public signup users are always AGENT and must belong to a tenant; the caller
+// Public signup users are always AGENT and must belong to a tenant; the caller
 // resolves which tenant (see resolveDefaultTenantId). The person and their membership are created
 // together, so a signup never leaves a user with nowhere to enter.
 export async function createUser(
@@ -158,7 +158,7 @@ export class SetupAlreadyCompleteError extends Error {
   }
 }
 
-// NOTE: Arbitrary fixed key for the transaction-scoped advisory lock that
+// Arbitrary fixed key for the transaction-scoped advisory lock that
 // serializes first-run setup. Any concurrent POST /auth/setup waits on the lock,
 // then sees a non-empty users table and aborts, so exactly one SUPER_ADMIN is created
 // even with the setup token disabled. xact-scoped lock auto-releases on
@@ -222,7 +222,7 @@ export async function createInitialAdmin(params: {
   });
 }
 
-// NOTE: tenant a public/Google self-signup user joins. Single-tenant deployments have
+// Tenant a public/Google self-signup user joins. Single-tenant deployments have
 // exactly one; multi-tenant onboarding via tenant-scoped invites is a later phase.
 export async function resolveDefaultTenantId(): Promise<bigint | null> {
   return asSuperAdmin(async (tx) => {
@@ -257,7 +257,7 @@ export async function createGoogleUser(params: {
   return sessionUserOf(row) as AuthUser;
 }
 
-// NOTE: Conditional update on `googleId: null` closes a TOCTOU race where two
+// Conditional update on `googleId: null` closes a TOCTOU race where two
 // parallel sign-ins for the same email but different Google identities both
 // observe googleId as null and the second write would silently overwrite the
 // first. The loser refetches and either fast-paths an idempotent retry of the
@@ -284,7 +284,7 @@ export async function linkGoogleIdToUser(
   return linked ? sessionUserOf(linked) : null;
 }
 
-// NOTE: a password change was attempted on an account that has no local password (e.g. a
+// A password change was attempted on an account that has no local password (e.g. a
 // Google-only user). The UI shows a "you sign in with Google" note instead of the form.
 export class NoPasswordSetError extends Error {
   constructor() {
@@ -293,7 +293,7 @@ export class NoPasswordSetError extends Error {
   }
 }
 
-// NOTE: the supplied current password did not match. Surfaced as a 400 (not 401) so it does not
+// The supplied current password did not match. Surfaced as a 400 (not 401) so it does not
 // trip the client's unauthorized-session handling — the session is valid, only the field is wrong.
 export class IncorrectPasswordError extends Error {
   constructor() {

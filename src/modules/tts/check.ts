@@ -72,7 +72,7 @@ export async function checkSynthesizedAudio(params: {
   const headers: Record<string, string> = {};
   if (cfg.token) headers.authorization = `Bearer ${cfg.token}`;
 
-  // NOTE: the deadline covers the body as well as the headers, and so does the classification: a
+  // The deadline covers the body as well as the headers, and so does the classification: a
   // detector that answers its headers in time and then stalls is a timeout, and a connection that
   // drops mid-body is a network failure. Only a body that ARRIVED and is not JSON is `malformed`.
   let raw: string;

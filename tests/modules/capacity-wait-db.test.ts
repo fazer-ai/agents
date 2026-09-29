@@ -347,7 +347,7 @@ describe.skipIf(!dbUp)("a reply waiting for capacity (issue #812)", () => {
           checkpointer: new MemorySaver(),
         },
       });
-      // NOTE: waits for the line rather than for a fixed time: under a loaded suite the flush can take
+      // Waits for the line rather than for a fixed time: under a loaded suite the flush can take
       // longer than the threshold to reach the queue at all.
       let lines = await capacityLines(conv.id);
       for (let i = 0; i < 100 && lines.length === 0; i++) {

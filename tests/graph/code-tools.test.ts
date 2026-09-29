@@ -263,7 +263,7 @@ describe("a code tool", () => {
   });
 
   test("a code tool is effect-free, and says so on the tool", () => {
-    // NOTE: The body runs in a fresh QuickJS interpreter with no fetch, no process, no require and
+    // The body runs in a fresh QuickJS interpreter with no fetch, no process, no require and
     // no timers (code-sandbox.ts): it computes and returns, so a second run duplicates nothing. The
     // observer's tick reads this to decide whether a failed tick may be retried, and an operator
     // names these tools, so the answer cannot be their name.

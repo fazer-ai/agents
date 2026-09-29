@@ -17,7 +17,7 @@ import { mcpResourceId } from "./metadata";
 // The mcp_oauth_* tables are GLOBAL (outside RLS); accessed via the base client, never scoped.
 
 const ALG = "HS256";
-// NOTE: wire-format identifier (the MCP OAuth `iss` claim).
+// Wire-format identifier (the MCP OAuth `iss` claim).
 const ISSUER = "fazerai:mcp";
 // Compatibility window for the brand rename: verify accepts the pre-rename issuer too, so access
 // tokens minted by the previous image survive the deploy instead of 401-ing in flight. We only ever

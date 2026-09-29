@@ -134,6 +134,46 @@ export function narratesHistory(block: CommentBlock): boolean {
   return NARRATION.test(block.text) && !waived(block);
 }
 
+// A statement that declares a name. Class members and object properties are left out: the line alone
+// does not tell a member from a call, so only the statement forms are held to the rule.
+const DECLARATION =
+  /^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?(?:async\s+)?(?:function\b|class\s|interface\s|enum\s|namespace\s|(?:const|let|var)\s+[\w$[{]|type\s+[\w$]+\s*[<=])/;
+const ASIDE = /^\s*(?:\/\/+|\/\*+)\s*NOTE:/;
+
+// A `NOTE:` opening a run of comment lines that ends directly above a declaration. The run documents
+// the name below it, so it takes no tag (`CLAUDE.md`, "Where the tag goes"); the tag is for an aside
+// about a statement. A directive inside the run does not end it: `biome-ignore` and the i18n anchors
+// sit between a docstring and its declaration. Returns the first line of each such run.
+export function taggedDocstrings(src: string): number[] {
+  const spans = commentSpans(src);
+  const inComment = (at: number) =>
+    spans.some(([start, end]) => at >= start && at < end);
+  const lines = src.split("\n");
+  const own: boolean[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    const lead = line.length - line.trimStart().length;
+    own.push(line.trim() !== "" && inComment(offset + lead));
+    offset += line.length + 1;
+  }
+  const out: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!own[i]) continue;
+    let end = i;
+    while (own[end + 1]) end++;
+    const run = lines.slice(i, end + 1).join("\n");
+    const below = lines[end + 1] ?? "";
+    if (
+      ASIDE.test(lines[i] ?? "") &&
+      !WAIVER.test(run) &&
+      DECLARATION.test(below)
+    )
+      out.push(i + 1);
+    i = end;
+  }
+  return out;
+}
+
 export type FileCounts = [provenance: number, long: number];
 
 export function countFile(src: string): {

@@ -60,7 +60,7 @@ export async function extractText(file: FileInput): Promise<{ text: string }> {
   let text: string;
 
   if (isPdf) {
-    // NOTE: Pass THE BYTES, not a proxy from `getDocumentProxy`: unpdf's `withDocument` only destroys
+    // Pass THE BYTES, not a proxy from `getDocumentProxy`: unpdf's `withDocument` only destroys
     // a document it created, so a caller-supplied proxy would stay alive for the life of the process
     // (the same ownership trap as the HEIC conversion in `modules/vision/convert`).
     const result = await unpdfExtractText(file.bytes, { mergePages: true });

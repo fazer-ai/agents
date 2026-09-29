@@ -273,7 +273,7 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
         await sign("TENANT_ADMIN"),
       );
       expect(viaOld.status).toBe(400);
-      // NOTE: while the shape the endpoint emits is accepted, so the 400 is about the FORM and not
+      // While the shape the endpoint emits is accepted, so the 400 is about the FORM and not
       // about cursors having stopped working.
       const viaNew = await get(
         `?limit=1&cursor=${encodeURIComponent(page.nextCursor)}`,

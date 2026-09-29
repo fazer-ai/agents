@@ -228,7 +228,7 @@ describe("the gate, as a run", () => {
   const appUrl = process.env.TEST_APP_DATABASE_URL as string;
 
   async function run(env: Record<string, string>) {
-    // NOTE: the opt-out is stripped from the INHERITED environment and only set by a caller that
+    // The opt-out is stripped from the INHERITED environment and only set by a caller that
     // means it. Otherwise a parent run started with ALLOW_NO_DB=1 would hand it to every child, and
     // the refusal these tests watch for would never happen.
     const { [DB_GATE_OPT_OUT]: _optOut, ...inherited } = process.env;

@@ -347,7 +347,7 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
   });
 
   test("a destination that redirects does not hand the URL back in the reason", async () => {
-    // NOTE: a Discord webhook URL embeds a bot token, and Bun's `UnexpectedRedirect` names the URL
+    // A Discord webhook URL embeds a bot token, and Bun's `UnexpectedRedirect` names the URL
     // it was fetching IN FULL, which would reach this result, the console toast and
     // `alert_deliveries.last_error`. The error text below is the one Bun produces against a 302.
     const path = "/api/webhooks/1234567890/TOKENDEDISCORDaaaSEGREDO";
@@ -374,7 +374,7 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
   });
 
   test("an IPv6 destination's path is masked too, brackets and all", async () => {
-    // NOTE: a regex stops at `]`, so an IPv6 literal would leave the token-bearing path in the
+    // A regex stops at `]`, so an IPv6 literal would leave the token-bearing path in the
     // clear. The destination is KNOWN here (just decrypted), so it is replaced by literal string
     // match; the regex is only the backstop for a URL this code does not know, like a redirect target.
     const url = "https://[2606:4700::1111]/hooks/PRIVATETOKENv6";
@@ -397,7 +397,7 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
   });
 
   test("a path holding punctuation the regex would stop at is masked whole", async () => {
-    // NOTE: guessing where a URL ENDS is the wrong job for the thing guarding a token: a regex
+    // Guessing where a URL ENDS is the wrong job for the thing guarding a token: a regex
     // ending at `)` or `'` would hand the remainder back in the clear.
     const url = outboundUrl("/hooks/tok)en'SUFFIXSECRET");
     const id = await seed("punct", { url });
@@ -415,7 +415,7 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
   });
 
   test("a host that does not resolve is still readable after the masking", async () => {
-    // NOTE: the pattern demands a scheme because a DNS failure names a bare host, which is the whole
+    // The pattern demands a scheme because a DNS failure names a bare host, which is the whole
     // advice the message carries and is already visible in the masked URL.
     const id = await seed("dns");
     const { fetchImpl } = receiver(() => {
@@ -477,7 +477,7 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
       await flowLogCount(suDb, { where: alerting }),
     ).toBe(0);
 
-    // NOTE: THE POSITIVE CONTROLS. Both tables are empty in a tenant created seconds ago, so a zero
+    // THE POSITIVE CONTROLS. Both tables are empty in a tenant created seconds ago, so a zero
     // is indistinguishable from a reader that cannot see the rows at all.
     const probe = await suDb.executionLog.create({
       data: {
@@ -620,7 +620,7 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
       },
       select: { id: true },
     });
-    // NOTE: TICK UNTIL IT CLAIMS. The claim is `FOR UPDATE ... SKIP LOCKED`, so a row another
+    // TICK UNTIL IT CLAIMS. The claim is `FOR UPDATE ... SKIP LOCKED`, so a row another
     // transaction holds is skipped until the next tick; under the full suite other files share the
     // database, so one tick can claim nothing. The loop returns the moment it delivers.
     const until = Date.now() + POLL_DEADLINE_MS;
@@ -648,7 +648,7 @@ describe.skipIf(!dbUp)("testing an alert channel", () => {
   });
 
   test("one place in the alerting module posts, and it is neither of the callers", async () => {
-    // NOTE: the structural half of the test above: parity held by construction rather than by two
+    // The structural half of the test above: parity held by construction rather than by two
     // call sites edited together (`sendWebhookTest` is the hand-kept counter-example), checked
     // against the whole module.
     const posts = await countInSrc(/\bfetchImpl\(/g);

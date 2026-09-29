@@ -713,7 +713,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
       },
       select: { id: true },
     });
-    // NOTE: O thread ocupado é o que faz o turno ESPERAR, que é a janela deste caso.
+    // O thread ocupado é o que faz o turno ESPERAR, que é a janela deste caso.
     const graphThreadId = contactInboxThreadId(
       tenantId,
       instanceId,
@@ -757,7 +757,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
     // Nada é dito por cima da pessoa, e o turno parou antes do invoke.
     expect(sent).toEqual([]);
     expect(seen.outcome).toBe("taken-over-unread");
-    // NOTE: E A MENSAGEM DO CLIENTE CHEGA À MEMÓRIA: sem isto, o cliente escreveu e nenhum lugar do
+    // E A MENSAGEM DO CLIENTE CHEGA À MEMÓRIA: sem isto, o cliente escreveu e nenhum lugar do
     // sistema guarda o que ele disse.
     const ingested = (await jobs("INGEST_MESSAGE")).map((j) => j.dedupeKey);
     expect(
@@ -1620,7 +1620,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   }, 20_000);
 
   test("a turn that stood down for the observer settles nothing until the ingestion has the message", async () => {
-    // NOTE: The stand-down's own settlement must not close the row before the observer is asked:
+    // The stand-down's own settlement must not close the row before the observer is asked:
     // an enqueue failing after it would leave a terminal row the sweep cannot recover.
     const r = await directTurnUnderFlip({
       convId: 20,
@@ -1637,7 +1637,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a turn that stood down, whose observer read fails, leaves the delivery for the sweep", async () => {
-    // NOTE: Whether the agent observes could not be read after the stand-down. Taken for "no", the
+    // Whether the agent observes could not be read after the stand-down. Taken for "no", the
     // message would be settled as consumed and remembered by nobody.
     const armed = { on: false, reads: 0 };
     const failing = appDb.$extends({
@@ -1832,7 +1832,7 @@ describe.skipIf(!dbUp)("a monitoring agent never answers", () => {
   });
 
   test("a reply handed to the observer inside its turn retires the redirect ladder, and the dispatch does not re-arm it", async () => {
-    // NOTE: The observing path retires the ladder from a mode read before the gate; a delivery
+    // The observing path retires the ladder from a mode read before the gate; a delivery
     // handed over INSIDE its turn passed that read as production, and its dispatch must not re-arm
     // the ladder on the way out (a template to a lead the observer now remembers, on the first flip
     // back to production).

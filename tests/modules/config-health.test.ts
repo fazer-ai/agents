@@ -53,7 +53,7 @@ describe("computeConfigIssues", () => {
     expect(issues).toEqual([]);
   });
 
-  // NOTE: CAN THIS MODEL BE BUILT, the whole question as a table, because it has three legs (no
+  // CAN THIS MODEL BE BUILT, the whole question as a table, because it has three legs (no
   // provider, no endpoint, a bag no schema validated). Each row is a class of stored value rather than
   // an example: what a write boundary lets through, what an import carries in, and what the runtime
   // then does with it. `expected` is what the primary-model checks say, and nothing else: the
@@ -1142,7 +1142,7 @@ describe("computeConfigIssues — noncanonical ref spellings", () => {
 // it before it looks at the provider, and returns null for the whole agent when it cannot, so the
 // agent goes silent on every message.
 describe("computeConfigIssues — an openai-compatible model with a ref of its own", () => {
-  // NOTE: WITH an endpoint, because this block is about the CREDENTIAL and the endpoint is its own
+  // WITH an endpoint, because this block is about the CREDENTIAL and the endpoint is its own
   // check: `createChatModel` throws on an openai-compatible bag with nowhere to dial, so a fixture
   // without one would raise `modelNoEndpoint` on every case here and stop isolating what it means to.
   const compat = {
@@ -1453,7 +1453,7 @@ describe("computeConfigIssues — which endpoint refusals wait for the vault", (
 // everything below is about what the panel DOES with it.
 describe("computeConfigIssues — Chatwoot already answers out of hours", () => {
   const ONE = [{ id: "5", name: "WhatsApp Vendas" }];
-  // NOTE: A schedule that actually closes. Without one the reactive gate never silences the agent, so
+  // A schedule that actually closes. Without one the reactive gate never silences the agent, so
   // its away message never goes out however the block is configured.
   const CLOSES = {
     windows: [{ day: 1, start: "09:00", end: "17:00" }],
@@ -1529,7 +1529,7 @@ describe("computeConfigIssues — Chatwoot already answers out of hours", () => 
     });
   }
 
-  // NOTE: The away message rides the SAME gate that silences replies, so an agent that never closes
+  // The away message rides the SAME gate that silences replies, so an agent that never closes
   // sends nothing out of hours with the switch on and the copy written. Claiming the duplicate there
   // describes two messages where the customer gets a closure notice and then normal service: the
   // contradiction, and the worse of the two.

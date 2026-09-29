@@ -51,7 +51,7 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
   });
 
   test("builds both indexes CONCURRENTLY, and can be run again after one fails", async () => {
-    // NOTE: a plain CREATE INDEX holds SHARE for the whole build and blocks INSERT, while the previous
+    // A plain CREATE INDEX holds SHARE for the whole build and blocks INSERT, while the previous
     // release is still writing this table after acking webhooks. Nothing prunes the ledger, so the
     // build time grows with the install's history. `migrate deploy` does not wrap a migration in a
     // transaction, so Postgres accepts CONCURRENTLY here.
@@ -76,7 +76,7 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
   });
 
   test("adds its columns idempotently, so a failed concurrent build can be re-run", async () => {
-    // NOTE: `migrate deploy` runs this file outside a transaction, so a failed concurrent build leaves
+    // `migrate deploy` runs this file outside a transaction, so a failed concurrent build leaves
     // the columns already added. On the re-run, a bare ADD COLUMN would abort before the index DROPs,
     // blocking the recovery with the half of the file that had already succeeded.
     const adds = [
@@ -87,7 +87,7 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
   });
 
   test("names every index it creates short enough for Postgres to keep the name", async () => {
-    // NOTE: read from the FILE: the database was built by an earlier `migrate deploy`, so it answers
+    // Read from the FILE: the database was built by an earlier `migrate deploy`, so it answers
     // about the index that exists, not the statement that would create one now. Postgres keeps the
     // FIRST 63 bytes of an identifier; Prisma truncates its implicit `@@index` name keeping `_idx`. Above
     // 63 they disagree, and every later `migrate dev` reports drift against a correct database.
@@ -145,7 +145,7 @@ describe.skipIf(!dbUp)("migration: the stranded-delivery columns", () => {
   });
 
   test("adds the three columns the sweep reads, and no column for the payload", async () => {
-    // NOTE: the other half of the file. The sweep needs the delivery's identity and nothing about what the
+    // The other half of the file. The sweep needs the delivery's identity and nothing about what the
     // customer wrote: no ciphertext column, no retention window, no second copy at rest.
     const cols = await suDb.query<{ column_name: string }>(
       "SELECT column_name FROM information_schema.columns WHERE table_name = 'chatwoot_webhook_deliveries'",

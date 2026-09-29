@@ -43,7 +43,7 @@ export function selectHistoryWindow(
   // to open, so the history is left alone rather than guessing a boundary.
   if (lastHuman < 0) return untouched();
 
-  // NOTE: longest suffix that fits, counting each message once. Whole messages only (half a message
+  // Longest suffix that fits, counting each message once. Whole messages only (half a message
   // reads as the agent misquoting the customer), and it stops at the first that does not fit, because
   // a window has to be contiguous.
   const counted: number[] = new Array(history.length);

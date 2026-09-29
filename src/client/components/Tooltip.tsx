@@ -23,7 +23,7 @@ type TooltipProps =
   | (TooltipBaseProps & { asChild?: true; children: ReactElement })
   | (TooltipBaseProps & { asChild: false; children: ReactNode });
 
-// NOTE: when asChild=true (default), Radix Slot clones `children` and merges
+// When asChild=true (default), Radix Slot clones `children` and merges
 // props — including `className`. If the cloned child receives a function
 // className (e.g. `<NavLink className={({ isActive }) => ...}>`), Slot
 // stringifies it during the merge and the serialized function ends up in the

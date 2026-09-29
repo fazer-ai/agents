@@ -1945,7 +1945,7 @@ function AgentEditor() {
     };
   }, [id, serverSyncTick]);
 
-  // NOTE: Live config-health: a feature on without its credential, or naming one whose secret is not
+  // Live config-health: a feature on without its credential, or naming one whose secret is not
   // filled in (pending); each issue deep-links to its tab or the vault fill modal. Messages by issue.key:
   // t('editor.configIssue.model', 'The model has no API key set, so the agent cannot reply.')
   // t('editor.configIssue.modelNotRunnable', 'This model configuration cannot be built, so the agent cannot reply. Check the provider and the model.')

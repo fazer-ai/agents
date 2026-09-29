@@ -656,7 +656,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
         },
       },
     });
-    // NOTE: the payload the worker is holding, captured at claim time, which is exactly the moment
+    // The payload the worker is holding, captured at claim time, which is exactly the moment
     // before the stamp lands.
     const job: ClaimedJob = {
       id: row.id,
@@ -773,7 +773,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
   // The ceiling has to hold across the model call, not only before it. A retry can be scheduled
   // minutes before the start, and a turn that begins in time can finish out of it.
   test("an appointment that starts during the model call sends nothing", async () => {
-    // NOTE: the start must be AHEAD when the handler begins and BEHIND when the model returns. The
+    // The start must be AHEAD when the handler begins and BEHIND when the model returns. The
     // model holds the call open UNTIL the start has passed, so no sleep is guessed against it; the start
     // is 3s out because `armed()` is a database write that, under `bun test --parallel`, can outlast 1s,
     // and it is not larger because it is real time paid on every run.
@@ -1140,7 +1140,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
   // is what a moved event or a queue running behind leaves. Asserted through the handler, because a
   // pure function can be correct and wired to nothing.
   test("the day comes from the clock, not from the offset the reminder was armed with", async () => {
-    // NOTE: a FIXED CLOCK AND A STATED OFFSET. The day is only claimed for a start that states an
+    // A FIXED CLOCK AND A STATED OFFSET. The day is only claimed for a start that states an
     // offset, as a real Google payload does (so `toISOString()` is not a faithful fixture). The clock is
     // fixed through the deps seam because the real one makes this assertion depend on the hour the suite
     // runs: near the UTC or local midnight the correct answer changes or the day is withheld.
@@ -1483,7 +1483,7 @@ describe("appointmentBooked, when a record-only reschedule cannot clean up", () 
   };
 
   test("the NEW start is NOT recorded, so a retry still sees the move", async () => {
-    // NOTE: writing it would destroy the evidence the retry needs: the next attempt would compare
+    // Writing it would destroy the evidence the retry needs: the next attempt would compare
     // equal starts, decide nothing moved, and skip the retirement for good. Safe to skip only here,
     // because this path exists BECAUSE the appointment is already recorded.
     const seen: string[] = [];
@@ -1537,7 +1537,7 @@ describe("appointmentBooked, when a record-only reschedule cannot clean up", () 
   });
 
   test("a record-only booking that did NOT move still records on the error path", async () => {
-    // NOTE: everywhere else the record is written even when the arming failed: forgetting the
+    // Everywhere else the record is written even when the arming failed: forgetting the
     // appointment is what this unit exists to prevent. With no stored booking there is nothing to retire,
     // and nothing to protect.
     const seen: string[] = [];
@@ -1667,7 +1667,7 @@ describe("reminderNudge temporal grounding (#685)", () => {
   // 00:30 tem o lembrete de 1h às 23:30 do dia ANTERIOR, e uma regra como "antecedência <= 12h ⇒ hoje"
   // diria hoje. Quem decide é a data de calendário, não a antecedência.
   test("the punctual reminder for a past-midnight appointment claims no day, and still says how far", () => {
-    // NOTE: aqui o dia cala, porque a uma hora da meia-noite local a resposta dependeria de um fuso
+    // Aqui o dia cala, porque a uma hora da meia-noite local a resposta dependeria de um fuso
     // que este módulo não tem; a distância, que é verdadeira, continua dita.
     const i = at("2026-09-17T00:30:00-03:00", "2026-09-16T23:30:00-03:00");
     expect(i).not.toContain("same calendar day");
@@ -1731,7 +1731,7 @@ describe("reminderNudge temporal grounding (#685)", () => {
       "2026-09-18T12:00:00-00:00",
       "2026-09-18T12:00:00Z",
     ]) {
-      // NOTE: o par é de meio-dia nas duas pontas de propósito: a sonda de horário de verão cala o dia
+      // O par é de meio-dia nas duas pontas de propósito: a sonda de horário de verão cala o dia
       // dentro de duas horas de qualquer meia-noite, então um `now` às 22:30 silenciaria este teste sozinho
       // e ele passaria sem medir a regra do offset zero.
       const i = at(startISO, "2026-09-16T12:00:00-03:00");

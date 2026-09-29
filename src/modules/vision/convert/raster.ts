@@ -82,10 +82,10 @@ export function flattenOntoWhite(src: Rgba): Rgba {
     }
   }
   if (!transparent) return src;
-  // NOTE: clamped, not wrapping: lossy HEVC can decode premultiplied colour above its alpha
+  // Clamped, not wrapping: lossy HEVC can decode premultiplied colour above its alpha
   // ([129, 129, 129, 128] composites to 256), which a plain Uint8Array stores as a BLACK 0.
   const out = new Uint8ClampedArray(s.length);
-  // NOTE: premultiplied colour is ALREADY scaled by its alpha, so multiplying again darkens anything
+  // Premultiplied colour is ALREADY scaled by its alpha, so multiplying again darkens anything
   // translucent. Only the flag says which formula applies: the same image with and without
   // premultiplied alpha decodes to IDENTICAL bytes.
   const premultiplied = src.premultiplied === true;
@@ -101,7 +101,7 @@ export function flattenOntoWhite(src: Rgba): Rgba {
   return { data: out, width: src.width, height: src.height };
 }
 
-// NOTE: jpeg-js indexes the array rather than requiring a Buffer, so the RGBA a decoder handed us
+// Jpeg-js indexes the array rather than requiring a Buffer, so the RGBA a decoder handed us
 // goes in as it came — a `Buffer.from` here would copy 48 MB per 12 MP photo to change nothing.
 export function encodeJpeg(src: Rgba, quality: number): ArrayBuffer {
   const out = jpeg.encode(

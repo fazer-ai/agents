@@ -1700,7 +1700,7 @@ describe.skipIf(!dbUp)("chatwoot mirror sync", () => {
       appDb,
     );
 
-    // NOTE: The contact upsert runs BEFORE the conversation's stale check (the conversation row
+    // The contact upsert runs BEFORE the conversation's stale check (the conversation row
     // needs the contact id), so without the per-contact watermark this out-of-order delivery would
     // downgrade the stored plan even though the conversation update itself is skipped.
     const stale = await mirrorChatwootEvent(

@@ -340,7 +340,7 @@ test("the offer is portalled inside the dialog, not into the body", async () => 
     if (!el) throw new Error("the offer never appeared");
     return el;
   });
-  // NOTE: by the WRAPPER's parent, never by `closest('[role=dialog]')` from the option: Radix's
+  // By the WRAPPER's parent, never by `closest('[role=dialog]')` from the option: Radix's
   // Popover Content is itself `role="dialog"`, so that search matches wherever it was portalled.
   const wrapper = anOption.closest("[data-radix-popper-content-wrapper]");
   expect(Boolean(wrapper)).toBe(true);

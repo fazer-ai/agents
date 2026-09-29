@@ -110,14 +110,14 @@ async function sweepHandler(
   const cutoffMin = Math.min(...enabledDelays);
   const sweptAt = Date.now();
   const cutoff = new Date(sweptAt - cutoffMin * 60_000);
-  // NOTE: the instant the appointment fence is judged against, passed in rather than left to SQL's
+  // The instant the appointment fence is judged against, passed in rather than left to SQL's
   // now(). Every DateTime column in this schema is `timestamp` without a zone (Prisma's default,
   // storing UTC), so comparing one to `now()` would cast it through the SESSION TimeZone — correct
   // only while that happens to be UTC. Every other due clause in this repo passes the instant the
   // same way.
   const now = new Date(sweptAt);
 
-  // NOTE: Agents the appointment fence does not apply to, asked of `appointmentPauseApplies` about
+  // Agents the appointment fence does not apply to, asked of `appointmentPauseApplies` about
   // `cfg.steps[0]` HERE rather than as JSON predicates in the SQL, which would be a second reader of
   // the settings. Read one tick before the query; the handler re-checks fresh settings before
   // sending. `cfg.enabled` first so this list means what it says on its own.
@@ -126,13 +126,13 @@ async function sweepHandler(
       ({ cfg }) => cfg.enabled && !appointmentPauseApplies(cfg, cfg.steps[0]),
     )
     .map(({ id }) => id);
-  // NOTE: -1 stands in for the empty set. Prisma.join refuses an empty list, and an agent id is a
+  // -1 stands in for the empty set. Prisma.join refuses an empty list, and an agent id is a
   // positive bigint, so the sentinel can never match a row — `<> ALL` then holds for everyone,
   // which is what "nobody is exempt" has to mean.
   const unfencedIdsSql = Prisma.sql`ARRAY[${Prisma.join(
     unfencedAgentIds.length > 0 ? unfencedAgentIds : [-1n],
   )}]::bigint[]`;
-  // NOTE: Only agents whose follow-up is ON are swept: `follow_up_armed_at` is never cleared on the
+  // Only agents whose follow-up is ON are swept: `follow_up_armed_at` is never cleared on the
   // way OFF, so the SQL alone would keep re-arming dropped jobs into the LIMIT. Same `cfg.enabled`
   // as the cutoff above; never empty here, thanks to the early return.
   const followUpAgentIds = configs
@@ -140,7 +140,7 @@ async function sweepHandler(
     .map(({ id }) => id);
   const followUpIdsSql = Prisma.sql`ARRAY[${Prisma.join(followUpAgentIds)}]::bigint[]`;
 
-  // NOTE: column-to-column comparison (lastInboundAt > lastFollowUpAt) requires raw SQL;
+  // Column-to-column comparison (lastInboundAt > lastFollowUpAt) requires raw SQL;
   // Prisma's query builder cannot express it. The filter mirrors the handler's watermark gate
   // so ineligible conversations are excluded before even enqueuing a FOLLOWUP job. The JOIN onto
   // the inbox's agent also drops conversations whose agent is in TEST mode but not yet activated
@@ -556,7 +556,7 @@ export async function followUpHandler(
       },
     });
     if (!agent) return null;
-    // NOTE: Everything that can have changed since the job was armed (agent or follow-up off, human
+    // Everything that can have changed since the job was armed (agent or follow-up off, human
     // or resolved, test not activated, a channelRedirect owning re-engagement on either inbox). The
     // predicate is shared with the console's follow-up indicator (see its header).
     const redirectCfg = readChannelRedirectConfig(agent.settings);
@@ -666,7 +666,7 @@ export async function followUpHandler(
       });
       return { outcome: "done" };
     }
-    // NOTE: Activation fence (mirrors the sweep SQL): a sequence only STARTS for an episode that began
+    // Activation fence (mirrors the sweep SQL): a sequence only STARTS for an episode that began
     // after follow-up was armed. Catches a step-0 job enqueued before a re-arm (disable → re-enable)
     // and any agent never armed (NULL → fail-safe). Later steps are exempt: an in-flight sequence
     // legitimately outlives a re-arm.
@@ -704,7 +704,7 @@ export async function followUpHandler(
     }
   }
 
-  // NOTE: Stamps `lastFollowUpAt` (the column /reset clears) unless the job was retired, returning
+  // Stamps `lastFollowUpAt` (the column /reset clears) unless the job was retired, returning
   // whether it landed so a caller can stop the sequence. ONE statement, since /reset retires the job
   // BEFORE clearing the column, so a separate read could find the job live and write after the clear.
   // The condition is the scheduler's own `jobNotRetiredSql`; an absent row still stamps.

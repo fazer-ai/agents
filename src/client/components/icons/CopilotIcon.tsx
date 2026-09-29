@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-// NOTE: GitHub Copilot brand mark — identifies the Copilot option in the MCP client selector. `currentColor` so it picks up `text-text-primary` from parent classes like the other monochrome provider icons.
+// GitHub Copilot brand mark — identifies the Copilot option in the MCP client selector. `currentColor` so it picks up `text-text-primary` from parent classes like the other monochrome provider icons.
 export function CopilotIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <svg

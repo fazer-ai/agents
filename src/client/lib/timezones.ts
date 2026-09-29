@@ -48,7 +48,7 @@ function timezoneOffsetMinutes(tz: string): number {
   }
 }
 
-// NOTE: sorted by UTC offset (west → east), alphabetical within the same offset. Computing the
+// Sorted by UTC offset (west → east), alphabetical within the same offset. Computing the
 // offset of ~400 zones instantiates ~400 Intl formatters, so the sorted list is cached for the
 // session (a DST flip mid-session only reorders edge cases; not worth recomputing).
 let cachedTimezones: string[] | null = null;

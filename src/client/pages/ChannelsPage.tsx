@@ -64,7 +64,7 @@ type ReachableData = Awaited<
 >["data"];
 type ReachableAccount = NonNullable<ReachableData>["accounts"][number];
 
-// NOTE: Static keys so the skeleton rows don't key off the array index.
+// Static keys so the skeleton rows don't key off the array index.
 const CHANNELS_ACCOUNT_KEYS = ["acct-0", "acct-1"];
 const CHANNELS_INBOX_KEYS = ["inbox-0", "inbox-1", "inbox-2"];
 
@@ -103,7 +103,7 @@ async function walkAgentsOnce(): Promise<
   const agents: AgentLite[] = [...first.data.agents];
   const seen = new Set(agents.map((a) => a.id));
   const total = first.data.total;
-  // NOTE: The freshest total the walk saw. A deletion on an already-read page slides every later row
+  // The freshest total the walk saw. A deletion on an already-read page slides every later row
   // one offset forward, so the walk skips one while the counts still add up; only the total moving
   // detects it.
   let latestTotal = total;
@@ -506,7 +506,7 @@ export function ChannelsPage() {
   const [reconnecting, setReconnecting] = useState<string | null>(null);
   const [removingInbox, setRemovingInbox] = useState<string | null>(null);
 
-  // NOTE: Marks ONLY the binding the operation attached. A re-provisioned bot serves every binding of
+  // Marks ONLY the binding the operation attached. A re-provisioned bot serves every binding of
   // its agent, but reattaching the siblings is best-effort (a failure is logged and the call still
   // succeeds), and the reconcile asks whether the bot exists, not the attachment. Marking them all
   // would hide an inbox receiving nothing; an extra Reconnect is an idempotent no-op click.
@@ -1031,7 +1031,7 @@ export function ChannelsPage() {
     showToast(t("channels.bound", "Inbox updated."), "success");
   }
 
-  // NOTE: The observer binding: both calls reach Chatwoot, and the row's list moves only on success, like
+  // The observer binding: both calls reach Chatwoot, and the row's list moves only on success, like
   // the responder binding above.
   async function observeInbox(inboxId: string, agentId: string) {
     const { data, error: err } = await api.api.v1.chatwoot

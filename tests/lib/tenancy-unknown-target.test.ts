@@ -132,7 +132,7 @@ describe.skipIf(!dbUp)("a tenant selector that names no tenant", () => {
 
   test("an internally built context is not checked at all", async () => {
     const { client, seen } = counting(appDb);
-    // NOTE: the shape every webhook/scheduler/graph context has: a tenant id this process read from a row.
+    // The shape every webhook/scheduler/graph context has: a tenant id this process read from a row.
     const internal: TenantContext = {
       tenantId: deadId,
       userId: null,

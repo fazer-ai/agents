@@ -381,7 +381,7 @@ describe("a list block (#459)", () => {
   });
 
   test("a standalone block that renders a marker keeps the text after it on its own line", () => {
-    // NOTE: the closing marker takes its line ending and every item puts one back, so a marker
+    // The closing marker takes its line ending and every item puts one back, so a marker
     // standing in for the items must too, or `Done` lands on the marker's line.
     const tpl = "Items:\n{{#each items}}\n- {{name}}\n{{/each}}\nDone";
     expect(render(tpl, { items: [] }).text).toBe("Items:\n(none)\nDone");

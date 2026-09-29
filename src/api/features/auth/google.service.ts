@@ -143,7 +143,7 @@ export async function upsertGoogleUser(
     throw new GoogleEmailDomainNotAllowedError();
   }
 
-  // NOTE: a self-signup user must join a tenant; with none provisioned there is nothing
+  // A self-signup user must join a tenant; with none provisioned there is nothing
   // to join, so treat it like closed registration rather than create a tenant-less row.
   const tenantId = await resolveDefaultTenantId();
   if (tenantId === null) {

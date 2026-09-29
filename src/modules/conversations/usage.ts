@@ -46,7 +46,7 @@ export async function getConversationUsage(
   base: PrismaClient = basePrisma,
 ): Promise<ConversationUsage> {
   const tenantId = ctx.tenantId as bigint;
-  // NOTE: ONE statement, and the total is the sum of its groups (turnless rows are the null-key
+  // ONE statement, and the total is the sum of its groups (turnless rows are the null-key
   // groups). Two reads at READ COMMITTED can each see a different set of rows while a turn writes,
   // and the turns would add up to more than the header.
   const groups = await runScopedOn(base, ctx, (db) =>

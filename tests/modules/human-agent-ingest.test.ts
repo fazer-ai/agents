@@ -234,7 +234,7 @@ describe.skipIf(!dbUp)(
       await drainIngest();
     }
 
-    // NOTE: A MESMA entrega do helper acima, com duas diferenças que só os casos de enfileiramento que falha
+    // A MESMA entrega do helper acima, com duas diferenças que só os casos de enfileiramento que falha
     // precisam: a base é do caso (um cliente estendido que recusa uma escrita), e o lançamento volta como
     // valor em vez de derrubar o teste, porque é ele que está sendo medido. Não drena a fila: o que se
     // mede aqui é o que o receptor deixa para trás.

@@ -380,7 +380,7 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
       JSON.stringify({ toolPreconditions: 7, maxToolCalls: 5 }),
     );
 
-    // NOTE: BOTH TABLES UNDER ONE NAME, in a tenant of its own. Each service refuses a name the other
+    // BOTH TABLES UNDER ONE NAME, in a tenant of its own. Each service refuses a name the other
     // holds, but the pre-lock race under READ COMMITTED and an old bundle can both land this pair
     // (namespace.ts says so). The assembly resolves it by ORDER (native, document, HTTP, code), so the
     // HTTP tool is the one that reached the model, and the operator's rule is about THAT tool.
@@ -597,7 +597,7 @@ describe.skipIf(!dbUp)("migration: assign_label → set_labels", () => {
   });
 
   test("with two tools under one name, the rule follows the one that ANSWERS", async () => {
-    // NOTE: The assembly resolves the duplicate by order (native, document, HTTP, code; first wins), so
+    // The assembly resolves the duplicate by order (native, document, HTTP, code; first wins), so
     // the HTTP tool is the one the operator's rule guards. Walking CODE first would move the rule onto
     // the loser and delete the key, leaving the winner silently unguarded after the upgrade.
     const http = await suDb.query(

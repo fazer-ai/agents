@@ -115,7 +115,7 @@ export function McpPage() {
     }
   };
 
-  // NOTE: standalone t() (not nested in another t()'s options) so i18n:extract keeps the keys.
+  // Standalone t() (not nested in another t()'s options) so i18n:extract keeps the keys.
   const dcrState = info?.dcrEnabled
     ? t("mcp.my.dcrOpen", "open")
     : t("mcp.my.dcrClosed", "closed");

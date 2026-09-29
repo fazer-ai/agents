@@ -155,7 +155,7 @@ describe("the protected-label ceiling is refused, not truncated", () => {
   });
 
   test("counted the way the reader counts it", () => {
-    // NOTE: blanks, non-strings and duplicates never become guards, so they must not push a legal
+    // Blanks, non-strings and duplicates never become guards, so they must not push a legal
     // list over the edge either: the refusal and the truncation have to be about the same list.
     const padded = [...many(PROTECTED_LABELS_MAX), "", "  ", 3, "l0", null];
     expect(() =>

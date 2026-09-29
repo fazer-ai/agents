@@ -64,7 +64,7 @@ type LogRow = {
   detail: unknown;
 };
 
-// NOTE: emitFlowEvent is fire-and-forget; poll until the expected row count lands.
+// emitFlowEvent is fire-and-forget; poll until the expected row count lands.
 async function pollToolRows(turnId: string, count: number): Promise<LogRow[]> {
   for (let i = 0; i < 50; i++) {
     const rows = await flowLogRows(suDb, {
@@ -82,7 +82,7 @@ async function pollToolRows(turnId: string, count: number): Promise<LogRow[]> {
   return [];
 }
 
-// NOTE: Scripted model: first call emits a tool_call for `toolName`, second call replies with text.
+// Scripted model: first call emits a tool_call for `toolName`, second call replies with text.
 // Captures every message list it is invoked with, so the test can assert what the model SAW.
 class ToolCallThenReplyModel {
   seen: BaseMessage[][] = [];
@@ -436,7 +436,7 @@ describe.skipIf(!dbUp)("ToolFlowLogger — failure-aware tool lines", () => {
       },
     );
 
-    // NOTE: The delivery row is what the alert worker POSTs from, so a failure logged info/ok would
+    // The delivery row is what the alert worker POSTs from, so a failure logged info/ok would
     // never reach a channel.
     let delivery: { stage: string | null; level: string | null } | null = null;
     for (let i = 0; i < 50 && !delivery; i++) {

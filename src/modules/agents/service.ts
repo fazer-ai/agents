@@ -268,7 +268,7 @@ export async function getAgent(
   return toDto(row);
 }
 
-// NOTE: the cap is a deliberate checkpoint (oversized prompts usually hold knowledge-base
+// The cap is a deliberate checkpoint (oversized prompts usually hold knowledge-base
 // content and degrade instruction adherence), raised only via AGENT_PROMPT_MAX_CHARS — on
 // purpose, no UI affordance points at the override. Checked BEFORE the schema parse so every
 // transport surfaces this localized error instead of a raw validation failure.
@@ -294,7 +294,7 @@ export function assertPromptSize(systemPrompt: string | undefined): void {
   }
 }
 
-// NOTE: the operator prose inside `settings` (tool guidance, guardrails policy, vision prompt,
+// The operator prose inside `settings` (tool guidance, guardrails policy, vision prompt,
 // follow-up steps) is clamped by the READERS, which is invisible to whoever wrote it: the row keeps
 // every character and only the model-facing copy is short. Refusing at the boundary is the same
 // checkpoint the system prompt gets — see text-caps.ts for why it is a refusal here and a clamp on
@@ -350,7 +350,7 @@ export function assertSettingsBlocksKept(
     settings && typeof settings === "object" && !Array.isArray(settings)
       ? (settings as Record<string, unknown>)
       : {};
-  // NOTE: Named by an OWN key holding a VALUE: an `undefined` value is dropped on the way to Postgres,
+  // Named by an OWN key holding a VALUE: an `undefined` value is dropped on the way to Postgres,
   // and an inherited `constructor` is not a block. `__proto__` is skipped: no write can carry it, so
   // refusing over a stored one would block every save of the agent.
   const dropped = Object.entries(stored as Record<string, unknown>)
@@ -701,7 +701,7 @@ function closedValueIssues(bag: Record<string, unknown>): ClosedValueIssue[] {
     if (parsed.success) continue;
     for (const issue of parsed.error.issues) {
       const next = valueAt(value, issue.path);
-      // NOTE: `never` marks a key the runtime does not read here (reply-only checks under `input`).
+      // `never` marks a key the runtime does not read here (reply-only checks under `input`).
       // REST cannot refuse it outright, since the console's Guardrails save materialises it, so the
       // reader's TYPE passes and anything else is refused like any other thrown-away value.
       let expected: string | undefined;
@@ -927,7 +927,7 @@ function applyImportFixes(
     // NOTE: Only when the reader's window is reachable by the cuts this will make: most lists are not
     // windowed, and trying the tail of a long one costs a whole-block read per element.
     if (arr.length - floor > IMPORT_POP_LIMIT) continue;
-    // NOTE: Tried on THIS list and undone when it does not settle it: the difference may belong to
+    // Tried on THIS list and undone when it does not settle it: the difference may belong to
     // another list, and popping here would take an element no reader ignores.
     const before = [...arr];
     const keptBefore = [...list.kept];
@@ -974,7 +974,7 @@ export function dropUnusableImportedSettingsInPlace(
     stripDerivedFullDetailInPlace(bag);
     takePath(dropped, "observability.fullDetail");
   }
-  // NOTE: A rule that cannot parse is dropped WHOLE, as the reader does. Judged by the READER, not the
+  // A rule that cannot parse is dropped WHOLE, as the reader does. Judged by the READER, not the
   // write boundary: a rule on a custom tool name is honoured at runtime. Done before the closed values,
   // which would strip one field (`equals`) and leave a weaker guard nobody wrote. `null` rules stay.
   const guards = plainObject(bag.toolPreconditions);
@@ -983,7 +983,7 @@ export function dropUnusableImportedSettingsInPlace(
     delete (guards as Record<string, unknown>)[name];
     takePath(dropped, `toolPreconditions.${name}`);
   }
-  // NOTE: The contact gate's local rule, on the same terms: the reader drops one that does not parse,
+  // The contact gate's local rule, on the same terms: the reader drops one that does not parse,
   // so it is taken out and named rather than stored as a list the runtime never reads.
   const contactAuth = plainObject(bag.contactAuth);
   if (contactAuth && invalidContactAuthRule(contactAuth.rule)) {
@@ -1005,7 +1005,7 @@ export function dropUnusableImportedSettingsInPlace(
       }
     }
   }
-  // NOTE: Invariant: what the runtime reads does not change. Each removal is tried on a copy and kept
+  // Invariant: what the runtime reads does not change. Each removal is tried on a copy and kept
   // only when `readBehaviorSettings` reads the block the same (a trimmed value or a list window can
   // differ). Last issue first, so removals never shift a path still to be judged.
   const now = new Date();
@@ -1560,7 +1560,7 @@ export async function updateAgent(
     const updateData: Record<string, unknown> = { ...rest };
     if (hasBh) updateData.businessHoursId = bhId;
     if (hasFuh) updateData.followUpHoursId = fuhId;
-    // NOTE: The row lock (held to commit) serializes the follow-up fence's read-compute-write, so a
+    // The row lock (held to commit) serializes the follow-up fence's read-compute-write, so a
     // stale ON cannot land after an OFF with an old watermark. NO KEY UPDATE, not FOR UPDATE: it still
     // conflicts with saves and `deleteAgent` but not with the FOR KEY SHARE a foreign-key reference
     // takes, so a save does not stall `bindInbox`. RLS still applies to the raw read.
@@ -1574,7 +1574,7 @@ export async function updateAgent(
       }>
     >`SELECT enabled, mode, settings, model_config, updated_at FROM agents WHERE id = ${id} FOR NO KEY UPDATE`;
     const before = beforeRows[0];
-    // NOTE: read AFTER the lock, and that order is the whole point. The raw lock above reads the
+    // Read AFTER the lock, and that order is the whole point. The raw lock above reads the
     // four columns the follow-up fence needs; the trail answers for every column an operator can
     // write, and which of the three actions this call IS comes from comparing them
     // (audit-projection.ts). Taken BEFORE the lock, this read can observe state A, wait on the lock
@@ -1645,7 +1645,7 @@ export async function updateAgent(
       modelConfig: before?.model_config,
       settings: before?.settings,
     });
-    // NOTE: See normalizeSettingsForStorage — the host list is reduced to hosts on the way IN, on
+    // See normalizeSettingsForStorage — the host list is reduced to hosts on the way IN, on
     // every write path, not only when it is read back.
     const normalizedSettings = normalizeSettingsForStorage(rest.settings);
     if (normalizedSettings) updateData.settings = normalizedSettings;
@@ -1655,7 +1655,7 @@ export async function updateAgent(
         mode: rest.mode !== undefined ? rest.mode : before.mode,
         settings: rest.settings !== undefined ? rest.settings : before.settings,
       };
-      // NOTE: Promotion to production re-arms even with follow-up already effectively ON: the
+      // Promotion to production re-arms even with follow-up already effectively ON: the
       // eligible set widens from /teste-activated conversations to EVERY pending one, and keeping a
       // watermark from the test period would blast the whole pre-promotion backlog (the community
       // incident this fence exists to prevent).
@@ -1955,7 +1955,7 @@ export async function deleteAgent(
     const doomedRows = await db.$queryRaw<Array<{ name: string }>>`
       SELECT name FROM agents WHERE id = ${id} FOR UPDATE`;
     const doomed = doomedRows[0];
-    // NOTE: An OBSERVER binding is a bot attached on Chatwoot's side, and the cascade
+    // An OBSERVER binding is a bot attached on Chatwoot's side, and the cascade
     // below would retire the row and the route token while the fork kept delivering to a bot that
     // is gone. The detach is a Chatwoot call, which this transaction cannot make, so the deletion
     // is refused while the agent observes anything — the same answer its mode change gets.
@@ -2021,7 +2021,7 @@ export async function cloneAgent(
     if (!src) {
       throw new NotFoundError("agent not found", "errors.agentNotFound");
     }
-    // NOTE: The bag is copied verbatim, over-cap text included. A clone authors nothing, and refusing
+    // The bag is copied verbatim, over-cap text included. A clone authors nothing, and refusing
     // it would make a legacy agent unclonable while its own saves go through.
     const grants = await db.agentToolSelection.findMany({
       where: { agentId: id },
@@ -2861,7 +2861,7 @@ export async function replaceAgentToolSelections(
     // NOTE: The NAMESPACE lock first, before the agent row: deleting a tool takes this lock, then the
     // tool row, then cascades into selections, and the opposite order deadlocks (`40P01`).
     await lockToolNames(db);
-    // NOTE: The agent row is LOCKED before its version is read and the grant snapshot is taken under
+    // The agent row is LOCKED before its version is read and the grant snapshot is taken under
     // it: the grant set has no version of its own, so this row serializes two replacements and ties
     // `expectedUpdatedAt` to the snapshot. NO KEY UPDATE as in `updateAgent`. RLS still applies.
     const locked = await db.$queryRaw<Array<{ updated_at: Date }>>`

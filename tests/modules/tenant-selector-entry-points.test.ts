@@ -134,7 +134,7 @@ function counting(base: PrismaClient) {
 }
 
 describe.skipIf(!dbUp)("a REST call carrying a dead tenant selector", () => {
-  // NOTE: one row per exported entry point the four controllers reach, because the rule holds per
+  // One row per exported entry point the four controllers reach, because the rule holds per
   // call site: the decision lives in `runScopedOn`, and this pins that each one reaches it with the
   // CALLER's context instead of one rebuilt from the id inside it.
   //
@@ -385,7 +385,7 @@ describe("no REST controller hands a module a bare tenant id", () => {
     const { Glob } = await import("bun");
     const offenders: string[] = [];
     for await (const rel of new Glob("**/*.ts").scan("src/api")) {
-      // NOTE: through the scan, so prose naming the shape is not counted as one.
+      // Through the scan, so prose naming the shape is not counted as one.
       const src = codeOnly(await Bun.file(`src/api/${rel}`).text());
       if (handsOutABareTenantId(src)) offenders.push(rel);
     }

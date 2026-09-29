@@ -45,7 +45,7 @@ async function requestsUntilFailure(
 }
 
 describe("the retry budget reaches the transport", () => {
-  // NOTE: BOTH ARMS CARRY AN EXPLICIT TIMEOUT: they count REQUESTS, and how long the SDK sleeps
+  // BOTH ARMS CARRY AN EXPLICIT TIMEOUT: they count REQUESTS, and how long the SDK sleeps
   // between them is the SDK's business. Alone this file runs in ~1.5s, but inside a busy shard
   // sharing one event loop the same call can pass 5s, and adding test files anywhere reshuffles every
   // shard (`.github/workflows/test.yml`), so the default 5000ms would go red for unrelated changes.

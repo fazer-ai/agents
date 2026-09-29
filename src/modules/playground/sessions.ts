@@ -660,7 +660,7 @@ export async function getPlaygroundSessionUsage(
   if (!isValidPlaygroundThread(threadId, tenantId, agentId)) {
     throw new NotFoundError("session not found", "errors.sessionNotFound");
   }
-  // NOTE: grouped by step, so the session total names its calls the way each turn does.
+  // Grouped by step, so the session total names its calls the way each turn does.
   const groups = await runScopedOn(base, ctx, (db) =>
     db.llmUsage.groupBy({
       by: ["node", "priceTable"],
@@ -711,7 +711,7 @@ export async function deletePlaygroundSession(
   // (no RLS, no foreign key), and refusing afterwards would erase a transcript on a refused request.
   // `runScopedOn` verifies nothing for a caller whose id came from a row.
   await runScopedOn(base, ctx, async () => undefined);
-  // NOTE: first, and not swallowed: dropping our rows and leaving the thread is the state above.
+  // First, and not swallowed: dropping our rows and leaving the thread is the state above.
   const checkpointer = await getCheckpointer();
   await checkpointer.deleteThread(threadId);
   await runScopedOn(base, ctx, async (db) => {

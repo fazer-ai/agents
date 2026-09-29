@@ -119,7 +119,7 @@ function makeOpenAIChat(
   };
   const chat = new ChatOpenAI(withPlan);
   if (!plan.toolEffort) return chat;
-  // NOTE: `toolEffort` (only set when nobody chose an effort and the provider's default breaks
+  // `toolEffort` (only set when nobody chose an effort and the provider's default breaks
   // function tools) is pinned on a SECOND instance's bindTools, so it reaches only tool-bound calls.
   // The raw instance (the final answer when the tool budget runs out, the guardrail pass, TTS
   // normalization, an agent with no grants) works at the provider default, so pinning "none" on
@@ -211,7 +211,7 @@ export function createChatModel(cfg: ResolvedModelConfig): BaseChatModel {
         // rather than passed whole so the omission is visible.
         ...(cfg.maxRetries !== undefined ? { maxRetries: cfg.maxRetries } : {}),
       });
-      // NOTE: the adapter declares tool parameters in the OpenAPI subset, whose closed field set
+      // The adapter declares tool parameters in the OpenAPI subset, whose closed field set
       // rejects the whole request over one unknown key; ./gemini-tools redeclares them as JSON
       // Schema. Patched on the INSTANCE, not by subclassing: LangChain derives the serialized model
       // id from the constructor name, so a subclass renames the model in every Langfuse payload.

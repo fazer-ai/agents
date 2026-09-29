@@ -143,7 +143,7 @@ export function localDayBounds(
 ): { since: string; until: string } | null {
   if (!ISO_DATE.test(value)) return null;
   const [y, m, d] = value.split("-").map(Number) as [number, number, number];
-  // NOTE: A date that does not exist is REFUSED and never normalised. Date arithmetic turns February
+  // A date that does not exist is REFUSED and never normalised. Date arithmetic turns February
   // 30 into March 2 without saying so, and this value can arrive from a URL somebody pasted: the
   // page would then query a different day than the one its own input is displaying, while presenting
   // itself as filtered. Round-tripping the components is the whole check.
@@ -416,7 +416,7 @@ export function AuditPage() {
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // NOTE: THROUGH THE REDIRECT, at the edge where the URL becomes state. A saved link can name a
+  // THROUGH THE REDIRECT, at the edge where the URL becomes state. A saved link can name a
   // consent action by an old spelling no row carries, and taking it verbatim would render a dead
   // filter over an empty trail. Normalising here rather than at the request means the control shows
   // the name that works, so the operator is not taught the old one.
@@ -427,7 +427,7 @@ export function AuditPage() {
   // job, not the caller's.
   const from = searchParams.get("from") ?? "";
   const to = searchParams.get("to") ?? "";
-  // NOTE: WHICH PRESET IS SELECTED IS NOT DERIVABLE FROM THE DATES: `custom` is a MODE ("I am choosing
+  // WHICH PRESET IS SELECTED IS NOT DERIVABLE FROM THE DATES: `custom` is a MODE ("I am choosing
   // the bounds myself") and every window it can hold is also some preset's, so reading the window back
   // would turn "Custom" into "Today" and hide the date inputs. It lives in the URL beside the bounds,
   // so a link carries what the sender was looking at; a link with only dates still resolves through
@@ -445,7 +445,7 @@ export function AuditPage() {
     isSuperAdmin && isAuditScope(scopeParam) ? scopeParam : "tenant";
   const showTenant = scope !== "tenant";
 
-  // NOTE: no debounce: a combo box commits once, when a value is chosen (its free-text row on
+  // No debounce: a combo box commits once, when a value is chosen (its free-text row on
   // confirm), not per keystroke. The empty row comes FIRST because a single-value ComboBox has no
   // clear affordance of its own; without it the only way to drop the action would be the page-wide
   // Clear, which also discards the actor and the period.
@@ -473,7 +473,7 @@ export function AuditPage() {
   // SCOPE IS ON THIS LIST because it chooses the trail, not because it is another filter.
   const filterKey = [action, actorType, from, to, scope].join("\u0000");
 
-  // NOTE: RESET DURING RENDER, NOT IN AN EFFECT. As an effect it runs after the commit that creates
+  // RESET DURING RENDER, NOT IN AN EFFECT. As an effect it runs after the commit that creates
   // `load`, so one render's requests would pair the NEW filter with the PREVIOUS walk's cursor (a
   // wasted scoped query under the fleet role, invisible because `reqRef` discards the answer).
   // Adjusting state during render is React's own answer: it re-renders before committing, so `load`
@@ -544,7 +544,7 @@ export function AuditPage() {
   };
 
   const [draft, setDraft] = useState({ from, to });
-  // NOTE: resyncs from the URL, never from what we just asked it to be: an optimistic value would
+  // Resyncs from the URL, never from what we just asked it to be: an optimistic value would
   // disagree with the params and the next render would put the operator's edit back. The MODE is part
   // of the committed state, because a preset can leave the bounds untouched (clear one custom field,
   // then pick a preset whose window is the applied one), and a draft watching bounds alone would keep
@@ -619,7 +619,7 @@ export function AuditPage() {
       const until = to ? localDayBounds(to) : null;
       if (since) query.since = since.since;
       if (until) query.until = until.until;
-      // NOTE: A date in the URL that is not a date is dropped from the URL too, not just from the query:
+      // A date in the URL that is not a date is dropped from the URL too, not just from the query:
       // left there the page would say it is filtered by a day it is not filtering by.
       const staleScope = scopeParam !== "" && scopeParam !== scope;
       if ((from && !since) || (to && !until) || staleScope) {
@@ -733,7 +733,7 @@ export function AuditPage() {
 
   const pageIdx = cursorStack.length - 1;
   const scoped = action || actorType || from || to || scope !== "tenant";
-  // NOTE: An empty page has two very different reasons, and only one of them is "nothing happened".
+  // An empty page has two very different reasons, and only one of them is "nothing happened".
   // These actions write rows keyed to no tenant, which a TENANT read cannot reach at all, so
   // answering the ordinary "no entries match" would be the page asserting something it did not
   // check. On `fleet` or `all` it DID check — those are the very rows it just read — and repeating

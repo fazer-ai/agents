@@ -131,7 +131,7 @@ describe.skipIf(!dbUp)("an agent carried to another tenant", () => {
     srcTenant = s.id;
     dstTenant = d.id;
 
-    // NOTE: SOURCE: alpha before beta, cal-a before cal-b, by creation order and therefore by id.
+    // SOURCE: alpha before beta, cal-a before cal-b, by creation order and therefore by id.
     const cAlpha = await mkConn(srcTenant, ALPHA, "alpha");
     await mkConn(srcTenant, BETA, "beta");
     await mkConn(srcTenant, EMOJI, "emoji");
@@ -222,7 +222,7 @@ describe.skipIf(!dbUp)("an agent carried to another tenant", () => {
   });
 
   test("the control: the import really did reassign the ids the other way round", async () => {
-    // NOTE: Without this the file could pass on a destination that happened to reproduce the source's id
+    // Without this the file could pass on a destination that happened to reproduce the source's id
     // order, which is the one arrangement in which the defect is invisible.
     const src = await suDb.mcpServerConnection.findMany({
       where: { tenantId: srcTenant, name: { in: [ALPHA, BETA] } },
@@ -245,7 +245,7 @@ describe.skipIf(!dbUp)("an agent carried to another tenant", () => {
   });
 
   test("and the plain name still belongs to the same one of the two colliding servers", async () => {
-    // NOTE: Spelled out rather than left to the equality above: this is the pair whose inversion sends a
+    // Spelled out rather than left to the equality above: this is the pair whose inversion sends a
     // call to the wrong backend under a name that did not change.
     const after = await exposedNameByServer(dstTenant, dstAgent);
     expect(after[ALPHA]).toBe("mcp__acme_crm_production_connecti__search");

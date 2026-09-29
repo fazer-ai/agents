@@ -303,7 +303,7 @@ function SourceToggle({
   );
 }
 
-// NOTE: Static keys so the skeleton placeholders don't key off the array index.
+// Static keys so the skeleton placeholders don't key off the array index.
 const DASH_KPI_KEYS = ["kpi-0", "kpi-1", "kpi-2", "kpi-3"];
 const DASH_FUNNEL_KEYS = ["funnel-0", "funnel-1", "funnel-2"];
 const DASH_COST_KEYS = ["cost-0", "cost-1", "cost-2"];
@@ -436,7 +436,7 @@ export function DashboardPage() {
   const [kpis, setKpis] = useState<Kpis | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
   const [costs, setCosts] = useState<Costs | null>(null);
-  // NOTE: The cost's own pending state: it settles after the section's figures, and in that window
+  // The cost's own pending state: it settles after the section's figures, and in that window
   // `costs === null` would tell a configured tenant to connect Langfuse, while keeping the previous
   // value would pair another segment's cost with these figures. The slot shows a skeleton instead.
   const [costsLoading, setCostsLoading] = useState(true);
@@ -486,7 +486,7 @@ export function DashboardPage() {
     }
   }, []);
 
-  // NOTE: Usage section (source-dependent): token figures + timeseries follow the selected segment,
+  // Usage section (source-dependent): token figures + timeseries follow the selected segment,
   // with a skeleton while reloading. Each load takes a sequence number and only the latest one's
   // answer reaches the state, so an older segment's answer landing last cannot mix two segments.
   const usageSeq = useRef(0);
@@ -503,7 +503,7 @@ export function DashboardPage() {
       ...(src === "all" ? {} : { source: src }),
       tz: OPERATOR_TZ,
     };
-    // NOTE: The cost follows the segment, the same query the ceiling's bar sits beside. The ceiling is
+    // The cost follows the segment, the same query the ceiling's bar sits beside. The ceiling is
     // read from our own snapshot, never from Langfuse. Neither failing blanks the section: each has
     // a card that says so.
     const costQuery = { ...query, ...(src === "all" ? {} : { source: src }) };
@@ -523,7 +523,7 @@ export function DashboardPage() {
         setCosts({ status: "error" as const });
         setCostsLoading(false);
       });
-    // NOTE: The ceiling's number is reserved when the request goes out, not when it commits: its answer
+    // The ceiling's number is reserved when the request goes out, not when it commits: its answer
     // can wait inside the `Promise.all` for a slower sibling, and a periodic refresh landing meanwhile
     // would otherwise be overwritten by this older read.
     const cseq = ++ceilingSeq.current;
@@ -556,7 +556,7 @@ export function DashboardPage() {
     void load(range);
   }, [load, range]);
 
-  // NOTE: The ceiling re-reads while the page stays open, since the poll writes a new figure every
+  // The ceiling re-reads while the page stays open, since the poll writes a new figure every
   // period and a wall-screen dashboard would otherwise keep its first read. It is its own quiet read:
   // going through `loadUsage` would put the usage section back in its skeleton every period. Its own
   // sequence number keeps a slow refresh from landing over a segment switch's read.
@@ -597,7 +597,7 @@ export function DashboardPage() {
       maximumFractionDigits: 1,
     }).format(v);
 
-  // NOTE: The funnel KPIs are REAL traffic only, so cost-per-conversation stays in that segment. The
+  // The funnel KPIs are REAL traffic only, so cost-per-conversation stays in that segment. The
   // cost itself follows the segment and shows in all three: playground spend is real money and the
   // ceiling refuses on it.
   const realView = source === "inbox";
@@ -624,7 +624,7 @@ export function DashboardPage() {
       dateStyle: "short",
       timeStyle: "short",
     });
-  // NOTE: "Open in Langfuse" target: the tenant's project page when the project id could be resolved,
+  // "Open in Langfuse" target: the tenant's project page when the project id could be resolved,
   // else the instance root.
   const langfuseUrl =
     showCost && costs?.status === "ok"
@@ -633,7 +633,7 @@ export function DashboardPage() {
   const costDays = costsOk && costs.status === "ok" ? costs.days : [];
   const totalCostUsd =
     costsOk && costs.status === "ok" ? costs.totalCostUsd : 0;
-  // NOTE: The card renders for Langfuse's models, and also when Langfuse answered with none but the
+  // The card renders for Langfuse's models, and also when Langfuse answered with none but the
   // ledger has usage: the models only this app recorded are then the check's finding.
   const costByModel =
     showCost &&
@@ -659,7 +659,7 @@ export function DashboardPage() {
   // empty (no usage AND no cost) → the "no data" placeholder instead of an axes-only empty chart.
   const chartData = buildCostTrend(points, costDays, range, source);
   const hasChartData = points.length > 0 || costDays.length > 0;
-  // NOTE: Cost per conversation across the whole window: total cost / total conversations, free of the
+  // Cost per conversation across the whole window: total cost / total conversations, free of the
   // per-day line's UTC/local day-boundary caveat. Real segment only, because the divisor
   // `kpis.totalConversations` counts real traffic and is not re-read per segment; and not while cost
   // is still $0 from ingestion lag.

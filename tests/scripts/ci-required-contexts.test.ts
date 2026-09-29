@@ -119,7 +119,7 @@ function classify(path: string): boolean {
  * files that matter here are docs a person edits by hand, never reached through a computed path.
  */
 export function readsIn(source: string): string[] {
-  // NOTE: Comments first: the fence's own prose names `CLAUDE.md`, so a sweep over raw text would
+  // Comments first: the fence's own prose names `CLAUDE.md`, so a sweep over raw text would
   // report itself. `withoutComments` keeps string bodies, which is exactly what reading a path out of
   // a literal needs.
   const src = withoutComments(source);
@@ -282,7 +282,7 @@ describe("what counts as documentation", () => {
   });
 
   test("the sweep reads the shapes the tree uses, and refuses the ones it cannot resolve", () => {
-    // NOTE: Fixtures rather than the tree, so each rule is exercised on its own: every real read in the
+    // Fixtures rather than the tree, so each rule is exercised on its own: every real read in the
     // tree is a plain literal, so dropping the comment strip or the const lookup would pass unnoticed.
     // The fixtures name a path the classifier ALREADY runs the suite for, by force: this fence sweeps
     // its own file with string bodies kept, so a call inside a fixture string counts as real, and a

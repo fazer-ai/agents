@@ -16,7 +16,7 @@ export const REASONING_EFFORTS = [
 
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
-// NOTE: matches a bare id ("gpt-5.6-luna", "gpt-6-luna"), a routed one ("openai/gpt-6-luna",
+// Matches a bare id ("gpt-5.6-luna", "gpt-6-luna"), a routed one ("openai/gpt-6-luna",
 // OpenRouter) and a fine-tuned one ("ft:gpt-6-luna:acme::x1"), which inherits the base model's
 // server-side default and so inherits the rejection too. A point release of gpt-6 ("gpt-6.1-luna")
 // is the same family. "gpt-5.60", "gpt-5.6x", "gpt-60", "gpt-6x" and "not-gpt-6-luna" deliberately

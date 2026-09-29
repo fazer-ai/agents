@@ -50,7 +50,7 @@ export function TenantDeepLink({ children }: { children: ReactNode }) {
   // Set once the miss has been reported, so a re-render does not repeat the toast.
   const [reported, setReported] = useState(false);
 
-  // NOTE: a SUPER_ADMIN is fleet-level and carries no tenant of its own (`tenantId` is null for exactly
+  // A SUPER_ADMIN is fleet-level and carries no tenant of its own (`tenantId` is null for exactly
   // that role). A person who belongs to several tenants chooses among them the same way, from the list
   // the session already carries; anyone else is pinned to theirs. Falling back to "loading" while the
   // session itself is still resolving keeps the gate shut rather than guessing.

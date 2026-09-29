@@ -83,7 +83,7 @@ describe("buildLangfuseHandler", () => {
 });
 
 describe("attachLangfuseDeliveryLogging", () => {
-  // NOTE: Langfuse swallows delivery failures (a failed flush is an unlistened "warning" event), so
+  // Langfuse swallows delivery failures (a failed flush is an unlistened "warning" event), so
   // a broken ingestion is invisible without this. Asserts those events reach our logger, and that a
   // persistently broken instance is deduped (logs once per distinct message).
   function fakeClient() {

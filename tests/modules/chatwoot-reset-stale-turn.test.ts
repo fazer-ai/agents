@@ -574,7 +574,7 @@ describe.skipIf(!dbUp)("a turn already running when /reset lands", () => {
     expect(ack ?? "").toContain("memória");
   }, 30000);
 
-  // NOTE: A TOOL-CALL ID OF THIS TEST'S OWN, and it is not hygiene. The stub above hardcodes
+  // A TOOL-CALL ID OF THIS TEST'S OWN, and it is not hygiene. The stub above hardcodes
   // `call_attr` and every test here writes to the SAME thread, so a second call under that id is
   // REPLACED IN PLACE by the messages reducer: the tool result lands at the earlier test's position,
   // the model's next round sees an unanswered assistant turn, and the tool never writes, so the two

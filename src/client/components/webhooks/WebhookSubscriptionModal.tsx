@@ -145,7 +145,7 @@ export function WebhookSubscriptionModal({
   const urlInvalid = !isValidHttpUrl(url);
   const canSubmit = url.trim().length > 0 && !urlInvalid && selected.size > 0;
 
-  // NOTE: dirty = any editable field diverges from its baseline (loaded subscription when editing,
+  // Dirty = any editable field diverges from its baseline (loaded subscription when editing,
   // empty/defaults when creating). `error`/`loading` are ephemeral and excluded.
   const baseUrl = editing?.url ?? "";
   const baseEvents = new Set<string>(editing?.events ?? []);

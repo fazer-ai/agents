@@ -207,7 +207,7 @@ test("a required field left blank stops the send and says which field", () => {
       ],
     },
   });
-  // NOTE: a skipped blank required box would send `args` without it, and the declared schema would
+  // A skipped blank required box would send `args` without it, and the declared schema would
   // refuse the call before the request, with the button enabled: the operator's first news would be
   // a failed run.
   const button = screen.getByText("Send request").closest("button");

@@ -182,7 +182,7 @@ describe("assertSafeOutboundUrl — how a resolver failure is classified", () =>
   });
 
   test("a transient failure is NOT the caller's fault and propagates", async () => {
-    // NOTE: `EAI_AGAIN` means the resolver failed, not that the hostname is bad; a 400 would tell the
+    // `EAI_AGAIN` means the resolver failed, not that the hostname is bad; a 400 would tell the
     // caller its input is wrong and not to retry. This exercises the SEAM: under Bun every lookup
     // failure arrives as `ENOTFOUND`, so no real resolver reaches this branch, but collapsing the
     // classification into "any failure is a 400" turns this red.

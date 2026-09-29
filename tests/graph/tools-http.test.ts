@@ -368,7 +368,7 @@ describe("buildHttpTool slow-tool ack (item 4)", () => {
   });
 
   test("an ack that reports the run called off stops the tool before any request", async () => {
-    // NOTE: the ack's send is a wait after the graph's own ask at the tool boundary; a run called
+    // The ack's send is a wait after the graph's own ask at the tool boundary; a run called
     // off inside it (e.g. the operator's flip to monitoring) makes no request.
     const order: string[] = [];
     const fetchImpl = (async () => {
@@ -850,7 +850,7 @@ describe("buildHttpTool — query params (any method)", () => {
 });
 
 describe("buildHttpTool — programmatic authoring shapes (JSON-Schema input_schema + single-brace placeholders)", () => {
-  // NOTE: the natural shapes an API/MCP author writes: standard JSON Schema for the input and
+  // The natural shapes an API/MCP author writes: standard JSON Schema for the input and
   // OpenAPI-style single-brace path params. Both must work (converted/normalized), not fail silently.
   const JSON_SCHEMA_INPUT = {
     required: ["valor"],
@@ -1570,7 +1570,7 @@ describe("a list of unknown length renders through a block (#459)", () => {
   });
 
   test("rows too long for fifty still leave the model a count, not a cut", async () => {
-    // NOTE: 100 rows of ~100 characters: rendered whole, the clip would take the count.
+    // 100 rows of ~100 characters: rendered whole, the clip would take the count.
     const long = Array.from({ length: 100 }, (_, i) => ({
       id: i + 1,
       descricao: "d".repeat(80),
@@ -1896,7 +1896,7 @@ describe("the turn's withdrawal fence reaches a toolpack", () => {
   });
 
   test("a refusal the pack SWALLOWED is still reported once, with the tool's own name", async () => {
-    // NOTE: the observer's tick has to know that nothing left the process, or it counts the
+    // The observer's tick has to know that nothing left the process, or it counts the
     // dispatch as a write and stops retrying. Every real pack catches a transport error and answers
     // a tool failure, so nothing escapes the invoke and a report waiting outside it would never
     // fire. Two requests, one report: the per-dispatch frame dedupes.
@@ -1957,7 +1957,7 @@ describe("the turn's withdrawal fence reaches a toolpack", () => {
   });
 
   test("a fence that turns false AFTER a request left reports nothing", async () => {
-    // NOTE: a pack tool is not one request. `asaas_create_pix_charge` POSTs the charge and then
+    // A pack tool is not one request. `asaas_create_pix_charge` POSTs the charge and then
     // GETs its QR code: a withdrawal between the two is a refusal with the charge already made, and
     // saying "no effect" there hands the scheduler a retry that charges twice.
     const reported: string[] = [];

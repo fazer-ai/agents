@@ -151,7 +151,7 @@ describe("the figure itself", () => {
     expect(screen.queryByTestId("token-usage-detail") === null).toBe(true);
   });
 
-  // NOTE: the cost is in the popover and nowhere else.
+  // The cost is in the popover and nowhere else.
   const priced = (costUsd: number, unpricedCalls: number) => ({
     ...turn("tA", T0).usage,
     costUsd,

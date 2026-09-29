@@ -315,7 +315,7 @@ describe("no text cap ever cuts an astral character in half", () => {
   }
 
   test("the straddling probe actually straddles (the harness is not vacuous)", () => {
-    // NOTE: if this ever stops holding, every case above passes for the wrong reason.
+    // If this ever stops holding, every case above passes for the wrong reason.
     const s = straddling(10);
     expect(loneSurrogates(s.slice(0, 10))).toBe(1);
   });
@@ -327,7 +327,7 @@ describe("no tail cap ever starts on half a character", () => {
   test("memory: the attendance transcript, clipped from the front", async () => {
     const { renderTranscript } = await import("@/modules/memory/summarize");
     const { HumanMessage } = await import("@langchain/core/messages");
-    // NOTE: two cuts live in clipTranscript: a flat 60k-character ceiling, and a token-budget pass that
+    // Two cuts live in clipTranscript: a flat 60k-character ceiling, and a token-budget pass that
     // recomputes its own start index. Sweep the emoji across both, one unit at a time.
     const offenders: string[] = [];
     for (let pad = 59_997; pad <= 60_003; pad++) {
@@ -336,7 +336,7 @@ describe("no tail cap ever starts on half a character", () => {
       if (loneSurrogates(out) > 0) offenders.push(`chars@${pad}`);
     }
     for (let tokens = 40; tokens <= 60; tokens++) {
-      // NOTE: long enough that the token pass has to cut, with emoji spread through the tail so some
+      // Long enough that the token pass has to cut, with emoji spread through the tail so some
       // start index lands inside one.
       const body = `${"x".repeat(400)}${"😀y".repeat(60)}`;
       const out = renderTranscript([new HumanMessage(body)], tokens);
@@ -510,7 +510,7 @@ const BARE_SLICES: Record<
 
 describe("every bare cut left in src/ is accounted for", () => {
   test("the file list and the per-file counts still match", async () => {
-    // NOTE: through `countInSrc`, so a comment explaining a cut is not counted as one. Do not answer a
+    // Through `countInSrc`, so a comment explaining a cut is not counted as one. Do not answer a
     // phantom entry by adding the file to the ledger: that arms a waiver over a file with no cut in
     // it, which silences the day it grows one.
     const found = await countInSrc(

@@ -19,7 +19,7 @@ export interface NormalizedToolShapes {
   warnings: string[];
 }
 
-// NOTE: conversation/contact context variable names the runtime interpolates (mirror of the
+// conversation/contact context variable names the runtime interpolates (mirror of the
 // httpToolContext built in graph/prepare.ts + the conversation_id/message_id merged at buildToolset
 // time). Used as the write-time allowlist for single-brace normalization.
 export const CONTEXT_VAR_NAMES = [
@@ -57,7 +57,7 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-// NOTE: parsed JSON can carry an own "__proto__" key; plain assignment on a fresh {} would invoke
+// Parsed JSON can carry an own "__proto__" key; plain assignment on a fresh {} would invoke
 // the inherited setter and silently drop it. Define an own property instead wherever a
 // caller-controlled key lands in an output map.
 function setOwn(
@@ -73,7 +73,7 @@ function setOwn(
   });
 }
 
-// NOTE: a valid compact map has ONLY plain-object values (one FieldSpec per field). Standard JSON Schema
+// A valid compact map has ONLY plain-object values (one FieldSpec per field). Standard JSON Schema
 // is recognized by `properties` being a map of plain objects PLUS a structural marker no compact
 // map can produce: a string `type`, an array `required`, or every top-level key being a JSON Schema
 // keyword. Requiring every `properties` value to be an object protects the pathological compact
@@ -91,7 +91,7 @@ export function isJsonSchemaShape(raw: unknown): boolean {
   );
 }
 
-// NOTE: JSON Schema → compact map. Flat scalar/enum/array-of-scalar properties convert faithfully;
+// JSON Schema → compact map. Flat scalar/enum/array-of-scalar properties convert faithfully;
 // anything deeper (nested properties, anyOf/oneOf, explicit type "object") degrades to the generic
 // "object" field type. The top-level `required` array marks per-field required flags. `warnings`
 // (optional collector) receives notes about lossy conversions.
@@ -175,7 +175,7 @@ export function compactFromJsonSchema(
   return out;
 }
 
-// NOTE: a single-brace {name} that is not part of a {{name}} token. Lookarounds keep {{name}} (and
+// A single-brace {name} that is not part of a {{name}} token. Lookarounds keep {{name}} (and
 // the ambiguous {name}} / {{name} halves) untouched, which also makes the rewrite idempotent.
 const SINGLE_BRACE = /(?<!\{)\{\s*([a-zA-Z0-9_]+)\s*\}(?!\})/g;
 
@@ -387,7 +387,7 @@ export function normalizeToolShapes(
   return { shapes, warnings };
 }
 
-// NOTE: read-side convenience for consumers that only care about the input schema (e.g. the
+// Read-side convenience for consumers that only care about the input schema (e.g. the
 // editor): returns the compact map, converting a JSON-Schema-shaped value when needed.
 export function normalizeInputSchemaShape(
   raw: unknown,

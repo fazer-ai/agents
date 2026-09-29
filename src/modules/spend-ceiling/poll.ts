@@ -189,7 +189,7 @@ async function fetchMonthCost(
   for (const row of body.data as Record<string, unknown>[]) {
     const cost = num(row.sum_totalCost);
     const calls = Math.round(num(row.count_count ?? row.count));
-    // NOTE: How many of the group carried a price: a price added mid-month leaves earlier calls NULL
+    // How many of the group carried a price: a price added mid-month leaves earlier calls NULL
     // (Langfuse does not re-price), and a call with no usage block is NULL too. `avg` skips NULL
     // where `count` does not, so sum / avg is the priced count; a zero price counts as unpriced.
     const avg = num(row.avg_totalCost);
@@ -264,7 +264,7 @@ async function writeSuccess(
         prev?.costedCalls ?? 0,
         carried.costed + seen.costedCalls,
       );
-      // NOTE: A partial answer (behind the row) keeps the names too, since its counters stand on the
+      // A partial answer (behind the row) keeps the names too, since its counters stand on the
       // previous figure. At or past the row the answer is whole, so a model priced since drops off.
       const behind =
         prev !== null &&
@@ -423,7 +423,7 @@ export async function pollTenantSpend(
   const now = deps.now ?? new Date();
   const month = monthStart(now);
   const ctx = sysCtx(tenantId);
-  // NOTE: Held outside the try so the failure path can ask whether the credential it failed under is
+  // Held outside the try so the failure path can ask whether the credential it failed under is
   // still the tenant's. `undefined` means the poll never got to resolve one.
   let cfg: LangfuseConfig | null | undefined;
   try {
@@ -431,7 +431,7 @@ export async function pollTenantSpend(
       resolveLangfuseConfig(db, tenantId),
     );
     if (!cfg) {
-      // NOTE: Rechecked under the month's lock: a credential added while this poll was out would
+      // Rechecked under the month's lock: a credential added while this poll was out would
       // otherwise get the sentinel written over it. A Langfuse save re-arms the poll.
       const wrote = await runScopedOn(base, ctx, (db) =>
         withEntityLock(db, monthLockKey(tenantId, month), async () => {
@@ -478,7 +478,7 @@ export async function pollTenantSpend(
         ),
       ),
     );
-    // NOTE: THE ANSWER IS TIED TO THE CREDENTIAL IT WAS ASKED WITH. A poll under an old credential
+    // THE ANSWER IS TIED TO THE CREDENTIAL IT WAS ASKED WITH. A poll under an old credential
     // can land after one under the new, and would read the new project as a switch and double count.
     // The check and the write share the month's lock and transaction, so they cannot interleave.
     const written = await runScopedOn(base, ctx, (db) =>
@@ -515,7 +515,7 @@ export async function pollTenantSpend(
     }
     return { status: "polled" };
   } catch (err) {
-    // NOTE: A parse error may quote Langfuse's body, and a NUL or unpaired surrogate in it would make
+    // A parse error may quote Langfuse's body, and a NUL or unpaired surrogate in it would make
     // Postgres refuse the very write that records the failure.
     const error = sanitizeErrorMessage(err);
     // NOTE: The sanitized message, not the error: Bun's network errors carry the request URL,
@@ -524,7 +524,7 @@ export async function pollTenantSpend(
       { error, tenantId: String(tenantId) },
       "spend ceiling poll failed; the last figure stands",
     );
-    // NOTE: Announced only when it was the row's present (a stale failure would page about a window
+    // Announced only when it was the row's present (a stale failure would page about a window
     // already recovered); an unknown write outcome is announced. Under the month's lock the failure
     // is re-read against the credential now: gone means not-configured, rotated means dropped, the
     // same means the failure stands; a poll with no resolved credential records it as is.
@@ -595,7 +595,7 @@ export async function spendPollHandler(
     outcome: "reschedule",
     runAt: new Date(Date.now() + config.spendCeiling.pollIntervalMs),
   });
-  // NOTE: The settings read is a failure like any other: it sits before the poll's own try, so it
+  // The settings read is a failure like any other: it sits before the poll's own try, so it
   // re-arms and asks again next period. "done" is reserved for a ceiling READ as off.
   let cfg: SpendCeilingConfig;
   try {

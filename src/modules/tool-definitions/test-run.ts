@@ -115,7 +115,7 @@ export async function runToolTest(
   const tenantId = ctx.tenantId;
   if (tenantId === null) throw new AppError("tenant required", 400);
   const d = input.definition;
-  // NOTE: the SAME five methods the write schema accepts, or this endpoint would let a TENANT_ADMIN
+  // The SAME five methods the write schema accepts, or this endpoint would let a TENANT_ADMIN
   // make the server issue a `PURGE` or `CONNECT`, which saving the definition does not allow.
   const method = readHttpMethod(d.method ?? DEFAULT_HTTP_METHOD);
   if (method === null) {
@@ -124,12 +124,12 @@ export async function runToolTest(
       400,
     );
   }
-  // NOTE: the WRITE path's other two gates, before anything goes out, so a shape the save refuses
+  // The WRITE path's other two gates, before anything goes out, so a shape the save refuses
   // is never previewed. The body first: `parseBody` ignores unknown keys, so an unsupported shape
   // would silently send a DIFFERENT payload.
   const badBody = unsupportedBodyShape(d.body);
   if (badBody) throw new AppError(badBody, 400);
-  // NOTE: then the response template, judged by the reader the write schema refines with, so an
+  // Then the response template, judged by the reader the write schema refines with, so an
   // undeclared shape (a legacy JSON Schema written through MCP) still passes.
   const tpl = readResponseTemplateResult(d.outputSchema);
   if (tpl.declared && !tpl.ok) throw new AppError(tpl.problem, 400);
@@ -154,7 +154,7 @@ export async function runToolTest(
   }
 
   const credentialRef = d.credentialRef || null;
-  // NOTE: the credential's metadata, read where the turn reads it, so a typed credential
+  // The credential's metadata, read where the turn reads it, so a typed credential
   // auto-injects as in production. Wrapped because it runs before the try around `invoke`, and a
   // store failure must still carry its reason.
   let meta: Awaited<ReturnType<typeof readCredentialMeta>> = null;
@@ -238,7 +238,7 @@ export async function runToolTest(
   });
 
   const startedAt = Date.now();
-  // NOTE: `invoke` THROWS whatever stops a call (mid-turn LangGraph catches it; here nothing would),
+  // `invoke` THROWS whatever stops a call (mid-turn LangGraph catches it; here nothing would),
   // so each throw is sorted to a status. AppError is kept as sent (the definition's own refusals are
   // 400, SsrfError included; the credential read is 500). A timeout is 504. Anything else (DNS, TLS,
   // a body the provider broke) is 502, not 400: the definition may be fine.
@@ -252,7 +252,7 @@ export async function runToolTest(
       throw new AppError(err.message, 400);
     }
     const message = err instanceof Error ? err.message : String(err);
-    // NOTE: a body cut mid-read by the runtime's bound surfaces as `EncodingError`, like a broken
+    // A body cut mid-read by the runtime's bound surfaces as `EncodingError`, like a broken
     // stream, so only `OutboundTimeoutError` says the bound did it. Its message names the real
     // bound, so it travels as written.
     const timedOut =

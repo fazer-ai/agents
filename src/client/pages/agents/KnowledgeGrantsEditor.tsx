@@ -13,7 +13,7 @@ interface Props {
   onCatalogChange: () => void | Promise<void>;
 }
 
-// NOTE: stable RAG tool identifier (RAG_TOOL_NAMES in src/graph/tools/catalog.ts). The agent's
+// Stable RAG tool identifier (RAG_TOOL_NAMES in src/graph/tools/catalog.ts). The agent's
 // `enabledTools` allowlist is filtered server-side by tool name, so the client gates the suggestion
 // tool by including/excluding this exact name.
 const SUGGEST_TOOL = "suggest_kb_entry";

@@ -366,7 +366,7 @@ describe.skipIf(!dbUp)("#546 binding an agent that is being deleted", () => {
     const src = await Bun.file(
       new URL("../../src/modules/agents/service.ts", import.meta.url),
     ).text();
-    // NOTE: comments stripped first, for the reason the same fence in
+    // Comments stripped first, for the reason the same fence in
     // `audit-channel-family.test.ts` gives: NOTEs in service.ts can name `FOR UPDATE` while
     // explaining why they do not take it.
     const code = src.replace(/^\s*\/\/.*$/gm, "");

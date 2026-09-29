@@ -166,7 +166,7 @@ function copyRun(
   const target = flatten(s);
   if (!target) return out;
   const text = (whole ?? chunks.join("\n\n")).trim();
-  // NOTE: `alreadySigned`'s two comparisons, split by end. Both ends walk when both say yes (a model
+  // `alreadySigned`'s two comparisons, split by end. Both ends walk when both say yes (a model
   // that opened and closed with the line wrote two copies); the reply decides, not the config.
   const atStart = text === s || (text.startsWith(s) && text[s.length] === "\n");
   const atEnd =
@@ -225,10 +225,10 @@ export function attachSignature(
       : `${body(chunk.trimEnd())}${delimiter}${signature}`;
   // NOTE: the balloon count must not change: `deliverReply` aligns `seps` with `chunks` by index.
   if (frequency === "all") {
-    // NOTE: asked per balloon, not of the whole reply: a model that signed at the end would
+    // Asked per balloon, not of the whole reply: a model that signed at the end would
     // otherwise suppress the badge on every other balloon.
     const own = copyRun(chunks, signature, whole);
-    // NOTE: a whole copy can share a balloon with prose after the `maxChunks` merge, which trims
+    // A whole copy can share a balloon with prose after the `maxChunks` merge, which trims
     // indentation. Matched on whole lines at an end, never in the middle: containment is how a
     // balloon loses its own closing ("Alex Support can help" is not "Alex\nSupport").
     const sigLines = normalizeLines(signature);
@@ -241,7 +241,7 @@ export function attachSignature(
         lines.slice(lines.length - sigCount).join("\n") === sigLines
       );
     };
-    // NOTE: gated on the reply having a copy at all; ungated, two ordinary lines (a list, an address)
+    // Gated on the reply having a copy at all; ungated, two ordinary lines (a list, an address)
     // matching the signature would send a balloon unsigned.
     const signedSomewhere =
       alreadySigned(chunks, signature, whole) ||

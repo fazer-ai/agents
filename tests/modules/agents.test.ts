@@ -707,7 +707,7 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
         updatedAt: (view.agentUpdatedAt as Date).toISOString(),
       });
 
-      // NOTE: A Behavior-tab save writes ONLY settings (debounce/stt/tts/split/serviceWindow). It
+      // A Behavior-tab save writes ONLY settings (debounce/stt/tts/split/serviceWindow). It
       // must emit the same agent-config event and advance updatedAt so a second editor tab is
       // warned, exactly like a General-tab save.
       const beforeSettings = events.length;
@@ -814,7 +814,7 @@ describe.skipIf(!dbUp)("agents create/clone/delete/tool-selections", () => {
         expectedUpdatedAt: t1,
       }),
     ).rejects.toMatchObject({ statusCode: 409 });
-    // NOTE: The current token still applies: the lock is precise, not a blanket refusal.
+    // The current token still applies: the lock is precise, not a blanket refusal.
     const ok = await replaceAgentToolSelections(ctx(tenantC), id, [], appDb, {
       expectedUpdatedAt: patched.updatedAt,
     });

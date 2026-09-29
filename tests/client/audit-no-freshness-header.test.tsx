@@ -65,7 +65,7 @@ afterEach(() => {
 });
 
 test("the trail-wide newest row is not printed anywhere", async () => {
-  // NOTE: the rows carry a `<Tooltip>`, and Radix's Root refuses to mount without a provider under
+  // The rows carry a `<Tooltip>`, and Radix's Root refuses to mount without a provider under
   // this harness (the app supplies its own).
   const view = render(
     <ToastProvider>

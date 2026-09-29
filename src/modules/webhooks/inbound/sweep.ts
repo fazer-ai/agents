@@ -56,7 +56,7 @@ export async function sweepStrandedInbound(params: {
   const now = params.now ?? Date.now();
   const cutoff = new Date(now - PROCESSING_STALE_MS);
   return runScopedOn(base, sysCtx(params.tenantId), async (db) => {
-    // NOTE: ONE STATEMENT, with the already-armed exclusion before the LIMIT: a row whose
+    // ONE STATEMENT, with the already-armed exclusion before the LIMIT: a row whose
     // re-dispatch died stays stranded, and filtered afterwards enough of them would fill every pass.
     // The stranded rule is `staleClaim` (./service.ts) and the key is `redispatchKey`, both restated
     // in SQL; tests/modules/inbound-sweep.test.ts pins them.

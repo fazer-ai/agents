@@ -11,7 +11,7 @@ export const ROLE_RANK: Record<UserRole, number> = {
   SUPER_ADMIN: 3,
 };
 
-// NOTE: accepts a loose string (JWT/treaty values arrive as strings); an unknown role
+// Accepts a loose string (JWT/treaty values arrive as strings); an unknown role
 // ranks 0 (below everything) so it is fail-closed.
 export function roleAtLeast(
   role: string | null | undefined,
@@ -20,7 +20,7 @@ export function roleAtLeast(
   return (ROLE_RANK[(role ?? "") as UserRole] ?? 0) >= ROLE_RANK[min];
 }
 
-// NOTE: "admin" means any elevated role (tenant admin or fleet super admin).
+// "admin" means any elevated role (tenant admin or fleet super admin).
 export function isAdminRole(role: string | null | undefined): boolean {
   return roleAtLeast(role, "TENANT_ADMIN");
 }

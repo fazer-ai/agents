@@ -24,7 +24,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
     const { t } = useTranslation();
     const field = useFormField();
     const max = typeof props.maxLength === "number" ? props.maxLength : null;
-    // NOTE: raw length, what the browser enforces `maxLength` against and what the write boundary
+    // Raw length, what the browser enforces `maxLength` against and what the write boundary
     // refuses on (modules/agents/text-caps.ts). A trimmed count would still show room while leading
     // spaces already stop the control accepting characters.
     const count = typeof props.value === "string" ? props.value.length : null;

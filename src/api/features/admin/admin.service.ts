@@ -149,7 +149,7 @@ export async function getUsers(
   const pageSize = 20;
   const skip = (page - 1) * pageSize;
 
-  // NOTE: a SQL UNION because the page is cut across memberships and fleet administrators at once.
+  // A SQL UNION because the page is cut across memberships and fleet administrators at once.
   // The search is a case-insensitive `contains` on the email, with `%`/`_` escaped.
   const pattern = search
     ? `%${search.replace(/[\\%_]/g, (c) => `\\${c}`)}%`
@@ -446,7 +446,7 @@ async function setMembershipRole(
 ): Promise<UserRow> {
   await lockAdminScopes(db, [tenantId]);
   await lockMembership(db, tenantId, userId);
-  // NOTE: locked before it is read, since the read is the recorded `before`: two concurrent re-roles
+  // Locked before it is read, since the read is the recorded `before`: two concurrent re-roles
   // would otherwise record the same transition twice.
   const before = await memberRow(db, tenantId, userId);
   // NOTE: the scope guard is the READ, so a person outside the tenant is a 404 and never a
@@ -503,7 +503,7 @@ export async function updateUserRole(
   }
   return withScopeRetry(() =>
     asPrincipalOn(base, ctx, async (db) => {
-      // NOTE: the scope locks come BEFORE the row lock, and which scopes is a question the unlocked
+      // The scope locks come BEFORE the row lock, and which scopes is a question the unlocked
       // peek answers; the locked read below confirms it or starts over (`withScopeRetry`).
       const peek = await db.user.findUnique({
         where: { id: userId },
@@ -535,7 +535,7 @@ export async function updateUserRole(
       const before = await superRow(db, userId);
       if (!before) throw new ScopeMovedError();
       await assertScopeKeepsAnAdmin(db, null, userId);
-      // NOTE: replacing an existing TENANT_ADMIN membership in the landing tenant is a demotion
+      // Replacing an existing TENANT_ADMIN membership in the landing tenant is a demotion
       // there too, so that tenant must keep an administrator. Its scope lock is already held.
       const already = await memberRow(db, joining, userId);
       if (already?.role === "TENANT_ADMIN" && role !== "TENANT_ADMIN") {
@@ -582,7 +582,7 @@ export async function deleteUser(
     await asPrincipalOn(base, ctx, async (db) => {
       await lockAdminScopes(db, [callerTenantId]);
       await lockMembership(db, callerTenantId, userId);
-      // NOTE: locked before it is read, so two acts on the same membership do not both audit it.
+      // Locked before it is read, so two acts on the same membership do not both audit it.
       const target = await memberRow(db, callerTenantId, userId);
       if (!target) {
         throw new UserNotInScopeError();
@@ -612,7 +612,7 @@ export async function deleteUser(
   }
   await withScopeRetry(() =>
     asPrincipalOn(base, ctx, async (db) => {
-      // NOTE: scope locks first, row second (see `lockAdminScopes`).
+      // Scope locks first, row second (see `lockAdminScopes`).
       const peeked = await personScopesOf(db, userId);
       if (peeked === null) {
         throw new UserNotInScopeError();

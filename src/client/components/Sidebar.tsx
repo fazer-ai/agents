@@ -151,7 +151,7 @@ function SidebarFooter({ collapsed = false, onNavigate }: SidebarFooterProps) {
 
   if (!SUPPORT_LINK && SECONDARY_LINKS.length === 0) return null;
 
-  // NOTE: white-label overrides: the operator's own site and support inbox replace the defaults, and
+  // White-label overrides: the operator's own site and support inbox replace the defaults, and
   // the GitHub entry can be hidden. The server sanitizes what it stores, but the URL still only rides
   // into an href after the allowlist check any externally-sourced link gets (defense in depth against
   // a tampered cache or response).

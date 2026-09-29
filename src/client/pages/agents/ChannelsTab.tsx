@@ -67,7 +67,7 @@ export function ChannelsTab({
   const [botStatus, setBotStatus] = useState<
     Record<string, "active" | "missing">
   >({});
-  // NOTE: Keyed `${inboxId}:${agentId}`, one entry per observer binding, the same shape the Channels
+  // Keyed `${inboxId}:${agentId}`, one entry per observer binding, the same shape the Channels
   // page reads, so a watcher whose observer bot is gone shows as missing rather than healthy.
   const [observerStatus, setObserverStatus] = useState<
     Record<string, "active" | "missing">
@@ -151,7 +151,7 @@ export function ChannelsTab({
     }
   }
 
-  // NOTE: Applies BOTH roles from an observe's answer. `observeInbox` can answer 200 with the observe NOT
+  // Applies BOTH roles from an observe's answer. `observeInbox` can answer 200 with the observe NOT
   // done: racing a bind of this same agent, the responder wins (`responderWon` in management.ts) and
   // the DTO names this agent as the RESPONDER, so reading only `observerAgentIds` would leave
   // `agentId` stale. The status map follows the answer too: `active` only where the response still
@@ -180,7 +180,7 @@ export function ChannelsTab({
     });
   }
 
-  // NOTE: The observer binding, the way the Channels page drives it: both calls reach Chatwoot, and the
+  // The observer binding, the way the Channels page drives it: both calls reach Chatwoot, and the
   // row's list moves only on success. Returns whether it worked, because the combined removal below
   // must not unbind the responder after a failed observer removal.
   async function setObserving(
@@ -199,7 +199,7 @@ export function ChannelsTab({
             .delete();
       if (res.error || !res.data) throw res.error;
       applyInboxRoles(inboxId, res.data.inbox);
-      // NOTE: The message is the answer's, not the request's: an observe the responder race won returns
+      // The message is the answer's, not the request's: an observe the responder race won returns
       // 200 with no observer.
       const observing = res.data.inbox.observerAgentIds.includes(agentId);
       showToast(
@@ -229,7 +229,7 @@ export function ChannelsTab({
     }
   }
 
-  // NOTE: Which role this agent has on this inbox, off the row rather than off the mode: a
+  // Which role this agent has on this inbox, off the row rather than off the mode: a
   // monitoring agent can be an inbox's responder after a mode change (docs/chatwoot.md), and reading
   // the role from the mode would hide that binding and leave no way to remove it.
   const rolesOn = (ib: Inbox) => ({
@@ -274,7 +274,7 @@ export function ChannelsTab({
     void setBinding(ib.id, agentId);
   }
 
-  // NOTE: The repair for a MISSING OBSERVER bot is an observe, not the inbox reconnect: that endpoint
+  // The repair for a MISSING OBSERVER bot is an observe, not the inbox reconnect: that endpoint
   // repairs the responder's bot and would leave this pair broken. `observeInbox` provisions the bot
   // again and re-attaches it.
   async function reobserve(inboxId: string) {
@@ -407,12 +407,12 @@ export function ChannelsTab({
                   <ul>
                     {items.map((ib) => {
                       const role = rolesOn(ib);
-                      // NOTE: ON when this agent is on this inbox in EITHER role.
+                      // ON when this agent is on this inbox in EITHER role.
                       const mine = role.responds || role.observes;
                       const observerBroken =
                         role.observes &&
                         observerStatus[`${ib.id}:${agentId}`] === "missing";
-                      // NOTE: Watching an inbox we do not answer: the row whose health is the observer pair's and
+                      // Watching an inbox we do not answer: the row whose health is the observer pair's and
                       // nobody else's.
                       const observerOnly = role.observes && !role.responds;
                       const otherOwner =
@@ -420,7 +420,7 @@ export function ChannelsTab({
                           ? (agents.find((a) => a.id === ib.agentId)?.name ??
                             t("editor.channels.otherAgent", "another agent"))
                           : null;
-                      // NOTE: The observer slot is single: `observeInbox` refuses a second one with 422
+                      // The observer slot is single: `observeInbox` refuses a second one with 422
                       // `errors.inboxAlreadyObserved`, since the memory thread is the contact-inbox's. On an inbox
                       // another agent watches, the switch is blocked AND names that agent, because a merely dead
                       // switch reads as a bug rather than as a rule.

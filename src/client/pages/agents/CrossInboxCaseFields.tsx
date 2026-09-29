@@ -17,7 +17,7 @@ import {
 } from "@/modules/cross-inbox-case/settings";
 import { type InboxLabelOption, LabelPicker } from "./LabelPicker";
 
-// NOTE: Mirrors agent.settings.crossInboxCase (modules/cross-inbox-case/settings). The inbox is kept
+// Mirrors agent.settings.crossInboxCase (modules/cross-inbox-case/settings). The inbox is kept
 // with the instance it was picked from, because an inbox id only means something inside one Chatwoot
 // account.
 export interface CrossInboxCaseState {

@@ -250,7 +250,7 @@ describe.skipIf(!dbUp)("getKpis: what counts as a resolution", () => {
   });
 
   test("a legacy row with no node still counts as the agent turn it was", async () => {
-    // NOTE: the eight conversations seeded above carry `node: null`, the shape of a legacy row.
+    // The eight conversations seeded above carry `node: null`, the shape of a legacy row.
     // `notIn` alone drops them (SQL NOT IN with NULL), so this catches the filter tightening past
     // its own rule.
     const kpis = await getKpis(ctx(), {}, appDb);

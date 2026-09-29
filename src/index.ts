@@ -59,7 +59,7 @@ import {
 
 const MAX_PORT_ATTEMPTS = 10;
 
-// NOTE: Postgres 42501 (insufficient_privilege) surfaces nested inside Prisma's
+// Postgres 42501 (insufficient_privilege) surfaces nested inside Prisma's
 // DriverAdapterError; walk the cause chain instead of trusting one shape.
 function isPermissionDenied(error: unknown): boolean {
   let current: unknown = error;

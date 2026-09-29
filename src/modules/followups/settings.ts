@@ -153,7 +153,7 @@ function readStep(raw: unknown): FollowUpStep | null {
     FOLLOW_UP_INSTRUCTIONS_MAX,
   );
   const step: FollowUpStep = { delayValue, delayUnit, instructions };
-  // NOTE: falls back to the legacy single `assignLabel` string so an agent saved before multi-label
+  // Falls back to the legacy single `assignLabel` string so an agent saved before multi-label
   // keeps its label.
   const rawLabels = Array.isArray(bag.assignLabels)
     ? bag.assignLabels
@@ -161,7 +161,7 @@ function readStep(raw: unknown): FollowUpStep | null {
       ? [bag.assignLabel]
       : [];
   const labels: string[] = [];
-  // NOTE: membership by Set, not a scan of what is kept: the list has no ceiling and every read of the
+  // Membership by Set, not a scan of what is kept: the list has no ceiling and every read of the
   // agent (the turn path, an import) runs this, so a scan is quadratic.
   const seen = new Set<string>();
   for (const l of rawLabels) {
@@ -187,18 +187,18 @@ export function readFollowUpConfig(settings: unknown): FollowUpConfig {
 
   const enabled = typeof bag.enabled === "boolean" ? bag.enabled : false;
 
-  // NOTE: no legacy fallback: without a valid steps array the agent gets one default step.
+  // No legacy fallback: without a valid steps array the agent gets one default step.
   const parsed = (Array.isArray(bag.steps) ? bag.steps : [])
     .slice(0, FOLLOW_UP_MAX_STEPS)
     .map(readStep)
     .filter((s): s is FollowUpStep => s !== null);
   let steps = parsed.length > 0 ? parsed : cloneDefaults().steps;
 
-  // NOTE: `resolve` is honored only on the last step; mid-sequence it would end the episode early.
+  // `resolve` is honored only on the last step; mid-sequence it would end the episode early.
   const lastIdx = steps.length - 1;
   steps = steps.map((s, i) => {
     if (i === lastIdx || !s.resolve) return s;
-    // NOTE: removed with a rest spread, never rebuilt field by field, which would silently drop every
+    // Removed with a rest spread, never rebuilt field by field, which would silently drop every
     // step field the rebuild does not list.
     const { resolve: _dropped, ...kept } = s;
     return kept;

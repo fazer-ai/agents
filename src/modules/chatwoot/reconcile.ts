@@ -128,7 +128,7 @@ export async function reconcileMirrorFromLive(
         const sec = (d: Date) => Math.floor(d.getTime() / 1000);
         const liveAt = live.lastActivityAt;
         const liveVersion = live.updatedAt;
-        // NOTE: a webhook can commit between the caller's GET and this write, making the snapshot the
+        // A webhook can commit between the caller's GET and this write, making the snapshot the
         // older truth. The conversation's version is exact, used for a field only when both the
         // snapshot and that field's mark carry one; `last_activity_at` is the coarse fallback (1s
         // resolution, unmoved by status or assignee, compared against a `lastEventAt` possibly
@@ -142,7 +142,7 @@ export async function reconcileMirrorFromLive(
           liveVersion !== null && mark !== null
             ? liveVersion >= mark
             : !activityStale;
-        // NOTE: A LOCAL CLAIM SOMEBODY ELSE IS HOLDING fences the status here for the same reason it
+        // A LOCAL CLAIM SOMEBODY ELSE IS HOLDING fences the status here for the same reason it
         // does in the mirror: this snapshot may have been read before that write reached Chatwoot,
         // and it carries no way to tell. Asked of the status the snapshot STATES, so a read that
         // agrees with the claim's new status is not refused by it. ./status-claim.ts.
@@ -162,7 +162,7 @@ export async function reconcileMirrorFromLive(
             );
         const claimed = verdict !== "apply";
         result.refusedByStatusClaim = claimed;
-        // NOTE: the owner's adjudication. This read is the version the source gave our transition. A
+        // The owner's adjudication. This read is the version the source gave our transition. A
         // refusal ahead of it was a write committed after ours (a colleague handing the conversation
         // back mid-toggle), and the only status it can have kept is the one the claim replaced, so
         // that stands; a refusal behind it was a pre-write snapshot and goes. Forward-only against the
@@ -188,7 +188,7 @@ export async function reconcileMirrorFromLive(
           ((!statusRanked && current.chatwootStatusAt !== null) ||
             (!assigneeOrdered && current.chatwootAssigneeAt !== null));
         result.applied = statusOrdered && assigneeOrdered;
-        // NOTE: The recency this write leaves in the row, computed once so the caller announces the
+        // The recency this write leaves in the row, computed once so the caller announces the
         // same value the row holds. It is NOT gated by the ordering marks: those order status and
         // assignee, while activity is monotonic on its own terms.
         const advancesActivity =
@@ -196,7 +196,7 @@ export async function reconcileMirrorFromLive(
           (current.lastEventAt === null ||
             sec(liveAt) > sec(current.lastEventAt));
         const nextEventAt = advancesActivity ? liveAt : current.lastEventAt;
-        // NOTE: Only what actually differs. The probe runs on every proactive send, and the
+        // Only what actually differs. The probe runs on every proactive send, and the
         // common outcome is "nothing changed" — writing the same values back would be two
         // updates per follow-up and would advance the row's `updatedAt` for nothing.
         // NOTE: What this call writes for the status: the deferred transition when the owner's own
@@ -209,7 +209,7 @@ export async function reconcileMirrorFromLive(
             ? live.status
             : null;
         const nextStatusAt = deferredWins ? deferredAt : liveVersion;
-        // NOTE: the assignee this call leaves behind, computed once so the row, the broadcast and the
+        // The assignee this call leaves behind, computed once so the row, the broadcast and the
         // durable event agree. On the deferred path it can differ from the stored trio: the owner's
         // GET may have seen an assignment the refused status event did not carry.
         const nextAssigneeId = assigneeOrdered

@@ -231,7 +231,7 @@ export function playgroundFailure(
         : undefined;
   const turnId =
     typeof body?.turnId === "string" && body.turnId ? body.turnId : undefined;
-  // NOTE: A request that never reached the server is not an answer, even though the client hands it
+  // A request that never reached the server is not an answer, even though the client hands it
   // back as one: Eden turns a failed `fetch` into a 503 error whose value is the fetch's own
   // TypeError, so its presence says nothing about the server.
   const answered = !!err && !(value instanceof Error);
@@ -275,7 +275,7 @@ export function agentTurn(
     ...(r.timing ? { timing: r.timing } : {}),
   };
   if (r.suppressed) {
-    // NOTE: A hand-over with no message to the customer empties the reply too, and it is a different
+    // A hand-over with no message to the customer empties the reply too, and it is a different
     // outcome from a suppression: the case would reach a person. Read off the verdict, which a reload
     // restores with the turn.
     const handedOff = r.trace.some(
@@ -333,7 +333,7 @@ export function usePlaygroundChat(
   );
   getDraftRef.current = opts.getDraft;
   const [turns, setTurns] = useState<PlaygroundTurn[]>([]);
-  // NOTE: The open session's total, always the ledger's, re-read after every turn rather than grown
+  // The open session's total, always the ledger's, re-read after every turn rather than grown
   // from the replies: a turn can fail after a call it was billed for, and the ledger is the one place
   // that has it. The per-turn line comes from the reply.
   const [sessionUsage, setSessionUsage] = useState<PlaygroundUsage>(NO_USAGE);

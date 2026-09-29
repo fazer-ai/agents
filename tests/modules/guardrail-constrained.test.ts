@@ -35,7 +35,7 @@ const VIOLATION = {
 
 // ── an OpenAI-shaped endpoint ───────────────────────────────────────────────
 
-// NOTE: two things the suite's happy-dom environment does to a local server. Its `fetch` enforces
+// Two things the suite's happy-dom environment does to a local server. Its `fetch` enforces
 // the same-origin policy, so every call below is preflighted and needs the CORS headers; and its
 // `Response` is not the one Bun's socket layer recognises, so a server answering with it fails the
 // connection outright (see tests/dom-setup.ts, which captures the native constructors for exactly

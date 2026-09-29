@@ -418,7 +418,7 @@ export async function sendWhatsAppFollowUp(
     base: p.base,
     botToken: bot?.accessToken,
   });
-  // NOTE: The link mint above is an HTTP round trip to Chatwoot, so the answer the caller had is older than
+  // The link mint above is an HTTP round trip to Chatwoot, so the answer the caller had is older than
   // this line. Nothing has left yet, which makes this the last free place to stop.
   const verdict = p.fence ? await p.fence() : "go";
   if (verdict !== "go") return verdict;
@@ -452,7 +452,7 @@ export async function redirectFollowUpHandler(
   const payload = parseRedirectFollowUpPayload(job.payload);
   if (!payload) return { outcome: "done" };
 
-  // NOTE: Retired while this row sat claimed? The row is re-read (the payload is the claim-time
+  // Retired while this row sat claimed? The row is re-read (the payload is the claim-time
   // snapshot), before every stage and the reschedule. A read that fails does NOT retire the job.
   const retired = (): Promise<boolean> => jobRetired(job, base);
   if (await retired()) return { outcome: "done" };
@@ -525,7 +525,7 @@ export async function redirectFollowUpHandler(
   ) {
     return { outcome: "done" };
   }
-  // NOTE: Retirement AND the agent's switch, re-asked from inside the stages in ONE round trip, so no
+  // Retirement AND the agent's switch, re-asked from inside the stages in ONE round trip, so no
   // I/O sits between either answer and the write it guards. Fails OPEN on a read that fails; a
   // DELETED agent is an answer, and it is no. The activation stamp is read only for a test agent,
   // and its two reads share no snapshot: a gap of one statement, with no network in it.
@@ -541,7 +541,7 @@ export async function redirectFollowUpHandler(
     opts: { strict?: boolean } = {},
   ): Promise<LadderVerdict> => {
     const read = async (db: ScopedDb) => {
-      // NOTE: The retirement read goes LAST, and that ordering is the whole of what the transaction
+      // The retirement read goes LAST, and that ordering is the whole of what the transaction
       // can offer: the two statements share a connection but not a snapshot (default READ COMMITTED),
       // so whichever is asked last is the one observed closest to the send. Retirement gets it, so a
       // /reset is never overtaken; the liveness answer carries a residual one statement wide.
@@ -627,7 +627,7 @@ export async function redirectFollowUpHandler(
           payload.widgetThreadId,
           err instanceof Error ? err.message : String(err),
         );
-        // NOTE: The liveness half is unknown here, and unknown is live. Retirement is not allowed to be
+        // The liveness half is unknown here, and unknown is live. Retirement is not allowed to be
         // unknown by association: a statement the server rejects leaves the transaction aborted, so it
         // cannot be asked in THAT one — it gets a fresh one. A /reset is the strongest fence in this
         // file and it must not be overtaken by a question that was added on top of it.
@@ -946,7 +946,7 @@ export async function deliverRedirectClosing(
     return "go";
   };
 
-  // NOTE: The retirement fence and the CLAIM sit together, after every read: claiming earlier would
+  // The retirement fence and the CLAIM sit together, after every read: claiming earlier would
   // let a ladder retired mid-read burn the at-most-once anchor on a closing it then refuses to
   // deliver, leaving a funnel that can never close. A race loser only discards a few reads.
   const beforeClaim = await ask();
@@ -966,7 +966,7 @@ export async function deliverRedirectClosing(
     return "already-closed";
   }
 
-  // NOTE: Claim the closing: set the watermark only if still unset AND the episode is the one this
+  // Claim the closing: set the watermark only if still unset AND the episode is the one this
   // run read (the origin, with null a value and not a wildcard), since a re-entry meanwhile would
   // have the goodbye resolve a thread no longer paired. With a null origin, the mark's NULLNESS
   // (never its value, which advances on every payload) tells "never told" from "told none". The
@@ -995,7 +995,7 @@ export async function deliverRedirectClosing(
   });
   if (!won) return "already-closed";
 
-  // NOTE: Asked once more after the claim write, the last point where the episode can end without a
+  // Asked once more after the claim write, the last point where the episode can end without a
   // goodbye; a stand-down releases the anchor (CAS'd on this claim's instant), or the funnel could
   // never close again. NOT asked between the two deliveries: stopping halfway leaves it half-closed.
   const releaseClaim = async (): Promise<void> => {
@@ -1023,7 +1023,7 @@ export async function deliverRedirectClosing(
     return afterClaim === "retired" ? "already-closed" : "stood-down";
   }
 
-  // NOTE: The fence for a caller with no job: /reset CLEARS this anchor, so the claim is the token,
+  // The fence for a caller with no job: /reset CLEARS this anchor, so the claim is the token,
   // re-read the way a job re-reads `claim_seq` (still our exact instant, or not ours to deliver or
   // release). A closure, asked once per stretch of I/O that precedes each of the two sends.
   const stillDelivering = async (): Promise<boolean> => {
@@ -1046,7 +1046,7 @@ export async function deliverRedirectClosing(
   };
   if (!(await stillDelivering())) return "already-closed";
 
-  // NOTE: The job, asked again and LAST, since the claim read above is a round trip a /reset can land
+  // The job, asked again and LAST, since the claim read above is a round trip a /reset can land
   // in. Only one question can be last: this leaves open a concurrent closing taking the anchor (a
   // rare duplicate goodbye) and closes the reset (a conversation the operator was told was clean).
   const beforeSends = await ask();
@@ -1101,7 +1101,7 @@ export async function deliverRedirectClosing(
       chatwootRedirectOriginAt: cx.widget.chatwootRedirectOriginAt,
     },
   );
-  // NOTE: ONE watermark read, then ONE fence, and nothing between the fence and the send (the fence
+  // ONE watermark read, then ONE fence, and nothing between the fence and the send (the fence
   // gets the last word: a stale one would send from a switched-off agent). Both are skipped once the
   // chat half was delivered, since a started delivery completes both halves. A stand-down releases
   // the claim; a lost watermark does not, since that claim belongs to another run.

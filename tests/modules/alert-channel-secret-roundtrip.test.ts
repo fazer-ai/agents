@@ -207,7 +207,7 @@ describe.skipIf(!dbUp)(
     });
 
     test("the receiver keeps getting a signed delivery after the save", async () => {
-      // NOTE: everything above reads our own column back; this reads the request that leaves the
+      // Everything above reads our own column back; this reads the request that leaves the
       // installation, the only place "the channel is unsigned" is a fact the receiver sees.
       const created = await seedSigned("dispatch");
       const before = await listed(BigInt(created.id));
@@ -257,7 +257,7 @@ describe.skipIf(!dbUp)(
     });
 
     test("a legacy ref that still names an entry comes back canonical", async () => {
-      // NOTE: legacy rows hold spellings like `vault: 7` and `vault:0007`. Every resolver reads them
+      // Legacy rows hold spellings like `vault: 7` and `vault:0007`. Every resolver reads them
       // (`readVaultRefId` parses the id with BigInt) and `requireVaultRef` refuses them, so the read
       // hands back the spelling that can go back IN, not the one that is stored.
       const created = await seedSigned("legacy");
@@ -279,7 +279,7 @@ describe.skipIf(!dbUp)(
     });
 
     test("a legacy value that names nothing is never handed out, and omitting is what saves it", async () => {
-      // NOTE: legacy rows can also hold a BARE NAME or any text (a caller who typed the secret
+      // Legacy rows can also hold a BARE NAME or any text (a caller who typed the secret
       // itself). Such a value cannot be projected: an audit row and a REST read are seen by every
       // tenant admin, and `alert_channel_list` by any principal with `mcp:read`.
       const created = await seedSigned("opaque");
@@ -319,7 +319,7 @@ describe.skipIf(!dbUp)(
     });
 
     test("no reader of a channel ever emits the raw column", async () => {
-      // NOTE: the promise `docs/logs.md` and the MCP tool description make, checked against every
+      // The promise `docs/logs.md` and the MCP tool description make, checked against every
       // projection this service has: the DTO, and the audit row, which is append-only.
       const created = await seedSigned("never-emitted");
       const planted = "s3cr3t-hmac-value";
@@ -346,7 +346,7 @@ describe.skipIf(!dbUp)(
     });
 
     test("clearing a secret the row cannot name still writes a row", async () => {
-      // NOTE: what the marker is FOR: redacted, an opaque legacy value reads as null on both sides of
+      // What the marker is FOR: redacted, an opaque legacy value reads as null on both sides of
       // a clear, so without it `projectionMoved` sees nothing and the save that removed a signing
       // secret leaves no trace.
       const created = await seedSigned("opaque cleared");
@@ -375,7 +375,7 @@ describe.skipIf(!dbUp)(
     });
 
     test("the sibling family answers the same round trip the same way", async () => {
-      // NOTE: the webhooks family is the norm this one follows, so it is driven through its own
+      // The webhooks family is the norm this one follows, so it is driven through its own
       // service here: the behaviour being cited, not a sentence about it.
       const created = await createWebhookSubscription(
         ctx(),
@@ -406,7 +406,7 @@ describe.skipIf(!dbUp)(
       );
       expect(after?.secretRef).toBe(`vault:${secretId}`);
 
-      // NOTE: the sibling's `secretRef` column holds the same legacy values, so it must not echo the
+      // The sibling's `secretRef` column holds the same legacy values, so it must not echo the
       // raw column either, or citing it as the norm would be false.
       const planted = "s3cr3t-sub-value";
       await (su as PrismaClient).$executeRawUnsafe(
@@ -555,7 +555,7 @@ const inbound = z.object({ status: z.string().nullish() });`;
   });
 
   test("a comment naming the shape is prose, not a declaration", () => {
-    // NOTE: a comment warning against the shape must not be read as the shape.
+    // A comment warning against the shape must not be read as the shape.
     const commented = service(
       "  secretRef: string | null;",
       "// NOTE: never add another `foo: z.string().nullish()` here\n  bar: z.string(),",

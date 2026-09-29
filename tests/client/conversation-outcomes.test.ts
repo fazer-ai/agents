@@ -45,7 +45,7 @@ describe("conversation actions report their outcome", () => {
     const body = handlerBody("reengage");
     const arm = body.indexOf('"posted-partial"');
     expect(arm).toBeGreaterThan(-1);
-    // NOTE: its own branch, and BEFORE the fallback: the chain is ordered, so an arm added after the
+    // Its own branch, and BEFORE the fallback: the chain is ordered, so an arm added after the
     // final `else` is unreachable.
     const fallback = body.indexOf("reengage.noReply");
     expect(fallback).toBeGreaterThan(arm);
@@ -100,7 +100,7 @@ describe("conversation actions report their outcome", () => {
     expect(SRC.slice(returnGate, returnCall)).toContain('!== "resolved"');
     expect(SRC.slice(returnGate, returnCall)).toContain("heldByOther");
 
-    // NOTE: "Respond now" asks the agent to speak, so it asks the same question. Read from the gate
+    // "Respond now" asks the agent to speak, so it asks the same question. Read from the gate
     // to the LABEL rather than over a fixed window, since the gate has more than one clause.
     const reengageGate = SRC.indexOf("{mayReengage &&");
     expect(reengageGate).toBeGreaterThan(-1);
@@ -214,7 +214,7 @@ describe("conversation actions report their outcome", () => {
     const handoffGate = SRC.lastIndexOf("{conv.status ===", handoff);
     expect(SRC.slice(handoffGate, handoff)).not.toContain("responderAnswers");
 
-    // NOTE: ...including the failure card's own button. It calls the same endpoint, which answers
+    // ...including the failure card's own button. It calls the same endpoint, which answers
     // `no-agent` on an inbox nothing answers, and a conversation keeps its `lastError` long after its
     // responder was unbound.
     const failureCard = SRC.indexOf("conversation.reengage.failedTitle");

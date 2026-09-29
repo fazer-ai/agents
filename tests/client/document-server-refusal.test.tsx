@@ -119,7 +119,7 @@ test("a company save with no server behind it still says something", async () =>
 });
 
 test("a logo refused for its pixel count does not blame its size", async () => {
-  // NOTE: the refusal names the real limit. The generic sentence names a DIFFERENT limit that this file
+  // The refusal names the real limit. The generic sentence names a DIFFERENT limit that this file
   // already satisfies, which is worse than saying nothing.
   const reason = "the logo must be at most 4000000 pixels (about 2000×2000)";
   refusing(400, reason, "POST");

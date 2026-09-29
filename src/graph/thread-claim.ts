@@ -275,13 +275,13 @@ async function acquireTurnHold(
   owner: ThreadOwner,
   base: PrismaClient,
 ): Promise<TurnHold> {
-  // NOTE: asked BEFORE this turn marks itself, or the answer is about this turn. The Map half still
+  // Asked BEFORE this turn marks itself, or the answer is about this turn. The Map half still
   // counts: an invoke in THIS process may hold a key that has no row (./inflight.ts). INVOKES only,
   // not reservations: a reservation is this very caller before it starts (a delivery recovery on its
   // way here), and counting it would defer the attendance divider and marker for its own turn.
   const alreadyHere = isTurnRunning(owner.graphThreadId);
   markTurnInFlight(owner.graphThreadId);
-  // NOTE: the wait runs against the CLAIM, not a fixed span: the append renews its lease while alive,
+  // The wait runs against the CLAIM, not a fixed span: the append renews its lease while alive,
   // so a fixed deadline would fail a customer's turn over a legitimately slow append. The deadline
   // restarts whenever the lease moves, and only a lease that stopped moving ends the wait.
   let seenLease: number | null = null;
@@ -303,7 +303,7 @@ async function acquireTurnHold(
           heldBefore: alreadyHere,
         });
       }
-      // NOTE: the row exists and the update was refused, so an append is in flight. It holds the claim
+      // The row exists and the update was refused, so an append is in flight. It holds the claim
       // for one checkpointer write, and says so by pushing the lease forward.
       const lease = await readWriteLease(owner, base);
       if (lease !== null && lease !== seenLease) {
@@ -565,7 +565,7 @@ export async function claimIngestWrite(
   );
   if (updated > 0)
     return renewingWrite(owner, base, { state: "claimed", token });
-  // NOTE: no row yet is not protected: a turn on another replica could insert its claim right after
+  // No row yet is not protected: a turn on another replica could insert its claim right after
   // this read and load the channel under the append (the FIRST message on a thread). So the claim is
   // taken by CREATING the row, held by this append alone (`ON CONFLICT DO NOTHING` yields to the
   // first inserter, read as busy). The row carries only the claim, so `releaseIngestWrite` can delete
@@ -595,7 +595,7 @@ export async function releaseIngestWrite(
   claim.stopRenewal?.();
   if (claim.token === null) return;
   if (claim.state === "created") {
-    // NOTE: the row exists only because the claim needed something to hold. If the append wrote, the
+    // The row exists only because the claim needed something to hold. If the append wrote, the
     // row carries that write and stays; if it stood down (message already known, or `/reset` revoked
     // the job), deleting it keeps "an append that writes nothing leaves nothing" true. Gated on the
     // row's emptiness AND this claim's token, so a late release throws away neither a concurrent

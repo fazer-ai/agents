@@ -207,7 +207,7 @@ describe.skipIf(!dbUp)(
           name: "Atendente",
         },
       });
-      // NOTE: The watcher: `monitoring` and switched on, with a bot of its own, on an inbox a
+      // The watcher: `monitoring` and switched on, with a bot of its own, on an inbox a
       // `test`-mode agent answers. The live receiver folds a colleague's reply in through THIS agent,
       // and it asks the watcher's switch without asking its mode.
       const watcher = await suDb.agent.create({
@@ -450,7 +450,7 @@ describe.skipIf(!dbUp)(
         .filter((r) => r.payload.conversationId === convId);
     }
 
-    // NOTE: PELA IDENTIDADE DO APPEND, e não pelo tamanho de uma população.
+    // PELA IDENTIDADE DO APPEND, e não pelo tamanho de uma população.
     // `ingest:<thread>:<messageId>` nomeia exatamente um append (src/graph/ingest-job.ts), e a chave
     // vem do construtor que o produto usa, em vez de remontada à mão. Uma negativa contada afirmaria
     // sobre um número que este módulo move de propósito (a linha é apagada ao concluir e
@@ -1222,7 +1222,7 @@ describe.skipIf(!dbUp)(
         }),
       ).toBe("undecided");
       expect(await ingestArmedFor(convId, 700)).toBe(false);
-      // NOTE: E NUM REGISTRO QUE UM OPERADOR CONSULTA, não numa linha de log de processo. Sem isto,
+      // E NUM REGISTRO QUE UM OPERADOR CONSULTA, não numa linha de log de processo. Sem isto,
       // a única linha nomeando esta mensagem seria `human_reply_not_remembered`, escrita pelo
       // receptor no instante da perda, cuja razão diz o OPOSTO do que é verdade agora: que a perda é
       // transitória e que uma retentativa vem aí.

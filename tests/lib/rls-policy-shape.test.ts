@@ -453,7 +453,7 @@ describe.skipIf(!dbUp)("RLS policy shape", () => {
       });
       expect((seen as Array<{ n: number }>)[0]?.n).toBe(0);
 
-      // NOTE: The counterfactual: the same table, reached by a BYPASSRLS role, hands back every row.
+      // The counterfactual: the same table, reached by a BYPASSRLS role, hands back every row.
       // The grantee is read from the APP connection, not written as `session_user`: inside the su
       // client that resolves to the migration role, and the grant would land on the wrong account.
       const runtimeRole = (

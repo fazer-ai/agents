@@ -46,7 +46,7 @@ export function wallClock(
   const parts = fmt.formatToParts(new Date(instantMs));
   const get = (type: Intl.DateTimeFormatPartTypes) =>
     Number(parts.find((p) => p.type === type)?.value ?? "0");
-  // NOTE: Folded back into the astronomical count JavaScript's Date uses: 1 BC is year 0, 2 BC is −1.
+  // Folded back into the astronomical count JavaScript's Date uses: 1 BC is year 0, 2 BC is −1.
   const era = parts.find((p) => p.type === "era")?.value ?? "";
   const yearOfEra = get("year");
   return {
@@ -75,7 +75,7 @@ export function zoneOffsetSeconds(
   } catch {
     return 0;
   }
-  // NOTE: Not `Date.UTC`: it reads a year of 0 to 99 as 1900 to 1999, which would skew the offset for
+  // Not `Date.UTC`: it reads a year of 0 to 99 as 1900 to 1999, which would skew the offset for
   // such a date by centuries. `setUTCFullYear` takes the year as written.
   const wall = new Date(0);
   wall.setUTCFullYear(w.year, w.month - 1, w.day);

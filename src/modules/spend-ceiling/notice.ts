@@ -74,7 +74,7 @@ export async function announceSpendCeilingOnConversation(
   return flight;
 }
 
-// NOTE: Test isolation only, like contact-auth's own state reset. Production never clears this: a
+// Test isolation only, like contact-auth's own state reset. Production never clears this: a
 // flight removes itself when it settles.
 export function clearSpendCeilingFlights(): void {
   inFlight.clear();

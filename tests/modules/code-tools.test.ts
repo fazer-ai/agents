@@ -217,7 +217,7 @@ describe.skipIf(!dbUp)("code tools service", () => {
     );
     expect(reverse?.translationKey).toBe("errors.documentToolNameTaken");
 
-    // NOTE: The same question on the UPDATE door: a rename onto a slug whose tool name is taken. The
+    // The same question on the UPDATE door: a rename onto a slug whose tool name is taken. The
     // create and the update reach the row through different code, so each has to ask.
     const free = await createDocumentTemplate(
       ctx(),
@@ -296,7 +296,7 @@ describe.skipIf(!dbUp)("code tools service", () => {
   });
 
   test("every writer of a tool name queues behind one lock, the import included", async () => {
-    // NOTE: The namespace spans two tables, so no unique index covers it: under READ COMMITTED both writes
+    // The namespace spans two tables, so no unique index covers it: under READ COMMITTED both writes
     // can read a free name and insert, and `dropDuplicateToolNames` then picks the tool at assembly with a
     // flow-log line as the only trace. Both `assertNameFree`s take the same transaction lock first
     // (src/modules/tool-definitions/namespace.ts). Timed rather than raced, because two concurrent
@@ -410,7 +410,7 @@ describe.skipIf(!dbUp)("code tools service", () => {
   });
 
   test("a name that was legal before the newer rules can still be saved, as long as it does not move", async () => {
-    // NOTE: The console sends the whole row on every save, and rows may predate these rules: refusing an
+    // The console sends the whole row on every save, and rows may predate these rules: refusing an
     // unchanged name would lock an operator out of editing a tool that was legal when they created it.
     // Only a name that MOVES is asked the question.
     const legacy = await suDb.codeToolDefinition.create({

@@ -720,7 +720,7 @@ describe.skipIf(!dbUp)("ingestMessageIntoThread", () => {
     // The voice note from A, still transcribing when B started.
     expect(await ingest(800, 901, "<audio> do primeiro")).toBe("ingested");
 
-    // NOTE: It is in the thread, so nothing is lost.
+    // It is in the thread, so nothing is lost.
     const cp = await saver.get({ configurable: { thread_id: graphThreadId } });
     const contents = (
       ((cp?.channel_values as { messages?: BaseMessage[] })?.messages ??

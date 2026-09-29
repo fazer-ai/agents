@@ -391,7 +391,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       issues.push(base);
     }
   };
-  // NOTE: Can the primary model be built at all, asked of the runtime's own two authorities: the
+  // Can the primary model be built at all, asked of the runtime's own two authorities: the
   // schema `parseModelConfig` throws on every turn, and the endpoint `createChatModel` needs (which
   // may arrive on the credential, so the schema cannot judge it).
   const modelTarget = {
@@ -406,7 +406,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       input.modelProvider,
       input.modelBaseURL ?? "",
     );
-    // NOTE: Wait while the vault is unread and a credential is set: the credential's base URL WINS over
+    // Wait while the vault is unread and a credential is set: the credential's base URL WINS over
     // the typed field (here and at runtime), so it may still replace an undialable string.
     const owed = vault.known === null && Boolean(input.modelCredentialRef);
     if (endpoint !== null && !owed) {
@@ -442,7 +442,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       vault,
     ),
   );
-  // NOTE: The speech rewrite fails SILENTLY at runtime (the audio goes out unrewritten), so this panel
+  // The speech rewrite fails SILENTLY at runtime (the audio goes out unrewritten), so this panel
   // is the only place it surfaces. Whether it needs a key is asked of the runtime's own resolver.
   const normalizeOn = Boolean(input.ttsNormalize) && input.ttsMode !== "never";
   const normalizeResolution = normalizeOn
@@ -479,7 +479,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
     tab: "behavior",
     sectionId: "tts",
   };
-  // NOTE: An endpoint can arrive on a CREDENTIAL the vault has not answered for, so the verdict waits,
+  // An endpoint can arrive on a CREDENTIAL the vault has not answered for, so the verdict waits,
   // but only where a credential could carry one: a failed vault load may never recover, and waiting
   // then would delete the warning. A typed endpoint does not settle it (the credential's URL wins).
   const endpointsKnown = vault.known !== null;
@@ -514,7 +514,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       ),
     );
   }
-  // NOTE: The attendance summariser's own model. Its job dies with the reason on its line, but nothing
+  // The attendance summariser's own model. Its job dies with the reason on its line, but nothing
   // in the console says so, and an attendance that ends while it is broken is never summarised. Read
   // against the SAVED model, like the rewrite.
   const compaction = readMemoryConfig(input.settings).compaction;
@@ -582,7 +582,7 @@ export function computeConfigIssues(input: ConfigHealthInput): ConfigIssue[] {
       ),
     );
   }
-  // NOTE: The fallback provider, judged like the summariser: one that cannot be built is the same as
+  // The fallback provider, judged like the summariser: one that cannot be built is the same as
   // none, found out on the day the primary fails. Its credential can be PENDING after an import or
   // UNRESOLVED after a delete. `hasModelFallback` is its on switch.
   const fallback = readModelFallbackConfig(input.settings);

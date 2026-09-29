@@ -95,7 +95,7 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
       await db.$executeRawUnsafe(
         `GRANT CONNECT ON DATABASE "${dbName(suUrl as string)}" TO ${SAFE_ROLE}`,
       );
-      // NOTE: a runtime role that cannot SET ROLE into the fleet role is REFUSED, so a fixture
+      // A runtime role that cannot SET ROLE into the fleet role is REFUSED, so a fixture
       // standing for "a healthy runtime role" has to hold the grant `db-bootstrap` provisions.
       const fleet = (
         (await db.$queryRawUnsafe(`SELECT ${FLEET_ROLE_FN} AS role`)) as Array<{
@@ -215,7 +215,7 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
     });
 
     test("SET ROLE is fine; INHERITING it is refused, and the message says which GRANT repairs it", async () => {
-      // NOTE: resolved from the database: the name carries the database (see `@/lib/tenancy/fleet-role`),
+      // Resolved from the database: the name carries the database (see `@/lib/tenancy/fleet-role`),
       // so writing it here would be a second spelling of the thing under test.
       const fleetRole = (
         (await suDb.$queryRawUnsafe(
@@ -246,7 +246,7 @@ describe.skipIf(!dbUp)("assertRuntimeRoleIsNotSuperuser", () => {
       expect(err?.message).toContain(FLEET_INHERITED_REASON);
       expect(err?.message).toContain("WITH INHERIT FALSE, SET TRUE");
 
-      // NOTE: the role never became privileged in the pg_roles sense, which is why this is asked
+      // The role never became privileged in the pg_roles sense, which is why this is asked
       // separately.
       const attrs = (await (tmp as PrismaClient).$queryRawUnsafe(
         `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user`,
@@ -318,7 +318,7 @@ describe.skipIf(!dbUp)(
     });
 
     test("refuses, and lists every table whose policy is misnamed", async () => {
-      // NOTE: `allow: true` on purpose: this refusal is NOT what ALLOW_SUPERUSER_RUNTIME covers. That
+      // `allow: true` on purpose: this refusal is NOT what ALLOW_SUPERUSER_RUNTIME covers. That
       // flag accepts that RLS may be a no-op; this is the cross-tenant path reading nothing at all.
       const err = await assertRuntimeRoleIsNotSuperuser(probe as PrismaClient, {
         allow: true,
@@ -395,7 +395,7 @@ describe.skipIf(!dbUp)(
         assertRuntimeRoleIsNotSuperuser(probe as PrismaClient, { allow: true }),
       ).resolves.toBeUndefined();
 
-      // NOTE: and it landed on BOTH tables, not on the one the message happened to list first.
+      // And it landed on BOTH tables, not on the one the message happened to list first.
       const named = new Client({ connectionString: probeUrl });
       await named.connect();
       try {

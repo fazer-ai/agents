@@ -704,7 +704,7 @@ describe("knowledge: a refusal the server phrased reaches the operator", () => {
     await waitFor(() => expect(shows(/Could not add document/i)).toBe(true));
   });
 
-  // NOTE: the other road to the same column: a file, refused per-row rather than by a toast. The
+  // The other road to the same column: a file, refused per-row rather than by a toast. The
   // three statuses this screen phrases better than the API can
   // (unsupported type, too large, nothing extractable) still win; everything else the API already
   // phrased in this operator's language.

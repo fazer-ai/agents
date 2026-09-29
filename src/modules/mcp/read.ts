@@ -1003,7 +1003,7 @@ export async function auditList(
     opts.actorId = v;
   }
   if (args.cursor !== undefined) {
-    // NOTE: The cursor is TWO COLUMNS, so not `parseMcpId`; a bare id is refused like any other
+    // The cursor is TWO COLUMNS, so not `parseMcpId`; a bare id is refused like any other
     // malformed cursor.
     const c = parseAuditCursor(args.cursor);
     if (c === null) {

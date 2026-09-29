@@ -22,7 +22,7 @@ import { roleAtLeast } from "@/lib/tenancy";
 // `ws` per lifecycle hook, so the wrapper is not a stable key (see `realtime.service.ts`).
 const attached = new Set<string>();
 
-// NOTE: `ws.id` strings that reserved a slot on the /events channel (its own
+// `ws.id` strings that reserved a slot on the /events channel (its own
 // cap, separate from `attached` above). Same rewrap caveat: key by id, not the
 // wrapper.
 const eventsAttached = new Set<string>();
@@ -43,7 +43,7 @@ const ClientMessage = t.Object({
 // typing of server messages comes from the `useWebSocket<TIn, TOut>` generics. Smoke-test a manual
 // round trip before reintroducing a response schema.
 
-// NOTE: WS upgrades are double-gated for CSRF: the auth cookie is
+// WS upgrades are double-gated for CSRF: the auth cookie is
 // `SameSite=Lax` (browser-enforced), and the upgrade itself is also
 // rejected here when the `Origin` header doesn't match `CORS_ORIGIN`
 // in production. Some browsers historically did not honor SameSite for
@@ -186,7 +186,7 @@ export const realtimeController = new Elysia({
     },
     close(ws, code) {
       const id = String(ws.id);
-      // NOTE: No explicit `ws.unsubscribe(...)` here. Bun automatically
+      // No explicit `ws.unsubscribe(...)` here. Bun automatically
       // cleans up topic subscriptions when the socket closes, so calling
       // unsubscribe is redundant and risks racing the close handler.
       // The periodic presence ticker is shared at the service level and

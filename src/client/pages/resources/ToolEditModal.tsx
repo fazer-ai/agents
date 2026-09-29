@@ -121,7 +121,7 @@ function loneTokenName(value: string): string | null {
 // alphanumeric/underscore name. Drives the inline {{token}} highlighting in the URL/query/headers/body.
 const TOOL_TOKEN_SOURCE = "\\{\\{\\s*([a-zA-Z0-9_]+)\\s*\\}\\}";
 
-// NOTE: context variable names the runtime interpolates (shared with the normalization module so
+// Context variable names the runtime interpolates (shared with the normalization module so
 // the lists cannot drift; keep nativeVarItems in sync). A {{token}} is "known" (highlighted as a
 // valid var, not a typo) when it names a declared AI field, one of these, or {{secret}} (only when
 // a credential is selected).
@@ -196,7 +196,7 @@ export function templatePreviewFor(args: {
   // neither a token nor a block the template IS the answer (a 204 with no body hands the model the
   // operator's own text).
   if (!sample.trim() && templateNeedsBody(template)) return null;
-  // NOTE: the runtime's own function decides (the 2xx gate, the token-less render, the clip), so
+  // The runtime's own function decides (the 2xx gate, the token-less render, the clip), so
   // the preview cannot drift from it. `status: null` is a hand-pasted sample and reads as 200.
   const p = projectToolResponse(
     { mode: "template", template },
@@ -400,7 +400,7 @@ export function requestShapeOf(payload: unknown): string {
 // NUL as the separator because no JSON `JSON.stringify` produces holds one.
 export function captureShapeOf(payload: unknown): string {
   const shape = requestShapeOf(payload);
-  // NOTE: only for a tool that names a credential. A definition with none cannot be changed by a
+  // Only for a tool that names a credential. A definition with none cannot be changed by a
   // vault edit, and prefixing it anyway would make any vault save refuse a sample nothing invalidated.
   const ref = (payload as { credentialRef?: unknown } | null)?.credentialRef;
   return typeof ref === "string" && ref !== ""
@@ -598,7 +598,7 @@ const TOOL_ACK_FIELDS = ["ackMessage"] as const;
 // rows so the operator sees what was previously assembled by magic. Saving then writes the new shape.
 // Exported for the load/save tests (pure over its argument).
 export function formFromTool(tool: Tool) {
-  // NOTE: legacy rows authored programmatically may still carry pre-normalization shapes
+  // Legacy rows authored programmatically may still carry pre-normalization shapes
   // (JSON-Schema inputSchema, single-brace {var}); render the canonical form so the real AI
   // fields show up.
   const { shapes } = normalizeToolShapes({
@@ -804,7 +804,7 @@ export function PathPicker({
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const anchorRef = useRef<HTMLDivElement | null>(null);
-  // NOTE: set by a pick when this caller restores focus itself, read once by `onCloseAutoFocus`.
+  // Set by a pick when this caller restores focus itself, read once by `onCloseAutoFocus`.
   // Every other way out of the offer keeps Radix's return to the trigger.
   const pickedRef = useRef(false);
   // NOTE: The filter is per visit, and clearing it in `onOpenChange` would miss the ordinary way out.
@@ -1366,7 +1366,7 @@ export function ToolEditModal({
   const apptAskConfirmId = useId();
   const { showToast } = useToast();
   const [form, setForm] = useState(emptyForm());
-  // NOTE: the generic webhook integrations a tool can hand `{{conversation_ref}}` for, read on
+  // The generic webhook integrations a tool can hand `{{conversation_ref}}` for, read on
   // open. Null until loaded; an empty list is an answer, and the picker says so.
   const [genericIntegrations, setGenericIntegrations] = useState<
     { id: string; name: string }[] | null
@@ -1376,7 +1376,7 @@ export function ToolEditModal({
   // rather than under a box that no longer holds it.
   const formRef = useRef(form);
   formRef.current = form;
-  // NOTE: the pasted (or tested) sample response, and the STATUS it came back under. ONE sample
+  // The pasted (or tested) sample response, and the STATUS it came back under. ONE sample
   // for the whole screen: the template and the appointment declaration read the same body. The
   // status matters because the runtime projects on 2xx alone, so a 404 sample previews RAW; null
   // (pasted by hand) reads as 2xx.
@@ -1424,7 +1424,7 @@ export function ToolEditModal({
   // offer only has to be right for the click that follows it, and clicking the picker's button
   // moves focus off the field without moving its selection.
   const [templateCaret, setTemplateCaret] = useState(0);
-  // NOTE: the template field is a CodeMirror, so the caret is a position in ITS document and the
+  // The template field is a CodeMirror, so the caret is a position in ITS document and the
   // picker writes through a dispatch. Held as state and not a ref because the completion's
   // extensions are memoized against the sample, and the view has to exist before they matter.
   const templateViewRef = useRef<EditorView | null>(null);
@@ -1608,11 +1608,11 @@ export function ToolEditModal({
     // Cancel is disabled while saving), and the continuation below would then close the dialog the
     // operator reopened and write this tool's state into it (docs/modals.md).
     const session = sessionRef.current;
-    // NOTE: read BEFORE the request, handed to the write below. A save can be in flight while this
+    // Read BEFORE the request, handed to the write below. A save can be in flight while this
     // tool is deleted or the session ends, and both clear what this tab remembers; without the
     // ticket, the response arriving afterwards would put the sample back.
     const ticket = sampleTicket();
-    // NOTE: read here too, because this is a REF: in the continuation it would answer for whatever
+    // Read here too, because this is a REF: in the continuation it would answer for whatever
     // opening followed a dismissed slow save, and compare this payload against that capture.
     const captured = sampleShapeRef.current;
     setFormError(null);
@@ -1626,7 +1626,7 @@ export function ToolEditModal({
     const held = (e: unknown) =>
       refusal.capture(e, fallback, payload, payloadOf(formRef.current) ?? {});
     try {
-      // NOTE: a sample-only change sends nothing (see `sendsNothing`).
+      // A sample-only change sends nothing (see `sendsNothing`).
       const untouched = sendsNothing({
         editing: !!editId,
         opened: baselineRef.current,
@@ -1686,7 +1686,7 @@ export function ToolEditModal({
     }
   }
 
-  // NOTE: the DIALABLE base, not the stored one: a relative url_template is valid only when a
+  // The DIALABLE base, not the stored one: a relative url_template is valid only when a
   // credential supplies a base the runtime will actually prepend, and a stray value on a kind that
   // takes none is not one.
   const credBaseUrl = dialableBaseUrl(
@@ -1739,7 +1739,7 @@ export function ToolEditModal({
       };
     }
   }, [sample]);
-  // NOTE: the formatted sample, or null with the NAME of why there is nothing to write. The button
+  // The formatted sample, or null with the NAME of why there is nothing to write. The button
   // is gated on this and not on `sampleParse`, so "enabled" always means a different text is ready
   // (the two readers can disagree, e.g. on a byte-order mark). The reason is carried so the row
   // beside the button says why it is disabled.
@@ -1816,7 +1816,7 @@ export function ToolEditModal({
   const strayTemplateDelimiter = unmatchedTemplateDelimiter(
     form.outputTemplate,
   );
-  // NOTE: the gate is the READER's, not the sum of the two checks above: those phrase two problems
+  // The gate is the READER's, not the sum of the two checks above: those phrase two problems
   // well, but the reader (the same function the service refines with) also refuses a template past
   // MAX_TEMPLATE_CHARS or holding a NUL or lone surrogate, which the checks above would let through.
   const templateDeclProblem = useMemo(
@@ -1825,7 +1825,7 @@ export function ToolEditModal({
   );
   const templateTooLong =
     form.outputTemplate.trim().length > MAX_TEMPLATE_CHARS;
-  // NOTE: the server stores no appointment declaration it would not follow: a book without a usable
+  // The server stores no appointment declaration it would not follow: a book without a usable
   // id and start path is REFUSED, and an unusable provider or summary path is silently dropped,
   // with only a generic error in the modal. So the same reader answers here, per field, before
   // there is anything to save: a value the runtime will not honour is not a value to save.
@@ -1842,7 +1842,7 @@ export function ToolEditModal({
     readProviderSlug(form.apptProvider) === null;
   const apptOffsetsInvalid =
     form.apptAction === "book" && readOffsetsField(form.apptOffsets) === null;
-  // NOTE: the ack tone example is required when the holding message is enabled: the runtime gate keys off a
+  // The ack tone example is required when the holding message is enabled: the runtime gate keys off a
   // non-empty ackMessage, so saving it blank would silently turn the feature off.
   const ackInvalid = form.ackEnabled && !form.ackMessage.trim();
   const valid =
@@ -1859,7 +1859,7 @@ export function ToolEditModal({
     !apptOffsetsInvalid &&
     templateDeclProblem === null &&
     !ackInvalid;
-  // NOTE: baseline is captured on open (create defaults / loaded tool); null while never opened or
+  // Baseline is captured on open (create defaults / loaded tool); null while never opened or
   // while the edit fetch is in flight.
   const isDirty =
     baselineRef.current !== null &&
@@ -2998,7 +2998,7 @@ export function ToolEditModal({
       <ToolTestModal
         modal={testModal}
         onResponse={(raw, status) => {
-          // NOTE: formatted on arrival, on a status whose body gets a template: an API answers
+          // Formatted on arrival, on a status whose body gets a template: an API answers
           // minified, and the operator did not write it. A body that does not read (HTML, XML,
           // text) is kept as sent, since the raw body IS the diagnosis, and a body the model reads
           // VERBATIM (non-2xx) is kept verbatim so the preview shows what the API sent.

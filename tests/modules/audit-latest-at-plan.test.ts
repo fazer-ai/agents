@@ -59,7 +59,7 @@ async function seedTrailFor(tx: PrismaClient): Promise<void> {
     SELECT NULL, NULL, 'system', 'plan.probe', 'p:' || g,
            now() - ((g % 200) || ' days')::interval
     FROM generate_series(1, 12500) g`);
-  // NOTE: and the trail AROUND it, so the fleet slice is the MINORITY it is on a real deployment;
+  // And the trail AROUND it, so the fleet slice is the MINORITY it is on a real deployment;
   // an almost all-fleet table makes the partial and plain indexes cost the same. The tenant is
   // CREATED here, not looked up: `(SELECT min(id) FROM tenants)` is NULL on a shard with no tenant
   // yet, which would put every row in the fleet slice.
@@ -216,7 +216,7 @@ describe.skipIf(!dbUp)("latestAt reaches its index on every scope", () => {
           expect(now).toMatch(/"Index Name":"audit_logs_\w*created_at\w*"/);
           expect(now).not.toContain('"Index Name":"audit_logs_pkey"');
 
-          // NOTE: the same rows ordered by `id`. On a table holding a handful of rows the planner may
+          // The same rows ordered by `id`. On a table holding a handful of rows the planner may
           // still reach an index, so the assertion is that the two plans DIFFER: the ordering does
           // the work, and the indexes are identical on both sides.
           const before = await planIn(db, page("id DESC"));

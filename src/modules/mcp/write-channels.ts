@@ -73,7 +73,7 @@ export async function deploymentConnect(
   if (!args.admin_token) return err("admin_token is required");
   try {
     if (args.dry_run !== false) {
-      // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
+      // The core's own question, asked INSIDE the branch because the apply reaches the core,
       // which asks it again; above the branch it would be a second lookup that can disagree.
       const data = await assertDeploymentConnectable({
         baseUrl: args.base_url,
@@ -169,7 +169,7 @@ export async function deploymentSetAccounts(
       // NOTE: the core's own question, asked INSIDE the branch because the apply reaches the core,
       // which asks it again; above the branch it would be a second lookup that can disagree.
       await assertAccountsClaimable(ctx, args.account_ids, base);
-      // NOTE: ADVISORY, like the claim check above: the list lives on the operator's Chatwoot and
+      // ADVISORY, like the claim check above: the list lives on the operator's Chatwoot and
       // can move before the apply, which asks again. It refuses here an id this deployment cannot
       // operate.
       let reported: number[] | null = null;

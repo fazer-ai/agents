@@ -152,12 +152,12 @@ function cappedFields(settings: unknown): CappedField[] {
       }
     }
   }
-  // NOTE: The operator's closing line, customer-facing copy clamped by readSignatureConfig.
+  // The operator's closing line, customer-facing copy clamped by readSignatureConfig.
   const signature = bagOf(root.signature);
   if (signature) {
     add(signature, "text", "signature.text", SIGNATURE_MAX);
   }
-  // NOTE: The audio-turn notice and the `reply_as_text` note are a paragraph of guidance each, like
+  // The audio-turn notice and the `reply_as_text` note are a paragraph of guidance each, like
   // a native tool's note, so the same ceiling.
   const tts = bagOf(root.tts);
   if (tts) {

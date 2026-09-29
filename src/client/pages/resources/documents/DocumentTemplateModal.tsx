@@ -144,7 +144,7 @@ export function DocumentTemplateModal({
     );
   }, [template, texts]);
 
-  // NOTE: what this modal would WRITE: only the fields that differ from the row it opened on, so a
+  // What this modal would WRITE: only the fields that differ from the row it opened on, so a
   // wording edit cannot overwrite a name, prefix or style an API or MCP client set meanwhile (the
   // row lock cannot tell a restated field from an edited one). The PREVIEW is built from this same
   // value, so it never shows a document the save would not produce.

@@ -32,7 +32,7 @@ export function SignupPage() {
     onError: setError,
   });
   const authPending = loading || googlePending;
-  // NOTE: Synchronous cross-method lock so a Google credential callback and a
+  // Synchronous cross-method lock so a Google credential callback and a
   // form submit cannot both pass their guards before React commits the pending
   // state update.
   const authInFlightRef = useRef(false);

@@ -295,7 +295,7 @@ describe.skipIf(!dbUp)("control commands: one reading of the agent", () => {
       select: { id: true },
     });
     const id = await seedConv(6003, orphan.id);
-    // NOTE: `mockRestore` also clears `mock.calls` in Bun, so the lines are copied out first.
+    // `mockRestore` also clears `mock.calls` in Bun, so the lines are copied out first.
     const info = spyOn(logger, "info");
     let lines: unknown[][] = [];
     try {

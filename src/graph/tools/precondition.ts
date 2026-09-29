@@ -51,7 +51,7 @@ export function guardedTool(
   onNoEffect?: NoEffectReporter,
 ): StructuredToolInterface {
   const refusal = unmetPreconditionMessage(inner.name, cond);
-  // NOTE: DELEGATION, not a second tool(). Wrapping the inner tool in another `tool()` and calling
+  // DELEGATION, not a second tool(). Wrapping the inner tool in another `tool()` and calling
   // `inner.invoke` from inside it starts a CHILD tool run under the outer one's callbacks:
   // ToolFlowLogger and Langfuse then record two runs for one model-issued call, and an integration
   // failure inside the inner tool emits its warn — and its alert — twice. Here the prototype carries
@@ -59,7 +59,7 @@ export function guardedTool(
   // exactly the run it would have had without any of this.
   const guarded = Object.create(inner) as StructuredToolInterface;
   guarded.invoke = (async (input: unknown, config?: ToolRunnableConfig) => {
-    // NOTE: ToolNode hands the whole tool call in as the input, so the id is on it; a direct
+    // ToolNode hands the whole tool call in as the input, so the id is on it; a direct
     // invocation with plain args (a unit test) has none, and the plain string is the honest
     // degradation there — the same shape failableTool settled on. Shared by both refusals below,
     // because a refusal that came back as a bare string where a ToolMessage was expected would
@@ -146,7 +146,7 @@ export function applyToolPreconditions(
     if (unmatched.length > 0) onUnmatched(unmatched);
   }
   return tools.map((t) => {
-    // NOTE: Own-property only: the map is null-prototype at its source, but this lookup is what a plain
+    // Own-property only: the map is null-prototype at its source, but this lookup is what a plain
     // object would break — a tool named `toString` would find an inherited function here, and every
     // call to it would be refused by a rule the operator never wrote.
     const cond = Object.hasOwn(preconditions, t.name)

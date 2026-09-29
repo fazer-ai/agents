@@ -126,7 +126,7 @@ export function DocumentsPanel() {
   const deleteModal = useModalController<{ id: string; name: string }>();
   const confirm = useModalController<ConfirmPayload>();
 
-  // NOTE: `loading` and `error` are the FIRST load only: this panel reloads constantly (a template
+  // `loading` and `error` are the FIRST load only: this panel reloads constantly (a template
   // saved or deleted, a starter used, a language switch), and a boundary keyed on them would take
   // the screen away over an unrelated action. A refresh, even a failing one, replaces data without
   // taking the screen. This means "a load SUCCEEDED" (set after the setters, not in `finally`), so
@@ -138,7 +138,7 @@ export function DocumentsPanel() {
   // older list landing after a newer one leaves the operator creating a template in the language
   // they just switched away from, permanently and with no sign anything went wrong.
   const loadSeq = useRef(0);
-  // NOTE: how many times the company block has been WRITTEN from this screen. A load's settings
+  // How many times the company block has been WRITTEN from this screen. A load's settings
   // response can predate a save or logo upload that has since answered, and applying it would undo
   // the operator's change on screen. The load generation does not cover this: no newer load
   // started, a different request answered.
@@ -362,7 +362,7 @@ export function DocumentsPanel() {
     // on it instead, which is the same protection without losing the tab.
     const tab = window.open("", "_blank");
     if (tab) tab.opener = null;
-    // NOTE: the fetch can REJECT (offline, DNS, a dropped connection), not merely answer non-OK;
+    // The fetch can REJECT (offline, DNS, a dropped connection), not merely answer non-OK;
     // uncaught, the tab just opened would stay blank with no message to the operator.
     let url: string;
     try {

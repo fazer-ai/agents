@@ -142,7 +142,7 @@ export function BusinessHoursForm({
     );
   }
 
-  // NOTE: A crossed or equal range stays as typed and is flagged invalid, which blocks the save.
+  // A crossed or equal range stays as typed and is flagged invalid, which blocks the save.
   // Auto-adjusting the other end instead would silently change a value the operator did not touch.
   function setStart(i: number, value: string) {
     if (!TIME_RE.test(value)) return; // ignore a cleared/partial time input
@@ -250,7 +250,7 @@ export function BusinessHoursForm({
         onSaved(data.businessHours.id, data.businessHours.name);
       }
     } catch (e) {
-      // NOTE: The toast names what the server refused (a duplicate name included). A fixed "check the
+      // The toast names what the server refused (a duplicate name included). A fixed "check the
       // timezone" sentence would point the operator at the wrong field.
       const toast = held(e);
       if (toast) showToast(toast, "error");

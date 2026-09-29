@@ -5,7 +5,7 @@ import { api } from "@/client/lib/api";
 import { normalizeResolveLabels } from "@/modules/agents/resolve-labels";
 import { type InboxLabelOption, LabelPicker } from "./LabelPicker";
 
-// NOTE: Mirrors agent.settings.resolveConversation (modules/agents/resolve-labels): the
+// Mirrors agent.settings.resolveConversation (modules/agents/resolve-labels): the
 // labels resolve_conversation writes itself before it closes.
 export interface ResolveConversationState {
   assignLabels: string[];

@@ -137,7 +137,7 @@ describe("renderInboundMessage: the email subject", () => {
   });
 
   test("cannot close its own marker, however the sender writes it", () => {
-    // NOTE: the subject is a field a STRANGER fills in that becomes structure in the prompt.
+    // The subject is a field a STRANGER fills in that becomes structure in the prompt.
     // Rendered verbatim, this text would leave the marker and read as though the system wrote it.
     const out = renderInboundMessage({
       text: "oi",
@@ -155,7 +155,7 @@ describe("renderInboundMessage: the email subject", () => {
   });
 
   test("cannot forge a marker of ours either", () => {
-    // NOTE: breaking out is only half of it: the sender must not be able to OPEN a block the model
+    // Breaking out is only half of it: the sender must not be able to OPEN a block the model
     // reads as the system speaking. `<atributos>` is a real one (conversation attributes use it).
     const out = renderInboundMessage({
       text: "oi",
@@ -351,7 +351,7 @@ describe("a subject-only email is a message everywhere, not just in the renderer
 
 describe("every reader of a Chatwoot message asks the SAME mapping", () => {
   test("the observer's transcript carries the subject too", () => {
-    // NOTE: the observer classifies the conversation by label; reading a subject-only email as a
+    // The observer classifies the conversation by label; reading a subject-only email as a
     // blank line, it would classify a conversation in which the customer said nothing.
     const lines = transcriptFromRows(
       [row({ id: 7020, emailSubject: "Cancelar ingresso" })],
@@ -378,7 +378,7 @@ describe("every reader of a Chatwoot message asks the SAME mapping", () => {
       "src/modules/debounce/handler.ts",
       "src/graph/runtime.ts",
     ]) {
-      // NOTE: comments and literals out through the shared scanner (`tests/utils/source-text.ts`),
+      // Comments and literals out through the shared scanner (`tests/utils/source-text.ts`),
       // not a local regex: a `//` line between the call and its argument would trip the fence, and
       // a `//` inside a string is not a comment at all.
       const src = codeOnly(

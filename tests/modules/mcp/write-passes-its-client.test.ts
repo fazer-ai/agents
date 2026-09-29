@@ -67,7 +67,7 @@ async function clientTakingFunctions(): Promise<Set<string>> {
 }
 
 describe("the sweep itself", () => {
-  // NOTE: Every case is a spelling this sweep could get wrong. Without these the tree assertion below is a
+  // Every case is a spelling this sweep could get wrong. Without these the tree assertion below is a
   // green that proves nothing: there is no offender left in `src/`, so a sweep that had stopped
   // matching anything would look exactly the same.
   const accepts = new Set(["getGlobalBranding", "listInboxes"]);

@@ -190,7 +190,7 @@ export async function disconnectChatwootDeployment(
     // the same instant and be counted low; locking the delivery path for an audit number is not worth it.
     await db.$queryRaw`SELECT id FROM chatwoot_deployments WHERE id = ${dep.id} FOR NO KEY UPDATE`;
     await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE deployment_id = ${dep.id} ORDER BY id FOR NO KEY UPDATE`;
-    // NOTE: what went with it, counted before the delete (the widest destructive act the console
+    // What went with it, counted before the delete (the widest destructive act the console
     // offers; contacts are deleted by hand since no cascade reaches them). Recorded before the delete:
     // `audit_logs.tenant_id` cascades on the tenant, which is not what is deleted here.
     const [accounts, inboxes, contacts] = await Promise.all([
@@ -315,7 +315,7 @@ export async function connectChatwootDeployment(
     { baseUrl: data.baseUrl, token: data.adminToken },
     deps,
   );
-  // NOTE: the base URL is intentionally NOT unique across tenants — one Chatwoot server can back many
+  // The base URL is intentionally NOT unique across tenants — one Chatwoot server can back many
   // tenants (cross-tenant uniqueness is enforced per ACCOUNT, see connectAccount + serverKey).
   const deployment = await runScopedOn(base, ctx, async (db) => {
     const existing = await db.chatwootDeployment.findFirst({
@@ -432,7 +432,7 @@ export async function rotateChatwootDeploymentToken(
       select: DEPLOYMENT_SELECT,
     });
     const dto = toDeploymentDto(row);
-    // NOTE: that it moved, never to or from what: a row keeping either end would outlive the
+    // That it moved, never to or from what: a row keeping either end would outlive the
     // rotation. Asked of the plaintext, since `encryptJson` randomizes and a ciphertext comparison
     // would report a rotation on every retry.
     const moved = readStoredToken(current.adminToken) !== token;
@@ -542,7 +542,7 @@ async function connectAccount(
       select: { id: true },
     });
     if (existing) {
-      // NOTE: one conditional write decides the row: two overlapping requests both read the account
+      // One conditional write decides the row: two overlapping requests both read the account
       // as disconnected under read-committed, and an unconditional update would record a second
       // `instance.connect`. With the condition in the `where`, the loser re-evaluates after the first
       // commits and matches nothing. The metadata rides inside the condition, so the loser does not
@@ -562,7 +562,7 @@ async function connectAccount(
         });
         return { id: existing.id, reconnected: true, changed: true };
       }
-      // NOTE: zero has two causes. Either the row is already connected (another request won, no
+      // Zero has two causes. Either the row is already connected (another request won, no
       // change is right), or `removeChatwootInstance` deleted it (it locks the instance while this
       // holds the deployment, so nothing serializes them). Reading zero as the first would return a
       // dead id and have `setConnectedAccounts` sync and report it. Ask again: still there is
@@ -635,7 +635,7 @@ async function assertAccountsNotTakenByAnotherTenant(
   accountIds: number[],
 ): Promise<void> {
   if (accountIds.length === 0) return;
-  // NOTE: the chunks share ONE transaction. Chunking to dodge the parameter ceiling would otherwise
+  // The chunks share ONE transaction. Chunking to dodge the parameter ceiling would otherwise
   // hand back the per-element privileged transaction this function was written to remove, just
   // divided by a thousand.
   const taken = await asSuperAdminOn(base, async (db) => {
@@ -719,7 +719,7 @@ export function assertAccountsSelectable(
   const known = new Set(reported);
   const unknown = wanted.filter((id) => !known.has(id));
   if (unknown.length > 0) {
-    // NOTE: the first few, not all of them. The message is read by a person, and a caller that sent
+    // The first few, not all of them. The message is read by a person, and a caller that sent
     // forty thousand ids does not need forty thousand back to learn what went wrong.
     const shown = unknown.slice(0, 5).join(", ");
     const rest = unknown.length > 5 ? ` (and ${unknown.length - 5} more)` : "";
@@ -747,7 +747,7 @@ export async function setConnectedAccounts(
   const wanted = [...new Set(accountIds)];
   const dep = await assertAccountsClaimable(ctx, wanted, base);
   const serverKey = normalizeChatwootBaseUrl(dep.baseUrl);
-  // NOTE: one probe, not one per account, and its answer is the bound as well as the source of
+  // One probe, not one per account, and its answer is the bound as well as the source of
   // display names. A failure still falls through to null names, and `assertAccountsSelectable` reads
   // that same null as "no list available" and applies the fallback cap instead.
   let nameById = new Map<number, string>();
@@ -853,7 +853,7 @@ export async function softDisconnectChatwootInstance(
       "errors.chatwootInstanceNotFound",
     );
   }
-  // NOTE: one transaction for the three local writes (clear bindings, stamp, audit row), so a
+  // One transaction for the three local writes (clear bindings, stamp, audit row), so a
   // failure cannot leave inboxes bound to nobody on an account still marked active.
   const { stamped, detach } = await runScopedOn(base, ctx, async (db) => {
     // NOTE: the account row first, before any inbox: `syncInboxes` takes the same lock then upserts
@@ -862,7 +862,7 @@ export async function softDisconnectChatwootInstance(
     // the webhook mirror inserting a conversation would deadlock with this. NO KEY UPDATE still
     // excludes itself and ordinary UPDATEs, all the serialization needed.
     await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${id} FOR NO KEY UPDATE`;
-    // NOTE: `RETURNING`, so the bindings removed are the same set the detach walks, and the count is
+    // `RETURNING`, so the bindings removed are the same set the detach walks, and the count is
     // that set. Listed first and cleared after, a bind in between would leave an inbox unbound here
     // with its bot still attached in Chatwoot. `agent_id IS NOT NULL` makes the write its own filter.
     const unbound = await db.$queryRaw<{ chatwoot_inbox_id: number }[]>`
@@ -872,7 +872,7 @@ export async function softDisconnectChatwootInstance(
          AND chatwoot_instance_id = ${id}
          AND agent_id IS NOT NULL
       RETURNING chatwoot_inbox_id`;
-    // NOTE: the stamp and row only where the account was still active, decided by the write: a retry
+    // The stamp and row only where the account was still active, decided by the write: a retry
     // would otherwise move the stamp, and two overlapping requests both read `null`.
     const { count } = await db.chatwootInstance.updateMany({
       where: { id, disconnectedAt: null },
@@ -917,7 +917,7 @@ export async function softDisconnectChatwootInstance(
     }
     if (client) {
       for (const inboxId of detach) {
-        // NOTE: re-asked before each call, outside any lock: one unreachable inbox holds the loop for
+        // Re-asked before each call, outside any lock: one unreachable inbox holds the loop for
         // a timeout, in which an operator can reconnect and bind, and pulling that bot would leave
         // an inbox bound here with no bot upstream, which nothing repairs. The binding is the
         // question, not the disconnected flag: the column saying a bot is there authorizes pulling
@@ -963,7 +963,7 @@ export async function reconnectChatwootInstance(
         "errors.chatwootInstanceNotFound",
       );
     }
-    // NOTE: the account already belongs to the tenant's single deployment, so reconnecting just
+    // The account already belongs to the tenant's single deployment, so reconnecting just
     // clears the flag. Conditional, and the condition is the test: two overlapping reconnects both
     // read a non-null flag, and a check before the write would let both record a reconnection.
     const { count: cleared } = await db.chatwootInstance.updateMany({
@@ -1142,7 +1142,7 @@ export async function readOutOfOfficeInboxes(
     }),
   );
 
-  // NOTE: one list call per distinct account (GET /inboxes is account-wide), run concurrently:
+  // One list call per distinct account (GET /inboxes is account-wide), run concurrently:
   // every request carries a 15s abort, so sequential reads let one unreachable server delay the
   // editor load. Unbounded on purpose: the fan-out is the few accounts the operator connected.
   const perInstance = await Promise.all(
@@ -1171,7 +1171,7 @@ export async function readOutOfOfficeInboxes(
   );
   const byInstance = new Map(perInstance.filter((entry) => entry !== null));
 
-  // NOTE: Chatwoot's name, not the mirror's (the mirror may be stale). Coverage is counted per bound
+  // Chatwoot's name, not the mirror's (the mirror may be stale). Coverage is counted per bound
   // inbox: one whose account, entry or out-of-hours fields could not be read is one this call cannot
   // vouch for, while every inbox beside it is still reported.
   const inboxes: { id: string; name: string }[] = [];
@@ -1414,7 +1414,7 @@ async function ensureAgentBotAndReattach(
   ];
   for (const other of reattach) {
     try {
-      // NOTE: confirmed here too and in the recheck below: an observer can be unobserved and a new
+      // Confirmed here too and in the recheck below: an observer can be unobserved and a new
       // observe insert its unstamped row after the snapshot, and attaching for that observe would
       // leave something its own compensation cannot detach.
       const stands = await runScopedOn(base, ctx, async (db) =>
@@ -1443,7 +1443,7 @@ async function ensureAgentBotAndReattach(
           bot.chatwootAgentBotId,
         );
       }
-      // NOTE: and the binding is asked again afterwards: a rebind to another agent calls Chatwoot
+      // And the binding is asked again afterwards: a rebind to another agent calls Chatwoot
       // before it commits, so this attach can put the old persona back upstream while the database
       // commits the new one (the console shows active, the wrong agent answers). Not closable here
       // (the writers share no ordering); the second read turns that silence into a line naming the
@@ -1703,7 +1703,7 @@ export async function listServiceWindowTemplates(
   return { templates: [...byName.values()] };
 }
 
-// NOTE: The Chatwoot instances an agent's inboxes live on, plus how many distinct ACCOUNTS they
+// The Chatwoot instances an agent's inboxes live on, plus how many distinct ACCOUNTS they
 // span. Every per-account listing below (labels, custom-attribute definitions) unions across the
 // instances and warns the editor when accountCount > 1, so the resolution lives in one place.
 async function agentInboxScope(
@@ -1773,7 +1773,7 @@ export async function listInboxLabels(
   return { labels: [...byTitle.values()], accountCount };
 }
 
-// NOTE: Custom-attribute DEFINITIONS available to an agent's inbox(es), for the attribute-context
+// Custom-attribute DEFINITIONS available to an agent's inbox(es), for the attribute-context
 // picker. Same best-effort contract as listInboxLabels, deduped by (model, key).
 export interface InboxCustomAttribute {
   key: string;
@@ -1868,7 +1868,7 @@ export async function assertInboxBindable(
       if (!agent) {
         throw new NotFoundError("agent not found", "errors.agentNotFound");
       }
-      // NOTE: a monitoring agent may be the responder (bound, reading, answering nothing, the
+      // A monitoring agent may be the responder (bound, reading, answering nothing, the
       // conversations starting `pending` for the team). The observer binding is for an inbox
       // somebody else answers. One agent cannot be both on one inbox: the fork delivers once, as the
       // responder, and the receiver would read the route as an observer's.
@@ -1970,7 +1970,7 @@ export async function bindInbox(
   try {
     persisted = await persistBinding();
   } catch (err) {
-    // NOTE: a failure (audit insert, lock) is a retry away; a refusal decided inside the transaction
+    // A failure (audit insert, lock) is a retry away; a refusal decided inside the transaction
     // (account disconnected, agent deleted under us) refuses again. Both leave the bot attached
     // upstream, so both are logged, and only one may say "retry".
     const refused = err instanceof AppError;
@@ -1998,7 +1998,7 @@ export async function bindInbox(
   // best-effort, outside every lock; a failure is what `unobserveInbox` repairs.
   if (persisted.retiredObserverBotId !== null) {
     try {
-      // NOTE: re-read the binding first: post-commit and unlocked, the retired pair can be observing
+      // Re-read the binding first: post-commit and unlocked, the retired pair can be observing
       // again by now, and the DELETE would remove a valid attachment (bot-status says active, nothing
       // is delivered). A failed read keeps the attachment. `agentId` is non-null wherever a row was
       // retired, but the signature allows null, so it is narrowed.
@@ -2035,7 +2035,7 @@ export async function bindInbox(
   }> {
     return runScopedOn(base, ctx, async (db) => {
       let retiredObserverBotId: number | null = null;
-      // NOTE: the account row first, re-asking the top read's question, since a disconnect fits in
+      // The account row first, re-asking the top read's question, since a disconnect fits in
       // the Chatwoot-call window: it would unbind the inboxes bound then, this would commit
       // `agentId` after, and its detach would pull our new bot, leaving an unrepairable binding.
       // Module order (account, then inbox), so no deadlock with `syncInboxes` or the disconnect.
@@ -2068,7 +2068,7 @@ export async function bindInbox(
           throw new NotFoundError("agent not found", "errors.agentNotFound");
         }
       }
-      // NOTE: read inside the transaction with the row locked, because the audit compares against
+      // Read inside the transaction with the row locked, because the audit compares against
       // it: an unlocked read would let two overlapping binds both claim to start from null.
       const locked = await db.$queryRaw<{ agent_id: bigint | null }[]>`
       SELECT agent_id
@@ -2111,7 +2111,7 @@ export async function bindInbox(
           retiredObserverBotId = bot?.chatwootAgentBotId ?? null;
         }
       }
-      // NOTE: stamped only when the binding moves: an observer stands down for the responder's own
+      // Stamped only when the binding moves: an observer stands down for the responder's own
       // delivery by asking how old the binding is, so re-stamping on a no-op re-submit would age it
       // forward. An unbind clears it, so the next bind starts its own clock.
       const boundTo = beforeWrite?.agent_id ?? null;
@@ -2207,7 +2207,7 @@ export async function readObserveTarget(
         "errors.agentIsResponder",
       );
     }
-    // NOTE: one watcher per inbox: the memory thread is keyed by contact-inbox, not agent, so a
+    // One watcher per inbox: the memory thread is keyed by contact-inbox, not agent, so a
     // second observer would write the same thread. The unique index enforces it under the race.
     const other = await db.inboxObserver.findFirst({
       where: { tenantId, inboxId },
@@ -2332,7 +2332,7 @@ export async function observeInbox(
   // NOTE: declared above `bindingStands`, which must be able to name this call's own row, the one
   // row its compensation must not count. Assigned where the row is written.
   let pendingRowId: bigint | null = null;
-  // NOTE: whether anything committed still needs the attachment. Two first-time observes share one
+  // Whether anything committed still needs the attachment. Two first-time observes share one
   // idempotent attachment upstream, so the loser's compensation re-reads the rows now and skips the
   // detach when one stands (the start-of-call `alreadyObserving` is stale). It skips exactly one
   // row, by id: this call's own pending row. Another call's pending row is a dependency in the
@@ -2368,7 +2368,7 @@ export async function observeInbox(
       return true;
     }
   };
-  // NOTE: taking back the intent on every road out that is not a completed observe: only the row
+  // Taking back the intent on every road out that is not a completed observe: only the row
   // this call wrote, only while unstamped (a concurrent observe that completed owns it by then).
   const dropPendingRow = async () => {
     if (pendingRowId === null) return;
@@ -2401,7 +2401,7 @@ export async function observeInbox(
     if (!alreadyObserving) {
       try {
         const created = await runScopedOn(base, ctx, async (db) => {
-          // NOTE: the agent's own row, locked in the insert's transaction: the insert's foreign key
+          // The agent's own row, locked in the insert's transaction: the insert's foreign key
           // takes only `KEY SHARE`, compatible with `updateAgent`'s `FOR NO KEY UPDATE`, so without
           // this a promotion and the pending row could both commit, leaving a production agent with
           // an unsettleable pending observer. Same lock as the promotion, so one sees the other.
@@ -2607,14 +2607,14 @@ export async function observeInbox(
           "errors.inboxAlreadyObserved",
         );
       }
-      // NOTE: already observing means a confirmed row: this call's own pending row is in `before`,
+      // Already observing means a confirmed row: this call's own pending row is in `before`,
       // and counting it would make every first observe look like a repeat.
       const already =
         (await db.inboxObserver.findFirst({
           where: { tenantId, inboxId, agentId, attachedAt: { not: null } },
           select: { id: true },
         })) !== null;
-      // NOTE: the stamp, on the row this call wrote, by id: `(tenantId, inboxId)` names a slot, and an
+      // The stamp, on the row this call wrote, by id: `(tenantId, inboxId)` names a slot, and an
       // unobserve plus a second observe in the attach window would put a stranger's intent there.
       // Where no row was written, the pair is the right address: this call is settling the row it
       // deferred to (the confirmed one it repairs, or the unique violation's winner), which names
@@ -3154,7 +3154,7 @@ export async function syncInboxes(
     // that does not exist yet: two first-time syncs (auto-sync on load plus the button) would both
     // read `existing` as null. Syncs of different accounts never contend.
     await db.$queryRaw`SELECT id FROM chatwoot_instances WHERE id = ${instanceId} FOR NO KEY UPDATE`;
-    // NOTE: The rename is its own conditional write, so a name Chatwoot did not change does not
+    // The rename is its own conditional write, so a name Chatwoot did not change does not
     // count as one. The `null` arm is not decoration: `accountName <> 'x'` is NULL for a row whose
     // name is NULL, so a plain `not` would silently skip the very rows that most need the name.
     let renamed = false;
@@ -3171,7 +3171,7 @@ export async function syncInboxes(
     let created = 0;
     let updated = 0;
     for (const inbox of remote) {
-      // NOTE: the comparison lives inside the write: a webhook's `upsertInbox` (no account lock) can
+      // The comparison lives inside the write: a webhook's `upsertInbox` (no account lock) can
       // commit a rename between a read and an upsert, which would then overwrite it and record no
       // change. Raw SQL because it must be one statement: a create-then-catch cannot work (P2002
       // aborts the scoped transaction) and Prisma's upsert cannot "update only if it differs".

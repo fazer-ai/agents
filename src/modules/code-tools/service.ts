@@ -204,7 +204,7 @@ async function assertNameFree(
   // unrelated edit to a tool that was legal when created.
   currentName?: string,
 ): Promise<void> {
-  // NOTE: compared through `normalizeToolName`, not as text: a row stored as `Search_Knowledge` and the
+  // Compared through `normalizeToolName`, not as text: a row stored as `Search_Knowledge` and the
   // console's normalized label are one identity to the model, so the save is not a rename.
   // `undefined` is a CREATE and always moves; not folded into the comparison because
   // `normalizeToolName("")` is `"tool"`.

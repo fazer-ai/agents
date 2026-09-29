@@ -155,7 +155,7 @@ export async function claimOpenForHumanQueue(p: {
       db,
       `${p.tenantId}:${p.instanceId}:${p.conversationId}`,
       async () => {
-        // NOTE: the countdown starts past the lock and the connection: everything before is
+        // The countdown starts past the lock and the connection: everything before is
         // queueing, not fencing, and a deadline stamped earlier would spend part of the window
         // waiting. The TTL is sized off the round trips that all follow this line.
         const claimUntil = statusClaimDeadline(new Date());
@@ -295,7 +295,7 @@ export async function runHumanReplyTakeover(
 ): Promise<HumanQueueOutcome> {
   const conversationId = p.conversationId;
   const convLabel = String(conversationId);
-  // NOTE: hoisted out of the try so the caller can be told. Every road that does not reach the open
+  // Hoisted out of the try so the caller can be told. Every road that does not reach the open
   // leaves the initial failure; only the persona lookup reaches the catch, and it throws.
   let outcome: HumanQueueOutcome = "failed";
   // Present at all — `null` included — is the finishing mode. A boolean of its own would be a second
@@ -342,7 +342,7 @@ export async function runHumanReplyTakeover(
           gate: `human reply (${p.route})`,
           conversationId,
           stillOurs: async () => {
-            // NOTE: Chatwoot first, because the mirror can be behind it: an attendant who answers
+            // Chatwoot first, because the mirror can be behind it: an attendant who answers
             // and immediately resolves or hands back does both before this detached delivery runs.
             // A gate only, not a reconcile: stamping this read would give the row a version newer
             // than the deciding message, and the ordering check below would refuse every takeover.
@@ -359,7 +359,7 @@ export async function runHumanReplyTakeover(
             if (finishing && live === null) {
               throw new Error("Chatwoot did not answer");
             }
-            // NOTE: the same ownership question in both modes: a conversation reassigned while the
+            // The same ownership question in both modes: a conversation reassigned while the
             // row sat stranded is still `pending`, and a status-only check would take it from another
             // bot's or person's queue. Only the status half differs: finishing also accepts `open`,
             // which our own first attempt leaves if only its response was lost.
@@ -453,7 +453,7 @@ export async function runHumanReplyTakeover(
               );
               return false;
             }
-            // NOTE: unversioned, only the field the action changed (as mirrorConsoleWrite does), so
+            // Unversioned, only the field the action changed (as mirrorConsoleWrite does), so
             // a truly newer event still outranks it; the reconcile below earns it a version. The four
             // observed columns make it a compare-and-swap across the read above and this write,
             // since another replica can commit between them: assignee and the console mark are

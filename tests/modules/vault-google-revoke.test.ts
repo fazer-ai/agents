@@ -7,7 +7,7 @@ afterEach(() => {
 });
 
 test("a revoke whose body never ends does not hold the disconnect", async () => {
-  // NOTE: nothing reads Google's answer here, and the disconnect controller AWAITS this call before
+  // Nothing reads Google's answer here, and the disconnect controller AWAITS this call before
   // removing the local tokens, so draining the body only adds latency: a provider that answers its
   // headers and then stalls would hold a user-facing disconnect for the whole 10s budget.
   const seen = { cancelled: false };

@@ -140,7 +140,7 @@ describe("inbound auth", () => {
     (h: Record<string, string>) =>
     (n: string): string | null =>
       h[n] ?? null;
-  // NOTE: The record lookup above answers every name, including ones no HTTP stack accepts. The receptor's
+  // The record lookup above answers every name, including ones no HTTP stack accepts. The receptor's
   // real reader is `request.headers.get`, which THROWS on a name outside the RFC 7230 token, so the
   // cases about an unusable name go through the real thing. The global `Headers` here is NOT it:
   // happy-dom replaces it with one that accepts every name and answers null.
@@ -724,7 +724,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
         kind: "asaas_payment",
       },
     });
-    // NOTE: The exact body Asaas sends for a paid DIRECT (non-link) PIX charge: `paymentLink` is present with
+    // The exact body Asaas sends for a paid DIRECT (non-link) PIX charge: `paymentLink` is present with
     // value null. A schema that rejected null would turn real payments into a silent `outcome: "ignored"`.
     const body = JSON.stringify({
       event: "PAYMENT_RECEIVED",
@@ -763,7 +763,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
     expect(conv?.value?.toString()).toBe("500");
   });
 
-  // NOTE: ── characters Postgres refuses to store ──
+  // ── characters Postgres refuses to store ──
   // A body that is valid JSON, passes the mapper's schema, and that the column then refuses:
   //   jsonb payload + lone surrogate -> invalid input syntax for type json
   //   jsonb payload + NUL            -> 22P05 unsupported Unicode escape sequence
@@ -899,7 +899,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
       },
       appDb,
     );
-    // NOTE: Incompressible on purpose: a run of one character compresses inside the index and slips past the
+    // Incompressible on purpose: a run of one character compresses inside the index and slips past the
     // limit, so a probe built from `repeat("x", n)` proves nothing. An incompressible dedupe key fails its
     // unique index at ~2704 bytes ("index row size 6432 exceeds btree version 4 maximum 2704"), another
     // 500 with no record. The mapper puts `payment.id` straight into the key and its schema caps neither
@@ -1160,7 +1160,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
         secret: encryptJson("REAL-TOKEN"),
       },
     });
-    // NOTE: What a client following the REST schema's own wording ("Vault reference name") could store.
+    // What a client following the REST schema's own wording ("Vault reference name") could store.
     const { token, id } = await rawInstance({
       strategy: "STATIC_HEADER",
       secretRef: "asaas-inbound",
@@ -1239,7 +1239,7 @@ describe.skipIf(!dbUp)("inbound receptor", () => {
   });
 
   test("a delivery wired to a multi-field credential is refused, not crashed", async () => {
-    // NOTE: langfuse-shaped: decryptJson gives a Record, which must not reach Buffer.from and throw, a 500
+    // Langfuse-shaped: decryptJson gives a Record, which must not reach Buffer.from and throw, a 500
     // where every other refusal is a 401.
     const entry = await suDb.vaultEntry.create({
       data: {

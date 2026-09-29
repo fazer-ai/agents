@@ -89,7 +89,7 @@ export async function linkRedirectConversations(
   const now = p.now ?? new Date();
   const entryInboxId = p.cfg.entryInboxId;
 
-  // NOTE: The WhatsApp entry half of this episode: the stored pairing when there is one, the
+  // The WhatsApp entry half of this episode: the stored pairing when there is one, the
   // most-recently-active predicate when there is not (episodeOriginQuery's header says why).
   const originQuery =
     entryInboxId === null
@@ -120,7 +120,7 @@ export async function linkRedirectConversations(
     p.widgetConv.testActivatedAt,
   );
 
-  // NOTE: CLAIM the cross-link for the episode this call read: is it still the one whose sibling was
+  // CLAIM the cross-link for the episode this call read: is it still the one whose sibling was
   // looked up? A pairing accepted meanwhile moves the episode, and losing the claim just means its
   // own first inbound will link it. With a null origin, the mark's NULLNESS (never its value, which
   // advances on every payload) separates "never told" from "told there is none". `redirectLinkedAt:

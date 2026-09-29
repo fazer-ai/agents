@@ -172,7 +172,7 @@ async function assertAgentPresent(
   db: ScopedDb,
   agentId: bigint,
 ): Promise<void> {
-  // NOTE: `FOR KEY SHARE`, the lock an FK's referencing insert takes: without an FK, `deleteAgent`
+  // `FOR KEY SHARE`, the lock an FK's referencing insert takes: without an FK, `deleteAgent`
   // could commit between an unlocked read and this write, storing the dangling reference. It conflicts
   // only with DELETE and key changes, so renames and sibling experiments do not serialize. RLS applies
   // to the raw statement, so another tenant's agent comes back as zero rows.

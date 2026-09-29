@@ -128,7 +128,7 @@ function catchSeesTheError(code: string, blockStart: number): boolean {
   const bound = /catch\s*\(\s*\w+\s*\)\s*\{$/.test(head);
   if (bound) return true;
   if (!/catch\s*\{$/.test(head)) return false;
-  // NOTE: the `try` this catch belongs to, brace-matched. A fixed window backwards would accept a
+  // The `try` this catch belongs to, brace-matched. A fixed window backwards would accept a
   // `throw err` from ANOTHER function (a local `JSON.parse` catch below a request handler) and
   // demand a fix for a refusal that does not exist.
   const tryEnd = code.lastIndexOf("}", blockStart);
@@ -314,7 +314,7 @@ function bindingIsDead(body: string, name: string): boolean {
       }
     }
     if (close < 0) continue;
-    // NOTE: the guard has to DOMINATE the toast: nested under another condition
+    // The guard has to DOMINATE the toast: nested under another condition
     // (`if (skip) { if (err) return; }`) it proves nothing about the path that skipped it. Every block
     // open at the guard must still be open at the toast; `body` ends there, so that is the whole
     // test. Getting this wrong refuses correct code.
@@ -471,7 +471,7 @@ function verdicts(
       continue;
     }
 
-    // NOTE: the sentence can be computed a few lines up and shown by NAME (`const toast =
+    // The sentence can be computed a few lines up and shown by NAME (`const toast =
     // refusal.capture(…)` then `showToast(toast, "error")`), or through a local helper called twice
     // (`setError(held(err))`). Every identifier in the argument list is asked, not just a leading
     // one: `held(err) ?? ""` and `msg ?? fallback` are the same question with other punctuation.
@@ -641,7 +641,7 @@ export function waiverKey(o: Offender): string {
 
 describe("an error toast shows what the server said", () => {
   test("the predicate flags a handler that discards the error it has", () => {
-    // NOTE: the positive control, written out rather than trusted to the tree: the real scan finds
+    // The positive control, written out rather than trusted to the tree: the real scan finds
     // nothing, and a predicate that matched NOTHING would pass that assertion exactly as well.
     const offending = `
       async function save() {
@@ -670,7 +670,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a bare catch with nothing thrown into it is not an offender", () => {
-    // NOTE: Eden resolves a transport failure rather than rejecting, so this catch holds only a fault
+    // Eden resolves a transport failure rather than rejecting, so this catch holds only a fault
     // in our own handler, and `apiErrorMessage` would answer null for it anyway.
     const ownFault = `
       async function save() {
@@ -685,7 +685,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("an endpoint named before it is awaited still counts as a request", () => {
-    // NOTE: the alias shape, verbatim from `KnowledgeApprovals.act`: reading `await api.` as literal
+    // The alias shape, verbatim from `KnowledgeApprovals.act`: reading `await api.` as literal
     // text would call this handler "never talked to the server".
     const aliased = `
       async function act(id) {
@@ -714,7 +714,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a toast the formatter wrapped is still read", () => {
-    // NOTE: biome writes a trailing comma on every multi-line call, so requiring the `"error"` to be
+    // Biome writes a trailing comma on every multi-line call, so requiring the `"error"` to be
     // LAST would skip every long toast, the ones with a sentence worth replacing.
     const wrapped = `
       async function save() {
@@ -745,7 +745,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a return annotation does not hide the function", () => {
-    // NOTE: `function f(): Promise<string | null> {` has parens in its head, so a pattern that
+    // `function f(): Promise<string | null> {` has parens in its head, so a pattern that
     // excluded them would read "no function here", fall back to the whole component, and accuse
     // preflights because something ELSE in that component awaited.
     const annotated = `
@@ -761,7 +761,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a nested call in an `if` head does not make it the handler", () => {
-    // NOTE: `if (error && isKnown(error)) {` reads as `<word>(…) {` just like a function head, and
+    // `if (error && isKnown(error)) {` reads as `<word>(…) {` just like a function head, and
     // `[^()]*` stops at the inner call's paren. Taking the `if` for the handler would put the request
     // OUTSIDE the searched body and answer "never talked to the server", silently.
     const nested = `
@@ -775,7 +775,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a throw in another function does not feed this catch", () => {
-    // NOTE: the `try` a bare catch belongs to is brace-matched, not a fixed window backwards: with a
+    // The `try` a bare catch belongs to is brace-matched, not a fixed window backwards: with a
     // window, an earlier `throw err` anywhere in the file would count, and a local `JSON.parse` catch
     // would be read as holding a server refusal.
     const elsewhere = `
@@ -797,7 +797,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("four requests awaited at once still count as a request", () => {
-    // NOTE: `src/client` loads screens with `await Promise.all([api…, api…])`, and reading
+    // `src/client` loads screens with `await Promise.all([api…, api…])`, and reading
     // `await api.` as literal text would answer "never talked to the server" about every one.
     const batched = `
       async function load() {
@@ -813,7 +813,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a toast delegated to a helper is asked about its caller", () => {
-    // NOTE: verbatim in shape from `DocumentsPanel`: the sentence lives in a `useCallback` that
+    // Verbatim in shape from `DocumentsPanel`: the sentence lives in a `useCallback` that
     // awaits nothing, and the refusal is at the call site. Asked on its own the helper looks like a
     // preflight.
     const delegated = `
@@ -831,7 +831,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a wrapped `useCallback(` still names its handler", () => {
-    // NOTE: the production shape, as a fixture of its own: biome wraps `useCallback(` once its
+    // The production shape, as a fixture of its own: biome wraps `useCallback(` once its
     // argument grows a parameter, and reading the name off the line the block opens would answer
     // "anonymous", so the delegation question would never be asked.
     const wrapped = `
@@ -870,7 +870,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a read of a binding the guard already killed is not a read", () => {
-    // NOTE: the rule's own idiom applied one branch too far, verbatim from `WebhooksPage.runTest`:
+    // The rule's own idiom applied one branch too far, verbatim from `WebhooksPage.runTest`:
     // the guard proves `err` null and returns, and the branch below reads it again. It looks swept
     // and shows the fixed sentence for every refusal.
     const dead = `
@@ -952,7 +952,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a guard with a second condition proves nothing", () => {
-    // NOTE: `if (err && err.status === 409) return;` exits on ONE kind of error and leaves every
+    // `if (err && err.status === 409) return;` exits on ONE kind of error and leaves every
     // other kind truthy below it. A rule matching any condition starting with the binding would
     // call that read dead and refuse correct code (`AgentEditorPage.handleConflict` has this shape).
     const partial = `
@@ -987,7 +987,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a sentence computed by a local helper is a read", () => {
-    // NOTE: the shape a form with two failure branches reaches for: one helper, called from the
+    // The shape a form with two failure branches reaches for: one helper, called from the
     // resolved branch and from the catch. Neither call site mentions the read, so the fence has to
     // follow the name to find it.
     const src = `
@@ -1027,7 +1027,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("an unrelated local name does not make a fixed sentence a read", () => {
-    // NOTE: the other direction of following names: the handler DOES read the sentence, somewhere, and
+    // The other direction of following names: the handler DOES read the sentence, somewhere, and
     // then shows a fixed one anyway. Asking "is any identifier in this call assigned from a read"
     // has to answer about the identifiers of THIS call.
     const src = `
@@ -1067,7 +1067,7 @@ describe("an error toast shows what the server said", () => {
   });
 
   test("a ternary fallback without parentheses is flagged", () => {
-    // NOTE: the positive control for the rule below, in the shape it is about.
+    // The positive control for the rule below, in the shape it is about.
     const broken = `showToast(
       apiErrorMessage(err) || status === 409 ? t("a", "A") : t("b", "B"),
       "error",

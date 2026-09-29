@@ -78,7 +78,7 @@ describe("setup.service", () => {
   });
 
   describe("refreshSetupState", () => {
-    // NOTE: Reset the module's in-memory state before each test via the
+    // Reset the module's in-memory state before each test via the
     // public helpers: initSetupState() with no users + token off seeds
     // (setupComplete=false, setupToken=null); then completeSetup() flips
     // setupComplete=true if a test wants the short-circuit baseline.

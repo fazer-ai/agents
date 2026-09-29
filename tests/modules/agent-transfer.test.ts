@@ -424,7 +424,7 @@ describe.skipIf(!dbUp)("agent export/import", () => {
       SELECT settings::text AS j FROM agents WHERE id = ${BigInt(agent.id)}`;
     expect(raw[0]?.j.includes("__proto__")).toBe(false);
     const stored = JSON.parse(raw[0]?.j ?? "{}") as Record<string, unknown>;
-    // NOTE: Everything else in both blocks is stored untouched: nothing here sanitizes, and
+    // Everything else in both blocks is stored untouched: nothing here sanitizes, and
     // `constructor` is the control, just as prototype-ish and storable, because zod keeps it and
     // both runtime maps are null-prototype.
     const pre = stored.toolPreconditions as Record<string, unknown>;
@@ -824,7 +824,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       },
       appDb,
     );
-    // NOTE: A code tool the agent is granted. Its body is the "wiring", the way an HTTP
+    // A code tool the agent is granted. Its body is the "wiring", the way an HTTP
     // tool's request is, and it travels in the bundle for the same reason; the grant names it by
     // NAME, like every other component.
     const codeTool = await suDb.codeToolDefinition.create({
@@ -1210,7 +1210,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       where: { tenantId: dstTenant, knowledgeBaseId: kb?.id },
     });
     expect(kbDocCount).toBe(0);
-    // NOTE: Business hours were recreated on the destination and linked to the agent, also silently.
+    // Business hours were recreated on the destination and linked to the agent, also silently.
     const bh = await suDb.businessHours.findFirst({
       where: { tenantId: dstTenant, name: "Comercial" },
     });
@@ -1238,7 +1238,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       "MCP",
       "RAG",
     ]);
-    // NOTE: The template itself was recreated on the destination, and the grant points at THAT row:
+    // The template itself was recreated on the destination, and the grant points at THAT row:
     // a DOCUMENT grant carrying the source tenant's id would reach across the fence or resolve to
     // nothing at all.
     const dstTemplate = await suDb.documentTemplate.findFirst({
@@ -1421,7 +1421,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
         documentTemplate: {
           async findFirst({ args, query }) {
             const answer = await query(args);
-            // NOTE: Fired on the NAME pre-check specifically: firing on the SLUG one lets the name
+            // Fired on the NAME pre-check specifically: firing on the SLUG one lets the name
             // check that runs next find the row and take the ordinary warning path, a race test that
             // never reaches the race and passes against unfixed code.
             const asksByName =
@@ -1535,7 +1535,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     // The reuse the pre-check reports says nothing about the body, and neither does the reuse the
     // insert reports: the tool that survived is the one already there, with its own body.
     expect(warnings.some((w) => w.code === "httpToolBodyIgnored")).toBe(false);
-    // NOTE: The statements AFTER the losing insert still ran. The grants are written at the very
+    // The statements AFTER the losing insert still ran. The grants are written at the very
     // end of the same transaction, so a count here is the proof that it was never aborted.
     const grants = await suDb.agentToolSelection.count({
       where: { agentId: BigInt(agent.id) },
@@ -1734,7 +1734,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
       includeComponents: true,
     });
-    // NOTE: simulate a bundle exported from a pre-normalization instance: rename the tool so the
+    // Simulate a bundle exported from a pre-normalization instance: rename the tool so the
     // import creates it fresh, and regress its shapes to the legacy authoring forms.
     const legacy = structuredClone(exp);
     const tool = legacy.components?.httpTools.find(
@@ -1764,7 +1764,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   test("a bundle this build produces still carries riskTier, for an older importer (issues #137, #149)", async () => {
-    // NOTE: Why the KEY outlives the column: an instance one release behind parses OUR bundle with
+    // Why the KEY outlives the column: an instance one release behind parses OUR bundle with
     // a schema where `riskTier` is REQUIRED, so dropping it would make every bundle this build
     // writes unimportable there. The value is a constant because the schema `@ignore`s the column
     // (this build never names it in SQL, so the next release can drop it). The literal below stands
@@ -1779,7 +1779,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   test("a bundle carrying the retired riskTier still imports (issue #137)", async () => {
-    // NOTE: Bundles exported before the risk tier was dropped carry `riskTier` on every HTTP tool.
+    // Bundles exported before the risk tier was dropped carry `riskTier` on every HTTP tool.
     // The import schema is a plain z.object, which STRIPS unknown keys; the removal is only safe as
     // long as that holds, so pin it against a bundle from an older instance.
     const exp = await exportAgent(srcCtx(), srcAgentId, appDb, {
@@ -1952,7 +1952,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
   });
 
   test("a restored classifier gets the label tool its guidance names", async () => {
-    // NOTE: The retired classifier applied labels itself and consulted no allowlist, so a bundle
+    // The retired classifier applied labels itself and consulted no allowlist, so a bundle
     // can carry an explicit NATIVE grant with no label tool in it and still have classified.
     // Restoring it with the migrated sentence and without the tool leaves an agent that spends a
     // model call per burst and classifies nothing. Step 1c of the migration repairs the rows that
@@ -2247,7 +2247,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       (g) => g?.source === "HTTP" && g.tool === "lookup_order",
     );
     if (grant?.source === "HTTP") grant.tool = "skip_reply";
-    // NOTE: `skip_reply_2` already exists on the destination: it is REUSED, warned, the way any
+    // `skip_reply_2` already exists on the destination: it is REUSED, warned, the way any
     // same-name component is, so a second import of the same bundle lands on the same row and the
     // bundle's tool is not stored under a third name.
     const existing = await suDb.toolDefinition.create({
@@ -3017,7 +3017,7 @@ describe.skipIf(!dbUp)("agent export/import with components", () => {
       name: "send_contrato_bundle",
       label: "Send contrato bundle",
     });
-    // NOTE: A REAL starter, not an empty shell: only a template that will actually be imported
+    // A REAL starter, not an empty shell: only a template that will actually be imported
     // reserves its `send_<slug>` name, and `blocks: []` is refused by the validity gate, so the
     // fixture would be asserting a rename for a template that never publishes anything.
     const bundleStarter = documentStarter("quote", "pt-BR");

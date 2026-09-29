@@ -158,6 +158,14 @@ export function renderCaseNote(
   ).trim();
 }
 
+// The note a case gets when the customer adds something after it opened. Its own layout, never the
+// operator's `noteTemplate`, which describes a case being opened.
+export function renderCaseAddition(reason: string, originUrl: string): string {
+  return composeForChatwoot(
+    `**Informação adicional do cliente** ([ver conversa](${originUrl})):\n\n${markValue(reason)}`,
+  );
+}
+
 // Chatwoot attribute keys are lowercase snake case; anything else would be written under a key the
 // dashboard never shows.
 // Exported for the write boundary and the editor: a key the reader would replace is refused there, not

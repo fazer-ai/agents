@@ -318,6 +318,8 @@ export interface ChatwootConversationRef {
   // Chatwoot's own reading of the channel's reply window (`can_reply`): false on an official WhatsApp
   // inbox, or a Twilio one on WhatsApp, where the customer has not written in the last 24h.
   canReply: boolean | null;
+  // The conversation's `custom_attributes`, null when the payload carries none.
+  customAttributes?: Record<string, unknown> | null;
 }
 
 // A search that has not found an exact address in this many pages of 15 is not going to: the query
@@ -350,6 +352,10 @@ function parseConversationRef(raw: unknown): ChatwootConversationRef | null {
     inboxId: Number.isInteger(inboxId) && inboxId > 0 ? inboxId : null,
     status: typeof o.status === "string" ? o.status : null,
     canReply: typeof o.can_reply === "boolean" ? o.can_reply : null,
+    customAttributes:
+      o.custom_attributes && typeof o.custom_attributes === "object"
+        ? (o.custom_attributes as Record<string, unknown>)
+        : null,
   };
 }
 
@@ -1454,6 +1460,47 @@ export class ChatwootClient {
       this.config.adminToken,
       "GET",
       `/contacts/${contactId}/conversations`,
+    )) as { payload?: unknown } | null;
+    const rows = Array.isArray(res?.payload) ? res.payload : [];
+    return rows.flatMap((row) => {
+      const ref = parseConversationRef(row);
+      return ref ? [ref] : [];
+    });
+  }
+
+  // The contact's conversations in one inbox that are not resolved, through the conversation filter,
+  // which is not capped at the newest 25 the contact listing answers. First page only (25, newest
+  // activity first): a contact with more unresolved conversations than that in one inbox is not a case.
+  async listUnresolvedContactConversations(
+    contactId: number,
+    inboxId: number,
+  ): Promise<ChatwootConversationRef[]> {
+    const res = (await this.request(
+      this.config.adminToken,
+      "POST",
+      "/conversations/filter",
+      {
+        payload: [
+          {
+            attribute_key: "contact_id",
+            filter_operator: "equal_to",
+            values: [contactId],
+            query_operator: "and",
+          },
+          {
+            attribute_key: "inbox_id",
+            filter_operator: "equal_to",
+            values: [inboxId],
+            query_operator: "and",
+          },
+          {
+            attribute_key: "status",
+            filter_operator: "not_equal_to",
+            values: ["resolved"],
+            query_operator: null,
+          },
+        ],
+      },
     )) as { payload?: unknown } | null;
     const rows = Array.isArray(res?.payload) ? res.payload : [];
     return rows.flatMap((row) => {

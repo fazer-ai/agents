@@ -18,6 +18,7 @@ import {
   type CrossInboxCaseConfig,
   destinationIdentity,
   openingAsksMessage,
+  renderCaseAddition,
   renderCaseNote,
   renderCaseOpening,
 } from "./settings";
@@ -35,6 +36,7 @@ export type CaseClient = Pick<
   | "findContactIdByEmail"
   | "mergeContacts"
   | "listContactConversations"
+  | "listUnresolvedContactConversations"
   | "createConversation"
   | "sendMessageAsAdmin"
   | "sendPrivateNote"
@@ -91,13 +93,15 @@ export interface OpenCaseInput {
 
 export type OpenCaseResult =
   | {
-      kind: "opened" | "continued" | "already_open";
+      // `appended`: the contact already had a case open in the destination, opened from another
+      // conversation, so the note went there and this conversation was linked to it.
+      kind: "opened" | "continued" | "already_open" | "appended";
       caseId: number;
       caseUrl: string;
       // How the address that reached the destination was settled, when one had to be.
       identity: "held" | "written" | "merged" | "other_contact" | null;
       // Writes after the case existed that did not land. The case is open either way. On an
-      // already-open case, only the owner writes (`case_assignee`, `case_team`) can appear.
+      // already-open case, only the owner writes (`case_assignee`, `case_team`) and the note can appear.
       partial: string[];
       // The opening message the output guardrail refused, so it was not sent.
       openingBlocked?: boolean;
@@ -106,6 +110,9 @@ export type OpenCaseResult =
       openingOutsideWindow?: boolean;
       // Operator case labels the account does not have, left off the case.
       unknownCaseLabels?: string[];
+      // On `appended` and `already_open`: whether the note carrying the call's `reason` reached the
+      // case. Later writes can be withdrawn or fail without it being lost.
+      additionDelivered?: boolean;
       // The case could not be read to settle its owner, so nothing past that point was written:
       // `before_clear` wrote nothing, `before_team` cleared the bot and wrote no team.
       caseOwnerUnread?: CaseOwnerUnread;
@@ -417,12 +424,30 @@ async function run(
           input.caseTeamId ?? null,
           partial,
         );
+        // What the model passed now is what the customer added since the case opened, and the case
+        // is where the team reads it.
+        let additionDelivered = false;
+        if (!input.stillWanted || (await input.stillWanted())) {
+          try {
+            await client.sendMessageAsAdmin(
+              known,
+              renderCaseAddition(input.reason, client.conversationUrl(origin)),
+              { private: true },
+            );
+            additionDelivered = true;
+          } catch {
+            partial.push("destination_note");
+          }
+        } else {
+          partial.push("called_off");
+        }
         return {
           kind: "already_open",
           caseId: known,
           caseUrl: client.conversationUrl(known),
           identity: null,
           partial,
+          additionDelivered,
           ...(caseOwnerUnread ? { caseOwnerUnread } : {}),
         };
       }
@@ -534,28 +559,67 @@ async function run(
       // the create made is numbered above every one that existed, and one at or below the newest the
       // contact already had is one it handed back.
       step = "list_case_conversations";
+      let lookupFailed = false;
       const listed = await client.listContactConversations(caseContactId);
       const before = new Set(
         listed.filter((c) => c.inboxId === target).map((c) => c.id),
       );
       const newestBefore = listed.reduce((m, c) => Math.max(m, c.id), 0);
+      // A case this contact already has open in the destination, opened by this tool from another
+      // conversation (the channel opens a new one when the customer writes after the origin was
+      // resolved). The addition goes to that case rather than to a second one.
+      const caseAmong = (rows: typeof listed) =>
+        rows
+          .filter(
+            (c) =>
+              c.inboxId === target &&
+              c.status !== "resolved" &&
+              c.customAttributes?.[CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE] != null,
+          )
+          .reduce<(typeof listed)[number] | null>(
+            (best, c) => (best === null || c.id > best.id ? c : best),
+            null,
+          );
+      let openCase = caseAmong(listed);
+      // NOTE: a full listing can hide an older case, so the filter, which has no such cap, is asked. A
+      // failed lookup falls back to opening a case, which is what the tool does without one.
+      if (openCase === null && listed.length >= CONTACT_CONVERSATIONS_PAGE) {
+        step = "find_open_case";
+        try {
+          openCase = caseAmong(
+            await client.listUnresolvedContactConversations(
+              caseContactId,
+              target,
+            ),
+          );
+        } catch {
+          lookupFailed = true;
+        }
+      }
       // ASKED AGAIN, after the last wait and right before the write nothing undoes: the ask above sat
       // before the screening and this read, and a `/reset` or a withdrawal inside either of them must
       // not still open a case and send its opening.
       if (input.stillWanted && !(await input.stillWanted())) {
         return { kind: "called_off" };
       }
-      step = "create_conversation";
-      const created = await client.createConversation({
-        inboxId: target,
-        contactId: caseContactId,
-        // Open, not pending: the case lands in the team's queue, and an agent bound to the destination
-        // inbox does not pick it up and triage it again (shouldBotHandle needs `pending`).
-        status: "open",
-        customAttributes: { [CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE]: origin },
-        ...(subject ? { additionalAttributes: { mail_subject: subject } } : {}),
-      });
+      step = openCase ? "append_to_case" : "create_conversation";
+      const created =
+        openCase ??
+        (await client.createConversation({
+          inboxId: target,
+          contactId: caseContactId,
+          // Open, not pending: the case lands in the team's queue, and an agent bound to the destination
+          // inbox does not pick it up and triage it again (shouldBotHandle needs `pending`).
+          status: "open",
+          customAttributes: { [CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE]: origin },
+          ...(subject
+            ? { additionalAttributes: { mail_subject: subject } }
+            : {}),
+        }));
       const caseId = created.id;
+      const appended = openCase !== null;
+      // An addition reads as continued too: a listed case is in `before`, and one only the filter finds
+      // is older than every listed conversation, so its number is below `newestBefore`.
       const continued = before.has(caseId) || caseId <= newestBefore;
       const caseUrl = client.conversationUrl(caseId);
       const originUrl = client.conversationUrl(origin);
@@ -568,7 +632,7 @@ async function run(
       // stops what is left, and the attribute writer asks again inside its own queue, after its read,
       // so a reset that cleared the origin's attributes is not undone by this one. The case stays
       // open, since no write here can take it back.
-      const partial: string[] = [];
+      const partial: string[] = lookupFailed ? ["open_case_lookup"] : [];
       let calledOff = false;
       const withdrawn = async (): Promise<boolean> => {
         if (calledOff) return true;
@@ -663,17 +727,21 @@ async function run(
         }
       }
       // ONE note on the case, so the team reads it whole: the subject, where it came from, and why.
-      await attempt("destination_note", () =>
-        client.sendMessageAsAdmin(
+      let noteDelivered = false;
+      await attempt("destination_note", async () => {
+        await client.sendMessageAsAdmin(
           caseId,
-          renderCaseNote(
-            config.noteTemplate ?? null,
-            { subject, reason: input.reason, originUrl },
-            interpolate,
-          ),
+          appended
+            ? renderCaseAddition(input.reason, originUrl)
+            : renderCaseNote(
+                config.noteTemplate ?? null,
+                { subject, reason: input.reason, originUrl },
+                interpolate,
+              ),
           { private: true },
-        ),
-      );
+        );
+        noteDelivered = true;
+      });
       await attempt("origin_link_note", () =>
         client.sendPrivateNote(origin, originLinkNote(caseUrl, inboxName)),
       );
@@ -731,7 +799,8 @@ async function run(
         );
       }
       return {
-        kind: continued ? "continued" : "opened",
+        kind: appended ? "appended" : continued ? "continued" : "opened",
+        ...(appended ? { additionDelivered: noteDelivered } : {}),
         caseId,
         caseUrl,
         identity,

@@ -149,6 +149,11 @@ export interface TurnState {
   // The case inbox the deferred close checks before writing them (graph/resolve-labels.ts).
   resolveCaseHold?: CaseInbox | null;
   caseClosing?: boolean;
+  // resolve_conversation asked for the close: a close the case scheduled and then withdrew leaves it.
+  resolveByModel?: boolean;
+  // An addition of this turn did not reach its case, so the case schedules no close for the rest of
+  // the turn: the origin is the only place those words are.
+  caseAdditionLost?: boolean;
   // A message this turn put in front of the customer from OUTSIDE the reply path, and the one thing
   // here that has already LEFT: the slow-tool acknowledgement ("só um instante"), which `emitAck`
   // (prepare.ts) sends straight through the Chatwoot client. It counts no balloon and queues no
@@ -1514,6 +1519,7 @@ function resolveConversationTool(ctx: ToolCtx) {
         // wording stays conditional on purpose — the intent is discarded on takeover/supersede,
         // and a flat "resolved" would be a false claim in the checkpointed thread history.
         ts.resolveRequested = true;
+        ts.resolveByModel = true;
         ts.resolveLabels = ctx.resolveLabels ?? [];
         ts.resolveCaseHold = ctx.resolveCaseHold ?? null;
         return "Resolve scheduled: the conversation will be marked resolved after your final reply in this turn is delivered.";
@@ -2170,6 +2176,14 @@ function getCurrentTimeTool(ctx: ToolCtx) {
   );
 }
 
+// An addition whose note did not reach the case: withdrawn before it, or the write failed.
+function additionLost(r: OpenCaseResult): boolean {
+  return (
+    (r.kind === "appended" || r.kind === "already_open") &&
+    r.additionDelivered === false
+  );
+}
+
 // What the model reads after `open_case_in_inbox`, one sentence per outcome. The ones that ask for
 // something are instructions the model acts on in its reply; none of them tells it to stay silent,
 // because the customer still has to hear, on the channel they are on, where their case went.
@@ -2201,7 +2215,18 @@ function openCaseOutcomeText(
       return `${how}${partial}${blocked} Tell the customer, in your reply here, that their case was opened and the team will contact them there.${close}`;
     }
     case "already_open":
-      return `This conversation already opened a case that is still open: conversation #${r.caseId}. Nothing new was opened. Tell the customer their case is already with the team.${close}`;
+      return additionLost(r)
+        ? `This conversation already opened a case that is still open: conversation #${r.caseId}. Nothing new was opened, and what you passed in \`reason\` could NOT be added to that case, so the team does not have it. Do not tell the customer it reached the team; hand off to a human with handoff_to_human so a person sees it.${close}`
+        : `This conversation already opened a case that is still open: conversation #${r.caseId}. Nothing new was opened; what you passed in \`reason\` was added to that case as an internal note. Tell the customer their case is already with the team.${close}`;
+    case "appended": {
+      if (additionLost(r)) {
+        return `The customer already has an open case with the team, opened from another conversation: conversation #${r.caseId}. Nothing new was opened, but what you passed in \`reason\` could NOT be added to that case, so the team does not have it. Do not tell the customer it reached the team; hand off to a human with handoff_to_human so a person sees it.${close}`;
+      }
+      const partial = r.partial.length
+        ? ` Some writes did not land (${r.partial.join(", ")}).`
+        : "";
+      return `The customer already has an open case with the team, opened from another conversation: conversation #${r.caseId}. Nothing new was opened and no message was sent to them there; what you passed in \`reason\` was added to that case as an internal note, and this conversation is now linked to it.${partial} Tell the customer, in your reply here, that what they added reached the team handling their case, and that the answer still comes from there.${close}`;
+    }
     case "needs_email":
       return "Nothing was opened: the destination is an email inbox and this contact has no email address. Ask the customer for their email, then call this tool again with `email` set to exactly what they typed.";
     case "needs_phone":
@@ -2235,7 +2260,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         ? "`customer_message` is your part of the first message the customer receives THERE: it goes inside the team's own opening text, so write only what is specific to this request."
         : "The customer receives the team's fixed opening message THERE; you do not write it.";
   const description =
-    `Open the customer's case in the team's other inbox (configured by the operator: you choose WHETHER to open it, never where), without asking the customer to switch channels. Use it when the request has to be handled by the team that works in that inbox. \`reason\` becomes an internal note on the case. ${opening} Call it directly: it reads the contact's email and phone itself, so do not ask the customer for them first. Only when the result says an email is missing, ask for it and call again with exactly the address they typed. Tell the customer here where their case went.` +
+    `Open the customer's case in the team's other inbox (configured by the operator: you choose WHETHER to open it, never where), without asking the customer to switch channels. Use it when the request has to be handled by the team that works in that inbox. \`reason\` becomes an internal note on the case. ${opening} Call it directly: it reads the contact's email and phone itself, so do not ask the customer for them first. Only when the result says an email is missing, ask for it and call again with exactly the address they typed. Tell the customer here where their case went. When the customer adds something after their case was opened, in this conversation or in a new one, call it again with the addition in \`reason\`: it goes to the open case as a note, and no second case is opened.` +
     (ctx.crossInboxCase?.config.resolveOrigin && ctx.turnState
       ? " Once the case is open, this conversation is closed after your reply is delivered."
       : " This tool does NOT close this conversation; close with resolve_conversation if that is the next step.");
@@ -2287,7 +2312,9 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         // NOTE: A configured case label the account does not have: the operator's to fix, so it goes to
         // the flow log and the alert, and not to the model, which can do nothing about it.
         if (
-          (result.kind === "opened" || result.kind === "continued") &&
+          (result.kind === "opened" ||
+            result.kind === "continued" ||
+            result.kind === "appended") &&
           result.unknownCaseLabels?.length
         ) {
           ctx.onSideEffectError?.({
@@ -2302,7 +2329,8 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         if (
           (result.kind === "opened" ||
             result.kind === "continued" ||
-            result.kind === "already_open") &&
+            result.kind === "already_open" ||
+            result.kind === "appended") &&
           result.partial.length > 0
         ) {
           ctx.onSideEffectError?.({
@@ -2315,7 +2343,8 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         if (
           (result.kind === "opened" ||
             result.kind === "continued" ||
-            result.kind === "already_open") &&
+            result.kind === "already_open" ||
+            result.kind === "appended") &&
           result.caseOwnerUnread
         ) {
           ctx.onSideEffectError?.({
@@ -2332,23 +2361,35 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         const caseOpen =
           result.kind === "opened" ||
           result.kind === "continued" ||
-          result.kind === "already_open";
+          result.kind === "already_open" ||
+          result.kind === "appended";
         // THE OPERATOR'S CLOSE RIDES THE SAME DEFERRED PATH `resolve_conversation` USES: after the
         // reply that tells the customer where the case went, and dropped when they write again
         // first. Only with a turn to defer to; a proactive turn has none, and closing immediately
         // there would take the conversation away before anything was said in it.
         let closing: "scheduled" | "not_here" | null = null;
         if (caseOpen) {
+          if (additionLost(result) && ctx.turnState) {
+            ctx.turnState.caseAdditionLost = true;
+          }
           if (
             cic.config.resolveOrigin &&
             ctx.turnState &&
-            !ctx.handoffState?.completed
+            !ctx.handoffState?.completed &&
+            !ctx.turnState.caseAdditionLost
           ) {
             ctx.turnState.resolveRequested = true;
             ctx.turnState.caseClosing = true;
             closing = "scheduled";
           } else {
             closing = "not_here";
+            // NOTE: a close an earlier call of this turn scheduled for the case is withdrawn, and one the
+            // model asked for with resolve_conversation stands.
+            if (ctx.turnState?.caseClosing) {
+              ctx.turnState.resolveRequested =
+                ctx.turnState.resolveByModel === true;
+              ctx.turnState.caseClosing = false;
+            }
           }
         }
         return openCaseOutcomeText(result, closing);

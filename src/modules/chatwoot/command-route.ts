@@ -1,21 +1,11 @@
-// WHICH DELIVERY RUNS A CONTROL COMMAND, WHEN CHATWOOT SENDS THE SAME ONE TWICE.
+// Which delivery runs a control command. Chatwoot dispatches an incoming message to the
+// conversation's assigned agent bot and to the inbox's (`agent_bot_listener.rb`), so one command
+// arrives twice. The inbox's persona runs it: the command is about the agent bound to this inbox.
 //
-// Chatwoot dispatches an incoming message to the conversation's ASSIGNED agent bot and to the
-// inbox's (`agent_bot_listener.rb`), so a command typed once arrives as two deliveries with two
-// route ids. The inbox's persona is the one that runs it — the command is about the agent bound to
-// THIS inbox: it is that agent's memory being cleared and that agent the conversation goes back to.
-//
-// It fails CLOSED on an unresolvable identity, on either side, and the two closed answers are NOT
-// the same fact. `no_persona` means the inbox's agent has no `ChatwootAgentBot` row, so it cannot
-// speak anywhere (every bot-token call goes out with an empty token and comes back 401, issue #79)
-// and EVERY route drops the command: nobody runs it, and waiting does not help. `other_route` means
-// this delivery is not the one — the inbox's persona has an identity and will run it on its own
-// delivery. Measured on the webhook path (issue #317): both were silent, and the process log line
-// said "leaving it to the inbox's persona" for both, which is true of one and misleading for the
-// other.
-// The two answers that DROP the command, carrying what the line reporting them has to name. Returned
-// as data rather than re-derived at the report: a boolean here and a second reading there is exactly
-// the shape issue #270 was, one fact answered twice by two readings that can disagree.
+// Both drops fail closed and are different facts. `no_persona`: the inbox's agent has no
+// `ChatwootAgentBot` row, cannot speak anywhere (bot-token calls go out empty and get 401), and
+// every route drops the command. `other_route`: the persona will run it on its own delivery. The
+// reason is returned as data so the reporting line does not re-derive it and disagree.
 export type CommandRouteDrop =
   | { reason: "other_route"; personaBot: number }
   | { reason: "no_persona" };

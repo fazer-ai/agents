@@ -43,9 +43,8 @@ function sysCtx(tenantId: bigint): TenantContext {
 
 export interface MirrorResult {
   conversationRowId: bigint | null;
-  // The mirrored INBOX row this event belongs to, upserted here on every event. Exposed because a
-  // caller that finds no agent has nothing else to name the inbox with — `rt` is null precisely
-  // then, which is the state issue #318 is about. Null when the payload named no inbox.
+  // The mirrored inbox row this event belongs to, upserted on every event. A caller that finds no
+  // agent (`rt` null) has nothing else to name the inbox with. Null when the payload named no inbox.
   inboxRowId: bigint | null;
   // The assignee BEFORE this event applied — captured for the REENGAGE flow, which
   // must see the prior human assignee before the mirror overwrites it.
@@ -145,15 +144,11 @@ export async function mirrorChatwootEvent(
   if (n.firstReplyCreatedAt != null)
     slaWrites.chatwootFirstReplyAt = n.firstReplyCreatedAt;
 
-  // TWICE AT MOST, and the second run is the fix (issue #476 review, found by the manual test). The
-  // contact and inbox upserts run BEFORE the per-conversation lock below, and Prisma's upsert is a
-  // select followed by an insert: two deliveries of the same event — an observer's route and the
-  // responder's, milliseconds apart — both find no contact row and one of them loses the insert
-  // with a unique violation. Inside this transaction that failure is terminal (P2002 aborts the
-  // whole tx), so the retry is the transaction run again: the row exists now, the upsert takes its
-  // update path, and the mirror is idempotent by construction. Before this existed the losing
-  // delivery stayed PROCESSING for the sweep, and the observer never saw the first message of any
-  // new contact on an inbox it shared with a responder.
+  // NOTE: twice at most. The contact and inbox upserts run before the per-conversation lock, and
+  // Prisma's upsert is a select then an insert, so two deliveries of one event (an observer's route
+  // and the responder's) can both miss the row and one loses with a unique violation. P2002 aborts
+  // the whole tx, so the retry reruns it: the upsert now takes its update path, and the mirror is
+  // idempotent. Without it the losing delivery sits PROCESSING until the sweep.
   let attempt = 0;
   const run = (): Promise<MirrorResult> =>
     runScopedOn(base, sysCtx(tenantId), async (db) => {
@@ -196,8 +191,8 @@ export async function mirrorChatwootEvent(
             // Read for the stale branch, which advances this watermark only when the payload really is
             // ahead of it. See the write there.
             lastInboundAt: true,
-            // The local claim, which is the one ordering input that does not come from the source
-            // (issue #436). See ./status-claim.ts.
+            // NOTE: the local claim, the one ordering input that does not come from the source.
+            // See ./status-claim.ts.
             statusClaimUntil: true,
             statusClaimFrom: true,
             statusClaimStampedAt: true,
@@ -229,43 +224,32 @@ export async function mirrorChatwootEvent(
             : null,
           now,
         );
-        // Whether this event kills a recorded resolution origin, asked ONCE for both exits below: the
-        // stale branch returns before the update, and rounds 5 and 6 of this change were the same rule
-        // stated twice and getting a different axis wrong each time. The rule itself, and why it takes
-        // these three facts and not `decision.stale`, is in `clearsResolutionOrigin`.
+        // NOTE: whether this event kills a recorded resolution origin, asked once for both exits
+        // below (the stale branch returns before the update), so the rule is not stated twice. Why it
+        // takes these three facts and not `decision.stale` is in `clearsResolutionOrigin`.
         const dropsResolutionOrigin =
           existing != null &&
           clearsResolutionOrigin({
             storedStatus: existing.status,
             statedStatus: statePayload.status,
             appliedStatus: decision.status,
-            // NOTE: Exactly what the flag means: a conversation event speaks about status, a message
-            // snapshot embeds one but is meant to move no state (issue #61). NOT `&& version != null`:
-            // `decideConversationWrites` orders a versionless conversation event by `last_activity_at`
-            // and lets it move status, so requiring a version silently exempted every Chatwoot older
-            // than 4.0.2 from the rule below.
+            // NOTE: a conversation event speaks about status; a message snapshot embeds one but moves
+            // no state. Not `&& version != null`: a versionless conversation event is ordered by
+            // `last_activity_at` and may move status, so requiring a version would exempt every
+            // Chatwoot older than 4.0.2 from the rule.
             sourceMayStateStatus: statePayload.fromConversationEvent,
             reopens: statePayload.reopensConversation,
             statedVersion: statePayload.version,
             stampedAfterVersion: existing.resolvedByAt,
           });
 
-        // The pairing is the redirect episode's IDENTITY, so a genuinely different one means this
-        // widget conversation is in a NEW episode and the per-episode one-shots belong to the old one.
-        // `redirectLinkedAt` gates the cross-link and `redirectClosedAt` is the at-most-once claim for
-        // the goodbye: left standing, the second episode gets neither — the cross-link reads a
-        // watermark the first episode set, and the closing CAS asks for a null the first episode spent.
-        // Both symptoms predate #222 and neither could be fixed before it, because until the fork
-        // recorded the pairing nothing on this side could tell one episode from the next.
-        //
-        // Asked of a PREVIOUSLY STATED origin, not of the stored value, and that is the whole
-        // distinction: stored null is both "the fork never spoke about this conversation" (every
-        // conversation, before fazer-ai/chatwoot#418 is deployed) and "the fork said there is none".
-        // Being told is what separates them, and it leaves two possible traces — the mark, or a stored
-        // origin from an instance too old to send a version to stamp one with. Leaning the
-        // other way would release the episode of every live conversation on the day the fork ships,
-        // re-running each cross-link and posting its private notes a second time; leaning this way
-        // leaves exactly the behaviour of today for a pairing we are only now learning.
+        // NOTE: the pairing is the redirect episode's identity, so a different one starts a new episode
+        // and the per-episode one-shots (`redirectLinkedAt` for the cross-link, `redirectClosedAt` for
+        // the goodbye) belong to the old one. Asked of a previously STATED origin, not the stored
+        // value: stored null means both "the fork never spoke" and "the fork said none", and being told
+        // (the mark, or a stored origin from an instance too old to stamp one) separates them. Leaning
+        // the other way would release every live conversation's episode the day the fork ships,
+        // re-running each cross-link and its private notes.
         const releasesEpisode =
           existing != null &&
           decision.redirectOrigin &&
@@ -273,39 +257,11 @@ export async function mirrorChatwootEvent(
             existing.redirectOriginDisplayId != null) &&
           (n.redirectOriginDisplayId ?? null) !==
             existing.redirectOriginDisplayId;
-        // Written with the pairing wherever the pairing is written, the stale branch included: that
-        // branch is where the pairing's own conversation_updated ORDINARILY lands, since
-        // `last_activity_at` does not move on a column write.
-        // The other half of the release, and it has to be ATOMIC with the pairing write, not merely
-        // after it. The ladder messages the paired WhatsApp thread and RESOLVES it, and retiring is the
-        // one signal that reaches a worker which has already claimed — a cancel touches PENDING rows
-        // only.
-        //
-        // Outside this transaction the ordering goes wrong in a way that has nothing to do with
-        // failure: the pairing's `conversation_updated` and the cloned `message_created` that follows
-        // it are two deliveries, and processed concurrently the message can arm the NEW episode's
-        // ladder between the pairing committing and a retirement running afterwards — which would then
-        // mark the new episode's own job DONE, on a dedupe key that carries no generation to tell them
-        // apart. Inside, the UPDATE takes the row lock on that key and holds it to commit, so an arm
-        // racing it blocks and lands after. Work armed for the next episode survives; work armed for
-        // the previous one does not.
-        //
-        // A SAVEPOINT, because catching the rejection would not contain the failure. A statement that
-        // Postgres rejects — a deadlock, a statement timeout — aborts the whole transaction at the
-        // server, and every statement after it fails with `current transaction is aborted` no matter
-        // what JavaScript did with the error. Without the savepoint this catch reads as a degradation
-        // and delivers a rollback of the whole mirror write.
-        //
-        // And letting it escape is worse still: this path is detached with Chatwoot's 200 already sent,
-        // so a rejection leaves the delivery row on PROCESSING with nothing running and that event
-        // never comes back — a transient deadlock in the scheduler would drop the pairing permanently.
-        //
-        // What must NOT survive the rollback is the pairing. The ladder carries no episode of its own,
-        // so committing the new pairing over a ladder that could not be retired hands the PREVIOUS
-        // episode's schedule to the NEW one: its next stage re-reads the pairing and nudges, then
-        // resolves, a conversation that has just started. So the pairing stands still with it, and
-        // nothing is lost by that — every later payload for this conversation restates the pairing and
-        // the mark it is ordered by has not moved either, so the next delivery applies both together.
+        // NOTE: written with the pairing wherever the pairing is written, the stale branch included
+        // (a column write does not move `last_activity_at`). Retiring the ladder is atomic with the
+        // pairing write, inside a savepoint, and a failed retirement holds the pairing back so the old
+        // episode's schedule is never handed to the new one. Why each of those is required:
+        // docs/chatwoot.md, "Mirror sync".
         let retiredLadder = true;
         if (releasesEpisode && opts.redirectLadderDedupeKey) {
           await db.$executeRawUnsafe("SAVEPOINT retire_redirect_ladder");
@@ -346,21 +302,12 @@ export async function mirrorChatwootEvent(
             : {};
 
         if (existing && decision.stale) {
-          // NOTE: A stale event says nothing about the conversation's STATE, with three exceptions, all
-          // written here because this branch returns before the update.
-          //
-          // One is a close of ours that this ordering refused. Another is the redirect pairing, which
-          // is ordered by a mark of its own and is routinely carried by a payload that is behind on
-          // everything else — see the stale branch of `decideConversationWrites`. `decision` decides
-          // both; this only spends the UPDATE when there is something to write, since every
-          // out-of-order delivery lands here.
-          //
-          // The third is the SLA pair, for the same reason stated the other way round: the ORDER this
-          // event lost is about the conversation's STATE. The SLA pair is not state this side
-          // maintains — it is two immutable readings Chatwoot computed from its own messages table —
-          // so losing the ordering says nothing about them, and a row that has never seen them yet is
-          // exactly the row a late delivery can still teach. Compared rather than written blind so the
-          // common stale delivery, which repeats what is stored, adds no UPDATE.
+          // NOTE: a stale event says nothing about the conversation's state, with three exceptions
+          // written here because this branch returns before the update: a close of ours this ordering
+          // refused, the redirect pairing (ordered by its own mark, see `decideConversationWrites`),
+          // and the SLA pair (two immutable readings Chatwoot computed from its messages table, which
+          // a late delivery can still teach). Each is compared first, so the common stale delivery
+          // that repeats what is stored adds no UPDATE.
           const staleSla: typeof slaWrites = {};
           if (
             slaWrites.chatwootCreatedAt != null &&
@@ -386,29 +333,13 @@ export async function mirrorChatwootEvent(
               : {}),
             ...episodeRelease,
             ...staleSla,
-            // THE INBOUND WATERMARK IS MONOTONIC, and it is not state this branch's ordering decides.
-            // What a stale delivery lost is the order of the conversation's STATE; `lastInboundAt` is
-            // the time of a CUSTOMER MESSAGE, and a message really newer than the stored watermark is
-            // newer whatever the state did meanwhile. Same shape as the SLA pair above, for the same
-            // reason: a row that has never seen this reading is exactly the row a late delivery can
-            // still teach.
-            //
-            // MEASURED, on the delivery recovery (#295): a conversation whose activity had moved past
-            // the stranded message — an away message posted after it — reconciles to that later time,
-            // so the rebuilt body lands here, and the customer got their reply while `lastInboundAt`
-            // came out NULL. That column anchors BOTH the follow-up "new episode" gate and the
-            // WhatsApp 24h service window, so leaving it behind makes a later proactive send read as
-            // in-window when it is not.
-            //
-            // Never backwards: `inboundAt` is written only when it is ahead of what is stored.
-            //
-            // NOT also guarded on the payload having MEASURED a timestamp, though a review round asked
-            // for it: an event carrying no `last_activity_at` never reaches this branch at all, because
-            // `decideConversationWrites` has nothing to order it BY and applies it. MEASURED — the
-            // guard was written, and the case built for it moved the watermark through the applied
-            // branch instead. A branch no input can take reads as a rule and is a comment. The harm it
-            // was aimed at is real and belongs where the undated body comes from: ./recover-delivery.ts
-            // refuses to rebuild one.
+            // NOTE: the inbound watermark is monotonic and not decided by this branch's ordering:
+            // `lastInboundAt` is the time of a customer message, and a newer one is newer whatever the
+            // state did. It anchors the follow-up "new episode" gate and the WhatsApp 24h window, so a
+            // recovered body landing here must still advance it. Never backwards. No guard on the
+            // payload carrying a timestamp: an undated event never reaches this branch
+            // (`decideConversationWrites` has nothing to order it by and applies it), and
+            // ./recover-delivery.ts refuses to rebuild an undated body.
             ...(inboundAt != null &&
             (existing.lastInboundAt === null ||
               inboundAt.getTime() > existing.lastInboundAt.getTime())
@@ -649,8 +580,8 @@ async function upsertContact(
     c.identifier ? { identifier: c.identifier } : {},
   );
 
-  // Keyed by INSTANCE too: a Chatwoot contact id is unique inside one account, and two accounts
-  // under the same tenant were collapsing contact 42 into one row.
+  // NOTE: keyed by instance too: a Chatwoot contact id is unique only inside one account, and two
+  // accounts under one tenant can share an id.
   const row = await db.contact.upsert({
     where: {
       tenantId_chatwootInstanceId_chatwootContactId: {
@@ -676,40 +607,13 @@ async function upsertContact(
     select: { id: true },
   });
 
-  // The upsert runs BEFORE the conversation's stale check (the conversation row needs the contact
-  // id), and one contact is shared by all its conversations, so the conversation guard cannot cover
-  // it: the watermark has to be per-contact. ONE statement ⇒ the compare-and-set is atomic under
-  // concurrent deliveries, and every field is settled inside the same visit to the row.
-  //
-  // A watermark PER FIELD, not per row. A payload states a SUBSET of the identity, so a row-wide
-  // position would be advanced by an event that never spoke about the field it then protects: a
-  // name-only event at t3 would reject a phone clear from t2 arriving behind it, and the gate would
-  // go on asking about a number the customer no longer has. Absent means "I know nothing about
-  // this", and knowing nothing may not move anything, value or position.
-  //
-  // These are SOURCE positions, never receipt times: stamping an undated payload with our own clock
-  // would make it beat every real Chatwoot timestamp and poison the ordering. An undated payload
-  // therefore has NO position, and a write with no position is a write decided by arrival order —
-  // the one thing this block exists to prevent — so it writes nothing at all. It used to be let
-  // through as a "bootstrap" for a row nothing had positioned yet, except that the watermark stayed
-  // null afterwards, so the next undated payload bootstrapped it again, and the one after that: two
-  // degraded deliveries naming different phones settled it by whoever arrived last. The bootstrap
-  // belongs to the `create` above, which runs exactly once per row. Identity only reaches us on
-  // conversation and message events, which carry `last_activity_at` (bots never receive
-  // `contact_updated`), so this is the degraded path, and the degraded path fails closed: a contact
-  // with nothing positioned reads as `no_identity` at the gate.
-  //
-  // Each field has two ways to be written, and they are the two CASE arms below:
-  //
-  //   * STRICTLY NEWER than the field's position: the stated value wins and the position moves.
-  //   * EQUAL to it: a tie, decided by DISAGREEMENT rather than arrival order. `last_activity_at`
-  //     has one-second resolution, so two events inside one second cannot be ordered at all. Two
-  //     payloads that AGREE are one event delivered twice and settle nothing new. Two that state
-  //     different values are a conflict nothing can break, and there the field is emptied: keeping
-  //     either is a coin toss about whose phone number this is, and the gate would carry the winner
-  //     to the operator's endpoint as fact. The position does not move — a tie positions nothing.
-  //
-  // Anything older than the position falls through to ELSE and changes nothing.
+  // NOTE: a per-field compare-and-set watermark, in one statement so it is atomic under concurrent
+  // deliveries. Per contact because the upsert runs before the conversation's stale check and one
+  // contact is shared by all its conversations; per field because a payload states a subset of the
+  // identity, and absent may move nothing. Positions are source times, never receipt times: an
+  // undated payload writes nothing and the bootstrap is the `create` above. Strictly newer wins and
+  // moves the position; an equal position that disagrees empties the field (a one-second tie nothing
+  // can break); older changes nothing. Full reasoning: docs/chatwoot.md, "Mirror sync".
   if (eventAt && (nameStated || emailStated || phoneStated || attrsStated)) {
     await db.$executeRaw`
       UPDATE contacts SET

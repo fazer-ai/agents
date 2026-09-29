@@ -2502,6 +2502,61 @@ describe("the tool", () => {
       expect(out).toContain("NOT closed");
     });
 
+    test("on: an addition that fails after a close this tool scheduled in the turn withdraws that close", async () => {
+      const failOn = new Set<string>();
+      const f = fakeChatwoot({
+        failOn,
+        convs: [
+          {
+            id: 7,
+            inboxId: 10,
+            contactId: 5,
+            status: "pending",
+            attrs: {},
+            labels: [],
+          },
+        ],
+      });
+      const turnState = turn();
+      const t = withClose(f, true, { turnState });
+      await t.invoke({ reason: "primeiro" });
+      expect(turnState.resolveRequested).toBe(true);
+      // The second call finds the case this conversation just opened, and its note fails.
+      failOn.add("sendMessageAsAdmin");
+      const out = String(await t.invoke({ reason: "segundo" }));
+      expect(out).toContain("could NOT be added");
+      expect(turnState.resolveRequested).toBe(false);
+      expect((turnState as { caseClosing?: boolean }).caseClosing).toBe(false);
+    });
+
+    test("on: a failed addition leaves a close the model asked for with resolve_conversation alone", async () => {
+      const f = fakeChatwoot({
+        failOn: new Set(["sendMessageAsAdmin"]),
+        convs: [
+          {
+            id: 7,
+            inboxId: 10,
+            contactId: 5,
+            status: "pending",
+            attrs: { case_conversation_id: 55 },
+            labels: [],
+          },
+          {
+            id: 55,
+            inboxId: 40,
+            contactId: 5,
+            status: "open",
+            attrs: {},
+            labels: [],
+          },
+        ],
+      });
+      const turnState = { ...turn(), resolveRequested: true };
+      const t = withClose(f, true, { turnState });
+      await t.invoke({ reason: "x" });
+      expect(turnState.resolveRequested).toBe(true);
+    });
+
     test("on, and the case was already open: the close is still scheduled", async () => {
       const f = fakeChatwoot({
         convs: [

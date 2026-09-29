@@ -2378,6 +2378,12 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           }
         } else if (caseOpen) {
           closing = "not_here";
+          // NOTE: a close an earlier call of this turn scheduled for the case is withdrawn too; one the
+          // model asked for with resolve_conversation is not this tool's to take back.
+          if (ctx.turnState?.caseClosing) {
+            ctx.turnState.resolveRequested = false;
+            ctx.turnState.caseClosing = false;
+          }
         }
         return openCaseOutcomeText(result, closing);
       }

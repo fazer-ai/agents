@@ -114,9 +114,9 @@ function ctxOrThrow(ctx: TenantContext | null): TenantContext {
 
 // Parses the optional optimistic-concurrency precondition from the request body. Exported for direct
 // unit testing of the boundary contract: a missing/blank/UNPARSEABLE value yields `undefined`, which
-// the service treats as "no precondition" (last-write-wins). That degrade-on-garbage is deliberate —
-// the precondition is opt-in (REST/MCP omit it) — but it means a client that serializes a malformed
-// timestamp silently loses the overwrite protection, so the editor must always send a real ISO date.
+// the service treats as "no precondition" (last-write-wins). That degrade-on-garbage is deliberate
+// (the precondition is opt-in; REST/MCP omit it), but a client that serializes a malformed timestamp
+// silently loses the overwrite protection, so the editor must always send a real ISO date.
 export function parseExpectedUpdatedAt(
   s: string | undefined,
 ): Date | undefined {
@@ -127,7 +127,7 @@ export function parseExpectedUpdatedAt(
 
 // Splits the optimistic-concurrency precondition out of the PATCH body BEFORE it reaches the service.
 // `agentUpdateSchema` is a strict zod object (rejects unknown keys), so forwarding the raw body with
-// `expectedUpdatedAt` still on it fails with `unrecognized_keys` — the precondition must travel as an
+// `expectedUpdatedAt` still on it fails with `unrecognized_keys`: the precondition must travel as an
 // opt, never as a patch field. Exported so the split is unit-tested directly.
 export function splitAgentUpdateBody(
   body: AgentUpdate & { expectedUpdatedAt?: string; settingsMode?: "replace" },
@@ -136,8 +136,8 @@ export function splitAgentUpdateBody(
   expectedUpdatedAt: Date | undefined;
   settingsMode: "replace" | undefined;
 } {
-  // Both of these are about the WRITE and not about the agent, so both come off the patch: the
-  // strict update schema refuses an unrecognized key, which is the regression the test below pins.
+  // NOTE: both are about the WRITE, not the agent, so both come off the patch: the strict update
+  // schema refuses an unrecognized key.
   const { expectedUpdatedAt, settingsMode, ...patch } = body;
   return {
     patch: patch as AgentUpdate,
@@ -147,11 +147,10 @@ export function splitAgentUpdateBody(
 }
 
 // Live, non-persisted playground override (the "edit live" popup): the unsaved prompt/model/settings
-// draft. The secret never travels — modelConfig carries only a credentialRef, resolved server-side.
-// NOTE: Elysia normalizes `draft` against this schema, so a field that is missing HERE is stripped
-// from the request before the handler ever sees it — silently, with the turn then running against
-// the saved config. The type below is derived from this object precisely so the two cannot drift:
-// declaring a draft field in TypeScript alone does not carry it over the wire.
+// draft. The secret never travels: modelConfig carries only a credentialRef, resolved server-side.
+// Elysia normalizes `draft` against this schema, so a field missing HERE is silently stripped and
+// the turn runs against the saved config. `PlaygroundDraft` derives from this object so the two
+// cannot drift: a draft field declared in TypeScript alone does not travel over the wire.
 export const playgroundDraftSchema = t.Object({
   systemPrompt: t.Optional(
     t.String({ maxLength: config.agent.promptMaxChars }),
@@ -175,7 +174,7 @@ type PlaygroundDraft = typeof playgroundDraftSchema.static;
 
 // The playground turn/follow-up request bodies, exported so the wire contract is TESTED rather than
 // mirrored: a field that exists in TypeScript but not here is stripped by Elysia's normalize before
-// the handler runs, and a test that copies the schema validates its own copy (issue #170).
+// the handler runs, and a test that copies the schema validates its own copy.
 export const playgroundTurnBodySchema = t.Object({
   message: t.String({
     minLength: 1,
@@ -243,7 +242,7 @@ function parseDraft(
 
 // Arbitrary text (a transcription / extraction) that might start with `{`/`[`, which Elysia's
 // multipart parser would auto-parse into an object (see parseDraft). The client sends it JSON-encoded
-// — always a quoted string, so it is never auto-parsed — and we decode it back here. Malformed ⇒
+// (always a quoted string, so it is never auto-parsed) and it is decoded back here. Malformed ⇒
 // undefined (the turn then re-derives the value server-side instead of reusing it).
 function decodeMultipartText(raw: unknown): string | undefined {
   if (typeof raw !== "string" || !raw) return undefined;
@@ -389,10 +388,9 @@ export const agentsController = new Elysia({
       }),
     },
   )
-  // "Is this agent's configuration healthy?", for a caller that is not the console. The same checks
-  // the editor's warning panel runs, over the SAVED row: an agent configured entirely over this API
-  // or over MCP never rendered that panel, so until this existed those warnings were not missed,
-  // they were never computed. Issue #467.
+  // "Is this agent's configuration healthy?", for a caller that is not the console: the same checks
+  // the editor's warning panel runs, over the SAVED row, so an agent configured entirely over this
+  // API or MCP (which never renders that panel) still gets them computed.
   .get(
     "/:id/config-health",
     async ({ tenantContext, params }) => ({
@@ -461,7 +459,7 @@ export const agentsController = new Elysia({
         }),
         systemPrompt: t.Optional(
           t.String({
-            // NOTE: no maxLength here — the service enforces the (env-configurable) cap and
+            // NOTE: no maxLength here: the service enforces the (env-configurable) cap and
             // raises the localized error; a TypeBox cap would 422 first with a raw message.
             description: `System prompt template, may contain {{variable}} placeholders (up to ${config.agent.promptMaxChars} characters).`,
           }),
@@ -472,10 +470,8 @@ export const agentsController = new Elysia({
               "Whether the agent is active and may handle conversations.",
           }),
         ),
-        // NOTE: derived, not spelled. This list was written by hand here and in ten other places,
-        // and when `monitoring` was briefly held back from the write side (v1.15.0) the compiler
-        // found the copies one at a time because none of them derived from anything. Deriving is
-        // what makes the next change to the set one edit instead of eleven.
+        // NOTE: derived from the mode set, not spelled out: a hand-written copy here would drift
+        // from the others, and a change to the set would need one edit per copy.
         mode: t.Optional(
           t.Union(
             AGENT_MODES.map((m) => t.Literal(m)),
@@ -557,7 +553,7 @@ export const agentsController = new Elysia({
         ),
         systemPrompt: t.Optional(
           t.String({
-            // NOTE: no maxLength here — the service enforces the (env-configurable) cap and
+            // NOTE: no maxLength here: the service enforces the (env-configurable) cap and
             // raises the localized error; a TypeBox cap would 422 first with a raw message.
             description: `System prompt template, may contain {{variable}} placeholders (up to ${config.agent.promptMaxChars} characters).`,
           }),
@@ -568,10 +564,8 @@ export const agentsController = new Elysia({
               "Whether the agent is active and may handle conversations.",
           }),
         ),
-        // NOTE: derived, not spelled. This list was written by hand here and in ten other places,
-        // and when `monitoring` was briefly held back from the write side (v1.15.0) the compiler
-        // found the copies one at a time because none of them derived from anything. Deriving is
-        // what makes the next change to the set one edit instead of eleven.
+        // NOTE: derived from the mode set, not spelled out: a hand-written copy here would drift
+        // from the others, and a change to the set would need one edit per copy.
         mode: t.Optional(
           t.Union(
             AGENT_MODES.map((m) => t.Literal(m)),
@@ -626,7 +620,7 @@ export const agentsController = new Elysia({
       }),
     },
   )
-  // Deleting an agent destroys its brain (prompt, grants, behavior) and detaches its inboxes — HARD
+  // Deleting an agent destroys its brain (prompt, grants, behavior) and detaches its inboxes, HARD
   // gated like the Chatwoot teardown: the operator re-types the agent's name AND confirms with their
   // password (step-up). The bundled components (tools/KB/integrations) are tenant-level and survive.
   .delete(
@@ -1174,9 +1168,8 @@ export const agentsController = new Elysia({
     "/:id/playground/media/:mediaId",
     async ({ tenantContext, params, set }) => {
       const ctx = ctxOrThrow(tenantContext);
-      // NOTE: refused, not answered 404. A media id that is not an id is a malformed request, and
-      // this route used to answer it as "no such blob": the one spelling of the rule in this app
-      // that told the caller their id was fine and the row was gone. Issue #371.
+      // NOTE: refused (400), not answered 404: a media id that is not an id is a malformed request,
+      // and a 404 would tell the caller their id was fine and the row was gone.
       const blob = await getPlaygroundMedia(
         ctx,
         requireDbId(params.mediaId, "mediaId"),
@@ -1244,7 +1237,6 @@ export const agentsController = new Elysia({
           requireDbId(params.id),
           params.threadId,
         ),
-        // The session's total so far, from the ledger (issue #839).
         usage: await getPlaygroundSessionUsage(
           ctx,
           requireDbId(params.id),
@@ -1271,7 +1263,7 @@ export const agentsController = new Elysia({
     },
   )
   // A fresh playground thread for a session about to start, so its first call is billed to a thread
-  // the console already holds (issue #839). Only an id: nothing is written until a turn runs on it.
+  // the console already holds. Only an id: nothing is written until a turn runs on it.
   .post(
     "/:id/playground/threads",
     async ({ tenantContext, params }) => {
@@ -1296,7 +1288,7 @@ export const agentsController = new Elysia({
     },
   )
   // The session's total alone, for a console that has to re-read it: a turn that failed after a
-  // billed call leaves that call in the ledger and nothing in the reply (issue #839).
+  // billed call leaves that call in the ledger and nothing in the reply.
   .get(
     "/:id/playground/sessions/:threadId/usage",
     async ({ tenantContext, params }) => {

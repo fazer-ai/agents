@@ -113,23 +113,21 @@ const LABEL_TOOL = "set_labels";
 // update_kanban_task (edit the linked card's title/description/priority/dates) also takes optional
 // operator guidance, so it renders as a configurable card next to kanban_move_card.
 const UPDATE_KANBAN_TOOL = "update_kanban_task";
-// open_case_in_inbox needs a destination inbox before it is offered at all (issue #700).
+// open_case_in_inbox needs a destination inbox before it is offered at all.
 const OPEN_CASE_TOOL = "open_case_in_inbox";
-// send_image refuses every call until at least one host is allowed (issue #880).
+// send_image refuses every call until at least one host is allowed.
 const SEND_IMAGE_TOOL = "send_image";
 // resolve_conversation can write the operator's labels on close.
 const RESOLVE_TOOL = "resolve_conversation";
 
 interface Props {
-  // The agent being edited — scopes the handoff target picker to the accounts it serves.
+  // The agent being edited: scopes the handoff target picker to the accounts it serves.
   agentId: string;
   // WHETHER THIS AGENT ONLY WATCHES. A monitoring turn builds its Chatwoot client MUTED, and the
-  // assembly then drops every tool whose whole point is to put something in front of the customer:
-  // the two natives flagged `deliversToCustomer`, the document tools, and a toolpack's delivery
-  // tools. Offering those grants here would be a control that cannot fire — the same class as the
-  // retired settings this issue refused, arriving through the editor instead of the API. Grants
-  // already saved are left ALONE, so flipping the mode back returns the agent as it was
-  // (review round 30).
+  // assembly drops every tool that puts something in front of the customer (the natives flagged
+  // `deliversToCustomer`, the document tools, a toolpack's delivery tools), so offering those grants
+  // would be a control that cannot fire. Grants already saved are left ALONE, so flipping the mode
+  // back returns the agent as it was.
   observing?: boolean;
   catalog: ToolCatalog;
   grants: GrantState[];
@@ -171,7 +169,7 @@ interface Props {
   // agent.settings.setLabels.protected; see readProtectedLabels for why the guard exists.
   protectedLabels: string;
   setProtectedLabels: (v: string) => void;
-  // The labels set_labels may ADD, comma-separated, and what a title outside them meets (issue #638).
+  // The labels set_labels may ADD, comma-separated, and what a title outside them meets.
   // Persisted in agent.settings.setLabels.allowed / .outsideAllowed; see readAllowedLabels.
   allowedLabels: string;
   setAllowedLabels: (v: string) => void;
@@ -209,7 +207,7 @@ function Section({
   action,
   children,
 }: {
-  // Anchor id + icon (item 9): lets the Tools-tab SectionNav scroll to and highlight this block.
+  // Anchor id + icon: lets the Tools-tab SectionNav scroll to and highlight this block.
   id?: string;
   icon?: LucideIcon;
   title: string;
@@ -244,8 +242,8 @@ function Section({
 }
 
 // Same shell as Section, but the whole header is a disclosure toggle that collapses the body. Used by
-// the native-tools block (which lives last): it renders EXPANDED by default (item 15 — the built-ins
-// should be visible at a glance), but stays collapsible, with a `badge` slot that shows how many
+// the native-tools block (which lives last): it renders EXPANDED by default (the built-ins should
+// be visible at a glance), but stays collapsible, with a `badge` slot that shows how many
 // native tools are active (and a config dot) even while collapsed.
 function CollapsibleSection({
   id,
@@ -388,11 +386,11 @@ function ConfigurableToolCard({
   description?: React.ReactNode;
   icon?: LucideIcon;
   badge?: React.ReactNode;
-  // True when the config holds non-default content — shows a dot on the collapsed header so the
+  // True when the config holds non-default content: shows a dot on the collapsed header so the
   // operator knows there is hidden config worth opening.
   configured?: boolean;
   // What keeps the granted tool from working, drawn under the header whether or not the config is
-  // expanded: a tool loaded already granted starts collapsed, and a warning inside it went unseen.
+  // expanded: a tool loaded already granted starts collapsed, which would hide a warning inside it.
   warning?: React.ReactNode;
   children?: React.ReactNode;
 }) {
@@ -504,14 +502,11 @@ function ConfigurableToolCard({
   );
 }
 
-// Controlled editor for NATIVE / HTTP / MCP / INTEGRATION grants. RAG lives in
-// the Knowledge tab; this component preserves any RAG grant untouched.
 // WHAT A PACK OFFERS *THIS* AGENT. A watcher's turn is assembled with a muted client, and
-// `buildToolpackTools` then drops every tool whose spec declares `deliversToCustomer`. Both places
-// this editor decides a pack's tool set — the auto-grant that runs when an integration is created
-// here, and the list the operator toggles — go through this one function, because filtering only one
-// of them persists a grant nobody saw: inert while the agent is muted, live the moment the mode is
-// flipped back (review round 31).
+// `buildToolpackTools` drops every tool whose spec declares `deliversToCustomer`. Both places this
+// editor decides a pack's tool set (the auto-grant on integration create, and the list the operator
+// toggles) go through this one function: filtering only one of them persists a grant nobody saw,
+// inert while the agent is muted and live the moment the mode is flipped back.
 export function offeredPackTools<T extends { deliversToCustomer?: boolean }>(
   tools: T[],
   observing: boolean | undefined,
@@ -519,6 +514,8 @@ export function offeredPackTools<T extends { deliversToCustomer?: boolean }>(
   return observing ? tools.filter((t) => !t.deliversToCustomer) : tools;
 }
 
+// Controlled editor for NATIVE / HTTP / MCP / INTEGRATION grants. RAG lives in
+// the Knowledge tab; this component preserves any RAG grant untouched.
 export function ToolGrantsEditor({
   agentId,
   observing,
@@ -575,7 +572,7 @@ export function ToolGrantsEditor({
   const documentModal = useModalController<TemplateModalPayload>();
   const [openingDocument, setOpeningDocument] = useState<string | null>(null);
   // A just-created integration is auto-granted with ALL its tools (matching the manual toggle), but
-  // its tool list only arrives once the catalog refetches — defer the grant until the instance shows
+  // its tool list only arrives once the catalog refetches: defer the grant until the instance shows
   // up in the refreshed catalog (the effect below applies it then).
   const [pendingIntegrationId, setPendingIntegrationId] = useState<
     string | null
@@ -615,8 +612,8 @@ export function ToolGrantsEditor({
   // first toggle persists an explicit allowlist (which may even become empty = no native tools).
   //
   // Intersected with the catalog's names on the way in, so a stored allowlist carrying a native that
-  // no longer exists (e.g. `run_code`, removed when code tools replaced it) does not have that stale
-  // name re-sent on the next save — the toggle rebuilds the set from this one.
+  // no longer exists (e.g. `run_code`) does not have that stale name re-sent on the next save: the
+  // toggle rebuilds the set from this one.
   const selectedNative = nativeGrant
     ? new Set(
         (nativeGrant.enabledTools ?? []).filter((n) => allNativeSet.has(n)),
@@ -644,7 +641,7 @@ export function ToolGrantsEditor({
   const resolveEnabled = selectedNative.has(RESOLVE_TOOL);
   const resolveEntry = catalog.native.find((n) => n.name === RESOLVE_TOOL);
 
-  // True when any ENABLED configurable native tool holds non-default config — surfaces a dot on the
+  // True when any ENABLED configurable native tool holds non-default config: surfaces a dot on the
   // collapsed section header so the operator knows hidden settings are in play. Mirrors each card's
   // own `configured` signal.
   const nativeConfigured =
@@ -707,8 +704,8 @@ export function ToolGrantsEditor({
       : null;
   // KEEPING one is a different question, and the answer is the account recorded next to the target,
   // which is what the runtime reads (`prepare.ts`: a pinned target falls back to agent_choice only in
-  // the accounts it does not belong to). Counting accounts is the fallback for a target stored before
-  // that field existed.
+  // the accounts it does not belong to). Counting accounts is the fallback for a target stored with
+  // no account recorded.
   const storedPinnedAccount = handoffAccounts.find(
     (a) => Number(a.instanceId) === handoff.targetInstanceId,
   );
@@ -732,16 +729,12 @@ export function ToolGrantsEditor({
             "This agent serves inboxes in different Chatwoot accounts; use “Let the AI choose”.",
           )
         : undefined;
-  // Auto-switch a "pinned" target to "agent_choice" once the fetched data shows it can no longer be
-  // used ANYWHERE: the account it names is not among the agent's, or it is a legacy target with no
-  // account recorded on an agent that now serves several. Keeps the SAVED config consistent with what
-  // the UI shows and the runtime does; marks the Tools section unsaved so the operator confirms the
-  // change. No loop: after the switch mode !== "pinned".
-  //
-  // A target the runtime WOULD still use is left alone. Switching on account count alone dropped a
-  // valid pinned target — and lit the tab's unsaved dot — the moment a second account's inbox was
-  // bound, with nobody having touched the form. Only judged once accounts came back: zero of them
-  // means no inbox is bound yet, or the read failed, and neither is evidence about the target.
+  // NOTE: auto-switch a "pinned" target to "agent_choice" once the fetched data shows it can no
+  // longer be used ANYWHERE (its account is not among the agent's, or it has no account recorded and
+  // the agent serves several), and mark the Tools section unsaved. No loop: after it, mode !== "pinned".
+  // A target the runtime WOULD still use is left alone: switching on account count alone would drop
+  // a valid target (and light the unsaved dot) when a second account's inbox is bound. Only judged
+  // once accounts came back: zero means no inbox bound or a failed read, not evidence.
   useEffect(() => {
     if (
       handoffData &&
@@ -787,9 +780,8 @@ export function ToolGrantsEditor({
       {
         source: "INTEGRATION",
         integrationInstanceId: inst.id,
-        // THE SAME PREDICATE THE LIST BELOW USES. Filtering only the rendering would grant a watcher
-        // a delivery tool it never saw — inert while the agent is muted, and live the moment the
-        // mode is flipped back, with nobody having chosen it (review round 31).
+        // NOTE: the same predicate the list below uses. Filtering only the rendering would grant a
+        // watcher a delivery tool it never saw, inert while muted and live once the mode flips back.
         enabledTools: offeredPackTools(inst.tools, observing).map(
           (tool) => tool.name,
         ),
@@ -828,7 +820,7 @@ export function ToolGrantsEditor({
   // The grant goes on BEFORE the refetch is awaited, and the order is the point: `selectHttp` reads
   // the `nonRag` of the render that created this callback, so anything the operator changed while
   // the catalog was in flight would be overwritten by that older list. Nothing here needs the
-  // refreshed catalog — the id is in hand — unlike the integration above, whose grant carries the
+  // refreshed catalog (the id is in hand), unlike the integration above, whose grant carries the
   // instance's tool names and therefore waits for it.
   async function onToolSaved(
     saved: { id: string; name: string },
@@ -862,7 +854,7 @@ export function ToolGrantsEditor({
     saved: { id: string; name: string },
     isNew: boolean,
   ) {
-    // Granted first, then refreshed — the reason is on `onToolSaved` above.
+    // NOTE: granted first, then refreshed; the reason is on `onToolSaved` above.
     if (isNew) selectCode(saved.id);
     await onCatalogChange();
   }
@@ -879,7 +871,7 @@ export function ToolGrantsEditor({
     saved: { id: string; name: string },
     isNew: boolean,
   ) {
-    // Granted first, then refreshed — the reason is on `onToolSaved` above.
+    // NOTE: granted first, then refreshed; the reason is on `onToolSaved` above.
     if (isNew) selectMcp(saved.id);
     await onCatalogChange();
   }
@@ -895,7 +887,7 @@ export function ToolGrantsEditor({
   // The catalog row is a projection (name, tool name, description); the modal edits the whole
   // template, so it has to be fetched. A session token because the fetch is slow enough for an
   // operator to click a second template before the first answers, and an unconditional open then
-  // shows template A's blocks under B's name — the same hazard the Components panel's reference
+  // shows template A's blocks under B's name: the same hazard the Components panel's reference
   // lookup carries (docs/modals.md).
   const documentSession = useRef(0);
 
@@ -920,11 +912,9 @@ export function ToolGrantsEditor({
       }
       documentModal.open({ template: data.template });
     } catch {
-      // MEASURED, because the usual note here is wrong for this call: a `fetch` that throws comes
-      // back through Eden as `{ error }`, so the branch above is what an offline click hits. This is
-      // the net for everything else that can throw between here and the open, and it is what keeps
-      // the `finally` reachable — without it a throw leaves the spinner turning forever. No test
-      // reaches it.
+      // NOTE: a `fetch` that throws comes back through Eden as `{ error }`, so an offline click hits
+      // the branch above. This catches anything else that throws before the open, so the `finally`
+      // still clears the spinner.
       if (session === documentSession.current) {
         showToast(
           t("editor.tools.documentOpenError", "Could not open this template."),
@@ -1465,7 +1455,7 @@ export function ToolGrantsEditor({
         )}
       </Section>
 
-      {/* A DOCUMENT IS AN ATTACHMENT TO THE CUSTOMER, so the muted assembly does not build one — the
+      {/* A DOCUMENT IS AN ATTACHMENT TO THE CUSTOMER, so the muted assembly does not build one: the
           tools this section grants would exist in the console and never in the turn. */}
       {!observing && (
         <Section
@@ -1506,11 +1496,10 @@ export function ToolGrantsEditor({
                     icon={FileText}
                     title={tpl.name}
                     badge={<Badge variant="secondary">{tpl.toolName}</Badge>}
-                    // AVAILABLE, not merely enabled. Assembly skips a template for two reasons, and an
-                    // operator who cannot see the second one grants a tool, saves, and gets no tool —
-                    // with the row saying nothing about why. The two are separate messages because the
-                    // remedies are: one is a switch on this template, the other is content this build
-                    // cannot read and has to be edited from the client that wrote it.
+                    // NOTE: AVAILABLE, not merely enabled. Assembly skips a template for two
+                    // reasons with different remedies (a switch on this template, or content this
+                    // build cannot read, edited from the client that wrote it), so each gets its own
+                    // message; otherwise a granted tool silently never appears.
                     description={
                       tpl.available
                         ? (tpl.description ?? undefined)
@@ -1622,23 +1611,19 @@ export function ToolGrantsEditor({
                   "Who receives the handoff",
                 )}
                 onChange={(value) => {
-                  // Picking the mode already in force changes nothing, and must WRITE nothing.
-                  // `Dropdown` fires onChange for the current value like any other, and now that
-                  // `pinned` stays reachable while it is the mode in force, that click used to
-                  // rewrite `targetInstanceId` to `pinnedInstanceId` — null wherever the picker
-                  // cannot offer targets — which then failed the check that keeps the target and
-                  // erased the very setting the operator was looking at.
+                  // NOTE: picking the mode already in force must WRITE nothing. `Dropdown` fires
+                  // onChange for the current value too, and re-picking `pinned` would rewrite
+                  // `targetInstanceId` to `pinnedInstanceId` (null wherever the picker cannot offer
+                  // targets), which fails the keep-target check and erases the setting.
                   if (value === handoff.mode) return;
                   setHandoff({
                     ...handoff,
                     mode: value,
                     target: value === "pinned" ? handoff.target : "",
-                    // Safe without a fallback to the recorded account precisely BECAUSE of the guard
-                    // above: reaching here with `pinned` means the mode was something else, and the
-                    // item is only selectable then when the agent serves exactly one account — which
-                    // is the case where `pinnedInstanceId` is filled. A `?? handoff.targetInstanceId`
-                    // here reads as prudence and is dead code: no test can tell it apart, and a line
-                    // no test can pin is a line nobody can maintain.
+                    // NOTE: no fallback to the recorded account, BECAUSE of the guard above: reaching
+                    // here with `pinned` means the mode was something else, and the item is then
+                    // selectable only with exactly one account, where `pinnedInstanceId` is filled.
+                    // A `?? handoff.targetInstanceId` would be dead code no test can pin.
                     targetInstanceId:
                       value === "pinned" ? pinnedInstanceId : null,
                   });
@@ -2051,8 +2036,8 @@ export function ToolGrantsEditor({
         sharedNotice
         onSaved={onIntegrationSaved}
       />
-      {/* A save here changes the tool the agent sees — its name, its wording, whether it is
-          available at all — so the catalog has to be refetched, exactly like the other three. */}
+      {/* A save here changes the tool the agent sees (its name, its wording, whether it is
+          available at all), so the catalog has to be refetched, exactly like the other three. */}
       <DocumentTemplateModal
         modal={documentModal}
         onSaved={() => void onCatalogChange()}

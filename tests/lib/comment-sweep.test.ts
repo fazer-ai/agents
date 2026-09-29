@@ -233,21 +233,33 @@ describe("the ledger", () => {
   });
 
   test("the rewrite prints an empty ledger the way the formatter prints an empty object", () => {
-    const empty = renderLedger([], new Set(), new Set());
-    expect(empty).toContain("Record<string, FileCounts> = {};\n");
-    expect(empty).not.toContain("= {\n};");
-    const full = renderLedger(
+    const header = [
+      "// Comment blocks each file may still carry, as [provenance, over the line ceiling]. Written by",
+      "// `bun run comments:ledger`; see tests/lib/comment-sweep.test.ts for what counts.",
+      'import type { FileCounts } from "@/tests/utils/comment-blocks";',
+      "",
+    ];
+    expect(renderLedger([], new Set(), new Set())).toBe(
       [
-        ["a.ts", [1, 0]],
-        ["pro.ts", [0, 2]],
-        ["master.ts", [3, 1]],
-      ],
-      new Set(["pro.ts"]),
-      new Set(["master.ts"]),
+        ...header,
+        "export const COMMENT_LEDGER: Record<string, FileCounts> = {};",
+        "",
+      ].join("\n"),
     );
-    expect(full).toContain(
+    expect(
+      renderLedger(
+        [
+          ["a.ts", [1, 0]],
+          ["pro.ts", [0, 2]],
+          ["master.ts", [3, 1]],
+        ],
+        new Set(["pro.ts"]),
+        new Set(["master.ts"]),
+      ),
+    ).toBe(
       [
-        "Record<string, FileCounts> = {",
+        ...header,
+        "export const COMMENT_LEDGER: Record<string, FileCounts> = {",
         '  "a.ts": [1, 0],',
         "  // @full-only",
         '  "pro.ts": [0, 2],',

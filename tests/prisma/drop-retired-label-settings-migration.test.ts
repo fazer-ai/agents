@@ -1,11 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 
-// Runs the ACTUAL migration file. The keys it removes reach no reader, so what is under test is not
-// a behaviour change but the UPGRADE: the write boundary refuses a retired key that carries
-// configuration, and every agent ever saved through the previous Behavior editor carries
-// `monitoring.labelGroups` because `observationToStored` wrote it unconditionally. Both surviving
-// writers spread what they read, so a tombstone left in place comes back on the next unrelated save.
+// Runs the actual migration file. The keys it removes reach no reader, so what is under test is the
+// upgrade: the write boundary refuses a retired key that carries configuration, an agent saved
+// through the previous Behavior editor carries `monitoring.labelGroups` even when it configured
+// nothing, and both surviving writers spread what they read, so a tombstone left in place comes back
+// on the next unrelated save.
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
   "prisma/migrations/20260910140000_drop_retired_label_settings/migration.sql";
@@ -65,8 +65,8 @@ describe.if(dbUp)("drop retired label settings", () => {
     );
     tenantId = BigInt(t.rows[0].id);
 
-    // The common row, and the one the finding is about: never configured a taxonomy, still carries
-    // the key because the editor wrote it unconditionally.
+    // NOTE: The common row: never configured a taxonomy, still carries the key because the previous
+    // editor wrote it unconditionally.
     ids.tombstone = await agent(
       "tumulo",
       JSON.stringify({
@@ -95,8 +95,8 @@ describe.if(dbUp)("drop retired label settings", () => {
         toolGuidance: { set_labels: "exatamente uma" },
       }),
     );
-    // A CONFIGURED TAXONOMY WITH NOBODY'S GUIDANCE OVER IT: the one row where something an operator
-    // chose would otherwise be deleted with the key (review round 26).
+    // NOTE: a configured taxonomy with no guidance over it: the one row where something an operator
+    // chose would otherwise be deleted with the key.
     ids.carried = await agent(
       "carregada",
       JSON.stringify({
@@ -108,8 +108,8 @@ describe.if(dbUp)("drop retired label settings", () => {
               values: ["cancelamento", "compra"],
               exclusive: true,
             },
-            // NO `exclusive` FIELD: the previous reader asked `!== false`, so this group was
-            // EXCLUSIVE — the default, and the opposite of what a missing value casts to.
+            // NOTE: No `exclusive` field: the previous reader asked `!== false`, so this group is
+            // exclusive, the opposite of what a missing value casts to.
             { name: "sinal", values: ["urgente"] },
             // Explicitly not exclusive, the only spelling that means "more than one".
             { name: "extra", values: ["vip"], exclusive: false },
@@ -120,9 +120,8 @@ describe.if(dbUp)("drop retired label settings", () => {
         },
       }),
     );
-    // ...and the allowlist that the OLD classifier never needed: it applied labels itself and asked
-    // no grant, so a watcher could carry an explicit NATIVE allowlist without the label tool and
-    // classify anyway (review round 28).
+    // NOTE: ...and an explicit NATIVE allowlist without the label tool, which the old classifier
+    // never needed: it applied labels itself and asked no grant.
     await suDb.query(
       `INSERT INTO "agent_tool_selections" (tenant_id, agent_id, source, knowledge_base_ids, enabled_tools, created_at, updated_at)
        VALUES ($1, $2, 'NATIVE', '{}', $3, NOW(), NOW())`,
@@ -148,11 +147,10 @@ describe.if(dbUp)("drop retired label settings", () => {
     // A row whose `monitoring` is not an object. The jsonb_set would raise on it if the WHERE did
     // not ask, and the failure would be a migration that aborts on somebody else's bad data.
     ids.odd = await agent("estranha", JSON.stringify({ monitoring: "nao" }));
-    // ...AND ONE WHOSE `labelGroups` IS NOT AN ARRAY, which is the shape that aborts the whole
-    // deployment (review round 39): the lateral runs before the WHERE that was supposed to filter
-    // it out, and `jsonb_array_elements` on a scalar raises. An import writes `settings` wholesale,
-    // so nothing upstream guarantees the type. Two spellings, because the object reaches a
-    // different branch of the same error than the string.
+    // NOTE: ...and one whose `labelGroups` is not an array, which would abort the deployment: the
+    // lateral runs before the WHERE, and `jsonb_array_elements` on a scalar raises. An import writes
+    // `settings` wholesale, so nothing upstream guarantees the type. Two spellings, because the object
+    // reaches a different branch of the same error than the string.
     ids.scalarGroups = await agent(
       "grupos-texto",
       JSON.stringify({
@@ -197,10 +195,9 @@ describe.if(dbUp)("drop retired label settings", () => {
     expect(obj.toolGuidance).toBeUndefined();
   });
 
-  // THE WINDOW THIS FILE CANNOT SURVIVE IS PROSE, so the prose is what is pinned (review round 41).
-  // `migrate deploy` runs in the new container with the old one still serving, and there
-  // `observationEnabled` is `labelGroups.length > 0`: with the key cut, that process arms nothing.
-  // A reader who takes this migration for an ordinary rolling one loses observations for good.
+  // NOTE: The window this file cannot survive is handled by prose, so the prose is pinned. `migrate
+  // deploy` runs with the old container still serving, where `observationEnabled` is
+  // `labelGroups.length > 0`: with the key cut, that process arms nothing, and observations are lost.
   test("the rollout note names this migration and says to stop the old process", async () => {
     const deploy = await Bun.file("docs/deploy.md").text();
     const at = deploy.indexOf("20260910140000_drop_retired_label_settings");
@@ -226,12 +223,9 @@ describe.if(dbUp)("drop retired label settings", () => {
   test("a configured taxonomy becomes the tool's guidance instead of disappearing", async () => {
     const s = await settingsOf(id("carried"));
     const note = (s.toolGuidance as Record<string, string>).set_labels;
-    // Names itself as migrated, because an operator who finds guidance they did not type has to be
-    // able to tell where it came from — this migration writes no audit line.
-    // THE WHOLE SENTENCE, and not a set of fragments: the import boundary renders the same text in
-    // TypeScript (tests/modules/agent-transfer.test.ts asserts this exact string for this exact
-    // input), and asserting both against one literal is what keeps a SQL renderer and a TS one from
-    // drifting apart (round 28).
+    // NOTE: Names itself as migrated, because this migration writes no audit line. The whole
+    // sentence, not fragments: tests/modules/agent-transfer.test.ts asserts this exact string for the
+    // TypeScript renderer at the import boundary, which keeps the SQL and TS renderers from drifting.
     expect(note).toBe(
       "Migrado da taxonomia anterior. Grupos de etiquetas desta conta: assunto (escolha no máximo uma): cancelamento, compra. sinal (escolha no máximo uma): urgente. extra (pode usar mais de uma): vip. solto (escolha no máximo uma): x.",
     );

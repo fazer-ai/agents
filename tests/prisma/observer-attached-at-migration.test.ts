@@ -1,20 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
 
-// THE ATTACH WINDOW'S OWN COLUMN (issue #540, window 5), and what is under test here is the
-// BACKFILL — the half a behavioural test cannot see, because every fixture it runs against was
-// written by this build.
-//
-// `inbox_observers` used to be written only once Chatwoot had agreed, so every row that exists on an
-// install today is a confirmed one. Read as pending, each of them would stop the observe tick (it
-// retries rather than acting on a binding that has not landed) and make the receiver report an
-// attach window that closed months ago. So the column has to arrive already true for them.
-//
-// It arrives that way through the column's DEFAULT rather than through an UPDATE, and that is the
-// decision under test as much as the value is: `inbox_observers` carries FORCE ROW LEVEL SECURITY,
-// and a data statement run by an owner who is not a superuser reaches ZERO rows and reports success
-// (docs/deploy.md; tests/prisma/migration-rls-bypass.test.ts is where the rule itself lives). DDL is
-// not subject to RLS, so `ADD COLUMN ... DEFAULT` fills the existing rows with no bypass to forget.
+// The attach window's column, and its backfill, which no behavioural test sees. Every
+// `inbox_observers` row that predates the column was written after Chatwoot agreed, so it must
+// arrive confirmed: read as pending it stalls the observe tick and reports a long-closed window. It
+// arrives through the column's DEFAULT, not an UPDATE: the table is FORCE RLS, where a data
+// statement by a non-superuser owner reaches zero rows and reports success, while DDL is not subject
+// to RLS (tests/prisma/migration-rls-bypass.test.ts holds the rule).
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
@@ -68,19 +60,11 @@ describe.skipIf(!dbUp)("migration: the observer's attach stamp", () => {
   });
 
   test("a row written without naming the column is confirmed, which is what the previous release writes", async () => {
-    // The rolling-deploy shape (docs/deploy.md): the release before this one names no such column,
-    // so its inserts must land confirmed. Written through the catalog rather than through Prisma,
-    // because Prisma's client knows the column and the point is a writer that does not.
-    // UNDER THE FLEET ROLE, from the FIRST insert (PR review, round 8). Every table this seeds
-    // carries FORCE ROW LEVEL SECURITY, and the supported migration account is an owner that is not
-    // a superuser (docs/deploy.md): for it, `tenants` refuses this insert outright, and the GUC that
-    // used to lift RLS has been inert since the policy split — the fence in
-    // `tests/prisma/migration-rls-bypass.test.ts` is where that history is written down. Left as it
-    // was, this test passed only where the migration account happened to be a real superuser, which
-    // is the one configuration the rule exists to stop anybody relying on.
-    //
-    // Session-level (`is_local` false), because these statements are not one transaction, and
-    // released in the `finally` below.
+    // NOTE: The rolling-deploy shape (docs/deploy.md): the previous release names no such column, so
+    // its inserts must land confirmed. Raw SQL, because Prisma's client knows the column. Under the
+    // fleet role from the first insert: every seeded table is FORCE RLS and the supported migration
+    // account is a non-superuser owner, for which `tenants` refuses this insert. Session-level
+    // (`is_local` false) because these statements are not one transaction; released in the `finally`.
     await suDb.query(
       "SELECT set_config('role', public.fazerai_fleet_role(), false)",
     );

@@ -34,8 +34,7 @@ describe("parseDbId", () => {
 
 // Decision table for the same string when it arrives in a BODY, where "no id" has two spellings and
 // they instruct different things: an absent key leaves the column alone, an explicit `null` detaches
-// it. Four controllers wrote that three-way by hand and no two wrote it the same, which is how an
-// empty string became `BigInt("")` — `0n`, a row nobody named. Issue #407.
+// it. An empty string is a refusal, never `BigInt("")`, which is `0n`, a row nobody named.
 describe("optionalDbId", () => {
   test("absent and null are kept apart, and neither is a refusal", () => {
     expect(optionalDbId(undefined, "agentId")).toBeUndefined();

@@ -1,18 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { codeOnly } from "@/tests/utils/source-text";
 
-// THE ENVIRONMENT IS READ IN ONE PLACE (issue #822).
-//
-// `src/config.ts` is where a variable becomes a setting: it is parsed, validated, given a default and
-// listed where an operator can find it (`.env.example`). A read anywhere else skips all of that, and
-// the one that prompted this file was a measurement probe, a `Bun.sleep` on an environment variable,
-// committed by accident at the top of every flow-log write and shipped in every release for a month:
-// undocumented, unvalidated (a non-numeric value became `NaN`), and on the hot path of every turn.
-// Nothing would have caught it, because nothing asked.
-//
-// So a file under `src/` that reads the environment is either `src/config.ts` or listed below with the
-// reason it cannot go through it. A new one fails until somebody answers the question; a listed one
-// that stopped reading fails too, so the list never describes code that is gone.
+// THE ENVIRONMENT IS READ IN ONE PLACE. `src/config.ts` is where a variable becomes a setting: parsed,
+// validated, given a default and listed where an operator can find it (`.env.example`). A read
+// anywhere else skips all of that, so a file under `src/` that reads the environment is either
+// `src/config.ts` or listed below with the reason it cannot go through it. A new one fails until
+// somebody answers the question; a listed one that stopped reading fails too, so the list never
+// describes code that is gone.
 const READS_OUTSIDE_CONFIG: Record<string, string> = {
   // Imported by `config.ts`'s own consumers at module load, and pinned per replica rather than per
   // install; the default is a fresh UUID, which config cannot express as a static value.

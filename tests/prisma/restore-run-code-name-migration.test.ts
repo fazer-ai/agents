@@ -173,11 +173,10 @@ describe.skipIf(!dbUp)("migration: restore tools renamed off run_code", () => {
     ]);
   });
 
-  // Round 27: "the name is free" is a question about the name the MODEL sees. Names were only
-  // canonicalized on write by this PR, so a database reaching this migration can hold `Run_Code`
-  // from before, which `sanitizeToolName` derives `run_code` from at assembly. Compared exactly,
-  // that row reads as free and the restore lands a SECOND tool answering to one name: the assembly
-  // drops whichever comes second and neither can be saved from the console again.
+  // NOTE: "The name is free" is a question about the name the MODEL sees. A stored name is not
+  // guaranteed canonical: a row can hold `Run_Code`, which `sanitizeToolName` derives `run_code` from
+  // at assembly. Compared exactly, that row reads as free and the restore lands a SECOND tool answering
+  // to one name: the assembly drops whichever comes second and neither can be saved from the console.
   test("a legacy spelling that normalizes to run_code blocks the restore", async () => {
     const t2 = await suDb.query(
       `INSERT INTO "tenants" (name, slug, created_at, updated_at)
@@ -191,7 +190,7 @@ describe.skipIf(!dbUp)("migration: restore tools renamed off run_code", () => {
       ["run_code_2", "Run code 2"],
       legacyTenant,
     );
-    // Legal before this PR, and the model sees `run_code` for it.
+    // NOTE: A non-canonical legacy spelling, and the model sees `run_code` for it.
     await tool("Run_Code", "Run Code", legacyTenant);
 
     await suDb.query(sql);

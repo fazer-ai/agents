@@ -2,37 +2,16 @@ import { describe, expect, test } from "bun:test";
 import { Glob } from "bun";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 
-// Stubbing a THIRD-PARTY module is a process-wide act, and this ledger is where each one is argued
-// for.
-//
-// `mock.module` has no file scope and no teardown: whatever it installs is what every file that runs
-// afterwards imports, for the rest of the process. For a `@/` target that is survivable — the module
-// is ours and the blast radius is a directory we own. For a package it is not: nobody downstream
-// knows it was replaced, the stub is written for one caller's needs, and a `mockReset()` on one of
-// its functions leaves that function RETURNING UNDEFINED rather than throwing. Code that reads a
-// property off the result dies with a TypeError, which its own catch reports as ordinary bad input.
-//
-// Measured on 2026-08-27 (issue #420): a stub of `jose` left `jwtVerify` returning `undefined` for
-// the files that ran after it. Every session cookie became a 401, the failure named the cookie, and
-// it took ten CI runs to find, because each layer between the stub and the assertion translated the
-// fault into its own vocabulary.
-//
-// ## Why the rule is "argue for it" and not "restore it afterwards"
-//
-// Restoring is the intuitive rule and it is the wrong one, on two counts both measured while this
-// file was being reviewed. It is not SUFFICIENT: `await import()` hands back a LIVE namespace that
-// the mock rewrites in place, so a teardown handing that namespace back re-registers the stub while
-// reading as a cleanup — and a teardown is free to install a different stub entirely, which no
-// reader of the source can tell from a real restore. And it is not what fixed the outage: what
-// fixed it was the stub DELEGATING to the real implementation, so that the leak, which is permanent
-// either way, carries correct behaviour.
-//
-// So the sweep asks the only question a reader can answer honestly — is this package stubbed at
-// all? — and every yes owes a line here saying what keeps it harmless.
+// Stubbing a THIRD-PARTY module is process-wide, and this ledger is where each one is argued for.
+// `mock.module` has no file scope and no teardown, so every later file imports a stub written for one
+// caller, and a `mockReset()` on it leaves a function RETURNING UNDEFINED: the TypeError that follows
+// reads as ordinary bad input. The rule is "argue for it", not "restore it afterwards": `await
+// import()` hands back the LIVE namespace the mock rewrote in place, so a teardown handing it back
+// re-registers the stub while reading as a cleanup. What keeps a leak harmless is a stub that
+// DELEGATES to the real implementation.
 
 // A package is a specifier that is not a path: `jose`, `@scope/name`. Anything starting with `.`,
-// `/` or `@/` is ours (or relative) and out of scope — the leading-dot case is not hypothetical,
-// it slipped through an earlier spelling of this pattern and the table below is what caught it.
+// `/` or `@/` is ours (or relative) and out of scope; the table below covers the leading dot.
 const PACKAGE_MOCK = () => /mock\.module\(\s*"(?![./]|@\/)([^"]+)"/g;
 
 // Keyed by `file → package`, never by file alone: a waiver written for one package must not cover a
@@ -53,8 +32,7 @@ export interface ScannedFile {
 }
 
 // The decision, over supplied files rather than over the tree, so the table below can hand it the
-// cases the tree does not contain — which are exactly the cases a sweep exists to catch, and the
-// ones the tree can never show while the sweep is passing.
+// cases the tree does not contain, which are exactly the ones a sweep exists to catch.
 export function packageMocksIn(files: readonly ScannedFile[]): string[] {
   const out: string[] = [];
   for (const { rel, source } of files) {
@@ -83,7 +61,7 @@ export function staleWaivers(
 
 // EVERY source file under `tests/`, not just `*.test.*`. A stub installed by a shared helper or by
 // a preload is exactly as process-global as one written in a test file, and `tests/utils/prisma-mock.ts`
-// is the proof that helpers here do install them — reading only test files would leave the whole
+// is the proof that helpers here do install them; reading only test files would leave the whole
 // support layer as a blind spot in a sweep that claims to cover the tree.
 export function testFiles(): string[] {
   return [...new Glob("**/*.{ts,tsx}").scanSync("tests")]
@@ -133,9 +111,8 @@ describe("every third-party module stub is argued for", () => {
     expectWaiverLedger("PACKAGE_MOCKS_WAIVED", PACKAGE_MOCKS_WAIVED, 1);
   });
 
-  // What the sweep READS, asserted separately from what it decides. No helper stubs a package
-  // today, so narrowing this back to `*.test.*` would break nothing measurable — which is exactly
-  // the shape of a guard nobody would notice losing.
+  // NOTE: what the sweep READS, asserted apart from what it decides: no helper stubs a package
+  // today, so narrowing this back to `*.test.*` would otherwise break nothing measurable.
   describe("what the sweep reads", () => {
     test("support files that are not tests are read too", () => {
       const files = testFiles();
@@ -237,16 +214,9 @@ describe("every third-party module stub is argued for", () => {
 
 // ── the stub that leaks has to SAY what the real module would ──
 //
-// The ledger above asks whether a package is stubbed. This asks the question that comes after, and
-// it is the one the outage in the header actually turned on: a leaked stub is the whole surface every
-// downstream file sees, so its BEHAVIOUR has to match. For `react-i18next` the half that gets
-// dropped is interpolation, because a stub is written for a caller whose own labels take no
-// variables, and the file that pays is a different one.
-//
-// Measured on 2026-08-29 (#435): four of the ten dropped the `vars` argument, a new page test
-// rendered a translated page without stubbing, and its label came out holding a literal `{{ref}}`.
-// Green locally, red on CI, because which stub wins is which file ran last — and the failure named
-// the assertion, not the stub.
+// A leaked stub is the whole surface every downstream file sees, so its BEHAVIOUR has to match.
+// For `react-i18next` the half a stub drops is interpolation (it is written for labels without
+// variables), and the file that pays is whichever runs next: its label holds a literal `{{ref}}`.
 const I18N_STUB = /mock\.module\(\s*"react-i18next"/;
 
 export function nonInterpolatingI18nStubs(
@@ -284,16 +254,10 @@ describe("a leaked `t` still interpolates", () => {
     ).toEqual([]);
   });
 
-  // THE TREE NO LONGER HOLDS ONE, AND THAT IS THE POINT, SO THIS SELF-CHECK IS INVERTED.
-  //
-  // It used to read `toBeGreaterThan(0)`, on the rule that a sweep finding nothing has stopped
-  // being evidence. Nine files stubbed the package then; none does now, because a per-file i18next
-  // instance handed down through `I18nextProvider` answers the same `t` without writing anything to
-  // the module registry (tests/utils/i18n.tsx). So the honest assertion is the stronger one: zero.
-  //
-  // What covers the function now that the tree cannot exercise it is the fixture table below, which
-  // is the same answer this file already gives for its own `SELF` exclusion. And the sweep above is
-  // what keeps the zero true: an unwaived `mock.module("react-i18next", …)` fails there first.
+  // NOTE: inverted on purpose, zero is the expected count. A per-file i18next instance handed down
+  // through `I18nextProvider` (tests/utils/i18n.tsx) answers the same `t` without touching the
+  // module registry. The fixture table below covers the function, and the sweep above keeps the
+  // zero true: an unwaived `mock.module("react-i18next", …)` fails there first.
   test("nothing stubs react-i18next any more", async () => {
     expect(
       i18nStubFiles(await scanTree()),
@@ -331,9 +295,9 @@ describe("a leaked `t` still interpolates", () => {
       expect(scan("const x = 1;")).toEqual([]);
     });
 
-    // The block ENDS at the stub's own closing line, and this is the fixture that says why: a
-    // placeholder anywhere later in the file — a fixture string, a second stub, a JSX comment — would
-    // otherwise answer for a `t` that never looks at `vars`.
+    // NOTE: the block ENDS at the stub's own closing line: a placeholder anywhere later in the file
+    // (a fixture string, a second stub, a JSX comment) would otherwise answer for a `t` that never
+    // looks at `vars`.
     test("a placeholder after the stub does not vouch for it", () => {
       expect(
         scan(

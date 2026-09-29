@@ -69,8 +69,8 @@ applyDefaultPrismaMockImplementations();
 
 // THE ENTITY KEEPS THE SESSION'S SHAPE, one tenant and one role, because that is what every test
 // states ("an admin of tenant 1", "a fleet administrator"). The schema stores it as a PERSON with a
-// membership per tenant (issue #756), so the reads the code makes are answered in that shape: the
-// fleet role becomes `isSuperAdmin`, and a tenant role becomes the one membership. The mock functions
+// membership per tenant, so the reads the code makes are answered in that shape: the fleet role
+// becomes `isSuperAdmin`, and a tenant role becomes the one membership. The mock functions
 // themselves stay what the tests configure and assert on.
 export interface MockPersonRow
   extends Omit<MockUserEntity, "role" | "tenantId"> {

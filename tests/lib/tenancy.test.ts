@@ -72,10 +72,9 @@ describe("resolveRequestTenantContext", () => {
     expect(context?.tenantId).toBeNull();
   });
 
-  // The half the test above did not reach. The old parse was `BigInt` in a try, so it refused only
-  // the spellings BigInt THROWS on: every row here used to come back as a target. The first four
-  // selected tenant 7 under a spelling no column has, and the last two parsed to a value the column
-  // cannot hold, which Postgres refuses at bind time with a 500 on a path documented as 400.
+  // NOTE: `BigInt` alone is not the parse: it accepts the first four as tenant 7 under a spelling no column
+  // has, and the next two as values a bigint column cannot hold, which Postgres refuses at bind time
+  // with a 500 on a path documented as 400.
   test("a selector BigInt would accept and a column would not is reported malformed", () => {
     for (const header of [
       "0x7",
@@ -91,7 +90,7 @@ describe("resolveRequestTenantContext", () => {
         header,
       );
       expect(context?.tenantId).toBeNull();
-      // Reported, not folded into "no selector at all": the routes downstream answer those two
+      // NOTE: reported, not folded into "no selector at all": the routes downstream answer those two
       // differently, and one of them answers 200.
       expect(malformedSelector).toBe(header);
     }
@@ -150,18 +149,13 @@ describe("resolveRequestTenantContext", () => {
   });
 });
 
-// The registry of tenant-scoped models is a hand-kept list in `multi-tenant.ts`, and nothing
-// checked it against the schema — so a new table with a `tenant_id` joined it only if whoever
-// added the table remembered. `PlaygroundTurnNote` did not (issue #136, review round 9), and it is
-// not the first. This reads both sides and forces the next one to be a DECISION: register it, or
-// name it below with a reason.
-//
-// The list is not an approval of what is on it. Everything except the documented global/identity
-// tables predates this guard and has never been audited; the point is that the set cannot grow
-// silently any more.
+// The registry of tenant-scoped models is a hand-kept list in `multi-tenant.ts`. This reads it
+// against the schema, so a new table with a `tenant_id` is a DECISION: register it, or name it below
+// with a reason. The list is not an approval: everything but the documented global/identity tables
+// is unaudited, and the point is that the set cannot grow silently.
 describe("every model with a tenant_id is accounted for", () => {
   const KNOWN_UNREGISTERED: Record<string, string> = {
-    // Documented exclusions (see the comment above TENANT_SCOPED_MODELS): global/identity tables.
+    // NOTE: documented exclusions (see the comment above TENANT_SCOPED_MODELS): global/identity tables.
     TenantUser:
       "identity: a person's membership, read before any tenant is chosen (issue #756)",
     AuditLog: "written for global actions too",
@@ -169,10 +163,9 @@ describe("every model with a tenant_id is accounted for", () => {
     McpOAuthRefreshToken: "OAuth identity table",
     McpOAuthAuthorizationCode: "OAuth identity table",
     McpOAuthPendingAuthorization: "OAuth identity table",
-    // Undocumented, and older than this guard. Every write to these passes tenantId explicitly, so
-    // nothing is broken today; what they lack is the anti-spoof override. Not touched here: this
-    // PR's scope is the playground, and changing seven write paths on the strength of a sweep is
-    // how a fix becomes an incident.
+    // NOTE: undocumented. Every write to these passes tenantId explicitly; what they lack is the
+    // anti-spoof override. Registering them changes seven write paths, which a sweep alone does not
+    // justify.
     AgentThread: "pre-existing gap, not audited",
     ChatwootAgentBot: "pre-existing gap, not audited",
     ChatwootDeployment: "pre-existing gap, not audited",
@@ -185,13 +178,13 @@ describe("every model with a tenant_id is accounted for", () => {
   test("it is registered, or named here with a reason", () => {
     const schema = readFileSync("prisma/schema.prisma", "utf8");
     const withTenantId = [...schema.matchAll(/^model (\w+) \{([\s\S]*?)^\}/gm)]
-      // A field the client ignores (`@ignore`) is not one it can read or write, and the registry governs
-      // the client: `users.tenant_id` is kept one release frozen that way (issue #756).
+      // NOTE: a field the client ignores (`@ignore`) is not one it can read or write, and the
+      // registry governs the client, so an `@ignore`d `tenantId` (`users.tenant_id`) is not counted.
       .filter(([, , body]) =>
         /^\s*tenantId\s+BigInt(?![^\n]*@ignore)/m.test(body ?? ""),
       )
       .map(([, name]) => name as string);
-    // A sweep that finds nothing is a broken sweep, not a clean repo.
+    // NOTE: a sweep that finds nothing is a broken sweep, not a clean repo.
     expect(withTenantId.length).toBeGreaterThan(20);
 
     const src = readFileSync("src/lib/tenancy/multi-tenant.ts", "utf8");
@@ -210,7 +203,7 @@ describe("every model with a tenant_id is accounted for", () => {
       (m) => !registered.has(m) && !(m in KNOWN_UNREGISTERED),
     );
     expect(unaccounted).toEqual([]);
-    // ...and the ledger cannot outlive what it excuses: a name here that IS registered, or that no
+    // NOTE: the ledger cannot outlive what it excuses: a name here that IS registered, or that no
     // longer exists, is a line nobody removed.
     expect(
       Object.keys(KNOWN_UNREGISTERED).filter(
@@ -219,10 +212,9 @@ describe("every model with a tenant_id is accounted for", () => {
     ).toEqual([]);
   });
 
-  // Both assertions above read `registered` out of the tree, so the ledger is the one input neither
-  // of them can contradict: a model added to it is excused AND is not stale. Pinned at the thirteen
-  // it was argued into. Seven of those are recorded as "pre-existing gap, not audited", which is
-  // exactly why this list must not be where the eighth goes. tests/utils/ledger.ts, issue #293.
+  // NOTE: the ledger is the one input the assertions above cannot contradict (a model added to it is
+  // excused AND not stale), so its size is pinned: seven entries are unaudited gaps, which is why an
+  // eighth must not land here. See tests/utils/ledger.ts.
   test("the unregistered-model ledger may only shrink", () => {
     expectWaiverLedger("KNOWN_UNREGISTERED", KNOWN_UNREGISTERED, 13);
   });

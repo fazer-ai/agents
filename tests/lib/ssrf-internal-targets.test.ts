@@ -11,7 +11,7 @@ import { assertSafeOutboundUrl, SsrfError } from "@/lib/ssrf";
 const BunResponse = (globalThis as unknown as { BunResponse: typeof Response })
   .BunResponse;
 
-// Issue #615: one internal service reachable by one HTTP tool, with the guard ON everywhere else.
+// One internal service reachable by one HTTP tool, with the guard ON everywhere else.
 // The instance declares the target (`SSRF_INTERNAL_TARGETS`, host:port), the tool names the host in
 // its own allowedHosts, and only a call that has both skips the range check.
 
@@ -49,7 +49,7 @@ describe("SSRF_INTERNAL_TARGETS parsing", () => {
     "http://sidecar:80",
     "user@sidecar:80",
     "sidecar:80/path",
-    // WHATWG URL reads `\` as `/`, so this used to parse to host `sidecar` (review round 1).
+    // NOTE: WHATWG URL reads `\` as `/`, so a URL-based parser would take this as host `sidecar`.
     "sidecar\\renderer:8080",
   ])("%p fails naming the variable", (raw) => {
     expect(() => parseInternalTargets(raw, "SSRF_INTERNAL_TARGETS")).toThrow(
@@ -70,8 +70,8 @@ describe("SSRF_INTERNAL_TARGETS parsing", () => {
     expect(run("sidecar:8080").exitCode).toBe(0);
   });
 
-  // The shipped compose files forward a closed list of variables, so one missing there is a setting
-  // the operator writes in `.env` and the container never sees (review round 2).
+  // NOTE: the shipped compose files forward a closed list of variables, so one missing there is a setting
+  // the operator writes in `.env` and the container never sees.
   test.each([
     "docker-compose.prod.yml",
     "docker-compose.portainer.yml",
@@ -113,7 +113,7 @@ describe("assertSafeOutboundUrl with internal targets", () => {
     expect(String(err.message)).toContain("only on port 8080, not 9090");
   });
 
-  // The acceptance line the issue asks for by name: the match is on the host as written.
+  // NOTE: the match is on the host as written, not on the address it resolves to.
   test("a different host resolving to the same private address is still refused", async () => {
     const lookup = (async () => [
       { address: "10.0.0.5", family: 4 },

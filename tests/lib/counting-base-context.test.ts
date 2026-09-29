@@ -4,15 +4,10 @@ import { countingBase } from "../utils/counting-base";
 
 // `countingBase` is the instrument two suites use to assert that a section holds no connection
 // across an await (`tests/graph/pool-inversion.test.ts`, `tests/modules/contact-auth-nudge.test.ts`).
-// Both used to read the raw COUNT, and the count answers a different question than either asks: the
-// client is shared with writes this run neither started nor awaits — `emitFlowEvent` is one by
-// design — so a detached INSERT still in flight made the count non-zero while the caller held
-// nothing. That was a real CI failure on a green branch, reproducible by delaying the start of that
-// write by about 12 ms (a local edit to `writeFlowEvent`, never a committed knob: issue #822), and it
-// is why `heldHere` is answered from the caller's own async context rather than from a number.
-//
-// A fake client rather than a database: what is under test is the instrument's bookkeeping, and a
-// real transaction would only make the two answers harder to tell apart.
+// The raw COUNT cannot answer that: the client is shared with writes this run neither started nor
+// awaits (`emitFlowEvent` by design), so a detached INSERT in flight makes it non-zero while the
+// caller holds nothing. `heldHere` answers from the caller's own async context instead. A fake client,
+// because the instrument's bookkeeping is under test and a real transaction would only blur the two.
 function fakeClient(): PrismaClient {
   const c = {
     $extends: () => c,
@@ -37,13 +32,13 @@ describe("countingBase tells 'the caller is inside one' from 'one exists'", () =
     const blocked = new Promise<void>((r) => {
       release = r;
     });
-    // Started and NOT awaited, which is the shape of `emitFlowEvent`.
+    // NOTE: started and NOT awaited, which is the shape of `emitFlowEvent`.
     const detached = c.base.$transaction(async () => blocked);
     await Bun.sleep(0);
 
-    // The count sees it, which is what the leak check is for and what used to be read here.
+    // NOTE: the count sees it, which is what the leak check is for.
     expect(c.open()).toBe(1);
-    // The caller does not, because it is not in that transaction's context.
+    // NOTE: the caller does not, because it is not in that transaction's context.
     expect(c.heldHere()).toBe(false);
 
     release?.();
@@ -55,8 +50,8 @@ describe("countingBase tells 'the caller is inside one' from 'one exists'", () =
     const c = countingBase(fakeClient());
     let seen: boolean | undefined;
     await c.base.$transaction(async () => {
-      // A second transaction started from inside the first WOULD see the mark, so the case that
-      // matters is the sibling: opened after the first resolved, from the top level.
+      // NOTE: a second transaction started from inside the first WOULD see the mark, so the case
+      // that matters is the sibling: opened after the first resolved, from the top level.
       seen = c.heldHere();
     });
     expect(seen).toBe(true);

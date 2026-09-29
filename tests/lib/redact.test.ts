@@ -2,22 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { redactSecretsDeep, sanitizeErrorMessage } from "@/lib/redact";
 import { unstorableProblem } from "@/lib/text";
 
-// REPAIRING A VALUE CAN RECONSTRUCT WHAT THE REDACTOR JUST FAILED TO MATCH.
-//
-// The walker does two things to every string: it scrubs secret-shaped substrings, and it repairs the
-// characters a `jsonb` column refuses. The order between them is load-bearing and was wrong: a NUL
-// inside a token breaks the pattern, so the redactor sees nothing to scrub, and the repair then
-// DELETES that NUL and stores the token whole. Measured before the fix:
-//
-//   { note: "token sk-<NUL>abcdefghijklmnop" }  ->  { note: "token sk-abcdefghijklmnop" }
-//   { "pass<NUL>word": "hunter2" }              ->  { password: "hunter2" }
-//
-// Both are the same mistake in the two places the walker makes a decision about a string, and both
-// defeat the invariant the whole module exists for. The repair is what makes the value storable, so
-// it cannot simply be dropped: it has to happen BEFORE the decision that reads the string.
-//
-// A NUL is the character that matters here, because it is the one the repair DELETES. An orphan half
-// becomes U+FFFD, which leaves `pass<U+FFFD>word` visibly broken rather than passing as `password`.
+// REPAIRING A VALUE CAN RECONSTRUCT WHAT THE REDACTOR JUST FAILED TO MATCH. A NUL inside a token
+// breaks the pattern, and the repair then DELETES it, so scrubbing first would store `sk-<NUL>abc…`
+// whole and `pass<NUL>word` as the key `password`. The repair makes the value storable, so it cannot
+// be dropped: it runs BEFORE any decision that reads the string. An orphan surrogate half becomes
+// U+FFFD, which leaves the key visibly broken rather than passing as `password`.
 
 const NUL = String.fromCharCode(0);
 
@@ -62,7 +51,7 @@ describe("redactSecretsDeep repairs before it decides", () => {
 });
 
 // The same ordering, in the other function that repairs and then decides. This one guards every
-// column that holds an error message (issue #243), and an exception message is exactly where a
+// column that holds an error message, and an exception message is exactly where a
 // provider's own answer, key included, ends up quoted verbatim.
 describe("sanitizeErrorMessage repairs before it decides", () => {
   test("a NUL inside a token does not smuggle the token past the scrubber", () => {
@@ -91,21 +80,12 @@ describe("sanitizeErrorMessage repairs before it decides", () => {
   });
 });
 
-// A CUT LANDING INSIDE A CREDENTIAL USED TO PUBLISH IT.
-//
-// Every value pattern has a MINIMUM length and no maximum, so a prefix that is still long enough
-// matches — and one that falls below the minimum does not. Cutting first therefore turns a
-// recognised credential into an unrecognised prefix of itself. Measured before the fix:
-//
-//   redactSecretsDeep({ tail: "sk-AAAA…" }, 0, 100, { left: 18 })  ->  "sk-AAAAAAAAAAAAAAA…[truncated]"
-//
-// Fifteen of the token's sixteen characters, stored raw in a row an operator reads and an export
-// carries. The budget of the log debug mode is what makes it easy to hit — the cut point becomes
-// whatever the earlier leaves left over — but the ordinary 2,000-character cap has the same
-// boundary, so this is a property of the ORDER, not of the budget.
-//
-// Each token below is at its pattern's MINIMUM length, because that is the only place the leak
-// lives: a longer token cut short still matches and is still scrubbed.
+// A CUT LANDING INSIDE A CREDENTIAL WOULD PUBLISH IT. Every value pattern has a MINIMUM length and
+// no maximum, so cutting first turns a credential into an unrecognised prefix of itself, stored raw
+// in a row an operator reads and an export carries. The debug-mode budget and the ordinary
+// 2,000-character cap share that boundary, so this is a property of the ORDER, not of the budget.
+// Each token below is at its pattern's MINIMUM length, the only place the leak lives: a longer token
+// cut short still matches.
 describe("the scrub reads past the cut", () => {
   const SECRETS: Array<[string, string]> = [
     ["OpenAI", `sk-${"A".repeat(16)}`],
@@ -121,9 +101,8 @@ describe("the scrub reads past the cut", () => {
   test.each(SECRETS)(
     "a %s token cut one character short is redacted, not published",
     (_label, secret) => {
-      // The space is not decoration: every pattern but the JWT anchors on `\b`, and a token glued
-      // to a word character is not a match to begin with — a test without it would prove nothing
-      // and pass either way.
+      // NOTE: The space is load-bearing: every pattern but the JWT anchors on `\b`, and a token
+      // glued to a word character never matches, so without it the test would pass either way.
       const head = `${"h".repeat(40)} `;
       const allowed = head.length + secret.length - 1;
       const out = redactSecretsDeep({ v: `${head}${secret}` }, 0, allowed, {
@@ -155,8 +134,8 @@ describe("the scrub reads past the cut", () => {
   );
 
   test("the same holds with no budget at all, at the ordinary cap", () => {
-    // The pre-existing boundary: `MAX_STRING` cuts at 2,000 whether or not a budget is in play, so
-    // the order was leaking on every line that stored a long enough string, not only in debug mode.
+    // NOTE: `MAX_STRING` cuts at 2,000 whether or not a budget is in play, so the order matters on
+    // every line that stores a long enough string, not only in debug mode.
     const secret = `sk-${"E".repeat(16)}`;
     const head = `${"h".repeat(2_000 - secret.length)} `;
     const out = redactSecretsDeep({ v: `${head}${secret}` }) as { v: string };
@@ -173,10 +152,9 @@ describe("the scrub reads past the cut", () => {
   });
 
   test("a redaction that shrinks the string below the cap still marks it cut", () => {
-    // The case that separates the two rules: a 203-character credential comes out as the ten
-    // characters of the placeholder, so the RESULT is well under the cap while the input was not —
-    // and everything past the scan window was dropped. Deciding the marker on the result would call
-    // that complete.
+    // NOTE: A 203-character credential comes out as the ten-character placeholder, so the RESULT is
+    // under the cap while the input was not and everything past the scan window was dropped.
+    // Deciding the marker on the result would call that complete.
     const out = redactSecretsDeep({ v: `sk-${"K".repeat(200)}` }, 0, 40, {
       left: 40,
     }) as { v: string };
@@ -197,8 +175,8 @@ describe("the scrub reads past the cut", () => {
   });
 
   test("`sanitizeErrorMessage` gets the same order, and always did", () => {
-    // It was already repair → scrub → cut, and its own comment says why. Routing it through the
-    // shared function is what keeps the two from drifting apart again.
+    // NOTE: It routes through the shared repair, scrub, cut function, which keeps the two surfaces
+    // from drifting apart.
     const secret = `sk-${"H".repeat(16)}`;
     const out = sanitizeErrorMessage(
       new Error(`boom ${secret}`),
@@ -209,9 +187,8 @@ describe("the scrub reads past the cut", () => {
   });
 });
 
-// The order is a property of the CALL SITE, and there were six of them. Five lived in the playground
-// trace and spelled it out by hand in the wrong order; the sixth is the flow-log walker. A seventh
-// written the same way would leak the same credential, and no type would say so.
+// The order is a property of the CALL SITE: a surface that composes the scrub around a cut by hand
+// leaks the same credential, and no type would say so.
 describe("no surface composes the order by hand", () => {
   test("nothing pairs the scrub with a cut it did not do first", async () => {
     const dir = new URL("../../src/", import.meta.url).pathname;
@@ -232,14 +209,10 @@ describe("no surface composes the order by hand", () => {
   });
 });
 
-// A REAL JWT IS NOT A PREFIX PLUS A RUN, AND THE MARGIN CANNOT SAVE IT.
-//
-// Every other shape here matches on `<prefix><run of at least N>`, so a long enough piece of one
-// still matches and a scan window wider than the minimum is all it takes. A JWT's match REQUIRES
-// two separators and a final segment, and a real payload puts them hundreds of characters in — so
-// what a cut takes away is not length, it is structure, and no margin recovers it. Measured on a
-// 676-character token: the bounded scan saw `eyJ…` and a payload with no second dot, matched
-// nothing, and stored four hundred characters of the token raw.
+// A REAL JWT IS NOT A PREFIX PLUS A RUN, AND THE MARGIN CANNOT SAVE IT. Every other shape matches
+// `<prefix><run of at least N>`, so a long enough piece still matches. A JWT's match REQUIRES two
+// separators and a final segment, which a real payload puts hundreds of characters in, so a cut
+// takes away structure, not length, and no margin recovers it.
 describe("a JWT cut anywhere is still recognised", () => {
   const jwt = `eyJ${"h".repeat(30)}.${"p".repeat(600)}.${"s".repeat(43)}`;
 
@@ -273,9 +246,9 @@ describe("a JWT cut anywhere is still recognised", () => {
 
 describe("the scan window is bounded, and the bound is visible", () => {
   test("a base64 blob mid-sentence is NOT a cut token, and survives", () => {
-    // What the end anchor buys. A JOSE header on its own is public metadata, not a credential, and
-    // an unanchored `eyJ…` rule would take every base64 blob in a tool result with it — a log that
-    // redacts the diagnosis is a log nobody can read.
+    // NOTE: A JOSE header on its own is public metadata, not a credential, and an unanchored `eyJ…`
+    // rule would take every base64 blob in a tool result with it: a log that redacts the diagnosis
+    // is a log nobody can read.
     const v = "config eyJhbGciOiJIUzI1NiJ9 loaded";
     expect((redactSecretsDeep({ v }) as { v: string }).v).toBe(v);
   });
@@ -300,15 +273,10 @@ describe("the scan window is bounded, and the bound is visible", () => {
   });
 });
 
-// THE REPAIR HAPPENS INSIDE THE WINDOW, AND ONE HALF OF IT DELETES.
-//
-// `makeStorable` drops every NUL, so a source window of `max + margin` characters comes back
-// shorter by however many NULs it held — and the margin that is supposed to sit past the cut is
-// spent on characters that no longer exist. Sixty-four of them spend all of it and the
-// cut-before-scrub leak comes straight back. Measured before the fix, on a value any webhook can
-// send:
-//
-//   64 NULs + 1,981 chars + " sk-<16>"  ->  "… sk-AAAAAAAAAAAAAAA…[truncated]"
+// THE REPAIR HAPPENS INSIDE THE WINDOW, AND ONE HALF OF IT DELETES. A window of `max + margin` raw
+// characters would come back short by however many NULs it held, spending the margin past the cut
+// on characters that no longer exist; 64 NULs, which any webhook can send, would spend all of it
+// (the window's count is in src/lib/redact.ts).
 describe("a deleted character does not come out of the margin", () => {
   const NUL = String.fromCharCode(0);
   const token = `sk-${"A".repeat(16)}`;
@@ -344,11 +312,9 @@ describe("a deleted character does not come out of the margin", () => {
   });
 
   test("a lone surrogate is replaced, not deleted, so it costs the margin nothing", () => {
-    // The other half of the repair keeps the length: one orphan half becomes one U+FFFD. Pinned
-    // because the fix counts on exactly that — if it ever started deleting, the margin would be
-    // short again and nothing here would say so.
-    // Same geometry as the NUL case: the token straddles the cut, so it is only redacted if the
-    // window reached past it.
+    // NOTE: The window counts only NULs as deleted, so this pins that one orphan half becomes one
+    // U+FFFD; if it ever deleted, the margin would be short and nothing else would say so. Same
+    // geometry as the NUL case: the token is only redacted if the window reached past the cut.
     const v = `${"\ud800".repeat(64)}${"h".repeat(1_917)} ${token}`;
     const out = redactSecretsDeep({ v }) as { v: string };
     expect(out.v).not.toContain("sk-A");

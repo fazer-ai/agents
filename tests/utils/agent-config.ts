@@ -10,9 +10,8 @@ import { SIGNATURE_DEFAULTS } from "@/modules/signature/service";
 import { SPLIT_DEFAULTS } from "@/modules/split/service";
 import { TTS_DEFAULTS } from "@/modules/tts/settings";
 
-// The AgentConfig stub `buildModelAndGraph` reads, shared by the two files that drive it. It moved
-// out of prepare.test.ts when the fallback tests needed the same twenty-odd fields: a second copy
-// would have started identical and drifted the first time AgentConfig grew one.
+// The AgentConfig stub `buildModelAndGraph` reads, shared by the files that drive it: a second copy
+// would drift the first time AgentConfig grew a field.
 
 // Minimal AgentConfig stub for buildModelAndGraph — only fields it reads.
 export function makeConfig(
@@ -28,7 +27,7 @@ export function makeConfig(
       | "modelFallbackApiKey"
       | "modelFallbackCredentialBaseUrl"
       // As entradas de que o prompt foi renderizado, para o teste da recomposição da idade poder
-      // montar uma config com template, vars e seções coerentes entre si (issue #749).
+      // montar uma config com template, vars e seções coerentes entre si.
       | "systemPrompt"
       | "promptTemplate"
       | "promptVars"

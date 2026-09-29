@@ -2,32 +2,13 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { Client } from "pg";
 
-// A BARE `@@index([tenantId])` BESIDE A COMPOSITE THAT LEADS WITH `tenantId` (issue #373).
-//
-// A btree serves any leading prefix of its columns, so `(tenant_id, x)` already answers
-// `WHERE tenant_id = $1`; a second index on `(tenant_id)` alone adds a row to maintain on every
-// insert and on every non-HOT update, and answers nothing the first one could not.
-//
-// Measured on PostgreSQL 17.10 against 1,000,000 seeded delivery rows across 50 tenants, with the
-// bare index dropped inside a rolled-back transaction so both arms saw the same table:
-//
-//   INSERT  +3.0 buffer accesses per row      UPDATE  +4.0 buffer accesses per row
-//
-// and `n_tup_hot_upd = 0` on both tables under test, so no update escapes index maintenance. On the
-// read side every plan the codebase actually issues came out identical, because the composite takes
-// over the prefix scan; only a bare `count(*)` per tenant reads more index pages (21 -> 193), and
-// there is no such query on either table.
-//
-// UNIQUENESS IS NOT PART OF THE RULE, and getting that wrong is what made the issue's own count say
-// two models when the schema held eighteen. `@@unique([tenantId, ...])` is a unique btree, and a
-// unique btree serves the prefix exactly like a plain one — measured by leaving
-// `issued_documents_tenant_id_idempotency_key_key` as the only tenant-led index on the table and
-// watching the planner take it with `Index Cond: (tenant_id = 7)`.
-//
-// THERE IS NO WAIVER LIST HERE ON PURPOSE. A ledger says "this shape is the exception", and no
-// model on either side of this rule is: the composite covers the prefix or it does not, and that is
-// a property of the index, not of the model's circumstances. A model that needs the bare index back
-// needs a measurement, and the measurement belongs in the schema next to it.
+// A BARE `@@index([tenantId])` BESIDE A COMPOSITE THAT LEADS WITH `tenantId` is refused. A btree
+// serves any leading prefix of its columns, so `(tenant_id, x)` already answers
+// `WHERE tenant_id = $1`; the bare index adds a row to maintain on every insert and non-HOT update
+// and answers nothing the composite could not. A UNIQUE composite counts too: a unique btree serves
+// the prefix exactly like a plain one. There is NO WAIVER LIST on purpose: covering the prefix is a
+// property of the index, not of the model's circumstances, so a model that needs the bare index
+// back needs a measurement, written in the schema next to it.
 
 type Model = { name: string; indexes: { unique: boolean; cols: string[] }[] };
 
@@ -66,14 +47,10 @@ describe("no bare tenantId index sits beside a composite that already covers it"
 });
 
 describe("a concurrent index drop is alone in its migration", () => {
-  // The eighteen drops are one per file, and that is not a style choice: measured through
-  // `prisma migrate deploy` against scratch databases, a `DROP INDEX CONCURRENTLY` applies when it
-  // is the only statement in the file and fails with `cannot run inside a transaction block` as
-  // soon as ANY second statement joins it. `CREATE INDEX CONCURRENTLY` does not share the limit,
-  // which is why a neighbouring migration can use it beside other statements.
-  //
-  // Without this, merging two of those files back together is caught by nothing until a release
-  // deploy runs the migration and stops.
+  // NOTE: The eighteen drops are one per file because under `prisma migrate deploy` a
+  // `DROP INDEX CONCURRENTLY` fails with `cannot run inside a transaction block` as soon as ANY second
+  // statement joins it (`CREATE INDEX CONCURRENTLY` has no such limit). Nothing else catches two of
+  // them merged into one file before a release deploy stops on it.
   test("every file that drops one concurrently holds one statement", () => {
     const dir = "prisma/migrations";
     const offenders: string[] = [];
@@ -81,12 +58,10 @@ describe("a concurrent index drop is alone in its migration", () => {
     for (const name of readdirSync(dir)) {
       const file = `${dir}/${name}/migration.sql`;
       if (!existsSync(file)) continue;
-      // TWO KINDS OF TEXT THAT ARE NOT STATEMENTS, and this sweep used to read both as if they were.
-      // A comment carries semicolons and can NAME the command it explains, so a migration whose
-      // header merely describes this rule was swept in and then reported as breaking it. A
-      // `DO $$ … $$` block is ONE statement holding several semicolons and, in this repository, the
-      // text of a RAISE that tells an operator which command to run. Strip both once, and use what
-      // is left for both questions -- which file to look at, and how many statements it holds.
+      // NOTE: TWO KINDS OF TEXT THAT ARE NOT STATEMENTS. A comment carries semicolons and can NAME the
+      // command it explains, so a header describing this rule would read as breaking it. A `DO $$ … $$`
+      // block is ONE statement holding several semicolons (and here, a RAISE naming a command). Both are
+      // stripped once, and what is left answers both questions: which file, and how many statements.
       const sql = readFileSync(file, "utf8")
         .split("\n")
         .filter((l) => !l.trimStart().startsWith("--"))
@@ -103,19 +78,13 @@ describe("a concurrent index drop is alone in its migration", () => {
     expect(offenders).toEqual([]);
   });
 
-  // AND THE CONVERSE, which is the half that was missing: a file whose ONLY job is to drop an index
-  // must drop it concurrently. Found by mutation on #544 — taking `CONCURRENTLY` out of that
-  // migration passed every test in the tree, and it is the exact shape `.claude/rules/prisma.md`
-  // warns about. `migrate deploy` runs on the NEW container while the OLD one is still serving, and
-  // a plain `DROP INDEX` takes ACCESS EXCLUSIVE on the TABLE, not on the index: every read and every
-  // write that records an audit row queues behind it for the length of the drop.
-  //
-  // ONLY-STATEMENT IS WHAT MAKES THE RULE EXCEPTIONLESS, rather than a list of grandfathered files.
-  // A plain drop is legitimate and necessary in two other shapes, both of which have a second
-  // statement: dropping a possibly-invalid leftover immediately before rebuilding it (the concurrent
-  // DROP form cannot share a file with `CREATE INDEX CONCURRENTLY`), and dropping a unique index as
-  // part of a larger schema change. Swept over the tree: every plain drop in it is one of those two,
-  // and every file that does nothing but drop already uses CONCURRENTLY.
+  // NOTE: AND THE CONVERSE: a file whose ONLY job is to drop an index drops it concurrently
+  // (`.claude/rules/prisma.md`). `migrate deploy` runs on the NEW container while the OLD one serves,
+  // and a plain `DROP INDEX` takes ACCESS EXCLUSIVE on the TABLE: every read and audited write queues
+  // behind it. ONLY-STATEMENT keeps the rule free of exceptions: a plain drop is legitimate in two
+  // shapes that both have a second statement, dropping an invalid leftover right before rebuilding it
+  // (the concurrent DROP cannot share a file with `CREATE INDEX CONCURRENTLY`) and dropping a unique
+  // index inside a larger schema change.
   test("a migration that only drops an index drops it concurrently", () => {
     const dir = "prisma/migrations";
     const offenders: string[] = [];
@@ -162,13 +131,11 @@ describe.skipIf(!dbUp)("and a database built from it holds none either", () => {
     await su?.end();
   });
 
-  // The schema test reads the file; this one reads the catalog, which is what the migration
-  // actually produced. A `DROP INDEX` left out of the migration passes the first and fails here.
-  //
-  // ONE query answers both halves on purpose. Asked only for offenders it returns an empty array
-  // for a clean catalog AND for a query that matches nothing — mutating the tenant column name to
-  // one that does not exist left the whole file green. Listing every tenant-led index and doing the
-  // pairing here means a broken column extraction empties the control in the same breath.
+  // NOTE: The schema test reads the file; this one reads the catalog, which is what the migration
+  // produced. A `DROP INDEX` left out of the migration passes the first and fails here. ONE query
+  // answers both halves on purpose: asked only for offenders, it returns an empty array both for a
+  // clean catalog and for a query that matches nothing (a wrong tenant column name). Listing every
+  // tenant-led index and pairing here means a broken extraction empties the control too.
   test("no table carries one", async () => {
     const { rows } = await suDb.query<{
       table: string;

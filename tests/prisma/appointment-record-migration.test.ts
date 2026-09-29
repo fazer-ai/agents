@@ -1,19 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { Client } from "pg";
 
-// The backfill of 20260826220000_appointment_record, run against rows shaped like the ones it will
-// actually meet in production.
-//
-// The reason it gets a test of its own is the cast. `startISO` reaches a reminder payload from the
-// model's own tool input, so unreadable values are not hypothetical, and a cast that raises inside a
-// migration does not skip a row: it aborts `migrate deploy`, which on the documented boot ordering
-// (`db-bootstrap && migrate deploy && exec bun src/index.ts`) is a container that never starts. One
-// bad payload anywhere in the fleet would be an outage, and no behavioural test in the suite can see
-// a migration's SQL.
-//
-// Everything here runs inside a transaction that is rolled back, so the statement is exercised
-// VERBATIM — across every tenant, as it runs for real — without leaving a row behind in the shared
-// test database.
+// The backfill of 20260826220000_appointment_record, run against rows shaped like production's.
+// `startISO` comes from the model's own tool input, so unreadable values are real, and a cast that
+// raises inside a migration aborts `migrate deploy`, which on the documented boot ordering is a
+// container that never starts. No behavioural test can see a migration's SQL. Everything runs in a
+// rolled-back transaction, so the statement runs VERBATIM across every tenant and leaves no row.
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const MIGRATION =
@@ -46,20 +38,12 @@ function backfillStatement(text: string): string {
 
 const hours = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString();
 
-// The backfill's ON CONFLICT names the unique key `appointments` had AT THAT POINT IN HISTORY, and
-// 20260827000000 later widened it to include the provider (issue #352). Replaying the statement
-// against today's table would fail to infer an arbiter index — a failure that says nothing about
-// the migration, which runs in order and meets the narrow key it was written for.
-//
-// So the transaction ADDS the historical key back, under a name of its own, and drops nothing. The
-// two coexist for the length of the transaction and `ON CONFLICT (tenant_id, external_id)` infers
-// the narrow one, because inference matches the columns exactly.
-//
-// Adding rather than swapping is the whole point. This is a SHARED database, and a transaction that
-// fails to roll back would otherwise leave the table without the unique key the current code upserts
-// through — every appointment write in every other suite then fails with `42P10`, in a way
-// `migrate deploy` cannot repair because the migration is already recorded as applied. (Measured:
-// that is exactly what happened.) Leaking an extra index instead is inert.
+// The backfill's ON CONFLICT names the unique key `appointments` had when it ran; a later migration
+// widened it to include the provider, so replaying against today's table cannot infer an arbiter.
+// The transaction ADDS the historical key under its own name and drops nothing, and inference picks
+// the narrow one because it matches the columns exactly. Adding, not swapping: on this SHARED
+// database a failed rollback would otherwise leave the table without the key current code upserts
+// through (`42P10` in every other suite, unrepairable by `migrate deploy`). A leaked index is inert.
 async function withHistoricalKey(): Promise<void> {
   await db.query(
     'CREATE UNIQUE INDEX "appointments_historical_key_probe" ON "appointments"("tenant_id", "external_id")',

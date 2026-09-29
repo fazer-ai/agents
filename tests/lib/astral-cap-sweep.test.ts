@@ -2,23 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { DEBUG_MAX_STRING } from "@/modules/flowlog/service";
 import { countInSrc } from "@/tests/utils/source-text";
 
-// THE GUARD AGAINST THE NEXT CAP THAT CUTS A CHARACTER IN HALF.
-//
-// `clipText` was written for ONE field (#122) and its comment already spelled out the whole cost:
-// a `slice` that lands between the two halves of an astral character leaves an unpaired surrogate,
-// Postgres refuses one inside a `jsonb` write, and anywhere it survives it renders as a replacement
-// character in the middle of somebody's name. Every OTHER cap in the tree kept using a bare `slice`
-// anyway — the rule was written next to its one call site, which is the one place a person writing
-// the next cap never looks.
-//
-// So the rule lives with the function now (`src/lib/text.ts`) and this file is the check: every cap
-// that bounds text is listed below with the entry point that reaches it, and each is fed a value
-// whose astral character straddles the cut. A new cap that forgets is a failure here.
-//
-// NOT in scope, and the distinction is the whole reason a regex sweep would be useless: an
-// index-based slice at a position the code computed (a delimiter, a trailing separator, an array
-// bound) is a different operation. `slug.slice(0, 28)` after the string was already reduced to
-// `[a-z0-9_-]` cannot split anything.
+// The guard against the next cap that cuts a character in half. A `slice` landing between the halves
+// of an astral character leaves an unpaired surrogate: Postgres refuses one inside a `jsonb` write,
+// and anywhere it survives it renders as a replacement character in somebody's name. The rule lives
+// with `clipText` (`src/lib/text.ts`); here every cap that bounds text runs through its real entry
+// point with an astral character straddling the cut. An index-based slice at a position the code
+// computed (a delimiter, an array bound, an already-ASCII slug) is a different operation, which is
+// why a regex sweep alone cannot decide this.
 
 // `for...of` yields a well-formed pair as ONE two-unit string, so a single-unit string in the
 // surrogate range is by definition an orphan half.
@@ -36,12 +26,10 @@ function straddling(cap: number): string {
   return `${"x".repeat(cap - 1)}😀 and then some more text past the cap`;
 }
 
-// Each entry names a cap, and runs the REAL function that applies it. The padding is swept a few
-// units either side of the cap so an entry stays honest when the cut is not exactly at `cap` (an
-// ellipsis suffix, a `max - 1`, an inner cap one unit wider than the outer one).
-// Every start in this file already carries an offset, so there is nothing for the resolver to
-// decide: it says "this value is already unambiguous". The resolution itself is exercised where
-// the timezone actually lives (tests/graph/tools-http-appointment.test.ts).
+// Each entry names a cap and runs the REAL function that applies it. The padding is swept a few
+// units either side of the cap, so an entry stays honest when the cut is not exactly at `cap` (an
+// ellipsis suffix, a `max - 1`, an inner cap one unit wider). `KEEP` is the timezone resolver: every
+// start here carries an offset, and resolution is tested in tests/graph/tools-http-appointment.test.ts.
 const KEEP = (wall: string) => wall;
 
 const CAPS: {
@@ -61,8 +49,8 @@ const CAPS: {
   },
   {
     // The title an operator's own booking system answers with, on its way into the appointment record
-    // and from there into EVERY later turn's prompt block (#352). Customer-adjacent: plenty of
-    // booking systems put the patient's own name in the appointment title.
+    // and from there into EVERY later turn's prompt block. Booking systems often put the patient's
+    // own name in the appointment title.
     name: "appointment: extractAppointment summary",
     cap: 200,
     run: async (s) => {
@@ -107,10 +95,8 @@ const CAPS: {
     },
   },
   {
-    // The SAME function under the log debug mode (#58), which raises the ceiling rather than
-    // removing it. It is a second cap through one code path, which is precisely the shape this file
-    // exists to catch: the entry above would keep passing while the raised one cut a character in
-    // half, because nothing about a higher number makes a slice safe.
+    // The SAME function under the log debug mode, which raises the ceiling rather than removing it:
+    // a second cap through one code path, and a higher number does not make a slice safe.
     name: "redact: redactSecretsDeep under the log debug ceiling",
     cap: DEBUG_MAX_STRING,
     run: async (s) => {
@@ -199,9 +185,8 @@ const CAPS: {
         null,
         { fetchImpl, assertSafe: async (u: string) => new URL(u) },
       );
-      // Read back the way the far end reads it. An orphan half survives `JSON.stringify` as a
-      // `\udXXX` escape — six ASCII characters — so measuring the raw body would find nothing
-      // wrong with a payload whose parser is about to produce the orphan.
+      // NOTE: read back the way the far end reads it. An orphan half survives `JSON.stringify` as a
+      // six-character ASCII `\udXXX` escape, so measuring the raw body would find nothing wrong.
       return String(
         (JSON.parse(body) as { message?: { text?: string } }).message?.text ??
           "",
@@ -271,7 +256,7 @@ const CAPS: {
   {
     // Every value a document prints: the fields the model fills in on issuance, and the contact and
     // company values the token resolver splices in. It ends up in `issued_documents.snapshot`, which
-    // is `jsonb` — so this one FAILS the issuance rather than degrading the PDF.
+    // is `jsonb`, so this one FAILS the issuance rather than degrading the PDF.
     name: "documents: sanitizeDocumentValue",
     cap: 2_000,
     run: async (s) => {
@@ -283,11 +268,9 @@ const CAPS: {
   },
   {
     // The window quoted back at whoever authored a template with an unreadable {{token}}. The start
-    // is a computed index (the offending braces), but the 40 that follows is a cap on the author's
-    // own text, and the refusal travels through the API and to the model.
-    // 38, not 40: the two braces the window opens on are themselves inside it, so the emoji has to
-    // start two units earlier than the cap to straddle the cut. Measured, not reasoned — at 40 the
-    // probe swept right past the boundary and the entry passed with the cut left bare.
+    // is a computed index (the offending braces), but the 40 that follows caps the author's own
+    // text. 38, not 40: the two braces the window opens on are inside it, so the emoji has to start
+    // two units earlier to straddle the cut.
     name: "documents: malformed-token window",
     cap: 38,
     run: async (s) => {
@@ -296,9 +279,8 @@ const CAPS: {
     },
   },
   {
-    // The operator's closing line (#599), cut on the way OUT of the settings bag. An emoji at the
-    // end of a signature is the ordinary case for this field rather than the exotic one, and an
-    // orphan half here repeats on EVERY message the agent sends instead of degrading one.
+    // The operator's closing line, cut on the way OUT of the settings bag. An emoji at the end of a
+    // signature is the ordinary case, and an orphan half here repeats on EVERY message the agent sends.
     name: "signature: readSignatureConfig",
     cap: 500,
     run: async (s) => {
@@ -309,8 +291,8 @@ const CAPS: {
     },
   },
   {
-    // The document title prepended to every chunk's embedding input (#857). An emoji in an article
-    // title is ordinary, and an orphan half here would reach the embeddings provider on every chunk.
+    // The document title prepended to every chunk's embedding input. An emoji in an article title is
+    // ordinary, and an orphan half here would reach the embeddings provider on every chunk.
     name: "rag: embeddingInput title",
     cap: 300,
     run: async (s) => {
@@ -333,20 +315,19 @@ describe("no text cap ever cuts an astral character in half", () => {
   }
 
   test("the straddling probe actually straddles (the harness is not vacuous)", () => {
-    // If this ever stops holding, every case above passes for the wrong reason.
+    // NOTE: if this ever stops holding, every case above passes for the wrong reason.
     const s = straddling(10);
     expect(loneSurrogates(s.slice(0, 10))).toBe(1);
   });
 });
 
 // Caps that keep the END of a value rather than the start. Same defect, mirrored: a start index
-// that lands between an emoji's halves leaves the result BEGINNING with a lone low surrogate. Found
-// in review, after a first sweep that looked only for `.slice(0, …)` and so could not see them.
+// between an emoji's halves leaves the result BEGINNING with a lone low surrogate.
 describe("no tail cap ever starts on half a character", () => {
   test("memory: the attendance transcript, clipped from the front", async () => {
     const { renderTranscript } = await import("@/modules/memory/summarize");
     const { HumanMessage } = await import("@langchain/core/messages");
-    // Two cuts live in clipTranscript: a flat 60k-character ceiling, and a token-budget pass that
+    // NOTE: two cuts live in clipTranscript: a flat 60k-character ceiling, and a token-budget pass that
     // recomputes its own start index. Sweep the emoji across both, one unit at a time.
     const offenders: string[] = [];
     for (let pad = 59_997; pad <= 60_003; pad++) {
@@ -355,7 +336,7 @@ describe("no tail cap ever starts on half a character", () => {
       if (loneSurrogates(out) > 0) offenders.push(`chars@${pad}`);
     }
     for (let tokens = 40; tokens <= 60; tokens++) {
-      // Long enough that the token pass has to cut, with emoji spread through the tail so some
+      // NOTE: long enough that the token pass has to cut, with emoji spread through the tail so some
       // start index lands inside one.
       const body = `${"x".repeat(400)}${"😀y".repeat(60)}`;
       const out = renderTranscript([new HumanMessage(body)], tokens);
@@ -365,24 +346,7 @@ describe("no tail cap ever starts on half a character", () => {
   });
 });
 
-// EVERY REMAINING TEXT-CAP-SHAPED `.slice(…)` IN `src/`, AND WHY IT IS NOT ONE.
-//
-// The behavioural table above proves the caps it can reach. It cannot prove the ABSENCE of a cap it
-// forgot, and forgetting is the documented failure mode here: #216 named four, the first sweep found
-// seventeen, and review found an eighteenth in `truncForAudit` — a walker with the same shape as
-// `redactSecretsDeep`, writing to the same kind of column, missed because its file was counted and
-// not read.
-//
-// A regex cannot tell a string cut from an array bound, so it cannot decide this on its own. What it
-// can do is refuse to let anyone decide it silently: every remaining occurrence is counted here with
-// a judgement attached, and a routed cap leaves no occurrence at all. A new bare cut — text or not —
-// fails this test until somebody writes down which it is.
-//
-// TWO shapes are counted, and the second was added after review found a cap the first could not see:
-// `.slice(0, n)` keeps the head, `.slice(-n)` / `.slice(x.length - n)` keeps the tail. Both bound a
-// value to a maximum length; every other `.slice(…)` in the tree names a position the code computed
-// (a delimiter, a marker's length, a caret, a tokenizer's window) and cannot be a cap at all.
-//
+// Why a remaining bare `.slice(…)` in `src/` is not a text cap:
 //   array         bounds how MANY entries are kept, not how long a string is
 //   index         slices at a position the code computed (a delimiter, a trailing character, a caret)
 //   ascii         the value was already reduced to [a-z0-9_-] (or is ASCII by construction)
@@ -397,6 +361,11 @@ type NotACap =
   | "parse-only"
   | "the-cut";
 
+// Every remaining text-cap-shaped `.slice(…)` in `src/`, with its judgement. The table above cannot
+// prove the ABSENCE of a cap it forgot, and a regex cannot tell a string cut from an array bound, so
+// a new bare cut fails until somebody writes down which it is; a routed cap leaves no occurrence.
+// Two shapes are counted: `.slice(0, n)` keeps the head, `.slice(-n)` / `.slice(x.length - n)` the
+// tail. Every other `.slice(…)` names a position the code computed and cannot be a cap.
 const BARE_SLICES: Record<
   string,
   [number, NotACap | `${NotACap} + ${NotACap}`]
@@ -406,41 +375,37 @@ const BARE_SLICES: Record<
   "src/client/components/Modal.tsx": [1, "array"],
   "src/client/contexts/ThemeContext.tsx": [1, "index"],
   "src/client/lib/breadcrumbs.ts": [1, "array"],
-  // The text BEFORE a parse error, counted and thrown away: the cut result is never shown, never
-  // stored and never sent — its `\n` count is the line and its last break is the column. The offset
-  // itself comes from the JSON grammar, which reports token boundaries, so it cannot land inside a
-  // code point to begin with.
+  // The text BEFORE a parse error, counted and thrown away: the cut result is never shown, stored or
+  // sent. The offset comes from the JSON grammar, which reports token boundaries, so it cannot land
+  // inside a code point.
   "src/client/lib/sampleJson.ts": [1, "parse-only"],
   // Four cuts into a DATE KEY: `YYYY-MM-DD` and the ten leading characters of an ISO instant. Every
   // character on either side of every one of them is a digit or a hyphen, and `DATE_KEY_RE` refuses
   // anything else before the value is used, so no cut here can land inside a surrogate pair.
   "src/client/lib/auditPeriod.ts": [4, "ascii"],
   // The cursor stack's own pop (Previous), and the page's array of entries. The one cut that lands
-  // in TEXT — the preview of a `before`/`after` value, which can be a system prompt — goes through
+  // in TEXT (the preview of a `before`/`after` value, which can be a system prompt) goes through
   // `clipText` like every other cap.
   "src/client/pages/AuditPage.tsx": [1, "array"],
   "src/client/pages/LogsPage.tsx": [1, "array"],
-  // The signature's own token insert, which splices at a SELECTION (#599). A caret is a position the
-  // browser maintains and it never sits between the two halves of an astral character. The two cuts
-  // in that field that DO bound the value go through `clipText`, which is the whole point of the
-  // distinction: an operator signing off with an emoji is the ordinary case here, not the exotic one.
+  // The signature's own token insert, which splices at a SELECTION. A caret is a position the browser
+  // maintains and it never sits between the two halves of an astral character. The two cuts in that
+  // field that DO bound the value go through `clipText`.
   "src/client/pages/agents/BehaviorTab.tsx": [1, "index"],
   "src/client/pages/agents/CapabilityMap.tsx": [1, "array"],
   "src/client/pages/agents/PlaygroundChat.tsx": [1, "array"],
   "src/client/pages/agents/PromptPanel.tsx": [1, "index"],
   "src/client/pages/agents/followUpFormState.ts": [1, "array"],
-  // Two since #563: the token insert splices at a SELECTION, which the browser never puts inside a
-  // surrogate pair, and `eachBlockEdit` cuts at the same boundary to ask what sits on either side of
-  // it. Neither is a cap.
+  // Two: the token insert splices at a SELECTION, which the browser never puts inside a surrogate
+  // pair, and `eachBlockEdit` cuts at the same boundary to ask what sits on either side of it.
   "src/client/pages/resources/ToolEditModal.tsx": [2, "index"],
   // The idempotency key's tail is a hex digest.
   "src/graph/tools/documents.ts": [1, "ascii"],
   "src/graph/tools/mcp.ts": [5, "ascii"],
-  // The spend ceiling's project key is the head of a hex digest (#426).
+  // The spend ceiling's project key is the head of a hex digest.
   "src/modules/spend-ceiling/poll.ts": [1, "ascii"],
-  // Six since #695: the fifth is the ceiling on what the model is SHOWN of a scope's labels,
-  // applied to the write report, and the sixth is the same ceiling over the GUARDED list, which the
-  // delta contract names in the tool description instead of hiding. Both cut arrays of label
+  // Six: the fifth is the ceiling on what the model is SHOWN of a scope's labels, applied to the
+  // write report, and the sixth is the same ceiling over the GUARDED list. Both cut arrays of label
   // titles, so neither cut can land inside one.
   "src/graph/tools/native.ts": [6, "array"],
   // The same ceiling at its source, over the same array of titles (graph/tools/label-view.ts).
@@ -452,19 +417,15 @@ const BARE_SLICES: Record<
   "src/lib/text.ts": [3, "the-cut"],
   "src/modules/agents/credential-paths.ts": [2, "array"],
   "src/modules/agents/text-caps.ts": [1, "array"],
-  // Two, both counted here because neither bounds prose. `countNotStoredAsWritten` cuts the bundled
-  // entries a schedule cap lets through, so the ones past it count as loss rather than being tested
-  // — an array of JSON entries, never a string. And `renamedToolName` trims the STEM of a tool name
-  // so the `_2` suffix fits inside the 64 the provider allows: the value went through
-  // `normalizeToolName` first, so it is `[a-z0-9_-]` and has nothing to split. (The label and the
-  // description that loop clips are text, and go through `clipText` like every other.)
-  // Three since #568: the third clamps an imported protected-label list to its ceiling — an array
-  // of titles, never characters.
+  // Three, none bounding prose. `countNotStoredAsWritten` cuts the bundled entries a schedule cap lets
+  // through (an array of JSON entries). `renamedToolName` trims the STEM of a tool name, already
+  // `[a-z0-9_-]` from `normalizeToolName`, so the `_2` suffix fits the provider's 64. The third clamps
+  // an imported protected-label list, an array of titles. The label and description that loop clips
+  // go through `clipText`.
   "src/modules/agents/transfer.ts": [3, "array"],
   "src/modules/analytics/langfuse-costs.ts": [2, "fixed-format"],
-  // The date the reminder says it was sent on, cut from `toISOString()` (issue #685): a fixed-width
-  // ASCII `YYYY-MM-DD` that the runtime produces itself, so the cut cannot land inside a code point
-  // and the piece is never operator or customer text.
+  // The date the reminder says it was sent on, cut from `toISOString()`: a fixed-width ASCII
+  // `YYYY-MM-DD` the runtime produces, never operator or customer text.
   "src/modules/appointments/reminders.ts": [1, "ascii"],
   "src/modules/api-keys/verify.ts": [1, "ascii"],
   "src/modules/appointments/settings.ts": [1, "array"],
@@ -476,8 +437,7 @@ const BARE_SLICES: Record<
   // one, so the file cannot end on half a character either.
   "src/modules/audit/export.ts": [2, "array + ascii"],
   // The page's overshoot row, dropped off an ARRAY (`limit + 1`, to learn whether more matched). The
-  // cursor codec's own two went with the round-9 rewrite: it splits on the separator it wrote rather
-  // than cutting at an offset, so there is no index left for a surrogate pair to straddle.
+  // cursor codec splits on the separator it wrote rather than cutting at an offset.
   "src/modules/audit/service.ts": [1, "array"],
   "src/modules/business-hours/announce.ts": [2, "fixed-format"],
   "src/modules/business-hours/hours.ts": [1, "fixed-format"],
@@ -486,9 +446,9 @@ const BARE_SLICES: Record<
   // NUMBERS cannot land inside a surrogate pair; the join that renders it happens after the cut.
   "src/modules/chatwoot/management.ts": [1, "array"],
   "src/modules/conversations/service.ts": [1, "array"],
-  // The newest turns' lines kept off an ARRAY of turns (issue #853), never a string.
+  // The newest turns' lines kept off an ARRAY of turns, never a string.
   "src/modules/conversations/usage.ts": [1, "array"],
-  // The operator's case labels capped as an ARRAY of labels (issue #901), never a string.
+  // The operator's case labels capped as an ARRAY of labels, never a string.
   "src/modules/cross-inbox-case/settings.ts": [1, "array"],
   "src/modules/debounce/handler.ts": [2, "array"],
   // The logo's one-shot download token is hex from randomUUID.
@@ -497,22 +457,18 @@ const BARE_SLICES: Record<
   // [a-zA-Z0-9-] before it is bounded, because it travels through a Content-Disposition header.
   "src/modules/documents/issue.ts": [2, "fixed-format + ascii"],
   "src/modules/documents/sample.ts": [1, "fixed-format"],
-  // The tool name a template derives to, after the name was reduced to [a-z0-9_]. The two cuts moved
-  // here from templates.ts when the slug rules were split out for the console to import; this ledger
-  // is keyed by PATH, so a move reads exactly like an unaccounted cut appearing from nowhere.
+  // The tool name a template derives to, after the name was reduced to [a-z0-9_]. This ledger is
+  // keyed by PATH, so moving a cut to another file reads as an unaccounted cut there.
   "src/modules/documents/slug.ts": [2, "ascii"],
   "src/modules/flowlog/export.ts": [2, "fixed-format + array"],
   "src/modules/flowlog/read.ts": [1, "array"],
   // `parseIsoInstant`: the date half of an ISO instant, to check a calendar `Date.parse` would
-  // silently normalise instead (February 30 → March 2). Position 10 is the format's own boundary,
-  // and the string was already matched against an ASCII-only pattern, so there is no character
-  // there for a cut to land inside of.
+  // silently normalise (February 30 to March 2). Position 10 is the format's own boundary, and the
+  // string already matched an ASCII-only pattern.
   "src/modules/flowlog/settings.ts": [1, "fixed-format"],
   "src/modules/followups/settings.ts": [1, "array"],
   "src/modules/images/fetch.ts": [1, "array"],
-  // The response-body caps that used to sit here are gone: they were a `.slice()` applied to a body
-  // `.text()` had already buffered whole, and #464 replaced them with a cap on the READ
-  // (`lib/outbound.ts`, which cuts through `clipText` like every other cap).
+  // No response-body cap here: `lib/outbound.ts` caps the READ, cutting through `clipText`.
   "src/modules/integrations/toolpacks/asaas.ts": [1, "fixed-format"],
   // The refusal a calendar write answers with lists the nearest bookable slots; the cut bounds that
   // LIST, and each entry is a slot object this code built, never received text.
@@ -525,27 +481,23 @@ const BARE_SLICES: Record<
   // one is a slice of an ARRAY of rows, so none can land inside a surrogate pair.
   "src/modules/observe/job.ts": [4, "array"],
   "src/modules/playground/service.ts": [1, "array"],
-  // The page of a document list (issue #708): `rows.slice(0, take)` keeps the first `take` rows.
+  // The page of a document list: `rows.slice(0, take)` keeps the first `take` rows.
   "src/modules/rag/documents.ts": [1, "array"],
   // The balloon's own LINES, cut from the array `split("\n")` returned, to ask whether the run at
   // either end of it is the model's copy of the signature. An array of strings, never a string, so
   // no cut can land inside a code point; and the pieces are compared, never sent.
   "src/modules/signature/service.ts": [2, "array"],
-  // Two, since the overflow merge carries the separators beside the chunks (issue #429): both are
-  // slices of an ARRAY of already-split strings, so neither can land inside a surrogate pair.
+  // Two: the overflow merge carries the separators beside the chunks, and both are slices of an ARRAY
+  // of already-split strings, so neither can land inside a surrogate pair.
   "src/modules/split/service.ts": [2, "array"],
   // The audit fingerprint of the over-ceiling sentence: a hex digest, so the cut cannot land inside
   // a surrogate pair.
   "src/modules/tenant-settings/service.ts": [1, "ascii"],
   "src/modules/tool-definitions/body-shape.ts": [1, "array"],
-  // How many items the picker samples for a block's fields: entries, never characters. The block
-  // itself renders by index under a text budget, and the per-value cut inside an item goes
-  // through clipText like every other.
-  //
-  // The second, since #563, is `templateWriteAt` cutting the document at the CARET to read what the
-  // operator has typed since `{{`. A caret is a position CodeMirror maintains, and it never sits
-  // inside a surrogate pair; the result is parsed, never shown, so a cut there could not truncate
-  // anything in front of a reader either.
+  // Two. How many items the picker samples for a block's fields (entries, never characters; the
+  // per-value cut inside an item goes through clipText). And `templateWriteAt` cutting the document at
+  // the CARET to read what the operator typed since `{{`: CodeMirror never puts a caret inside a
+  // surrogate pair, and the result is parsed, never shown.
   "src/modules/tool-definitions/response-template.ts": [2, "array"],
   "src/modules/updates/semver.ts": [1, "array"],
   // Read only to be substring-matched against the provider's auth-failure shapes, then dropped:
@@ -558,9 +510,9 @@ const BARE_SLICES: Record<
 
 describe("every bare cut left in src/ is accounted for", () => {
   test("the file list and the per-file counts still match", async () => {
-    // Through `countInSrc`, so a comment explaining a cut is not counted as one. A phantom entry here
-    // is not a chore: the fix that suggests itself is to add the file to the ledger, which arms a
-    // waiver over a file with no cut in it and silences the day it grows one (#424).
+    // NOTE: through `countInSrc`, so a comment explaining a cut is not counted as one. Do not answer a
+    // phantom entry by adding the file to the ledger: that arms a waiver over a file with no cut in
+    // it, which silences the day it grows one.
     const found = await countInSrc(
       /\.slice\(\s*(?:0\s*,|-|[A-Za-z_$][\w$.]*\.length\s*-)/g,
     );

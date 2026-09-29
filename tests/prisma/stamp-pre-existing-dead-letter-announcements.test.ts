@@ -2,32 +2,22 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { DEAD_LETTER_ANNOUNCED } from "@/modules/scheduler/service";
 
-// A MIGRAÇÃO DE ROLLOUT DO RECIBO (issue #737, achado da rodada 3 de review).
-//
-// O carimbo `deadLetterAnnouncedFor` nasce com esta entrega. Uma linha que já estava `DEAD` no dia
-// do deploy foi anunciada pelo despachante antigo, que escrevia a linha de log e não tocava no
-// payload — então, sem a migração, o primeiro `/reset` que apagasse essa linha anunciaria a mesma
-// morte uma segunda vez.
-//
-// NUM BANCO DE PROVA, e não no banco da suíte (rodada 4 de review). A migração é um UPDATE sobre
-// TODAS as linhas `DEAD` de `scheduler_jobs`, sem cerca de tenant nenhuma — é para isso que ela
-// existe. Rodando no banco compartilhado, ela carimba a morte que outro arquivo acabou de criar e
-// rouba o anúncio dele, que é a mesma família de estrago que `scheduler-tenant-fence.test.ts`
-// existe para impedir, e que sob `--parallel` aparece no arquivo roubado.
-//
-// A migração é LIDA DO DISCO e aplicada verbatim: uma cópia aqui continuaria passando depois de o
-// arquivo que ela representa mudar.
+// A MIGRAÇÃO DE ROLLOUT DO CARIMBO `deadLetterAnnouncedFor`. Uma linha que já estava `DEAD` no
+// deploy foi anunciada pelo despachante anterior, que escrevia o log sem tocar no payload; sem a
+// migração, o primeiro `/reset` que apagasse essa linha anunciaria a mesma morte de novo.
+// NUM BANCO DE PROVA: a migração é um UPDATE sobre TODAS as linhas `DEAD` de `scheduler_jobs`, sem
+// cerca de tenant, e no banco compartilhado carimbaria a morte que outro arquivo acabou de criar,
+// roubando o anúncio dele sob `--parallel`. A migração é LIDA DO DISCO e aplicada verbatim: uma
+// cópia continuaria passando depois de o arquivo que ela representa mudar.
 
 const MIGRATION =
   "prisma/migrations/20260920060000_stamp_pre_existing_dead_letter_announcements/migration.sql";
 
 const suUrl = process.env.MIGRATION_DATABASE_URL;
 const PROBE_DB = `fazerai_dlstamp_${process.pid}`;
-// O DONO da tabela, e não o superusuário. É a diferença que decide o teste: superusuário ignora RLS
-// sempre, então rodando como ele o `NO FORCE` da migração não prova nada. `FORCE ROW LEVEL SECURITY`
-// existe justamente para sujeitar o DONO à policy, e é num deployment cujo papel de migração é dono
-// sem ser superusuário que o incidente da cerca aconteceu (PR #485 rodada 19: a varredura decidiu
-// sobre zero linhas e relatou sucesso).
+// O DONO da tabela, e não o superusuário: superusuário ignora RLS sempre, então rodando como ele o
+// `NO FORCE` da migração não prova nada. `FORCE ROW LEVEL SECURITY` sujeita o DONO à policy, e um
+// papel de migração dono sem ser superusuário decidiria sobre zero linhas e relataria sucesso.
 const PROBE_ROLE = `fazerai_dlstamp_owner_${process.pid}`;
 const PROBE_PASS = "probe";
 let dbUp = false;

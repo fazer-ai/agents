@@ -1,19 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-// WHAT THE BACKFILL REACHES (issue #476), which is the half a behavioural test cannot: the statement
-// decides what a delivery written by the PREVIOUS build says about its route after the upgrade, and
-// no test that runs against a freshly migrated database ever sees such a row.
-//
-// The rule the column introduces is that a null role is not replayed — guessing "the responder's"
-// loses an observation silently on an inbox nobody answers, and hands the responder a message its
-// own route already carried on one it does. That rule is correct for rows written since, and wrong
-// for every row written before, where observers did not exist and the route was always a
-// responder's. So the backfill has to cover every status the recovery can still pick up.
-//
-// DEAD IS ONE OF THEM. The sweep's verdict is not the end of a delivery: `DELIVERY_RECOVERY`
-// reclaims a DEAD row and replays it (`claimFrom: "DEAD"`). Left out, a pre-existing recovery whose
-// inbox was rebound to another bot since is refused by an ambiguity check that did not exist when it
-// stranded — a delivery the build before this one recovered against the current responder.
+// What the backfill reaches, which no test against a freshly migrated database can see: rows written
+// by the previous build. A null role is not replayed (guessing "the responder's" loses an
+// observation on an unanswered inbox and duplicates one on an answered inbox), which is wrong for
+// pre-existing rows, where observers did not exist and the route was always a responder's. So the
+// backfill covers every status recovery can still pick up, DEAD included: `DELIVERY_RECOVERY`
+// reclaims DEAD rows (`claimFrom: "DEAD"`), and a null role there is refused after an inbox rebind.
 
 const MIGRATION =
   "prisma/migrations/20260903130000_delivery_route_observed/migration.sql";
@@ -39,11 +31,9 @@ describe("migration: the delivery's route role", () => {
     expect(update).toContain('"route_observed" IS NULL');
   });
 
-  // The backfill is ONE SHOT and the column has no DEFAULT, so a delivery the PREVIOUS release
-  // inserts after it commits keeps a null role — skipped by the wide settlement and refused by the
-  // recovery after a rebind. A default is not the fix: it would make a row between its insert and
-  // its claim say "the responder's", a false statement rather than a missing one. The deploy note
-  // is, and it is the artefact an operator actually reads.
+  // NOTE: The backfill is one shot and the column has no DEFAULT, so a row the previous release
+  // inserts afterwards keeps a null role. A default is not the fix: it would make an unclaimed row
+  // say "the responder's", a false statement rather than a missing one. The deploy note is.
   test("is named in the deploy notes as wanting the old writer stopped", async () => {
     const notes = await Bun.file("docs/deploy.md").text();
     const para = notes

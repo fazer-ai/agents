@@ -1,25 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { codeOnly } from "@/tests/utils/source-text";
 
-// THE GUARD AGAINST THE TENTH CALL SITE.
-//
-// The rule this file enforces was already written down nine times when the leak that motivated it
-// was found, once beside each call site that follows it: `ChatwootApiError` (status and endpoint,
-// never the body), `SttError` / `VisionError` (`never capture the response body`), the tool lane's
-// first-line cut, the `tts` line's slug-shaped code, `redactSecretsDeep` on `detail`, the guard on
-// the contact-authorization `reason`, and so on. Every one of those carries a comment explaining
-// why. It still did not stop the tenth boundary from being written without it, because a rule kept
-// beside its call sites is invisible from the place where the next call site is born.
-//
-// Prose cannot fix that — `docs/stt.md` already says "Adding a provider = one function + one
-// registry entry" and names `SttError`, which is exactly why `stt` and `vision` held while
-// embeddings, in a module with no such paragraph, did not. What reaches a module that does not
-// exist yet is a check that FAILS on it.
-//
-// So: a file that authenticates to an operator-configured endpoint and issues a request is a
-// provider boundary, and every one of them must be listed below saying HOW it keeps the other end's
-// text out of an operator-facing store. A new one is a test failure until somebody answers the
-// question. The list is the deliverable; the assertions under it are what keep the answers honest.
+// A file that authenticates to an operator-configured endpoint and issues a request is a provider
+// boundary, and every one of them is listed below saying HOW it keeps the other end's text out of an
+// operator-facing store. A rule kept beside its call sites, or in prose (`docs/stt.md`), is invisible
+// where the next call site is born, so a new one fails here until somebody answers the question.
 
 // How each boundary discharges the rule.
 //
@@ -40,8 +25,8 @@ const BOUNDARIES: Record<string, Discharge> = {
   "src/modules/stt/providers.ts": "own-error-type",
   "src/modules/vision/providers.ts": "own-error-type",
   "src/modules/tts/providers.ts": "own-error-type",
-  // The OpenAI client builds its message out of the response body, measured in
-  // tests/modules/rag-embeddings-failure.test.ts, so this one needs the wrapper.
+  // The OpenAI client builds its message out of the response body (asserted in
+  // tests/modules/rag-embeddings-failure.test.ts), so this one needs the wrapper.
   "src/modules/rag/embeddings.ts": "throughProvider",
   // OUR server, not a provider client: it matches on the API-key admin tools it exposes and on a
   // URL fetch that carries no operator credential to a model vendor.
@@ -60,8 +45,8 @@ async function candidates(): Promise<string[]> {
   const { Glob } = await import("bun");
   const found: string[] = [];
   for await (const file of new Glob("src/**/*.ts").scan(".")) {
-    // Through the scan, so a comment naming `await fetch(` does not make a file a provider boundary
-    // (#424). Measured: same six files with and without, which is what makes it safe to adopt.
+    // NOTE: through the scan, so a comment naming `await fetch(` does not make a file a provider
+    // boundary.
     if (isCandidate(codeOnly(await Bun.file(file).text()))) found.push(file);
   }
   return found.sort();
@@ -70,7 +55,7 @@ async function candidates(): Promise<string[]> {
 describe("every provider boundary answers for the other end's text", () => {
   test("a boundary that is not on the list fails this test", async () => {
     const found = await candidates();
-    // Both directions: an unlisted file is the tenth call site, and a listed file that stopped
+    // NOTE: both directions: an unlisted file is a new boundary, and a listed file that stopped
     // matching means the list is describing code that no longer exists.
     expect(found).toEqual(Object.keys(BOUNDARIES).sort());
   });
@@ -94,10 +79,8 @@ describe("every provider boundary answers for the other end's text", () => {
     for (const [file, discharge] of Object.entries(BOUNDARIES)) {
       const src = codeOnly(await Bun.file(file).text());
       if (discharge === "throughProvider") {
-        // Per ENTRY POINT, not per file. Checking the file only asks whether the wrapper appears
-        // somewhere in it, and a module with two exported calls satisfies that with one of them
-        // wrapped — which is exactly the half-converted shape this whole change is about. Removing
-        // the wrapper from `embedQuery` alone passed the file-level version of this check.
+        // NOTE: per ENTRY POINT, not per file: a file-level check is satisfied by a module with two
+        // exported calls and only one of them wrapped (the half-converted shape).
         const entries = src.split(/export async function /).slice(1);
         if (entries.length === 0) {
           offenders.push(

@@ -107,8 +107,8 @@ describe("readCappedBytes", () => {
   });
 
   test("a download one byte over the limit is refused, and stops being read", async () => {
-    // Both halves matter: refusing is the contract, and stopping is why this exists — the shape it
-    // replaces buffered the whole file before deciding it was too big.
+    // NOTE: both halves matter: refusing is the contract, and stopping is why this exists, since
+    // buffering the whole file before deciding it is too big is the shape this avoids.
     let produced = 0;
     let cancelled = false;
     const res = new Response(
@@ -157,9 +157,9 @@ describe("fetchBoundedBytes", () => {
   }
 
   test("a `readWhen` that says no cancels the body instead of reading it", async () => {
-    // The decision is made on the HEADERS. A caller that will refuse a download for its declared
-    // size must not spend the cap — and, on a slow link, its whole budget — discovering what the
-    // headers already said.
+    // NOTE: the decision is made on the HEADERS. A caller that will refuse a download for its
+    // declared size must not spend the cap (and, on a slow link, its whole budget) discovering what
+    // the headers already said.
     const { seen, res } = pullCounter();
     const { body } = await fetchBoundedBytes(
       "https://8.8.8.8/x",
@@ -198,8 +198,8 @@ describe("fetchBoundedBytes", () => {
 
 describe("fetchBounded", () => {
   test("the bound covers the BODY, not only the headers", async () => {
-    // The measured defect (#464): headers at once, body never finishes, and the call was still
-    // pending at 3,002ms under a 300ms bound.
+    // NOTE: headers at once and a body that never finishes: the call has to settle at the bound
+    // instead of staying pending.
     const startedAt = Date.now();
     const err = (await fetchBounded(
       "https://8.8.8.8/x",
@@ -279,9 +279,9 @@ describe("fetchBounded", () => {
   });
 
   test("a signal that was already aborted cancels before anything is sent", async () => {
-    // `abort` fires once. A signal that fired before the listener was attached never reaches it, so
-    // without an explicit check the caller's cancellation is simply ignored and the request goes
-    // out — the one case where relaying by listener alone is not enough.
+    // NOTE: `abort` fires once. A signal that fired before the listener was attached never reaches
+    // it, so without an explicit check the caller's cancellation is ignored and the request goes
+    // out: relaying by listener alone is not enough.
     const seen: { aborted?: boolean } = {};
     await fetchBounded(
       "https://8.8.8.8/x",

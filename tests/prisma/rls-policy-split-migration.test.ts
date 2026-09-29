@@ -2,16 +2,11 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { Client } from "pg";
 import { FLEET_ROLE_FN } from "@/lib/tenancy/fleet-role";
 
-// The migration that splits the tenant policy is driven off the CATALOG rather than off a list of
-// tables (the list is the thing that goes stale — `tenant_isolation` was written for 38 tables in
-// the init migration and four later ones added their own). That buys correctness on any database
-// and costs one failure mode: a loop over a catalog that does not look the way it assumed completes
-// successfully and silently, leaving half a schema split.
-//
-// So the migration ends in its own count assertion, and this file is what proves that assertion
-// fires — asked on a MINIMAL database rather than the suite's, because the state it guards against
-// cannot exist there. Deleting the block turns the second test red; nothing else in the suite
-// notices, which is why it is here.
+// The tenant-policy split migration is driven off the CATALOG rather than a list of tables, since a
+// list goes stale. The cost is one failure mode: a loop over a catalog that does not look the way it
+// assumed completes silently, leaving half a schema split. So the migration ends in its own count
+// assertion, and this file proves that assertion fires, on a MINIMAL database because the state it
+// guards against cannot exist in the suite's. Delete the block and only the second test turns red.
 
 const MIGRATION =
   "prisma/migrations/20260827000000_rls_split_tenant_and_fleet_policies/migration.sql";
@@ -91,9 +86,9 @@ describe.skipIf(!dbUp)("the RLS policy split migration", () => {
   afterAll(async () => {
     if (su) {
       await su.query(`DROP DATABASE IF EXISTS ${PROBE_DB} WITH (FORCE)`);
-      // The role the migration created here, whose NAME carries the probe database. Dropping a
-      // database does not drop a role — measured on this cluster as 40 leftovers from earlier runs
-      // of this suite, which is the same accumulation `migrate dev` causes with its shadow database.
+      // NOTE: The role the migration created here, whose NAME carries the probe database. Dropping a
+      // database does not drop a role, so without this every run leaves one behind (the same accumulation
+      // `migrate dev` causes with its shadow database).
       for (const { rolname } of (
         await su.query<{ rolname: string }>(
           "SELECT rolname FROM pg_roles WHERE rolname LIKE $1",

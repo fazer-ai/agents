@@ -3,51 +3,21 @@ import { Glob } from "bun";
 import { codeOnly } from "@/tests/utils/source-text";
 
 // A TEARDOWN THAT HANDS BACK THE NAMESPACE `await import()` RETURNED PUTS NOTHING BACK.
-//
-// `mock.module(spec, factory)` rewrites the module registry for the WHOLE process, and it rewrites
-// the live namespace object in place. So a file that saves the namespace first and re-registers it
-// afterwards is handing the registry the object the rewrite already changed:
-//
-//     const service = await import("@/modules/rag/service");
-//     mock.module("@/modules/rag/service", () => ({ ...service, listX: stub }));
-//     afterAll(() => mock.module("@/modules/rag/service", () => service));   // <- undoes nothing
-//
-// It reads as a cleanup, it is what a reviewer expects to see, and the stub survives it for every
-// file that runs afterwards. tests/lib/module-mock-package.test.ts already says this in prose. This
-// is the same sentence, enforced.
-//
-// Measured on 2026-08-30, over `bun test --shard=k/4` against a clean main: six files were carrying
-// this shape and two of them were reachable in the order the shards give.
-//
-//   - tests/api/v1/knowledge-tenant-context.test.ts stubbed `listKnowledgeBases` to answer `[]`, and
-//     tests/modules/tenant-selector-entry-points.test.ts, which calls the real one to prove it
-//     REFUSES a dead tenant selector, got the stub. Nothing was refused. Two failures in shard 1/4.
-//   - tests/api/v1/query-filter-refusal.test.ts stubbed `listExecutionLogs` and `listAudit` the same
-//     way, and tests/modules/flowlog.test.ts then read none of its own rows back, reported as a
-//     tenant unable to see its own data, which is the shape of an RLS defect. Three failures in
-//     shard 4/4, across two files, neither of which stubs anything.
-//
-// None of the five failures named the file at fault, which is why this is a source sweep and not a
-// runtime check: the cost is paid somewhere else, so only the source can name the cause.
-//
-// WHAT IS NOT FLAGGED, and the distinction is the whole decision: a factory returning an object
-// LITERAL is fine, because `{ ...service }` taken before the rewrite is a copy and the copy still
-// holds the original functions. What is flagged is a factory returning a bare identifier that this
-// file bound from `await import(...)`. The two are indistinguishable at the call site, so the sweep
-// resolves the binding instead of reading the call.
-//
-// THE FIX IS NEVER A BETTER TEARDOWN. `spyOn(namespaceObject, "name")` keeps the original value and
-// `mockRestore()` puts that value back, per property, without touching the registry at all. Every
-// file named above now does that.
+// `mock.module` rewrites the registry for the whole process AND the live namespace in place, so
+// `afterAll(() => mock.module(spec, () => service))` re-registers the stub while reading as a
+// cleanup. The failure lands in a later file that stubs nothing, so only a source sweep names the
+// cause. Not flagged: a factory returning an object LITERAL (`{ ...service }` taken before the
+// rewrite is a copy of the originals). Flagged: a bare identifier bound from `await import(...)`,
+// found by resolving the binding. The fix is never a better teardown: `spyOn(namespace, "name")`
+// with `mockRestore()` restores per property without touching the registry.
 
 const NAMESPACE_BINDING =
   /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*await\s+import\s*\(/g;
-// A factory that is an arrow returning a bare identifier and nothing else. The specifier is left
-// unnamed in this sentence on purpose: the package sweep next door reads raw source, so spelling a
-// quoted bare specifier inside a `mock.module(` here would be counted as a stub of a package by
-// that name. The
-// specifier is matched as `"[^"]*"` rather than `"[^"]+"` because this runs over `codeOnly` output,
-// where a string body is blanked and an EMPTY pair of quotes is what a real specifier looks like.
+// A factory that is an arrow returning a bare identifier and nothing else. The specifier stays
+// unnamed here on purpose: the package sweep next door reads raw source, so a quoted bare specifier
+// inside a `mock.module(` in this comment would count as a stub of that package. It is matched as
+// `"[^"]*"`, not `"[^"]+"`, because `codeOnly` blanks string bodies and an EMPTY pair of quotes is
+// what a real specifier looks like there.
 const UNDO_BY_IDENT =
   /mock\.module\(\s*"[^"]*"\s*,\s*\(\s*\)\s*=>\s*([A-Za-z_$][\w$]*)\s*\)/g;
 
@@ -101,8 +71,8 @@ describe("a module stub is undone by restoring, not by re-registering", () => {
     ).toEqual([]);
   });
 
-  // A sweep that reads nothing passes, and passing on an empty read is the failure this file exists
-  // to prevent. The tree no longer holds the shape, so what has to be non-empty is the INPUT.
+  // NOTE: a sweep that reads nothing passes. The tree holds no instance of the shape, so what has to
+  // be non-empty is the INPUT.
   test("the sweep reads the tree", async () => {
     const files = await testSources();
     expect(files.length).toBeGreaterThan(400);

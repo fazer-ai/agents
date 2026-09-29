@@ -6,28 +6,17 @@ import { describe, expect, test } from "bun:test";
 import { Glob } from "bun";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 
-// Every `BigInt` in the tree whose argument is not a literal, and the reason each one is allowed.
-//
-// `src/lib/db-id.ts` has named `BigInt(params.id)` as the spelling to avoid since it was written,
-// and the count when the path half of this fence was added was ONE HUNDRED sites across eighteen
-// controllers (#371). The body half came to nineteen more (#407), and two rounds of narrowing
-// taught the shape this file ended up in.
-//
-// It reads ALL of `src`, not `src/api`, because the parse a body id needs happens in a service as
-// often as in a handler, and because the transports that are not HTTP at all — an MCP tool's
-// arguments, an agent-export bundle, a `vault:<id>` reference, a scheduler payload — reach the same
-// columns. It matches on the ARGUMENT rather than on a list of variable names, because a pattern
-// keyed on `params|body|query|args` cannot see `BigInt(r.slice(…))` or `BigInt(parts[2])`, and both
-// of those were real sites: the review round that caught them found seven copies of the vault-ref
-// slice, four of which spelled the prefix as a literal.
-//
-// And it is a SOURCE sweep, not a request sweep: the wire behaviour is covered in
-// tests/api/v1/route-id-refusal.test.ts and tests/api/v1/body-id-refusal.test.ts, and those files
-// can only reach routes they can call. What a site WROTE is visible here the moment it is written.
+// Every `BigInt` in the tree whose argument is not a literal, and the reason each one is allowed
+// (`src/lib/db-id.ts` names `BigInt(params.id)` as the spelling to avoid). It reads ALL of `src`,
+// because body ids are parsed in services too and MCP tools, export bundles, `vault:<id>` refs and
+// scheduler payloads reach the same columns. It matches on the ARGUMENT, since a pattern keyed on
+// `params|body|query|args` cannot see `BigInt(r.slice(…))` or `BigInt(parts[2])`. A SOURCE sweep,
+// not a request sweep: tests/api/v1/route-id-refusal.test.ts and body-id-refusal.test.ts cover the
+// wire, but only for routes they can call.
 
 // A `BigInt` whose argument is not a caller's id, keyed by the argument text so that a NEW call in
-// an already-listed file still fails. Asserted in both directions — an entry that stops matching is
-// describing code that no longer exists — and size-pinned, so silencing a new site costs a second,
+// an already-listed file still fails. Asserted in both directions (an entry that stops matching
+// describes code that no longer exists) and size-pinned, so silencing a new site costs a second,
 // visible edit rather than an append.
 const NOT_A_CALLERS_ID: Record<string, string> = {
   "src/lib/db-id.ts | raw":
@@ -64,19 +53,13 @@ const NOT_A_CALLERS_ID: Record<string, string> = {
     "the id of the document row this tool just issued.",
 };
 
-// Comments and string CONTENTS blanked to spaces of the same length, so a `BigInt(` quoted inside a
-// sentence is not mistaken for a call. `db-id.ts` spells the forbidden call out twice in its own
-// header, and an error message can quote it too; without this the sweep reports its own
-// documentation as the offence.
-//
-// Length-PRESERVING rather than removing, because the argument text is then sliced out of the
-// original source at these offsets. Collapsing a string to nothing made `slice("vault:".length)`
-// and `slice("other:".length)` the same waiver key, so one entry would silently cover a call it was
-// never argued for. Measured on CI, where the ninth vault-ref copy came back as `ref.slice("".length)`.
-// Whether the `/` at `at` opens a regex literal rather than being division. Decided by the last
-// significant character before it, which is how every hand-written JS scanner tells the two apart:
-// after a value (identifier, literal, `)`, `]`) a slash divides; after an operator, a punctuator or
-// a keyword it opens a pattern.
+// `blankNonCode` (below) blanks comments and string CONTENTS to spaces of the same length, so a
+// `BigInt(` quoted in prose or an error message is not a call. Length-PRESERVING because the argument
+// text is sliced from the original source at these offsets: collapsing strings would make
+// `slice("vault:".length)` and `slice("other:".length)` one waiver key.
+// `startsRegex`: whether the `/` at `at` opens a regex literal rather than dividing. After a value
+// (identifier, literal, `)`, `]`) a slash divides; after an operator, punctuator or keyword it opens
+// a pattern.
 export function startsRegex(src: string, at: number): boolean {
   let i = at - 1;
   while (i >= 0 && /\s/.test(src[i] as string)) i--;
@@ -117,10 +100,10 @@ export function blankNonCode(src: string): string {
       if (out[i] !== "\n") out[i] = " ";
     }
   };
-  // One frame per template literal being walked. `depth < 0` means the walk is in the template's
-  // TEXT (blank it); `depth >= 0` means it is inside a `${…}` hole, which is code and stays. The
-  // frame is a stack because a hole can hold another template. Treating a backtick as an ordinary
-  // quote blanked the holes with the text, and `` `${BigInt(body.id)}` `` went unseen.
+  // NOTE: one frame per template literal being walked. `depth < 0` means the walk is in the
+  // template's TEXT (blank it); `depth >= 0` means it is inside a `${…}` hole, which is code and
+  // stays. A stack because a hole can hold another template; blanking holes with the text would hide
+  // `` `${BigInt(body.id)}` ``.
   const frames: { chunk: number; depth: number }[] = [];
   let i = 0;
   while (i < src.length) {
@@ -174,10 +157,9 @@ export function blankNonCode(src: string): string {
       i = Math.min(j + 1, src.length);
       continue;
     }
-    // A regex literal, whose body is not code and whose slashes are not comment openers. Skipping
-    // it matters in both directions: `/https?:\/\//` read as a line comment blanked the rest of
-    // the line, hiding a cast written after it, and `/BigInt\(params\./` read as code would be
-    // reported as a call that was never made.
+    // NOTE: a regex literal, whose body is not code and whose slashes are not comment openers. Read
+    // as a line comment, `/https?:\/\//` would blank a cast written after it; read as code,
+    // `/BigInt\(params\./` would be reported as a call that was never made.
     if (c === "/" && startsRegex(src, i)) {
       let j = i + 1;
       let inClass = false;
@@ -247,16 +229,14 @@ export function bigIntArgs(src: string): string[] {
       }
     }
     if (end !== -1) {
-      // The trailing comma a formatter adds when the call wraps is not part of the argument, and a
+      // NOTE: the trailing comma a formatter adds when the call wraps is not part of the argument, and a
       // waiver keyed with one would stop matching the day the line fits on one line again.
       const tidy = (text: string) =>
         text.replace(/\s+/g, " ").trim().replace(/,$/, "").trim();
       const arg = tidy(src.slice(at + 7, end));
-      // WHOLLY a literal, judged on the blanked copy where a string's contents are spaces. Judging
-      // by the first character instead classified `BigInt("0" + params.id)` as a constant and
-      // dropped it from the sweep — an argument that starts with a literal is not a literal. A
-      // template literal is never treated as one: either it interpolates, or it is a constant
-      // written the one way that hides interpolation from this check.
+      // NOTE: WHOLLY a literal, judged on the blanked copy where a string's contents are spaces. An
+      // argument that starts with a literal is not a literal (`BigInt("0" + params.id)`). A template
+      // literal never counts as one: either it interpolates, or it hides interpolation from this check.
       const blanked = tidy(code.slice(at + 7, end));
       const isLiteral =
         /^(["'] *["']|[0-9][0-9_]*n?|0[xXoObB][0-9a-fA-F_]*n?)$/.test(blanked);
@@ -268,9 +248,8 @@ export function bigIntArgs(src: string): string[] {
 }
 
 // The calls a ledger does not account for. A waiver covers ONE call, not a spelling: waiving by key
-// alone meant a file could gain a second `BigInt(raw)` beside the one that was argued for, and the
-// sweep would stay green — the exact hole a tree-wide guard exists to close. Separate from the
-// sweep so the rule can be shown a case the tree does not currently contain.
+// alone would let a file gain a second `BigInt(raw)` beside the argued one while the sweep stays
+// green. Separate from the sweep so the rule can be shown a case the tree does not contain.
 export function unwaived(
   counts: Map<string, number>,
   ledger: Record<string, string>,
@@ -287,10 +266,10 @@ export function unwaived(
 async function sources(): Promise<Map<string, string>> {
   const files = new Map<string, string>();
   for await (const file of new Glob("src/**/*.{ts,tsx}").scan(".")) {
-    // RAW on purpose. `bigIntArgs` runs its own `blankNonCode` for the detection and then takes the
+    // NOTE: RAW on purpose. `bigIntArgs` runs its own `blankNonCode` for detection and takes the
     // argument's TEXT as the ledger key, so pre-stripping rewrites the keys: `BigInt(ref.slice(
     // "vault:".length))` becomes an argument full of spaces and the waiver stops matching. The one
-    // sweep in this family that must not be handed stripped source (found by review).
+    // sweep in this family that must not be handed stripped source.
     files.set(file, await Bun.file(file).text());
   }
   return files;
@@ -307,7 +286,7 @@ describe("a caller's id is parsed, never cast", () => {
     }
     const offending = unwaived(counts, NOT_A_CALLERS_ID);
     expect(offending).toEqual([]);
-    // …and the other direction: a waiver describing code that no longer exists is a waiver that
+    // NOTE: …and the other direction: a waiver describing code that no longer exists is a waiver that
     // would silently cover the next call written in its place.
     expect(Object.keys(NOT_A_CALLERS_ID).filter((k) => !counts.has(k))).toEqual(
       [],
@@ -341,8 +320,8 @@ describe("a caller's id is parsed, never cast", () => {
     expect(files.has("src/modules/agents/service.ts")).toBe(true);
   });
 
-  // The control: the extractor has to find the shapes this fence exists for, INCLUDING the two the
-  // earlier name-based patterns could not see, and leave the parses and the literals alone.
+  // NOTE: the control: the extractor has to find the shapes this fence exists for, including the two a
+  // name-based pattern cannot see, and leave the parses and the literals alone.
   test("the extractor finds every shape a cast can take", () => {
     expect(
       bigIntArgs(
@@ -365,9 +344,8 @@ describe("a caller's id is parsed, never cast", () => {
     ]);
   });
 
-  // An argument that STARTS with a literal is not a literal, and the difference is the whole sweep:
-  // judged by first character, `BigInt("0" + params.id)` was dropped as a constant while deriving
-  // its value from the path.
+  // NOTE: an argument that STARTS with a literal is not a literal: judged by first character,
+  // `BigInt("0" + params.id)` would be dropped as a constant while deriving its value from the path.
   test("only a wholly literal argument is dropped", () => {
     expect(
       bigIntArgs(
@@ -386,39 +364,39 @@ describe("a caller's id is parsed, never cast", () => {
     expect(bigIntArgs("BigInt(raw)\nBigInt(raw)")).toEqual(["raw", "raw"]);
   });
 
-  // A `${…}` hole is code, not text. Blanking it with the template's text hid a cast written inside
-  // one — the argument is caller-controlled either way, and the backtick around it is incidental.
+  // NOTE: a `${…}` hole is code, not text: the argument is caller-controlled either way, and the backtick
+  // around it is incidental.
   test("a cast inside a template interpolation is still a cast", () => {
     expect(
       bigIntArgs("const key = `t:${BigInt(body.id)}:${BigInt(q.n)}`;"),
     ).toEqual(["body.id", "q.n"]);
-    // Nested one deep, and the surrounding TEXT still counts as text: `BigInt(` written in the
-    // literal part is not a call — before the hole and after the last one alike, which is the
-    // chunk a walk that only blanks on the way IN forgets.
+    // NOTE: nested one deep, and the surrounding TEXT still counts as text: `BigInt(` in the literal
+    // part is not a call, before the hole and after the last one alike (the chunk a walk that only
+    // blanks on the way IN forgets).
     expect(
       bigIntArgs("`a BigInt(x) b ${ `${BigInt(raw)}` } c BigInt(z) d`"),
     ).toEqual(["raw"]);
-    // A brace inside the hole is the hole's, not its terminator. Miscounting it ends the hole at
+    // NOTE: a brace inside the hole is the hole's, not its terminator. Miscounting it ends the hole at
     // the object's `}` and reads the rest of the line as text, which swallows the call after it.
     expect(bigIntArgs("`${ fn({ a: 1 }) + BigInt(body.id) }`")).toEqual([
       "body.id",
     ]);
   });
 
-  // A regex literal is neither code nor a comment opener, and getting it wrong hides calls in both
-  // directions: `\\/\\/` inside a pattern read as `//` blanked the rest of the line, and a pattern
-  // that spells the forbidden call would be reported as a call nobody wrote.
+  // NOTE: a regex literal is neither code nor a comment opener. Wrong either way hides calls: `\\/\\/`
+  // inside a pattern read as `//` blanks the rest of the line, and a pattern that spells the
+  // forbidden call would be reported as a call nobody wrote.
   test("a regex literal is skipped, and does not swallow the line after it", () => {
     expect(
       bigIntArgs("const re = /https?:\\/\\//; const id = BigInt(body.id);"),
     ).toEqual(["body.id"]);
-    // Both spellings of the call inside a pattern: escaped, as a sweep for it would write, and
+    // NOTE: both spellings of the call inside a pattern: escaped, as a sweep for it would write, and
     // unescaped, where the parens are a capture group and the text reads exactly like a call.
     expect(bigIntArgs("const OFFENDING = /BigInt\\(params\\.id\\)/;")).toEqual(
       [],
     );
     expect(bigIntArgs("const g = /BigInt(params.id)/;")).toEqual([]);
-    // A character class can hold an unescaped slash, so the scan has to leave the class before it
+    // NOTE: a character class can hold an unescaped slash, so the scan has to leave the class before it
     // takes one for the closing delimiter.
     expect(bigIntArgs("const re = /[/x]+/; BigInt(q.n);")).toEqual(["q.n"]);
   });
@@ -444,9 +422,9 @@ describe("a caller's id is parsed, never cast", () => {
     expect(bigIntArgs(src)).toEqual([]);
   });
 
-  // …and a string INSIDE an argument survives verbatim, which is what keeps two waivers apart. The
-  // blanking exists to stop a quoted call from being found, not to erase the argument's own text:
-  // erasing it collapsed every `slice("<prefix>".length)` in the tree onto one key.
+  // NOTE: …and a string INSIDE an argument survives verbatim, which is what keeps two waivers apart. The
+  // blanking stops a quoted call from being found; erasing the argument's own text would collapse
+  // every `slice("<prefix>".length)` in the tree onto one key.
   test("two calls differing only inside a string literal are two keys", () => {
     expect(
       bigIntArgs(

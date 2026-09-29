@@ -1,15 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
 // `scripts/db-bootstrap.ts` and `scripts/db-bootstrap.sql` provision the same thing by two routes:
-// the first runs unattended on every container boot, the second is the by-hand psql equivalent for a
-// bare Postgres (both say so in their headers). They are the same question asked in two places, and
-// that is the shape that goes stale — measured: the membership RECONCILE was added to the TypeScript
-// and not to the SQL, so the documented manual path went on leaving a recreated database readable by
-// the previous installation's runtime role. Nothing was red, because the `.sql` has no test at all.
-//
-// This is the cheapest fence that would have caught it. It cannot execute the psql script (the
-// `\set` / `:'var'` syntax is a psql feature, not SQL), so it asks whether each file CONTAINS the
-// construct for each invariant. A rename breaks it loudly, which is the failure mode to want here.
+// the first runs unattended on every container boot, the second is the by-hand psql equivalent for
+// a bare Postgres. Two copies of one answer drift silently (the `.sql` has no test of its own): a
+// membership RECONCILE in one and not the other leaves a recreated database readable by the
+// previous installation's runtime role. The psql script cannot run here (`\set` / `:'var'` are psql
+// features), so this asks whether each file CONTAINS the construct for each invariant; a rename
+// breaks it loudly, which is the failure mode to want.
 
 const INVARIANTS: Array<{
   what: string;
@@ -45,11 +42,10 @@ const INVARIANTS: Array<{
     sql: /INHERITS/,
   },
   {
-    // The half that covers the FIRST boot: the grant below is skipped there because the migration
-    // has not created the function yet, and on an install that revoked PUBLIC's default the
-    // function would then carry nothing. ALTER DEFAULT PRIVILEGES is scoped to the role that runs
-    // it — the same role that creates the function one step later — so it reaches forward.
-    // Measured on a database with the default revoked: EXECUTE is true after the first boot.
+    // NOTE: The half that covers the FIRST boot: the grant below is skipped there because the migration
+    // has not created the function yet, and on an install that revoked PUBLIC's default the function
+    // would then carry nothing. ALTER DEFAULT PRIVILEGES is scoped to the role that runs it, the same
+    // role that creates the function one step later, so it reaches forward.
     what: "sets a DEFAULT privilege so the resolver is executable when it is created",
     ts: /ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO \$\{ident\}/,
     sql: /ALTER DEFAULT PRIVILEGES IN SCHEMA public'\s*\n?\s*' GRANT EXECUTE ON FUNCTIONS TO %I/,
@@ -83,8 +79,8 @@ const INVARIANTS: Array<{
     sql: /'CREATEDB'[\s\S]{0,200}'CREATEROLE'[\s\S]{0,200}'REPLICATION'/,
   },
   {
-    // PL/pgSQL's RAISE knows only `%`, so an identifier it prints has to be quoted in the ARGUMENT.
-    // Measured: `%I` there emits the value followed by a literal `I` and quotes nothing.
+    // NOTE: PL/pgSQL's RAISE knows only `%`, so an identifier it prints has to be quoted in the
+    // ARGUMENT: `%I` there emits the value followed by a literal `I` and quotes nothing.
     what: "quotes identifiers it PRINTS, in the argument rather than the format string",
     ts: /quote_ident\(\$1::text\)/,
     sql: /quote_ident\(v_fleet\), quote_ident\(v_fleet\)/,
@@ -115,14 +111,12 @@ const INVARIANTS: Array<{
     sql: /pg_stat_activity[\s\S]{0,200}?a\.usename = r\.rolname/,
   },
   {
-    // And the session is only HALF of it. Measured: a stale installation, after its database was
-    // dropped and recreated under the same name, reconnects and presents the same open session as a
-    // rotation — so the exemption is DECLARED by the operator, and the session only bounds it. A
-    // file that kept inferring it from the session alone passes the invariant above and is wrong.
-    // Reachability is asked with the SAME attribute set the direct list refuses, minus LOGIN, which
-    // does not survive a SET ROLE. A file asking only about the two that defeat RLS calls a fleet
-    // role that can become CREATEROLE unprivileged — measured, and the runtime role then minted a
-    // cluster role through it.
+    // NOTE: And the session is only HALF of it. A stale installation whose database was dropped and
+    // recreated under the same name reconnects with the same open session as a rotation, so the
+    // exemption is DECLARED by the operator and the session only bounds it. Reachability is asked with
+    // the SAME attribute set the direct list refuses, minus LOGIN (it does not survive a SET ROLE):
+    // asking only about the two that defeat RLS calls a fleet role that can become CREATEROLE
+    // unprivileged, and the runtime role could mint a cluster role through it.
     what: "counts CREATEDB, CREATEROLE and REPLICATION as reachable privilege too",
     // By the CONSTANT on this side, because the columns live in the shared module the two callers
     // import — which is the arrangement, not a gap. The test below holds that module to them.
@@ -135,9 +129,9 @@ const INVARIANTS: Array<{
     sql: /r\.rolname = ANY \(v_retained\)/,
   },
   {
-    // A `fleet_super_admin` policy naming SOMEONE ELSE's fleet role is what a restore or a clone
-    // under a different name leaves behind, and measured across two real databases the source
-    // installation's runtime role then read 30 of 30 rows of the restored one.
+    // NOTE: A `fleet_super_admin` policy naming SOMEONE ELSE's fleet role is what a restore or a clone
+    // under a different name leaves behind, and through it the source installation's runtime role
+    // reads every row of the restored one.
     what: "revokes the privileges of a FOREIGN fleet role named by the policies here",
     ts: /REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I/,
     sql: /REVOKE ALL ON ALL TABLES IN SCHEMA public FROM %I/,
@@ -150,17 +144,16 @@ const INVARIANTS: Array<{
     sql: /LIKE 'fazerai\\_fleet\\_%'/,
   },
   {
-    // The foreign role's CLUSTER-WIDE membership is deliberately untouched: it belongs to a source
-    // installation still running on its own database, and revoking it from here would break that
-    // one. Measured: the source keeps reading its own 30 of 30 after this runs.
+    // NOTE: The foreign role's CLUSTER-WIDE membership is deliberately untouched: it belongs to a
+    // source installation still running on its own database, and revoking it from here would break it.
     what: "says it leaves the foreign role's cluster-wide membership alone",
     ts: /cluster-wide membership is[\s\S]{0,40}?deliberately untouched/,
     sql: /cluster-wide[\s\S]{0,200}?left\s*\n?--\s*alone on purpose/,
   },
   {
-    // Severity, not just presence, and the two files diverged on exactly this: one raised and the
-    // other warned past a membership that can read every tenant. A fence that only asks whether
-    // both mention the state would have passed that.
+    // NOTE: Severity, not just presence: one file raising and the other warning past a membership that
+    // can read every tenant is the divergence to catch, and a fence that only asks whether both mention
+    // the state passes it.
     what: "REFUSES a membership it could not clear, rather than warning past it",
     ts: /if \(after\.length > 0\) \{[\s\S]{0,600}?throw new Error\(/,
     sql: /IF v_left IS NOT NULL THEN[\s\S]{0,200}?RAISE EXCEPTION/,
@@ -179,9 +172,8 @@ const sql = await Bun.file(
 ).text();
 
 // PL/pgSQL's `RAISE` knows only `%`. `%I` there is not an identifier placeholder: it emits the value
-// followed by a literal `I` and quotes nothing — measured as `DROP ROLE some_roleI;`, a statement the
-// operator it was written for cannot run. It reads exactly like the `format()` spelling one line
-// away, which is why it survived a review round and appeared TWICE in one file.
+// followed by a literal `I` and quotes nothing (`DROP ROLE some_roleI;`, which the operator cannot
+// run). It reads exactly like the `format()` spelling one line away, so it is easy to miss.
 const migration = await Bun.file(
   new URL(
     "../../prisma/migrations/20260827000000_rls_split_tenant_and_fleet_policies/migration.sql",
@@ -230,11 +222,6 @@ describe("no RAISE prints an identifier through %I", () => {
   });
 });
 
-// The repair has to OUTLIVE the refusal, and in the SQL that is a statement boundary rather than a
-// line of prose. Measured with both in one DO block: the script revoked the foreign role's
-// privileges, raised, and the RAISE rolled the revoke back with it — the restored database read 30
-// of 30 again immediately after the boot that had just announced closing it. At psql's top level
-// each statement is its own transaction, so the two must stay two blocks.
 // The columns the invariant above names by constant. Kept here rather than inlined into the pattern
 // pair, because only one of the twins has a module to import from and a fence that pretended
 // otherwise would be asking the `.ts` about text that is correctly not in it.
@@ -274,6 +261,8 @@ describe("the reachable-privilege set matches the direct one", () => {
   });
 });
 
+// The repair has to OUTLIVE the refusal: in one DO block the RAISE rolls the revoke back with it.
+// At psql's top level each statement is its own transaction, so the two stay two blocks.
 describe("the foreign-fleet repair survives the refusal", () => {
   // Top-level `DO $$ ... $$;` blocks. The script has no nested dollar-quoting, so splitting on the
   // terminator is exact; a future nested `$tag$` would break this loudly rather than quietly.
@@ -289,10 +278,10 @@ describe("the foreign-fleet repair survives the refusal", () => {
     expect(repairing[0]).not.toContain("RAISE EXCEPTION");
   });
 
-  // And it comes after the block that CREATES this database's fleet role, which is a SECOND measured
-  // ordering: the statement the refusal prints names that role, so raised from where the repair sits
-  // the script aborted before provisioning it and pasting the repair answered `role … does not
-  // exist`. Moved to the end, the same paste rewrites every policy to the name the copy derives.
+  // NOTE: And it comes after the block that CREATES this database's fleet role: the statement the
+  // refusal prints names that role, so raised any earlier the script would abort before provisioning
+  // it and pasting the repair would answer `role … does not exist`. At the end, the same paste
+  // rewrites every policy to the name the copy derives.
   test("the refusal comes after both the repair and the provisioning", () => {
     const refusing = blocks.filter(
       (b) =>

@@ -1092,18 +1092,12 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
   });
 
   // ── THE CLAIM IS UNORDERABLE UNTIL THE RECONCILE STAMPS IT ──
-  //
-  // The row moves to `open` before the toggle goes out, and that write claims no version (the toggle
-  // endpoint renders none). Deliveries for one conversation are dispatched detached and never
-  // serialized, so anything committing between the claim and the reconcile does so against a row
-  // whose `chatwoot_status_at` still names the state BEFORE the claim — and wins.
+  // The claim moves the row to `open` with no version (the toggle renders none), and deliveries run
+  // detached: a commit between claim and reconcile sees the old `chatwoot_status_at` and wins.
 
-  // WAY IN ONE: a customer message Chatwoot serialized before it committed the toggle. Its snapshot
-  // still says `pending`, and the reopen exception is the one rule that lets a message move status.
-  //
-  // Asserted on the TURN and not on the row, because the row is repaired a moment later by the
-  // reconcile and the turn is not: by then the agent has already spoken into a conversation a
-  // colleague is holding.
+  // WAY IN ONE: a message Chatwoot serialized before the toggle still says `pending`, and the
+  // reopen exception lets a message move status. Asserted on the TURN, not the row: the reconcile
+  // repairs the row, but by then the agent has spoken into a colleague's conversation.
   test("a customer message delivered while the toggle is on the wire drives no turn", async () => {
     const conv = 8560;
     await deliver(conv, { ...customerSays("oi") });
@@ -1277,6 +1271,9 @@ describe.skipIf(!dbUp)("a human reply ends the agent's attendance", () => {
     expect((await convRow(conv))?.status).toBe("open");
   });
 
+  // The compare-and-swap does not order the claim against a mirror transaction that has already
+  // READ the row and not yet written, which would commit over the `open`. The lock the mirror and
+  // the reconcile share orders them, so the claim queues behind whoever holds it.
   test("the claim waits for whoever holds the conversation", async () => {
     const conv = 8568;
     await deliver(conv, { ...customerSays("oi") });

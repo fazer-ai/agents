@@ -470,12 +470,12 @@ describe.skipIf(!dbUp)("episodeTestActivatedAt", () => {
     }
   });
 
-  // Why this module takes the caller's connection: every call site asks from inside a scoped
-  // transaction, and `runScopedOn` PINS a pooled connection for its length (the ladder's fences hold
-  // an advisory lock there). A read on its OWN connection asks a pinned pool for a second one, and
-  // `DB_POOL_MAX=1` is a supported setting. The failure is SILENT: a failed read is swallowed as "no
-  // activation" (an unknown answer means the row's own value, never an invented refusal), so the
-  // agent would judge by the widget row alone with nothing failing to say so.
+  // A failed sibling read answers "no activation", so the test agent stays silent: the OPPOSITE of
+  // the ladder's fail-open liveness fence, because here the cost is a test agent messaging a real
+  // lead. That swallow makes a pool starved by a pinned transaction SILENT: every call site asks
+  // inside one (`runScopedOn` PINS a connection; the ladder's fences hold an advisory lock there),
+  // a read on its OWN connection asks for a second, `DB_POOL_MAX=1` is supported, and nothing fails
+  // to say so.
   test("the sibling read answers inside a pinned transaction, on a pool of one", async () => {
     const at = new Date("2026-08-20T17:00:00Z");
     await stampEntry(ENTRY_CONV, at);

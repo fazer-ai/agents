@@ -646,15 +646,13 @@ describe.skipIf(!dbUp)(
     });
 
     // ── what a projection may NOT hold ──
-    //
-    // Three of the five families own a field that is large, free-form, or both, and none of the three
-    // is an allowlist on the way in. A row is append-only and readable by every tenant admin, so what
-    // goes on it is the SHAPE of those fields and never their contents.
+    // Three families own a large or free-form field that no allowlist guards on the way in. A row
+    // is append-only and readable by every tenant admin, so it carries their SHAPE, never their
+    // contents.
 
-    // The allowlist is `z.string().min(1).max(255)` per entry and nothing more, and in the editor
-    // it sits beside the URL field, so a pasted URL goes in it, and so does a bare token: `ghp_0123`
-    // and `xoxb-1-2` are things `URL` will call a host, and a JWT has dots. No test on the string
-    // separates the two, so the row carries the COUNT and the live surface carries the names.
+    // Each allowlist entry is just `z.string().min(1).max(255)`, beside the URL field: a pasted URL
+    // lands in it, and so does a token (`ghp_0123` parses as a host, a JWT has dots). No test on
+    // the string separates the two, so the row carries the COUNT and the live surface the names.
     test("a tool's host allowlist reaches the row as a count, not as entries", async () => {
       await clearAudit();
       const created = await createToolDefinition(

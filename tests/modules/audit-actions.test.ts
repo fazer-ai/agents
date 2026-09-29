@@ -8,21 +8,13 @@ import {
 } from "@/lib/audit/actions";
 import { withoutComments } from "@/tests/utils/source-text";
 
-// The console's action filter offers a constant list (see the note on AUDIT_ACTIONS), worth offering
-// only while it agrees with the code that writes the rows, in both directions:
-//   MISSING: a family adds `channel.foo` and the operator cannot pick it.
-//   EXTRA: a producer is deleted and its name stays; the operator reads the empty page as "nothing
-//   happened".
-// The sweep reads through `withoutComments` (a name in PROSE is not a producer), NOT `codeOnly`:
-// the thing looked for IS a string literal, so blanking string bodies would blank the answer.
+// The console's action filter offers a constant list (see AUDIT_ACTIONS), worth offering only while
+// it agrees with the code that writes the rows: MISSING and EXTRA below are the two directions.
 
-// The value expression written after `action:`, up to the comma or brace that ends the property.
-// NOT a literal-initializer match, which misses `action: cond ? "company_logo.clear" : "…set"`;
-// reading the whole expression finds every literal in any shape of it.
-//
-// Depth-aware and string-aware, because the value can contain a nested call, an object, or a comma
-// inside a template. A producer that computes its name from a variable contributes nothing, which is
-// the one gap left and is visible: the entry it needs would show up as `extra` on the list.
+// The whole value expression after `action:`, up to the comma or brace that ends the property, so
+// `cond ? "company_logo.clear" : "company_logo.set"` yields both literals. Depth- and string-aware
+// for nested calls, objects and commas inside templates. A name computed from a variable
+// contributes nothing, and the entry it needs shows up as `extra` on the list.
 function actionValue(code: string, from: number): string {
   let depth = 0;
   let quote: string | null = null;
@@ -51,8 +43,9 @@ function literalsIn(expr: string): string[] {
   return [...expr.matchAll(/"([a-z_]+\.[a-z_]+)"/g)].map((m) => m[1] as string);
 }
 
-// Every `src/**/*.ts` but the list itself, with comments blanked. Read once and shared, because both
-// directions below sweep the same bytes asking different questions.
+// Every `src/**/*.ts` but the list itself, through `withoutComments` (a name in prose is not a
+// producer) and NOT `codeOnly`: the name looked for IS a string literal, and blanking string bodies
+// would blank the answer. Read once and shared: both directions sweep the same bytes.
 async function producerSources(): Promise<string[]> {
   const out: string[] = [];
   for await (const rel of new Bun.Glob("**/*.ts").scan("src")) {

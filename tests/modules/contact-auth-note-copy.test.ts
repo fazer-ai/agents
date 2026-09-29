@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { contactAuthNoteText } from "@/modules/chatwoot/webhook";
 
-// The note earns its space by carrying what is NOT on screen. It used to say "o agente não respondeu
-// automaticamente" on every refusal, including the ones where the deny message had gone out one line
-// above — a note that contradicts the screen. Announcing the opposite ("o contato foi avisado") is
+// The note earns its space by carrying what is NOT on screen. Saying "o agente não respondeu
+// automaticamente" on every refusal, including the ones where the deny message went out one line
+// above, would contradict the screen. Announcing the opposite ("o contato foi avisado") is
 // just as useless, for the same reason: the operator can see that message. So the note says nothing
 // about a copy that WAS delivered, and speaks up in the three cases where nothing reached the
 // customer, which are the ones nobody can see.
@@ -52,7 +52,7 @@ describe("contactAuthNoteText: só diz o que não está na tela", () => {
 
   // The strongest criterion here, and the one that does not depend on the words chosen: with the
   // SAME reason code and the same handoff, the four states must read as four different notes.
-  // Before the fix they were byte-for-byte identical, which is what made the note unreadable.
+  // Identical notes for different outcomes are what makes the note unreadable.
   test("the four outcomes are four distinct notes, and none of them leaks the contact", () => {
     const notas = (["sent", "none", "suppressed", "failed"] as const).map((c) =>
       contactAuthNoteText(denied, true, c),

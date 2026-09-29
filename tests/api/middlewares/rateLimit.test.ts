@@ -113,8 +113,8 @@ describe("rate-limit keying (client address, not the socket peer)", () => {
 
 // Which requests the DCR limiter covers. The budget is 10/min because an open DCR endpoint lets
 // anyone mint OAuth client rows, so a spelling that routes but escapes the limiter is the whole
-// limiter: measured before the fix, 14 registrations through `/register/` under that ceiling, every
-// one a 200 and none carrying a `RateLimit-*` header.
+// limiter: a trailing-slash `/register/` that escapes it takes unlimited registrations, each a 200
+// with no `RateLimit-*` header.
 describe("the DCR limiter covers every spelling that routes", () => {
   const post = (path: string) =>
     new Request(`http://localhost${path}`, { method: "POST" });

@@ -11,6 +11,19 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/check-comments.sh",
+            "timeout": 30,
+            "statusMessage": "Checking comments..."
+          }
+        ]
+      }
     ]
   }
 }

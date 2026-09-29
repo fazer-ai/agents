@@ -15,6 +15,10 @@ export const WAIVER = /\bcomment-waiver:[ \t]*\S/;
 const PROVENANCE =
   /(?<![\w&/#])#\d+\b|\bPR\s*#?\d+\b|\bissues?\s+#\d+\b|\breview,?\s+round\b|\bround\s+\d+\b|\brodada\s+\d+\b|github\.com\/[\w.-]+\/[\w.-]+\/(?:issues|pull)\/\d+/i;
 const OWED_WORK = /\b(TODO|FIXME):/;
+// History told without a number: a finding credited to a reviewer, or the code's earlier behaviour.
+// Precise on purpose: "before the change" in a concurrency sense and "used to" as purpose stay prose.
+const HISTORY =
+  /\b(?:review|codex|copilot)\s+(?:found|flagged|caught|asked)\b|\b(?:found|flagged|caught)\s+by\s+(?:the\s+)?(?:review|codex|copilot)\b|\breview\s+r\d+\b|\(r\d+\)|\bround-\d+\b|\b(?:before|after|until)\s+(?:the|this)\s+(?:fix|refactor|PR)\b|\b(?:the|a)\s+(?:first|earlier|previous|old)\s+(?:version|revision|implementation|spelling)\s+of\s+this\b|\b(?:this|that|it|which|they)\s+used\s+to\b|\bused\s+to\s+be\b|\bmeasured\s+on\s+(?:a\s+real|a\s+live|a\s+production|production)\b|\bthis\s+(?:PR|pull\s+request)\b|\b(?:esta|nesta|desta)\s+PR\b|\bcaso\s+real\s*:/i;
 const NARRATION =
   /\b(measured|medido|real case|caso real|used to|before this change|originally|turned out|we found)\b/i;
 // Text a tool reads rather than a person: a suppression, a type directive, an i18n key, an edition marker.
@@ -106,13 +110,19 @@ const prose = (text: string) =>
 
 const waived = (block: CommentBlock) => WAIVER.test(prose(block.text));
 
-// An issue, PR or review round cited as where the code came from. A `TODO:`/`FIXME:` line may name
-// the issue that tracks the work it owes.
+// Where the code came from, cited (an issue, a PR, a review pass) or told in words. A `TODO:` or
+// `FIXME:` line may name the issue that tracks the work it owes.
 export function citesProvenance(block: CommentBlock): boolean {
   if (waived(block)) return false;
-  return block.text
+  const lines = prose(block.text)
     .split("\n")
-    .some((line) => PROVENANCE.test(line) && !OWED_WORK.test(line));
+    .filter((line) => !OWED_WORK.test(line));
+  // NOTE: history phrases are matched on the joined prose, so a phrase wrapped across two comment
+  // lines is still one phrase; a citation is one token and stays per line.
+  return (
+    lines.some((line) => PROVENANCE.test(line)) ||
+    HISTORY.test(lines.join(" ").replace(/\s+/g, " "))
+  );
 }
 
 export function overCeiling(block: CommentBlock): boolean {

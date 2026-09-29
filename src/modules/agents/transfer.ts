@@ -1343,7 +1343,7 @@ export async function importAgent(
     // The names this bundle grants as its OWN tools, HTTP or code. Read straight off the parsed
     // bundle (no database), because it decides what a settings key MEANS: a rule keyed
     // `assign_label` on an agent that grants a custom tool of that name is about that tool, not
-    // about the native that used to hold the name before this release.
+    // about a native that held the name in an older release.
     const customToolNames = new Set(
       exp.tools.flatMap((g) =>
         g && (g.source === "HTTP" || g.source === "CODE") ? [g.tool] : [],

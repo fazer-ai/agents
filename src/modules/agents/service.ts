@@ -1301,8 +1301,8 @@ function fallbackPair(settings: unknown): {
 const namedOrNull = (v: unknown): string | null =>
   typeof v === "string" && v.trim() ? v.trim() : null;
 
-// WHAT THE WRITE WILL ACTUALLY STORE, which is not the same question on the two transports and was
-// the defect in the first version of this: REST REPLACES the settings column with the bag it was
+// WHAT THE WRITE WILL ACTUALLY STORE, which is not the same question on the two transports: REST
+// REPLACES the settings column with the bag it was
 // handed (`updateData = { ...rest }`), while the MCP patch runs `mergeBehaviorSettings` first and
 // merges a block one level deep. Asking the merge question on the replace path lets
 // `settings: { modelFallback: { model: "new" } }` borrow the stored provider to pass the check and

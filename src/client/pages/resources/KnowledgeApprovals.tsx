@@ -30,8 +30,7 @@ type ApprovalsData = Awaited<
 >["data"];
 type Approval = NonNullable<ApprovalsData>["approvals"][number];
 
-// The knowledge-suggestion approval queue, rendered as a SECTION inside the Knowledge panel (it used
-// to be a top-level page). Reports the pending count up so the Components → Knowledge tab can show a
+// The knowledge-suggestion approval queue, rendered as a SECTION inside the Knowledge panel. Reports the pending count up so the Components → Knowledge tab can show a
 // badge. Renders nothing once the queue is empty (the badge disappears too), so a clean knowledge
 // base has no clutter.
 // The two keys the edit patch carries, spelled the way the route refuses them.

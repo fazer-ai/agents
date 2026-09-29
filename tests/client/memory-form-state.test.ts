@@ -67,10 +67,9 @@ describe("agent editor memory round-trip", () => {
 });
 
 // The Behavior tab's Save is blocked while either of these holds, and the summariser's fields live
-// inside a section the operator can switch OFF, which hides them. The TTS override already carried
-// this precondition, in its adapter and in its own tests; the summariser's arrived calling the
-// shared helper directly and skipped both, which is how review found it. The rule lives in the
-// shared helper now, as a required argument, so these are over that.
+// inside a section the operator can switch OFF, which hides them. The rule lives in the shared
+// helper as a required argument, so a caller cannot skip it the way a direct call could; these are
+// over that helper.
 const AGENT = { provider: "openai", credentialRef: "vault:1", baseURL: "" };
 const BROKEN = {
   provider: "openai-compatible",

@@ -2151,7 +2151,7 @@ export async function returnConversationToAgent(
   );
   // NOTE: the binding itself is re-read LAST of all, after the runnable probe (the longest await
   // left), under the same row lock: a rebind in that window would leave the validation judging the
-  // agent that used to be there. It refuses rather than re-validating, like the move confirmation.
+  // agent that was there before. It refuses rather than re-validating, like the move confirmation.
   const boundNow = await runScopedOn(base, ctx, async (db) => {
     if (nowInbox === null) return null;
     await db.$queryRaw`SELECT id FROM inboxes WHERE chatwoot_instance_id = ${conv.chatwootInstanceId} AND chatwoot_inbox_id = ${nowInbox.chatwootInboxId} FOR NO KEY UPDATE`;

@@ -1547,7 +1547,7 @@ function buildCancelEventTool(
         );
       }
       // 204 No Content is the success shape; 410 Gone means it was already cancelled (idempotent).
-      // BOTH retire the local record, and 410 is the one that used to slip past: the appointment is
+      // BOTH retire the local record, 410 included, which is easy to miss: the appointment is
       // gone in Google either way, and leaving the record behind keeps the follow-up paused and the
       // appointment in the agent's prompt until its start passes. The ownership gate has already run
       // by here — the owner fetch succeeded and its stamp matched — so this is known to be THIS

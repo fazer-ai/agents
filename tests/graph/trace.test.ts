@@ -153,8 +153,8 @@ describe("buildPlaygroundTrace", () => {
 
 // The guardrail row goes to the same places the rows above do — over REST, into MCP, and into a
 // stored transcript — but its text is written by a model that was shown the reply, so the reply's
-// own leaks can come back quoted in it. It used to be spread in whole (`{ type, ...report }`),
-// which is the one path into the trace that skipped the redaction every other path applies.
+// own leaks can come back quoted in it. Spreading it in whole (`{ type, ...report }`) would be the
+// one path into the trace that skips the redaction every other path applies.
 describe("traceGuardrail", () => {
   const report = {
     direction: "output" as const,

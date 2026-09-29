@@ -374,10 +374,9 @@ describe.skipIf(!dbUp)("phase-2 primitives", () => {
   });
 
   test("audit: records a row scoped to the tenant", async () => {
-    // A synthetic action, because this asserts RLS scoping and nothing about the vocabulary. It used
-    // to borrow `tenant.update`, which is Full-only: once `AuditEntry.action` became `AuditAction`,
-    // this file stopped compiling in the Free tree while the master tree stayed green -- caught by
-    // `bun run build:free`, which is the only check that reads the derived tree.
+    // NOTE: a synthetic action, because this asserts RLS scoping and nothing about the vocabulary. A
+    // real one like `tenant.update` is Full-only, so the Free tree would not compile while the master
+    // tree stays green; only `bun run build:free` reads the derived tree.
     const ACTION = syntheticAction("vault_audit.scoped");
     await scoped((db) =>
       recordAudit(db, tenantId, {

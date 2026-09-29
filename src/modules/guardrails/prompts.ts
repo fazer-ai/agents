@@ -19,9 +19,8 @@ export interface GuardrailPromptParams {
 }
 
 // The policy key each check is named by IN THE PROMPT, separate from its description, because the
-// key is also the vocabulary the LOG is allowed to record (GUARDRAIL_CATEGORY_KEYS below). It used
-// to be glued to the front of the description string, so the only place that knew the keys was the
-// model.
+// key is also the vocabulary the LOG is allowed to record (GUARDRAIL_CATEGORY_KEYS below). Glued to the
+// front of the description string, the keys would be known only to the model.
 const CHECK_DEFINITIONS: Record<
   keyof GuardrailChecks,
   { key: string; description: string }

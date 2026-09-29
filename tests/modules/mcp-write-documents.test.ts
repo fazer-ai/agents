@@ -326,9 +326,9 @@ describe.skipIf(!dbUp)("MCP document writes", () => {
   // run, which is the worst possible place to disagree with the apply.
   //
   // The new name has to be one the derived slug collides on and the NAME index does not, which is
-  // what isolates the rule. It used to reuse "Sem prefixo" verbatim, which is also the taken NAME —
-  // so once the dry run started asking the name index (as it must; see the rename test below) that
-  // fixture began failing for the right reason about the wrong rule.
+  // what isolates the rule. Reusing "Sem prefixo" verbatim would hit the taken NAME as well, and
+  // since the dry run asks the name index (see the rename test below) the test would fail for the
+  // right reason about the wrong rule.
   test("a name-only dry run does not judge a slug derived from the name", async () => {
     const [tpl] = await listDocumentTemplates(ctx(), appDb);
     const r = await documentTemplateUpdate(

@@ -238,10 +238,9 @@ export function PromptPanel({
                 "editor.promptVarsHint",
                 "Insert a variable (dates also accept a :format suffix):",
               )}
-              {/* The same `?` as every other piece of help in the console, and not the Info icon
-                  this used to carry: the affordance is learned once, so a second glyph for the same
-                  job is a second thing to learn. It was also a <Tooltip>, which no phone can open
-                  (Popover.tsx). The box drops to `text-xs`: its default size is set for prose, and
+              {/* The same `?` as every other piece of help in the console, not an Info icon: the
+                  affordance is learned once, so a second glyph for the same job is a second thing
+                  to learn. A popover, not a <Tooltip>, which no phone can open (Popover.tsx). The box drops to `text-xs`: its default size is set for prose, and
                   this content is a two-column reference table that wants to stay dense. */}
               <HelpPopover
                 content={<FormatHelpTooltipContent />}

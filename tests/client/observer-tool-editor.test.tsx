@@ -4,13 +4,11 @@ import { afterEach, expect, test } from "bun:test";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 
-// A WATCHER'S TOOLS TAB OFFERS ONLY WHAT ITS TURN CAN RUN (issue #568, review round 30).
-//
-// The monitoring turn builds its Chatwoot client MUTED, and the assembly then drops every tool whose
-// whole point is to put something in front of the customer: the two natives the catalog flags, the
-// document tools, and a toolpack's delivery tools. A grant for one of those is a control that cannot
-// fire — the same class of dead configuration this issue refused at the API, arriving through the
-// editor instead. Grants already saved are left alone: flipping the mode back returns the agent.
+// A WATCHER'S TOOLS TAB OFFERS ONLY WHAT ITS TURN CAN RUN. The monitoring turn builds its Chatwoot
+// client MUTED, and the assembly drops every tool whose point is to put something in front of the
+// customer: the two natives the catalog flags, the document tools, and a toolpack's delivery tools.
+// A grant for one of those is a control that cannot fire. Grants already saved are left alone:
+// flipping the mode back returns the agent.
 
 const { ToolGrantsEditor, offeredPackTools } = await import(
   "@/client/pages/agents/ToolGrantsEditor"
@@ -188,10 +186,9 @@ test("an agent that only observes is not offered the tools its turn would refuse
 });
 
 test("both places a pack's tools are decided read one predicate", async () => {
-  // The auto-grant that fires when an integration is created inside this editor is not reachable
-  // from a test without driving the creation modal, and it is exactly the site that was filtering
-  // nothing. So the two sites share a function instead of a repeated expression, and this asks that
-  // function directly — a mutant would have to re-introduce the duplicate to get past it.
+  // The auto-grant that fires when an integration is created inside this editor is not
+  // reachable without driving the creation modal, so both sites share one function and this asks
+  // that function directly; a mutant would have to re-introduce a duplicate to get past it.
   const tools = [
     { name: "drive_find_file" },
     { name: "drive_send_file", deliversToCustomer: true },
@@ -204,8 +201,8 @@ test("both places a pack's tools are decided read one predicate", async () => {
     "drive_send_file",
   ]);
   expect(offeredPackTools(tools, undefined)).toHaveLength(2);
-  // ...and the source of both call sites names it. Read from the file rather than deduced: this is
-  // the assertion that a second, hand-rolled filter cannot pass (review round 31).
+  // ...and the source of both call sites names it. Read from the file rather than deduced:
+  // this is the assertion that a second, hand-rolled filter cannot pass.
   const src = await Bun.file(
     new URL(
       "../../src/client/pages/agents/ToolGrantsEditor.tsx",
@@ -230,9 +227,8 @@ test("...and an agent that answers is offered all of them", async () => {
   expect(screen.queryAllByText("Documents").length).toBeGreaterThan(0);
 });
 
-// THE OTHER HALF OF THE SAME SCREEN (review round 40). The grant cards stopped offering what a muted
-// turn strips; the preconditions block beside them, and the section index on the left, were still
-// drawn from the unfiltered catalog.
+// THE OTHER HALF OF THE SAME SCREEN. Besides the grant cards, the preconditions block beside them
+// and the section index on the left leave out what a muted turn strips.
 function renderToolsTab(
   observing: boolean,
   rows: { tool: string; scope: string; key: string; value: string }[] = [],

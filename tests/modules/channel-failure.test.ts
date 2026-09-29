@@ -19,7 +19,7 @@ import { type ClaimedJob, completeJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
-// Issue #587: an outgoing attachment the CHANNEL refused after Chatwoot accepted it. The failure
+// An outgoing attachment the CHANNEL refused after Chatwoot accepted it. The failure
 // arrives later, as a `message_updated` carrying `content_attributes.external_error`. A media-class
 // code is answered with the same reply as text, once; anything else is a line naming the code.
 
@@ -61,7 +61,7 @@ function updated(
     error?: string | null;
     sender?: { type: string; id: number } | null;
     transcribed?: string | null;
-    // The whole reply the voice note carries when its speech left an item out (#792).
+    // The whole reply the voice note carries when its speech left an item out.
     replyText?: string;
     byOperator?: boolean;
     event?: string;
@@ -188,7 +188,7 @@ describe("channelFailureOf", () => {
     expect(
       channelFailureOf(updated(4, { error: "999999: new" }), BOT_ID)?.kind,
     ).toBe("unknown");
-    // A title that names media but carries no code is NOT media: the table is by code.
+    // NOTE: A title that names media but carries no code is NOT media: the table is by code.
     expect(
       channelFailureOf(updated(5, { error: "Media upload error" }), BOT_ID),
     ).toMatchObject({ code: null, kind: "unknown" });
@@ -201,7 +201,7 @@ describe("channelFailureOf", () => {
     ).toBe(true);
   });
 
-  // #792: since #787 the transcription is the speech, which has holes where a URL or an address was.
+  // The transcription is the speech, which has holes where a URL or an address was left out.
   test("the whole reply the voice note carries is the text, not the speech with holes", () => {
     const holed = "Acompanhe seu pedido em a qualquer momento";
     const whole =
@@ -212,7 +212,7 @@ describe("channelFailureOf", () => {
         BOT_ID,
       )?.text,
     ).toBe(whole);
-    // A blank one is no reply: the transcription is still the text.
+    // NOTE: A blank one is no reply: the transcription is still the text.
     expect(
       channelFailureOf(
         updated(13, { transcribed: holed, replyText: "  " }),
@@ -317,7 +317,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     expect(
       job?.payloadSecret ? decryptJson<string>(job.payloadSecret) : null,
     ).toBe(REPLY);
-    // The reply never rides the Json payload.
+    // NOTE: The reply never rides the Json payload.
     expect(JSON.stringify(job?.payload)).not.toContain("pedido");
     const lines = await linesFor(9001);
     expect(lines.map((l) => [l.level, l.detail])).toEqual([
@@ -391,7 +391,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
             assignee_id: opts.assignee?.id ?? null,
           };
         },
-        // Pages the way Chatwoot does: the latest ~20, or the ~20 older than `before`. The thread is
+        // NOTE: Pages the way Chatwoot does: the latest ~20, or the ~20 older than `before`. The thread is
         // the failed voice note, `filler` newer messages, and the named sends.
         getMessages: async (_c: number, o?: { before?: number }) => {
           await opts.onRead?.();
@@ -429,7 +429,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
           text: string,
           o?: { private?: boolean; sendId?: string },
         ) => {
-          // The customer has to READ it: a private note would be the team talking to itself.
+          // NOTE: The customer has to READ it: a private note would be the team talking to itself.
           sent.push({
             conv,
             text,
@@ -532,7 +532,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
       const cw = fakeChatwoot({});
       await mediaFallbackHandler(await claimed(9001), appDb, cw.makeClient);
       expect(cw.sent).toEqual([]);
-      // ...and inside it, it does.
+      // NOTE: ...and inside it, it does.
       await suDb.conversation.updateMany({
         where: { tenantId, chatwootConversationId: CONV_ID },
         data: { lastInboundAt: new Date() },
@@ -577,7 +577,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
   test("a takeover the mirror recorded after Chatwoot's snapshot was taken stops the send", async () => {
     const cw = fakeChatwoot({
       onLive: async () => {
-        // The takeover webhook commits while the GET is in flight: newer than the snapshot.
+        // NOTE: The takeover webhook commits while the GET is in flight: newer than the snapshot.
         await suDb.conversation.updateMany({
           where: { tenantId, chatwootConversationId: CONV_ID },
           data: {
@@ -791,7 +791,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     expect(after.status).toBe("DONE");
     expect(after.dedupeKey).toBe(mediaFallbackDedupeKey(instanceId, 9001));
     expect(after.payloadSecret).toBeNull();
-    // Back to what the tests below expect to claim.
+    // NOTE: Back to what the tests below expect to claim.
     await suDb.schedulerJob.update({
       where: { id: row.id },
       data: { status: "PENDING", payloadSecret: encryptJson(REPLY) },
@@ -899,7 +899,7 @@ describe.skipIf(!dbUp)("a channel failure reported to the bot", () => {
     await deliver(updated(9002));
     let jobs = await jobsFor(9002);
     expect(jobs).toHaveLength(1);
-    // As if the job had run: a later redelivery must not put it back to PENDING.
+    // NOTE: As if the job had run: a later redelivery must not put it back to PENDING.
     await suDb.schedulerJob.update({
       where: { id: jobs[0]?.id },
       data: { status: "DONE" },

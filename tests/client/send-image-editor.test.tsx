@@ -11,12 +11,11 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 
-// Issue #880: `sendImage.allowedHosts` is config OF the send_image tool, and an empty list makes the
-// tool refuse every call while it is still offered to the model. It lived in the Behavior tab, so the
-// operator granting the tool on the Tools tab saw nothing saying a list existed, or that it was empty.
-// It is edited on the tool's own card now and written by the Tools save, the way `crossInboxCase` and
-// `handoff` are. Two saves write the same settings column and each resends the whole bag, so the
-// ownership has to be exact on both sides.
+// `sendImage.allowedHosts` is config OF the send_image tool, and an empty list makes the tool refuse
+// every call while it is still offered to the model, so it is edited on the tool's own card, where
+// the operator grants it, and written by the Tools save, the way `crossInboxCase` and `handoff` are.
+// Two saves write the same settings column and each resends the whole bag, so the ownership has to
+// be exact on both sides.
 
 const { ToolGrantsEditor } = await import(
   "@/client/pages/agents/ToolGrantsEditor"
@@ -116,9 +115,9 @@ describe("which save owns the block (source)", () => {
   });
 });
 
-// Review round 1 of #887: the Knowledge save writes the grant set and none of the Tools config, so it
-// may move only the grants half of the Tools baseline. Before, it recaptured all of it, and a host list
-// typed and not saved stopped reading as unsaved.
+// The Knowledge save writes the grant set and none of the Tools config, so it may move only the
+// grants half of the Tools baseline; recapturing all of it would make a host list typed and not saved
+// stop reading as unsaved.
 describe("the Knowledge save leaves unsaved tool config dirty", () => {
   test("only the grants move", () => {
     const baseline = JSON.stringify({
@@ -134,7 +133,7 @@ describe("the Knowledge save leaves unsaved tool config dirty", () => {
       grants: ["new"],
       sendImage: { allowedHosts: "" },
     });
-    // Still dirty against the live snapshot, and clean once the config matches again.
+    // NOTE: still dirty against the live snapshot, and clean once the config matches again.
     expect(rebased).not.toBe(snapshot);
     expect(
       rebaseToolGrants(
@@ -155,7 +154,7 @@ describe("the Knowledge save leaves unsaved tool config dirty", () => {
     expect(src).toContain(
       "rebaseToolGrants(baselineRef.current.tools, sectionSnap.tools)",
     );
-    // The flag is what picks that branch, and the Tools recapture is what consumes it.
+    // NOTE: the flag is what picks that branch, and the Tools recapture is what consumes it.
     expect(src).toContain(
       'const grantsOnly = k === "tools" && toolGrantsOnlyRef.current;',
     );
@@ -303,12 +302,12 @@ describe("the send_image card", () => {
     renderCard({ granted: true, hosts: "" });
     await ready();
     expect(screen.queryAllByText("Send image").length).toBeGreaterThan(0);
-    // Collapsed, as it loads: the warning is already on screen.
+    // NOTE: collapsed, as it loads: the warning is already on screen.
     expect(hostsField()).toBeNull();
     expect(screen.queryByText(WARNING)).not.toBeNull();
     expand();
     expect(hostsField()).not.toBeNull();
-    // A single textarea keeps its label: the field is named "Allowed hosts" (review round 1 of #887).
+    // NOTE: a single textarea keeps its label: the field is named "Allowed hosts".
     expect(screen.getByLabelText("Allowed hosts")).toBe(
       hostsField() as HTMLTextAreaElement,
     );

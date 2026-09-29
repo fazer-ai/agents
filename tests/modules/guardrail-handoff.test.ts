@@ -18,7 +18,7 @@ import {
   pinnedHandoffTarget,
 } from "@/modules/handoff/settings";
 
-// Issue #704: the guardrail's `handoff` action. The unit half: how it is configured, what the gate
+// The guardrail's `handoff` action. The unit half: how it is configured, what the gate
 // hands the caller, what the operator note says, and the transfer itself. The runtime and follow-up
 // halves are in tests/graph/runtime.test.ts and tests/graph/nudge.test.ts.
 

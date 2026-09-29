@@ -311,6 +311,23 @@ describe("extractWithRetry", () => {
     expect(budgets[1] as number).toBeLessThanOrEqual(VISION_TOTAL_BUDGET_MS);
   });
 
+  test("no attempt starts once the caller's deadline has passed", async () => {
+    const { provider, budgets } = recordingProvider([503]);
+    const deadline = new AbortController();
+    await expect(
+      extractWithRetry({
+        provider,
+        providerName: "gemini",
+        model: "m",
+        req: req(),
+        // The deadline passes during the wait before the second attempt.
+        sleep: async () => deadline.abort(),
+        signal: deadline.signal,
+      }),
+    ).rejects.toThrow("vision gemini failed with 503");
+    expect(budgets).toHaveLength(1);
+  });
+
   test("unmeasured work is handed the whole budget on the first attempt", async () => {
     // `now` frozen, not for speed but for exactness: with the real clock a millisecond passing
     // between `startedAt` and the budget makes this 59_999, and the assertion is about the ceiling

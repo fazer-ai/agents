@@ -539,7 +539,7 @@ export async function reengageConversation(
         // NOTE: Os anexos que a passagem eager nunca viu. A parada mais comum que este botão atende
         // chegou antes de o agente observar a caixa, então nenhum anexo dela tem extração, e sem isto
         // o turno diria que não conseguiu ler a imagem.
-        fillMissingMedia: true,
+        fillMissingMedia: "all",
         managedBotId: resolved.loaded.agentBotId,
         whatsappProvider: resolved.loaded.whatsappProvider,
         label: "reengage",

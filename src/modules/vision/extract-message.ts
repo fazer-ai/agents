@@ -115,6 +115,8 @@ export async function extractMessageVisuals(params: {
   convLabel?: string;
   // Asked before each later batch of email body images: false stops the reading there.
   stillAllowed?: () => Promise<boolean>;
+  // The caller's deadline: past it, no later batch and no further provider attempt starts.
+  signal?: AbortSignal;
 }): Promise<MessageVisuals | null> {
   const { visuals: todos, tenantId, instanceId, messageId } = params;
   if (todos.length === 0) return null;
@@ -148,6 +150,7 @@ export async function extractMessageVisuals(params: {
       deps: params.deps,
       // O agregado é stashado uma vez depois do laço; ver a nota lá embaixo.
       stashAnnotation: false,
+      signal: params.signal,
     };
     return visual.id === null
       ? extractBodyImage(comum)
@@ -201,7 +204,10 @@ export async function extractMessageVisuals(params: {
   vagas = primeiroLote.filter((e) => e.r === BODY_IMAGE_IGNORED).length;
   let parou = false;
   while (corpo.length > 0 && vagas > 0 && orcamento > 0) {
-    if (params.stillAllowed && !(await params.stillAllowed())) {
+    if (
+      params.signal?.aborted ||
+      (params.stillAllowed && !(await params.stillAllowed()))
+    ) {
       parou = true;
       break;
     }
@@ -214,6 +220,7 @@ export async function extractMessageVisuals(params: {
   // assinatura depois de oito fotos não é arquivo a pedir de novo.
   // Em lotes do tamanho do teto, porque cada download fica inteiro em memória.
   while (!parou && corpo.length > 0 && orcamento > 0) {
+    if (params.signal?.aborted) break;
     const alemDoTeto = await Promise.all(
       tirar(VISION_MAX_ATTACHMENTS).map((visual) =>
         classifyBodyImage({
@@ -263,7 +270,14 @@ export async function extractMessageVisuals(params: {
   // só a que terminou por último; e no Chatwoot upstream, onde a rota de write-back da meta não
   // existe, essa loja é o ÚNICO leitor do flush do debounce.
   const leuCorpo = todos.some((v) => v.id === null);
-  if (descricao || documento || naoLidos > 0 || leuCorpo)
+  // NOTE: Uma mensagem que o prazo do chamador cortou sem ler nada não é stashada: a contagem de não
+  // lidos é a marca de TENTADA, e a nova tentativa do job tem que lê-la. Lida em parte, ela é
+  // stashada como sempre, com o aviso dos arquivos que faltaram.
+  const cortadaSemLeitura = params.signal?.aborted && !descricao && !documento;
+  if (
+    !cortadaSemLeitura &&
+    (descricao || documento || naoLidos > 0 || leuCorpo)
+  )
     stashMediaAnnotation(
       { tenantId, instanceId, messageId },
       {

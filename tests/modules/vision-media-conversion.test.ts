@@ -40,18 +40,16 @@ import { visionKindForMime } from "@/modules/vision/providers";
 
 const HEIC = readFileSync(`${import.meta.dir}/../fixtures/media/recibo.heic`);
 // A cutout: left half opaque red, right half fully transparent. Made the way iOS's "remove
-// background" makes one, `sips -s format heic` from an RGBA PNG, and the alpha survives the decode
-// (measured: the transparent half comes back with a = 0).
+// background" makes one, `sips -s format heic` from an RGBA PNG; the alpha survives the decode (the
+// transparent half comes back with a = 0).
 const ALPHA = readFileSync(
   `${import.meta.dir}/../fixtures/media/recorte-alpha.heic`,
 );
 // A three-image collection whose PRIMARY is the MIDDLE item: flat blue 512x512, flat red 2400x1200,
-// flat green 300x300, with `pitm` pointing at the red one. Three and not two on purpose — with two,
-// "take the last" and "take the designated" agree, and the mutation battery showed that a two-image
-// fixture cannot tell the fix from a different wrong answer. Built with libheif's own encoder
-// (`heif-enc azul512.png vermelho2400.png verde300.png`, which makes the first input primary) and
-// then patching the two-byte item id inside the `pitm` box from 1 to 2, which is the only way to get
-// the two orders to disagree — every encoder writes the primary first.
+// flat green 300x300, with `pitm` pointing at the red one. Three and not two: with two, "take the
+// last" and "take the designated" agree. Built with `heif-enc azul512.png vermelho2400.png
+// verde300.png`, then the two-byte item id in `pitm` patched from 1 to 2 (every encoder writes the
+// primary first, so patching is the only way to make the two orders disagree).
 // A HEIC written with premultiplied alpha (`heif-enc --premultiplied-alpha`): 64x64 of a single
 // pixel value, RGBA (100, 0, 0, 128), where the 100 is ALREADY the colour scaled by the alpha.
 // libheif reports `is_premultiplied_alpha()` true for it and hands those exact bytes back.
@@ -140,8 +138,8 @@ describe("normalizeMediaType / mediaSubtype", () => {
   });
 
   test("a PDF whose content type carries a parameter is still a document", () => {
-    // The bug the dedupe fixed: `application/pdf; charset=binary` matched neither the equality nor
-    // the `/pdf` suffix, so Chatwoot serving that spelling meant the document was never read.
+    // NOTE: Chatwoot can serve `application/pdf; charset=binary`, which matches neither an equality
+    // nor a `/pdf` suffix check.
     expect(visionKindForMime("application/pdf; charset=binary")).toBe(
       "document",
     );
@@ -153,7 +151,7 @@ describe("planImageConversion", () => {
   // The table's source is each vendor's own documentation, read 2026-09-17, and for OpenAI also the
   // live API's 400, which enumerates ['png', 'jpeg', 'gif', 'webp'].
   const cases: Array<[string, string, "as-is" | "convert"]> = [
-    // HEIC: the type the issue is about. Gemini documents it; the other two do not.
+    // NOTE: HEIC: Gemini documents it; the other two do not.
     ["openai", "image/heic", "convert"],
     ["anthropic", "image/heic", "convert"],
     ["gemini", "image/heic", "as-is"],
@@ -296,16 +294,10 @@ describe("flattenOntoWhite", () => {
   });
 
   test("flattening BEFORE the resize is what keeps the cutout edge from darkening", () => {
-    // The claim in the comment, with the arithmetic that makes it a claim. Three pixels, two opaque
-    // red and one transparent black (what iOS leaves under a cutout), downscaled to two so the
-    // second box STRADDLES the edge:
-    //
-    //   flatten, then fit   px1 is (220,30,30) and px2 is white, so the box averages to
-    //                       ((220+255)/2, (30+255)/2, …) = (237, 142, 142)
-    //   fit, then flatten   the box first averages colour AND alpha to (110,15,15) at a = 127, and
-    //                       compositing that half-transparent dark value gives (183, 135, 135)
-    //
-    // 183 against 237 is the dark fringe, on every cutout, invisible in a green test.
+    // NOTE: flatten BEFORE fit. Two opaque red pixels and one transparent black (what iOS leaves
+    // under a cutout), downscaled to two so the second box straddles the edge: flatten-then-fit gives
+    // (237, 142, 142); fit-then-flatten averages colour AND alpha first and gives (183, 135, 135),
+    // a dark fringe on every cutout.
     const src = {
       data: new Uint8Array([220, 30, 30, 255, 220, 30, 30, 255, 0, 0, 0, 0]),
       width: 3,
@@ -356,14 +348,10 @@ describe("flattenOntoWhite", () => {
   });
 
   test("premultiplied colour is not scaled by its alpha a second time", async () => {
-    // Review round 10. libheif answers `is_premultiplied_alpha()` and hands back colour that is
-    // already multiplied by the alpha; compositing it with the straight-alpha formula multiplies
-    // again and darkens everything translucent. The arithmetic, on the fixture's (100, 0, 0, 128):
-    //
-    //   premultiplied (right)   100 + 255 * (1 - 128/255) = 227
-    //   straight (wrong)        100 * (128/255) + 255 * (1 - 128/255) = 177
-    //
-    // Fifty levels of red on every cutout edge, and nothing about the output looks broken.
+    // NOTE: libheif answers `is_premultiplied_alpha()` and hands back colour already multiplied by
+    // the alpha; the straight-alpha formula multiplies again and darkens everything translucent. On
+    // the fixture's (100, 0, 0, 128): premultiplied gives 100 + 255 * (1 - 128/255) = 227, straight
+    // gives 177, fifty levels of red lost on every cutout edge with nothing looking broken.
     const out = await runMediaConverter(
       "heic-to-jpeg",
       PREMULT.buffer.slice(
@@ -378,10 +366,8 @@ describe("flattenOntoWhite", () => {
   });
 
   test("the two files decode to the SAME bytes, so only the flag can tell them apart", async () => {
-    // Measured, and it is what makes this a correctness question rather than a heuristic one: the
-    // same PNG encoded with and without `--premultiplied-alpha` comes back byte-identical. Nothing
-    // in the pixels says which formula is owed, so discarding the flag is not a worse guess — it is
-    // no information. Independently reproduced by the verifier's a5 addendum.
+    // NOTE: the same PNG encoded with and without `--premultiplied-alpha` decodes byte-identical, so
+    // nothing in the pixels says which formula is owed: without the flag there is no information.
     const asArrayBuffer = (b: Buffer) =>
       b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
     const raw = async (b: Buffer) =>
@@ -431,7 +417,7 @@ describe("flattenOntoWhite", () => {
     expect(flattenOntoWhite(bytes()).data[0]).toBe(177);
     // AND IT SATURATES. Premultiplied colour is supposed to be at most its alpha, and lossy HEVC
     // does not have to honour that: [129, 129, 129, 128] composites to 256, which a plain
-    // `Uint8Array` stores as 0 — a black pixel where the arithmetic asked for white (round 11, P2).
+    // `Uint8Array` stores as 0, a black pixel where the arithmetic asked for white.
     expect(
       flattenOntoWhite({
         data: new Uint8Array([129, 129, 129, 128]),
@@ -560,7 +546,7 @@ describe("heic-to-jpeg", () => {
   });
 
   test("the wasm binary is a replaceable file on disk, and the path is overridable", () => {
-    // THE LICENSING SHAPE, asserted. libheif is LGPL-3.0 in a proprietary product, and §4(d)(1) of
+    // NOTE: THE LICENSING SHAPE, asserted. libheif is LGPL-3.0 in a proprietary product, and §4(d)(1) of
     // that licence asks for a mechanism that "will operate properly with a modified version of the
     // Library that is interface-compatible". A 1.9 MB JavaScript file with the binary base64'd
     // inside it — what `libheif-js/wasm-bundle` ships, and what this module deliberately does not
@@ -665,11 +651,10 @@ describe("heic-to-jpeg", () => {
   });
 
   test("a rejected file leaves NOTHING behind in the wasm heap", async () => {
-    // The round 2 finding, as an assertion instead of a claim. A malformed file is the case the old
-    // wrapper could not release — it built the decoder and threw before returning a handle — and it
-    // cost 6.5 KB each. The probe is a malloc(1) against libheif's own heap: the pointer it returns
-    // is the boundary of what is allocated, so two probes with the allocation released in between
-    // are equal, and any residual shows up as the difference.
+    // NOTE: a malformed file throws after the decoder is built and must still release it. The probe
+    // is a malloc(1) against libheif's own heap: the pointer it returns is the boundary of what is
+    // allocated, so two probes with the allocation released in between are equal, and any residual
+    // shows up as the difference.
     const lib = (await loadLibheif()) as unknown as {
       _malloc(n: number): number;
       _free(p: number): void;
@@ -679,24 +664,20 @@ describe("heic-to-jpeg", () => {
       lib._free(p);
       return p;
     };
-    // One pass first, to take the allocator's own one-time step (440 bytes) out of the measurement.
+    // NOTE: one pass first, to take the allocator's own one-time step (440 bytes) out of the probe.
     await withHeicFrames(truncatedHeic(), async (f) => f.length);
     const before = probe();
     for (let i = 0; i < 50; i++)
       await withHeicFrames(truncatedHeic(), async (f) => f.length);
-    // Not "bounded", not "small": ZERO. Measured flat at 100, 500, 1000 and 2000 files too.
+    // NOTE: not "bounded", not "small": ZERO.
     expect(probe() - before).toBe(0);
   });
 
   test("every image handle is released, on every path out, and before the context", async () => {
-    // Review round 5, and the finding my own round 2 measurement missed: freeing the CONTEXT does not
-    // free the image handles, and what a handle retains is the decoded image. Measured over 400
-    // conversions of the 2400x1600 fixture, the wasm heap grows 4.3 -> 9.5 -> 15.75 -> 23.25 MB
-    // without `image.free()` and stays at 0 with it.
-    //
-    // Asserted here by standing in for the library, because measuring it takes a minute of real
-    // decoding and because the ORDER is part of the contract: a handle holds a reference into the
-    // context, so the context cannot go first.
+    // NOTE: freeing the CONTEXT does not free the image handles, and a handle retains the decoded
+    // image, so the wasm heap grows with every conversion that skips `image.free()`. Asserted by
+    // standing in for the library: a real heap reading takes a minute of decoding, and the ORDER is
+    // part of the contract (a handle holds a reference into the context, so the context goes last).
     const trail: string[] = [];
     const fake = (n: number) =>
       ({
@@ -718,7 +699,7 @@ describe("heic-to-jpeg", () => {
     await withHeicFrames(heicBytes(), async () => "ok", fake(2));
     expect(trail).toEqual(["image 0", "image 1", "context"]);
 
-    // The refusal paths are the ones that leaked in both review rounds, so each gets its own check.
+    // NOTE: the refusal paths are the ones most prone to skip a release, so each gets its own check.
     trail.length = 0;
     await expect(
       withHeicFrames(
@@ -738,13 +719,10 @@ describe("heic-to-jpeg", () => {
   });
 
   test("converts the image the file DESIGNATES, not the one stored first", async () => {
-    // Review round 6. A HEIC may carry several top-level images and name one of them in its `pitm`
-    // box; libheif returns them in storage order, and the two disagree. Taking the first sends a
-    // picture the sender did not send, and the extraction comes back successful and about the wrong
-    // image — the worst shape a defect can have here, because nothing downstream looks wrong.
-    //
-    // Measured on the fixture: item order is blue 512x512, red 2400x1200, green 300x300, and `pitm`
-    // designates the red one — neither the first nor the last.
+    // NOTE: a HEIC may carry several top-level images and name one in its `pitm` box; libheif returns
+    // them in storage order. Taking the first yields a successful extraction of the wrong picture,
+    // with nothing downstream looking wrong. The fixture's `pitm` designates the red one, neither the
+    // first nor the last.
     const out = await runMediaConverter(
       "heic-to-jpeg",
       COLECAO.buffer.slice(
@@ -768,14 +746,10 @@ describe("heic-to-jpeg", () => {
   });
 
   test("images with nothing designated convert the first instead of reading as empty", async () => {
-    // The fallback, and what it is actually for. It is NOT for a file with no `pitm`: measured by
-    // renaming that box to `free` (the standard says to ignore `free`, so it stops existing for a
-    // reader), libheif refuses the file outright with `No 'pitm' box` and returns zero images, so
-    // such a file never reaches this branch. What the branch answers for is a library that returns
-    // images without designating one, which this version never does — hence standing in for it.
-    // Without the fallback that case would throw "heic carries no image frame" about a file that
-    // plainly has frames. Driven through `runMediaConverter` and not through `withHeicFrames`,
-    // because the selection being asserted lives in the converter.
+    // NOTE: the fallback is NOT for a file with no `pitm` (libheif refuses that with `No 'pitm' box`
+    // and zero images). It answers a library that returns images without designating one, which this
+    // version never does, hence the stand-in; without it that case throws "heic carries no image
+    // frame". Driven through `runMediaConverter`, because the selection lives in the converter.
     const solid = (w: number, h: number, r: number) => {
       const data = new Uint8ClampedArray(w * h * 4);
       for (let i = 0; i < data.length; i += 4) {
@@ -833,15 +807,11 @@ describe("heic-to-jpeg", () => {
   });
 
   test("a crop cannot shrink the file past the pixel cap", async () => {
-    // Review round 11, P1. A HEIC may carry a `clap` crop, and libheif's `get_width`/`get_height`
-    // then report the CROPPED size while the decode still materialises the whole stored image. A cap
-    // applied to the reported size is therefore no cap at all: a 1x1 crop over a 100 Mpx picture
-    // walks straight past it.
-    //
-    // Neither mechanism available in libheif answers this on the installed build, and both were
-    // measured: `heif_image_handle_get_ispe_width` returns 0 even for a plain file whose dimensions
-    // it should report, and `heif_context_set_maximum_image_size_limit` refuses nothing at any value,
-    // set before the read or after it. So the cap reads the size out of the file.
+    // NOTE: with a `clap` crop, `get_width`/`get_height` report the CROPPED size while the decode
+    // materialises the whole stored image, so a 1x1 crop over 100 Mpx walks past a cap on the
+    // reported size. The cap reads the size out of the file because, on the installed build,
+    // `heif_image_handle_get_ispe_width` returns 0 and `heif_context_set_maximum_image_size_limit`
+    // refuses nothing.
     const clap = CLAP.buffer.slice(
       CLAP.byteOffset,
       CLAP.byteOffset + CLAP.byteLength,
@@ -853,7 +823,7 @@ describe("heic-to-jpeg", () => {
     });
     expect(storedPixels(clap)).toBe(64 * 64);
 
-    // One pixel of cap. The reported size fits it exactly, which is what made this a bypass.
+    // NOTE: one pixel of cap, which the reported (cropped) size fits exactly.
     await expect(
       runMediaConverter("heic-to-jpeg", clap, { maxSourcePixels: 1 }),
     ).rejects.toThrow(/stores 4096 px, over the 1 px cap/);
@@ -865,10 +835,9 @@ describe("heic-to-jpeg", () => {
   });
 
   test("an extended-size box does not blind the cap", async () => {
-    // Review round 12. BMFF states a box size three ways — `n`, `0` for "to the end of the file", and
-    // `1` for "the real size is the 64 bits after the type" — and a walker that only understands the
-    // first stops at the first of the others. It then reports "no declared size", which under the
-    // previous fallback meant the cropped dimensions, which is the hole the walk was added to close.
+    // NOTE: BMFF states a box size three ways (`n`, `0` for "to the end of the file", `1` for "the
+    // real size is the 64 bits after the type"). A walker that only understands the first stops at
+    // the others and reports "no declared size", which must not fall back to the cropped dimensions.
     const ext = CLAP_EXT.buffer.slice(
       CLAP_EXT.byteOffset,
       CLAP_EXT.byteOffset + CLAP_EXT.byteLength,
@@ -910,11 +879,10 @@ describe("heic-to-jpeg", () => {
   });
 
   test("an extended-size ftyp still carries a brand, eight bytes later", async () => {
-    // Review round 13. The brand check reads offset 8, which is only the brand when the header ended
-    // there: with `size == 1` the real size occupies the next 64 bits and the brand sits at 16. The
-    // file below decodes in libheif without complaint and was reported as `carries brand "   "` — a
-    // source mismatch, which hands the original HEIC to a provider that refuses it. The attachment
-    // stops being read, which is the outcome this whole PR exists to prevent.
+    // NOTE: offset 8 is the brand only when the header ends there: with `size == 1` the real size
+    // takes the next 64 bits and the brand sits at 16. Misread, the file below (which libheif decodes)
+    // reads as `carries brand "   "`, a source mismatch that hands the original HEIC to a provider
+    // that refuses it, and the attachment stops being read.
     const ext = CLAP_FTYP_EXT.buffer.slice(
       CLAP_FTYP_EXT.byteOffset,
       CLAP_FTYP_EXT.byteOffset + CLAP_FTYP_EXT.byteLength,
@@ -942,20 +910,11 @@ describe("heic-to-jpeg", () => {
   });
 
   test("an ispe that understates the coded image is refused by the decoder, not decoded", async () => {
-    // Review round 14 raised the cap's one blind spot and it is real as a question: both numbers the
-    // cap reads — `get_width`/`get_height` and the `ispe` walk — come from `ispe`, while the work a
-    // decode costs is set by the HEVC bitstream. A file that declares 1x1 and codes 2000x2000 would
-    // walk past any cap.
-    //
-    // MEASURED, and libheif closes it: it compares the coded dimensions against the signalled ones
-    // and refuses BEFORE decoding. On libheif-js 1.23.2, steady state, the same source encoded at
-    // 2000x2000, 4000x4000 and 6000x6000 and then made to declare 1x1 costs 2-3 ms and grows the
-    // wasm heap by zero; decoded honestly the three cost 111 ms / +27 MB, 91 ms / +130 MB and
-    // 197 ms / +216 MB. The lie buys an attacker less work than telling the truth, at every size.
-    //
-    // So this test is not about the cap. It pins the property the cap leans on, which belongs to the
-    // dependency and could change under an upgrade: the file below is admitted by any cap (it says
-    // one pixel) and must still never be decoded.
+    // NOTE: both numbers the cap reads come from `ispe`, while a decode's cost is set by the HEVC
+    // bitstream, so a file declaring 1x1 and coding 2000x2000 passes any cap. libheif closes that: it
+    // compares coded against signalled dimensions and refuses BEFORE decoding (no heap growth). This
+    // pins that property of the dependency, which an upgrade could change: the file below is admitted
+    // by any cap and must still never be decoded.
     const bytes = ISPE_MENOR.buffer.slice(
       ISPE_MENOR.byteOffset,
       ISPE_MENOR.byteOffset + ISPE_MENOR.byteLength,
@@ -1048,13 +1007,9 @@ describe("heic-to-jpeg", () => {
   });
 
   test("a JPEG carrying an accepted brand at offset 8 is a MISMATCH, not a broken HEIC", async () => {
-    // Review round 7. Offset 8 is the major brand only when offset 4 says `ftyp`; on its own it is
-    // four bytes that can spell one by accident. A JPEG whose first marker is a comment puts the
-    // comment's payload exactly there, and the file decodes perfectly as a JPEG.
-    //
-    // Getting this wrong costs the SAME regression the brand check was written to prevent: the file
-    // would be called a broken HEIC, the conversion would fail, and the attachment would be skipped
-    // — an attachment the vendor reads by sniffing, and read before this feature existed.
+    // NOTE: offset 8 is the major brand only when offset 4 says `ftyp`; a JPEG whose first marker is
+    // a comment puts the comment's payload exactly there. Misread, the file is called a broken HEIC
+    // and skipped, although the vendor reads it by sniffing.
     const real = new Uint8Array(
       jpeg.encode(
         { data: new Uint8Array(8 * 8 * 4).fill(180), width: 8, height: 8 },
@@ -1069,11 +1024,10 @@ describe("heic-to-jpeg", () => {
     armadilha.set([0x20, 0x20], 12);
     armadilha.set(real.subarray(2), 14);
 
-    // The two facts that make this the regression rather than a curiosity: those bytes DO spell an
-    // accepted brand at the offset the check reads, and the file IS a readable JPEG.
+    // NOTE: those bytes DO spell an accepted brand at offset 8, and the file IS a readable JPEG.
     expect(String.fromCharCode(...armadilha.subarray(8, 12))).toBe("heic");
     expect(jpeg.decode(armadilha).width).toBe(8);
-    // `ftyp` is what the check now requires at offset 4, and a JPEG has 0xFFFE there.
+    // NOTE: the check requires `ftyp` at offset 4, and a JPEG has 0xFFFE there.
     expect(String.fromCharCode(...armadilha.subarray(4, 8))).not.toBe("ftyp");
 
     await expect(
@@ -1082,9 +1036,8 @@ describe("heic-to-jpeg", () => {
   });
 
   test("the operator's line names WHICH of the three things the file is", async () => {
-    // The three ways of not being a convertible HEIC are different facts, and the line is the whole
-    // point of this PR. Reported as one, a 703-byte JPEG reads as `<too short>` and sends whoever is
-    // looking at it after a truncated upload (PR #707, found by the verifier's a4 addendum).
+    // NOTE: the three ways of not being a convertible HEIC are different facts on the line. Reported
+    // as one, a 703-byte JPEG reads as `<too short>` and sends the reader after a truncated upload.
     const message = async (bytes: ArrayBuffer) => {
       const out: unknown = await runMediaConverter("heic-to-jpeg", bytes).catch(
         (e: unknown) => e,

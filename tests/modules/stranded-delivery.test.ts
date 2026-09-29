@@ -6,19 +6,11 @@ import {
 
 // Whether a ledger row stuck non-terminal means a customer went unanswered, as a table.
 //
-// The table is short, and it got that way by deletion. It used to carry an "already answered"
-// verdict decided by comparing the conversation's watermarks, and three review rounds of PR #282
-// each found a different way that comparison closes a real loss — a watermark is a per-CONVERSATION
-// high-water mark and the question is per-MESSAGE. That fact now comes from the ledger itself: a
-// turn that runs over a message retires its row, so a row this function ever sees is one nothing
-// covered. The effect is proved in delivery-sweep.test.ts, where a real turn retires a real row.
-//
-// What is left here is the age fence and the ORDER of the two questions, which is a decision. The
-// boundaries are cheap here and expensive through a database.
-//
-// `ageMs` is the age of the current ATTEMPT, not of the receipt. The sweep resolves which clock that
-// is before calling (a claimed row is measured from its claim), and that distinction has its own
-// case in the sweep's test, where a real row can carry both timestamps.
+// No "already answered" verdict from the conversation's watermarks: a watermark is per-CONVERSATION
+// and the question is per-MESSAGE. A turn over a message retires its row, so a row seen here is one
+// nothing covered (proved in ./delivery-sweep.test.ts). Left here: the age fence and the ORDER of
+// the two questions. `ageMs` is the age of the current ATTEMPT, not of the receipt; the sweep picks
+// the clock (a claimed row is measured from its claim), tested there with both timestamps.
 
 const STALE_MS = 30 * 60 * 1000;
 const NOW = new Date("2026-08-25T12:00:00.000Z");
@@ -178,8 +170,8 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "lost",
     },
     {
-      // MEASURED: `webwidget_triggered` is the one event of the seven an Agent Bot receives whose
-      // body is a CONTACT_INBOX, so `normalize.ts` reads no conversation from it (issue #257) and
+      // NOTE: `webwidget_triggered` is the one event of the seven an Agent Bot receives whose body
+      // is a CONTACT_INBOX, so src/modules/chatwoot/normalize.ts reads no conversation from it and
       // the row is inserted with both ids null. Its signature is identical to an old build's PENDING
       // row, and read that way every one of them stranded before a claim would be a customer-loss
       // alert about an event nobody was waiting on.
@@ -228,8 +220,7 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "no-message",
     },
     {
-      // UNLESS IT NAMES A MESSAGE, which is the pair issue #478 added and the only way a
-      // `message_updated` can owe anything: the receiver writes the inbound id on the update that
+      // NOTE: UNLESS IT NAMES A MESSAGE, the only way a `message_updated` can owe anything: the receiver writes the inbound id on the update that
       // carried the TRANSCRIPTION, and on nothing else. The words are the whole of what that row
       // owes, so it is neither `no-message` (the defect, which loses them silently) nor `lost` (a
       // customer waiting on a reply, which nobody here is).
@@ -253,10 +244,9 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "owed-transcription",
     },
     {
-      // ISSUE #540, window 2. A colleague's reply whose delivery died between the INSERT and the
-      // claim: the shape is on the row (written at INSERT), and the role is not, because the claim
-      // is the statement that writes it. Read as the responder's — which is what shipped — a
-      // WATCHER's row is silently mis-served: the takeover correctly answers `not-owed` and the
+      // NOTE: a colleague's reply whose delivery died between the INSERT and the claim: the shape is
+      // on the row (written at INSERT), and the role is not, because the claim writes it. Read as the
+      // responder's, a WATCHER's row is silently mis-served: the takeover correctly answers `not-owed` and the
       // observer's lost ingestion, the whole of what that route owed, leaves no trace anywhere.
       name: "a reply stranded before the claim names no role",
       ageMs: STALE_MS * 3,
@@ -289,9 +279,9 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "lost",
     },
     {
-      // ISSUE #439. The same row as "carried no inbound message" above, plus the one column that
-      // tells the two apart: this `message_created` was a COLLEAGUE answering the customer, and
-      // since issue #430 that delivery is what steps the agent off the conversation. Closed as
+      // NOTE: the same row as "carried no inbound message" above, plus the one column that tells the
+      // two apart: this `message_created` was a COLLEAGUE answering the customer, and that delivery
+      // is what steps the agent off the conversation. Closed as
       // benign, the conversation stays `pending` and the agent answers over the person.
       name: "carried no message but owed the takeover: a side effect to recover",
       ageMs: STALE_MS * 3,
@@ -310,7 +300,7 @@ describe("classifying a delivery stranded non-terminal", () => {
       expected: "owed-takeover",
     },
     {
-      // ISSUE #476. The same colleague's reply, on the OBSERVER's route. A takeover steps the
+      // NOTE: the same colleague's reply, on the OBSERVER's route. A takeover steps the
       // RESPONDER off the conversation and an observer was never on it, so arming one here spends a
       // job that answers `not-owed` and reports nothing. What this row owed was the observer's
       // ingestion, which nothing can replay — so it gets a verdict that can be reported.
@@ -333,7 +323,7 @@ describe("classifying a delivery stranded non-terminal", () => {
     },
     {
       // A row written before the column, or one stranded before the receiver could state a role. Not
-      // read as a watcher's: the takeover is the answer that shipped, and it is the safe one — the
+      // read as a watcher's: the takeover is the safe answer, since the
       // recovery asks the inbox and answers `not-owed` where there is nothing to hand back.
       name: "a row that never stated a role keeps the takeover it always owed",
       ageMs: STALE_MS * 3,

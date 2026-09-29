@@ -47,7 +47,7 @@ describe("isTransientVisionFailure", () => {
     ["404 unknown model", new VisionError("gemini", 404), false],
     ["413 too large", new VisionError("gemini", 413), false],
     ["422 unprocessable", new VisionError("gemini", 422), false],
-    // AbortSignal.timeout rejects with a DOMException named TimeoutError (measured on Bun 1.4).
+    // NOTE: AbortSignal.timeout rejects with a DOMException named TimeoutError (on Bun 1.4).
     [
       "the attempt budget expiring",
       new DOMException("The operation timed out.", "TimeoutError"),
@@ -104,9 +104,9 @@ describe("attemptBudgetMs", () => {
 
   test("a non-final attempt is capped only where a measurement backs the cap", () => {
     expect(at("image", 1, 0)).toBe(VISION_IMAGE_CEILING_MS);
-    // Unmeasured, both of them: a document is 25MB and ~100 pages of provider work, and a custom
-    // `baseURL` is the operator's own hardware. Cutting either at 20s would turn a slow SUCCESS
-    // into a permanent marker, so they keep the whole total, exactly as the single call had it.
+    // NOTE: no latency data backs a cap for either: a document is 25MB and ~100 pages of provider
+    // work, and a custom `baseURL` is the operator's own hardware. Cutting either at 20s would turn a
+    // slow SUCCESS into a permanent marker, so they keep the whole total.
     expect(at("document", 1, 0)).toBe(VISION_TOTAL_BUDGET_MS);
     expect(at("image", 1, 0, true)).toBe(VISION_TOTAL_BUDGET_MS);
   });
@@ -125,7 +125,7 @@ describe("attemptBudgetMs", () => {
   });
 
   test("a remainder too short to answer is no budget at all", () => {
-    // 500ms buys a timeout, not an extraction: the fastest measured call is 2.0s.
+    // NOTE: 500ms buys a timeout, not an extraction: the fastest observed call takes 2.0s.
     expect(at("document", 2, 59_500)).toBeNull();
     expect(at("image", 2, VISION_TOTAL_BUDGET_MS)).toBeNull();
   });
@@ -156,10 +156,9 @@ describe("attemptBudgetMs", () => {
   });
 });
 
-// A transient provider failure (503, rate limit, timeout) used to end the attachment: `extract` was
-// called once and the catch below it degraded to the "couldn't extract" marker, permanently — no
-// later turn can recover the content of that attachment (issue #319). These drive the real service
-// through a fetch that personifies the vendor: Gemini's generateContent answering 503 then 200.
+// A transient provider failure (503, rate limit, timeout) is retried: the "couldn't extract" marker is
+// permanent, since no later turn recovers that attachment's content. These drive the real service
+// through a fetch that plays the vendor: Gemini's generateContent answering 503 then 200.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -591,10 +590,9 @@ describe.skipIf(!dbUp)("vision retry", () => {
       if (rows.length < VISION_MAX_ATTEMPTS)
         await new Promise((r) => setTimeout(r, 20));
     }
-    // Sorted BY `attempt`, not taken in row order: `emitFlowEvent` is fire-and-forget, so the lines
-    // of one turn race each other to the table and their ids do not carry the order (measured —
-    // three lines landed 1, 3, 2). `attempt` carries it, which is the whole reason it is on the
-    // line, and every positional assertion below reads this ordering rather than the table's.
+    // NOTE: sorted BY `attempt`, not row order: `emitFlowEvent` is fire-and-forget, so one turn's
+    // lines race to the table and their ids do not carry the order. `attempt` does, which is why it
+    // is on the line, and every positional assertion below reads this ordering.
     const details = rows
       .map((r) => r.detail as Record<string, unknown>)
       .sort((a, b) => (a.attempt as number) - (b.attempt as number));

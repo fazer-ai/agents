@@ -5,7 +5,7 @@ import {
   unsupportedBodyShape,
 } from "@/modules/tool-definitions/body-shape";
 
-// Issue #150. The decision table for what a tool body may be, kept apart from the transports that
+// The decision table for what a tool body may be, kept apart from the transports that
 // act on it: REST and the console refuse it in the service, MCP refuses it in the dry-run preview
 // too (the preview never calls the service), and the bundle import warns and drops it rather than
 // failing a whole bundle. All three ask this one function.
@@ -29,7 +29,7 @@ const CASES: { name: string; body: unknown; ok: boolean }[] = [
   { name: "raw", body: { mode: "raw", raw: '{"a":{{a}}}' }, ok: true },
   { name: "legacy fields", body: { mode: "fields" }, ok: true },
 
-  // NOTE: The reported case: a plain JSON object that reads like a template and is not one.
+  // NOTE: a plain JSON object that reads like a template and is not one.
   {
     name: "plain object, nested placeholder",
     body: { order_id: "{{order_id}}", contact: { email: "{{contact_email}}" } },
@@ -44,9 +44,8 @@ const CASES: { name: string; body: unknown; ok: boolean }[] = [
   },
   { name: "unknown mode", body: { mode: "template", raw: "…" }, ok: false },
 
-  // NOTE: round 3 review, P1. A mode-only check accepted every one of these, and each loses the
-  // author's payload in silence — the half-conversion is the likeliest of them all, because the
-  // refusal above tells people to reach for mode "raw".
+  // NOTE: a mode-only check accepts every one of these, and each loses the author's payload in
+  // silence. The half-conversion is the likeliest, because the refusal above points at mode "raw".
   {
     name: "raw with the old plain object still attached",
     body: { mode: "raw", contact: { email: "{{contact_email}}" } },
@@ -125,15 +124,11 @@ describe("tool body shape", () => {
   });
 });
 
-// NOTE: rounds 4 and 5, both P2, both the same defect at a different depth: `canonicalBodyShape`
-// was written by reading the refusal rules instead of by reading `parseBody`, so the two disagreed
-// wherever the runtime TOLERATES what an author may not write — an extra key beside `raw`, an extra
-// key inside a row, a value of the wrong type. Each disagreement changes the request of a tool the
-// import was only supposed to tidy.
-//
-// So the cases below are enumerated by WHERE the two questions can diverge (mode level, row level,
-// field level, degenerate input) rather than picked by hand, and the property is asserted against
-// the wire: whatever the refusal rejects, its canonical form must send byte-identical bytes.
+// `canonicalBodyShape` must agree with `parseBody` wherever the runtime TOLERATES what an author may
+// not write (an extra key beside `raw` or inside a row, a value of the wrong type), or the import
+// changes the request of a tool it only meant to tidy. Cases are enumerated by WHERE the two can
+// diverge (mode, row, field, degenerate input), and asserted on the wire: whatever the refusal
+// rejects, its canonical form sends byte-identical bytes.
 describe("the canonical form of a refused body sends what the original sent", () => {
   const REFUSED: unknown[] = [
     // NOTE: extra keys, at each level that has one.
@@ -197,12 +192,11 @@ describe("the canonical form of a refused body sends what the original sent", ()
   }
 });
 
-// NOTE: round 6 review, second P2, and it is fixed in the runtime rather than refused at the write:
-// `payload[k] = v` on a plain object hits Object.prototype's setter when k is "__proto__", so the
-// assignment succeeds, no own property appears, and JSON.stringify drops the row. Refusing the key
-// would leave every already-stored row losing its value; a null-prototype payload makes the key
-// ordinary, which is what an operator writing it meant. `constructor` was never affected (an own
-// property simply shadows the inherited one) and is here so the fix is not mistaken for a ban.
+// `payload[k] = v` on a plain object hits Object.prototype's setter when k is "__proto__", so no own
+// property appears and JSON.stringify drops the row. The runtime uses a null-prototype payload
+// instead of refusing the key, since a refusal would leave every stored row losing its value.
+// `constructor` is unaffected (an own property shadows the inherited one) and is here so the fix
+// is not mistaken for a ban.
 describe("a payload key that collides with Object.prototype", () => {
   async function sent(body: unknown): Promise<string> {
     let out = "";
@@ -264,13 +258,10 @@ describe("a payload key that collides with Object.prototype", () => {
   });
 });
 
-// NOTE: rounds 6 and 7. Round 6 asked for duplicate trimmed keys to be refused, on the grounds that
-// the later row overwrites the earlier and one authored value never leaves. Round 7 found the hole in
-// that, and measuring it turned the whole rule over: which row wins is decided PER CALL by the
-// model's own arguments, because a row whose value is a lone {{aiField}} is skipped when the model
-// omitted that field. So two rows on one key are not a mistake, they are a fallback idiom — and a
-// refusal would have broken it, while a canonicalizer that deduplicates could never be
-// byte-identical. The rule was removed rather than patched; these tests are what it left behind.
+// Which of two rows on one trimmed key wins is decided PER CALL by the model's arguments: a row whose
+// value is a lone {{aiField}} is skipped when the model omitted that field. So duplicate keys are a
+// fallback idiom, not a mistake: refusing them would break it, and a deduplicating canonicalizer
+// could never be byte-identical.
 describe("two kv rows on the same key are a fallback, not a collision", () => {
   const BODY = {
     mode: "kv",

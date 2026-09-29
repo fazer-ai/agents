@@ -7,15 +7,13 @@ import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
 import { clearFlowLog, flowLogRows } from "@/tests/utils/flowlog";
 import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 
-// ── A DEAD DELIVERY HAS TO SAY SO WHERE THE OPERATOR READS (issue #325) ──
+// ── A DEAD DELIVERY HAS TO SAY SO WHERE THE OPERATOR READS ──
 // Integration, real DB, real RLS: the claim runs cross-tenant under asSuperAdmin and the outcome
 // under the tenant scope, exactly as the worker does in production. Only the network and the SSRF
 // guard are injectable, and the SSRF test uses the REAL guard because the URL it refuses is the
-// second road to DEAD — the one that needs no retries at all.
-//
-// The effect asserted is the row an operator can see (`ExecutionLog`) and the alert it feeds
-// (`AlertDelivery`), never the worker's own return value: the tick summary already counted these
-// deaths before this issue, and counting is exactly what did not reach anybody.
+// second road to DEAD, the one that needs no retries at all. The effect asserted is the row an operator can see (`ExecutionLog`) and the alert it feeds
+// (`AlertDelivery`), never the worker's own return value: the tick summary counts these deaths, and
+// a count reaches nobody.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -81,11 +79,9 @@ async function seedDelivery(
 async function webhookRows(expected: number, waitMs = POLL_DEADLINE_MS) {
   const deadline = Date.now() + waitMs;
   for (;;) {
-    // flowlog-scope: tenant-wide — the subject is HOW MANY lines the tick wrote, so scoping the
-    // read to a turn would answer a different question and pass while a second row existed. The
-    // tenant is this file's own and `clearRows` empties it before each case — through `clearFlowLog`,
-    // which settles the scheduled writes first, or the emptying would not include the line the
-    // previous case had scheduled and not yet written (issue #375).
+    // flowlog-scope: tenant-wide. The subject is HOW MANY lines the tick wrote, so a turn-scoped read
+    // would pass with a second row present. The tenant is this file's own, and `clearRows` empties it
+    // through `clearFlowLog`, which settles scheduled writes first (or the previous case's line lands late).
     const rows = await flowLogRows(suDb, {
       where: { tenantId, stage: "webhook" },
       orderBy: { id: "asc" },

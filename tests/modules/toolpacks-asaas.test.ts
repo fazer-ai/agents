@@ -300,9 +300,9 @@ describe("asaas toolpack — PIX charge (hermetic)", () => {
     expect(out).toContain("https://sandbox.asaas.com/i/pix1");
   });
 
-  // NOTE: Issue #46 — a side effect that fails inside a tool that still returns success must reach
-  // ctx.onSideEffectError (prepare.ts surfaces it as a flowlog warn). The model-facing return value
-  // never changes.
+  // NOTE: a side effect that fails inside a tool that still returns success must reach
+  // ctx.onSideEffectError (src/graph/prepare.ts surfaces it as a flowlog warn). The model-facing
+  // return value never changes.
   test("a failed correlation-ref persist reports the side effect but still returns the charge", async () => {
     const { impl } = scriptedFetch(pixRoutes({ data: [], totalCount: 0 }));
     const effects: Array<{ tool: string; phase: string; err: unknown }> = [];
@@ -500,9 +500,9 @@ describe.skipIf(!dbUp)("asaas toolpack — correlation ref persistence", () => {
         enabledTools: ["asaas_payment_link_create"],
         config: {
           environment: "sandbox",
-          // externalReference is the field Asaas offers for the merchant's OWN identifier, so an
-          // ERP/CRM id is the most plausible thing an operator puts in this map. It used to win
-          // over ours, and the payment then arrived uncorrelated to any conversation (issue #108).
+          // NOTE: externalReference is the field Asaas offers for the merchant's OWN identifier, so an
+          // ERP/CRM id is the most plausible thing an operator puts in this map. Ours wins, or the
+          // payment arrives uncorrelated to any conversation.
           paymentLink: {
             externalReference: "ERP-1234",
             billingType: "CREDIT_CARD",
@@ -600,9 +600,9 @@ describe.skipIf(!dbUp)("asaas toolpack — correlation ref persistence", () => {
   });
 });
 
-// NOTE: Integration failures must reach the flow log as failures (issue #40): invoked as a
-// tool_call, a missing credential returns a ToolMessage with status "error"; bad model input
-// (invalid CPF) stays a plain success — normal operation, not an outage.
+// Integration failures reach the flow log as failures: invoked as a tool_call, a missing credential
+// returns a ToolMessage with status "error"; bad model input (invalid CPF) stays a plain success,
+// normal operation, not an outage.
 describe("asaas toolpack — integration failures are marked (issue #40)", () => {
   test("missing credential returns ToolMessage status error", async () => {
     const { impl, calls } = stubFetch(200, {});

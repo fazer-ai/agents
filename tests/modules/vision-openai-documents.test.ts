@@ -10,15 +10,12 @@ import {
 import type { VisionConfig } from "@/modules/vision/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #324: choosing `openai` as the vision provider used to skip every PDF before any call was
-// made, so the agent saw the "couldn't extract" marker and the content of the attachment was lost
-// for the rest of the attendance. These drive the real service down to the effect the operator
-// sees: the extracted text written back onto the Chatwoot attachment.
+// `openai` as the vision provider reads PDFs: a skipped PDF leaves the "couldn't extract" marker and
+// loses the attachment for the rest of the attendance. These drive the real service down to the
+// effect the operator sees: the extracted text written back onto the Chatwoot attachment.
 //
-// The fetch below personifies the endpoint rather than nodding at it. Every refusal it can answer
-// was measured against the live API on 2026-08-26 (gpt-4o), so a request this test accepts is one
-// the vendor accepts, and a regression in the content part shows up here as the vendor's own 400
-// instead of as a green test.
+// The fetch below mirrors the live endpoint's refusals (gpt-4o), so a request this test accepts is
+// one the vendor accepts, and a broken content part shows up as the vendor's own 400.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -56,8 +53,8 @@ type Part = {
   file?: { filename?: string; file_data?: string };
 };
 
-// The vendor's own validation, as measured. Each branch returns the status and message the live API
-// returned for that request.
+// The vendor's own validation: each branch returns the status and message the live API answers for
+// that request.
 function openaiFetch() {
   const parts: Part[] = [];
   const impl = (async (url: string | URL, init?: RequestInit) => {

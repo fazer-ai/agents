@@ -9,12 +9,11 @@ import {
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
 
-// Round 15 of PR #485. The assembly reserves every native name (#457, unique-names.ts): another tool
-// that claims one is dropped, and the drop is a flow-log line. Nothing refused the name where it is
-// TYPED, so an HTTP tool named `calculator` — or `handoff_to_human` — could be written, granted, shown
-// in the console, and never reach the model. A document slug is refused at write time for the same
-// collision (documents/slug.ts); this is the HTTP tool's equivalent, and REST, the console and MCP
-// all land in the service.
+// The assembly reserves every native name (src/graph/tools/unique-names.ts): another tool claiming
+// one is dropped, with a flow-log line. So the name is refused where it is TYPED, or an HTTP tool
+// named `calculator` could be written, granted, shown, and never reach the model. The HTTP tool's
+// equivalent of the document slug check (src/modules/documents/slug.ts); REST, console and MCP all
+// land in the service.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -122,12 +121,10 @@ describe.skipIf(!dbUp)("an HTTP tool cannot take a native tool's name", () => {
     expect(renamed.name).toBe("calculator_http");
   });
 
-  // Round 29. Names are canonicalized on write only since #363, so a row can carry a spelling from
-  // before it. The console derives the identifier from the label and submits it on EVERY save, so
-  // editing a legacy row's description sends `search_knowledge` for a row stored `Search_Knowledge`
-  // — one identity to the model, two strings. Compared as text that reads as a rename, and the
-  // namespace rules added later then refuse an edit that moved no name at all: the operator can
-  // never touch the row again from the console.
+  // NOTE: a legacy row can carry a spelling from before names were canonicalized on write. The
+  // console submits the identifier derived from the label on EVERY save, so editing
+  // `Search_Knowledge` sends `search_knowledge`: one identity, two strings. Compared as text it
+  // reads as a rename that the namespace rules refuse, locking the row out of the console.
   test("a legacy spelling can still be edited: the identity, not the string, decides a rename", async () => {
     // Written past the service, which would canonicalize it: this is a row from before that rule.
     const legacy = await suDb.toolDefinition.create({
@@ -147,8 +144,7 @@ describe.skipIf(!dbUp)("an HTTP tool cannot take a native tool's name", () => {
       appDb,
     );
     expect(updated.label).toBe("Buscar na base");
-    // ...and a real move onto that same RAG name is still refused, so the fix did not open the door
-    // it was guarding.
+    // NOTE: ...and a real move onto that same RAG name is still refused.
     const other = await createToolDefinition(
       ctx(),
       toolInput("outra_ferramenta") as never,

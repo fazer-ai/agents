@@ -5,19 +5,12 @@ import { replaceAgentToolSelections } from "@/modules/agents/service";
 
 // What a caller is told when a tool grant is refused.
 //
-// Twelve throw sites shared ONE key, `errors.invalidToolGrant`, and that key was in neither locale
-// catalog — so `translateWithLocale` fell back to `message` and every one of them answered a pt-BR
-// caller in English (issue #256). One key for twelve refusals could only ever have been a generic
-// sentence anyway, which would have thrown away what each of them says.
-//
-// The six keys below are the six DIFFERENT questions those twelve sites ask, and the split is by
-// what the caller has to change: an id they did not send, an id that is not a number, a source they
-// already granted, a tool name that does not exist, a source that does not exist, and a tool that
-// exists but not for that integration.
-//
-// Asserted THROUGH the translation rather than on the error object, for the same reason
-// document-error-reason.test.ts is: the defect lived in that step, and an assertion on
-// `error.message` passes with or without the fix because `message` was always English.
+// Twelve throw sites ask six DIFFERENT questions, one key each, split by what the caller has to
+// change: an id they did not send, an id that is not a number, a source already granted, a tool name
+// that does not exist, a source that does not exist, a tool that exists but not for that integration.
+// Asserted THROUGH the translation, as in ./document-error-reason.test.ts: a key missing from the
+// locale catalogs falls back to `message`, which is English, so an assertion on `error.message`
+// cannot see it.
 
 const ctx = { tenantId: 1n, role: "TENANT_ADMIN" as const, userId: 1n };
 
@@ -123,7 +116,7 @@ describe("a refused tool grant says WHICH rule refused it", () => {
 
   // Unknown-tool is one rule over TWO catalogs, and the caller has to know which one it checked: the
   // native list and the RAG list hold different names, so "Unknown tool: x" leaves them guessing
-  // where to look. Without this, a mutation collapsing both sites onto one source broke no test.
+  // where to look. This is the test that fails if both sites collapse onto one source.
   test("an unknown tool names which catalog was searched", async () => {
     const native = await refusal([
       { source: "NATIVE", enabledTools: ["send_carrier_pigeon"] },
@@ -173,16 +166,9 @@ describe("a refused tool grant says WHICH rule refused it", () => {
 });
 
 // The same question one layer up, on the OTHER refusal `updateAgent` raises before it opens a
-// transaction: a business-hours id that is not a number. The rule this pins is that the refusal
-// names the RIGHT thing — a mutation that hard-coded `errors.agentNotFound` broke no test, so the
-// caller could have been told the AGENT was missing when the id they typed was the schedule's.
-//
-// It used to be a 404 ("Business hours not found"), on the reasoning that a non-numeric id
-// certainly does not exist. That collapsed two situations only one of which the caller can act on,
-// and the same file already answered 400 for a malformed tool-grant id, so one mistake had two
-// answers depending on which field carried it. Now both say 400 and name the field (issue #407),
-// which serves this test's own point better than the old key did: `businessHoursId` and
-// `followUpHoursId` are told apart, where "Business hours not found." covered both.
+// transaction: a business-hours id that is not a number. The refusal names the RIGHT field, not the
+// AGENT, and it is a 400 like a malformed tool-grant id (a 404 would say "does not exist", which the
+// caller cannot act on), so `businessHoursId` and `followUpHoursId` are told apart.
 describe("a business-hours id that is not a number", () => {
   async function updateRefusal(patch: Record<string, unknown>) {
     const { updateAgent } = await import("@/modules/agents/service");

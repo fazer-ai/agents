@@ -21,11 +21,9 @@ import {
 } from "@/modules/vault/service";
 
 // A `paramName` is only ever read for the kinds whose catalog entry declares `needsParamName`
-// (`resolveSecretInjection` takes the name from there, and from nowhere else). Every other kind
-// used to STORE the field and then discard it: the write said 200, the console read the name back,
-// and the outbound request carried no credential at all. That is issue #488 — an operator wired a
-// `generic` credential with `paramName: Authorization`, expecting the bare JWT the API wanted, and
-// got a 401 with nothing anywhere saying the field was dead.
+// (`resolveSecretInjection` takes the name from there, and from nowhere else). Stored on any other
+// kind, the write says 200 and the console reads the name back while the outbound request carries no
+// credential: a `generic` credential with `paramName: Authorization` gets a 401 and no word why.
 //
 // The rule is the CATALOG, not a list written here: a kind that declares no use for the field
 // refuses it, and a kind this build does not know keeps passing (the same carve-out
@@ -188,8 +186,8 @@ describe.skipIf(!dbUp)("vault: a param name the kind cannot use", () => {
   }
 
   test("the reporter's config is refused, and the one that works is not", async () => {
-    // NOTE: Issue #488 verbatim: a bare JWT that the API wants in `Authorization`, with no Bearer. The
-    // kind that does that is `header`; `generic` never injects anything.
+    // NOTE: a bare JWT that the API wants in `Authorization`, with no Bearer. The kind that does that
+    // is `header`; `generic` never injects anything.
     const e = await refusal(() =>
       createVaultEntry(
         ctx(),

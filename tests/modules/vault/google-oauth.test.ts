@@ -332,9 +332,9 @@ describe.skipIf(!dbUp)("google-oauth: DB-backed", () => {
   });
 
   test("createVaultEntry validates google_oauth fields (clientId + clientSecret)", async () => {
-    // Missing clientSecret → rejected, NAMING the field: the credential form renders one input per
-    // declared field and keys it by exactly this string, so a refusal that only says it in prose
-    // leaves the console with nowhere to put the message (issue #231).
+    // NOTE: missing clientSecret is rejected NAMING the field: the credential form keys one input per
+    // declared field by exactly this string, so a refusal that only says it in prose leaves the
+    // console with nowhere to put the message.
     const refused = await createVaultEntry(
       ctx(),
       {

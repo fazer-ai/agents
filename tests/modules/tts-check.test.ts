@@ -20,7 +20,7 @@ import { TTS_DEFAULTS, type TtsConfig } from "@/modules/tts/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
-// The corrupted-audio check (issue #779). The detector is faked at its HTTP boundary, apart from the
+// The corrupted-audio check. The detector is faked at its HTTP boundary, apart from the
 // TTS provider, so each case counts syntheses and checks independently: the claims are about how
 // many times each one was paid for, and in which order.
 
@@ -378,8 +378,8 @@ describe.skipIf(!dbUp)("tts audio check", () => {
     await appDb.$disconnect();
   });
 
-  // Issue #802: the agent picks the mode, the deployment owns the detector. `check` here stands for
-  // the deployment (`config.ttsCheck`), and `cfg.checkMode` for the agent's own choice.
+  // NOTE: the agent picks the mode, the deployment owns the detector. `check` here stands for the
+  // deployment (`config.ttsCheck`), and `cfg.checkMode` for the agent's own choice.
   describe("the agent's own mode", () => {
     const run = async (
       agent: TtsConfig["checkMode"],

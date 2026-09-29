@@ -10,7 +10,7 @@ import { isUsablePath } from "@/modules/tool-definitions/json-path";
 import { toolDefinitionCreateSchema } from "@/modules/tool-definitions/service";
 
 // The decision table for what an operator's HTTP tool may declare about the booking its response
-// describes (issue #352). The rule lives in one pure function on purpose; a DB-backed test proves
+// describes. The rule lives in one pure function on purpose; a DB-backed test proves
 // the wiring, never the rule.
 
 describe("readAppointmentDeclaration", () => {
@@ -113,10 +113,9 @@ describe("readAppointmentDeclaration", () => {
       { ...BOOK, provider: "  Feegow-01  " },
       { ...READ, provider: "feegow-01" },
     ],
-    // Both of the next two used to fall back to the shared default, and that WAS the defect (round
-    // 14): a typo on the booking tool moved it into `declared` while its paired cancel tool, spelled
-    // correctly, kept `feegow`, so the cancellation never found the record. Refusing is what the form
-    // has done since round 3, and the reader is what the REST and MCP paths go through.
+    // NOTE: neither of the next two falls back to the shared default: a typo on the booking tool
+    // would move it into `declared` while its correctly spelled cancel tool kept `feegow`, and the
+    // cancellation would never find the record. The form refuses too; REST and MCP go through here.
     [
       "a provider that is not a slug is refused, not defaulted",
       { ...BOOK, provider: "Sistema da Clínica!" },
@@ -170,7 +169,7 @@ describe("readPath", () => {
     ["an object at the end", "data", undefined],
     ["an array at the end", "items", undefined],
     ["a non-numeric index into an array", "items.id", undefined],
-    // (#352, round 6) An integer past 2^53 reaches here ALREADY rounded. Coercing it would mint an
+    // NOTE: an integer past 2^53 reaches here ALREADY rounded. Coercing it would mint an
     // id the operator's system never issued, one digit off the real booking and therefore able to
     // land on the one beside it: a later cancel would then retire another customer's appointment.
     // Reported as unresolved instead, so the operator is told to point at the string id.
@@ -187,20 +186,11 @@ describe("readPath", () => {
   }
 });
 
-// (#352) Picking beats typing, and the reason is what the form's gates CANNOT catch: a well-formed
-// path aimed at the wrong key passes every check and reads nothing, silently. The offer is only
-// trustworthy if it can never include a leaf the reader would then refuse, so these assert exactly
-// that agreement, in both directions.
-// (#352, round 12) A path addresses the RESPONSE, and `sampleLeaves` already says so by walking
-// `Object.keys` — own properties. `readPath` walked the prototype chain, so the two readers of the
-// same question disagreed about what a path may address, and this PR's whole argument for the picker
-// is that they must not.
-//
-// The disagreement is not reachable from a real body: JSON.parse only ever produces plain objects,
-// and nothing on Object.prototype is a scalar (measured: its one non-function own property is
-// `__proto__`, an accessor returning an object), so the reviewer's `constructor.name` returns
-// undefined because the intermediate is a function and the walk already refuses one. What is pinned
-// here is the CONTRACT, on the only input that can express it.
+// Picking beats typing: a well-formed path aimed at the wrong key passes every check and reads
+// nothing, silently. The offer is only trustworthy if the picker (`sampleLeaves`, own properties via
+// `Object.keys`) and the reader (`readPath`) agree on what a path may address: the RESPONSE, never
+// the prototype chain. No real body reaches the difference (JSON.parse makes plain objects and
+// nothing on Object.prototype is a scalar), so this pins the CONTRACT on the one input that shows it.
 describe("a path addresses the response, not JavaScript", () => {
   test("readPath does not walk the prototype chain", () => {
     const body = Object.create({ inherited: "from the prototype" }) as Record<
@@ -283,7 +273,7 @@ describe("sampleLeaves", () => {
   });
 
   test("reaching the cap ENDS the traversal, it does not just stop pushing", () => {
-    // The cap is only a bound if it stops the walk. Measured on the LOOP, not on the leaves: with
+    // NOTE: the cap is only a bound if it stops the walk. Counted on the LOOP, not on the leaves: with
     // each recursive call merely returning, the container is still enumerated end to end, which for
     // a pasted 50k-row response is the browser freezing while the operator waits. The Proxy counts
     // the index reads the traversal actually performs.
@@ -334,12 +324,10 @@ describe("sampleLeaves", () => {
   });
 });
 
-// (#352, round 9) What a declared response hands over is bounded, and the three fields answer
-// differently because the question is whether the consumer needs the exact bytes.
-// (#352, round 14) OMITTED and SUPPLIED-BUT-INVALID are different answers. Collapsing them meant a
-// typo on the booking tool moved it into the shared namespace while its paired cancel tool, spelled
-// correctly, kept its own — and the cancellation then never found the record. The form has refused
-// this since round 3; the reader is what the REST and MCP paths go through.
+// What a declared response hands over is bounded, and the three fields answer differently because
+// the question is whether the consumer needs the exact bytes. OMITTED and SUPPLIED-BUT-INVALID are
+// different answers: collapsed, a typo on the booking tool would move it into the shared namespace
+// while its paired cancel tool kept its own, and the cancellation would never find the record.
 describe("readAppointmentDeclaration and an explicit provider", () => {
   const withProvider = (provider: unknown) =>
     readAppointmentDeclaration({
@@ -412,7 +400,7 @@ describe("extractAppointment bounds what it persists", () => {
     expect(r).toEqual({ ok: false, missing: ["data.start"] });
   });
 
-  // (#352, round 11) The SAME split answers the other thing a value can be wrong about. `external_id`
+  // NOTE: the SAME split answers the other thing a value can be wrong about. `external_id`
   // is text and the scheduler payload is jsonb; both refuse a NUL and both refuse half a character,
   // so an unstoreable value does not degrade anything — the write throws and the booking is never
   // recorded at all.

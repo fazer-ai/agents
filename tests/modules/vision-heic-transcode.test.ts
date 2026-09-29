@@ -11,23 +11,14 @@ import {
 import type { VisionConfig } from "@/modules/vision/settings";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #697: an iPhone photo arrives as `image/heic`, which OpenAI and Anthropic do not accept and
-// Gemini does. It used to go to the provider untouched, come back 400, and the customer was told
-// their photo could not be read.
+// An iPhone photo arrives as `image/heic`, which OpenAI and Anthropic refuse (400) and Gemini accepts,
+// so it is converted before it reaches a provider that refuses it.
 //
-// The fetch below personifies OpenAI's own validation rather than nodding at it. Both branches were
-// measured against the live API on 2026-09-17 (gpt-4o-mini), with the very fixture this test loads:
-//
-//   data:image/heic -> 400 invalid_request_error / invalid_image_format, and the message below,
-//                      character for character, including the format list the vendor enumerates
-//   data:image/png  -> 200, and the model transcribed "R$ 1.480,00" off the image
-//
-// So a request this test accepts is one the vendor accepts, and a regression that stops converting
-// shows up here as the vendor's own 400 instead of as a green test.
-//
-// FIXTURE: `tests/fixtures/media/recibo.heic` is a 2400x1600 HEIC (HEVC) carrying the legible text
-// "R$ 1.480,00", made on macOS with `sips -s format heic` from a generated PNG. Its CONTENT is what
-// made the live probe provable (the model read the value back); here only its container matters.
+// The fetch below mirrors OpenAI's own validation (gpt-4o-mini): `data:image/heic` answers 400
+// invalid_image_format with the message below, character for character, and `data:image/png`
+// answers 200. So a request this test accepts is one the vendor accepts, and a lost conversion
+// shows up as the vendor's own 400. FIXTURE: `tests/fixtures/media/recibo.heic` is a 2400x1600 HEIC
+// (HEVC) reading "R$ 1.480,00", made with `sips -s format heic`; here only its container matters.
 
 const HEIC = readFileSync(`${import.meta.dir}/../fixtures/media/recibo.heic`);
 const OPENAI_FORMATS = ["png", "jpeg", "gif", "webp"];
@@ -63,7 +54,7 @@ const CHATWOOT_INBOX_ID = 27;
 
 type Part = { type?: string; image_url?: { url?: string } };
 
-// OpenAI's validation of an `image_url` part, as measured.
+// OpenAI's validation of an `image_url` part, as the live API answers it.
 function openaiFetch() {
   const mimes: string[] = [];
   const impl = (async (_url: string | URL, init?: RequestInit) => {
@@ -73,11 +64,9 @@ function openaiFetch() {
     const uri = body.messages?.[0]?.content?.[1]?.image_url?.url ?? "";
     const mime = /^data:([^;]+);base64,/.exec(uri)?.[1] ?? "";
     mimes.push(mime);
-    // SNIFFED, not read off the label, because that is what the vendor does. Measured on
-    // 2026-09-18: the same PNG bytes announced as `image/png` and as `image/heic` both come back
-    // 200 with the value transcribed. A fake that trusted the data URI would accept a request the
-    // vendor rejects and reject one it accepts — and the second is the regression this file exists
-    // to guard (holdout scenario s8).
+    // NOTE: SNIFFED, not read off the label, because the vendor sniffs: the same PNG bytes announced
+    // as `image/png` or `image/heic` both answer 200. A fake that trusted the data URI would reject a
+    // request the vendor accepts, which is the regression the mislabelled-PNG case below guards.
     const data = Buffer.from(uri.slice(uri.indexOf(",") + 1), "base64");
     const sniffed = data
       .subarray(0, 8)
@@ -349,11 +338,9 @@ describe.skipIf(!dbUp)("heic transcode before the vision call", () => {
   });
 
   test("an attachment whose declared type lied is still read, not dropped", async () => {
-    // HOLDOUT s8, and a regression this PR introduced before it was measured. Chatwoot serves
-    // whatever content type the uploader's server declared, and the vendors sniff bytes: a PNG
-    // announced as `image/heic` came back 200 with the value read off it, live, on 2026-09-18. So a
-    // failed conversion must not skip when the failure is "these bytes were never that type" —
-    // before this feature existed the attachment was read, and it has to stay read.
+    // NOTE: Chatwoot serves whatever content type the uploader's server declared, and the vendors
+    // sniff bytes (a PNG announced as `image/heic` answers 200). So a failed conversion must not skip
+    // when the failure is "these bytes were never that type": the attachment is still read.
     const png = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
       "base64",
@@ -374,8 +361,7 @@ describe.skipIf(!dbUp)("heic transcode before the vision call", () => {
         sleep: async () => {},
       },
     });
-    // The bytes went as they came, under the label they came with — which is exactly what the
-    // vendor accepted when this was measured against the live API.
+    // NOTE: the bytes go as they came, under the label they came with, which the vendor accepts.
     expect(mimes).toEqual(["image/heic"]);
     expect(out?.text).toBe(EXTRACTED);
   });

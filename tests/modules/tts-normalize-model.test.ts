@@ -12,9 +12,8 @@ import { readTtsConfig } from "@/modules/tts/settings";
 // save (the editor guards some of them, REST and MCP write the settings bag directly), and the
 // column that matters is what reaches the provider.
 //
-// The failure this table exists to make impossible: a secret belonging to one vendor arriving at
-// somewhere it was not issued for, or a model id asked of a vendor that never heard of it. Six
-// separate review rounds found six different paths into it, every one the same shape: half of the
+// The failure it makes impossible: a vendor's secret arriving somewhere it was not issued for, or a
+// model id asked of a vendor that never heard of it. Every path into it has one shape: half of the
 // pair stored beside the override, the other half read off a field the operator edits elsewhere.
 
 const AGENT: NormalizeModelSource = {
@@ -463,8 +462,8 @@ describe("resolveNormalizeModel", () => {
     });
   }
 
-  // Blank strings are what an editor field the operator cleared actually stores. They must read as
-  // "unset", not as an empty model name going on the wire (the #94 failure).
+  // NOTE: blank strings are what a cleared editor field stores. They must read as "unset", not as an
+  // empty model name going on the wire.
   test("blank overrides read as unset, not as an empty model", () => {
     expect(
       resolve({ normalize: true, normalizeProvider: "  ", normalizeModel: "" }),

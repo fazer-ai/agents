@@ -3,7 +3,7 @@ import { readTtsConfig } from "@/modules/tts/settings";
 import { SPEAKABLE_DEFAULTS } from "@/modules/tts/settings-shared";
 import { planAudioReply, unspeakable } from "@/modules/tts/speakable";
 
-// Issue #856: a reply built to be read goes as text even when the customer would get audio.
+// A reply built to be read goes as text even when the customer would get audio.
 
 // The switch on, as an operator who turned it on without touching the limits.
 const LIMITS = { textInstead: true, ...SPEAKABLE_DEFAULTS };
@@ -14,7 +14,7 @@ const OFF = {
   textOverNumbers: null,
 };
 
-// The shape the issue reports, invented numbers: two seats in four sectors, half and full price,
+// A production-shaped reply, invented numbers: two seats in four sectors, half and full price,
 // per person and total.
 const PRICE_TABLE = `Pelo que consta, os valores de 2 lugares ficam assim:
 

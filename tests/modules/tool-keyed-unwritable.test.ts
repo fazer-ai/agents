@@ -1,17 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 
-// WHY A TOOL RULE CANNOT BE NAMED `__proto__`, measured end to end rather than argued.
-//
-// The question this answers came out of a review of the MCP settings surface: `agent_settings_set`
-// silently ignores a `{"__proto__": null}` tombstone, so IF such an entry could ever be stored, a
-// caller could read an active rule and never delete it. These tests pin the two halves that make the
-// premise false, so the day either one changes the conclusion is re-derived instead of inherited.
-//
-// Half one is here: the key does not survive any zod object rebuild, so no write surface can carry
-// it (REST create/update parse with `z.record`, the MCP patch with loose objects). Half two is in
-// tests/modules/agent-transfer.test.ts: an agent import copies the settings bag verbatim past both,
-// and the value still never reaches Postgres, because Prisma rebuilds the JSON on the way in.
+// WHY A TOOL RULE CANNOT BE NAMED `__proto__`. `agent_settings_set` ignores a `{"__proto__": null}`
+// tombstone, so a stored entry could never be deleted; two halves keep it from being stored. Here:
+// the key does not survive any zod object rebuild, so no write surface carries it. In
+// ./agent-transfer.test.ts: an agent import copies the settings bag verbatim past both, and Prisma
+// rebuilds the JSON so the value never reaches Postgres. If either changes, re-derive the conclusion.
 const CANDIDATES = [
   "__proto__",
   "constructor",
@@ -32,7 +26,7 @@ function ownKeysAfter(parse: (v: unknown) => unknown): string[] {
 
 describe("which tool names a write surface can carry", () => {
   // MOST prototype-flavoured names are fine, and that is the useful half of this result: they arrive
-  // as ordinary own properties and both runtime maps are null-prototype (#378), so they never resolve
+  // as ordinary own properties and both runtime maps are null-prototype, so they never resolve
   // to anything inherited. `__proto__` is the single name where the surfaces disagree with storage.
   test("zod drops `__proto__` on rebuild and keeps every other prototype-ish name", () => {
     const loose = ownKeysAfter((v) => z.looseObject({}).parse(v));
@@ -47,7 +41,7 @@ describe("which tool names a write surface can carry", () => {
     ]);
   });
 
-  // The other half of the same fact, and the reason the import path had to be measured separately:
+  // NOTE: the other half of the same fact, and why the import path is tested separately:
   // JSON.parse and an object SPREAD both keep the key as an own property, so it travels through
   // everything between the schema and the database.
   test("JSON.parse and spread both preserve what zod drops", () => {
@@ -56,7 +50,7 @@ describe("which tool names a write surface can carry", () => {
     expect(Object.keys({ ...raw })).toContain("__proto__");
   });
 
-  // A `z.unknown()` VALUE is passed by reference, which is what made the import worth measuring: the
+  // NOTE: a `z.unknown()` VALUE is passed by reference, which is why the import needs its own test: the
   // record rebuilds `settings` itself and leaves each block's own keys exactly as they arrived.
   test("a record rebuilds the bag but not the blocks inside it", () => {
     const bundle = JSON.parse(

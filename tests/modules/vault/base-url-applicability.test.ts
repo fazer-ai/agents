@@ -27,17 +27,13 @@ import {
 } from "@/modules/vault/service";
 import { codeOnly } from "@/tests/utils/source-text";
 
-// A `baseUrl` is only meaningful for the kinds whose catalog entry declares one. Every other kind
-// STORED it anyway and the runtime then USED it: the model path reads `credentialBaseUrl ?? mc.baseURL`
-// straight off the resolved entry, and so do vision, STT, TTS, the HTTP-tool base and the MCP
-// connection URL — none of them asking the kind. So an `openai` credential could carry a base URL
-// the console never renders, never shows and cannot edit, and the operator's provider key went to
-// that host on the next turn with nothing anywhere saying so. That is issue #504, and the count is
-// not a sample: all NINE kinds whose form hides the input accepted one.
+// A `baseUrl` is only meaningful for the kinds whose catalog entry declares one. The runtime reads it
+// off the resolved entry without asking the kind (the model path's `credentialBaseUrl ?? mc.baseURL`,
+// vision, STT, TTS, the HTTP-tool base, the MCP connection URL), so a stray one on a kind whose form
+// hides the input sends the operator's key to a host the console never shows.
 //
 // The rule is the CATALOG, not a list written here, and a kind this build does not know keeps
-// passing — the same carve-out `secretTypeRefusesParamName` makes (#488), so a row written by an
-// older build stays editable.
+// passing (the carve-out `secretTypeRefusesParamName` makes), so an older build's row stays editable.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -102,7 +98,7 @@ describe("nothing writes a base URL past the rule", () => {
   // vault-entry WRITES in `src/` and pins them to the one file the helper lives in: a fourth write
   // path — an OAuth callback storing a discovered endpoint, an import restoring an export — would
   // set `baseUrl` without ever passing the kind, and no test of the three current boundaries would
-  // notice. `codeOnly` because a comment naming `vaultEntry.update` is prose, not a write (#424).
+  // notice. `codeOnly` because a comment naming `vaultEntry.update` is prose, not a write.
   const WRITE = /\bvaultEntry\.(create|update|updateMany|upsert|createMany)\b/g;
 
   test("every vaultEntry write lives in the vault service", async () => {
@@ -120,10 +116,9 @@ describe("nothing writes a base URL past the rule", () => {
 });
 
 describe("nothing reads a base URL past the gate", () => {
-  // NOTE: the write-side sweep above has a read-side twin, and it exists because the first version of
-  // the gate missed two readers: `assemble.ts` and `test-run.ts` build their OWN vault query and copy
-  // `baseUrl` straight into `credentialBaseUrl`, so a relative HTTP tool kept dialling the stray host
-  // after the resolvers had stopped. A ledger rather than a rule, because two of these files are
+  // NOTE: the write-side sweep above has a read-side twin, because gating the resolvers is not
+  // enough: `assemble.ts` and `test-run.ts` build their OWN vault query and would copy `baseUrl`
+  // straight into `credentialBaseUrl`, so a relative HTTP tool would dial the stray host. A ledger rather than a rule, because two of these files are
   // supposed to read the row raw — the audit projection and the console listing — and the point is
   // that a NEW reader has to be looked at rather than silently join either side.
   const SELECTS = /baseUrl:\s*true/g;
@@ -151,10 +146,9 @@ describe("nothing reads a base URL past the gate", () => {
     expect(found.size).toBeGreaterThan(3);
   });
 
-  // NOTE: the CLIENT half, and it exists because the gate reached the console one reader at a time —
-  // the tool editor in one round, the MCP editor in the next. A page that DECIDES with this value
-  // (locking a field, enabling Save, accepting a relative template) has to use the dialable one; a
-  // page that DISPLAYS the row, or edits the row itself, keeps the raw value on purpose.
+  // NOTE: the CLIENT half. A page that DECIDES with this value (locking a field, enabling Save,
+  // accepting a relative template) has to use the dialable one; a page that DISPLAYS the row, or
+  // edits the row itself, keeps the raw value on purpose.
   const CLIENT_LEDGER: Record<
     string,
     "gated" | "via the hook" | "raw by design"
@@ -195,12 +189,10 @@ describe("nothing reads a base URL past the gate", () => {
   });
 
   test("every gated file CALLS the gate, not merely imports it", async () => {
-    // NOTE: the call and not the name. Both mutations that put a raw `entry.baseUrl` back left the
-    // import untouched, so a file-contains-the-word check passed while the read was ungated again.
-    //
-    // What this fences is that the gate is present in the file, not that it wraps the right read —
-    // the placement is what the resolve-level tests above measure, and these two readers build their
-    // own query, so a behavioural test of them means an agent, a tool and a grant apiece.
+    // NOTE: the call and not the name: putting a raw `entry.baseUrl` back leaves the import in place,
+    // so a file-contains-the-word check would pass. This fences that the gate is in the file, not that
+    // it wraps the right read: placement is what the resolve-level tests above prove, since these
+    // readers build their own query and a behavioural test would need an agent, tool and grant apiece.
     for (const [file, how] of Object.entries(LEDGER)) {
       if (how !== "gated") continue;
       const code = codeOnly(await Bun.file(file).text());
@@ -322,10 +314,9 @@ describe.skipIf(!dbUp)("vault: a base URL the kind cannot use", () => {
   }
 
   test("the redirect the issue describes is refused, and the kind that exists for it is not", async () => {
-    // NOTE: Issue #504 verbatim, on the sharpest of the nine: an `openai` credential carrying a base
-    // URL the console never shows. `prepare.ts` hands `credentialBaseUrl ?? mc.baseURL` to the model
-    // client, so every turn's API key went to that host. The kind that legitimately does this is
-    // `openai_compatible`, which is why the refusal names it.
+    // NOTE: the sharpest case: an `openai` credential carrying a base URL the console never shows.
+    // `src/graph/prepare.ts` hands `credentialBaseUrl ?? mc.baseURL` to the model client, so every
+    // turn's key would go to that host. `openai_compatible` legitimately does this, so the refusal names it.
     const e = await refusal(() =>
       createVaultEntry(
         ctx(),
@@ -365,7 +356,7 @@ describe.skipIf(!dbUp)("vault: a base URL the kind cannot use", () => {
   test("an empty base URL still means none, on a kind that cannot use one", async () => {
     // NOTE: A client that always sends the field must not be refused for sending nothing in it: the
     // console submits `baseUrl: null` on every kind whose form has no input, and "" reaches
-    // `validateBaseUrl` as the empty string it already returned before this rule existed.
+    // `validateBaseUrl` as the empty string it accepts.
     for (const baseUrl of [null, "", "   "]) {
       const { id } = await createVaultEntry(
         ctx(),

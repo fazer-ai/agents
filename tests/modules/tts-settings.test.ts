@@ -84,7 +84,7 @@ describe("shouldReplyWithAudio", () => {
   });
 });
 
-// Issue #802: the agent's own audio check mode. Anything but the three reads as "the instance's".
+// The agent's own audio check mode. Anything but the three reads as "the instance's".
 describe("readTtsConfig checkMode", () => {
   test("the three modes are kept, anything else is the instance default", () => {
     expect(readTtsConfig(undefined).checkMode).toBeNull();

@@ -18,23 +18,14 @@ import { processOutboundBatch } from "@/modules/webhooks/outbound/worker";
 import { outboundUrl } from "../utils/outbound";
 import { POLL_DEADLINE_MS } from "../utils/poll";
 
-// ── A DELIVERY THAT WENT OUT UNSIGNED SAYS SO, AND SAYS WHICH PROBLEM IT WAS (issue #724) ──
+// ── A DELIVERY THAT WENT OUT UNSIGNED SAYS SO, AND SAYS WHICH PROBLEM IT WAS ──
 //
-// A signing secret is a vault REFERENCE. When the reference stops resolving — the entry was deleted,
-// or it exists and was never filled — `tryResolveVaultSecret` returns null WITHOUT throwing, and both
-// workers fall through and POST unsigned. The row is then written DELIVERED with `lastError` cleared,
-// so nothing anywhere distinguishes it from a delivery that was signed. A receiver that verifies
-// signatures drops the alert; the operator's screen still says "Signed".
-//
-// The direction this round took is NOT to stop delivering. In this family not arriving is the damage
-// itself, and both workers already agree on sending. What changes is that the fact is recorded, and
-// recorded as ADVICE: "the credential was deleted" and "the credential was never filled" send the
-// operator to different places, and `resolveVaultRefState` already separates them — it has had no
-// caller in the tree until now.
-//
-// The mark lives on the DELIVERY and not on the channel, and that is the sharp half. A channel-level
-// mark would heal the moment the credential is fixed, and whoever is investigating why a receiver
-// dropped an alert on Tuesday needs Tuesday's row.
+// A signing secret is a vault REFERENCE; when it stops resolving (entry deleted, or never filled)
+// `tryResolveVaultSecret` returns null without throwing and both workers POST unsigned. Stopping
+// delivery is wrong: in this family not arriving is the damage itself. So the row records it, as
+// advice from `resolveVaultRefState` ("deleted" and "never filled" send the operator to different
+// places). The mark lives on the DELIVERY, not the channel: a channel-level mark heals once the
+// credential is fixed, and whoever investigates Tuesday's dropped alert needs Tuesday's row.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -260,7 +251,7 @@ describe.skipIf(!dbUp)("a delivery that went out unsigned", () => {
     const before = await deliverOnce(id);
     expect(before.row.unsignedReason ?? "").not.toBe("");
 
-    // The operator fills the credential in; the reference resolves from now on.
+    // NOTE: the operator fills the credential in, so the reference resolves from here on.
     await suDb.vaultEntry.update({
       where: { id: empty.id },
       data: { status: "active", secret: encryptJson("s3cr3t") },
@@ -282,10 +273,9 @@ describe.skipIf(!dbUp)("a delivery that went out unsigned", () => {
 
 // ── THE SAME FACT, ON THE SCREEN AND ON THE OTHER BUS ──────────────────────────────────────────
 //
-// The delivery row is what an incident is read from afterwards. These two are what keep the operator
-// from having to reach an incident first: the channel list, which used to answer this question off
-// the row alone and therefore could not see the two vault states at all, and the outbound webhook
-// family, which had the same hole plus a probe that REFUSED where its own worker sends.
+// The delivery row is what an incident is read from afterwards. These two keep the operator from
+// having to reach an incident first: the channel list, which asks the vault (the row alone cannot
+// see the two vault states), and the outbound webhook family, whose probe sends where its worker does.
 
 describe.skipIf(!dbUp)(
   "the channel list answers whether alerts are signed",
@@ -364,16 +354,16 @@ describe.skipIf(!dbUp)(
         where: { id: BigInt(ignored.id) },
         data: { type: "discord" },
       });
-      // Pre-#126 the column was free text, and a caller who read the field name as "the secret" typed
-      // one in. `readableVaultRef` refuses to publish it, and the state has to say why.
+      // NOTE: a legacy row can hold a secret typed where a reference belongs. `readableVaultRef` refuses
+      // to publish it, and the state has to say why.
       const unreadable = await mk("unreadable", {});
       await suDb.alertChannel.update({
         where: { id: BigInt(unreadable.id) },
         data: { secretRef: "sha256=not-a-reference" },
       });
 
-      // The credential is deleted AFTER the channel was saved: `requireVaultRef` checks on write, and
-      // this whole issue is about the window that opens afterwards.
+      // NOTE: the credential is deleted AFTER the channel was saved: `requireVaultRef` checks on write,
+      // and this is the window that opens afterwards.
       await suDb.vaultEntry.delete({ where: { id: doomed.id } });
 
       const byName = new Map(
@@ -478,8 +468,7 @@ describe.skipIf(!dbUp)(
 
       expect(r.sent).toHaveLength(1);
       expect(signatureHeaders(r.sent[0])).toEqual([]);
-      // Delivered, not retried: the comment in the worker used to claim a missing secret "falls
-      // through to retry/backoff", and it never did. The behaviour is kept; the claim was the bug.
+      // NOTE: delivered, not retried: a missing secret does not fall through to retry/backoff.
       expect(after.status).toBe("DELIVERED");
       expect(after.attempts).toBe(1);
       expect(after.lastError).toBe(null);
@@ -489,8 +478,8 @@ describe.skipIf(!dbUp)(
     });
 
     test("the subscription list stops calling a deleted credential Signed", async () => {
-      // Same hole the alert channel list had, in the other family and on the same page: the label was
-      // derived from the row, so a ref whose entry had been deleted read exactly like a live one.
+      // NOTE: a label derived from the row alone reads a ref whose entry was deleted exactly like a
+      // live one.
       await subscription("list-gone");
       const live = await suDb.vaultEntry.create({
         data: {
@@ -572,14 +561,13 @@ describe.skipIf(!dbUp)(
         globalThis.fetch = original;
       }
 
-      // It used to return `ok: false` with nothing on the wire, while the worker next door POSTed all
-      // day. A probe that exercises a different path from the real send condemns what works and
-      // approves what does not.
+      // NOTE: the probe sends as the worker does: a probe on a different path from the real send
+      // condemns what works and approves what does not.
       expect(seen).toHaveLength(1);
       expect(signatureHeaders(seen[0])).toEqual([]);
       expect(result.ok).toBe(true);
       expect(result.error).toBe(null);
-      // `ok` alone would now be a worse lie than the refusal was, so the outcome carries the sentence.
+      // NOTE: `ok` alone would hide that it went unsigned, so the outcome carries the sentence.
       expect(result.signed).toBe(false);
       expect((result.warning ?? "").toLowerCase()).toContain("unsigned");
     });

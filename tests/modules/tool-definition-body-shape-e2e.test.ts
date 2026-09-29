@@ -10,15 +10,11 @@ import {
   updateToolDefinition,
 } from "@/modules/tool-definitions/service";
 
-// Issue #150. A body authored as a plain JSON object was accepted by every write, stored, echoed
-// back by the dry-run preview, and then discarded at invocation — `parseBody` recognizes three
-// shapes and falls back to assembling the payload from the declared input fields for anything else.
-// So the request went out looking plausible, missing whatever the operator had written, and the
-// only symptom was the upstream API complaining about a field the operator could see in their own
-// tool definition.
-//
-// The reporter read this as "nested placeholders are not substituted". They are not substituted,
-// but neither are the top-level ones: the first test here shows the whole body being ignored.
+// A body authored as a plain JSON object is discarded at invocation: `parseBody` recognizes three
+// shapes and otherwise assembles the payload from the declared input fields, so the request goes
+// out plausible and missing what the operator wrote. Every write (and the dry-run preview) refuses
+// it. It reads like "nested placeholders are not substituted", but the first test shows the whole
+// body is ignored, top level included.
 
 const NESTED_BODY = {
   order_id: "{{order_id}}",
@@ -31,7 +27,7 @@ const INPUT_SCHEMA = {
 };
 
 describe("the body that motivated the refusal", () => {
-  // NOTE: This is the measurement the issue's diagnosis got wrong, so it is pinned rather than described.
+  // NOTE: the whole body is ignored, not only nested placeholders, so it is pinned rather than described.
   test("a plain-object body is ignored entirely, not just at depth", async () => {
     let sent = "";
     const fetchImpl = (async (
@@ -175,8 +171,8 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    // NOTE: A limit added over data that already exists refuses only what the write itself changes: a row
-    // stored before this existed must stay editable, or the operator cannot fix it from the console.
+    // NOTE: a limit over data that already exists refuses only what the write itself changes: a row
+    // stored before the limit must stay editable, or the operator cannot fix it from the console.
     test("a patch that does not touch the body is not refused for a stored one", async () => {
       const created = await createToolDefinition(
         ctx(),
@@ -209,9 +205,8 @@ describe.skipIf(!dbUp)(
       expect(err).not.toBeNull();
     });
 
-    // NOTE: The dry run is where the issue says the author should have found out, and it never called the
-    // service — it previewed the input back and applied nothing, so a refusal in the service alone
-    // would still let `dry_run: true` echo the broken shape with no warning.
+    // NOTE: the dry run is where the author should find out, and it never calls the service, so a
+    // refusal in the service alone would let `dry_run: true` echo the broken shape with no warning.
     test("MCP tool_create refuses in the dry-run preview, not only on apply", async () => {
       const dry = await toolCreate(
         principal(),
@@ -228,9 +223,9 @@ describe.skipIf(!dbUp)(
       if (!dry.ok) expect(dry.error).toContain('"mode":"raw"');
     });
 
-    // The preview has to describe what the APPLY would do, and two things about a name make that
-    // false unless the preview asks the core: the name is canonicalized on write, and a rename onto
-    // a name another kind holds is refused there. Both are the code tool's rules too (#490, #363).
+    // NOTE: the preview has to describe what the APPLY would do, and two things about a name make
+    // that false unless the preview asks the core: the name is canonicalized on write, and a rename
+    // onto a name another kind holds is refused there. Both are the code tool's rules too.
     test("MCP tool previews show the canonical name, and refuse a rename the apply would refuse", async () => {
       const dry = await toolCreate(
         principal(),

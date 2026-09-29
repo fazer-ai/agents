@@ -21,7 +21,7 @@ import {
   VOICE_CHOICE_TEXT_MAX,
 } from "@/modules/tts/settings-shared";
 
-// Issue #859: the model is told when its reply will be spoken, and may choose text for one reply.
+// The model is told when its reply will be spoken, and may choose text for one reply.
 // Both are the operator's, per agent, and both are OFF until the operator turns them on.
 
 const cfg = (tts: Record<string, unknown>) =>

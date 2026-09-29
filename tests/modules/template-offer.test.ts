@@ -6,13 +6,11 @@ import {
   templateWriteAt,
 } from "@/modules/tool-definitions/response-template";
 
-// WHAT A TOKEN AT THIS CARET MAY NAME (issue #563).
+// WHAT A TOKEN AT THIS CARET MAY NAME.
 //
-// The console already answered this for its picker, against the caret the picker was opened at.
-// Completion asks the same question against the caret the operator is typing in, and the two must
-// not answer differently: an offer that lists a field the picker would not, or the reverse, is two
-// opinions about one grammar. So the rule moved here, next to the reader that has to accept what is
-// picked.
+// The picker asks it at the caret it was opened at, completion at the caret being typed in, and the
+// two must not answer differently (that would be two opinions about one grammar). So the rule lives
+// here, next to the reader that has to accept what is picked.
 
 const BODY = {
   cliente: { nome: "Ana", cidade: "SP" },
@@ -106,8 +104,8 @@ describe("templateWriteAt", () => {
   // THE BRACES THE OPERATOR ALREADY TYPED ARE NOT RETYPED, and the ones they did not are added, or
   // picking from the list leaves `{{path` on screen and a stray brace in the model's input.
   //
-  // WHERE they are is the answer and not merely THAT they are: measured in the browser,
-  // `closeBrackets` turns a typed `{{` into `{{}}`, so this is the ordinary case, and the caller
+  // WHERE they are is the answer and not merely THAT they are: in the browser, `closeBrackets` turns
+  // a typed `{{` into `{{}}`, so this is the ordinary case, and the caller
   // needs the position to put the caret past the close instead of inside the token.
   test("says where the close already is", () => {
     expect(templateWriteAt("Nome: {{}}", 8)).toEqual({
@@ -145,31 +143,27 @@ describe("templateWriteAt", () => {
     });
   });
 
-  // THE SEPARATOR IS PART OF THE GRAMMAR, and offering without it writes something the grammar
-  // refuses (round 1 of review). `BLOCK` spells the marker as `#each` followed by `[ \t]+` and then
-  // the path, so a caret sitting straight after `each` is not in list position: completing there
-  // produced `{{#eachresultados}}`, which no block pattern matches and the Save gate turns down.
-  // It is also the ordinary shape, not a corner: `closeBrackets` answers a typed `{{` with `{{}}`,
-  // so typing `#each` inside it leaves the caret exactly there.
+  // NOTE: THE SEPARATOR IS PART OF THE GRAMMAR: `BLOCK` spells `#each`, then `[ \t]+`, then the
+  // path, so a caret straight after `each` is not in list position (completing there writes
+  // `{{#eachresultados}}`, which the Save gate refuses). It is the ordinary shape: `closeBrackets`
+  // answers a typed `{{` with `{{}}`, so typing `#each` inside it leaves the caret exactly there.
   test("does not ask for a list until the marker's separator is typed", () => {
     expect(templateWriteAt("{{#each}}", 7)).toBeNull();
     expect(templateWriteAt("{{#each", 7)).toBeNull();
     expect(templateWriteAt("{{#each }}", 8)).toMatchObject({ kind: "list" });
   });
 
-  // AND A HALF-TYPED MARKER IS NOT A PATH PREFIX. Requiring the separator alone only moved the
-  // defect one step: `{{#each}}` stopped asking for a list and started asking for a PATH over the
-  // text `#each`, so accepting wrote a field name over the marker being typed.
+  // NOTE: AND A HALF-TYPED MARKER IS NOT A PATH PREFIX: read as one, `{{#each}}` would ask for a
+  // PATH over the text `#each`, and accepting would write a field name over the marker being typed.
   test("offers nothing over a marker that is still being typed", () => {
     expect(templateWriteAt("{{#", 3)).toBeNull();
     expect(templateWriteAt("{{#ea", 5)).toBeNull();
   });
 
-  // THE WHITESPACE THE GRAMMAR ALLOWS IS NOT PART OF WHAT IS BEING TYPED (round 2 of review).
-  // `BLOCK` spells `\{\{\s*` and the token render trims, so `{{ campo }}` and `{{ #each xs }}` are
-  // both legal. Anchoring at `{{` put that space into the prefix CodeMirror filters on, so every
-  // path was filtered OUT for `{{ campo`, and `{{ #each ` was read as a scalar path — the offer
-  // disappearing exactly where the grammar says it should be there.
+  // NOTE: THE WHITESPACE THE GRAMMAR ALLOWS IS NOT PART OF WHAT IS BEING TYPED. `BLOCK` spells
+  // `\{\{\s*` and the token render trims, so `{{ campo }}` and `{{ #each xs }}` are legal. Anchored
+  // at `{{`, the space joins the prefix CodeMirror filters on, filtering out every path for `{{ campo`
+  // and reading `{{ #each ` as a scalar path.
   test("skips the whitespace the grammar allows after the opening", () => {
     expect(templateWriteAt("{{ field", 8)).toMatchObject({
       kind: "path",
@@ -181,15 +175,10 @@ describe("templateWriteAt", () => {
     });
   });
 
-  // AND THE PATH ALREADY THERE IS WHAT THE ANSWER REPLACES, not the empty string before the caret
-  // (round 2 of review). Completing at the start of `{{foo}}` and picking `bar` wrote `{{barfoo}}`;
-  // where the concatenation happens to stay a legal path it is worse, because it silently aims at a
-  // field nobody chose.
-  //
-  // AND IT IS NOT THE RANGE THE LIST FILTERS ON (round 3 of review): CodeMirror's pattern is
-  // `sliceDoc(from, to)`, measured in the installed package, so `to` has to stay at the caret or
-  // every candidate is matched against the path being replaced and the ones meant to replace it
-  // disappear. Two ranges, two questions.
+  // NOTE: THE PATH ALREADY THERE IS WHAT THE ANSWER REPLACES (else picking `bar` at the start of
+  // `{{foo}}` writes `{{barfoo}}`, which may even be a legal path nobody chose). AND IT IS NOT THE
+  // RANGE THE LIST FILTERS ON: CodeMirror filters on `sliceDoc(from, to)` in the installed package,
+  // so `to` stays at the caret or every candidate is matched against the path being replaced.
   test("replaces through the end of the path while filtering on what was typed", () => {
     expect(templateWriteAt("{{foo}}", 2)).toEqual({
       kind: "path",

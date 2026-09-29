@@ -53,10 +53,8 @@ describe.skipIf(!dbUp)("stt: vault entry baseUrl precedence", () => {
     const e1 = await suDb.vaultEntry.create({
       data: {
         tenantId,
-        // NOTE: `openai_compatible` and not `openai`, since #504: a base URL is only DIALLED for a
-        // kind whose catalog entry declares one, so a row with `kind: "openai"` and a base URL is a
-        // stray value the resolve now answers `null` for. What this file is about — the entry's base
-        // winning over the config's — is unchanged, and this is the kind that can carry one.
+        // NOTE: `openai_compatible`, not `openai`: a base URL is only dialled for a kind whose catalog
+        // entry declares one, so an `openai` row with a base URL resolves to `null`.
         name: "stt-with-base",
         kind: "openai_compatible",
         secret: encryptJson("sk-stt"),

@@ -3,7 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
 import { recordDirectUsage } from "@/graph/usage";
 
-// Issue #855: every billed call records how long it took, beside its tokens. The LangChain capture is
+// Every billed call records how long it took, beside its tokens. The LangChain capture is
 // driven by a real turn in tests/graph/runtime.test.ts; this is the other writer, the one vision (and
 // any call made outside LangChain) goes through.
 

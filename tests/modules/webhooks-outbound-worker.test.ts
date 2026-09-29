@@ -233,7 +233,7 @@ describe.skipIf(!dbUp)("outbound delivery worker", () => {
     expect(row.lastError).toContain("500");
   });
 
-  // Issue #243. The remote endpoint's own error message is what lands in `last_error`, and a `text`
+  // NOTE: the remote endpoint's own error message is what lands in `last_error`, and a `text`
   // column refuses a NUL outright. Refused, the whole retry write is refused with it: the row keeps
   // its SENDING claim and its attempt count, so nothing re-drives it and nothing dead-letters it.
   test("retries a transport failure whose message carries a NUL", async () => {
@@ -303,7 +303,7 @@ describe.skipIf(!dbUp)("outbound delivery worker", () => {
     const { fetchImpl, calls } = stubFetch(200);
     // Real SSRF guard (not the passthrough): the metadata/loopback URL must be rejected.
     await processOutboundBatch({ base: appDb, tenantId, fetchImpl });
-    // NOTE: THIS delivery never reached fetch. Asserting on the total instead made the test a
+    // NOTE: THIS delivery never reached fetch. Asserting on the total would make the test a
     // stopwatch: the retry test above leaves a PENDING row whose backoff is `Math.random() * 2000`,
     // so once more than that elapses before this line the batch legitimately claims it too, and the
     // count stops being about the blocked URL. Same shape as the disabled-subscription test below.

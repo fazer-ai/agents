@@ -813,6 +813,8 @@ describe.skipIf(!dbUp)(
       });
     });
 
+    // A private note is the operator talking to their own team, not part of the dialogue with the
+    // customer: kept in the contact's permanent memory it would leak into a future prompt.
     test("a private note is not ingested", async () => {
       const convId = 504;
       await deliver(convId, fromCustomer("preciso de ajuda"));

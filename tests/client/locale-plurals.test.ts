@@ -43,9 +43,9 @@ const PARENTHETICAL_PLURAL =
 // Strings where the parentheses are a decision rather than a dodge, with the reason. Only strings
 // the regex above cannot rule out on its own belong here.
 const DODGE_WAIVED: Record<string, string> = {
-  // NOTE: two INDEPENDENT counts in one sentence, and i18next pluralizes a key on exactly one
+  // Two INDEPENDENT counts in one sentence, and i18next pluralizes a key on exactly one
   // `count`, so the fix is two keys (a change to the sentence, not the catalog). English carries no
-  // defect here, since its adjectives do not inflect. Written up in `docs/roadmap.md`.
+  // defect here, since its adjectives do not inflect.
   "channels.synced": "two independent counts in one key; needs splitting",
 };
 

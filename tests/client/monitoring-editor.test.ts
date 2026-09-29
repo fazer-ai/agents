@@ -281,7 +281,8 @@ describe("the Channels tab of a watcher", () => {
 
   // NOTE: the fallback section is drawn for a watcher, with its validator, so the save writes the block
   // like any other. Skipping a half-named pair for a watcher would discard an edit the operator can
-  // see themselves making.
+  // see themselves making; the server refuses that pair by name (`assertSettingsModelFallback`,
+  // docs/ui.md).
   test("a watcher's save writes the fallback block like any other", () => {
     const flat = EDITOR.replace(/\s+/g, " ");
     expect(flat).toContain(

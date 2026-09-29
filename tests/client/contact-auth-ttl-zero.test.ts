@@ -8,8 +8,11 @@ import { readContactAuthConfig } from "@/modules/contact-auth/settings";
 // store 86400 (a day), while passed through it is clamped by the reader to its 60-second floor.
 // Checked on the source because rendering the editor pulls auth, theme, toast and a live catalog,
 // and paired with the reader below so what zero MEANS is exercised, not asserted.
+
 // Scope: the contactAuth block only. The other fields share the spelling, not the risk; changing
-// them would change shipped behavior.
+// them would change shipped behavior. The nearest neighbour, `contactAuth.timeoutMs`, has a floor of
+// 1000 and a falsy fallback of 5000: a typed zero there holds the gate LONGER than the clamp would,
+// the same direction, bounded by ten seconds instead of a day.
 const SRC = readFileSync("src/client/pages/agents/AgentEditorPage.tsx", "utf8");
 
 // The file holds TWO `contactAuth: {` blocks, the form-state reader and the save. Scanning from the

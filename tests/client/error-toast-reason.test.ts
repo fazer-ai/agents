@@ -449,7 +449,7 @@ function verdicts(
       continue;
     }
 
-    // NOTE: `.value.error` is the same read by hand, and `mapSaveError` (CredentialForm) does it on
+    // NOTE: `.value.error` is the same read by hand, and CredentialForm does it on
     // purpose: a LOCALIZED sentence for 409 and the server's own for 400. The hook is often held under
     // a qualified name (`embRefusal`, `lfRefusal`), so the capital is part of the pattern.
     // `(apiError.value as ApiErrorPayload)?.error` is the same read with a CAST; whether it is placed

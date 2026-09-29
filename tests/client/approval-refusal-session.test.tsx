@@ -15,7 +15,7 @@ import {
 // starts (a dialog does it with `useOnModalOpen`).
 // A save answering after the editor closed is not tested: Cancel is disabled while the PATCH is out.
 
-// NOTE: assertions reduce to a string or a boolean BEFORE expect: a failing expectation holding a
+// Assertions reduce to a string or a boolean BEFORE expect: a failing expectation holding a
 // DOM node serializes a cyclic happy-dom tree and stalls.
 
 const { KnowledgeApprovals } = await import(

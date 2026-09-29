@@ -50,7 +50,7 @@ const HANDLER_HEAD =
 export function handlers(src: string): {
   name: string;
   body: string;
-  // NOTE: the same span with comments and string CONTENTS blanked out, offsets preserved. Every
+  // The same span with comments and string CONTENTS blanked out, offsets preserved. Every
   // question asked of a handler is about what it runs, and prose mentions the same words innocently
   // (a comment inside a body-less button handler can name a declared field).
   code: string;
@@ -625,7 +625,7 @@ const ALWAYS_ON_SCREEN: Record<string, string> = {
 // is satisfied by the hook being called at all), so it is a declaration, pinned by size. Empty, and
 // kept: it is where a future form declares where it stopped, and a pin of zero makes adding one cost
 // the second edit. The agent editor declares every value it writes and announces the ones held off
-// screen in a banner (see `refusalAway`).
+// screen in a banner.
 const PARTIALLY_HELD: Record<string, string> = {};
 
 describe("a form that writes holds the refusal it gets", () => {

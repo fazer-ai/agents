@@ -14,7 +14,6 @@ const SRC = readFileSync("src/client/pages/agents/AgentEditorPage.tsx", "utf8");
 // anchor, and -1 is a legal argument to `slice` ("one character from the end"), so a missing END
 // anchor runs the span to the end of the FILE and every assertion passes on unrelated code. A rename
 // is all it takes, which is why the guard cannot be "remember to check".
-// it takes, which is why the guard cannot be "remember to check".
 function between(src: string, from: string, to: string): string {
   const start = src.indexOf(from);
   expect(start, `anchor not found: ${from}`).toBeGreaterThan(-1);

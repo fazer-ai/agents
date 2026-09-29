@@ -10,11 +10,11 @@ import {
 } from "@testing-library/react";
 
 // Uniqueness in the vault is the (name, kind) pair, and the mark expires by the name. A held
-// refusal comes off when the box stops holding what the server refused, but `assertUniqueVaultName`
+// refusal comes off when the box stops holding what the server refused, but the vault's uniqueness check
 // refuses the PAIR: a duplicate for (Alfa, openai) says nothing about (Alfa, anthropic), so switching
 // type while keeping the name must clear "already in use" explicitly.
 
-// NOTE: assertions reduce to a string or a boolean BEFORE expect: a failing expectation holding a
+// Assertions reduce to a string or a boolean BEFORE expect: a failing expectation holding a
 // DOM node serializes a cyclic happy-dom tree and stalls.
 
 const { CredentialForm } = await import("@/client/components/CredentialForm");

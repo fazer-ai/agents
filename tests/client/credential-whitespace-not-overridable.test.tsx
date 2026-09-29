@@ -14,7 +14,7 @@ import {
 // is not one: it is the WRITE's verdict reported early, and `createVaultEntry`/`updateVaultEntry`
 // refuse it every time, so "Save anyway" would advertise an action that cannot succeed.
 
-// NOTE: `globalThis.fetch` is swapped rather than `mock.module`, whose restore is global to the
+// `globalThis.fetch` is swapped rather than `mock.module`, whose restore is global to the
 // process and tears down other files' mocks. Assertions reduce to a string or a boolean BEFORE
 // expect: a failing expectation holding a DOM node serializes a cyclic happy-dom tree and stalls.
 

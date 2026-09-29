@@ -22,12 +22,8 @@ import {
   updateKnowledgeBase,
 } from "@/modules/rag/service";
 
-// THE KNOWLEDGE FAMILY (issue #396), where ten actions had a name over MCP and twelve REST routes
-// wrote nothing at all: the console is the door an operator actually uses, and everything they did
-// to a knowledge base through it was invisible.
-//
-// `PATCH /v1/knowledge/documents/:id` had no MCP twin either, so `knowledge_document.update` is a
-// name this issue invents.
+// THE KNOWLEDGE FAMILY, recorded by the service, so the console's REST routes leave the same rows as
+// MCP.
 //
 // The rule that shapes every projection here is the one the family makes unavoidable: a document's
 // CONTENT is the payload most likely to carry a customer's data, the row is append-only and readable
@@ -320,7 +316,6 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
     await deleteDocument(ctx(), doc.id, appDb);
   });
 
-  // The action with no name on any transport before this issue.
   test("editing a document records that the text moved, by its length", async () => {
     const doc = await makeDoc();
     await clearAudit();
@@ -342,9 +337,7 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
     await collect();
   });
 
-  // A title-only edit is metadata: the chunks are the content, so nothing is re-embedded and the
-  // document does not leave the state it was in.
-  // Issue #857: the title is part of every chunk's vector, so a rename re-queues the document.
+  // The title is part of every chunk's vector, so a rename re-queues the document.
   test("renaming a document records the rename and re-indexes it", async () => {
     const doc = await makeDoc();
     await suDb.knowledgeDocument.update({
@@ -438,9 +431,9 @@ describe.skipIf(!dbUp)("the knowledge family records its own changes", () => {
       includeFailed: false,
       includeIndexed: false,
     });
-    // The jobs, committed with the transition and with the row that counts them. Enqueuing after
-    // the commit is what leaves documents in PENDING with no job: they are no longer UNINDEXED, so
-    // the next bulk re-index does not select them either.
+    // NOTE: the jobs are committed with the transition and with the row that counts them. Enqueued
+    // after the commit, a failure leaves documents in PENDING with no job: they are not UNINDEXED,
+    // so the next bulk re-index does not select them either.
     expect(
       await suDb.schedulerJob.count({
         where: {

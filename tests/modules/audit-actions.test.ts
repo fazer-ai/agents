@@ -8,36 +8,13 @@ import {
 } from "@/lib/audit/actions";
 import { withoutComments } from "@/tests/utils/source-text";
 
-// The console's action filter offers a list, and the list is a constant rather than a query (see the
-// note on AUDIT_ACTIONS for why). A constant is only worth offering while it agrees with the code
-// that writes the rows, and it can disagree in two directions that fail differently:
-//
-//   MISSING — a family adds `channel.foo` and the operator cannot pick it. The trail holds rows
-//   nobody can filter to, which is the failure the filter exists to prevent.
-//   EXTRA — a producer is deleted or renamed and its name stays on the list. The operator picks a
-//   value that can never match and reads the empty page as "nothing happened".
-//
-// Both are asserted, and the sweep counts through `tests/utils/source-text` so a name that only
-// appears in PROSE — every one of these modules explains its own actions in comments — is not read
-// as a producer.
-//
-// `withoutComments` and NOT `codeOnly`: the thing being looked for IS a string literal, so blanking
-// string bodies blanks the answer. Measured — the first version of this file used `codeOnly` and
-// counted zero producers, which without the floor below would have read as a clean tree.
-// The value expression written after `action:`, up to the comma or brace that ends the property.
-//
-// NOT a `action:\s*"([a-z_]+\.[a-z_]+)"` match, which is what this file did first and which reads
-// only the simplest producer. `setCompanyLogoKey` writes
-//
-//   action: logoKey === null ? "company_logo.clear" : "company_logo.set",
-//
-// and a literal-initializer pattern sees neither name — so both were missing from the vocabulary
-// while this test was green, which is exactly the direction that leaves an action unfilterable.
-// Review found it. Reading the whole expression finds every literal in any shape of it.
-//
-// Depth-aware and string-aware, because the value can contain a nested call, an object, or a comma
-// inside a template. A producer that computes its name from a variable contributes nothing, which is
-// the one gap left and is visible: the entry it needs would show up as `extra` on the list.
+// The console's action filter offers a constant list (see AUDIT_ACTIONS), worth offering only while
+// it agrees with the code that writes the rows: MISSING and EXTRA below are the two directions.
+
+// The whole value expression after `action:`, up to the comma or brace that ends the property, so
+// `cond ? "company_logo.clear" : "company_logo.set"` yields both literals. Depth- and string-aware
+// for nested calls, objects and commas inside templates. A name computed from a variable
+// contributes nothing, and the entry it needs shows up as `extra` on the list.
 function actionValue(code: string, from: number): string {
   let depth = 0;
   let quote: string | null = null;
@@ -66,8 +43,9 @@ function literalsIn(expr: string): string[] {
   return [...expr.matchAll(/"([a-z_]+\.[a-z_]+)"/g)].map((m) => m[1] as string);
 }
 
-// Every `src/**/*.ts` but the list itself, with comments blanked. Read once and shared, because both
-// directions below sweep the same bytes asking different questions.
+// Every `src/**/*.ts` but the list itself, through `withoutComments` (a name in prose is not a
+// producer) and NOT `codeOnly`: the name looked for IS a string literal, and blanking string bodies
+// would blank the answer. Read once and shared: both directions sweep the same bytes.
 async function producerSources(): Promise<string[]> {
   const out: string[] = [];
   for await (const rel of new Bun.Glob("**/*.ts").scan("src")) {
@@ -80,11 +58,9 @@ async function producerSources(): Promise<string[]> {
 }
 
 describe("the audit action vocabulary", () => {
-  // MISSING — a family adds `channel.foo` and the operator cannot pick it.
-  //
-  // The type is the real fence here now (`AuditEntry.action` is `AuditAction`, so this cannot
-  // compile), and this stays because it costs one sweep and fails with the NAME rather than with a
-  // union of ninety alternatives.
+  // MISSING: a family adds `channel.foo` and the operator cannot pick it. The type is the real
+  // fence (`AuditEntry.action` is `AuditAction`); this costs one sweep and fails with the NAME
+  // rather than with a union of ninety alternatives.
   test("every action the code writes is on the list", async () => {
     const written = new Set<string>();
     for (const code of await producerSources()) {
@@ -103,20 +79,11 @@ describe("the audit action vocabulary", () => {
     ).toEqual([]);
   });
 
-  // EXTRA — a producer is deleted or renamed and its name stays on the list. The operator picks a
+  // EXTRA: a producer is deleted or renamed and its name stays on the list, so an operator picks a
   // value that can never match and reads the empty page as "nothing happened". NO TYPE CAN CHECK
-  // THIS: a union member nobody constructs is not an error anywhere.
-  //
-  // Asked as PRESENCE, not by parsing producers, and that is the lesson of three rounds of review.
-  // Read off `action:` sites, this direction was wrong for every name written any other way: a
-  // ternary (`company_logo.*`), and a helper taking the name as an argument
-  // (`auditConsentDecision`, whose two names it reported as extra while they are written on every
-  // consent decision). Presence cannot be fooled by the shape, because it does not look at one.
-  //
-  // THE ONE EXEMPTION DOES NOT WEAKEN THE RULE THIS TEST STATES. The rule's harm is a value that
-  // can NEVER match; those two match every consent row in the table, and delisting them before the
-  // backfill is what would strand them. The exemption is the same named pair the shape test
-  // carries, and it leaves with it.
+  // THIS: a union member nobody constructs is not an error anywhere. Asked as PRESENCE, not by
+  // parsing producers: parsing `action:` sites misses a name written through a ternary or passed to
+  // a helper (`auditConsentDecision`), and presence does not depend on the shape.
   test("every action on the list still has a producer", async () => {
     const sources = await producerSources();
     const orphaned = AUDIT_ACTIONS.filter(
@@ -130,14 +97,9 @@ describe("the audit action vocabulary", () => {
     expect(unique.size).toBe(AUDIT_ACTIONS.length);
   });
 
-  // The filter renders these verbatim, so the shape is part of the contract: `<entity>.<verb>`, the
-  // naming #392 settled. A name in another shape reaches the operator as noise and, worse, suggests
-  // the family it belongs to is somewhere else.
-  //
-  // NO EXCEPTIONS, and that is the state this assertion has been working towards since #392. The
-  // last two, the consent pair, were named rather than pattern-matched so a third would be a
-  // decision somebody made on purpose; they left with #555's backfill, which put every recorded row
-  // under the dotted name and made the old spellings unreachable rather than merely unwritten.
+  // The filter renders these verbatim, so the shape is part of the contract: `<entity>.<verb>`,
+  // with no exceptions. A name in another shape reaches the operator as noise and suggests the
+  // family it belongs to is somewhere else.
   test("every action is <entity>.<verb>", () => {
     const odd = AUDIT_ACTIONS.filter(
       (a) => !/^[a-z][a-z_]*\.[a-z][a-z_]*$/.test(a),
@@ -146,22 +108,12 @@ describe("the audit action vocabulary", () => {
   });
 });
 
-// WHICH ACTIONS BELONG TO NO TENANT, asked of the producers rather than of the list.
-//
-// SPLIT BY COUNTING PARENS, not by a lookahead over `[^,]+`. The first version of this used
-// `,\s*(?!null\s*,)[^,]+,` to mean "the tenant argument is not null", and a regex backtracks: with
-// `\s*` matching zero spaces the lookahead sees " null", which does not start with `null`, so every
-// fleet call also matched the tenant pattern and disqualified itself. It reported five fleet actions
-// where there are eleven, and it reported them confidently.
-//
-// Three call shapes reach the row, and all three are enumerated because the sweep must fail LOUDLY
-// on a fourth rather than quietly shrink: a new shape makes an action look tenant-scoped, the
-// declared entry becomes `extra`, and this goes red. A new fleet action in a known shape is
-// `missing` and goes red too. Neither direction degrades to a pass.
-//
-// `api_key.*` and `mcp_oauth_consent.*` are correctly absent from the declaration: they take the
-// tenant id on the tenant path and `null` on the fleet path, so membership is asked as "writes null
-// ALWAYS" — an action seen in any tenant-scoped write is disqualified.
+// WHICH ACTIONS BELONG TO NO TENANT, asked of the producers. Arguments are SPLIT BY COUNTING PARENS:
+// a lookahead like `,\s*(?!null\s*,)[^,]+,` backtracks and lets every fleet call match the tenant
+// pattern. All three call shapes are enumerated so a fourth fails LOUDLY (its action looks
+// tenant-scoped and the declared entry becomes `extra`) rather than quietly shrinking the sweep.
+// Membership is "writes null ALWAYS", so `api_key.*` and `mcp_oauth_consent.*`, which write the
+// tenant id on the tenant path and `null` on the fleet path, are correctly absent.
 describe("which actions belong to no tenant", () => {
   // Where the tenant is written in each call, and `null` for the local `fleetAudit` alias in
   // `mcp/oauth/admin.ts`, which supplies the null itself.
@@ -249,13 +201,9 @@ describe("which actions belong to no tenant", () => {
   });
 });
 
-// THE RENAME LEAVES A DOOR OPEN BEHIND IT, and this is the whole contract of that door. #555 moved
-// every consent row off the two pre-#392 spellings and dropped them from the catalog, which is the
-// point of the change: one act, one name. What the drop also does, though, is turn every filter link
-// an operator saved, every script's query string and every quoted export that names the old spelling
-// into a read that matches nothing — an audit answering "no consent decision was ever recorded"
-// while the rows sit one name over. So the old spelling is accepted as INPUT and redirected, and the
-// three assertions below are the three halves of "input only" that a later edit could break
+// THE RENAMED CONSENT SPELLINGS ARE ACCEPTED AS INPUT ONLY. Saved filter links, scripts and quoted
+// exports still name the old spellings, and without the redirect they read "no consent decision was
+// ever recorded" while the rows sit one name over. The three halves of "input only" can break
 // separately: it translates, it is not in the vocabulary, and it does not leak into what is written.
 describe("audit actions: the spellings the rename left behind", () => {
   test("an old spelling is redirected to the name the rows now carry", () => {
@@ -274,7 +222,7 @@ describe("audit actions: the spellings the rename left behind", () => {
   // A NAME OFF `Object.prototype` IS STILL JUST A NAME THE TRAIL DOES NOT HAVE. `?action=toString`
   // is a string like any other, and a plain-object lookup answers it with an inherited FUNCTION,
   // which `?? action` then keeps because it is not nullish. That value goes on to Prisma as the
-  // `action` filter — a 500 where this endpoint promises an empty result — and into the page's
+  // `action` filter (a 500 where this endpoint promises an empty result) and into the page's
   // filter state, which expects a string. Asserted as a type, not as a spelling, so the next reader
   // to add a member cannot pick one this misses.
   test("a name that Object.prototype happens to carry is handed back untouched", () => {

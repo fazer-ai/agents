@@ -6,7 +6,7 @@ import {
 } from "@/modules/availability/away";
 import type { Schedule } from "@/modules/business-hours/hours";
 
-// Decision table for the customer-facing out-of-hours copy (#153). Fixed instants, no real clock:
+// Decision table for the customer-facing out-of-hours copy. Fixed instants, no real clock:
 // 2024-01-07 is a Sunday, 2024-01-08 a Monday.
 const MON_9_TO_17: Schedule = {
   windows: [{ day: 1, start: "09:00", end: "17:00" }],

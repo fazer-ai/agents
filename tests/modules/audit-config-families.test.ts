@@ -36,18 +36,13 @@ import {
 } from "@/modules/tool-definitions/service";
 import { outboundUrl } from "../utils/outbound";
 
-// Five configuration families whose trail was written by the MCP transport and by nothing else, plus
-// the vault (#444), which joins the FENCE at the bottom of this file rather than the matrix: the
-// invariant it guards is about every audited family, and a sixth model added to it is one more
-// column list read out of the schema.
+// Five configuration families (tool definitions, MCP connections, integration instances,
+// experiments, document templates) recorded by the service, in the mutation's own transaction, so
+// every door leaves the same row. They share one shape (three routes over one service), so the
+// assertion is a matrix over it, and a family that stops matching falls out as a failing row.
 //
-// The seam (#392) puts the row inside the service, in the mutation's own transaction, so it covers
-// whichever door the change came through. This file is the family measurement for the five that
-// were still on the transport: tool definitions, MCP connections, integration instances,
-// experiments and document templates (issue #399). What makes it one file rather than five is that
-// the five have the same shape — three routes over one service — so the assertion is a matrix over
-// the shape, and a family that stops matching it falls out as a failing row rather than as a file
-// nobody wrote.
+// The vault joins the FENCE at the bottom of this file rather than the matrix: that invariant is
+// about every audited family.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -339,10 +334,9 @@ describe.skipIf(!dbUp)(
 
     // ── the transport writes ONE row, and it is the service's ──
     //
-    // The tools used to build the row themselves, one layer up and in a second transaction. Removing
-    // that without the service writing one would have left the MCP door recording nothing, and
-    // leaving it in would have double-recorded every apply — so the count is the assertion, not the
-    // presence.
+    // A row built by the tool as well as by the service would double-record every apply, and one
+    // built by neither would leave the MCP door recording nothing, so the count is the assertion,
+    // not the presence.
 
     const MCP_APPLY: {
       entity: string;
@@ -611,18 +605,17 @@ describe.skipIf(!dbUp)(
 
     test("clearing an unreadable credential ref writes a row, because the projection marks it", async () => {
       const id = await (FAMILIES[0] as Family).create(ctx());
-      // Planted with the SUPERUSER client, past the guard that has refused this spelling on the way
-      // in since #126: the column predates that guard and the rows it wrote are still there.
+      // NOTE: planted with the SUPERUSER client, past the guard that refuses this spelling on the
+      // way in: the column predates that guard, so legacy rows hold such values.
       await su?.$executeRawUnsafe(
         `UPDATE tool_definitions SET credential_ref = 'sk-live-399-not-a-reference' WHERE id = ${id}`,
       );
       await clearAudit();
       await updateToolDefinition(ctx(), id, { credentialRef: null }, appDb);
       const [row] = await rows("tool.update");
-      // Without `credentialRefOpaque` both sides of this change read as `credentialRef: null` —
-      // `readableVaultRef` shows the stored value only where it IS a reference (#438) — so
-      // `projectionMoved` would see nothing and the one save that removed a credential would write
-      // no row at all.
+      // NOTE: without `credentialRefOpaque` both sides read as `credentialRef: null` (`readableVaultRef`
+      // shows the stored value only where it IS a reference), so `projectionMoved` would see nothing
+      // and the save that removed a credential would write no row at all.
       expect(row).toBeDefined();
       expect(row?.before).toMatchObject({
         credentialRef: null,
@@ -653,16 +646,13 @@ describe.skipIf(!dbUp)(
     });
 
     // ── what a projection may NOT hold ──
-    //
-    // Three of the five families own a field that is large, free-form, or both, and none of the three
-    // is an allowlist on the way in. A row is append-only and readable by every tenant admin, so what
-    // goes on it is the SHAPE of those fields and never their contents.
+    // Three families own a large or free-form field that no allowlist guards on the way in. A row
+    // is append-only and readable by every tenant admin, so it carries their SHAPE, never their
+    // contents.
 
-    // The allowlist is `z.string().min(1).max(255)` per entry and nothing more, and in the editor
-    // it sits beside the URL field. Two rounds of review landed on the same place: a pasted URL
-    // goes in it, and so does a bare token — `ghp_0123` and `xoxb-1-2` are things `URL` will call a
-    // host, and a JWT has dots. No test on the string separates the two, so the row carries the
-    // COUNT and the live surface carries the names.
+    // Each allowlist entry is just `z.string().min(1).max(255)`, beside the URL field: a pasted URL
+    // lands in it, and so does a token (`ghp_0123` parses as a host, a JWT has dots). No test on
+    // the string separates the two, so the row carries the COUNT and the live surface the names.
     test("a tool's host allowlist reaches the row as a count, not as entries", async () => {
       await clearAudit();
       const created = await createToolDefinition(
@@ -692,8 +682,8 @@ describe.skipIf(!dbUp)(
     });
 
     // NEITHER the values NOR the key names. `config` is `z.record(z.string(), z.unknown())` on both
-    // writers, so an operator names its keys as freely as they fill them, and #394 settled that an
-    // unknown, caller-controlled key can itself be secret material.
+    // writers, so an operator names its keys as freely as they fill them, and an unknown,
+    // caller-controlled key can itself be secret material.
     test("an integration's config contributes neither its values nor its key names", async () => {
       const created = await createIntegrationInstance(
         ctx(),
@@ -786,13 +776,10 @@ describe.skipIf(!dbUp)(
 
     // ── the two routes that look like mutations and are not ──
     //
-    // Asserted on the SOURCE rather than by driving them, and the reason is the discover: it opens a
-    // real MCP connection, so a behavioural probe against a fixture host spends the network timeout
-    // and then proves nothing the read of the function does not already say. What is being claimed is
-    // that neither function contains a write to the trail, and that is a property of the text.
-    //
-    // `docs/mcp.md` records the same decision for the MCP twin of the first one (#397): the trail
-    // records changes, and these two change nothing.
+    // Asserted on the SOURCE rather than by driving them: the discover opens a real MCP connection,
+    // so a behavioural probe spends the network timeout and proves nothing the text does not say.
+    // The trail records changes, and these two change nothing (`docs/mcp.md` says the same of the
+    // MCP twin of the first).
 
     test("discover and preview record nothing, and the predicate can tell", async () => {
       const conns = await Bun.file(
@@ -820,7 +807,7 @@ describe.skipIf(!dbUp)(
       );
     });
 
-    // The row says THAT the undisclosed half moved and nothing about what it holds — not the value
+    // The row says THAT the undisclosed half moved and nothing about what it holds: not the value
     // and not a fingerprint of one. A fingerprint would be an offline verifier: `audit_logs` is
     // append-only and readable by every tenant admin long after the record is deleted, and a reader
     // holding a candidate could hash it and confirm. The proof is that two different contents leave
@@ -845,9 +832,8 @@ describe.skipIf(!dbUp)(
 
     // ── the half that is compared and not carried, and why it is not optional ──
     //
-    // Review round 1 found five columns that changed without the projection noticing. Each one below
-    // is an ORDINARY edit of its family, and each writes no row at all when its column is in neither
-    // half of the projection.
+    // Each one below is an ORDINARY edit of its family, and each writes no row at all when its column
+    // is in neither half of the projection.
 
     test("a tool patch that touches only an omitted field still writes a row", async () => {
       const id = await (FAMILIES[0] as Family).create(ctx());
@@ -1125,15 +1111,10 @@ describe.skipIf(!dbUp)(
 
     // ── the fence: every mutable column is in one half or the other ──
     //
-    // The five findings above were five instances of ONE mistake — a column that is in neither half —
-    // and fixing them one by one would leave the sixth to be found by review again. So the coverage
-    // is cobbled from the SOURCE of the invariant rather than from the projections: the columns come
-    // out of `prisma/schema.prisma`, and a column added to any of these models later fails this test
-    // until its author has decided which half it belongs in.
-    //
-    // Reading the schema is what makes it a fence rather than a restatement. Counting off the
-    // projections would only ever agree with itself (the lesson #438 wrote down: count the DECLARATION
-    // and not the projection of it).
+    // The cases above are instances of ONE mistake, a column in neither half, so the columns come
+    // out of `prisma/schema.prisma` and a column added to any of these models fails this test until
+    // its author decides which half it belongs in. Counting off the projections instead would only
+    // ever agree with itself: count the DECLARATION, not the projection of it.
 
     test("every mutable column of the five models is projected, compared, or exempt with a reason", async () => {
       const schema = await Bun.file("prisma/schema.prisma").text();
@@ -1211,11 +1192,10 @@ const UNDISCLOSED = ["secretBag"] as const;`;
       expect(coveredColumns(complete)).toEqual(
         new Set(["name", "secretBag", "count"]),
       );
-      // The shape review found: a column read nowhere in the projection, so it moves and the row does
-      // not.
+      // NOTE: a column read nowhere in the projection, so it moves and the row does not.
       expect(coveredColumns(leaky).has("count")).toBe(false);
-      // A pair that only OPENS as a whole-value pair does not count: this is the shape review found
-      // on `allowedHosts`, where a `.map(redact)` under the same key reports less than the column.
+      // NOTE: a pair that only OPENS as a whole-value pair does not count: a `.map(redact)` under the
+      // same key (as on `allowedHosts`) reports less than the column.
       expect(
         coveredColumns(`function auditProjection(r: Row) {
   return { name: r.name.map(redact) };
@@ -1238,8 +1218,8 @@ const UNDISCLOSED = [] as const;`).has("name"),
 // inbound auth strategy is a policy an operator changes — so relations are told apart by being
 // declared as `model` in the same schema.
 export function mutableColumns(schema: string, model: string): string[] {
-  // An ALLOWLIST of what counts, not a denylist of what does not. Told the other way round — "a
-  // type that is a model in this schema is a relation" — the predicate quietly admits any type it
+  // NOTE: an ALLOWLIST of what counts, not a denylist of what does not. Told the other way round ("a
+  // type that is a model in this schema is a relation"), the predicate quietly admits any type it
   // does not recognise, and a relation to a model declared elsewhere, or a type this file has not
   // heard of, becomes a column the fence then demands a projection for. Enums are on the list
   // because an inbound auth strategy IS a policy an operator changes.
@@ -1275,23 +1255,13 @@ export function mutableColumns(schema: string, model: string): string[] {
   return out.sort();
 }
 
-// Which columns a change to would MOVE the projection, which is not the same as which ones it
-// mentions.
-//
-// Mentioning is what the first version of this fence counted, and it passed with the defect
-// restored: `urlMasked: redactEndpoint(r.urlTemplate)` mentions `urlTemplate` while reporting only
-// its origin, so a template edited from `/a` to `/b` moves nothing and writes no row. Same for an
-// MCP `url`, for a `command` shown as its launcher, and for `fields` shown as `{key, type}`. So a
-// column counts in exactly two shapes:
-//
-// - named in the module's `UNDISCLOSED` list, which the update path compares whole; or
-// - as a whole-value pair, `name: r.name`, where the projection carries it as it stands, and the
-//   pair has to END there: `allowedHosts: r.allowedHosts.map(hostForAudit)` opens with the same
-//   eleven characters and reports a redacted list, so a prefix match would vouch for exactly the
-//   transform this fence exists to catch.
-//
-// A transformed projection is neither, and has to be listed as well to count. The one lossless
-// transform in the tree is declared per family in `FENCED[].whole`, with its reason.
+// Which columns a change to would MOVE the projection, not which ones it mentions:
+// `urlMasked: redactEndpoint(r.urlTemplate)` mentions `urlTemplate` while reporting only its origin,
+// so an edit of the path moves nothing. A column counts in exactly two shapes: named in the module's
+// `UNDISCLOSED` list, which the update path compares whole; or as a whole-value pair, `name: r.name`,
+// that ENDS there (`allowedHosts: r.allowedHosts.map(hostForAudit)` opens the same way and reports a
+// redacted list). A transformed projection has to be listed as well; the one lossless transform is
+// declared per family in `FENCED[].whole`, with its reason.
 export function coveredColumns(source: string): Set<string> {
   const start = source.indexOf("function auditProjection(");
   if (start < 0) return new Set();
@@ -1387,9 +1357,8 @@ const FENCED: {
         "the issuer's counter, advanced by issuing a document and not by editing the template",
     },
   },
-  // #444. Not one of the five, and here for the reason the fence exists at all: the invariant is
-  // about every audited family, and this is the one where the projection sits one column away from
-  // the credential itself.
+  // NOTE: not one of the five, and here because the invariant is about every audited family: this
+  // is the one where the projection sits one column away from the credential itself.
   {
     model: "VaultEntry",
     file: "src/modules/vault/service.ts",

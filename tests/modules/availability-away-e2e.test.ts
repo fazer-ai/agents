@@ -11,16 +11,13 @@ import {
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { isOwnershipRead } from "../utils/ownership-read";
 
-// Issue #153, wiring end. The availability gate silenced the agent and told only the OPERATOR, so the
-// customer's side of a closed schedule was indistinguishable from the business ignoring them. What the
-// decision table in availability-away.test.ts pins is the RULE (what text, and when it is withheld);
-// what these cover is that the text actually leaves the process as a CUSTOMER-facing message on the
-// conversation — the half a pure function cannot prove, because "the double received a public message
-// with the persona's token" is the whole point.
+// The decision table in availability-away.test.ts pins the RULE (what text, and when it is withheld);
+// these cover that the text actually leaves the process as a CUSTOMER-facing message, posted with the
+// persona's token, which a pure function cannot prove.
 //
-// The schedule is open 00:00–23:59 every day and an exception closes today and tomorrow, so every
+// The schedule is open 00:00 to 23:59 every day and an exception closes today and tomorrow, so every
 // assertion here is on the CLOSED direction and holds at any minute of the run (same construction as
-// the #129 suite).
+// business-hours-exceptions.test.ts).
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

@@ -7,10 +7,9 @@ import type {
   ToolpackCtx,
 } from "@/modules/integrations/toolpacks/types";
 
-// Issue #345: `calendar_create_event` (and `calendar_update_event`) wrote any `start` they were
-// handed. `calendar_check_availability` enforces the service hours, the slot grid, the minimum lead
-// and the existing bookings; the write path enforced none of them, so a time availability would
-// never offer was still bookable and the operator only found out when someone showed up.
+// `calendar_check_availability` enforces the service hours, the slot grid, the minimum lead and the
+// existing bookings, and `calendar_create_event`/`calendar_update_event` must too, or a time
+// availability would never offer is still bookable.
 //
 // The rule these tests pin is ONE sentence: a write only lands on a (start, end) pair that
 // `calendar_check_availability` would have returned for that window. Every case below is a way of
@@ -109,8 +108,8 @@ function toolFor(
   )[0];
 }
 
-// One-hour appointments offered on the hour: the configuration the issue describes, where a 14:15
-// start is a time the business does not sell.
+// One-hour appointments offered on the hour, where a 14:15 start is a time the business does not
+// sell.
 const HOURLY = { slotDurationMinutes: 60, slotGranularityMinutes: 60 };
 
 // Far enough out that the real clock never makes these cases about the lead time.
@@ -352,7 +351,7 @@ describe("calendar writes honor availability (#345)", () => {
   });
 });
 
-// The three defects round 1 of the review found, each as the case that separates the two behaviours.
+// Three cases, each one separating a write that honors the rule from one that does not.
 describe("calendar writes honor availability — round 1 (#345)", () => {
   function tzWeekday(isoStr: string, tz: string): number {
     const s = new Intl.DateTimeFormat("en-US", {
@@ -541,8 +540,8 @@ describe("calendar writes honor availability — round 1 (#345)", () => {
   });
 });
 
-// Round 2 and 3 of the review: three ways the boundary between the string the model sends and the
-// instant the rule judges leaked.
+// Three ways the boundary between the string the model sends and the instant the rule judges can
+// leak.
 describe("calendar writes honor availability — round 3 (#345)", () => {
   test("unchanged all-day values are left out of the patch, not reshaped", async () => {
     // The timed patch shape would reach Google as a `dateTime` of "2099-06-22" with `date` cleared,

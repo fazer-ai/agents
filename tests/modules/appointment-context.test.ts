@@ -4,17 +4,13 @@ import {
   parseStartMs,
 } from "@/modules/appointments/context";
 
-// The projection of reminder JOBS into "live appointments" used to live here. It is gone with the
-// model it projected: an appointment is a row of its own now, and liveness is one predicate over one
-// column (`cancelled_at IS NULL AND start_at > now`), asserted against a real database in
-// tests/modules/appointment-context-db.test.ts. Several of the cases this file used to need are no
-// longer expressible — a row with no event id, a start compared as a string across offsets — which
-// is what the change bought.
+// An appointment is a row of its own, and liveness is one predicate over one column
+// (`cancelled_at IS NULL AND start_at > now`), asserted against a real database in
+// tests/modules/appointment-context-db.test.ts. This file covers the block's text.
 
 const FUTURE = "2026-08-08T10:00:00-03:00";
-// O relógio e o fuso do turno, que o bloco agora enuncia (#685). Fixos, porque um bloco que carrega
-// o instante corrente afirma uma data, e teste que lê o relógio da máquina afirma outra a cada
-// rodada.
+// O relógio e o fuso do turno, que o bloco enuncia. Fixos, porque um bloco que carrega o instante
+// corrente afirma uma data, e teste que lê o relógio da máquina afirma outra a cada execução.
 const NOW = new Date("2026-08-07T14:10:00-03:00");
 const TZ = "America/Sao_Paulo";
 
@@ -61,10 +57,9 @@ describe("buildAppointmentContextSection", () => {
     expect(readOnly).not.toContain("calendar_update_event");
   });
 
-  // `canOperate` answers for the TOOLSET and the provider answers for the APPOINTMENT, and an
-  // operator who declares bookings from their own system (issue #352) while also granting the
-  // Calendar toolpack has both in one block. Pointing the model at calendar_cancel_event with a
-  // Feegow id is a call that cannot work, made against a booking that is real.
+  // `canOperate` answers for the TOOLSET and the provider answers for the APPOINTMENT: an operator
+  // who declares bookings from their own system while also granting the Calendar toolpack has both
+  // in one block, and calendar_cancel_event with a Feegow id cannot work on a booking that is real.
   const foreign = {
     ...event,
     eventId: "42",
@@ -106,8 +101,8 @@ describe("buildAppointmentContextSection", () => {
   });
 });
 
-// NOTE: parseStartMs pins offset-less startISO values to UTC — the same rule the sweep SQL mirrors —
-// so the JS and Postgres liveness decisions cannot diverge when app and DB time zones differ.
+// parseStartMs pins offset-less startISO values to UTC (the same rule the sweep SQL mirrors), so the
+// JS and Postgres liveness decisions cannot diverge when app and DB time zones differ.
 describe("parseStartMs", () => {
   test("all-day date parses as UTC midnight", () => {
     expect(parseStartMs("2026-06-13")).toBe(Date.parse("2026-06-13T00:00:00Z"));
@@ -133,22 +128,21 @@ describe("parseStartMs", () => {
     expect(Number.isNaN(parseStartMs(""))).toBe(true);
   });
 
-  // NOTE: Date.parse would roll these over (Feb 30 → Mar 2) while the sweep's pg_input_is_valid
-  // rejects them — NaN keeps the two liveness decisions in agreement.
+  // Date.parse would roll these over (Feb 30 → Mar 2) while the sweep's pg_input_is_valid rejects
+  // them: NaN keeps the two liveness decisions in agreement.
   test("impossible calendar dates are NaN, not rolled over", () => {
     expect(Number.isNaN(parseStartMs("2026-02-30"))).toBe(true);
     expect(Number.isNaN(parseStartMs("2026-04-31T12:00:00"))).toBe(true);
     expect(Number.isNaN(parseStartMs("2023-02-29T10:00:00Z"))).toBe(true);
     expect(Number.isNaN(parseStartMs("2024-02-29"))).toBe(false);
-    // NOTE: Years below 0100 are valid — the guard must not let Date.UTC remap them to 19xx.
+    // NOTE: years below 0100 are valid: the guard must not let Date.UTC remap them to 19xx.
     expect(parseStartMs("0099-02-28")).toBe(Date.parse("0099-02-28T00:00:00Z"));
   });
 });
 
-// (#685) O bloco enuncia datas absolutas, e o turno que as lê não sabe que dia é hoje: o instante
-// corrente só chega a um prompt quando o operador digitou `{{data_atual}}` ou uma irmã. Medido
-// contra a API real, numa thread cuja mensagem anterior dizia "amanhã" para um compromisso que
-// tinha virado hoje: 6 de 10 respostas repetiam "amanhã", e com esta linha no bloco, 0 de 10.
+// O bloco enuncia datas absolutas, e o turno que as lê não sabe que dia é hoje: o instante corrente
+// só chega a um prompt quando o operador digitou `{{data_atual}}` ou uma irmã. Sem esta linha, o
+// modelo repete o "amanhã" do histórico para um compromisso que virou hoje.
 describe("buildAppointmentContextSection: o instante corrente (#685)", () => {
   const event = {
     eventId: "ev_1",
@@ -185,8 +179,7 @@ describe("buildAppointmentContextSection: o instante corrente (#685)", () => {
   });
 
   // O fuso é o que chega, não o default: é o mesmo par (instante, fuso) que as variáveis de prompt
-  // renderizam, e duas renderizações do mesmo relógio discordando dentro de um prompt é o defeito,
-  // não o conserto.
+  // renderizam, e duas renderizações do mesmo relógio não podem discordar dentro de um prompt.
   test("o fuso é o do turno, não o padrão do produto", () => {
     const s = buildAppointmentContextSection(
       [event],

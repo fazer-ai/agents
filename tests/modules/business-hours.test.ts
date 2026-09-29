@@ -150,10 +150,10 @@ describe("isOpenAt (São Paulo, UTC-3)", () => {
   });
 });
 
-// ── date exceptions (issue #129) ──
+// ── date exceptions ──
 //
-// 2026-09-07 (Brazilian Independence Day) falls on a Monday, which is the scenario the issue reports:
-// every weekday check says "open" and the agent works the holiday as an ordinary Monday.
+// 2026-09-07 (Brazilian Independence Day) falls on a Monday: without the exception every weekday
+// check says "open" and the agent works the holiday as an ordinary Monday.
 const SEP7_0914 = new Date("2026-09-07T12:14:00Z"); // Mon 09:14 SP
 const SEP8_0914 = new Date("2026-09-08T12:14:00Z"); // Tue 09:14 SP
 const holiday: ScheduleException = {

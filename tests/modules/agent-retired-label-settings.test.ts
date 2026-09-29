@@ -12,8 +12,8 @@ import {
 } from "@/modules/agents/tool-guidance";
 
 // The settings blocks are loose objects, so a key removed from every reader keeps being accepted and
-// stored with a 200 while governing nothing. Issue #568 retired the taxonomy; these are the four
-// faces the verifier found of it still being accepted, and the guard that answers all four.
+// stored with a 200 while governing nothing. These are the four ways the retired label taxonomy can
+// still arrive, and the guard that answers all four.
 describe("retired label settings", () => {
   test("settings.labels is refused, naming where the taxonomy went", () => {
     expect(() =>
@@ -29,10 +29,9 @@ describe("retired label settings", () => {
   });
 
   test("an empty tombstone passes, because refusing it breaks ordinary saves", () => {
-    // The previous Behavior editor wrote `monitoring.labelGroups` unconditionally, so an agent that
-    // never had a taxonomy still carries `[]` — and both surviving writers spread what they read.
-    // A refusal on mere presence would fail every later save for a key the operator cannot see.
-    // The migration clears the stored ones; this keeps the rolling-deploy window from hard-failing.
+    // NOTE: an older console writes `monitoring.labelGroups` as `[]` on every save, and both
+    // writers spread what they read, so a refusal on mere presence would fail every later save for a
+    // key the operator cannot see (the migration clears stored ones; this covers a rolling deploy).
     for (const value of [
       {},
       [],
@@ -77,11 +76,9 @@ describe("retired label settings", () => {
   });
 
   test("monitoring.noteOnChange is never refused, whatever it says", () => {
-    // Round 25 refused every value but `false`; round 33 measured the cost during a rolling deploy.
-    // The previous console does not ASK for the behaviour, it reconstructs the key: the reader
-    // defaults it to `true` when absent and the form writes it back on every Behavior save. So a
-    // refusal here answers 400 to saves that have nothing to do with labels, naming a field the
-    // operator cannot see from that screen.
+    // NOTE: an older console reconstructs the key on every Behavior save (its reader defaults it to
+    // `true`), so refusing it answers 400 to saves unrelated to labels, during a rolling deploy,
+    // naming a field the operator cannot see from that screen.
     for (const value of [true, "true", "sim", 1, {}, [], false, null]) {
       expect(() =>
         assertSettingsRetiredLabelKeys({ monitoring: { noteOnChange: value } }),
@@ -90,8 +87,8 @@ describe("retired label settings", () => {
   });
 
   test("...it is taken out of the bag instead, whatever it says", () => {
-    // Stripped rather than stored: it governs a feature that no longer exists, and leaving it in
-    // would write straight back the key the migration just cleared.
+    // NOTE: stripped rather than stored: it governs nothing, and leaving it in would write back the
+    // key the migration cleared.
     for (const value of [true, "true", 1, false, null]) {
       const bag = {
         monitoring: { window: { messages: 25 }, noteOnChange: value },
@@ -109,9 +106,9 @@ describe("retired label settings", () => {
   });
 
   test("a taxonomy is STILL refused, which is the half an operator can act on", () => {
-    // The difference between the two keys: a taxonomy is a decision the operator made and can move
-    // (the refusal names `toolGuidance.set_labels`, which is where it goes). The note flag is not a
-    // decision at all — it is what the old console writes for every agent.
+    // NOTE: a taxonomy is a decision the operator made and can move (the refusal names
+    // `toolGuidance.set_labels`); the note flag is not a decision, it is what the old console writes
+    // for every agent.
     expect(() =>
       assertSettingsRetiredLabelKeys({
         monitoring: {
@@ -138,8 +135,8 @@ describe("the protected-label ceiling is refused, not truncated", () => {
   const many = (n: number) => Array.from({ length: n }, (_, i) => `l${i}`);
 
   test("a list past the ceiling is refused, naming the ceiling", () => {
-    // The reader keeps the first PROTECTED_LABELS_MAX, so without this the console reloads sixty
-    // labels as configured while ten of them are there for set_labels to remove — a guard that
+    // NOTE: the reader keeps the first PROTECTED_LABELS_MAX, so without this the console reloads
+    // sixty labels as configured while ten of them are there for set_labels to remove: a guard that
     // looks active and is not.
     expect(() =>
       assertSettingsProtectedLabels(
@@ -158,8 +155,8 @@ describe("the protected-label ceiling is refused, not truncated", () => {
   });
 
   test("counted the way the reader counts it", () => {
-    // Blanks, non-strings and duplicates never became guards, so they must not push a legal list
-    // over the edge either — the refusal and the truncation have to be about the same list.
+    // NOTE: blanks, non-strings and duplicates never become guards, so they must not push a legal
+    // list over the edge either: the refusal and the truncation have to be about the same list.
     const padded = [...many(PROTECTED_LABELS_MAX), "", "  ", 3, "l0", null];
     expect(() =>
       assertSettingsProtectedLabels(

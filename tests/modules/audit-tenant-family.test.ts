@@ -16,19 +16,14 @@ import {
 } from "@/modules/tenant-settings/service";
 import { countingBase } from "../utils/counting-base";
 
-// The tenant / tenant-settings / branding trail, moved into the services that perform the writes.
-//
-// Six actions existed and all six were written by an MCP tool after the service had committed, so
-// the identical change made from the console left no row at all. Measured, not assumed: every
-// probe in this file failed on the base. Three more things this family made visible, each with a
-// test below that dies if the fix is undone:
-//
+// The tenant / tenant-settings / branding trail, recorded by the services that perform the writes,
+// so the console and MCP leave the same row. Three invariants of this family, each with a test:
 //   - `audit_logs.tenant_id` is ON DELETE CASCADE, so a `tenant.delete` row filed under the tenant
-//     it deletes is erased by the same statement. The deployment's most consequential act, gone.
+//     it deletes would be erased by the same statement; it is fleet-level.
 //   - A SUPER_ADMIN writes whichever tenant the PATH names, not the one its header selects, so a row
-//     keyed on the context lands in a stranger's trail.
-//   - Removing a branding asset had no audit name on any transport, and none of the branding writes
-//     ran inside a transaction, so no row could ever have been atomic with them.
+//     keyed on the context would land in a stranger's trail.
+//   - Removing a branding asset is recorded, and the branding writes run inside a transaction, so
+//     the row is atomic with them.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -281,9 +276,8 @@ describe.skipIf(!dbUp)("the tenant family records from its services", () => {
     expect(await rows({ tenantId })).toEqual([]);
   });
 
-  // THREE rows since #444, and the new one is the point of that issue: the credential this tool
-  // fills is created by the vault service, which records it now. Before, `langfuse.connect` was the
-  // only trace that a credential had appeared, and it names the connection rather than the entry.
+  // THREE rows: the credential this tool fills is created by the vault service, which records it;
+  // `langfuse.connect` names the connection rather than the entry.
   test("langfuse_connect records the credential, the settings write and the connection as the three writes they are", async () => {
     await clearAudit();
     const res = await langfuseConnect(

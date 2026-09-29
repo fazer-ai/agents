@@ -124,7 +124,7 @@ describe("reminderNudge", () => {
   const args = {
     summary: "Consulta",
     startISO: "2026-06-25T10:00:00-03:00",
-    // A clock, because the nudge is grounded in one (issue #685). A day out, so these cases read the
+    // NOTE: a clock, because the nudge is grounded in one. A day out, so these cases read the
     // reminder they were written for and the grounding is exercised on the side.
     now: new Date("2026-06-24T10:00:00-03:00"),
     eventId: "ev_1",
@@ -148,9 +148,9 @@ describe("reminderNudge", () => {
     expect(n.instructions).not.toContain("calendar_confirm_appointment");
   });
 
-  // (#352) A booking that reached the platform through a tool's declaration has no Google event
-  // behind it, so naming a calendar tool at the model points it at one that cannot touch this
-  // appointment. The reminder itself is unchanged: same summary, same refs, same date and time.
+  // A booking that reached the platform through a tool's declaration has no Google event behind it,
+  // so naming a calendar tool at the model points it at one that cannot touch this appointment. The
+  // reminder itself is unchanged: same summary, same refs, same date and time.
   test("without the calendar behind it, no calendar tool is named — in either shape", () => {
     for (const askConfirmation of [true, false]) {
       const n = reminderNudge({
@@ -186,11 +186,10 @@ describe("reminderNudge", () => {
     ).toContain("calendar_update_event");
   });
 
-  // (#352, round 4) Not naming a Calendar tool is not the same as asserting the model holds no tool
-  // at all. The operator's own booking system may have an HTTP cancel/reschedule tool granted this
-  // very turn — buildAppointmentContextSection points the same model at exactly that, in the same
-  // prompt — so a flat "you have no tool" is both false and self-contradictory. The nudge may only
-  // rule out the Calendar family, which it can prove.
+  // Not naming a Calendar tool is not asserting the model holds no tool at all: the operator's own
+  // booking system may have an HTTP cancel/reschedule tool granted this turn, and
+  // buildAppointmentContextSection points the model at it in the same prompt. The nudge may only rule
+  // out the Calendar family, which it can prove.
   test("never claims the model has no tool, and defers to the booking system's own", () => {
     for (const askConfirmation of [true, false]) {
       const n = reminderNudge({
@@ -209,9 +208,9 @@ describe("reminderNudge", () => {
     }
   });
 
-  // (#352, round 5) The refs ARE the fenced data the model reads back, so a fill-in here is an
-  // identifier the model is told the appointment has. There is no Google calendar behind a declared
-  // booking, and "primary" names a real one, so the ref is absent rather than invented.
+  // The refs ARE the fenced data the model reads back, so a fill-in here is an identifier the model
+  // is told the appointment has. There is no Google calendar behind a declared booking, and "primary"
+  // names a real one, so the ref is absent rather than invented.
   test("no calendar behind it → no calendar_id ref at all", () => {
     const n = reminderNudge({
       ...args,
@@ -239,8 +238,8 @@ describe("reminderNudge", () => {
   });
 });
 
-// NOTE: The reminder turn (and the customer's reply to it) must be able to act on the exact event:
-// the nudge carries the ids as fenced-data refs, and the instructions point at them by key. Issue #22.
+// The reminder turn (and the customer's reply to it) must be able to act on the exact event: the
+// nudge carries the ids as fenced-data refs, and the instructions point at them by key.
 describe("reminderNudge event identity", () => {
   const base = {
     isLast: true,
@@ -365,9 +364,9 @@ describe("the start a reminder is judged and worded by", () => {
       displayed: AHEAD,
     },
     {
-      // The repo already learned this one on the sweep's side: `Date.parse` rolls 31 February forward
-      // into March instead of refusing it, and a start reaches the payload from the model's own tool
-      // input. Judged against a day that does not exist, a reminder is dropped as "already started".
+      // NOTE: `Date.parse` rolls 31 February forward into March instead of refusing it, and a start
+      // reaches the payload from the model's own tool input: judged against a day that does not exist, a
+      // reminder would be dropped as "already started".
       name: "an impossible calendar date never counts as started",
       live: undefined,
       snapshot: "2026-02-31T09:00:00Z",
@@ -426,10 +425,9 @@ describe("the start a reminder is judged and worded by", () => {
 });
 
 describe("computeReminderJobs and the record read one parser", () => {
-  // (#376) The arming used a bare Date.parse while liveness used parseStartMs. Date.parse ROLLS an
-  // impossible date forward, so "2026-02-30" became March 2 and reminders were armed for an
-  // appointment the record refuses to hold — a reminder that would reach the customer about a
-  // booking nothing else in the platform knows about.
+  // Arming and liveness read the start with the same parser (parseStartMs): Date.parse ROLLS an
+  // impossible date forward ("2026-02-30" becomes March 2), which would arm reminders for an
+  // appointment the record refuses to hold.
   test("an impossible calendar date arms nothing, exactly as it records nothing", () => {
     const now = new Date("2026-01-01T00:00:00Z");
     expect(
@@ -658,7 +656,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
         },
       },
     });
-    // The payload the worker is holding — captured at claim time, which is exactly the moment
+    // NOTE: the payload the worker is holding, captured at claim time, which is exactly the moment
     // before the stamp lands.
     const job: ClaimedJob = {
       id: row.id,
@@ -672,9 +670,8 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     return job;
   };
 
-  // Issue #281. A reminder offset is spent exactly once, and it used to be spent even when the agent
-  // could not author a word: the handler discarded the outcome and answered `done`, so a credential
-  // that was broken at the wrong minute cost the customer the reminder outright.
+  // A reminder offset is spent exactly once, so it must not be spent when the agent could not author
+  // a word: a credential broken at the wrong minute would cost the customer the reminder outright.
   // Restored on the way out: the tests below this one read the same agent row, and a credential left
   // broken would make them fail for a reason that has nothing to do with what they assert.
   async function withUnresolvableCredential<T>(
@@ -724,13 +721,11 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     expect(s.sent).toEqual([]);
   });
 
-  // The review of #281 caught this one: the retry above writes to a row another writer may stamp
-  // while the handler runs, and the per-event cancel is the writer that does it WITHOUT bumping the
-  // claim token (it merges the tombstone onto rows of any status). A payload written back from the
-  // claim-time snapshot therefore passes the compare-and-set and un-cancels the appointment.
-  // The design decision the retry rests on, and the reason there is no cross-job query anywhere: an
-  // earlier offset yields to the one behind it. Retrying it would let a 2h reminder come due beside
-  // the 1h one and deliver both back to back the moment a credential recovered.
+  // The retry writes to a row another writer may stamp while the handler runs, and the per-event
+  // cancel does it WITHOUT bumping the claim token (it merges the tombstone onto rows of any status), so
+  // a payload written back from the claim-time snapshot would pass the compare-and-set and un-cancel the
+  // appointment. An earlier offset yields to the one behind it, which is why there is no cross-job
+  // query: retrying it would deliver a 2h and a 1h reminder back to back once a credential recovered.
   test("an earlier offset is not retried: the next reminder carries the message", async () => {
     const job = await armed("reminder:evt-not-last:120", { isLast: false });
     const s = stubClient();
@@ -778,20 +773,10 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
   // The ceiling has to hold across the model call, not only before it. A retry can be scheduled
   // minutes before the start, and a turn that begins in time can finish out of it.
   test("an appointment that starts during the model call sends nothing", async () => {
-    // TWO NUMBERS THAT USED TO BE GUESSES ABOUT HOW FAST THE MACHINE IS.
-    //
-    // The case needs the start to be AHEAD when the handler begins and BEHIND when the model
-    // returns. It was written as a start 1s out and a model that sleeps 2s, which holds only while
-    // everything before the handler fits in that first second. `armed()` is a database write, and
-    // under `bun test --parallel` it does not: measured at 24 workers, the start had already passed
-    // before the handler looked, the pre-call check dropped the job, the model never ran, and the
-    // assertion below read `Expected: 1, Received: 0` — the test failing for the machine rather than
-    // for the ceiling it exists to pin.
-    //
-    // The second number is gone rather than raised. The model now holds the call open UNTIL the
-    // start has actually passed, which is the condition the test is about, so no sleep has to be
-    // guessed against it. The first is 3s instead of 1s, which is real time paid on every run and is
-    // why it is not larger: it only has to outlast one row's insert.
+    // NOTE: the start must be AHEAD when the handler begins and BEHIND when the model returns. The
+    // model holds the call open UNTIL the start has passed, so no sleep is guessed against it; the start
+    // is 3s out because `armed()` is a database write that, under `bun test --parallel`, can outlast 1s,
+    // and it is not larger because it is real time paid on every run.
     const startAt = Date.now() + 3_000;
     const job = await armed("reminder:evt-crosses-start:60", {
       isLast: true,
@@ -850,7 +835,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     expect(s.sent.length).toBeGreaterThan(0);
   });
 
-  // (#811) A reminder whose job's deadline already fired sends nothing: that run was failed, and its
+  // A reminder whose job's deadline already fired sends nothing: that run was failed, and its
   // retry is the one that reminds. Without the signal the late run and its retry would both send.
   test("a run its job's deadline already ended sends nothing", async () => {
     const job = await armed("reminder:evt-deadline:60", {
@@ -883,7 +868,7 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     expect(commits).toBe(0);
   });
 
-  // (#811) The other side: a reminder that reached the conversation is spent, and the run says so, so
+  // The other side: a reminder that reached the conversation is spent, and the run says so, so
   // that a run past its deadline has its `done` written instead of its retry sending it again.
   test("a reminder that reached the conversation commits its run", async () => {
     const job = await armed("reminder:evt-commit:60", {
@@ -1008,10 +993,9 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     expect(out.notes.length).toBe(1);
   });
 
-  // (#352, round 8) Two operator systems may both answer with `42` — that is why the record and the
-  // dedupe key carry the provider. The PAYLOAD had to carry it too: without it the reminder turn
-  // holds an id and no way to say which system issued it, and the sentence it was given points at
-  // "this booking system's own tool" without naming one. Asserted on what the MODEL received.
+  // Two operator systems may both answer with `42`, which is why the record, the dedupe key and the
+  // PAYLOAD carry the provider: without it the reminder turn holds an id and no way to say which
+  // system issued it. Asserted on what the MODEL received.
   test("a declared payload names its booking system to the model", async () => {
     const job = await armed("reminder:feegow/evt-src:60", {
       isLast: true,
@@ -1102,10 +1086,10 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     expect(seen).not.toContain("booking_system=");
   });
 
-  // (#352, round 5) The payload is the only thing standing between a declared booking and the model:
-  // `calendarId: null` has to survive the handler's own read, or the fill-in reappears here and the
-  // fenced data tells the agent this appointment lives on Google's `primary` calendar. Asserted on
-  // what the MODEL received, not on the nudge object, because the whole chain is what the fix is.
+  // The payload is the only thing standing between a declared booking and the model: `calendarId:
+  // null` has to survive the handler's own read, or the fenced data tells the agent this appointment
+  // lives on Google's `primary` calendar. Asserted on what the MODEL received, not on the nudge object,
+  // because the whole chain is what has to hold.
   test("a payload with no calendar sends the model no calendar_id", async () => {
     const job = await armed("reminder:feegow/evt-nocal:60", {
       isLast: true,
@@ -1151,25 +1135,21 @@ describe.skipIf(!dbUp)("a reminder retired while claimed", () => {
     expect(seen).not.toContain("calendar_id");
   });
 
-  // (#685) The day the customer hears is computed from the CLOCK and the authoritative start, never
-  // from the offset the row was armed with. This row carries `offsetHours: 1` — which is what the
-  // issue proposed translating into "hoje" — and a start a day out, which is what a moved event or a
-  // queue running behind actually leaves behind. The handler is what has to get this right: a pure
-  // function can be correct and wired to nothing.
+  // The day the customer hears is computed from the CLOCK and the authoritative start, never from
+  // the offset the row was armed with. This row carries `offsetHours: 1` and a start a day out, which
+  // is what a moved event or a queue running behind leaves. Asserted through the handler, because a
+  // pure function can be correct and wired to nothing.
   test("the day comes from the clock, not from the offset the reminder was armed with", async () => {
-    // A FIXED CLOCK AND A STATED OFFSET, and every word of that is a lesson from the review. The
-    // offset, because the day is only claimed for a start that states one (round 2) — and a real
-    // Google payload does state one, which is why `toISOString()` was not the faithful fixture. The
-    // fixed clock, through the deps seam that exists for this, because the real one made this
-    // assertion fail for CORRECT behaviour twice: two calendar days out when the suite ran in the
-    // last hour of the UTC day (round 1), and then silent for the two hours around local midnight,
-    // where the day genuinely depends on an hour the module does not hold (round 4).
+    // NOTE: a FIXED CLOCK AND A STATED OFFSET. The day is only claimed for a start that states an
+    // offset, as a real Google payload does (so `toISOString()` is not a faithful fixture). The clock is
+    // fixed through the deps seam because the real one makes this assertion depend on the hour the suite
+    // runs: near the UTC or local midnight the correct answer changes or the day is withheld.
     const now = new Date("2026-09-16T15:00:00-03:00");
     const start = "2026-09-17T12:00:00-03:00";
-    // The payload is an untyped JSON blob, which is why the handler guards every other field it
-    // reads. The offset arrives absent (what `armed` writes, and every row armed before it existed),
-    // lying (a moved event, a queue running behind, a retry hours later), and unusable — and the
-    // customer hears the right day in all four, because none of them is consulted.
+    // NOTE: the payload is an untyped JSON blob, which is why the handler guards every other field it
+    // reads. The offset arrives absent (what `armed` writes, and every legacy row), lying (a moved event,
+    // a queue running behind, a retry hours later), and unusable, and the customer hears the right day in
+    // all of them, because none of them is consulted.
     for (const [name, extra] of [
       ["absent", {}],
       ["lying", { offsetHours: 1 }],
@@ -1503,10 +1483,9 @@ describe("appointmentBooked, when a record-only reschedule cannot clean up", () 
   };
 
   test("the NEW start is NOT recorded, so a retry still sees the move", async () => {
-    // Writing it would destroy the evidence the retry needs: the next attempt would compare equal
-    // starts, decide nothing moved, and skip the retirement for good — leaving reminders that
-    // announce a time the appointment no longer has. Safe to skip only here, because this path
-    // exists BECAUSE the appointment is already recorded (round 21).
+    // NOTE: writing it would destroy the evidence the retry needs: the next attempt would compare
+    // equal starts, decide nothing moved, and skip the retirement for good. Safe to skip only here,
+    // because this path exists BECAUSE the appointment is already recorded.
     const seen: string[] = [];
     let thrown: unknown;
     try {
@@ -1558,25 +1537,20 @@ describe("appointmentBooked, when a record-only reschedule cannot clean up", () 
   });
 
   test("a record-only booking that did NOT move still records on the error path", async () => {
-    // The rule this file is built on is unchanged everywhere else: forgetting the appointment is
-    // the defect this unit exists for, so the record is written even when the arming failed. With
-    // no stored booking there is nothing to retire, and nothing to protect.
+    // NOTE: everywhere else the record is written even when the arming failed: forgetting the
+    // appointment is what this unit exists to prevent. With no stored booking there is nothing to retire,
+    // and nothing to protect.
     const seen: string[] = [];
     await appointmentBooked({ ...args, base: fakeBase(seen, null) });
     expect(seen).toEqual(["record"]);
   });
 });
 
-// (#685) A reminder that fires on the day of the appointment used to tell the customer it was
-// "amanhã". Nothing in the turn said what NOW is: the nudge carries the start as an ISO, the prompt's
-// appointment block carries the same ISO, and the current instant only reaches the model when the
-// operator happened to type {{data_atual}} into their own prompt. With no anchor, the model takes the
-// relative word from the previous message in the conversation, which is where "amanhã" was correct.
-//
-// Measured against the real API (gpt-5-mini, 5 runs per cell): as it stood, 2/5 replies said "amanhã"
-// for an appointment starting in one hour. With the day and the distance computed here and stated in
-// the instructions lane, 5/5 said "hoje", and on an appointment that had been MOVED to the next day
-// 5/5 said "amanhã".
+// Nothing in the turn says what NOW is unless this nudge does: the nudge and the appointment block
+// carry the start as an ISO, and the current instant reaches the model only when the operator typed
+// {{data_atual}} into the prompt. With no anchor, the model takes the relative word ("amanhã") from
+// the previous message. So the day and the distance are computed here and stated in the instructions
+// lane.
 describe("reminderNudge temporal grounding (#685)", () => {
   const base = {
     isLast: false,
@@ -1597,11 +1571,9 @@ describe("reminderNudge temporal grounding (#685)", () => {
   });
 
   // A FRASE É DATADA, e isso não é estilo. Este turno fica no thread, então a frase que diz "hoje"
-  // hoje continua ali amanhã, e o turno reativo do dia seguinte não tem relógio para contradizê-la.
-  // Medido: com a redação relativa a "now", 9 de 10 respostas do dia seguinte repetiam a palavra
-  // velha mesmo com o instante corrente no bloco de agendamentos; nomeando a data do envio, 1 de 10.
-  // A data é a LOCAL do compromisso, que é a única que concorda com o que a mensagem diz em voz alta:
-  // às 21:00 de -03:00 já é o dia seguinte em UTC, e a data do envio aqui continua sendo a de quem lê.
+  // continua ali amanhã, e o turno reativo do dia seguinte não tem relógio para contradizê-la; por isso
+  // ela nomeia a data do envio. A data é a LOCAL do compromisso, a única que concorda com o que a
+  // mensagem diz: às 21:00 de -03:00 já é o dia seguinte em UTC.
   test("the sentence names the date it was sent on, in the appointment's own frame", () => {
     expect(
       at("2026-09-17T10:00:00-03:00", "2026-09-16T21:00:00-03:00"),
@@ -1641,9 +1613,8 @@ describe("reminderNudge temporal grounding (#685)", () => {
 
   // The SIGN of that offset, in both directions. The pair above cannot see it: an offset shifts the
   // start and now by the same amount, so a flipped sign only changes the answer when it walks one of
-  // the two across a midnight and not the other. These two do exactly that — the morning reminder
-  // for a late-evening appointment west of UTC, and its mirror east of it — and this is the shape
-  // the issue's own example has (the 24h reminder fired at 23:47).
+  // the two across a midnight and not the other. These two do exactly that: the morning reminder for a
+  // late-evening appointment west of UTC, and its mirror east of it.
   test("the sign of the offset decides, west and east of UTC", () => {
     expect(
       at("2026-09-16T23:00:00-03:00", "2026-09-16T10:00:00-03:00"),
@@ -1672,9 +1643,9 @@ describe("reminderNudge temporal grounding (#685)", () => {
     }
   });
 
-  // The issue proposed deriving the word from the configured offset and writing "hoje" into the
-  // instructions. The word is the conversation's, not ours: the same agent serves a tenant writing in
-  // English, and the operator's prompt is what decides the language. Nothing here names a word.
+  // The word is the conversation's, not ours: deriving "hoje" from the configured offset would break
+  // a tenant writing in English, and the operator's prompt decides the language. Nothing here names a
+  // word.
   test("the day is a fact, never a word the reply has to use", () => {
     for (const isLast of [true, false]) {
       for (const askConfirmation of [true, false]) {
@@ -1692,17 +1663,12 @@ describe("reminderNudge temporal grounding (#685)", () => {
     }
   });
 
-  // A antecedência configurada erra o dia SEM que nada dê errado, e este é o caso: com o default
-  // `[24, 1]` da própria issue, um compromisso às 00:30 tem o lembrete de 1h às 23:30 do dia
-  // ANTERIOR. A regra proposta ("antecedência <= 12h ⇒ hoje") diz hoje; a fila estava em dia, o
-  // worker foi pontual e o payload está inteiro. Quem decide é a data de calendário, não a
-  // antecedência.
+  // A antecedência configurada erra o dia SEM que nada dê errado: com `[24, 1]`, um compromisso às
+  // 00:30 tem o lembrete de 1h às 23:30 do dia ANTERIOR, e uma regra como "antecedência <= 12h ⇒ hoje"
+  // diria hoje. Quem decide é a data de calendário, não a antecedência.
   test("the punctual reminder for a past-midnight appointment claims no day, and still says how far", () => {
-    // Com o default `[24, 1]` da própria issue, um compromisso às 00:30 tem o lembrete de 1h às
-    // 23:30 do dia ANTERIOR, e a regra proposta ("antecedência <= 12h ⇒ hoje") diz hoje com a fila
-    // em dia, o worker pontual e o payload inteiro. Aqui o dia cala, porque a uma hora da meia-noite
-    // local a resposta dependeria de um fuso que este módulo não tem; a distância, que é verdadeira,
-    // continua dita. O que não acontece em nenhum dos dois é uma palavra errada.
+    // NOTE: aqui o dia cala, porque a uma hora da meia-noite local a resposta dependeria de um fuso
+    // que este módulo não tem; a distância, que é verdadeira, continua dita.
     const i = at("2026-09-17T00:30:00-03:00", "2026-09-16T23:30:00-03:00");
     expect(i).not.toContain("same calendar day");
     expect(i).not.toContain("calendar day after it");
@@ -1710,11 +1676,10 @@ describe("reminderNudge temporal grounding (#685)", () => {
     expect(i).toContain("do not describe which day it is relative to now");
   });
 
-  // (rodada 3 da review) O offset que o start declara é o do fuso NO INSTANTE DO COMPROMISSO, e
-  // `now` pode estar do outro lado de uma virada de horário de verão, onde o mesmo fuso está a uma
-  // hora dele. Medido: em America/New_York, um start `2026-11-01T02:30:00-05:00` com agora
-  // `00:30:00-04:00` está a duas horas no MESMO dia local, e o offset declarado sozinho põe o agora
-  // na data anterior e chama de "tomorrow" enquanto a distância na mesma frase diz duas horas.
+  // O offset que o start declara é o do fuso NO INSTANTE DO COMPROMISSO, e `now` pode estar do outro
+  // lado de uma virada de horário de verão. Em America/New_York, um start `2026-11-01T02:30:00-05:00`
+  // com agora `00:30:00-04:00` está no MESMO dia local, e o offset declarado sozinho poria o agora na
+  // data anterior e chamaria de "tomorrow".
   test("a day that would depend on a daylight-saving hour is not claimed", () => {
     const i = at("2026-11-01T02:30:00-05:00", "2026-11-01T00:30:00-04:00");
     expect(i).not.toContain("same calendar day");
@@ -1724,11 +1689,10 @@ describe("reminderNudge temporal grounding (#685)", () => {
     expect(i).toContain("starts in about 3 hours");
   });
 
-  // (rodada 10 da review) E a hora não é o único tamanho de virada. Antarctica/Troll anda DUAS
-  // (+00 no inverno, +02 no verão), e enquanto a sonda testava só ±60 este par se anunciava como
-  // "hoje" com a data local do envio ainda no dia 28. A sonda hoje vai a ±120 e passa pela meia hora
-  // de Lord Howe no caminho; o preço é uma faixa um pouco mais larga em volta da meia-noite onde o
-  // dia não é afirmado e a frase sai só com a distância, que é a troca desta função.
+  // E a hora não é o único tamanho de virada: Antarctica/Troll anda DUAS (+00 no inverno, +02 no
+  // verão). Por isso a sonda vai a ±120 minutos (passando pela meia hora de Lord Howe); o preço é uma
+  // faixa um pouco mais larga em volta da meia-noite onde o dia não é afirmado e a frase sai só com a
+  // distância.
   test("a shift of two hours is as unguessable as one, and silences the day too", () => {
     const i = at("2026-03-29T10:00:00+02:00", "2026-03-28T23:30:00Z");
     expect(i).not.toContain("same calendar day");
@@ -1741,11 +1705,8 @@ describe("reminderNudge temporal grounding (#685)", () => {
   });
 
   test("a start whose instant is invented says nothing at all", () => {
-    // All-day e relógio de parede sem offset: o instante que o `parseStartMs` produz é um marcador
-    // para ordenar, então nem o dia nem a distância são fatos sobre o compromisso. Os dois foram
-    // medidos afirmando o dia ERRADO antes desta borda existir — o all-day do dia 18 se anunciando
-    // como "amanhã" para quem estava no dia 16 às 21:00 em São Paulo, e o relógio de parede sem
-    // offset se anunciando como "hoje" na véspera.
+    // NOTE: all-day e relógio de parede sem offset: o instante que o `parseStartMs` produz é um
+    // marcador para ordenar, então nem o dia nem a distância são fatos sobre o compromisso.
     for (const [startISO, now] of [
       ["2026-09-18", "2026-09-16T21:00:00-03:00"],
       ["2026-09-18", "2026-09-16T15:00:00-03:00"],
@@ -1761,18 +1722,18 @@ describe("reminderNudge temporal grounding (#685)", () => {
     }
   });
 
-  // (rodada 6 da review) `+00:00` e `-00:00` são o `Z` com outra grafia, e estavam chegando à
-  // resposta oposta: lidos como o calendário do cliente, anunciavam um compromisso a dois dias como
-  // "amanhã". O ISO 8601 chega a dar a `-00:00` o sentido de "offset desconhecido".
+  // `+00:00` e `-00:00` são o `Z` com outra grafia e não podem ser lidos como o calendário do
+  // cliente (anunciariam um compromisso a dois dias como "amanhã"). O ISO 8601 chega a dar a `-00:00`
+  // o sentido de "offset desconhecido".
   test("a zero offset is Z under another spelling, and claims no day", () => {
     for (const startISO of [
       "2026-09-18T12:00:00+00:00",
       "2026-09-18T12:00:00-00:00",
       "2026-09-18T12:00:00Z",
     ]) {
-      // O par é de meio-dia nas duas pontas de propósito (rodada 10): a sonda de horário de verão
-      // cala o dia dentro de duas horas de qualquer meia-noite, então um `now` às 22:30 silenciaria
-      // este teste sozinho e ele passaria sem medir a regra do offset zero.
+      // NOTE: o par é de meio-dia nas duas pontas de propósito: a sonda de horário de verão cala o dia
+      // dentro de duas horas de qualquer meia-noite, então um `now` às 22:30 silenciaria este teste sozinho
+      // e ele passaria sem medir a regra do offset zero.
       const i = at(startISO, "2026-09-16T12:00:00-03:00");
       expect(i).not.toContain("calendar day after it");
       expect(i).not.toContain("same calendar day");

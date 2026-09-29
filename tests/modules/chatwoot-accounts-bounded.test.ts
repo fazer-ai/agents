@@ -8,22 +8,13 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { deploymentSetAccounts } from "@/modules/mcp/write-channels";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// `deployment_set_accounts` publishes `account_ids: z.array(z.number().int())` with no maximum, and
-// `setConnectedAccounts` iterates it: every id not already active gets a row plus a best-effort
-// `syncInboxes`, two HTTP calls to the operator's Chatwoot, sequentially. Measured before the bound
-// existed (issue #503): one call carrying 40,000 ids created 16,774 `chatwoot_instances` rows in
-// about two minutes and was still climbing when it was killed.
-//
-// The bound is the deployment's own account list, and that it CAN be the bound was measured against
-// a real Chatwoot 4.17.0 rather than reasoned: a user access token whose profile reported account 1
-// of the server's two got 200 on `/api/v1/accounts/1/inboxes` and 401 "You are not authorized to
-// access this account" on `/accounts/2/inboxes`. An id outside the profile is an account the token
-// cannot operate at all.
-//
-// The stubs below therefore describe servers that can exist. A profile reporting [5, 8, 9] means a
-// token that reaches exactly those three, and `profileDown` is the probe FAILING — the only window
-// the numeric cap covers, kept fail-open so an outage on the operator's Chatwoot does not refuse a
-// write whose ids the operator picked deliberately.
+// `deployment_set_accounts` publishes `account_ids` with no maximum, and `setConnectedAccounts` gives
+// every new id a row plus a best-effort `syncInboxes` (two sequential HTTP calls), so an unbounded
+// list is unbounded work. The bound is the deployment's own account list: Chatwoot answers 401 on
+// `/accounts/:id/inboxes` for an account outside the token's profile, so such an id is one the token
+// cannot operate at all. A profile of [5, 8, 9] is a token reaching exactly those; `profileDown` is
+// the probe FAILING, the only window the numeric cap covers, kept fail-open so an outage on the
+// operator's Chatwoot does not refuse ids the operator picked deliberately.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -158,7 +149,7 @@ describe.skipIf(!dbUp)("the accounts a deployment can be asked for", () => {
     expect(await activeIds()).toEqual([5]);
   });
 
-  // NOTE: the rule is the core's, so the preview inherits it rather than restating it (#490).
+  // NOTE: the rule is the core's, so the preview inherits it rather than restating it.
   test("the preview refuses what the apply refuses", async () => {
     const p: VerifiedToken = {
       userId: 1n,

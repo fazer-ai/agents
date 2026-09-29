@@ -8,23 +8,14 @@ import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { processChatwootDelivery } from "@/modules/chatwoot/webhook";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Round 3 of fazer-ai/chatwoot#418's review asked whether the standalone `conversation_updated` the
-// fork now emits for a new pairing can make a consumer act EARLY: on the message-bearing path it is
-// dispatched before `message_created`, measured on a live instance.
+// The fork emits a standalone `conversation_updated` for a new pairing, dispatched BEFORE the cloned
+// `message_created` on the message-bearing path. It must not make a consumer act EARLY: everything the
+// episode does (the cross-link, the ladder's re-arm, the turn) is gated on a brand-new INCOMING
+// customer message, and the update only states a value (on the message-LESS path, the only witness).
 //
-//   origin changes, cloned message  ->  1. conversation_updated (new origin)
-//                                       2. message_created      (new origin)
-//
-// It cannot, and this is where that is pinned. Everything the episode does — the cross-link, the
-// ladder's re-arm, the turn itself — is gated on a brand-new INCOMING customer message, and the
-// update is not one. What the update does is state a value, which is the whole reason it exists:
-// on the message-LESS path it is the only witness there is.
-//
-// Asserted on the EFFECT rather than on one gate, because there are two and both are older than this
-// change: the call site of `maybeConsumeCommandOrGate` is itself `(act || commandActive) &&
-// isNewIncoming`, so deleting the `isNewIncomingMessage(n)` inside the cross-link block leaves these
-// tests green. Two fences on something that messages and resolves a customer's conversation is a
-// choice, not an accident, and the effect is what has to hold whichever one is load-bearing.
+// Asserted on the EFFECT rather than on one gate, because there are two fences (the call site of
+// `maybeConsumeCommandOrGate` is itself gated on `isNewIncoming`, as is the cross-link block), and the
+// effect is what has to hold whichever one is load-bearing.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -219,7 +210,7 @@ describe.skipIf(!dbUp)(
         redirectLinkedAt: null,
       });
 
-      // The event the review was about: it carries the NEW origin and precedes the cloned message.
+      // NOTE: the update carries the NEW origin and precedes the cloned message.
       await deliver(widgetConversation(NEW_ORIGIN), "conversation_updated");
       const afterUpdate = await widgetRow();
       // The value is stated...
@@ -228,13 +219,11 @@ describe.skipIf(!dbUp)(
       expect(afterUpdate.redirectLinkedAt).toBeNull();
     });
 
-    // Review round 5 of #355. Clearing the row's watermarks frees the NEXT episode's one-shots and
-    // does nothing about the work already armed for the previous one. The REDIRECT_FOLLOWUP ladder
-    // messages the paired WhatsApp thread and RESOLVES it, and a worker that already read its sibling
-    // passes every fence it has left — so the episode change has to retire it, which is the one
-    // signal that reaches a run already claimed.
-    // `origin` omitted ⇒ a payload with no episode on it, which is every ladder armed before this
-    // field existed and every one armed from a Chatwoot that does not speak about pairings.
+    // Clearing the row's watermarks frees the NEXT episode's one-shots and does nothing about work
+    // armed for the previous one: a REDIRECT_FOLLOWUP worker that already read its sibling passes every
+    // fence it has left, so the episode change has to retire it (the one signal a claimed run sees).
+    // `origin` omitted means a payload with no episode on it: a legacy ladder, or one armed from a
+    // Chatwoot that does not speak about pairings.
     async function armLadder(origin?: number | null) {
       const key = followUpDedupeKey(
         chatwootThreadId(tenantId, instanceId, WIDGET_CONV),
@@ -292,22 +281,12 @@ describe.skipIf(!dbUp)(
       });
     });
 
-    // Rounds 9 and 10 of #355, and they settle two halves of one question.
-    //
-    // The savepoint is round 9: the retirement runs inside the mirror's transaction, and a statement
-    // Postgres REJECTS there aborts the whole transaction at the server. Every statement after it
-    // fails with `current transaction is aborted`, whatever JavaScript did with the rejection, so a
-    // plain catch read as a degradation and delivered a rollback. Reproduced with a genuinely failing
-    // statement rather than a thrown Error, because a thrown Error does not abort a Postgres
-    // transaction and would prove nothing.
-    //
-    // What round 10 adds is WHAT survives that rollback. Committing the new pairing over a ladder
-    // that could not be retired is the one combination that must not happen: the ladder carries no
-    // episode of its own, so it would re-read the pairing and run the PREVIOUS episode's schedule
-    // against the NEW one — a nudge and a resolve on a conversation that just started. So the pairing
-    // stands still with it. Nothing is lost by that: every later payload for this conversation
-    // restates the pairing, and the mark it is ordered by has not moved either, so the next delivery
-    // applies both together.
+    // The retirement runs inside the mirror's transaction under a savepoint: a statement Postgres
+    // REJECTS aborts the whole transaction, so a plain catch would deliver a rollback. Reproduced with a
+    // genuinely failing statement, since a thrown Error does not abort a Postgres transaction. The
+    // pairing is held back with it: committed over an unretired ladder, that ladder would run the
+    // PREVIOUS episode's schedule against the NEW one. The next payload restates the pairing, so
+    // nothing is lost (docs/channel-redirect.md, "The ladder's retirement").
     test("a scheduler statement Postgres rejects holds the pairing back", async () => {
       const FOURTH = 6204;
       const breaking = appDb.$extends({
@@ -392,18 +371,11 @@ describe.skipIf(!dbUp)(
       });
     });
 
-    // Review round 12 of #355. The dedupe key names the CONVERSATION, and until now the retirement
-    // took every job under it — so a retirement running AFTER the new episode's ladder was armed
-    // killed the ladder it exists to protect. That ordering is reachable, and by the failure path
-    // right above: a delivery whose retirement was rejected holds the pairing back and then goes on
-    // to arm anyway, because the arm keys off the widget INBOX and never reads the pairing. The next
-    // payload restates the pairing, retires successfully, and takes the new episode's ladder with
-    // it. Nothing re-arms it either: `redirectLinkedAt` is cleared by the release, but the cross-link
-    // that reads it only runs on an INBOUND event, and the lead that was just redirected has stopped
-    // talking — which is the silence the ladder was armed to chase.
-    //
-    // So the job carries the episode it was armed for, and a retirement keeps its own. A payload
-    // with no episode on it is the previous episode's by construction: it predates the field.
+    // The dedupe key names the CONVERSATION, so a retirement taking every job under it would kill a
+    // ladder the NEW episode already armed (reachable through the failure path above, since the arm
+    // keys off the widget INBOX), and nothing would re-arm it. So the job carries the episode it was
+    // armed for and a retirement keeps its own; a payload with no episode is the previous episode's
+    // by construction (docs/channel-redirect.md, "The ladder's retirement").
     test("a ladder armed for the episode being written survives the retirement", async () => {
       const FIFTH = 6205;
       const key = await armLadder(FIFTH);

@@ -9,14 +9,12 @@ import type { ChatwootClient } from "@/modules/chatwoot/client";
 import { bindInbox } from "@/modules/chatwoot/management";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// #546. `Inbox.agentId` is a plain column with no `@relation`, so no foreign key ever refused a
-// binding to an agent that is gone, and `persistBinding` referenced the row without holding any lock
-// on it. `deleteAgent` is the writer that fits in the window: it takes the agent `FOR UPDATE`, nulls
-// every inbox pointing at it (this one is not yet), deletes it, and the bind then commits the
-// dangling reference. The window is not a millisecond either: step 2 of `bindInbox` is the round trip
-// to Chatwoot, made deliberately OUTSIDE the transaction.
-//
-// Sibling of #501, which answered the same shape on `Experiment.agentId`.
+// `Inbox.agentId` is a plain column with no `@relation`, so no foreign key refuses a binding to an
+// agent that is gone; `persistBinding` has to lock the agent row itself. `deleteAgent` fits in the
+// window: it takes the agent `FOR UPDATE`, nulls every inbox pointing at it (this one is not yet),
+// deletes it, and an unlocked bind then commits the dangling reference. The window is wide: step 2
+// of `bindInbox` is the round trip to Chatwoot, made deliberately OUTSIDE the transaction.
+// `Experiment.agentId` has the same shape and the same guard.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -256,10 +254,9 @@ describe.skipIf(!dbUp)("#546 binding an agent that is being deleted", () => {
   // transaction, and Postgres is asked who is blocking whom.
   test("the write waits for the agent's own lock", async () => {
     const { agentId, inboxId } = await pair("waits");
-    // Provision the bot FIRST, and then re-bind through a client that reports it alive. Otherwise
+    // NOTE: provision the bot FIRST, then re-bind through a client that reports it alive. Otherwise
     // `ensureAgentBot` inserts `chatwoot_agent_bots`, whose foreign key takes KEY SHARE on the agent
-    // and blocks against the holder all by itself: the assertion below would be green with no guard
-    // in the write at all, which is how this test passed before it was written properly.
+    // and blocks against the holder by itself, so the assertion would pass with no guard at all.
     await bindInbox(
       ctx(),
       inboxId,
@@ -315,13 +312,11 @@ describe.skipIf(!dbUp)("#546 binding an agent that is being deleted", () => {
     expect(await boundAgentOf(inboxId)).toBe(agentId);
   });
 
-  // The other half of the mode, and the one a future edit is most likely to break: an ordinary SAVE
-  // of the agent must NOT hold the bind up. `FOR KEY SHARE` conflicts with `FOR UPDATE` and with
-  // nothing else, so this holds true only while the non-deleting writers take `FOR NO KEY UPDATE`
-  // (`updateAgent` and `replaceAgentToolSelections`, weakened for exactly this in #546). If one of
-  // them goes back to `FOR UPDATE`, this test does not fail with a message: it HANGS until the
-  // runner kills it, which is the loud version of the stall it is about, since a bind that waits
-  // here is holding the Chatwoot account row while it does.
+  // The other half of the mode: an ordinary SAVE of the agent must NOT hold the bind up. `FOR KEY
+  // SHARE` conflicts only with `FOR UPDATE`, so this holds while the non-deleting writers
+  // (`updateAgent`, `replaceAgentToolSelections`) take `FOR NO KEY UPDATE`. If one takes `FOR UPDATE`,
+  // this test HANGS until the runner kills it: the stall it is about, since a waiting bind holds the
+  // Chatwoot account row.
   test("an ordinary save of the same agent does not hold the bind up", async () => {
     const { agentId, inboxId } = await pair("saved");
     const holder = await holdAgentLock(agentId, "FOR NO KEY UPDATE");
@@ -364,16 +359,16 @@ describe.skipIf(!dbUp)("#546 binding an agent that is being deleted", () => {
   });
 
   // The test above proves the two modes are compatible; this one proves the agents module still
-  // SPEAKS the weak one. They are different claims, and only the second survives a writer being
-  // added: a new `FOR UPDATE` in some third agent write would stall the bind exactly like the two
-  // weakened in #546 did, and the test above would go on passing because it takes its own lock. The
+  // SPEAKS the weak one. Only the second survives a writer being added: a new `FOR UPDATE` in another
+  // agent write would stall the bind while the test above, taking its own lock, kept passing. The
   // delete is the single admissible strong lock, and it is the conflict the bind wants.
   test("only the delete takes a lock on the agent strong enough to stall a bind", async () => {
     const src = await Bun.file(
       new URL("../../src/modules/agents/service.ts", import.meta.url),
     ).text();
-    // Comments stripped first, for the reason the same fence in `audit-channel-family` gives: the
-    // NOTEs in that file name `FOR UPDATE` while explaining why they do not take it.
+    // NOTE: comments stripped first, for the reason the same fence in
+    // `audit-channel-family.test.ts` gives: NOTEs in service.ts can name `FOR UPDATE` while
+    // explaining why they do not take it.
     const code = src.replace(/^\s*\/\/.*$/gm, "");
     const strong = [...code.matchAll(/FOR UPDATE/g)].map((m) => m.index);
     const del = code.indexOf("export async function deleteAgent(");

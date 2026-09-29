@@ -14,24 +14,14 @@ import { renderInboundMessage } from "@/modules/chatwoot/render";
 import { transcriptFromRows } from "@/modules/observe/job";
 import { codeOnly } from "@/tests/utils/source-text";
 
-// Issue #598. On an email inbox the request is frequently in the subject line and nowhere else: the
-// body is empty, or a client footer like "Enviado do meu iPhone". Everything the agent reads is
-// built from `content` alone, so that message reaches the model as a footer and is answered as one
-// — measured on a real SAC mailbox, where gpt-5.6-luna called `skip_reply` in 4 of 5 runs on the
-// case reproduced below, and answered correctly on the first run once the subject was the first
-// line of the body.
-//
-// The subject IS on the wire: the mailbox writes `MailPresenter#serialized_data` into the message's
-// `content_attributes.email`, subject included, and `Message#webhook_data` ships the bag. Verified
-// against production on 2026-09-11 (`webhook_data[:content_attributes]` on two live inbound emails
-// came back as a Hash with `email.subject` present), which is what makes the field itself the
-// channel gate: no other channel writes it, so nothing here has to ask what channel it is on.
-//
-// THE PREDICATE IS THE FENCE. "Renderable" is asked in three places that must agree — the one branch
-// `renderInboundMessage` returns "" on, `pendingIncoming` (the debounce burst) and `maxIncomingId`
-// (the supersede gate) — and a subject-only email is exactly the shape that separates them if one
-// is updated and another is not. The last test in this file is that fence: it walks a table of
-// shapes and asserts the three answer identically, so the next field added here cannot drift.
+// On an email inbox the request is often in the subject line and nowhere else (the body is empty,
+// or a client footer like "Enviado do meu iPhone"), so a message built from `content` alone reaches
+// the model as a footer and is answered as one. The subject is on the wire: the mailbox writes
+// `MailPresenter#serialized_data` into `content_attributes.email` and `Message#webhook_data` ships
+// the bag. No other channel writes that field, so the field itself is the channel gate.
+// THE PREDICATE IS THE FENCE. "Renderable" is asked in three places that must agree (the branch
+// `renderInboundMessage` returns "" on, `pendingIncoming` for the debounce burst, and `maxIncomingId`
+// for the supersede gate); the table test below asserts the three answer identically.
 
 const SUBJECT =
   "Olá, tudo bem? Perdi o acesso ao e-mail e ao telefone cadastrados na minha conta do Café Exemplo e, por isso, não consigo receber o código de acesso. Gostaria de solicitar a atualização dos meus dados para recuperar o acesso à minha conta";
@@ -73,7 +63,7 @@ describe("renderInboundMessage: the email subject", () => {
   });
 
   test("is the whole message when the body is empty, instead of rendering to nothing", () => {
-    // The branch that used to return "" — "nothing renderable → skip" — and with it the turn.
+    // NOTE: the "nothing renderable, skip" branch must not return "" here, or the turn is lost.
     expect(
       renderInboundMessage({
         text: "",
@@ -89,7 +79,7 @@ describe("renderInboundMessage: the email subject", () => {
       attachmentTypes: [],
       emailSubject: SUBJECT,
     });
-    // The tail is the operative half of this real subject: clipping at the quote's 200 chars would
+    // NOTE: the tail is the operative half of this subject: clipping at the quote's 200 chars would
     // drop "para recuperar o acesso à minha conta" and leave the agent guessing what was asked.
     expect(out).toContain("recuperar o acesso à minha conta");
   });
@@ -147,9 +137,8 @@ describe("renderInboundMessage: the email subject", () => {
   });
 
   test("cannot close its own marker, however the sender writes it", () => {
-    // The subject is the first field a STRANGER fills in that becomes structure in the prompt, and
-    // an email address is all it takes to write one. Rendered verbatim, this text left the marker
-    // and arrived as though the system had written it.
+    // NOTE: the subject is a field a STRANGER fills in that becomes structure in the prompt.
+    // Rendered verbatim, this text would leave the marker and read as though the system wrote it.
     const out = renderInboundMessage({
       text: "oi",
       attachmentTypes: [],
@@ -166,9 +155,8 @@ describe("renderInboundMessage: the email subject", () => {
   });
 
   test("cannot forge a marker of ours either", () => {
-    // Breaking out is only half of it: the sender must not be able to OPEN a block that the model
-    // reads as the system speaking. `<atributos>` is a real one — it is how conversation attributes
-    // reach the prompt.
+    // NOTE: breaking out is only half of it: the sender must not be able to OPEN a block the model
+    // reads as the system speaking. `<atributos>` is a real one (conversation attributes use it).
     const out = renderInboundMessage({
       text: "oi",
       attachmentTypes: [],
@@ -194,9 +182,9 @@ describe("renderInboundMessage: the email subject", () => {
   });
 
   test("a reaction does not swallow the subject", () => {
-    // Impossible on a mailbox — nobody reacts to an email — but the type allows it and
-    // `hasAnswerableContent` admits a message for its subject alone, so a reaction branch that
-    // returned before the subject was added is the predicate and the renderer disagreeing again.
+    // NOTE: impossible on a mailbox, but the type allows it and `hasAnswerableContent` admits a
+    // message for its subject alone, so a reaction branch returning before the subject is added
+    // would make the predicate and the renderer disagree.
     expect(
       renderInboundMessage({
         text: "👍",
@@ -335,11 +323,10 @@ describe("a subject-only email is a message everywhere, not just in the renderer
       ],
       ["blank subject, no body", row({ id: 5, emailSubject: "   " })],
       ["nothing at all", row({ id: 6 })],
-      // An image the mailbox kept in the body, nothing else (issue #864).
+      // NOTE: an image the mailbox kept in the body, nothing else.
       ["body image only", row({ id: 8, bodyImages: 1 })],
-      // Impossible on a mailbox, allowed by the type, and the one shape where the renderer and the
-      // predicate used to disagree: the burst admitted it for its subject while the reaction branch
-      // returned before the subject was ever added.
+      // NOTE: impossible on a mailbox, allowed by the type, and the shape that separates the
+      // renderer from the predicate if the reaction branch returns before the subject is added.
       [
         "reaction + subject",
         row({
@@ -364,9 +351,8 @@ describe("a subject-only email is a message everywhere, not just in the renderer
 
 describe("every reader of a Chatwoot message asks the SAME mapping", () => {
   test("the observer's transcript carries the subject too", () => {
-    // The observer classifies the conversation by label without answering anybody. Reading a
-    // subject-only email as a blank line, it classified a conversation in which the customer had
-    // said nothing.
+    // NOTE: the observer classifies the conversation by label; reading a subject-only email as a
+    // blank line, it would classify a conversation in which the customer said nothing.
     const lines = transcriptFromRows(
       [row({ id: 7020, emailSubject: "Cancelar ingresso" })],
       10,
@@ -381,25 +367,20 @@ describe("every reader of a Chatwoot message asks the SAME mapping", () => {
   });
 
   test("FENCE: no call site builds the renderable by hand", async () => {
-    // Four readers build what the agent reads, from two sources — a delivered event
-    // (`incomingRenderable`) and a fetched row (`toRenderable`) — and each hand-written copy of
-    // those shapes is a place the NEXT marker will not reach. The email subject is what proved it:
-    // spelled out by hand, the memory fold and the observer went on dropping a message the renderer,
-    // the burst and the ceiling gate had already learned to read. Asserted on the source because
-    // that is where the mistake is made; a behavioural test only catches the copy that exists today.
-    //
-    // `src/modules/playground/service.ts` is deliberately out: its input is a playground user's own
-    // typing, which never came from Chatwoot and has no `content_attributes` to read.
+    // NOTE: four readers build what the agent reads from two sources (`incomingRenderable` for a
+    // delivered event, `toRenderable` for a fetched row), and each hand-written copy is a place the
+    // NEXT field will not reach. Asserted on the source, since a behavioural test only catches the
+    // copy that exists today. `src/modules/playground/service.ts` is out: its input never came from
+    // Chatwoot and has no `content_attributes`.
     for (const path of [
       "src/modules/chatwoot/webhook.ts",
       "src/modules/observe/job.ts",
       "src/modules/debounce/handler.ts",
       "src/graph/runtime.ts",
     ]) {
-      // Comments and literals out through the shared scanner, not a regex of my own: the shape being
-      // counted is CODE, so a `//` line between the call and its argument is prose and would make
-      // this fence trip on its own explanation, and a `//` inside a string is not a comment at all.
-      // `tests/utils/source-text.ts` is where that lesson already lives.
+      // NOTE: comments and literals out through the shared scanner (`tests/utils/source-text.ts`),
+      // not a local regex: a `//` line between the call and its argument would trip the fence, and
+      // a `//` inside a string is not a comment at all.
       const src = codeOnly(
         await Bun.file(new URL(`../../${path}`, import.meta.url)).text(),
       );

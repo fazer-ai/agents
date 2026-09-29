@@ -27,20 +27,14 @@ import { countingBase } from "../utils/counting-base";
 import { outboundUrl } from "../utils/outbound";
 import { countInSrc } from "../utils/source-text";
 
-// The outbound-webhook and alert-channel trail, moved into the services that perform the writes
-// (issue #397, under the epic #306).
-//
-// Seven actions existed and all seven were written by an MCP tool after the service had already
-// committed, so the same change made from the console left no row at all — every probe in this file
-// fails on the base for that reason. Two things this family carries that the proving family did not:
-//
+// The outbound-webhook and alert-channel trail, recorded by the services that perform the writes, so
+// the console and MCP leave the same row. Two things this family carries:
 //   - Both halves hold a secret in the row's neighbourhood. A subscription's `secretRef` is a vault
 //     REFERENCE (`vault:<id>`, canonicalized on write by `requireVaultRef`, and these services are
 //     the only writers of the column), and an alert channel's `url` is stored encrypted because a
 //     Discord URL embeds a bot token. The row names the ref and the MASKED url, never either secret.
-//   - The alert-channel editor PATCHes its whole form on every save, so a row per apply is not noise
-//     here: it is the only thing that would show a save that changed something the operator did not
-//     mean to change.
+//   - The alert-channel editor PATCHes its whole form on every save, so a row is the only thing that
+//     shows a save that changed something the operator did not mean to change.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -129,12 +123,9 @@ async function seedDelivery(subscriptionId: bigint): Promise<bigint> {
 // ── the fence under the projection's own justification ──
 //
 // Both projections carry `secretRef` in full, on the grounds that it is a REFERENCE and never a
-// secret — and that grounds is not a property of the column, which is a plain string, but of these
-// two services being the only writers of it: both canonicalize through `requireVaultRef`. An audit
-// row is append-only and readable by every tenant admin, so a third writer that stored a raw value
-// there would put it somewhere no correction reaches, and nothing would fail.
-//
-// The count is what says so, and it runs without a database because it reads the tree.
+// secret, which holds only because these two services are its only writers and both canonicalize
+// through `requireVaultRef`. A third writer storing a raw value would put it in an append-only row
+// every tenant admin reads, and nothing would fail. The count reads the tree, with no database.
 describe("the projections' claim about who writes these columns", () => {
   const OWNERS: Record<string, string> = {
     webhookSubscription: "src/modules/webhooks/outbound/subscriptions.ts",
@@ -492,11 +483,9 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
   });
 
   test("clearing a subscription secret the row cannot name still writes a row", async () => {
-    // `webhook_subscriptions.secret_ref` has the same history as the alert one — both writers guarded
-    // in the same commit (#126), the column unvalidated before it — so the read redacts a value that
-    // names no vault entry. Redacted, such a value reads as null on BOTH sides of a clear,
-    // `projectionMoved` sees nothing, and the one save that removed a signing secret would write no
-    // row at all. `secretRefOpaque` is what keeps that visible.
+    // NOTE: legacy rows of `webhook_subscriptions.secret_ref`, like the alert one, can hold a value
+    // that names no vault entry, which the read redacts. Redacted, it reads as null on BOTH sides of
+    // a clear, so without `secretRefOpaque` the save that removed a signing secret writes no row.
     const created = await createWebhookSubscription(
       ctx(),
       {
@@ -544,10 +533,8 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     );
     expect(created.hasSecret).toBe(true);
     await clearAudit();
-    // A DELIBERATE clear, which is the only way the console reaches this since #435: the editor
-    // PATCHes its whole form on every save, and it now loads the stored ref into the picker, so a
-    // null here means the operator emptied it. Until then a blank field was indistinguishable from
-    // an untouched one and this row was written by a save that meant to change the name.
+    // NOTE: a DELIBERATE clear, the only way the console reaches this: the editor loads the stored
+    // ref into the picker, so a null here means the operator emptied it.
     await updateAlertChannel(
       ctx(),
       BigInt(created.id),
@@ -860,7 +847,8 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
     expect(rest).toEqual([]);
     expect(row?.action).toBe("webhook_delivery.requeue");
     expect(row?.actorType).toBe("mcp");
-    // The tool used to be HANDED this, because its own read would have been outside the lock.
+    // NOTE: read by the service under its lock, not handed in by the tool, whose read would be
+    // outside the lock.
     expect(row?.before).toMatchObject({ status: "DEAD", attempts: 8 });
   });
 
@@ -907,11 +895,9 @@ describe.skipIf(!dbUp)("the webhook and alert-channel trail", () => {
       { base },
     );
     expect(res.ok).toBe(true);
-    // FIVE before this. Four of them are reads the tool takes before it writes anything —
-    // `resolveSecretRef` resolves the name, `resolveSecretValue` resolves it again and then reads
-    // the secret — and the mutation is the fourth. The fifth was the transport opening its OWN
-    // transaction for the audit row, after the service had already committed: a failure in between
-    // landed the change with no record of it.
+    // NOTE: three reads the tool takes before it writes (`resolveSecretRef` resolves the name,
+    // `resolveSecretValue` resolves it again and reads the secret), and the mutation with its audit
+    // row. A separate transaction for the row could fail after the commit, leaving no record.
     expect(total()).toBe(4);
     expect((await rows()).map((r) => r.action)).toEqual([
       "alert_channel.create",

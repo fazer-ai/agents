@@ -23,7 +23,7 @@ import {
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog, flowLogRows } from "../utils/flowlog";
 
-// Issue #812, through the production writers: a reply that waited for capacity leaves one `capacity`
+// Through the production writers: a reply that waited for capacity leaves one `capacity`
 // warn on the delayed conversation's own tenant, naming which limit held it, and the alert bus
 // receives it like any other warn. Two roads, both real: a due DEBOUNCE row stuck behind a full lane
 // (the real waiting query, the real announcement), and a flush whose model call queues on the

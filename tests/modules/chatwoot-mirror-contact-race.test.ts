@@ -7,8 +7,8 @@ import { normalizeChatwootEvent } from "@/modules/chatwoot/normalize";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
 // Two routes deliver the same first message of a new contact milliseconds apart (an observer beside
-// a responder, issue #476), and the mirror's contact upsert — a select then an insert, ahead of the
-// per-conversation lock — loses the insert on one of them. The transaction is aborted by then, so
+// a responder), and the mirror's contact upsert (a select then an insert, ahead of the
+// per-conversation lock) loses the insert on one of them. The transaction is aborted by then, so
 // the recovery is the whole mirror run again, once. Reproduced here deterministically by making the
 // first upsert lose the way the database makes it lose.
 

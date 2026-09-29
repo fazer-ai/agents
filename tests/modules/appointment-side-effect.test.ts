@@ -6,8 +6,8 @@ import {
 
 // The boundary where a booking's side effect stops being an exception and becomes a line an operator
 // reads. Every case here is a failure that the TOOL still reported as success to the model, so the
-// only thing left to get right is the report — and a report that names the wrong tool sends the
-// operator to an integration they may not even have configured (issue #352).
+// only thing left to get right is the report, and a report that names the wrong tool sends the
+// operator to an integration they may not even have configured.
 //
 // The writes are injected: the question is what the REPORT says, and a test that needed a broken
 // database to ask it would not be asking it.
@@ -83,7 +83,7 @@ describe("appointment side effects: what the report names", () => {
     ]);
   });
 
-  // The Calendar toolpack cannot name which of its tools called, so the FAMILY name is the default —
+  // The Calendar toolpack cannot name which of its tools called, so the FAMILY name is the default,
   // and it must stay the default, or the two integrations swap places in the Logs page.
   test("a caller that names no tool is still the Calendar toolpack", async () => {
     const h = harness({
@@ -182,9 +182,8 @@ describe("appointment side effects: what the report names", () => {
 });
 
 // A MUTED TURN MUST NOT ARM AN ALARM THAT RINGS LATER. The observer's transport refuses anything the
-// customer would perceive, but a reminder is not sent by that turn: it is a job that runs on its own
-// tick, resolves the inbox's RESPONDER and builds a client of its own, so the mute never reaches it
-// and an observation would have spoken to the customer after all (issue #568, review round 16).
+// customer would perceive, but a reminder is a job that runs on its own tick, resolves the inbox's
+// RESPONDER and builds a client of its own, so the mute never reaches it.
 describe("appointment side effects: who may arm a reminder", () => {
   const REMINDERS = { offsetsHours: [24, 2], askConfirmationOnLast: true };
 
@@ -195,10 +194,9 @@ describe("appointment side effects: who may arm a reminder", () => {
     // remembered as much as one that labels.
     expect(h.bookCalls).toHaveLength(1);
     expect(h.bookCalls[0]?.eventId).toBe("ap_1");
-    // NOT `reminders: null`: that is the "policy switched off" re-statement, and it RETIRES what is
-    // already armed — so an observation restating the responder's appointment would cancel the
-    // responder's reminders. The policy is passed through untouched and the write is told to leave
-    // reminders alone entirely.
+    // NOTE: NOT `reminders: null`: that is the "policy switched off" re-statement, and it RETIRES
+    // what is already armed, so an observation restating the responder's appointment would cancel
+    // the responder's reminders. The write is told to leave reminders alone entirely.
     expect(h.bookCalls[0]?.reminders).toEqual(REMINDERS);
     expect(h.bookCalls[0]?.recordOnly).toBe(true);
     expect(h.reports).toEqual([]);

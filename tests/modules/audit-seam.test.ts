@@ -18,12 +18,10 @@ import {
 } from "@/modules/mcp/write-settings";
 import { countingBase } from "../utils/counting-base";
 
-// The audit trail belongs to the service, not to a transport.
-//
-// Every one of the 65 audited actions was written by `src/modules/mcp/write*.ts`, after the service
-// it called had already committed. Two consequences this file measures rather than argues: a change
-// made through any OTHER door left no row at all, and the row that WAS written could not be atomic
-// with the mutation it recorded, because it lived in a second transaction.
+// The audit trail belongs to the service, not to a transport: a row written by a transport after the
+// service commits covers one door only and is not atomic with the mutation it records. This file
+// asserts both halves (every door records; one transaction) (docs/api-and-fleet.md, "A mutation
+// records itself").
 //
 // Business hours is the proving family: three mutations, three REST routes, no external effect and
 // no secret in the projection, so what is being tested here is the seam and not the family.
@@ -178,7 +176,7 @@ describe.skipIf(!dbUp)("the audit seam records from the service", () => {
     expect(await rows()).toEqual([]);
   });
 
-  // ── attribution says which door, and the action no longer does ──
+  // ── attribution says which door, and the action does not ──
 
   test("a Bearer API key is attributed as one, not as a browser session", async () => {
     await clearAudit();
@@ -274,8 +272,8 @@ describe.skipIf(!dbUp)("the audit seam records from the service", () => {
       { name: "one tx", dry_run: false },
       { base },
     );
-    // Two before this: the service committed, and only then did the transport open its own
-    // transaction for the audit row. A failure in between landed the change with no record of it.
+    // NOTE: one transaction: an audit row in a second one could fail after the change committed,
+    // landing it with no record.
     expect(total()).toBe(1);
   });
 

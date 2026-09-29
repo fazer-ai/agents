@@ -13,23 +13,14 @@ import {
 import { recordAudit } from "@/modules/audit/service";
 import { syntheticAction } from "../utils/audit-action";
 
-// TAKING THE TRAIL OUT OF THE BROWSER (issue #521).
+// TAKING THE TRAIL OUT OF THE BROWSER. The export must produce the SAME ROWS the page does (shared
+// `buildAuditWhere`), so the tests run the list and the export against one filter and compare,
+// rather than restating the rows by hand, which would pass while the two readers drift apart. The
+// scope comes with it: `fleet`/`all` are refused to the same callers and read under the same role.
 //
-// The export answers the question the operator is already looking at, so the thing worth testing is
-// not that it produces a CSV -- it is that it produces the SAME ROWS the page does. Hence the shared
-// `buildAuditWhere`, and hence the assertions here run the list and the export against one filter and
-// compare, rather than restating the expected rows by hand: a test that spells out both sides can go
-// on passing while the two readers drift apart, which is the only failure this feature really has.
-//
-// The scope comes with it, and the issue did not ask for that -- it was written before #520. An
-// export that ignored the scope would either dump the wrong trail or repeat the omission #520 closed,
-// so `fleet`/`all` are refused to the same callers and read under the same role.
-//
-// THE CAP IS BYTES AND NOT ONLY ROWS, and that is measured rather than chosen. `truncForAudit` bounds
-// each STRING at 4000 but nothing bounds the object, and `agent.prompt_set` writes two prompts: a
-// worst-case row serializes to 8,120 bytes of CSV, so the Logs module's 10,000-row cap would permit a
-// 77 MB download. A month of ordinary rows (161 bytes measured on a dev trail) still comes out whole;
-// the month carrying prompts is the one that cuts.
+// THE CAP IS BYTES AND NOT ONLY ROWS. `truncForAudit` bounds each STRING at 4000 but nothing bounds
+// the object, and `agent.prompt_set` writes two prompts: a worst-case row is about 8 kB of CSV, so a
+// 10,000-row cap alone would permit a download of tens of MB. Ordinary rows are a few hundred bytes.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -103,9 +94,8 @@ async function seed(
 }
 
 // Parses an RFC 4180 CSV into rows of cells, honouring quoted cells that hold commas, quotes and
-// newlines. Written out rather than split(",") on purpose: EVERY audit row needs quoting (measured:
-// 72 of 72 on a dev trail, because a JSON cell always carries `"`), so a naive split would agree with
-// a broken writer.
+// newlines. Written out rather than split(",") on purpose: EVERY audit row needs quoting (a JSON
+// cell always carries `"`), so a naive split would agree with a broken writer.
 function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -196,18 +186,12 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
     ]);
   });
 
-  // THE ONE ASSERTION THIS FEATURE IS ABOUT. Not "the filter works" -- that the export and the page
-  // answer the same question, compared against each other rather than against a hand-written list.
-  // A ROW WHOSE ID AND STAMP DISAGREE, seeded for the whole comparison below. Without it the two
-  // orders coincide on this trail -- rows are appended stamp-ascending -- so the assertion would
-  // hold against an export still walking by `id` alone, which is exactly what it must not do since
-  // #530. Measured: dropping this row lets the comparison pass with the two readers ordered
-  // differently.
-  // AND THEY AGREE ON THE NAME FROM BEFORE THE RENAME TOO (#555). This is the sharp end of the
-  // redirect: the page's empty trail is at least on screen next to a picker offering the new name,
-  // while an export is a file, quoted to a customer, that says "no consent decision was recorded"
-  // with nothing around it to correct the impression. Asserted NON-EMPTY on purpose — the same
-  // comparison over two empty results passes against the defect.
+  // THE ONE ASSERTION THIS FEATURE IS ABOUT: the export and the page answer the same question. A
+  // ROW WHOSE ID AND STAMP DISAGREE is seeded for the comparison below: without it the two orders
+  // coincide (rows are appended stamp-ascending), so an export walking by `id` alone would pass.
+  // AND THEY AGREE ON THE NAME FROM BEFORE THE RENAME. An export is a file quoted to a customer,
+  // and an empty one says "no consent decision was recorded" with nothing to correct it. Asserted
+  // NON-EMPTY, since the same comparison over two empty results would pass.
   test("an export filtered by the spelling from before the rename carries the rows", async () => {
     await seed(mine, "mcp_oauth_consent.grant", `${TAG}:renamed`, {
       at: "2026-04-02T00:00:00Z",
@@ -305,7 +289,7 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
     expect(r.count).toBe(parseCsv(r.content).length - 1);
   });
 
-  // The cap the issue did not ask for. A row is bounded per STRING and not per object, so rows fat
+  // A row is bounded per STRING and not per object, so rows fat
   // enough to blow a download can still be far under the row cap: the byte budget is what stops it,
   // and it has to stop it by FETCHING less, not by trimming what it already pulled into memory.
   test("a fat trail is cut by bytes long before it reaches the row cap", async () => {
@@ -331,8 +315,7 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
   // BOTH DIRECTIONS, and on the function rather than through a result. A caller asking for LESS is
   // visible in an export (the truncation tests above); a caller asking for MORE than the module allows
   // is not, because telling the two apart would need a trail longer than the ceiling itself -- so a
-  // test written against `exportAudit` here passes whether or not the clamp exists. Measured: removing
-  // the `Math.min` left this whole file green.
+  // test written against `exportAudit` here passes whether or not the clamp exists.
   test("a caller may lower the ceilings and may not raise them", () => {
     expect(clampAuditExportCeilings({ maxRows: 5, maxBytes: 100 })).toEqual({
       maxRows: 5,
@@ -353,8 +336,8 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
     });
   });
 
-  // The numbers themselves, because the ceiling is the feature: a row cap alone would permit a 77 MB
-  // download on the fat trail measured in this module's header.
+  // The numbers themselves, because the ceiling is the feature: a row cap alone would permit a
+  // download of tens of MB on the fat trail described in this module's header.
   test("the ceilings are the ones a browser can hold", () => {
     expect(AUDIT_EXPORT_MAX_ROWS).toBeLessThanOrEqual(10_000);
     expect(AUDIT_EXPORT_MAX_BYTES).toBeLessThanOrEqual(16 * 1024 * 1024);
@@ -385,10 +368,9 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
 
   // WHAT IS FETCHED, and not only what is written. The byte budget bounds the file, and a fixed row
   // batch bounds nothing: `truncForAudit` clips each STRING at 4,000 and clips neither the number of
-  // fields nor the depth, so a row has no structural ceiling at all. Measured on this projection, a
-  // batch of 500 materializes 8 MB at two fields per row, 191 MB at fifty, 765 MB at two hundred --
-  // all of it read to then be thrown away by a ceiling of 8 MB. So the trip has to be sized by the
-  // budget that is left and by the width already observed, and the assertion is on the `take` the
+  // fields nor the depth, so a row has no structural ceiling at all, and a fixed batch of wide rows
+  // can materialize hundreds of MB only to throw it away at the byte ceiling. So the trip is sized by
+  // the budget left and by the width already observed, and the assertion is on the `take` the
   // database actually received.
   test("a trip is sized by the budget left, so a fat trail is not materialized whole", async () => {
     const fat = {
@@ -400,7 +382,7 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
       for (let i = 0; i < 14; i++) {
         await seed(mine, "agent.update", `${TAG}:fat${i}`, { after: fat });
       }
-      // One row's real size on this projection, measured rather than assumed.
+      // NOTE: one row's real size on this projection, read rather than assumed.
       const one = await exportAudit(ctx(), { maxRows: 1 }, appDb);
       const rowBytes = Buffer.byteLength(one.content, "utf8");
       const budget = rowBytes * 5;
@@ -466,9 +448,9 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
 
   // THE WIDEST ROW SEEN, NOT THE AVERAGE, and the difference is the whole point of the estimate. An
   // average is dragged down by every thin row around a fat one, so a trail that opens thin and turns
-  // fat -- which is the ordinary shape, since one `agent.settings` write sits among a hundred logins
-  // -- would keep asking for trips sized as if the fat row had never appeared. The widest row is a
-  // fact already measured; the average is a guess about rows not yet read.
+  // fat (the ordinary shape: one `agent.settings` write sits among a hundred logins) would keep
+  // asking for trips sized as if the fat row had never appeared. The widest row is a fact already
+  // read; the average is a guess about rows not yet read.
   test("one fat row shrinks the next trip, instead of being averaged away", async () => {
     try {
       const fat = {
@@ -626,8 +608,8 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
   });
 
   // ONE SNAPSHOT, ACROSS EVERY TRIP. The walk takes several round trips and rows keep arriving
-  // between them. Ordered by `id` that was free -- a new row carries a higher id than the descending
-  // walk will ever reach again -- but `(created_at, id)` reads a clock the writer owns, so a row
+  // between them. Ordered by `id` that would be free (a new row carries a higher id than the
+  // descending walk reaches again), but `(created_at, id)` reads a clock the writer owns, so a row
   // appended by a replica running behind lands BELOW the cursor and a later trip picks it up, while
   // one stamped ahead does not. The file would then mix two snapshots under a filename claiming one.
   //
@@ -670,10 +652,9 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
     }
   });
 
-  // A FILTER THAT MATCHES NOTHING still produces a file, and the bound does not get in the way. Worth
-  // its own case because the bound moved from `max(id)` over the trail -- which is null on an empty
-  // one -- to the sequence, which always answers; the branch that used to handle "no bound" is gone,
-  // so this is what stands in for it.
+  // A FILTER THAT MATCHES NOTHING still produces a file, and the bound does not get in the way. The
+  // bound comes from the sequence, which always answers (unlike `max(id)`, null on an empty trail),
+  // so there is no "no bound" branch and this case stands in for it.
   test("a filter that matches nothing exports a header and says so", async () => {
     const r = await exportAudit(
       ctx(),
@@ -688,7 +669,7 @@ describe.skipIf(!dbUp)("exporting the trail", () => {
 
   // THE UNCALLED SEQUENCE, which is a fresh deployment's first export. Postgres reports
   // `last_value = 1` both for a sequence that has never run and for one that has handed out exactly
-  // one id; only `is_called` tells them apart (measured against a real sequence, below). Reading the
+  // one id; only `is_called` tells them apart (checked against a real sequence, below). Reading the
   // value alone would bound an EMPTY trail at 1, so the very first audit row ever written -- landing
   // between the bound being taken and the first trip -- would appear in a file that started before
   // it existed.

@@ -20,9 +20,8 @@ import { seedChatwootInstance } from "../utils/chatwoot";
 import { UsageReportingModel } from "../utils/scripted-models";
 
 // `LlmUsage` is the only ledger of what an install spends on models, and a call reaches it only by
-// carrying the turn's usage callback. Two billed calls never did (issue #316): the guardrail
-// analysis, which invokes without callbacks, and vision, whose provider contract returned a bare
-// string and so could not carry the token counts the provider had already sent back.
+// carrying the turn's usage callback (or recording direct usage). The guardrail analysis and vision
+// are the two billed calls that do not ride the agent's own invocation.
 //
 // Every test here reads the row an operator would read, through the real call path. What is being
 // proved is not that a function returns a number: it is that the money spent leaves a trace.
@@ -178,8 +177,8 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
         },
         settings: {
           split: { enabled: false },
-          // openai-compatible asks for the verdict in prose (verdictAskMode), which is the plain
-          // `model.invoke` path — the one that was missing its callbacks.
+          // NOTE: openai-compatible asks for the verdict in prose (verdictAskMode), which is the
+          // plain `model.invoke` path.
           guardrails: {
             enabled: true,
             provider: "openai-compatible",
@@ -300,10 +299,9 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
     expect(guard?.inboxId).toBe(inboxDbId);
   });
 
-  // THE GUARDRAIL'S CALL IN THE OTHER BOOK (review round 8). The gate hands its model `[usage()]`
-  // and nothing else, so the question is whether the turn's Langfuse handler still sees the call
-  // through LangChain's own config propagation, or whether the guardrail's spend is invisible to
-  // the dollar ceiling the way vision's was. Measured, not reasoned: the ingestion batch is read.
+  // THE GUARDRAIL'S CALL IN THE OTHER BOOK. The gate hands its model `[usage()]` and nothing else,
+  // so the turn's Langfuse handler must see the call through LangChain's config propagation, or the
+  // guardrail's spend is invisible to the dollar ceiling. The ingestion batch itself is read.
   test("a screened turn reaches Langfuse with the guardrail's generation beside the agent's", async () => {
     const tctx = { tenantId, userId: null, role: "TENANT_ADMIN" as const };
     const lf = await suDb.vaultEntry.create({
@@ -492,10 +490,8 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
     expect(usage[0]?.agentId).toBe(agentId);
   });
 
-  // THE SECOND BOOK (review round 2 of #426). The row above is the ledger; the dollar ceiling reads
-  // Langfuse, which prices what its own generations carry, and a call made by raw fetch is a call
-  // no LangChain callback ever showed it. Without this every vision call stayed outside the month's
-  // cost, and an extraction-only playground could run under the ceiling indefinitely. The
+  // THE SECOND BOOK. The row above is the ledger; the dollar ceiling reads Langfuse, which never sees
+  // a call made by raw fetch unless it is reported, or vision stays outside the month's cost. The
   // generation has to be one the poll's own filters find: the tenant's slug as `userId`, the
   // source's environment, and the usage keyed the way the LangChain handler keys it, so one model
   // definition prices both paths.
@@ -628,16 +624,10 @@ describe.skipIf(!dbUp)("billed model calls reach the usage ledger", () => {
   });
 });
 
-// The fence. Fixing the two offenders above closes today's hole; this is what stops the next call
-// site from being born with it, and it is why this issue was one issue rather than two reports.
-//
-// The predicate is the offender's GRAMMAR, not its intention: an option bag handed to a model
-// invocation that names `signal` and not `callbacks`. Both guardrail sites read exactly that way,
-// and both sites that had already been fixed by hand (`tts/normalize.ts`, `memory/summarize.ts`)
-// carry `callbacks` right beside `signal`.
-//
-// Measured against the tree with the guardrail fix reverted, the sweep reports both sites; against
-// the tree as it stands, none.
+// The fence: it stops the next call site from being born without a usage sink. The predicate is the
+// offender's GRAMMAR, not its intention: an option bag handed to a model invocation that names
+// `signal` and not `callbacks` (compliant sites such as `tts/normalize.ts` and `memory/summarize.ts`
+// carry `callbacks` right beside `signal`).
 const INVOKE_OPTIONS = /\.invoke\([\s\S]{0,400}?\{([^{}]*signal:[^{}]*)\}/g;
 
 function sinkless(source: string): string[] {
@@ -657,7 +647,7 @@ async function tsFilesUnder(dir: string): Promise<string[]> {
 
 describe("every model invocation carries a usage sink", () => {
   // A sweep that finds nothing passes whether the rule holds or the predicate is broken. This is
-  // what tells the two apart, and it is the shape the real offender had.
+  // what tells the two apart.
   test("the predicate recognises an invocation with no sink", () => {
     const offender = `
       const res = await model.invoke(messages, {
@@ -686,15 +676,11 @@ describe("every model invocation carries a usage sink", () => {
   });
 });
 
-// A second sweep, over the other half of the same defect. Completing the ledger did not only add
-// rows: it added a KIND of row, and `getKpis` was reading "this conversation has a billed call" as
-// "the agent took this conversation". That held only while the calls the agent did not make had no
-// row. Vision is the first node that bills before the bot-ownership gate, and it will not be the
-// last, so the classification is total and this is what keeps it total.
-//
-// The predicate is the writer's grammar: a `node:` key resolving to a string literal, inside a file
-// that builds a ledger sink. Scoping it to sink files is what keeps unrelated `node:` keys (an n8n
-// workflow graph names its steps that way) out of the vocabulary.
+// A second sweep: the ledger holds rows for calls the agent did not make (vision bills before the
+// bot-ownership gate), so "has a billed call" is not "the agent took this conversation" for
+// `getKpis`. Every node written must be classified. The predicate is a `node:` key resolving to a
+// string literal inside a file that builds a ledger sink; scoping it to sink files keeps unrelated
+// `node:` keys (an n8n workflow graph names its steps that way) out of the vocabulary.
 const SINK_FILE = /new UsageCapture\(|recordDirectUsage\(|buildCallbacks\(/;
 const NODE_LITERAL = /\bnode:\s*[^,\n}]*?"([a-z_]+)"/g;
 
@@ -728,8 +714,8 @@ describe("every node the ledger writes is classified for the involvement KPI", (
         found.add(node);
       }
     }
-    // Both directions. A node written but unclassified is the hole vision just opened; a node
-    // classified but no longer written is a rule about code that is gone, and the map is what a
+    // NOTE: both directions. A node written but unclassified is a row the involvement KPI cannot
+    // answer for; a node classified but not written is a rule about code that is gone, and the map is what a
     // reader trusts to be the whole vocabulary.
     expect([...found].sort()).toEqual(
       Object.keys(USAGE_NODE_IS_AGENT_TURN).sort(),

@@ -12,13 +12,9 @@ import {
 //
 // The merge re-reads the patched bag through the typed readers to clamp and validate it, and then
 // has to STORE what it read. A block that is merged but not written back leaves the raw value in
-// `agent.settings` while every projection shows the normalized one — the two disagree from then on,
-// in the export, in the MCP read and in any diff between two agents. It is silent by construction:
-// the readers normalize again on the way out, so nothing downstream misbehaves.
-//
-// Review found `modelFallback` missing from that list, which was the fourth time in one change that
-// a new behavior block went in with one of its registration points forgotten. So the invariant is
-// asserted per KEY, behaviourally, instead of the eighteenth assignment being reviewed by eye.
+// `agent.settings` while every projection shows the normalized one, so the export, the MCP read and a
+// diff between two agents disagree. It is silent by construction (the readers normalize again on the
+// way out), so it is asserted per KEY, behaviourally, rather than trusted to each assignment.
 describe("behavior-settings — the merge stores every block it owns", () => {
   // The two blocks whose stored form is deliberately NOT the read form, each for a reason at its own
   // assignment: `observability` persists through `storableObservability` because `fullDetail` is
@@ -144,7 +140,7 @@ describe("behavior-settings — attributeContext", () => {
 });
 
 // The per-agent switch for logging tool VALUES instead of their shape rides the same surface, so the
-// editor, REST and MCP all project the one normalized value (issue #78).
+// editor, REST and MCP all project the one normalized value.
 describe("behavior-settings — observability", () => {
   test("it is an owned key and defaults to off", () => {
     expect(BEHAVIOR_SETTINGS_KEYS).toContain("observability");
@@ -177,11 +173,9 @@ describe("behavior-settings — observability", () => {
   });
 });
 
-// The merge contract goes all the way down (issue #184). One shallow spread per block kept the
-// promise at the top level of a block and broke it one step in: a patch that named a SUB-object
-// replaced it whole, and because each block is then re-read through its typed reader, the hole came
-// back filled with defaults rather than absent — a complete, plausible block with the operator's
-// values gone.
+// The merge contract goes all the way down. A shallow spread per block would let a patch that names a
+// SUB-object replace it whole, and since each block is re-read through its typed reader, the hole comes
+// back filled with defaults: a complete, plausible block with the operator's values gone.
 describe("behavior-settings — a patch into a nested block", () => {
   const configured = {
     guardrails: {
@@ -244,9 +238,8 @@ describe("behavior-settings — a patch into a nested block", () => {
 
   // The descent is BOUNDED. Both sides of the merge are caller-supplied and the settings schema
   // accepts arbitrary nested `unknown`, so an unbounded recursion turns "store a deep object, then
-  // patch it" into a RangeError that escapes the write — and, because it escapes the write, leaves
-  // the agent's settings unwritable until the row is repaired by hand. Measured against this tree
-  // before the cap: 5_000 levels merged, 20_000 threw.
+  // patch it" into a RangeError that escapes the write and leaves the agent's settings unwritable
+  // until the row is repaired by hand.
   test("a pathologically deep patch is bounded instead of blowing the stack", () => {
     const deep = (n: number): Record<string, unknown> => {
       let o: Record<string, unknown> = { leaf: 1 };
@@ -262,8 +255,8 @@ describe("behavior-settings — a patch into a nested block", () => {
   });
 
   // The cap is not a number someone liked: it has to clear the deepest shape the readers actually
-  // produce, or a block nested past it would silently lose the values this whole change exists to
-  // keep. Growing a deeper block fails HERE, where the fix is one constant, instead of in the field.
+  // produce, or a block nested past it would silently lose the operator's values. Growing a deeper
+  // block fails HERE, where the fix is one constant, instead of in the field.
   test("the depth cap clears the deepest shape the readers produce", () => {
     expect(behaviorSettingsMaxDepth()).toBeLessThan(MERGE_MAX_DEPTH_FOR_TESTS);
   });
@@ -285,7 +278,7 @@ describe("behavior-settings — a patch into a nested block", () => {
 // The merge re-reads every block through its typed reader and writes the result back, so a reader
 // that answers a DERIVED field would persist it. `observability.fullDetail` is exactly that field:
 // it is computed from `fullDetailUntil` on every read, and a bag holding it would let the stored
-// answer and the computed one disagree the moment the window closes (issue #58).
+// answer and the computed one disagree the moment the window closes.
 describe("behavior-settings — the merge stores what is stored, not what is derived", () => {
   const armed = new Date(Date.now() + 3_600_000).toISOString();
 

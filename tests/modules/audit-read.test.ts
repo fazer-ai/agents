@@ -10,14 +10,9 @@ import {
 } from "@/modules/audit/service";
 import { syntheticAction } from "../utils/audit-action";
 
-// THE READ HALF (issue #401). The trail is append-only and the console page is the only door most
-// operators have to it, so what the read surface can ANSWER is what the trail is worth to them.
-//
-// Before this, `listAudit` took a limit (capped at 500) and an action, and nothing else: no way to
-// reach row 501, and no way to arrive the way an operator actually arrives, with a date and no idea
-// which action to look for. The issue calls the endpoint "keyset by id"; it was ordered by id and
-// paged by nothing, which is the same shape a caller cannot tell apart until the trail outgrows one
-// page.
+// THE READ HALF. The console page is the only door most operators have to the trail, so what the
+// read surface can ANSWER is what the trail is worth: every row reachable by keyset paging, and a
+// date filter for an operator who arrives with a date and no idea which action to look for.
 //
 // The seeding here is `recordAudit` itself rather than a family service: this file is about the
 // read, and a family's own rows are measured by its own file.
@@ -122,7 +117,7 @@ describe.skipIf(!dbUp)("reading the trail", () => {
         createdAt: new Date(page.entries[1]?.createdAt ?? ""),
         id: BigInt(page.entries[1]?.id ?? "0"),
       },
-      // No pre-#530 bound: this walk began under this release.
+      // NOTE: a cursor is the position only, with no legacy bound.
     });
   });
 
@@ -177,19 +172,19 @@ describe.skipIf(!dbUp)("reading the trail", () => {
       // February 30th becomes March 2nd and the walk continues from an instant nobody asked for,
       // quietly skipping whatever lies between.
       "2026-02-30T00:00:00.000Z|7",
-      // Forms this codec never emits. Each one parses, and two of them parse in the SERVER'S OWN
-      // ZONE: `Sep 4 2026` and `…T12:00` (no offset) resolved three hours off on the machine that
-      // measured this, so one cursor would name different instants on two deployments.
+      // NOTE: forms this codec never emits. Each one parses, and two of them parse in the SERVER'S
+      // OWN ZONE: `Sep 4 2026` and `…T12:00` (no offset) resolve by the server's timezone, so one
+      // cursor would name different instants on two deployments.
       "2026-09-04|7",
       "Sep 4 2026|7",
       "2026-09-04T12:00|7",
       "2026-09-04T12:00:00.000+00:00|7",
       "2026-09-04T12:00:00.0000Z|7",
-      // EXPANDED YEARS, which are canonical JavaScript and outside what the column can hold.
+      // NOTE: EXPANDED YEARS, which are canonical JavaScript and outside what the column can hold.
       // `toISOString` emits the `±YYYYYY` form beyond four digits, so these survive the round trip
       // above -- and the negative one is refused by Postgres at bind time, which turns a malformed
-      // cursor into a 500 where the endpoint promises a 400 (measured: the positive extreme binds
-      // fine, so this is about the spelling and not about probing the server's exact range).
+      // cursor into a 500 where the endpoint promises a 400 (the positive extreme binds fine, so
+      // this is about the spelling and not about probing the server's exact range).
       "-100000-01-01T00:00:00.000Z|1",
       "+275760-09-13T00:00:00.000Z|1",
     ]) {
@@ -213,11 +208,10 @@ describe.skipIf(!dbUp)("reading the trail", () => {
     });
   });
 
-  // THE WHOLE SET, SWEPT, and this is what three review rounds of one-more-bad-spelling argue for.
-  // The instant a cursor may carry is exactly: a four-digit year that is not `0000`, spelled the way
+  // THE WHOLE SET, SWEPT, rather than one more bad spelling at a time. The instant a cursor may carry is exactly: a four-digit year that is not `0000`, spelled the way
   // `toISOString` spells it, naming a date that exists. This walks every one of the 10,000
-  // four-digit years and asserts the codec agrees with the database about each -- so a spelling
-  // nobody thought of is a failing test rather than a later finding.
+  // four-digit years and asserts the codec agrees with the database about each, so a spelling
+  // nobody thought of is a failing test.
   test("the codec accepts exactly the instants the column can hold", async () => {
     const refusedByCodec: string[] = [];
     for (let y = 0; y <= 9999; y++) {
@@ -244,10 +238,9 @@ describe.skipIf(!dbUp)("reading the trail", () => {
   });
 
   // Two rows the clock cannot tell apart, which is the case a cursor has to survive and the reason
-  // it is keyed on the id. `created_at` here is written by the CLIENT and not by the database —
-  // three rows appended inside one transaction come back with stamps later than that transaction's
-  // own now(), and at millisecond resolution two of them landing on the same value is ordinary
-  // (measured). So the column is neither unique nor guaranteed to agree with insertion order, and a
+  // it is keyed on the id. `created_at` here is written by the CLIENT and not by the database:
+  // rows appended inside one transaction carry stamps later than that transaction's own now(), and
+  // at millisecond resolution two of them landing on the same value is ordinary. So the column is neither unique nor guaranteed to agree with insertion order, and a
   // page cut on it would repeat one of a tied pair or skip it. Stamped equal here on purpose rather
   // than raced into a tie, so the case is exercised every run instead of on a fast machine.
   test("a page boundary between two rows sharing one timestamp repeats nothing", async () => {
@@ -261,8 +254,8 @@ describe.skipIf(!dbUp)("reading the trail", () => {
         "tie.two",
       ]);
       expect(new Set(first.entries.map((e) => e.createdAt)).size).toBe(1);
-      // The three stamps are identical, so nothing but the id can place the boundary -- which is
-      // exactly why the id stayed in the key when #530 put `created_at` in front of it.
+      // NOTE: the three stamps are identical, so nothing but the id can place the boundary, which
+      // is why the id is in the key after `created_at`.
       expect(parseAuditCursor(first.nextCursor ?? "")?.at?.id).toBe(
         BigInt(first.entries[1]?.id ?? "0"),
       );
@@ -317,12 +310,10 @@ describe.skipIf(!dbUp)("reading the trail", () => {
     ).toEqual(["b.five"]);
   });
 
-  // THE FILTER ANSWERS THE NAME THE READER LEARNED, not only the one the rows carry today. #555
-  // renamed the two consent actions and moved every row, which turns a saved filter link, a script's
-  // query string and a quoted export naming the old spelling into a read that matches nothing — an
-  // audit saying "this never happened" about rows sitting one name over. Asserted through `listAudit`
-  // rather than on the map, because what has to hold is that the READER goes through the redirect:
-  // the map being right while `buildAuditWhere` ignores it is exactly the failure, and it is silent.
+  // THE FILTER ANSWERS THE NAME THE READER LEARNED, not only the one the rows carry today. The two
+  // consent actions were renamed and their rows moved, so a saved filter link, a script or a quoted
+  // export naming the old spelling would otherwise match nothing. Asserted through `listAudit`: the
+  // map being right while `buildAuditWhere` ignores it is exactly the failure, and it is silent.
   test("a filter naming the spelling from before the rename finds the rows", async () => {
     await seed("mcp_oauth_consent.grant", "2024-03-04T09:00:00Z");
     try {
@@ -372,16 +363,14 @@ describe.skipIf(!dbUp)("reading the trail", () => {
   // `created_at` is written by the client, so a row that commits later can carry an earlier stamp
   // than one already in the table. This number is compared against a record's own `updatedAt`, and a
   // comparison between times answered by "whichever row has the biggest id" reports a covered record
-  // as newer than the trail — the exact false alarm the field exists to avoid raising.
+  // as newer than the trail: the exact false alarm the field exists to avoid raising.
   test("the newest row is the newest by TIME, even when the ids disagree", async () => {
     try {
       // Written last, stamped earliest: the highest id is not the latest row.
       await seed("skew.older", "2026-01-04T00:00:00Z");
       const page = await listAudit(ctx(), { limit: 1 }, appDb);
-      // AND THE PAGE AGREES WITH IT SINCE #530. Ordered by id this row came first, because it was
-      // written last -- so the trail's own first line disagreed with the `latestAt` printed beside
-      // it. Ordered by `(created_at, id)` the two answer the same question, which is the one the
-      // operator is asking: what happened most recently.
+      // NOTE: and the page agrees with it: ordered by `(created_at, id)`, not by id (which would
+      // put this row first), the first line and `latestAt` answer the same question.
       expect(page.entries[0]?.action).toBe("c.six");
       expect(page.latestAt).toBe("2026-01-06T00:00:00.000Z");
       expect(page.entries[0]?.createdAt).toBe(page.latestAt ?? "");
@@ -392,20 +381,10 @@ describe.skipIf(!dbUp)("reading the trail", () => {
     }
   });
 
-  // A CURSOR IS A POSITION AGAIN, AND A BARE ID IS NOT ONE (#544).
-  //
-  // Before #530 this endpoint paged `id < X` under `ORDER BY id`, so the cursor it handed out was a
-  // BOUND. For one release after #530 that bound was still accepted and carried to the end of the
-  // walk, so a walk spanning a rolling deploy finished without losing a row. #530 shipped in
-  // v1.15.0 and this is the release after it, so no process can still be emitting one and the form
-  // is refused again.
-  //
-  // WHY REFUSED AND NOT CONVERTED, which is the part worth keeping now that the code is gone: the
-  // id CANNOT be translated into the new key. `created_at` is written by the client, so a row can
-  // carry a stamp older than a row with a smaller id, and every unseen row stamped ahead of X sits
-  // ahead of X's own tuple and would never come back. Measured on the dev trail, one process and 75
-  // rows: from id 88 the old walk owed 19 rows and the translated cursor returned 2, skipping all
-  // 19. A 400 tells the caller the walk cannot continue; a translation would keep the pager saying
+  // A CURSOR IS A POSITION, AND A BARE ID IS NOT ONE. An id cannot be translated into the
+  // `(created_at, id)` key: `created_at` is written by the client, so a row can carry a stamp older
+  // than a row with a smaller id, and every unseen row stamped ahead of X would never come back. A
+  // 400 tells the caller the walk cannot continue; a translation would keep the pager saying
   // "Page 2" over a silently different answer.
   test("a bare id is not a cursor, and neither is the bound it used to carry", () => {
     expect(parseAuditCursor("115")).toBeNull();

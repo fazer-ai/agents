@@ -1,14 +1,11 @@
 // A control command (`/teste`, `/reset`) is only honoured when the agent it lands on is in `test`
-// mode, and issue #270 is what happens when that question gets asked twice of two different rows.
-// `commandActive` resolves the agent from the inbox id IN THE PAYLOAD; the test-mode gate that
-// silences the conversation resolves it from the inbox id STORED on the mirrored conversation. When
-// those disagree the operator sends `/teste` and gets back the private note telling them to send
-// `/teste` — a dead end with no way out from inside the conversation.
+// mode, and that question must be asked of ONE row. If `commandActive` and the test-mode gate
+// resolved the agent from different inbox ids (payload vs mirrored conversation) and disagreed, the
+// operator would send `/teste` and get back the note telling them to send `/teste`: a dead end.
 //
-// The reported diagnosis (the channel-redirect gate eating the command) is REFUTED here, on purpose
-// and by a passing test: with `channelRedirect.enabled` on the entry inbox, `/teste` activates and
-// acks exactly as it does without it. The redirect gate sits after the test-mode gate and is never
-// reached with a live command in hand.
+// The channel-redirect gate does not eat the command: with `channelRedirect.enabled` on the entry
+// inbox, `/teste` activates and acks exactly as without it, since that gate sits after the
+// test-mode gate and is never reached with a live command in hand.
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/../generated/prisma/client";
@@ -311,10 +308,9 @@ describe.skipIf(!dbUp)("control commands: one reading of the agent", () => {
       where: { id },
       select: { testActivatedAt: true },
     });
-    // No agent on either reading, so the command genuinely cannot run — but it must not vanish. The
-    // three values issue #270 asked for (the command, why it was inactive, the route it arrived on)
-    // are the whole point of the line: without them this delivery is indistinguishable from a
-    // customer who happened to type "/teste".
+    // NOTE: no agent on either reading, so the command cannot run, but it must not vanish. The
+    // line's three values (the command, why it was inactive, the route it arrived on) are what tell
+    // this delivery apart from a customer who happened to type "/teste".
     expect(row?.testActivatedAt).toBeNull();
     expect(posted.filter((p) => p.conversationId === 6003)).toEqual([]);
     const line = lines.find((c) => String(c[0]).includes("not run"));
@@ -399,9 +395,8 @@ describe.skipIf(!dbUp)("control commands: one reading of the agent", () => {
       where: { id },
       select: { testActivatedAt: true },
     });
-    // The payload could not name the agent, so the ONLY row that can is the mirrored conversation —
-    // the same row the test-mode gate reads. Before the fix the two disagreed and the operator got
-    // the "send /teste" private note back in reply to a /teste.
+    // NOTE: the payload could not name the agent, so the ONLY row that can is the mirrored
+    // conversation, the same row the test-mode gate reads.
     expect(row?.testActivatedAt).not.toBeNull();
     // The private "send /teste" note from the pre-activation "oi" is legitimate and stays; what must
     // NOT happen is the command itself being answered with that same instruction. The public ack is

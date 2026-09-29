@@ -201,7 +201,7 @@ describe.skipIf(!dbUp)("the redirect closing records its own origin", () => {
 // The OTHER way the redirect's goodbye reaches a customer: not the ladder's timed closing stage, but
 // a resolve on the widget conversation, which the receiver turns into a closing on the WhatsApp
 // sibling. It sends fixed text with no nudge behind it, so the agent's own switch is asked here or
-// nowhere (issue #219). The real receiver is driven, because the gate lives on that wiring and a call
+// nowhere. The real receiver is driven, because the gate lives on that wiring and a call
 // to `deliverRedirectClosing` would skip the very code under test.
 describe.skipIf(!dbUp)(
   "a resolve-triggered closing asks the agent's switch",
@@ -386,11 +386,10 @@ describe.skipIf(!dbUp)(
       });
     };
 
-    // Review round 9 of #355, and it is round 7's fix read back. The mark is a VERSION: it advances
-    // on every payload that states the pairing, the ones that state the SAME pairing included. Used
-    // as an equality token it turns any ordinary webhook arriving mid-run into "the episode moved",
-    // and on this path that is permanent — the ladder is already cancelled, so the resolve trigger is
-    // the only closing this episode will ever get.
+    // The mark is a VERSION: it advances on every payload that states the pairing, the SAME pairing
+    // included. Used as an equality token it turns any ordinary webhook arriving mid-run into "the
+    // episode moved", and on this path that is permanent: the ladder is already cancelled, so the
+    // resolve trigger is the only closing this episode will ever get.
     test("an ordinary same-origin update does not cost the closing its claim", async () => {
       await rearm();
       await suDb.conversation.updateMany({
@@ -440,10 +439,9 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    // Review round 7 of #355, and the same question one state deeper. A closing that starts from
-    // `(origin=null, mark=null)` resolved its sibling through the recency fallback; a stated clear
-    // landing under it makes that answer wrong, and the claim compares only the origin, so both
-    // nulls match and the goodbye goes out on a thread the source just disowned.
+    // A closing that starts from `(origin=null, mark=null)` resolves its sibling through the recency
+    // fallback; a stated clear landing under it makes that answer wrong, and a claim comparing only
+    // the origin would match both nulls and post the goodbye on a thread the source just disowned.
     test("a stated clear landing under the closing stops the claim", async () => {
       await rearm();
       const flipping = appDb.$extends({
@@ -479,11 +477,10 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    // Review round 6 of #355, and the effect rather than the decision table. A STATED clear reaches
-    // this consumer as a stored null, which is also what "the fork never spoke about this
-    // conversation" looks like — and the old predicate answers the second one. Read as a gap it
-    // hands the closing the contact's most recent WhatsApp thread and that thread gets a goodbye and
-    // a resolve, on an episode the source said has no WhatsApp half at all.
+    // The effect rather than the decision table. A STATED clear reaches this consumer as a stored
+    // null, which is also what "the fork never spoke about this conversation" looks like. Read as a
+    // gap it hands the closing the contact's most recent WhatsApp thread, which then gets a goodbye
+    // and a resolve on an episode the source said has no WhatsApp half at all.
     test("a stated clear leaves the closing with no sibling to post on", async () => {
       await rearm();
       await suDb.conversation.updateMany({
@@ -508,12 +505,11 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    // Review round 5 of #355. The closing RESOLVES the WhatsApp conversation it names, and on this
-    // path there is no job to ask about — the resolve webhook enters it directly — so the claim CAS is
-    // the only thing standing between a run that read one episode and a conversation that is now in
-    // another. The pairing is read at the top and the claim is written after the agent read, the bot
-    // load and the client build; a re-entry accepted in that window re-points the episode, and a
-    // goodbye sent afterwards resolves a thread this conversation is no longer paired with.
+    // The closing RESOLVES the WhatsApp conversation it names, and on this path there is no job to
+    // ask about (the resolve webhook enters it directly), so the claim CAS is the only guard. The
+    // pairing is read at the top and the claim written after the agent read, the bot load and the
+    // client build; a re-entry accepted in that window re-points the episode, and a goodbye sent
+    // afterwards would resolve a thread this conversation is no longer paired with.
     test("the pairing moving under the closing stops the claim", async () => {
       await rearm();
       await suDb.conversation.updateMany({
@@ -595,9 +591,9 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    // Issue #249: the activation the operator gave is on the OTHER half of the episode. This gate's
-    // own conversation is the widget, but what it protects is a message to the WhatsApp SIBLING
-    // (`closeChat: false`) — the conversation that carries the stamp. Judged by the widget row alone
+    // The activation the operator gave is on the OTHER half of the episode. This gate's own
+    // conversation is the widget, but what it protects is a message to the WhatsApp SIBLING
+    // (`closeChat: false`), the conversation that carries the stamp. Judged by the widget row alone
     // it reads as "never activated" and the goodbye is dropped on an episode that is activated, on
     // the very channel it would have messaged.
     test("a test agent activated on the sibling still posts the goodbye", async () => {
@@ -629,7 +625,7 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    // Issue #246: the runtime is read, and then compaction arming, the ladder cancel and the closing's
+    // The runtime is read, and then compaction arming, the ladder cancel and the closing's
     // own reads all run before anything is posted. The switch is re-asked from inside for that window.
     test("switched off while the closing reads posts nothing", async () => {
       await suDb.agent.update({

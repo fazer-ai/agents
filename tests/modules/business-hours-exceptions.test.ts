@@ -14,13 +14,11 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
-// Issue #129, wiring end. A BusinessHours profile only modelled the week, so a holiday had no
-// representation and every consumer read September 7 as an ordinary Monday. The RULE (which ranges
-// govern a date) is pinned as a decision table in business-hours.test.ts against fixed instants; what
-// these cover is that the exception actually travels from the row to each decision — the part that
-// silently would not, because exceptions cannot ride inside an array of weekly windows.
+// The RULE (which ranges govern a date) is pinned as a decision table in business-hours.test.ts; these
+// cover that a date exception actually travels from the row to each decision, since exceptions cannot
+// ride inside an array of weekly windows.
 //
-// The schedule here is open 00:00–23:59 on all seven days, and an exception closes TODAY and TOMORROW
+// The schedule here is open 00:00 to 23:59 on all seven days, and an exception closes TODAY and TOMORROW
 // in its own timezone. Everything below therefore asserts the CLOSED direction, which holds at any
 // minute of the run; the open direction depends on the wall clock and is pinned in the unit table
 // instead, at instants that cannot drift.
@@ -161,7 +159,7 @@ async function seedConversation(
       chatwootConversationId: convId,
       status: "pending",
       threadId: threadOf(convId),
-      // O agente já respondeu aqui uma vez: sem isso não há follow-up nenhum a adiar (issue #652).
+      // NOTE: the agent has replied here once; without that there is no follow-up to defer.
       lastRepliedMessageId: 1,
       // Two minutes idle, so the 1-minute follow-up step is due.
       lastEventAt: new Date(Date.now() - 2 * 60_000),
@@ -361,8 +359,8 @@ describe.skipIf(!dbUp)("business-hours date exceptions (issue #129)", () => {
     });
     expect(result.outcome).toBe("reschedule");
     const runAt = (result as { runAt: Date }).runAt;
-    // The deferral names the configuration it was computed from, agent AND schedule, so the sweep
-    // re-arms it when either changes (issue #796).
+    // NOTE: the deferral names the configuration it was computed from, agent AND schedule, so the
+    // sweep re-arms it when either changes.
     expect(
       (result as { payload?: Record<string, unknown> }).payload?.deferredUnder,
     ).toMatch(/^\d+:[1-9]\d*$/);

@@ -17,8 +17,8 @@ import {
 // that knows where those fields live, so the write boundary and the importer agree with the readers.
 const over = (max: number) => "x".repeat(max + 1);
 const at = (max: number) => "x".repeat(max);
-// Nothing stored before: every oversized value is one this write introduces, which is what the
-// walker itself is being measured on here.
+// Nothing stored before, so every oversized value is one this write introduces: the walker alone
+// is under test.
 const oversized = (s: unknown) => collectOversizedTextChanges(s, undefined);
 const paths = (s: unknown) => oversized(s).map((o) => o.path);
 
@@ -70,10 +70,9 @@ describe("the settings text walker", () => {
   });
 
   // The input direction never writes a replacement, so its generation guidance reaches no prompt and
-  // the editor no longer offers the field. Capping it anyway would refuse a write over text nothing
-  // reads AND raise a console warning routed to `gr-input`, a section with no field to fix it in —
-  // an unclearable warning whose "Go to" lands nowhere. Same rule the walker already applies to tool
-  // names it does not recognize.
+  // the editor offers no field for it. Capping it would refuse a write over text nothing reads AND
+  // raise a console warning routed to `gr-input`, a section with no field to fix it in (a "Go to"
+  // that lands nowhere). Same rule the walker applies to tool names it does not recognize.
   test("the input direction's generation guidance is not capped, because nothing reads it", () => {
     expect(
       paths({
@@ -99,12 +98,10 @@ describe("the settings text walker", () => {
   });
 
   test("whitespace counts, because the control and the browser count it too", () => {
-    // The readers trim before they clamp, so a value that only passes the cap through surrounding
-    // whitespace would still be read whole. Measuring the trimmed length here was this walker's first
-    // shape and it could not be mirrored on screen: the browser enforces `maxLength` against the RAW
-    // value, so a field holding two leading spaces refused the next character while the counter still
-    // showed room. One rule everywhere is worth more than accepting a value whose only problem is
-    // invisible, and the counter says exactly how much to delete.
+    // NOTE: The readers trim before they clamp, but measuring the trimmed length cannot be mirrored
+    // on screen: the browser enforces `maxLength` against the RAW value, so a field with leading
+    // spaces would refuse the next character while the counter still showed room. One rule
+    // everywhere, and the counter says exactly how much to delete.
     expect(
       paths({ handoff: { instructions: ` ${at(TOOL_INSTRUCTIONS_MAX)}` } }),
     ).toEqual(["handoff.instructions"]);
@@ -192,14 +189,14 @@ describe("clampOversizedTextInPlace", () => {
     expect(oversized(bag)).toEqual([]);
     const ho = bag.handoff as Record<string, unknown>;
     expect((ho.instructions as string).length).toBe(TOOL_INSTRUCTIONS_MAX);
-    // The rest of the block survives: a clamp that rebuilds the bag from the fields it knows would
-    // drop everything it does not (the shape of the bug in #113).
+    // NOTE: The rest of the block survives: a clamp that rebuilds the bag from the fields it knows
+    // would drop everything it does not.
     expect(ho.mode).toBe("pinned");
   });
 
   // Every reader trims before it applies its cap, so an imported value that is only over because of
   // leading whitespace loses nothing at the runtime. Clipping the raw string would throw away as many
-  // real characters as there were spaces — content the reader would have kept.
+  // real characters as there were spaces, content the reader would have kept.
   test("clips what the reader would keep, not the whitespace in front of it", () => {
     const rule = "r".repeat(TOOL_INSTRUCTIONS_MAX);
     const bag: Record<string, unknown> = {
@@ -232,11 +229,10 @@ describe("clampOversizedTextInPlace", () => {
 });
 
 // What a write is allowed to be refused for: the text it INTRODUCES or CHANGES. A value stored before
-// the caps existed cannot be refused, because every field carrying one can be invisible in the editor
-// — a native-tool note with no control at all (`private_note`), or a section whose fields only render
-// when it is switched on — so the refusal would name something the operator has no way to shorten,
-// on every tab, forever. The reader still clamps that value on the way to the model, which is where
-// it always mattered.
+// the caps existed cannot be refused, because the field carrying it can be invisible in the editor (a
+// native-tool note with no control at all, `private_note`, or a section whose fields only render when
+// it is switched on), so the refusal would name something the operator has no way to shorten, on
+// every tab. The reader still clamps that value on the way to the model.
 describe("settings text caps: what a write changes", () => {
   const changed = (next: unknown, prev: unknown) =>
     collectOversizedTextChanges(next, prev).map((o) => o.path);
@@ -286,7 +282,7 @@ describe("settings text caps: what a write changes", () => {
 
   // The editor trims these fields when it serializes the form, so an untouched legacy value stored
   // with surrounding whitespace comes back as a DIFFERENT string. Comparing raw would call that an
-  // edit and refuse a save the operator never made — on a tab that may not even show the field.
+  // edit and refuse a save the operator never made, on a tab that may not even show the field.
   test("whitespace the readers discard is not an edit", () => {
     const body = "w".repeat(TOOL_INSTRUCTIONS_MAX + 200);
     const prev = { handoff: { instructions: `  ${body}  ` } };

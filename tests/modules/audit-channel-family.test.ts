@@ -26,18 +26,13 @@ import {
 } from "@/modules/chatwoot/management";
 import { routeTokenCacheGeneration } from "@/modules/chatwoot/route-token-cache";
 
-// THE CHANNEL-MANAGEMENT FAMILY (issue #395), whose trail was written by the MCP transport and by
-// nothing else. The Channels page speaks `chatwoot-admin.controller.ts`, eleven mutating routes, none
-// of which contained the string `audit`: connecting a deployment, rotating its token, disconnecting
-// it, binding or removing an inbox all left nothing.
+// THE CHANNEL-MANAGEMENT FAMILY, recorded by the service (`src/modules/chatwoot/management.ts`), so
+// the Channels page's routes and MCP leave the same rows (docs/api-and-fleet.md, "A family moves
+// down as a whole").
 //
-// Three of those routes had no MCP twin at all and get an action name here:
-// `deployment.disconnect`, `instance.reconnect` and `instance.remove`.
-//
-// The other thing this family carries is the secret. The deployment admin token is one of the two
-// documented raw-secret carve-outs (`docs/mcp.md`) and the MCP rows kept metadata only; the console
-// path has to redact identically, which is what the fence at the bottom of this file measures over
-// every row the file produced.
+// The deployment admin token is one of the two documented raw-secret carve-outs (`docs/mcp.md`), so
+// every path has to keep it out of the row; the fence at the bottom of this file checks every row
+// the file produced.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -85,10 +80,9 @@ const ctx = (over: Partial<TenantContext> = {}): TenantContext => ({
 });
 
 // A Chatwoot whose /profile answers with two accounts, which is what connect and rotate probe.
-// NOTE: every id these tests connect, because `setConnectedAccounts` now measures its input against
-// the accounts the deployment reports and a stub that omits them describes a server that cannot
-// exist: measured against a real Chatwoot 4.17.0, a token gets 401 on an account absent from its own
-// `GET /api/v1/profile` (#503).
+// It lists every id these tests connect, because `setConnectedAccounts` checks its input against the
+// accounts the deployment reports: Chatwoot answers 401 to a token on an account absent from its own
+// `GET /api/v1/profile`, so a stub that omits them describes a server that cannot exist.
 const fetchProfile = async () => ({
   accounts: [
     { id: 1, name: "Conta A" },
@@ -132,7 +126,7 @@ function stubClient(over: Record<string, unknown> = {}) {
   return { calls, makeClient: async () => client as unknown as ChatwootClient };
 }
 
-// The stub with the fork's observer route on it (issue #476): the bot is provisioned as for a bind,
+// The stub with the fork's observer route on it: the bot is provisioned as for a bind,
 // under an id of its own, and attached/detached as an observer.
 function observingClient() {
   return stubClient({
@@ -146,15 +140,13 @@ function observingClient() {
   });
 }
 
-// A client that lets a CONCURRENT request land in the one window `setConnectedAccounts` cannot see:
-// between the snapshot it reads of which accounts are active and the writes it derives from it. Each
-// step of that function runs in its own transaction, so the window is real and two overlapping
-// requests give it to each other; the hook makes the interleaving deterministic instead of timing-
-// dependent.
+// A client that lets a CONCURRENT request land between the snapshot `setConnectedAccounts` reads of
+// which accounts are active and the writes it derives from it (each step runs in its own
+// transaction, so the window is real); the hook makes the interleaving deterministic.
 //
-// It fires on the snapshot read and on nothing else: it is the only `chatwootInstance.findMany` on
-// this path that asks for `disconnectedAt` (the claims lookup reads `accountId`/`tenantId`, and the
-// listing that closes the function runs after the flag is already spent).
+// It fires on the snapshot read only: the one `chatwootInstance.findMany` on this path that asks for
+// `disconnectedAt` (the claims lookup reads `accountId`/`tenantId`, and the closing listing runs
+// after the flag is spent).
 function afterSnapshot(
   client: PrismaClient,
   hook: () => Promise<unknown>,
@@ -274,11 +266,10 @@ function afterAccountLookup(
               const res = await (
                 inner as (a: unknown) => Promise<unknown>
               ).call(d, args);
-              // Only the lookup that DECIDES the connect. `assertAccountsNotTakenByAnotherTenant`
-              // runs first and also asks by `accountId`, from OUTSIDE the transaction: firing there
-              // deletes the row before the decision is even reached, the create path runs on its
-              // own, and the test passes with the fix removed. The two are told apart by the
-              // cross-tenant check carrying `serverKey`, which the connect lookup does not.
+              // NOTE: only the lookup that DECIDES the connect. `assertAccountsNotTakenByAnotherTenant`
+              // runs first and also asks by `accountId`, from OUTSIDE the transaction; firing there
+              // would run the create path on its own and prove nothing. The cross-tenant check
+              // carries `serverKey`, which the connect lookup does not.
               if (
                 !fired &&
                 args?.where?.accountId !== undefined &&
@@ -562,9 +553,9 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(all.map((r) => r.action)).toEqual(["instance.reconnect"]);
     expect(await rows("instance.connect")).toEqual([]);
     expect(await rows("deployment.set_accounts")).toEqual([]);
-    // And it moved nothing on the way past. The metadata refresh used to sit OUTSIDE the condition,
-    // so the request that lost the race still overwrote the label — a change with no row anywhere,
-    // and one the next sync could not report either, because by then the column already held it.
+    // NOTE: and it moved nothing on the way past: the metadata refresh sits INSIDE the condition,
+    // or the request that lost the race would overwrite the label with no row anywhere, and the
+    // next sync could not report it either.
     expect(
       (
         await suDb.chatwootInstance.findUniqueOrThrow({
@@ -988,16 +979,13 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     }
   });
 
-  // Every lock in the module, in one place, because the mode is a property of the MODULE and not of
-  // whichever path happened to need one first: a new `FOR UPDATE` added later deadlocks against the
-  // mirror exactly the same way, and a deadlock has no green test that can catch it.
+  // Every lock in the module, in one place: the mode is a property of the MODULE, since a new
+  // `FOR UPDATE` deadlocks against the mirror, and a deadlock has no green test.
   //
-  // TWO modes are admissible, not one, and the second is the reason this matches every row-lock
-  // spelling rather than only the UPDATE family. `FOR KEY SHARE` is exactly what a child insert's
-  // foreign key takes, so it cannot be the lock that blocks one; `bindInbox` takes it on the AGENT
-  // (#546) to stand in for the foreign key `Inbox.agentId` does not have. `FOR UPDATE` and
-  // `FOR SHARE` stay out: the first is the mirror deadlock above, and the second conflicts with the
-  // NO KEY UPDATE this module takes everywhere, which would serialise paths that have no reason to.
+  // TWO modes are admissible. `FOR KEY SHARE` is what a child insert's foreign key takes, so it
+  // cannot block one; `bindInbox` takes it on the AGENT to stand in for the foreign key
+  // `Inbox.agentId` does not have. `FOR UPDATE` is the mirror deadlock, and `FOR SHARE` conflicts
+  // with the NO KEY UPDATE taken everywhere, serialising paths that have no reason to.
   test("no path in the module takes a lock strong enough to block a child insert", async () => {
     const src = await Bun.file(
       new URL("../../src/modules/chatwoot/management.ts", import.meta.url),
@@ -1017,7 +1005,7 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
   // still fail. Rolled back, Chatwoot routes to a bot our row does not name, and the next message is
   // handled by nobody. Not compensated (a detach on an error path is another call into somebody
   // else's system, with its own failure) but reported and left retryable: the retry sees the local
-  // binding unchanged, calls Chatwoot again, and commits — the opposite of the disconnect, whose
+  // binding unchanged, calls Chatwoot again, and commits: the opposite of the disconnect, whose
   // equivalent retry is a no-op, which is why the two order their remote call the other way round.
   test("a bind that could not be recorded leaves a state a retry repairs", async () => {
     const fx = await connectedFixture(4448, "Retentativa", { bound: false });
@@ -1227,9 +1215,8 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(await rows()).toEqual([]);
   });
 
-  // The OBSERVER binding (issue #476) joins the family here: same row shape as the bind, the list of
-  // observers on both sides, written by the service and by nothing else — the MCP twin used to
-  // record it from the transport, which is the door-shaped trail #395 retired.
+  // The OBSERVER binding joins the family: same row shape as the bind, the list of observers on both
+  // sides, written by the service and not by any transport.
   test("observing an inbox records the observer it gained", async () => {
     await clearAudit();
     const inbox = await suDb.inbox.findFirstOrThrow({
@@ -1454,12 +1441,10 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     expect(await rows()).toEqual([]);
   });
 
-  // The reconcile that moves nothing does not WRITE either, which is a stronger claim than the row
-  // count above and the one that closes the race the review found: the comparison used to be a
-  // `findUnique` before the upsert, and a webhook's `upsertInbox` (`mirror.ts` takes no lock on this
-  // account) commits between the two, so the pre-read matched, the upsert overwrote the webhook's
-  // value, and `updated` stayed zero, a change with no row. With the condition on the conflict arm
-  // there is no window at all, and a row nothing touched keeps the stamp it had.
+  // The reconcile that moves nothing does not WRITE either. A `findUnique` before the upsert would
+  // leave a window where a webhook's `upsertInbox` (`mirror.ts` takes no lock on this account) commits
+  // between the two, and the upsert overwrites it with `updated` zero: a change with no row. With the
+  // condition on the conflict arm there is no window, and an untouched row keeps its stamp.
   test("a reconcile that moves nothing does not touch the row it read", async () => {
     await clearAudit();
     const inst = await suDb.chatwootInstance.findFirstOrThrow({
@@ -1532,11 +1517,9 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     });
   });
 
-  // The other half of the same review round. `connectAccount` reads the account, then writes it
-  // conditionally, and a zero from that write has TWO causes: another request already reconnected it
-  // (idempotent success) or the row was DELETED under it. Reading zero as the first answered the
-  // operator with the id of a row that no longer exists, and `setConnectedAccounts` then synced
-  // inboxes for it and reported the account connected.
+  // `connectAccount` reads the account, then writes it conditionally, and a zero from that write has
+  // TWO causes: another request already reconnected it, or the row was DELETED under it. Read as the
+  // first, the operator gets the id of a row that is gone and its inboxes are synced for nothing.
   test("a reconnect whose row is deleted under it connects the account, instead of naming a row that is gone", async () => {
     const dep = await suDb.chatwootDeployment.findFirstOrThrow({
       where: { tenantId },
@@ -1630,11 +1613,9 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
     });
   });
 
-  // The one action of the nine that does NOT move down, and the reason is measured rather than
-  // stylistic: `reconcileInboxBots` lists inboxes, lists bots, asks Chatwoot which are live and
-  // returns a status map. Nothing is written on either side, and its REST twin is a GET. The row the
-  // MCP transport used to write was a read on the trail, which is the same call `webhook_test` and
-  // `mcp_connection_discover` already answer with silence (#397, #399).
+  // `reconcileInboxBots` lists inboxes, lists bots, asks Chatwoot which are live and returns a
+  // status map: nothing is written on either side and its REST twin is a GET, so it records nothing,
+  // like `webhook_test` and `mcp_connection_discover`.
   test("reading which bots are live records nothing", async () => {
     await clearAudit();
     const statuses = await reconcileInboxBots(
@@ -1740,9 +1721,8 @@ describe.skipIf(!dbUp)("the channel family records its own changes", () => {
   });
 
   // The fence, over every row the file wrote. `docs/mcp.md` names the deployment admin token as one
-  // of the two raw-secret carve-outs, and the point of moving the row down a layer is that the
-  // console now writes it too: a projection that kept the token would put it in an append-only table
-  // a tenant admin can read.
+  // of the two raw-secret carve-outs, and every door writes these rows: a projection that kept the
+  // token would put it in an append-only table a tenant admin can read.
   test("no row anywhere in this family carries the token", () => {
     expect(everyRow.length).toBeGreaterThan(8);
     const dumped = JSON.stringify(everyRow, (_k, v) =>

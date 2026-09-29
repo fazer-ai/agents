@@ -16,7 +16,7 @@ describe("readLimitsConfig — maxHistoryTokens", () => {
 
   // Zero and negatives disable it instead of clamping up to the floor. An operator who empties the
   // field in the editor is asking for "off", and clamping would hand them the TIGHTEST possible
-  // ceiling instead — the opposite of the intent, and not recoverable from that same field.
+  // ceiling instead: the opposite of the intent, and not recoverable from that same field.
   test("zero, negative and non-numeric all mean off, never the floor", () => {
     for (const raw of [0, -1, -5000, "12000", null, {}, Number.NaN]) {
       expect(read({ maxHistoryTokens: raw }).maxHistoryTokens).toBeNull();
@@ -57,7 +57,7 @@ describe("readLimitsConfig — maxHistoryTokens", () => {
   });
 });
 
-// ISSUE #885: the retry of an unexplained silence is ON unless the operator says `false`.
+// The retry of an unexplained silence is ON unless the operator says `false`.
 describe("limits.retrySilence", () => {
   const read = (limits: unknown) => readLimitsConfig({ limits });
   test("on by default, with no settings at all", () => {

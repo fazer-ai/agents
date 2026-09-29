@@ -179,6 +179,7 @@ const FLOWLOG_READERS: Record<string, number> = {
   "tests/modules/chatwoot-recover-takeover.test.ts": 1,
   "tests/modules/chatwoot-unbound-inbox.test.ts": 1,
   "tests/modules/contact-auth-gate-e2e.test.ts": 3,
+  "tests/modules/debounce-late-visual.test.ts": 1,
   "tests/modules/debounce.test.ts": 9,
   "tests/modules/delivery-sweep.test.ts": 5,
   "tests/modules/eager-media-flow-context.test.ts": 6,

@@ -270,10 +270,12 @@ export async function extractMessageVisuals(params: {
   // só a que terminou por último; e no Chatwoot upstream, onde a rota de write-back da meta não
   // existe, essa loja é o ÚNICO leitor do flush do debounce.
   const leuCorpo = todos.some((v) => v.id === null);
-  // NOTE: Nada é stashado depois do prazo do chamador: um arquivo que o prazo cortou não foi TENTADO,
-  // e a contagem de não lidos é a marca que faz o flush seguinte pular a mensagem.
+  // NOTE: Uma mensagem que o prazo do chamador cortou sem ler nada não é stashada: a contagem de não
+  // lidos é a marca de TENTADA, e a nova tentativa do job tem que lê-la. Lida em parte, ela é
+  // stashada como sempre, com o aviso dos arquivos que faltaram.
+  const cortadaSemLeitura = params.signal?.aborted && !descricao && !documento;
   if (
-    !params.signal?.aborted &&
+    !cortadaSemLeitura &&
     (descricao || documento || naoLidos > 0 || leuCorpo)
   )
     stashMediaAnnotation(

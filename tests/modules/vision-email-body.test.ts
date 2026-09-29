@@ -17,6 +17,7 @@ import { encryptJson } from "@/api/lib/crypto";
 import type { TenantContext } from "@/lib/tenancy";
 import {
   clearMediaAnnotations,
+  mediaAnnotationFor,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -897,6 +898,63 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     });
     // The first batch was already under way; nothing past the cap is downloaded to classify it.
     expect(downloads.length).toBe(8);
+  });
+
+  test("a message the deadline cut halfway keeps what was read and names what was not", async () => {
+    await setVision(true);
+    const lida = blob(660, "lida.png");
+    const cortada = blob(661, "cortada.png");
+    const deadline = new AbortController();
+    const client = {
+      servesUrl: () => true,
+      downloadAttachment: async (dataUrl: string) => {
+        // The second file is still downloading when the deadline passes.
+        if (dataUrl === cortada) {
+          await new Promise((r) => setTimeout(r, 50));
+          deadline.abort();
+        }
+        return { bytes: png(1200, 1600), contentType: "image/png" };
+      },
+      updateAttachmentMeta: async () => ({}),
+    } as unknown as ChatwootClient;
+    const r = await extractMessageVisuals({
+      tenantId,
+      instanceId,
+      conversationId: 1051,
+      messageId: 661,
+      visuals: [
+        {
+          id: 660,
+          dataUrl: lida,
+          name: "lida.png",
+          imageDescription: null,
+          extractedText: null,
+        },
+        {
+          id: 661,
+          dataUrl: cortada,
+          name: "cortada.png",
+          imageDescription: null,
+          extractedText: null,
+        },
+      ],
+      cfg: {
+        enabled: true,
+        provider: "openai",
+        credentialRef: `vault:${visionKeyId}`,
+      } as never,
+      base: appDb,
+      deps: {
+        makeClient: async () => client,
+        fetchImpl: visionFetch(["Um comprovante."]),
+      },
+      signal: deadline.signal,
+    });
+    expect(provider.calls).toBe(1);
+    expect(r?.attachmentsUnread).toBe(1);
+    const nota = mediaAnnotationFor(tenantId, instanceId, 661);
+    expect(nota?.imageDescription).toContain("Um comprovante.");
+    expect(nota?.attachmentsUnread).toBe(1);
   });
 
   test("a passed deadline starts no provider call for an attachment", async () => {

@@ -9,6 +9,7 @@ import {
 import { resolveCaseHoldFor } from "@/graph/resolve-labels";
 import { ownTransfer } from "@/graph/tools/native";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
+import { composeForChatwoot, markValue } from "@/modules/chatwoot/liquid";
 import { CONTACT_AUTH_DEFAULTS } from "@/modules/contact-auth/settings";
 import {
   CROSS_INBOX_CASE_DEFAULTS,
@@ -218,6 +219,42 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
     );
     const off = (await seenFor(picked, 3n)) as { sign?: (t: string) => string };
     expect(off.sign?.("Caso {{foo}}")).toBe("Caso {{ '{{' }}foo}}");
+  });
+
+  test("the operator's templates are filled with the prompt's context variables", async () => {
+    let seen: Record<string, unknown> | undefined;
+    await buildToolset(
+      {
+        ...config(picked),
+        promptVars: { primeiro_nome: "Ana {{contact.email}}" },
+      } as AgentConfig,
+      {
+        tenantId: 1n,
+        instanceId: 3n,
+        base: app as PrismaClient,
+        client: {} as unknown as ChatwootClient,
+        conversationId: 77,
+        threadId: `t-${process.pid}`,
+      },
+      {
+        buildNativeTools: (native) => {
+          seen = native as unknown as Record<string, unknown>;
+          return [];
+        },
+      },
+    );
+    const cic = seen?.crossInboxCase as {
+      interpolate?: (t: string) => string;
+    };
+    // The contact's name is a value, not the operator's Liquid: it goes out escaped.
+    const filled =
+      cic.interpolate?.("Olá, {{primeiro_nome}} {{mensagem}}") ?? "";
+    expect(filled).toBe(
+      `Olá, ${markValue("Ana {{contact.email}}")} {{mensagem}}`,
+    );
+    expect(composeForChatwoot(filled)).toBe(
+      "Olá, Ana {{ '{{' }}contact.email}} {{mensagem}}",
+    );
   });
 
   test("a config written without the account is honored as-is", async () => {

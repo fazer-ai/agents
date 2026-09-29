@@ -469,6 +469,16 @@ const crossInboxCase = z.looseObject({
     .nullable()
     .optional()
     .describe("email subject; {{resumo}} = model's summary"),
+  openingTemplate: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("{{mensagem}} = model's part"),
+  noteTemplate: z
+    .string()
+    .nullable()
+    .optional()
+    .describe("{{assunto}} {{motivo}} {{link_origem}}"),
   // Checked with `refine`, not `regex`: a pattern would enter the published JSON Schema and its
   // ceiling, and the refusal message already names the rule to whoever sends a bad key.
   caseAttributeKey: z

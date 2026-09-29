@@ -1,4 +1,9 @@
 import { clipText } from "@/lib/text";
+import {
+  composeForChatwoot,
+  markValue,
+  replaceInOperatorText,
+} from "@/modules/chatwoot/liquid";
 
 // Per-agent config for the `open_case_in_inbox` native tool, read from `agent.settings.crossInboxCase`.
 // WHERE the case goes lives here, never in a tool argument, which the customer's words could steer
@@ -29,6 +34,15 @@ export interface CrossInboxCaseConfig {
   // The subject of a case opened in an EMAIL inbox: the operator's template, with the prompt's context
   // variables and `{{resumo}}`/`{{summary}}`, which the model writes. Null ⇒ Chatwoot's generic one.
   subjectTemplate: string | null;
+  // The opening message of a NEW case, written by the operator: the prompt's context variables,
+  // `{{numero_caso}}`/`{{case_number}}` and `{{mensagem}}`/`{{message}}`, the part the model writes.
+  // Without the message placeholder the opening is fixed and the model is not asked for one. Null ⇒
+  // the model's message, signed, as the whole opening.
+  openingTemplate: string | null;
+  // The one private note on the case, written by the operator: `{{assunto}}`/`{{subject}}`,
+  // `{{motivo}}`/`{{reason}}`, `{{link_origem}}`/`{{origin_url}}` and the context variables. Null ⇒
+  // the default layout (`renderCaseNote`).
+  noteTemplate: string | null;
 }
 
 export const CROSS_INBOX_CASE_DEFAULT_ATTRIBUTE = "case_conversation_id";
@@ -47,6 +61,8 @@ export const CROSS_INBOX_CASE_DEFAULTS: CrossInboxCaseConfig = {
   mergeContacts: false,
   resolveOrigin: false,
   subjectTemplate: null,
+  openingTemplate: null,
+  noteTemplate: null,
 };
 
 // An email header: one line, and short enough to read in a list.
@@ -72,6 +88,74 @@ export function renderCaseSubject(
     .replace(/\s+/g, " ")
     .trim();
   return line ? clipText(line, CROSS_INBOX_CASE_SUBJECT_MAX).trim() : null;
+}
+
+export const CROSS_INBOX_CASE_OPENING_TEMPLATE_MAX = 4000;
+export const CROSS_INBOX_CASE_NOTE_TEMPLATE_MAX = 2000;
+const MESSAGE_PLACEHOLDER = /\{\{\s*(?:mensagem|message)\s*\}\}/;
+const OPENING_PLACEHOLDERS =
+  /\{\{\s*(mensagem|message|numero_caso|case_number)\s*\}\}/g;
+const NOTE_PLACEHOLDERS =
+  /\{\{\s*(assunto|subject|motivo|reason|link_origem|origin_url)\s*\}\}/g;
+
+// Whether the model is asked for its part of the opening: always without a template (the message IS
+// the opening), and with one only when it has the placeholder.
+export function openingAsksMessage(template: string | null): boolean {
+  return template === null || MESSAGE_PLACEHOLDER.test(template);
+}
+
+// Context variables first, then the case number and the model's message in ONE pass, so text the
+// model wrote is never interpolated, and the placeholders are filled in the operator's text only, never
+// inside a value already filled in. `interpolate` fences the values it fills in (`markValue`), the
+// model's message is fenced here, and `composeForChatwoot` escapes every fenced value for Chatwoot's
+// Liquid while the operator's own keeps rendering: the result is the wire. Empty ⇒ null, nothing sent.
+export function renderCaseOpening(
+  template: string,
+  message: string | null,
+  caseNumber: number,
+  interpolate: (template: string) => string,
+): string | null {
+  const text = composeForChatwoot(
+    replaceInOperatorText(
+      interpolate(template),
+      OPENING_PLACEHOLDERS,
+      (_, key) =>
+        key === "mensagem" || key === "message"
+          ? markValue(message ?? "")
+          : String(caseNumber),
+    ),
+  ).trim();
+  return text || null;
+}
+
+// The one private note on the case, in markdown: the subject as its title, a link back to the
+// conversation the case came from, and the model's reason. PT-BR, like the other system notes. The
+// operator's template replaces the layout, filled the same way as the opening: the subject and the
+// reason carry the model's words and are fenced values, the link is ours.
+export function renderCaseNote(
+  template: string | null,
+  parts: { subject: string | null; reason: string; originUrl: string },
+  interpolate: (template: string) => string,
+): string {
+  const subject = parts.subject ? markValue(parts.subject) : "";
+  const reason = markValue(parts.reason);
+  if (!template) {
+    const title = subject ? `### ${subject}\n\n` : "";
+    return composeForChatwoot(
+      `${title}**Caso aberto a partir de outra conversa:** [ver conversa de origem](${parts.originUrl})\n\n**Motivo:**\n${reason}`,
+    );
+  }
+  return composeForChatwoot(
+    replaceInOperatorText(
+      interpolate(template),
+      NOTE_PLACEHOLDERS,
+      (_, key) => {
+        if (key === "assunto" || key === "subject") return subject;
+        if (key === "motivo" || key === "reason") return reason;
+        return parts.originUrl;
+      },
+    ),
+  ).trim();
 }
 
 // Chatwoot attribute keys are lowercase snake case; anything else would be written under a key the
@@ -121,6 +205,8 @@ export function readCrossInboxCaseConfig(
           CROSS_INBOX_CASE_SUBJECT_TEMPLATE_MAX,
         )
       : "";
+  const template = (v: unknown, max: number) =>
+    typeof v === "string" ? clipText(v.trim(), max).trim() || null : null;
   return {
     targetInboxId: positiveInt(o.targetInboxId),
     targetInstanceId: positiveInt(o.targetInstanceId),
@@ -132,6 +218,11 @@ export function readCrossInboxCaseConfig(
     mergeContacts: o.mergeContacts === true,
     resolveOrigin: o.resolveOrigin === true,
     subjectTemplate: subject || null,
+    openingTemplate: template(
+      o.openingTemplate,
+      CROSS_INBOX_CASE_OPENING_TEMPLATE_MAX,
+    ),
+    noteTemplate: template(o.noteTemplate, CROSS_INBOX_CASE_NOTE_TEMPLATE_MAX),
   };
 }
 

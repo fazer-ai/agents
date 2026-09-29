@@ -17,6 +17,9 @@ import {
   CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE,
   type CrossInboxCaseConfig,
   destinationIdentity,
+  openingAsksMessage,
+  renderCaseNote,
+  renderCaseOpening,
 } from "./settings";
 
 export { destinationIdentity };
@@ -72,8 +75,12 @@ export interface OpenCaseInput {
   screenCustomerMessage?: (text: string) => Promise<CustomerTextVerdict>;
   // The agent's signature over the opening the customer receives, applied after the screening like
   // every reply's. It returns what goes on the wire: the model's text escaped for Chatwoot's Liquid
-  // and the signature as the operator wrote it. Absent ⇒ the model's text, escaped.
+  // and the signature as the operator wrote it. Absent ⇒ the model's text, escaped. Not applied over
+  // the operator's `openingTemplate`, which carries its own sign-off.
   signCustomerMessage?: (text: string) => string;
+  // The prompt's context variables, for the operator's opening and note templates, each value fenced
+  // with `markValue` so it goes out escaped for Chatwoot's Liquid. Absent ⇒ none.
+  interpolate?: (template: string) => string;
   // The label writers' shared queue is keyed by tenant (see modules/chatwoot/labels.ts).
   tenantId?: bigint | null;
   // The team the case is given to when it has none: the agent's pinned handoff team, which is where
@@ -227,18 +234,11 @@ export const CONTACT_CONVERSATIONS_PAGE = 25;
 export function originLinkNote(caseUrl: string, inboxName: string): string {
   return `➡️ Caso aberto na caixa ${inboxName}: ${caseUrl}`;
 }
-export function destinationLinkNote(originUrl: string): string {
-  return `⬅️ Caso aberto a partir da conversa: ${originUrl}`;
-}
 // Header of the opening that could not reach the customer: the destination channel only lets the
 // business write first with an approved template, and a free-form message there is rejected.
 export const OPENING_OUTSIDE_WINDOW_PREFIX =
   "⏳ Fora da janela de atendimento deste canal: a mensagem de abertura abaixo NÃO foi enviada ao cliente. " +
   "Para falar com ele por aqui, comece por um template aprovado (HSM).\n\n";
-
-export function destinationReasonNote(reason: string): string {
-  return `Motivo: ${reason}`;
-}
 
 // WHO HOLDS THE CASE, read from the conversation Chatwoot answers with. `human` is a person assigned
 // (`meta.assignee_type` "User"); an agent bot is NOT read from here on purpose, see `settleCaseOwner`.
@@ -324,6 +324,7 @@ async function run(
   const target = config.targetInboxId;
   if (target === null) return { kind: "not_configured" };
   const origin = input.originConversationId;
+  const interpolate = input.interpolate ?? ((t: string) => t);
 
   let step = "read_target_inbox";
   try {
@@ -581,37 +582,59 @@ async function run(
       // new case has, by construction, no message from them. Chatwoot's own `can_reply` says so; the
       // opening then goes to the case as an explained note, the service-window fallback.
       let openingOutsideWindow = false;
-      if (!continued && customerMessage) {
-        const text = customerMessage;
+      // The operator's template wraps the model's part, which was screened above: a refused part
+      // discards the whole opening, and a template that needs the part sends nothing without it. A
+      // fixed template (no message placeholder) is the operator's own text and always goes out.
+      const openingTemplate = config.openingTemplate ?? null;
+      let opening: string | null = null;
+      if (openingTemplate === null) {
+        opening = customerMessage;
+      } else if (
+        !openingBlocked &&
+        (customerMessage || !openingAsksMessage(openingTemplate))
+      ) {
+        opening = renderCaseOpening(
+          openingTemplate,
+          customerMessage,
+          caseId,
+          interpolate,
+        );
+      }
+      if (!continued && opening) {
+        const text = opening;
+        // Without a template the opening is the model's own text, escaped on the way out; with one,
+        // `renderCaseOpening` escaped the model's part and the rest is the operator's.
+        const ownOpening = openingTemplate === null;
         if (created.canReply === false) {
           openingOutsideWindow = true;
           await attempt("customer_message", () =>
             client.sendMessageAsAdmin(
               caseId,
-              `${OPENING_OUTSIDE_WINDOW_PREFIX}${literalForChatwoot(text)}`,
+              `${OPENING_OUTSIDE_WINDOW_PREFIX}${ownOpening ? literalForChatwoot(text) : text}`,
               { private: true },
             ),
           );
         } else {
-          // The signer escapes the model's part itself and leaves the signature's Liquid alone.
-          const signed =
-            input.signCustomerMessage?.(text) ?? literalForChatwoot(text);
+          // The signer escapes the model's text itself and leaves the signature's Liquid alone.
+          const signed = ownOpening
+            ? (input.signCustomerMessage?.(text) ?? literalForChatwoot(text))
+            : text;
           await attempt("customer_message", () =>
             client.sendMessageAsAdmin(caseId, signed, { private: false }),
           );
         }
       }
-      await attempt("destination_reason_note", () =>
+      // ONE note on the case, so the team reads it whole: the subject, where it came from, and why.
+      await attempt("destination_note", () =>
         client.sendMessageAsAdmin(
           caseId,
-          destinationReasonNote(literalForChatwoot(input.reason)),
+          renderCaseNote(
+            config.noteTemplate ?? null,
+            { subject, reason: input.reason, originUrl },
+            interpolate,
+          ),
           { private: true },
         ),
-      );
-      await attempt("destination_link_note", () =>
-        client.sendMessageAsAdmin(caseId, destinationLinkNote(originUrl), {
-          private: true,
-        }),
       );
       await attempt("origin_link_note", () =>
         client.sendPrivateNote(origin, originLinkNote(caseUrl, inboxName)),

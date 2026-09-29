@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { asRendered, literalForChatwoot } from "@/modules/chatwoot/liquid";
+import {
+  asRendered,
+  composeForChatwoot,
+  literalForChatwoot,
+  markValue,
+  replaceInOperatorText,
+} from "@/modules/chatwoot/liquid";
 import { attachSignature } from "@/modules/signature/service";
 
 // THE ESCAPE ITSELF. What makes it right is how Chatwoot's Liquid 5.4 renders it, and
@@ -74,5 +80,62 @@ describe("literalForChatwoot", () => {
   // nothing to pair.
   test("an escaped text carries no backtick", () => {
     expect(literalForChatwoot("`a` {{b}} `c`")).not.toContain("`");
+  });
+});
+
+// Operator text with values fenced in it. Pinned the same way as above, rendered through the fork's
+// transform against the operator's template with each value put back raw afterwards.
+describe("composeForChatwoot", () => {
+  test.each([
+    // The operator's Liquid renders; the value's does not.
+    [
+      `Olá {{contact.phone_number}}, ${markValue("{{contact.email}}")}`,
+      "Olá {{contact.phone_number}}, {{ '{{' }}contact.email}}",
+    ],
+    // A code span of the operator's around a value: left as backticks, Chatwoot's raw block would
+    // show the value's tags. Printed by tags, and the value's `{{` by its own.
+    [
+      `Motivo: \`${markValue("a {{foo}}")}\``,
+      "Motivo: {{ '%60' | url_decode }}a {{ '{{' }}foo}}{{ '%60' | url_decode }}",
+    ],
+    // What the operator wrote inside their own code span stays literal, as Chatwoot keeps it.
+    [
+      `\`{{contact.email}}\` e ${markValue("{%x")}`,
+      "{{ '%60' | url_decode }}{{ '{{' }}contact.email}}{{ '%60' | url_decode }} e {{ '{%' }}x",
+    ],
+    // A value's trailing `{` does not take the operator's `{{` with it.
+    [
+      `${markValue("x{")}{{contact.phone_number}}`,
+      "x{{ '{' }}{{contact.phone_number}}",
+    ],
+    // A `{` right before a backtick's tag would run into it: printed by a tag of its own.
+    [
+      `Nota: ${markValue("a{`b`")}`,
+      "Nota: a{{ '{' }}{{ '%60' | url_decode }}b{{ '%60' | url_decode }}",
+    ],
+    // An operator's own raw block around a value would print its tags: replayed like a code span.
+    [
+      `Dica: {% raw %}${markValue("Use {{foo}}")}{% endraw %} e {{contact.email}}`,
+      "Dica: Use {{ '{{' }}foo}} e {{contact.email}}",
+    ],
+    // With whitespace control, as Liquid trims it: the opening tag's `{%-` before, its `-%}` after.
+    [
+      `Dica: \n{%- raw -%}${markValue("Use {{foo}}")}{% endraw %}\n fim`,
+      "Dica:Use {{ '{{' }}foo}}fim",
+    ],
+    // Nothing in the value to escape: the operator's text goes out as written, code span included.
+    [`\`{{contact.email}}\` ${markValue("Ana")}`, "`{{contact.email}}` Ana"],
+  ])("%p", (fenced, wire) => {
+    expect(composeForChatwoot(fenced)).toBe(wire);
+  });
+});
+
+describe("replaceInOperatorText", () => {
+  // A placeholder a customer wrote into their own name is theirs: it is not filled.
+  test("fills the operator's text and leaves a fenced value alone", () => {
+    const fenced = `Olá ${markValue("Ana {{mensagem}}")}: {{mensagem}}`;
+    expect(
+      replaceInOperatorText(fenced, /\{\{mensagem\}\}/g, () => markValue("Ok")),
+    ).toBe(`Olá ${markValue("Ana {{mensagem}}")}: ${markValue("Ok")}`);
   });
 });

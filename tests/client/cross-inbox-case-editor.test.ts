@@ -28,9 +28,26 @@ describe("the form round-trips what is stored", () => {
       resolveOrigin: true,
       caseLabels: ["agente-sac", "veio-do-whatsapp"],
       subjectTemplate: "Solicitação de {{nome_contato}}: {{resumo}}",
+      openingTemplate: "Olá {{primeiro_nome}}\n\n{{mensagem}}",
+      noteTemplate: "{{motivo}} {{link_origem}}",
     };
     const saved = serializeCrossInboxCase(readCrossInboxCaseState(stored));
     expect(readCrossInboxCaseConfig({ crossInboxCase: saved })).toEqual(stored);
+  });
+
+  test("clearing the opening and the note templates saves none (issue #923)", () => {
+    const state = readCrossInboxCaseState({
+      targetInboxId: 40,
+      openingTemplate: "Olá {{mensagem}}",
+      noteTemplate: "{{motivo}}",
+    });
+    const saved = serializeCrossInboxCase({
+      ...state,
+      openingTemplate: "  ",
+      noteTemplate: "",
+    });
+    expect(saved.openingTemplate).toBeNull();
+    expect(saved.noteTemplate).toBeNull();
   });
 
   test("clearing the inbox clears the instance too, and an empty key falls back to the default", () => {

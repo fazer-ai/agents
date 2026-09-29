@@ -400,6 +400,8 @@ function renderPinned(targetInstanceId: number | null): {
           mergeContacts: false,
           resolveOrigin: false,
           subjectTemplate: "",
+          openingTemplate: "",
+          noteTemplate: "",
         }}
         setCrossInboxCase={noop}
         sendImage={{ allowedHosts: "" }}

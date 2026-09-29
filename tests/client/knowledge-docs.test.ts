@@ -9,10 +9,9 @@ import {
   type EmbeddingBlockReason,
 } from "@/lib/embedding-block";
 
-// Decision table for the realtime merge behind the documents modal. The row the operator is looking
-// at is patched from the event without a re-fetch, so whatever this function inherits stays on
-// screen until a reload — which is what made the stale reason in issue #80 reachable once an
-// UNINDEXED badge started rendering `error`.
+// Decision table for the realtime merge behind the documents modal. The row on screen is patched
+// from the event without a re-fetch, so whatever this function inherits stays on screen until a
+// reload (and the UNINDEXED badge renders `error`).
 
 const blocked: DocumentRowState = {
   status: "UNINDEXED",
@@ -30,8 +29,8 @@ describe("mergeDocumentEvent", () => {
     expect(row.error).toBe("errors.embeddingPending");
   });
 
-  // The regression this function exists for: re-index writes `error: null` server-side, so the row
-  // must stop claiming a block it no longer has.
+  // NOTE: the rule this function exists for: re-index writes `error: null` server-side, so the row must
+  // stop claiming a block it no longer has.
   test("a re-queue clears a reason the row was carrying", () => {
     const row = mergeDocumentEvent(blocked, { status: "PENDING" });
     expect(row.status).toBe("PENDING");
@@ -62,9 +61,8 @@ describe("mergeDocumentEvent", () => {
     expect(row.chunkCount).toBe(12);
   });
 
-  // The review finding this rule was rewritten for: a title-only PATCH leaves `error` untouched in
-  // the database and broadcasts the SAME status with no error, so clearing on it would drop a live
-  // failure from every open modal.
+  // NOTE: A title-only PATCH leaves `error` untouched in the database and broadcasts the SAME status with
+  // no error, so clearing on it would drop a live failure from every open modal.
   test("an event repeating the status does not clear a live reason", () => {
     const failed: DocumentRowState = {
       status: "FAILED",
@@ -98,15 +96,10 @@ describe("mergeDocumentEvent", () => {
   });
 });
 
-// The reason a blocked document carries is written by the SERVER and read by the console, and until
-// now the two spelled it differently: `resolveEmbeddingConfig` threw `errors.embedding.<snake_case>`,
-// the ingest catch stored that `translationKey` verbatim in `KnowledgeDocument.error`, and the
-// console matched `errors.embeddingCamelCase`. Neither branch ever fired, so the operator read the
-// raw token off a tooltip.
-//
-// The assertion is over the PRODUCER's map rather than a list written here, which is the only form
-// that survives a reason being added: a new entry in `EMBEDDING_BLOCK_KEY` with no console branch
-// fails this test instead of shipping a token to a tooltip.
+// The reason a blocked document carries is written by the SERVER (`resolveEmbeddingConfig`'s
+// translation key, stored verbatim in `KnowledgeDocument.error`) and read by the console, so both
+// must spell it the same or the operator reads a raw token off a tooltip. Asserted over the
+// PRODUCER's map (`EMBEDDING_BLOCK_KEY`), so a reason added there without a console branch fails.
 describe("every reason the server can emit is localizable", () => {
   test("EMBEDDING_BLOCK_KEY is covered by docErrorEntry, entry for entry", () => {
     const reasons = Object.keys(EMBEDDING_BLOCK_KEY) as EmbeddingBlockReason[];
@@ -130,12 +123,9 @@ describe("every reason the server can emit is localizable", () => {
     expect(new Set(sentences).size).toBe(tokens.length);
   });
 
-  // `KnowledgeDocument.error` is STORED, and nothing rewrites it when the producer changes spelling.
-  // Every row that failed before issue #256 still carries `errors.embedding.<snake_case>`, so the
-  // console has to answer those too or the history reads as raw tokens forever.
-  //
-  // Derived from EMBEDDING_BLOCK_KEY rather than listed, so a reason added later cannot get a modern
-  // token and be forgotten here — the same coupling the coverage test above enforces going forward.
+  // NOTE: `KnowledgeDocument.error` is STORED and nothing rewrites it when the producer changes
+  // spelling, so rows still carrying the legacy `errors.embedding.<snake_case>` must be answered
+  // too. Derived from EMBEDDING_BLOCK_KEY rather than listed, so a new reason cannot be forgotten.
   test("a row written before the rename still gets its sentence", () => {
     for (const reason of Object.keys(
       EMBEDDING_BLOCK_KEY,

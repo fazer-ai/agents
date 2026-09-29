@@ -15,14 +15,10 @@ import { MemoryRouter } from "react-router";
 
 // A DECLARATION THE RUNTIME WOULD NOT FOLLOW IS NOT A DECLARATION TO SAVE.
 //
-// The declaration is read by ONE function, and the server stores nothing it would not follow: a book
-// without a usable id and start path is REFUSED on save, and an unusable provider or summary path is
-// silently dropped. Either way the operator ends up with a tool that does not do what the form
-// showed them, and the modal's only report is the generic "check the name and URL" — so the feature
-// reads as broken rather than as a typo in a path.
-//
-// Asserted on what the SAVE BUTTON does, never on the message alone: a test that only reads the
-// error text stays green against a build that shows the message and saves anyway (issue #340).
+// The server stores nothing the one reader would not follow: a book without a usable id and start
+// path is REFUSED, and an unusable provider or summary path is silently dropped, with only the
+// generic "check the name and URL" to report it. Asserted on what the SAVE BUTTON does, never on the
+// message alone: a build that shows the message and saves anyway keeps a text-only test green.
 
 const { ToolEditModal } = await import(
   "@/client/pages/resources/ToolEditModal"
@@ -74,11 +70,10 @@ function Harness() {
   );
 }
 
-// By the field's own CAPTION — the first span inside its label — never by the label's whole
-// textContent. A label carries its hint, its error message and (for a select) every option, so a
-// substring search matches fields it was not aiming at: a fixture URL of `/v1/appointments` made
-// the URL field answer for the appointment section, and the section's caption answered for
-// "start time".
+// By the field's own CAPTION (the first span inside its label), never by the label's whole
+// textContent: a label carries its hint, its error and (for a select) every option, so a substring
+// search matches fields it was not aiming at (a fixture URL of `/v1/appointments` answers for the
+// appointment section, and the section's caption for "start time").
 function captionOf(label: Element): string {
   return (label.textContent ?? "").trim();
 }
@@ -112,8 +107,7 @@ function inputFor(pattern: RegExp): HTMLInputElement {
 }
 
 // By the SENTENCE, not by the word "appointment": the URL field's own value is on screen too, and a
-// fixture URL like /v1/appointments made this selector return the URL label instead, so the test
-// failed for a reason that had nothing to do with the form.
+// fixture URL like /v1/appointments would match it instead.
 function actionSelect(): HTMLSelectElement {
   return controlFor<HTMLSelectElement>(
     /(books or cancels|marca ou cancela)/i,
@@ -136,10 +130,6 @@ function clickSave(): void {
   if (!btn) throw new Error("no save button on screen");
   fireEvent.click(btn);
 }
-
-// By the SENTENCE, not by the word "appointment": the URL field's own value is on screen too, and a
-// fixture URL like /v1/appointments made this selector return the URL label instead — the test then
-// failed for a reason that had nothing to do with the form.
 
 async function openForm() {
   serving();
@@ -212,10 +202,8 @@ test("a book declaration cannot be saved until its paths are usable", async () =
   });
 });
 
-// (#352, round 6) The reminder offsets were the one field still FILTERING instead of refusing: `24h`
-// and `0` were dropped on the way out, the tool saved, the field went on showing them, and the
-// customer was never reminded. Same question as the paths and the provider above, so the same
-// answer.
+// Reminder offsets are refused like the paths and the provider above, never filtered: a dropped
+// `24h` or `0` saves a tool whose field still shows them while the customer is never reminded.
 test("offsets the runtime would not honour hold the save", async () => {
   await openForm();
   fireEvent.change(actionSelect(), { target: { value: "book" } });
@@ -228,7 +216,7 @@ test("offsets the runtime would not honour hold the save", async () => {
   await waitFor(() => expect(saveDisabled()).toBe(false));
 
   const offsets = inputFor(/quantas horas antes|this many hours before/i);
-  // Not a number at all: silently dropped before, so the tool saved with no reminder armed.
+  // NOTE: not a number at all, so no reminder would be armed.
   fireEvent.change(offsets, { target: { value: "24h" } });
   await waitFor(() => expect(saveDisabled()).toBe(true));
   // Below the server's own floor, and the same disappearance.
@@ -260,14 +248,11 @@ test("offsets the runtime would not honour hold the save", async () => {
   });
 });
 
-// (#352) The picker is the answer to what the gates above CANNOT catch: `data.id` typed where the
-// field is `data.appointment.id` is well-formed, passes every check, and reads nothing all the way
-// to production. Asserted on the VALUE the field ends up holding and on what is submitted, never on
-// the list appearing: a picker that renders and fills nothing looks identical.
-// THE SAMPLE IS A CODEMIRROR NOW (issue #562), so it is written by dispatching into its view rather
-// than by firing `change` on a textarea. Found by the accessible name on the contenteditable, which
-// is the element CodeMirror gives the `textbox` role to, so this does not depend on how many editors
-// the screen holds.
+// The picker covers what the gates above CANNOT catch: `data.id` typed where the field is
+// `data.appointment.id` is well-formed and reads nothing. Asserted on the VALUE the field ends up
+// holding and on what is submitted, since a picker that renders and fills nothing looks identical.
+// The sample is a CodeMirror, written by dispatching into the view found by its accessible name
+// (CodeMirror gives the contenteditable the `textbox` role), whatever other editors are on screen.
 function writeSample(text: string): void {
   const content = Array.from(document.querySelectorAll(".cm-content")).find(
     (el) =>
@@ -344,10 +329,9 @@ test("a pasted sample fills the paths by clicking, and is never submitted", asyn
   expect(JSON.stringify(posted[0])).not.toContain('starts_at":"2026');
 });
 
-// (#352, round 8) A switch with no programmatic name is announced as an unnamed switch: the text
-// beside it is only visually adjacent. Asserted through the accessible name, which is also what
-// makes the label clickable — a test that merely found the text on screen would pass unchanged
-// against the broken build.
+// A switch with no programmatic name is announced as an unnamed switch: the text beside it is only
+// visually adjacent. Asserted through the accessible name, which is also what makes the label
+// clickable; finding the text on screen would pass against an unnamed switch.
 test("the confirmation switch carries its label", async () => {
   await openForm();
   fireEvent.change(actionSelect(), { target: { value: "book" } });

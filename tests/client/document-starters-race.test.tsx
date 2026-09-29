@@ -18,21 +18,16 @@ import {
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 
-// Switching language while the panel is loading starts a second load, and the two answer the SAME
-// question differently: the starter list is the one thing here whose content is locale-specific. If
-// the older request resolves last, its list replaces the current one — and the operator then creates
-// a template in the language they just switched away from, permanently, with nothing on screen
-// saying anything went wrong.
-//
-// NOTE: the language is switched on the REAL i18n instance rather than by mocking react-i18next.
-// `mock.module` is global to the process, and so is the `mock.restore()` that would undo it: an
-// earlier version of this file mocked the module and restored it in afterAll, which tore down the
-// module mocks another test file had installed and failed a test in it. Nothing here needs the
-// module replaced — the panel reads `i18n.language`, and changing it for real is both simpler and
-// what the operator actually does.
-//
-// NOTE: every assertion reduces to a boolean or a string BEFORE expect — a failing expectation that
-// holds a DOM node serializes a cyclic happy-dom tree and stalls the runner.
+// Switching language while the panel is loading starts a second load, and the starter list is the
+// one thing here whose content is locale-specific. If the older request resolves last, its list
+// replaces the current one and the operator creates a template in the language they just left.
+
+// The language is switched on the REAL i18n instance rather than by mocking react-i18next:
+// `mock.module` is global to the process, and so is the `mock.restore()` that would undo it, which
+// tears down module mocks other test files installed. The panel reads `i18n.language`, so changing
+// it for real is simpler and what the operator does.
+// Assertions reduce to a boolean or a string BEFORE expect: a failing expectation that holds a DOM
+// node serializes a cyclic happy-dom tree and stalls the runner.
 
 (globalThis as { happyDOM?: { setURL(u: string): void } }).happyDOM?.setURL(
   "http://localhost/recursos/documentos",
@@ -145,7 +140,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 }) as unknown as typeof fetch;
 
 // Fresh gates per test. They are one-shot promises, so a test that releases one leaves the next
-// test with a request that never blocks — which is how a race test quietly stops racing.
+// test with a request that never blocks, and a race test quietly stops racing.
 beforeEach(() => {
   gates = {};
   posts.length = 0;
@@ -182,9 +177,9 @@ describe("creating from a starter is one request", () => {
     return view;
   }
 
-  // "Use" no longer creates: it moves to the naming step, because names are unique per account and
+  // NOTE: "Use" does not create: it moves to the naming step, because names are unique per account and
   // the name is what the agent's tool is called. The request comes from Create, so that is where the
-  // in-flight rules live now.
+  // in-flight rules live.
   async function pickFirstStarter() {
     const buttons = await screen.findAllByText("Use");
     expect(buttons.length).toBeGreaterThan(1);
@@ -254,8 +249,8 @@ describe("a refresh does not undo a company save it overlapped", () => {
         </ToastProvider>
       </MemoryRouter>,
     );
-    // First load through, then the letterhead editor opened: it is a modal now, so the form is not on
-    // screen until somebody asks for it.
+    // NOTE: first load through, then the letterhead editor opened: it is a modal, so the form is not
+    // on screen until somebody asks for it.
     gate("en-US").release();
     fireEvent.click(
       await screen.findByRole("button", { name: /^(edit|fill in)$/i }),
@@ -263,8 +258,8 @@ describe("a refresh does not undo a company save it overlapped", () => {
     const nameInput = (await screen.findAllByRole("textbox"))[0];
     if (!nameInput) throw new Error("no company field");
 
-    // A SECOND load, held on its last request: its settings response is already in hand and carries
-    // the company as it is stored — which is about to stop being true.
+    // NOTE: a SECOND load, held on its last request: its settings response is already in hand and
+    // carries the company as it is stored, which is about to stop being true.
     holdDocuments = true;
     await act(async () => {
       await i18n.changeLanguage("pt-BR");
@@ -286,8 +281,8 @@ describe("a refresh does not undo a company save it overlapped", () => {
     gate("documents").release();
     await new Promise((r) => setTimeout(r, 80));
 
-    // Read off the summary row rather than the field: a successful save closes the editor, so the
-    // name the panel is holding is what the row prints. Same question, the place it is now visible.
+    // NOTE: read off the summary row rather than the field: a successful save closes the editor, so
+    // the name the panel is holding is what the row prints.
     expect((document.body.textContent ?? "").includes("ACME Nova")).toBe(true);
   });
 });
@@ -321,7 +316,7 @@ describe("the starter list belongs to the current language", () => {
       fireEvent.click(button);
     };
 
-    // The NEWER answer lands first, the older one after it — the ordering that loses the race.
+    // NOTE: the NEWER answer lands first, the older one after it: the ordering that loses the race.
     gate("en-US").release();
     await open();
     await waitFor(

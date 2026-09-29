@@ -1,13 +1,9 @@
 /// <reference lib="dom" />
 
-// THE SCOPE, ON THE PAGE (#520).
-//
-// The three answers are not three filters over one query, and the console has to reflect that in
-// three places: the selector exists only for the role that may use it, the row grows a tenant column
-// exactly where "which tenant" stops being implied, and a scope in the URL that this operator cannot
-// use leaves the URL as well as the query — the same rule the page already applies to a date it
-// could not parse, because an address bar that names a trail the page is not reading is what a
-// shared link then carries to the next person.
+// The scope, on the page. The three answers are not three filters over one query: the selector
+// exists only for the role that may use it, the row grows a tenant column where "which tenant" stops
+// being implied, and a scope this operator cannot use leaves the URL as well as the query (a shared
+// link would otherwise carry a trail the page is not reading).
 
 import {
   afterEach,
@@ -175,12 +171,9 @@ test("and not on the tenant's own trail, where every row is its own", async () =
   expect(text).not.toContain("#9");
 });
 
-// THE CURSOR BELONGS TO ONE TRAIL, and the scope is what chooses the trail. Every other filter
-// already resets the walk for exactly this reason: a keyset cursor is an id from the page before,
-// and it only means "continue" against the same rows it was cut from. Handed to another scope it
-// still means `id < N`, which silently drops every newer row of the new trail and labels what
-// survives "Page 2" — an operator switching to the fleet from page two would be told the fleet trail
-// starts where a tenant's page happened to end.
+// The cursor belongs to one trail, and the scope chooses the trail. A keyset cursor handed to
+// another scope still means `id < N`, silently dropping every newer row of the new trail and
+// labelling what survives "Page 2".
 test("switching scope restarts the walk instead of carrying the cursor over", async () => {
   mockUser.role = "SUPER_ADMIN";
   globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -209,19 +202,15 @@ test("switching scope restarts the walk instead of carrying the cursor over", as
   await waitFor(() => expect(asked()).toContain("scope=fleet"));
   expect(asked()).not.toContain("cursor=");
   expect(view.container.textContent).toContain("Page 1");
-  // EVERY REQUEST THE CHANGE PRODUCED, and not just the one that won. Asserting the last request
-  // only is what let the old cursor be fired at the new trail unnoticed: the reset lived in an
-  // effect, so a render's worth of requests went out with the new filter and the previous walk's
-  // cursor still paired together. `reqRef` then discarded the answer, which is why the screen was
-  // right and the round trip was still made -- against a growing table, and under the fleet role.
+  // NOTE: every request the change produced, not just the one that won: `reqRef` discards a stale
+  // answer, so the screen is right either way and only the requests show a stale cursor sent with
+  // the new filter.
   expect(sent.slice(mark).filter((u) => u.includes("cursor="))).toEqual([]);
 });
 
-// THE EMPTY STATE HAS TO SAY WHAT WAS SEARCHED. On a tenant's trail a fleet-level action can only
-// come back empty, because those rows are keyed to no tenant and that read cannot reach them — so
-// the page says the emptiness proves nothing. On `fleet` or `all` it just searched exactly those
-// rows, and repeating "an empty list here does not mean it never happened" would turn a real answer
-// into a disclaimer about a read the page did not perform.
+// The empty state has to say what was searched. On a tenant's trail a fleet-level action can only
+// come back empty (those rows are keyed to no tenant), so the page says the emptiness proves
+// nothing. On `fleet` or `all` the page searched those rows, so the disclaimer would be false.
 test("on a wider scope, an empty fleet-level action is a real answer", async () => {
   mockUser.role = "SUPER_ADMIN";
   globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -239,8 +228,7 @@ test("on a wider scope, an empty fleet-level action is a real answer", async () 
   expect(text).toContain("No entries match these filters");
 });
 
-// The tenant scope keeps it, and this is the assertion that stops the fix above from being "delete
-// the branch".
+// The tenant scope keeps the disclaimer, so the fix above cannot be "delete the branch".
 test("on the tenant's own trail it still says the emptiness proves nothing", async () => {
   mockUser.role = "SUPER_ADMIN";
   globalThis.fetch = (async (input: RequestInfo | URL) => {

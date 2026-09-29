@@ -10,9 +10,9 @@ import clientPt from "@/client/locales/pt-BR.json";
 import { ErrorLogsLink } from "@/client/pages/agents/PlaygroundChat";
 import { playgroundFailure } from "@/client/pages/agents/usePlaygroundChat";
 
-// Issue #841: the error bubble says what the server said, and where the cause is when it could not.
-// The old one read only a JSON `error` and otherwise told the operator to check the model, which was
-// wrong for the failure that prompted this (a database error with the model configured).
+// The error bubble says what the server said, and where the cause is when it could not. Telling the
+// operator to check the model is wrong for a failure the model did not cause (a database error with
+// the model configured), so that is never the fallback.
 
 afterEach(cleanup);
 

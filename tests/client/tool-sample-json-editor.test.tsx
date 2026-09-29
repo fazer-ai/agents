@@ -12,17 +12,13 @@ import {
 import { useEffect, useRef } from "react";
 import { MemoryRouter } from "react-router";
 
-// THE SAMPLE RESPONSE IS READ, SO IT IS EDITED IN SOMETHING THAT READS (issue #562).
+// THE SAMPLE RESPONSE IS READ, SO IT IS EDITED IN SOMETHING THAT READS.
 //
-// This field is load-bearing and was a four-row textarea: every path picker on the screen is fed
-// from it, the appointment declaration and the response template both point into it, and what goes
-// in is a real API response, very often minified onto one line.
-//
-// The issue that asked for this said invalid JSON "fails silently". Measured before building: it
-// does not — `tools.sampleInvalid` has always said the sample could not be read. What was missing is
-// WHERE, and that is not free: `JSON.parse`'s message carries a position on V8 for some errors and
-// not others, and on JSC (Bun here, Safari for an operator) for none. So the position comes from the
-// editor's own grammar, and these tests drive the shapes where the engine would have nothing to say.
+// Every path picker on the screen is fed from this field, and what goes in is a real API response,
+// often minified onto one line. `tools.sampleInvalid` says the sample could not be read; the missing
+// part is WHERE, and `JSON.parse`'s message carries a position only on V8 and only for some errors.
+// So the position comes from the editor's own grammar, and these tests drive the shapes where the
+// engine would have nothing to say.
 
 const { ToolEditModal } = await import(
   "@/client/pages/resources/ToolEditModal"
@@ -105,8 +101,8 @@ async function openEditor() {
 }
 
 // THE GRAMMAR IS JSON, NOT JAVASCRIPT, and this is the shape that tells them apart: `{a: 1}` is an
-// ordinary JavaScript object literal and is not JSON. Reusing the code tool's `javascript()` — which
-// was already in the tree, and was the cheap thing to do — would have highlighted this as fine.
+// ordinary JavaScript object literal and is not JSON, so the code tool's `javascript()` grammar would
+// highlight it as fine.
 test("an unquoted key is reported, at the character where it starts", async () => {
   await openEditor();
   writeSample("{a: 1}");
@@ -186,11 +182,8 @@ test("format is refused while the sample cannot be read, and the paste is untouc
   expect(sampleView().state.doc.toString()).toBe(broken);
 });
 
-// Round 1 of review, and both findings are the same root: two readers of one field disagreeing
-// about which string they are talking about.
-
-// THE LINE IT NAMES IS THE LINE ON SCREEN. The field trimmed before asking, so a paste with blank
-// lines above it was measured against a string the operator is not looking at.
+// THE LINE IT NAMES IS THE LINE ON SCREEN: counted in the document as pasted, never in a trimmed copy
+// the operator is not looking at.
 test("the reported line counts from the document as pasted", async () => {
   await openEditor();
   writeSample('\n\n  {"a": }');
@@ -201,10 +194,9 @@ test("the reported line counts from the document as pasted", async () => {
   });
 });
 
-// AN ENABLED BUTTON THAT DOES NOTHING is the silent refusal this whole feature exists to remove.
-// A paste that opens with a byte-order mark READS — `String.trim` counts U+FEFF as whitespace, so
-// `JSON.parse` gets a clean document and the pickers fill — and the formatter refused it, so Format
-// stood enabled and the click went nowhere.
+// AN ENABLED BUTTON THAT DOES NOTHING is the silent refusal this field exists to remove. A paste that
+// opens with a byte-order mark READS (`String.trim` counts U+FEFF as whitespace, so the pickers
+// fill), so Format has to handle it too.
 test("format enabled means format does something", async () => {
   await openEditor();
   writeSample('﻿{"data":{"id":"ap_1"}}');
@@ -309,14 +301,11 @@ test("a response from the test request arrives formatted", async () => {
   );
 });
 
-// A BODY THE MODEL READS VERBATIM IS KEPT VERBATIM (round 5 of review).
+// A BODY THE MODEL READS VERBATIM IS KEPT VERBATIM.
 //
 // `templatePreviewFor` shows a non-2xx sample RAW, clipped exactly the way the runtime clips it,
-// because that is what the model gets: the file already refuses to trim it for that reason, since
-// dropping leading whitespace slides the 4000-character window and shows tail content the model
-// would never reach. Reformatting the same body does more than slide the window — the preview would
-// show a document the API never sent. So while a status says the body goes verbatim, this field
-// neither formats on arrival nor offers to.
+// because that is what the model gets. Reformatting it would preview a document the API never sent,
+// so while a status says the body goes verbatim, this field neither formats on arrival nor offers to.
 test("a non-2xx response is kept exactly as the API sent it", async () => {
   const raw = '{"error":{"code":"not_found","message":"no such id"}}';
   globalThis.fetch = (async (i: RequestInfo | URL, init?: RequestInit) => {
@@ -378,11 +367,11 @@ test("a non-2xx response is kept exactly as the API sent it", async () => {
   );
 });
 
-// EVERY WAY OF DECLINING HAS A SENTENCE (round 6 of review).
+// EVERY WAY OF DECLINING HAS A SENTENCE.
 //
-// A sample that READS fine can still be one Format will not touch, and a disabled button beside the
-// test-request hint says nothing about why. Two of those exist: a body the model reads verbatim
-// (above) and one whose formatted form would be past the ceiling.
+// A sample that READS fine can still be one Format will not touch: a body the model reads verbatim
+// (above) and one whose formatted form would be past the ceiling. A disabled button beside the
+// test-request hint says nothing about why.
 test("a sample too nested to format says so, instead of a dead button", async () => {
   await openEditor();
   let deep = "1";
@@ -398,11 +387,9 @@ test("a sample too nested to format says so, instead of a dead button", async ()
   );
 });
 
-// THE PARSE ERROR IS THE FIELD'S ERROR, so the accessibility tree carries it.
-//
-// It used to be a line beside the buttons: outside the labelled group, with no id the editor points
-// at, so a screen reader got `aria-invalid` and never the line and column. Through `FormField` it
-// reaches the tree the way every other field's error does.
+// THE PARSE ERROR IS THE FIELD'S ERROR, so the accessibility tree carries it. Rendered through
+// `FormField`, it is inside the labelled group with the id the editor points at, so a screen reader
+// gets the line and column, not only `aria-invalid`.
 test("the parse error is announced with the field, not merely drawn near it", async () => {
   await openEditor();
   writeSample('{"a": }');

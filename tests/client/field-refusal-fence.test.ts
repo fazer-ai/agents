@@ -4,21 +4,14 @@ import { join } from "node:path";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 import { codeSkeleton } from "@/tests/utils/source-text";
 
-// THE GUARD AGAINST THE NEXT FORM THAT SENDS A FIELD REFUSAL TO A BANNER.
-//
-// #231 put the refused field on the wire, #232 built the state that renders it at the control, and
-// this sweep wired the console. What comes back without a guard is the form written next week: it
-// will read the server's sentence (the other fence in this directory sees to that) and drop it into
-// a toast or an error line, which is far from the input and, on a long form, leaves the operator
-// counting down the fields to work out which one the server meant.
-//
-// Two rules, because a form can fail this in two directions and only one of them is visible:
-//
-//   1. a form that WRITES holds its refusal — `useFieldRefusal`, or a named reason not to;
+// The guard against a form that sends a field refusal to a banner. The server names the refused
+// field and `useFieldRefusal` renders it at the control; a form that drops the server's sentence
+// into a toast or an error line leaves the operator counting fields to find the one it meant.
+// Two rules, because a form can fail in two directions and only one is visible:
+//   1. a form that WRITES holds its refusal: `useFieldRefusal`, or a named reason not to;
 //   2. every name a form DECLARES is read back by an `at(…)` call in the same file. A declared name
-//      with no control behind it is worse than not declaring it: `placeRefusal` marks it as placed
-//      and the caller then keeps the toast silent, so the refusal reaches nobody at all. Measured
-//      while wiring ToolEditModal, which declared `allowedHosts` and renders no such input.
+//      with no control is worse than none: `placeRefusal` marks it placed and the caller keeps the
+//      toast silent, so the refusal reaches nobody.
 
 const ROOT = "src/client";
 
@@ -47,30 +40,24 @@ export function writesAForm(src: string): boolean {
   return RENDERS_A_CONTROL.test(src) && writeHandlers(src).length > 0;
 }
 
-// One function of a component, by name. Both spellings this tree uses — `async function save()` and
-// `const submit = async () => {` — at the component's own indentation, so a callback nested inside
-// one is part of its body rather than a handler of its own.
-//
-// Named and not merely located, because the whole point is to say WHICH handler is unheld: a file
-// with six forms is not answered by "this file calls the hook somewhere", which is what the previous
-// version of this fence asked and what let `useKnowledgeManager`'s add-text form through with a
-// holder that was read and never written.
+// One function of a component, by name. Both spellings this tree uses (`async function save()` and
+// `const submit = async () => {`) at the component's own indentation, so a callback nested inside
+// one is part of its body rather than a handler of its own. Named, not merely located: a file with
+// six forms is not answered by "this file calls the hook somewhere".
 const HANDLER_HEAD =
   /\n {2}(?:export )?(?:async function (\w+)|const (\w+) = (?:async )?(?:\([^)]*\)|\w+) =>|function (\w+))/g;
 
 export function handlers(src: string): {
   name: string;
   body: string;
-  // The same span with comments and string CONTENTS blanked out, offsets preserved. Every question
-  // this file asks of a handler is about what it runs, and prose is where those words appear
-  // innocently: `useKnowledgeManager`'s reindex button sends no body at all, and read raw it looked
-  // like a form write because a comment inside it says "Same text as the banner".
+  // The same span with comments and string CONTENTS blanked out, offsets preserved. Every
+  // question asked of a handler is about what it runs, and prose mentions the same words innocently
+  // (a comment inside a body-less button handler can name a declared field).
   code: string;
 }[] {
-  // Bounded by its own closing brace, not by where the next handler starts. Slicing to the next head
-  // makes the LAST handler of a nested component swallow everything after it, and this file's whole
-  // subject is per-handler attribution: measured, that made `ChannelsPage`'s `select` — which awaits
-  // a callback and no request at all — read as a write of the function three declarations below it.
+  // NOTE: bounded by its own closing brace, not by where the next handler starts: slicing to the
+  // next head makes the LAST handler of a nested component swallow everything after it, so a
+  // callback that awaits nothing would read as a write of a function declared below it.
   const code = codeSkeleton(src);
   return [...src.matchAll(HANDLER_HEAD)].map((m) => {
     const open = code.indexOf("{", m.index + (m[0] as string).length - 3);
@@ -130,15 +117,10 @@ function capturingNames(code: string): Set<string> {
 }
 
 // A write handler that sends a value this form DECLARED and does not route its failure through a
-// refusal holder.
-//
-// Declared is what bounds it, and the bound is the rule rather than a convenience: the fence's whole
-// subject is "a refusal naming an input this form renders reaches that input", so a handler that
-// sends nothing the form named cannot receive one. That is what separates a submit from the actions
-// beside it — `revoke.post()` carries no body at all, `toggleEnabled` sends the one switch of a list
-// row, `saveGuardrails` sends the settings bag whose paths this page deliberately does not declare
-// (see PARTIALLY_HELD). Asking every write instead flagged twenty-five handlers, of which one was a
-// form.
+// refusal holder. Declared is what bounds it: a handler that sends nothing the form named cannot
+// receive a refusal about an input. That separates a submit from the actions beside it
+// (`revoke.post()` has no body, `toggleEnabled` sends one switch, `saveGuardrails` sends a bag whose
+// paths this page does not declare, see PARTIALLY_HELD). Asking every write would flag mostly non-forms.
 export function unheldWrites(src: string): string[] {
   if (!RENDERS_A_CONTROL.test(src)) return [];
   const declared = declaredFields(src);
@@ -159,19 +141,11 @@ export function unheldWrites(src: string): string[] {
 }
 
 // A BRANCH of a held handler that writes the form's error line without going through the holder.
-//
-// `unheldWrites` asks per handler, and a handler is answered by one `capture` anywhere inside it —
-// which is exactly how `AlertChannelsSection` passed while its `catch` wrote a fixed sentence
-// straight into the modal-local banner. The resolved-error branch was wired; the thrown one was not,
-// and Eden REJECTS on a transport failure, so the unwired branch is the one the operator hits when
-// the network is what failed. Dismiss the dialog during that and the sentence reaches nobody.
-//
-// Only branches AFTER the request went out, and only ones that write a SENTENCE.
-//
-// Both bounds are the rule, not convenience. A `setError` before the write is a pre-submit guard —
-// "Passwords do not match", "Headers must be valid JSON." — which the client decided on its own and
-// which no server was asked about; routing one through `capture` would be nonsense, and so would
-// routing the `setError("")` that clears the line at the top of a submit.
+// `unheldWrites` is answered by one `capture` anywhere in a handler, so a `catch` writing a fixed
+// sentence beside a wired resolved-error branch passes it; Eden REJECTS on a transport failure, so
+// that catch is the branch a failed network hits. Only branches AFTER the request went out, and
+// only ones that write a SENTENCE: a pre-submit guard ("Passwords do not match") or a clearing
+// `setError("")` has no server answer to route.
 export function unheldBranches(src: string): string[] {
   const carriers = capturingNames(codeSkeleton(src));
   if (carriers.size === 0) return [];
@@ -209,14 +183,10 @@ function sentAt(code: string): number {
   return -1;
 }
 
-// A caller that does not believe the hook's null.
-//
-// `capture` answers one question — is there anything left for YOU to say — and null is "no": the
-// sentence is on the control, or the form had left the screen and the hook raised the global toast
-// itself. Substituting a fallback for that null fires the second channel on top of the first, and
-// the two spellings of the mistake are the same operator experience: a message under the box AND a
-// toast repeating it, or two identical toasts. Measured on `CompanyProfileCard`, whose catch read
-// `toast ?? t("…saveError")`.
+// A caller that does not believe the hook's null. `capture` answers "is there anything left for YOU
+// to say", and null is "no": the sentence is on the control, or the hook raised the global toast
+// itself. Substituting a fallback (`toast ?? t("…saveError")`) fires the second channel on top of
+// the first: a message under the box AND a toast repeating it, or two identical toasts.
 export function distrustedNulls(src: string): string[] {
   const code = codeSkeleton(src);
   const carriers = capturingNames(code);
@@ -254,13 +224,10 @@ export function distrustedNulls(src: string): string[] {
   return [...new Set(out)];
 }
 
-// A staleness check that compares a value with itself.
-//
-// `capture` takes what the request CARRIED and what the inputs hold NOW, and refuses to mark a
-// control that has moved on. Handing it the same expression twice makes that comparison a tautology
-// — always "unchanged", always placed — while the render reads the live value and finds no mark for
-// it. The refusal then reaches neither channel. Measured on `ChannelsPage`'s account picker, whose
-// rows stay live while the PUT is out.
+// A staleness check that compares a value with itself. `capture` takes what the request CARRIED and
+// what the inputs hold NOW, and refuses to mark a control that has moved on. The same expression
+// twice makes that a tautology (always placed) while the render reads the live value and finds no
+// mark, so the refusal reaches neither channel (e.g. a picker whose rows stay live during a PUT).
 export function tautologicalStaleness(src: string): string[] {
   const code = codeSkeleton(src);
   const out: string[] = [];
@@ -296,17 +263,11 @@ function splitArgs(args: string): string[] {
 }
 
 // A holder that is declared and then half-used. Either half alone is silence: a holder nobody
-// captures into can only ever answer null at every `at(…)` reading it, and a holder nobody reads
-// keeps the toast quiet about a refusal it has placed nowhere.
-// A holder can also be used through a REGISTER: the agent editor keeps one per writing form (#415)
-// and reaches them as `refusals[section].capture(...)`, so no holder is ever named at a call site.
-// The obligation is unchanged and so is its force, since a holder that is declared and left out of
-// the register is exactly the orphan this flags, but the proof moves: the register is what has to be
-// captured and read, and each holder has to be IN it.
-//
-// Deliberately keyed off the `Record<_, FieldRefusal>` annotation rather than any object that
-// mentions a holder. An unannotated bag would let a file opt out of this check by listing its
-// holders somewhere, which is the same hole as not checking at all.
+// captures into answers null at every `at(…)`, and one nobody reads keeps the toast quiet about a
+// refusal placed nowhere. A holder can be used through a REGISTER (the agent editor's
+// `refusals[section].capture(...)`): then the register must be captured and read, and each holder
+// must be IN it. Keyed off the `Record<_, FieldRefusal>` annotation, so a file cannot opt out by
+// listing holders in an unannotated bag.
 function registeredHolders(src: string): {
   register: string | null;
   members: Set<string>;
@@ -343,9 +304,8 @@ export function halfUsedHolders(src: string): string[] {
   const registerCaptures =
     !!register &&
     new RegExp(`\\b${register}\\[[^\\]]+\\]\\??\\.capture\\(`).test(src);
-  // `.at\b` rather than `.at(`: a page with several holders reads them through an aggregate, and
-  // the natural spelling passes the method as a REFERENCE (`refusals[s].at`) instead of calling it
-  // there. Requiring the call site would have forced a worse shape to satisfy the guard.
+  // NOTE: `.at\b` rather than `.at(`: a page with several holders passes the method as a REFERENCE
+  // (`refusals[s].at`) to an aggregate, and requiring the call site would force a worse shape.
   const registerReads =
     !!register &&
     new RegExp(`\\b${register}\\[[^\\]]+\\]\\??\\.at\\b`).test(src);
@@ -364,17 +324,11 @@ export function halfUsedHolders(src: string): string[] {
   return out;
 }
 
-// EVERY holder in the file with the names it declares, not the first one that happens to appear.
-//
-// A file with one form is the easy case and it is not the common one here: `ChannelsPage` keeps
-// three holders, `useKnowledgeManager` three, `AdvancedPanel` two, and the agent editor two. Reading
-// only the first meant the fence agreed with itself about one form per file and asked nothing at all
-// of the rest — a declared name with no control behind it, in any of them, passed. Attributed per
-// holder for the same reason `unheldWrites` names its handler: "this file declares a name it never
-// renders" is not a finding anyone can act on.
-//
-// Read from the source rather than imported because the point is to compare the declaration against
-// the RENDER, and only the source has both.
+// EVERY holder in the file with the names it declares, not the first one that appears: several
+// pages keep two or three holders, and reading only the first asks nothing of the rest. Attributed
+// per holder, like `unheldWrites` names its handler, so a finding is actionable.
+// Read from the source rather than imported, because the declaration is compared against the
+// RENDER, and only the source has both.
 export function declarations(src: string): {
   holder: string;
   fields: string[];
@@ -389,7 +343,7 @@ export function declarations(src: string): {
 }
 
 // The text between a call's parentheses, balanced. Not a lazy match up to the next `);`, because the
-// argument is an expression now and expressions nest.
+// argument is an expression and expressions nest.
 function argumentOf(src: string, open: number): string {
   let depth = 0;
   for (let i = open; i < src.length; i++) {
@@ -402,20 +356,12 @@ function argumentOf(src: string, open: number): string {
   return "";
 }
 
-// Every name the argument can ever produce, whichever branch it takes.
-//
-// The argument is an EXPRESSION now — `modal.isOpen ? MCP_FIELDS : []`, `required ? WITH_TOKEN :
-// BASE`, an array built one control at a time — so reading it as "one identifier, or one inline
-// array" answers `[]` for almost every holder in the tree, and a rule that is handed nothing asks
-// nothing. That is what this rule was written to catch and what it silently stopped seeing the
-// moment the hook's argument changed shape: a fence with no findings and a fence with no vision are
-// the same green.
-//
-// So: every string literal in the expression, plus every SCREAMING_CASE identifier in it that names
-// a list in this file, resolved one level down so `[...SETUP_FIELDS, "token"]` contributes both. A
-// computed element contributes nothing, which is the honest answer rather than a hole — a spread of
-// `fields.map(f => f.key)` is read back by an `at(f.key, …)` the source cannot see either, so both
-// sides of the comparison drop it together.
+// Every name the argument can ever produce, whichever branch it takes. The argument is an
+// EXPRESSION (`modal.isOpen ? MCP_FIELDS : []`, `required ? WITH_TOKEN : BASE`), so reading it as
+// "one identifier or one inline array" would answer `[]` for almost every holder: a fence with no
+// vision is as green as one with no findings. So: every string literal in it plus every
+// SCREAMING_CASE list of this file, resolved one level down (`[...SETUP_FIELDS, "token"]`). A computed
+// element contributes nothing, and its `at(f.key, …)` reading is invisible too, so both drop together.
 function declaredArg(arg: string, src: string): string[] {
   const out = new Set(literalsInLists(arg));
   for (const m of arg.matchAll(/\b([A-Z][A-Z0-9_]*)\b/g)) {
@@ -444,8 +390,7 @@ function literals(list: string): string[] {
 }
 
 // Only the literals inside an ARRAY, because the expression also holds the condition that chooses
-// between them: `addTab === "texto" ? DOC_FIELDS : []` names a tab, not a field, and reading it as
-// one had the fence demanding a control for `texto`.
+// between them: `addTab === "texto" ? DOC_FIELDS : []` names a tab, not a field.
 function literalsInLists(arg: string): string[] {
   const out: string[] = [];
   for (let i = 0; i < arg.length; i++) {
@@ -472,37 +417,22 @@ export function readFields(src: string, holder?: string): Set<string> {
   return new Set([...src.matchAll(re)].map((m) => m[1] as string));
 }
 
-// A holder that is not cleared at EVERY opening of the dialog it belongs to.
-//
-// The component around a modal STAYS MOUNTED when the dialog closes — that is what `useOnModalOpen`
-// exists for, resetting the form on each open — so a holder written into state survives the session
-// that produced it. Reopening and typing the refused value again shows the old server sentence under
-// the box without anything having been sent. The hook's own note says a holder must not outlive its
-// form; a modal wrapper is exactly where "the form" and "the component" stop being the same thing.
-//
-// Per OPENING and per DIALOG, which the first version of this rule was neither. It pooled every
-// reset block in the file into one string and asked whether the holder's name appeared anywhere in
-// it, so one cleared opening vouched for all of them and one holder's clear vouched for the others.
-// `ChannelsPage` has three dialogs and two ways into the connect one, and the way the operator
-// actually uses — the Connect button — was the uncleared one.
-//
-// The attribution comes free from the holder itself: its second argument names the dialog whose
-// `isOpen` it answers for (`connectModal.isOpen`), and each opening names its dialog too. A holder
-// that names no dialog is a page's, and this rule has nothing to say about it — the page unmounts.
+// A holder that is not cleared at EVERY opening of the dialog it belongs to. The component around a
+// modal STAYS MOUNTED on close (hence `useOnModalOpen`), so a holder in state survives its session,
+// and reopening shows the old server sentence before anything was sent. Asked per OPENING and per
+// DIALOG: one cleared opening must not vouch for another, nor one holder's clear for others. The
+// holder's second argument names its dialog (`connectModal.isOpen`); one naming none is a page's,
+// and the page unmounts.
 export function uncleanedHolders(src: string): string[] {
   const code = codeSkeleton(src);
   const out: string[] = [];
   for (const m of src.matchAll(/const (\w+) = useFieldRefusal\(([^;]*?)\);/g)) {
     const holder = m[1] as string;
-    // DIALOGS, and deliberately not every state a holder is gated on.
-    //
-    // An inline editor needs the same per-session clear — `startEdit` re-seeds the form from a
-    // record, so a mark from the last request stops being about anything on screen — and this rule
-    // is not the place to demand it. Asking every gating state means asking the vault's
-    // manual/`.env` toggle too, and clearing there would DELETE a correct mark: switching views does
-    // not change the value the server refused. Separating "opens a session" from "switches a view"
-    // needs to know what the setter re-seeds, which two attempts at a heuristic got wrong in
-    // opposite directions. KnowledgeApprovals' clear is proved by a test instead.
+    // NOTE: DIALOGS, and deliberately not every state a holder is gated on. An inline editor needs
+    // the same per-session clear (`startEdit` re-seeds from a record), but asking every gating state
+    // would also clear on the vault's manual/`.env` toggle and DELETE a correct mark. Telling a
+    // session from a view switch needs to know what the setter re-seeds, which no heuristic here
+    // gets right; KnowledgeApprovals' clear is proved by a test instead.
     const guard = codeSkeleton(m[2] as string);
     const dialogs = [
       ...new Set(
@@ -520,14 +450,10 @@ export function uncleanedHolders(src: string): string[] {
   return [...new Set(out)];
 }
 
-// Where one dialog's per-session reset has to live, which is ONE of two places.
-//
-// `useOnModalOpen(dialog, …)` is the hook for it and runs on every opening by construction, so where
-// it exists it is the only site that matters and the buttons calling `.open()` are just buttons.
-// Where it does not — a dialog seeded inline from the click that opens it, which is how the agent
-// editor's clone dialog and the channels page's Connect button are written — the reset lives at each
-// `.open()` and EVERY one of them has to carry it. Asking both of a file that has the hook flags
-// every button in it; asking only the hook lets an inline dialog through with no reset at all.
+// Where one dialog's per-session reset has to live: ONE of two places. `useOnModalOpen(dialog, …)`
+// runs on every opening, so where it exists it is the only site that matters. Where it does not (a
+// dialog seeded inline from the click that opens it, like the agent editor's clone dialog), the
+// reset lives at each `.open()` and EVERY one must carry it. Asking both would flag every button.
 function resetSites(src: string, code: string, dialog: string): string[] {
   const hooked: string[] = [];
   for (const m of code.matchAll(
@@ -557,20 +483,11 @@ function resetSites(src: string, code: string, dialog: string): string[] {
   return inline;
 }
 
-// A holder that hands the hook a bare constant, which is the claim "every one of these is drawn,
-// always".
-//
-// `rendered` is what the form is DRAWING, so the default is an expression and a bare list is the
-// exception. The first two versions of this rule had it the other way round — they tried to work out
-// whether the FILE hides anything, first from a list of shapes (a dialog, a tab) and then from the
-// JSX around each reading — and each version missed the shape the next round found: an inline editor
-// opened by `editingId === a.id`, whose two inputs are as absent as any dialog's while it is closed.
-// Detecting a conditional render from source text is a real static-analysis question and string
-// matching kept answering it with one more exclusion.
-//
-// Inverting it costs a ledger of eight and buys the property the shape list never had: a form added
-// next week either says what it draws or writes down why it always draws everything. See
-// ALWAYS_ON_SCREEN.
+// A holder that hands the hook a bare constant, which claims "every one of these is always drawn".
+// `rendered` is what the form is DRAWING, so the default is an expression and a bare list the
+// exception. Detecting a conditional render from source text (a dialog, a tab, an inline editor
+// opened by `editingId === a.id`) is a real static-analysis question, so the rule is inverted: a
+// form either says what it draws or writes down why it draws everything, in ALWAYS_ON_SCREEN.
 export function holdersBlindToTheScreen(src: string): string[] {
   return declarations(src)
     .filter((d) => /^\s*[A-Za-z_$][\w$]*\s*$/.test(argOf(src, d.holder)))
@@ -582,24 +499,12 @@ function argOf(src: string, holder: string): string {
   return m ? argumentOf(src, m.index + m[0].length - 1) : "";
 }
 
-// A field whose control is drawn BEHIND A GUARD, declared as though it always were.
-//
-// This is the per-control half of the rule above, and it took three review rounds to state because I
-// kept trying to state it about the file: a dialog, then a tab, then an inline editor, then a mode
-// toggle inside a form that is itself on screen. The thing being asked about was never the file. It
-// is one JSX conditional, in the idiom this codebase writes it in — `{expr && (`, `{expr ? (` — with
-// the expression carrying no parens or braces of its own, which is what keeps the search from
-// walking out to the component body and calling every arrow and type annotation a guard.
-//
-// The demand is that the DECLARATION mention the STATE the guard turns on — `type` for
-// `type === "webhook"`, `form.ackEnabled` for itself — which is exactly what a caller writes anyway
-// (`type === "webhook" ? ALERT_WEBHOOK_FIELDS : ALERT_FIELDS`). Mentioning it rather than repeating
-// the whole condition, because the two are not always spellable the same way: an inline editor's
-// guard is `editingId === a.id`, per row, and the holder above the rows has only `editingId`. What
-// makes this checkable at all is that it never has to decide whether one expression implies another.
-//
-// Run over the tree it named eighteen guarded controls, six of which were declared unconditionally —
-// two the review found and four it had not reached.
+// A field whose control is drawn BEHIND A GUARD, declared as though it always were: the per-control
+// half of the rule above. The guard is one JSX conditional in this codebase's idiom (`{expr && (`,
+// `{expr ? (`) whose expression has no parens or braces, which keeps the search from walking out to
+// the component body. The DECLARATION must mention the STATE the guard turns on (`type` for
+// `type === "webhook"`), not repeat the condition: an inline editor's guard is `editingId === a.id`
+// per row, and the holder above the rows only has `editingId`. So nothing decides implication.
 const JSX_GUARD = /\{\s*[^{}()]*?(?:&&|\?)\s*$/;
 
 export function guardOf(
@@ -660,19 +565,11 @@ export function guardedButUnconditional(src: string): string[] {
   return out;
 }
 
-// A reading that CANNOT run, because the `??` in front of it never falls through.
-//
-// `at(…)` answers `string | null`, so it reads naturally as the fallback of a local validation
-// error — and it is dead there whenever that local error is a state initialized to `""`, since an
-// empty string is not nullish. Nothing about this is visible: the name is declared, the reading is
-// written, the fence's other rule sees an `at(…)` and is satisfied, and the refusal is placed onto a
-// holder whose one reader can never return it. `capture` has already told the caller "it is on the
-// control", so the toast stays quiet too. Measured on `useKnowledgeManager`: the chunk-size box
-// checks BOUNDS locally and the schema is `t.Integer`, so a size of 100.5 is refused by name and
-// answered with nothing at all.
-//
-// The left operand is the whole test. `refusal.at(a) ?? refusal.at(b)` — one control drawn for two
-// names, which ToolEditModal does — falls through exactly as intended.
+// A reading that CANNOT run, because the `??` in front of it never falls through. `at(…)` answers
+// `string | null`, so it reads naturally as the fallback of a local validation error, and it is dead
+// whenever that error is a state initialized to `""` (not nullish). The other rule sees an `at(…)`
+// and is satisfied, `capture` has told the caller "it is on the control", and the refusal is shown
+// nowhere. The left operand is the whole test: `refusal.at(a) ?? refusal.at(b)` falls through fine.
 export function deadReadings(src: string): string[] {
   const neverNullish = new Set(
     [...src.matchAll(/const \[(\w+),[^\]]*\]\s*=\s*useState\(\s*["'`]/g)].map(
@@ -706,9 +603,8 @@ const NOT_A_REFUSABLE_FORM: Record<string, string> = {
 };
 
 // A holder whose form cannot be hidden, in a file that can hide something else. Separate from the
-// ledger above because the two rules ask different questions, and one entry answers only one of
-// them: the agent editor's holder is a page's for the clearing rule and a hidden form's for this
-// one. Waiving it in both was how the tab case survived the round that found the modal case.
+// ledger above because the two rules ask different questions, and one entry answers only one: the
+// agent editor's holder is a page's for the clearing rule and a hidden form's for this one.
 const ALWAYS_ON_SCREEN: Record<string, string> = {
   "components/BusinessHoursForm.tsx :: refusal":
     "The schedule editor IS the screen it is on, and its four controls are drawn together. The windows and exceptions lists grow and shrink; the controls that hold them do not.",
@@ -725,16 +621,11 @@ const ALWAYS_ON_SCREEN: Record<string, string> = {
     "The Langfuse credential picker, likewise. The enable switch hides the SETTINGS below it, not the picker this holder names.",
 };
 
-// A form that holds SOME of its refusals, with what is left. Neither rule above can see this — rule
-// 1 is satisfied by the hook being called at all — so it is a declaration, pinned by size, and the
-// only thing keeping the sweep honest about where it stopped.
-// EMPTY since #349, and kept rather than deleted: the shape is the place a future form declares what
-// it stopped at, and a pin of zero makes adding one cost the second edit the ledger exists to force.
-//
-// What emptied it: the agent editor now declares every value it writes — twenty-three names over four
-// tabs — and hands the answers to the tabs that draw them. The half that was missing was never the
-// mark, it was that a mark on a tab nobody is looking at is silence, so the editor announces the ones
-// it holds off screen in a banner that carries the way to the control (see `refusalAway`).
+// A form that holds SOME of its refusals, with what is left. Neither rule above can see this (rule 1
+// is satisfied by the hook being called at all), so it is a declaration, pinned by size. Empty, and
+// kept: it is where a future form declares where it stopped, and a pin of zero makes adding one cost
+// the second edit. The agent editor declares every value it writes and announces the ones held off
+// screen in a banner.
 const PARTIALLY_HELD: Record<string, string> = {};
 
 describe("a form that writes holds the refusal it gets", () => {
@@ -790,8 +681,8 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("a handler ends at its own brace, not at the next declaration", () => {
-    // A nested component's last handler used to swallow everything after it, which read a callback
-    // that awaits nothing as a write of the function three declarations below.
+    // NOTE: a nested component's last handler must not swallow everything after it, which would read
+    // a callback that awaits nothing as a write of a function declared below.
     const src = `
   async function select(next: string | null) {
     await onChange(next);
@@ -809,8 +700,8 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("a declared name inside a COMMENT is not a form write", () => {
-    // Measured on `useKnowledgeManager`: the reindex button sends no body at all, and the only
-    // mention of a declared name inside it is a comment that says "Same text as the banner".
+    // NOTE: a button that sends no body at all, whose only mention of a declared name is a comment
+    // inside it.
     const src = `
       const F = ["title", "text"] as const;
       const r = useFieldRefusal(F, m.isOpen);
@@ -908,7 +799,6 @@ describe("a form that writes holds the refusal it gets", () => {
     // `{r.at(x) && (<span/>)}` guards on the refusal itself and says nothing about whether the
     // control is drawn. It needs no clause of its own: the pattern only accepts a condition that
     // ends the text before the delimiter, and here the reading it would flag sits past a `<span>`.
-    // Measured — an explicit exclusion for it was dead in both directions.
     const src = `
       const F = ["windows"] as const;
       const r = useFieldRefusal(F);
@@ -977,8 +867,7 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("the second holder of a file is asked the same question", () => {
-    // The shape the first-call-only version could not see: two forms, and the one that is wrong is
-    // not the one declared first.
+    // NOTE: two forms, and the one that is wrong is not the one declared first.
     const src = `
       const A = ["name"] as const;
       const B = ["name", "slug"] as const;
@@ -1004,8 +893,8 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("a list chosen by a condition is read on both branches", () => {
-    // The shape almost every holder has now, and the one an identifier-or-array reader answers `[]`
-    // for — which would leave the whole sweep green and blind.
+    // NOTE: the shape almost every holder has, and the one an identifier-or-array reader answers `[]`
+    // for, which would leave the whole check green and blind.
     const src = `
       const A = ["name", "slug"] as const;
       const r = useFieldRefusal(modal.isOpen ? A : []);
@@ -1015,8 +904,8 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("a condition's own strings are not fields", () => {
-    // `addTab === "texto"` names a tab. Reading the expression's literals flat had the fence
-    // demanding a control for it.
+    // NOTE: `addTab === "texto"` names a tab; reading the expression's literals flat would demand a
+    // control for it.
     const src = `
       const DOC = ["title"] as const;
       const r = useFieldRefusal(m.isOpen && addTab === "texto" ? DOC : []);
@@ -1037,8 +926,8 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("an inline field list is read, not skipped", () => {
-    // `CredentialForm` builds its list from the secret type it is drawing. The identifier-only
-    // version returned nothing for it, so the whole form was outside the fence.
+    // NOTE: `CredentialForm` builds its list from the secret type it is drawing; an identifier-only
+    // reader returns nothing for it.
     const src = `
       const refusal = useFieldRefusal([
         "name",
@@ -1257,9 +1146,8 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("a holder inside a modal is cleared when the modal opens", () => {
-    // No ledger under this one, and that is the rule earning its keep: it used to need two waivers
-    // saying "this holder belongs to the page, not to the dialog in the same file", and now the
-    // holder says which dialog it belongs to and the ones that name none are simply not asked.
+    // NOTE: no ledger under this one: the holder says which dialog it belongs to, and the ones that
+    // name none are simply not asked.
     const uncleaned = sources(ROOT).flatMap((f) =>
       uncleanedHolders(readFileSync(f, "utf8")).map(
         (h) => `${f.slice(`${ROOT}/`.length)} :: ${h}`,
@@ -1286,10 +1174,9 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("every always-on-screen entry describes a holder that still exists", () => {
-    // Both directions, like the other ledgers here: an entry for a holder that has since started
-    // answering with an expression is describing code that is not there any more, and it would go on
-    // waiving whatever took its place. The branding page's holder became conditional the round this
-    // assertion was written, and nothing else noticed.
+    // NOTE: both directions, like the other ledgers here: an entry for a holder that has since
+    // started answering with an expression describes code that is not there, and would go on
+    // waiving whatever took its place.
     const flagged = new Set(
       sources(ROOT).flatMap((f) =>
         holdersBlindToTheScreen(readFileSync(f, "utf8")).map(
@@ -1338,9 +1225,9 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("a page's form is flagged too, and answers in the ledger", () => {
-    // The inversion: a bare list is the exception, not the default. A form that really does draw all
-    // of them says so once, by name, in ALWAYS_ON_SCREEN — which is a sentence someone wrote, not a
-    // shape a regex guessed.
+    // NOTE: the inversion: a bare list is the exception, not the default. A form that really does draw all
+    // of them says so once, by name, in ALWAYS_ON_SCREEN: a sentence someone wrote, not a shape a
+    // regex guessed.
     const src = `
       const refusal = useFieldRefusal(BRANDING_FIELDS);
       <FormField error={refusal.at("name", v)} />
@@ -1349,8 +1236,8 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("an inline editor guards its readings like any dialog", () => {
-    // The shape the file-shape list missed: no dialog, no tab, and the two inputs are as absent as
-    // any modal's while `editingId` is null.
+    // NOTE: no dialog, no tab, and the two inputs are as absent as any modal's while `editingId` is
+    // null.
     const src = `
       const refusal = useFieldRefusal(APPROVAL_FIELDS);
       {editingId === a.id ? (
@@ -1384,8 +1271,8 @@ describe("a form that writes holds the refusal it gets", () => {
   });
 
   test("one cleared opening does not vouch for another", () => {
-    // The shape the pooled version could not see, and it is the one the operator uses: the deep-link
-    // path clears, the button beside it does not, and the mark comes back on the value it refused.
+    // NOTE: the path the operator uses: the deep-link path clears, the button beside it does not,
+    // and the mark comes back on the value it refused.
     const src = `
       const connectRefusal = useFieldRefusal(F, connectModal.isOpen);
       useEffect(() => {

@@ -1,16 +1,9 @@
 /// <reference lib="dom" />
 
-// A LINK SAVED BEFORE THE RENAME STILL OPENS THE ROWS IT NAMED (issue #555).
-//
-// The two consent actions were renamed and every row moved, and the old spellings left the catalog
-// the picker is built from. That leaves a saved `/audit?action=mcp_oauth_consent_granted` — a
-// bookmark, a link pasted in a ticket, a dashboard's deep link — naming something no row carries
-// any more, and the answer would be an empty trail: the page saying "no consent decision was ever
-// recorded" about rows sitting one name over.
-//
-// What is asserted here is BOTH halves, because either alone is still broken for the operator:
-// the request goes out under the name the rows carry, AND the control on screen shows that name
-// rather than the dead one. A page that quietly asks the right question while displaying the old
+// A link saved before the rename still opens the rows it named. The two consent actions were
+// renamed and the old spellings left the catalog, so a saved `/audit?action=mcp_oauth_consent_granted`
+// would otherwise answer with an empty trail about rows one name over. Both halves are asserted:
+// the request uses the name the rows carry AND the control shows it, since displaying the dead
 // spelling teaches the operator a name that no longer works.
 
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
@@ -84,9 +77,8 @@ test("an unrelated value is left exactly as it was asked", async () => {
   expect(sent.at(-1) ?? "").toContain("not_an_action");
 });
 
-// ...including one that a plain-object lookup would have answered with an inherited FUNCTION, which
-// would reach the filter state as a non-string and the query string as "[object Object]" or worse.
-// Driven through the page rather than the map because this is where the operator's value enters.
+// ...including one a plain-object lookup would answer with an inherited FUNCTION, reaching the
+// query string as "[object Object]". Driven through the page, where the operator's value enters.
 test("a name off Object.prototype travels as the string it is", async () => {
   mountAt("?action=toString");
   await waitFor(() => expect(sent.length).toBeGreaterThan(0));

@@ -15,11 +15,11 @@ import {
 } from "@/client/pages/conversationTimeline";
 import { PRICE_TABLE_READ_AT } from "@/modules/pricing/version";
 
-// Issues #853 and #858: each agent turn's spend sits at the foot of the last message the turn
-// created that is on screen. A turn with none on screen (silent, older than the loaded page, from
-// before its messages were recorded) keeps a line in the timeline at the time of its last billed
-// call, and while older pages are still to load a line older than the oldest loaded message waits
-// for them instead of stacking above the first bubble.
+// Each agent turn's spend sits at the foot of the last message the turn created that is on screen.
+// A turn with none on screen (silent, older than the loaded page, or without recorded messages)
+// keeps a line in the timeline at the time of its last billed call, and while older pages are still
+// to load, a line older than the oldest loaded message waits for them instead of stacking above the
+// first bubble.
 
 afterEach(() => {
   cleanup();
@@ -151,7 +151,7 @@ describe("the figure itself", () => {
     expect(screen.queryByTestId("token-usage-detail") === null).toBe(true);
   });
 
-  // Issue #863: the cost is in the popover and nowhere else.
+  // NOTE: the cost is in the popover and nowhere else.
   const priced = (costUsd: number, unpricedCalls: number) => ({
     ...turn("tA", T0).usage,
     costUsd,
@@ -211,7 +211,7 @@ describe("the figure itself", () => {
     expect(detail).not.toContain("price table of");
   });
 
-  // Issue #865: the line under the figure says whose prices it used.
+  // NOTE: the line under the figure says whose prices it used.
   test("a figure priced by the tenant's own prices says so, and a mixed one names both", async () => {
     await inLanguage(
       "en",
@@ -244,7 +244,7 @@ describe("the figure itself", () => {
     );
   });
 
-  // Issue #866: an OpenRouter call carries what OpenRouter charged, which is no table estimate.
+  // NOTE: an OpenRouter call carries what OpenRouter charged, which is no table estimate.
   test("a figure OpenRouter reported says so, and three sources are named together", async () => {
     await inLanguage(
       "en",

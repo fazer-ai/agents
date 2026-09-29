@@ -4,14 +4,9 @@ import { describe, expect, test } from "bun:test";
 import { cleanup, render } from "@testing-library/react";
 
 // A layout rule that only exists at paint time. happy-dom computes no layout, so what is checked is
-// the CLASS the modal hands the preview column — which is where the bug was, and is the thing that
-// can silently regress.
-//
-// What broke: the preview column carries `self-start` (without it `sticky` has nothing to travel
-// within), and `self-start` removes the stretch that was giving the column its height. With only a
-// `max-h-` ceiling left, the box sat at `min-h-96` and the PDF rendered into 384px of a modal twice
-// that tall. The fix is a DEFINITE height, and this is the check that it does not quietly go back to
-// a ceiling the next time someone tunes the number.
+// the CLASS the modal hands the preview column. The column carries `self-start` (so `sticky` has
+// something to travel within), which removes the stretch that gave it height, so it needs a
+// DEFINITE height: a `max-h-` ceiling alone leaves the box at `min-h-96` with the PDF in 384px.
 
 const MODAL = new URL(
   "../../src/client/pages/resources/documents/DocumentTemplateModal.tsx",
@@ -41,12 +36,9 @@ describe("the template modal's preview column", () => {
 });
 
 // The height above only reaches the document because the iframe fills the box it is given, so the
-// two files cannot drift apart into a tall empty frame around a small PDF.
-//
-// Rendered rather than read off the source, and that is not a preference: the first version of this
-// scanned from `indexOf("<iframe")`, which lands on the module comment ABOVE the component (it says
-// "in an <iframe> fed by a blob URL"), so the slice swept up the loading Skeleton's own `h-full` and
-// the check passed with the iframe stripped bare. The class attribute is on the element either way.
+// two files cannot drift apart into a tall empty frame around a small PDF. Rendered, not read off
+// the source: a scan from `indexOf("<iframe")` lands on the module comment above the component and
+// sweeps up the Skeleton's own `h-full`.
 describe("the preview iframe", () => {
   test("fills the box it is given", async () => {
     const { DocumentPreview } = await import(

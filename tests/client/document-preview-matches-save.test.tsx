@@ -21,16 +21,12 @@ import { ToastProvider, useModalController } from "@/client/components";
 import { DocumentTemplateModal } from "@/client/pages/resources/documents/DocumentTemplateModal";
 
 // The preview promises what the SAVE will produce, and the save sends only what this modal changed.
-// A preview assembled from the modal's whole state therefore describes a different write: the modal
-// holds a snapshot from when the list loaded, so a wording-only edit previews the style that
-// snapshot carries while the save keeps whatever an API or MCP client set in the meantime. The two
-// have to be built from one value.
-//
-// Driven through the rendered modal and asserted on the REQUEST, because that is where the two
-// payloads can differ — comparing them in the component would just be reading the same variable
-// twice.
-//
-// NOTE: every assertion reduces to a boolean or a string BEFORE expect — a failing expectation that
+// The modal holds a snapshot from when the list loaded, so a preview built from its whole state
+// would show the snapshot's style while the save keeps what an API or MCP client set since. Both
+// are built from one value, asserted on the REQUEST (comparing them in the component would read
+// the same variable twice).
+
+// Every assertion reduces to a boolean or a string BEFORE expect: a failing expectation that
 // holds a DOM node serializes a cyclic happy-dom tree and stalls the runner.
 
 (globalThis as { happyDOM?: { setURL(u: string): void } }).happyDOM?.setURL(
@@ -170,7 +166,7 @@ describe("the preview payload is the payload that will be saved", () => {
 });
 
 // The diff was captured when Save was clicked. An edit typed after that is not in the request, and
-// the success that follows closes the modal and takes it away without a word — so the form has to
+// the success that follows closes the modal and takes it away without a word, so the form has to
 // stop accepting edits for as long as the request is out.
 describe("the form is not editable while a save is in flight", () => {
   test("controls are disabled until the request answers", async () => {
@@ -190,11 +186,10 @@ describe("the form is not editable while a save is in flight", () => {
       expect(patchBodies.length).toBe(1);
     });
 
-    // Asserted STRUCTURALLY: every editable control sits inside a fieldset, and that fieldset is
-    // disabled. A fieldset disables its whole subtree — including controls added to this form later,
-    // which is why it is one element rather than a prop on each — but that inheritance is computed
-    // by the browser, and happy-dom leaves `el.disabled` reading each element's own attribute. So
-    // the containment and the flag are what can be observed here; the propagation is the platform's.
+    // NOTE: asserted STRUCTURALLY: every editable control sits inside a disabled fieldset, which
+    // disables its whole subtree (including controls added later). happy-dom does not compute that
+    // inheritance (`el.disabled` reads each element's own attribute), so containment and the flag
+    // are what is observed here.
     const form = document.querySelector("fieldset") as HTMLFieldSetElement;
     expect(form?.disabled).toBe(true);
     const editable = [
@@ -202,10 +197,9 @@ describe("the form is not editable while a save is in flight", () => {
     ] as HTMLElement[];
     expect(editable.length).toBeGreaterThan(3);
     expect(editable.every((el) => form.contains(el))).toBe(true);
-    // Released so the request does not outlive the test. Whether the modal then closes is the
-    // SAVE's business, asserted by the test above through the PATCH it sends; waiting for the close
-    // here only adds a timing dependency to an assertion about the form being frozen, and under a
-    // full-suite run that wait is what timed out.
+    // NOTE: released so the request does not outlive the test. Whether the modal then closes is
+    // asserted by the test above; waiting for the close here would only add a timing dependency
+    // that times out under a full-suite run.
     releasePatch();
   });
 });

@@ -7,9 +7,9 @@ import {
 } from "@/client/pages/resources/ToolTestModal";
 import { parseToolInputSchema } from "@/graph/tools/http";
 
-// Round 1 of review, finding 1. The test dialog collects text and the runtime validates the
-// argument against the field's DECLARED zod type before fetching, so five of the seven declared
-// types would fail the call on a schema error and never reach the API.
+// The test dialog collects text, and the runtime validates each argument against the field's
+// DECLARED zod type before fetching, so an uncoerced value fails on a schema error and never reaches
+// the API.
 //
 // The control is not this table's shape but its agreement with `parseToolInputSchema`, which builds
 // the very schema `buildHttpTool` validates against: a coercion that only satisfies its own author
@@ -82,15 +82,14 @@ describe("coerceTestArg", () => {
       if (got.ok) args[name] = got.value;
     }
     expect(parseToolInputSchema(declared).safeParse(args).success).toBe(true);
-    // And the control the other way: the raw strings this dialog used to send do NOT pass, which is
-    // the defect being fixed rather than a property of the fix.
+    // NOTE: and the control the other way: the raw strings do NOT pass, which proves the coercion is
+    // needed rather than a property of itself.
     expect(parseToolInputSchema(declared).safeParse(typed).success).toBe(false);
   });
 });
 
-// Round 2 of review. Two questions the dialog answered on its own and the runtime answers
-// differently, both proven against `parseToolInputSchema`/`zodFor` rather than against my reading
-// of them.
+// Two questions the dialog could answer differently from the runtime, both proven against
+// `parseToolInputSchema`/`zodFor` rather than against a reading of them.
 
 describe("argProblem", () => {
   test("a required field left blank is a problem, an optional one is not", () => {
@@ -141,9 +140,9 @@ describe("fieldUsesPicker", () => {
   });
 });
 
-// Round 11 of review. An empty string is a VALUE for a string field — a PATCH that clears a
-// provider field sends exactly that — and the dialog read every blank box as "nothing". A required
-// string field could therefore not be submitted at all.
+// An empty string is a VALUE for a string field (a PATCH that clears a provider field sends exactly
+// that), so a blank box is not always "nothing": otherwise a required string field could never be
+// submitted.
 describe("the empty string, where the schema takes it", () => {
   test.each([
     [{ type: "string" }, true],
@@ -165,7 +164,7 @@ describe("the empty string, where the schema takes it", () => {
   });
 
   test("a required string left blank is a value, not a missing field", () => {
-    // It used to be a dead end: reported missing, Send disabled, and no way to say "".
+    // NOTE: otherwise a dead end: reported missing, Send disabled, and no way to say "".
     expect(argProblem({ type: "string", required: true }, "")).toBeNull();
     // A required integer left blank is still missing — "" is not an integer.
     expect(argProblem({ type: "integer", required: true }, "")).toEqual({

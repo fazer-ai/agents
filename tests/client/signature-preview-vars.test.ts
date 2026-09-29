@@ -15,15 +15,11 @@ import { SIGNATURE_DEFAULTS } from "@/modules/signature/service";
 
 // EVERY VARIABLE THE SIGNATURE FIELD ACCEPTS RESOLVES IN ITS PREVIEW.
 //
-// Three review rounds of #599 reported this one name at a time, which is what a fence is for. The
-// preview renders an unresolved placeholder as the operator's own literal — the right behaviour for
-// a TYPO, and a lie for a name the field supports, because the operator reads "this does not work"
-// and stops using it. The three reported were `{{email_contato}}`, `{{telefone_contato}}` and
-// `{{canal}}` (a hand-written example map that had fallen behind the chips) and then
-// `{{horario_atendimento}}` (the map was passed without the render options a schedule name needs).
-//
-// Asked over the LISTS the editor itself offers, so a variable added to the prompt is covered here
-// without anyone remembering to add it.
+// The preview renders an unresolved placeholder as the operator's own literal: right for a TYPO, and
+// a lie for a name the field supports, because the operator reads "this does not work" and stops
+// using it. Schedule names also need the render options, not only the example map. Asked over the
+// LISTS the editor itself offers, so a variable added to the prompt is covered without anyone
+// remembering to add it.
 const t = (_k: string, d: string) => d;
 
 const SOURCE = await Bun.file("src/client/pages/agents/BehaviorTab.tsx").text();
@@ -79,9 +75,8 @@ describe("the signature preview answers every variable the field offers", () => 
   });
 });
 
-// The cases above prove the FUNCTION honours its options. What the review found was the CALL SITE
-// not passing them, which no amount of calling the function directly can catch — so this reads the
-// tab's own source, the way the repo's other placement fences do.
+// The cases above prove the FUNCTION honours its options; only the CALL SITE can fail to pass them,
+// which calling the function directly cannot catch, so this reads the tab's own source.
 describe("the tab passes the render options to its preview", () => {
   test("the preview call forwards an options argument", () => {
     const at = SOURCE.indexOf("{signaturePreviewParts(");
@@ -101,12 +96,9 @@ describe("the tab passes the render options to its preview", () => {
 
 // ONE EXAMPLE PERSON FOR THE WHOLE EDITOR, AND NOBODY REAL IN IT.
 //
-// The signature preview shipped with a second sample contact, a second sample company and a second
-// sample agent, invented beside the ones the prompt editor two clicks away already used — and the
-// company and agent were a live customer of one deployment, in a product that ships to every
-// deployment. Both are the same defect seen from two sides: sample data written where it is needed
-// rather than read from where it already exists. The fence is the shared constant, because a
-// hand-written literal is what drifts.
+// Sample contact, company and agent are read from the shared constants the prompt editor uses, never
+// written beside the call site: a hand-written literal drifts from the other preview, and the tree
+// ships to every deployment, so it must not carry a real customer.
 describe("the editor's previews speak to one example person", () => {
   test("both preview call sites read the shared example contact", () => {
     expect(SOURCE).toContain("PROMPT_PREVIEW_CONTACT");
@@ -122,8 +114,8 @@ describe("the editor's previews speak to one example person", () => {
     );
   });
 
-  // A sample contact hard-coded next to the call site is how the two previews drifted apart the
-  // first time. Asked of both files, so neither editor can grow a private one back.
+  // NOTE: a sample contact hard-coded next to the call site is how the two previews drift apart.
+  // Asked of both files, so neither editor can grow a private one.
   test("neither editor hard-codes a sample contact beside its preview", () => {
     // Booleans, not the file: a failed `expect(src).not.toContain(...)` prints the whole tab.
     const files: Array<[string, string]> = [
@@ -140,9 +132,8 @@ describe("the editor's previews speak to one example person", () => {
 
 // THE OPERATOR'S OWN AGENT SIGNS THE PREVIEW.
 //
-// The acceptance run's note on the first version: the preview resolved `{{nome_agente}}` to a
-// stand-in, so the operator read a message their agent would never send. A signature is mostly
-// those two names, which makes a stand-in there the one place an example costs something.
+// A stand-in for `{{nome_agente}}` shows a message their agent would never send. A signature is
+// mostly those two names, which makes a stand-in there the one place an example costs something.
 describe("the preview signs with the operator's own names", () => {
   const vars = signaturePreviewVars("Recepção", "Clínica Moreira");
 
@@ -178,9 +169,8 @@ describe("the preview signs with the operator's own names", () => {
   });
 });
 
-// Issue #616: the preview is where the operator sees what they are buying. A single bubble could
-// not show the repetition, and could not show WHICH of two messages `once` signs either — the half
-// of the old rule nobody could read off the screen.
+// The preview is where the operator sees what they are buying: a single bubble could not show the
+// repetition, nor WHICH of two messages `once` signs.
 describe("the preview shows one bubble per message", () => {
   const VARS = signaturePreviewVars("Alex", "Minha Empresa");
   const sig = (over: Record<string, unknown>) => ({

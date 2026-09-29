@@ -1,17 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 
-// Two conversation endpoints answer with an OUTCOME rather than with a failure: `/return` can come
-// back "taken-over" and `/reengage` can come back "gate-closed" (among others). Both return HTTP
-// success in those cases, on purpose — the call did what it could, and what is being reported is the
-// state it ended in — so a handler that checks `error` alone shows a success toast that says the
-// opposite of what the row now reads. `/return` shipped exactly that: the outcome was added on the
-// server, threaded through the API and the MCP tool, and the first-party console kept destructuring
-// only `error`, telling the operator the AI had a conversation a person had just claimed.
-//
+// Two conversation endpoints answer with an OUTCOME rather than a failure: `/return` can come back
+// "taken-over" and `/reengage` "gate-closed" (among others), both with HTTP success on purpose. A
+// handler that checks `error` alone shows a success toast that contradicts what the row now reads.
 // Checked on the source because rendering this page pulls auth, theme, toast, realtime and a live
 // conversation, and the branch under test is one `if`. The outcomes themselves are covered by
-// tests/modules/tier3.test.ts; what is left here is that nobody writes a new action that drops them.
+// tests/modules/tier3.test.ts; this fences new actions that drop them.
 const SRC = readFileSync("src/client/pages/ConversationDetailPage.tsx", "utf8");
 
 // Endpoint -> the outcome value whose whole point is that it is NOT a success.
@@ -42,20 +37,15 @@ describe("conversation actions report their outcome", () => {
     });
   }
 
-  // AN OUTCOME THAT IS NEITHER A SUCCESS NOR A SILENCE (issue #429). `posted-partial` says the
-  // customer got part of the answer, and the handler's chain ends in an `else` that says "The AI
-  // produced no reply" — so a new outcome lands there by default and tells the operator the exact
-  // opposite of what happened. Worse than a wrong word: it invites them to re-engage again, which
-  // re-runs the turn and sends the part they already have a second time.
-  //
-  // Asserted as PRESENCE of the arm rather than absence from the fallback, for the reason the test
-  // below states about the offer: "does not reach the else" is not the same fact as "has its own
-  // branch", and only the second one survives someone reordering the chain.
+  // NOTE: an outcome that is neither a success nor a silence: `posted-partial` means the customer got part
+  // of the answer, and the chain's final `else` says "The AI produced no reply", inviting a
+  // re-engage that sends the part again. Asserted as PRESENCE of the arm, not absence from the
+  // fallback: only "has its own branch" survives someone reordering the chain.
   test("a partial reply gets its own arm instead of the no-reply fallback", () => {
     const body = handlerBody("reengage");
     const arm = body.indexOf('"posted-partial"');
     expect(arm).toBeGreaterThan(-1);
-    // Its own branch, and BEFORE the fallback — the chain is ordered, so an arm added after the
+    // NOTE: its own branch, and BEFORE the fallback: the chain is ordered, so an arm added after the
     // final `else` is unreachable.
     const fallback = body.indexOf("reengage.noReply");
     expect(fallback).toBeGreaterThan(arm);
@@ -63,15 +53,11 @@ describe("conversation actions report their outcome", () => {
     expect(body.slice(arm, fallback)).toContain("reengage.postedPartial");
   });
 
-  // The half a toast cannot fix. "Respond now" makes the agent post into the conversation, so
-  // offering it after a takeover invites the operator to talk over the person who just claimed it.
-  //
-  // Asserted as PRESENCE of the false write, not as absence of the true one. The first version of
-  // this test checked only that the arm does not raise the offer, and it passed over the defect it
-  // was written for: the offer is page state that outlives the action that raised it, so "does not
-  // raise it" and "takes it down" are different facts and only the second one is safe. The server
-  // leaves the status at `pending` here, so the JSX gate that hides the button after a handoff does
-  // not close on this path.
+  // NOTE: the half a toast cannot fix: "Respond now" after a takeover invites the operator to talk over
+  // the person who claimed it. Asserted as PRESENCE of the false write, not absence of the true one:
+  // the offer is page state that outlives the action that raised it, so only "takes it down" is
+  // safe. The server leaves the status `pending` here, so the JSX gate that hides the button after a
+  // handoff does not close on this path.
   test("a taken-over return takes the re-engage offer down", () => {
     const body = handlerBody("returnToAi");
     const takeover = body.indexOf('"taken-over"');
@@ -81,21 +67,15 @@ describe("conversation actions report their outcome", () => {
     const arm = body.slice(takeover, elseAt);
     expect(arm).toContain("setOfferReengage(false)");
     expect(arm).not.toContain("setOfferReengage(true)");
-    // And the ordinary return still raises it, so the assertion above is about the takeover rather
-    // than about an offer nobody makes any more.
+    // NOTE: the ordinary return still raises it, so the assertion above is about the takeover.
     expect(body.slice(elseAt)).toContain("setOfferReengage(true)");
   });
 
-  // Taking the offer down is not enough on its own: the operator still has to be able to RETRY. A
-  // takeover leaves the conversation `pending` with a human on it, and the two ownership buttons used
-  // to key on status alone — so that state showed "Handoff to human" (to a conversation a human
-  // already had) and hid "Return to AI" (the only action that helps). An operator with no way to act
-  // on a conversation a human is holding is issue #198 itself, restated inside our own console.
-  //
-  // And the holder is the SERVER's answer, not `assigneeType === "User"`. A conversation assigned to
-  // another persona's agent bot is equally out of this agent's hands — the ownership gate compares the
-  // bot id, which the browser cannot do — so a User-only test reads that case backwards and offers
-  // exactly the wrong button on it.
+  // NOTE: the operator must still be able to RETRY: a takeover leaves the conversation `pending` with a
+  // human on it, so buttons keyed on status alone would offer "Handoff to human" and hide "Return to
+  // AI". The holder is the SERVER's answer, not `assigneeType === "User"`: a conversation assigned
+  // to another persona's agent bot is equally out of this agent's hands, and only the server can
+  // compare the bot id.
   test("the ownership buttons key on the holder, not on the status", () => {
     // The gates live in JSX, so they are read as source for the same reason the handlers are.
     const handoff = SRC.indexOf(".handoff.post(");
@@ -115,14 +95,13 @@ describe("conversation actions report their outcome", () => {
     expect(returnGate).toBeGreaterThan(-1);
     expect(returnGate).toBeLessThan(returnCall);
 
-    // And it does not overlap "Reopen", which runs the SAME operation: two differently labelled
-    // buttons for one action is what keying the holder clause on every status produced.
+    // NOTE: it does not overlap "Reopen", which runs the SAME operation: keying the holder clause on
+    // every status would show two differently labelled buttons for one action.
     expect(SRC.slice(returnGate, returnCall)).toContain('!== "resolved"');
     expect(SRC.slice(returnGate, returnCall)).toContain("heldByOther");
 
-    // "Respond now" asks the agent to speak, so it asks the same question. Read from the gate to
-    // the LABEL rather than over a fixed window: the gate gained a clause in issue #753 (the rank
-    // the route now asks for) and a character count broke on it.
+    // NOTE: "Respond now" asks the agent to speak, so it asks the same question. Read from the gate
+    // to the LABEL rather than over a fixed window, since the gate has more than one clause.
     const reengageGate = SRC.indexOf("{mayReengage &&");
     expect(reengageGate).toBeGreaterThan(-1);
     const reengageLabel = SRC.indexOf(
@@ -132,9 +111,9 @@ describe("conversation actions report their outcome", () => {
     expect(reengageLabel).toBeGreaterThan(reengageGate);
     expect(SRC.slice(reengageGate, reengageLabel)).toContain("!heldByOther");
 
-    // None of the three settles for the browser-side approximation. `isHuman` still exists for the
-    // header's assignee line, so its presence in the file is not the thing being forbidden — its
-    // presence in these three gates is.
+    // NOTE: none of the three settles for the browser-side approximation. `isHuman` still exists for the
+    // header's assignee line, so its presence in the file is not the thing being forbidden, only
+    // its presence in these three gates.
     for (const gate of [
       SRC.slice(handoffGate, handoff),
       SRC.slice(returnGate, returnCall),
@@ -144,11 +123,10 @@ describe("conversation actions report their outcome", () => {
     }
   });
 
-  // And all three that hand the conversation TO the agent ask whether anything answers the inbox
-  // (issue #495): a responder bound, switched on, not in monitoring mode. On an inbox an observer
-  // only watches, "Return to AI" set the conversation pending and unassigned the person who had it,
-  // and nothing ever picked it up. The server refuses now; the console does not offer it first.
-  // "Handoff to human" is the one action that needs no agent, so it is left out on purpose.
+  // NOTE: all three that hand the conversation TO the agent ask whether anything answers the inbox: a
+  // responder bound, switched on, not in monitoring mode. Otherwise "Return to AI" would unassign
+  // the person and nothing would pick it up; the server refuses it, and the console does not offer
+  // it. "Handoff to human" needs no agent, so it is left out on purpose.
   test("handing the conversation to the agent is offered only when a responder answers the inbox", () => {
     const gateDef = SRC.indexOf("const responderAnswers =");
     expect(gateDef).toBeGreaterThan(-1);
@@ -158,20 +136,17 @@ describe("conversation actions report their outcome", () => {
     expect(SRC.slice(gateDef, gateDef + 200)).toContain(
       'agentMode !== "monitoring"',
     );
-    // ...and the bot row behind the binding (issue #495 review, round 2): without it the server
-    // refuses the return with a 409 and the re-engage cannot load the agent.
+    // NOTE: ...and the bot row behind the binding: without it the server refuses the return with a
+    // 409 and the re-engage cannot load the agent.
     expect(SRC.slice(gateDef, gateDef + 200)).toContain("agentHasBot === true");
-    // ...and a `test` agent only where `/teste` activated it (issue #495 review, round 11). The
-    // server answers `errors.returnAgentTestSilent` there, so the button would be a 409 with a
-    // click on it. Read off the EPISODE's activation, which is what `testActivatedAt` on the detail
-    // already carries (issue #261) and the same question the server asks.
+    // NOTE: ...and a `test` agent only where `/teste` activated it (the server answers
+    // `errors.returnAgentTestSilent` otherwise). Read off the EPISODE's activation,
+    // `testActivatedAt` on the detail, the same question the server asks.
     expect(SRC.slice(gateDef, gateDef + 900)).toContain(
       'conv.agentMode !== "test" || conv.testActivatedAt != null',
     );
-    // ...and when it hides them it SAYS SO (issue #495 review, round 13). Hiding on its own leaves
-    // the operator looking for a button that is not there, unable to tell a rule from a bug — and
-    // this predicate reads the mirror, so on the one conversation where it is wrong they had nothing
-    // to go on at all.
+    // NOTE: ...and when it hides them it SAYS SO: otherwise the operator cannot tell a rule from a
+    // bug, and this predicate reads the mirror, so where it is wrong they would have nothing to go on.
     expect(SRC).toContain(
       "const noResponder: { label: string; detail: string } | null =",
     );
@@ -180,19 +155,14 @@ describe("conversation actions report their outcome", () => {
       "conversation.responderObserves",
       "conversation.responderNoBot",
       "conversation.responderTestSilent",
-      // ...and the inbox with NO responder at all, which round 13 excluded on the theory that the
-      // panel above already says it (issue #495 review, round 16). It does not: with nobody
-      // assigned that line prints the generic "AI" label, which names an answerer this inbox does
-      // not have, and with a person on it it prints their name — either way the three actions
-      // vanish with nothing on screen saying why.
+      // NOTE: ...including the inbox with NO responder at all: the panel above prints the generic
+      // "AI" label (or a person's name), which does not explain why the three actions vanished.
       "conversation.responderNone",
     ]) {
       expect(SRC).toContain(key);
     }
-    // ...each with a SHORT label beside it, which is what sits in the action row; the sentence is
-    // behind the row's `?` (issue #494 manual test). A sentence dropped into a flex line of buttons
-    // wraps and moves the navigation, and the condition is three words even when the remediation is
-    // not.
+    // NOTE: ...each with a SHORT label in the action row and the sentence behind the row's `?`: a
+    // sentence in a flex line of buttons wraps and moves the navigation.
     for (const key of [
       "conversation.responderNoneShort",
       "conversation.responderOffShort",
@@ -244,10 +214,9 @@ describe("conversation actions report their outcome", () => {
     const handoffGate = SRC.lastIndexOf("{conv.status ===", handoff);
     expect(SRC.slice(handoffGate, handoff)).not.toContain("responderAnswers");
 
-    // ...INCLUDING THE FAILURE CARD'S OWN BUTTON (issue #495 review, round 1). It calls the same
-    // endpoint, which answers `no-agent` on an inbox nothing answers, and a conversation keeps its
-    // `lastError` long after its responder was unbound — so it outlives the header offer it was
-    // gated beside.
+    // NOTE: ...including the failure card's own button. It calls the same endpoint, which answers
+    // `no-agent` on an inbox nothing answers, and a conversation keeps its `lastError` long after its
+    // responder was unbound.
     const failureCard = SRC.indexOf("conversation.reengage.failedTitle");
     expect(failureCard).toBeGreaterThan(-1);
     const failureAction = SRC.indexOf(

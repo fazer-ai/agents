@@ -14,9 +14,9 @@ import {
 import { readTtsConfig } from "@/modules/tts/settings";
 
 // The Behavior save REPLACES the whole `tts` block with what the form holds, so any field the form
-// does not carry is deleted on the next save. `normalizeBaseURL` was exactly that: settable over REST
-// and MCP, and wiped the first time an operator saved the Behavior tab. These tests are over the
-// round-trip rather than over that one field, so the next field cannot be added silently either.
+// does not carry (`normalizeBaseURL` is settable over REST and MCP) is deleted on the next save.
+// These tests are over the round-trip rather than over one field, so the next field cannot be added
+// silently either.
 
 // Every knob set to a NON-default value, so a field that fails to survive shows up as a difference
 // rather than as a coincidence.
@@ -49,8 +49,8 @@ const SAVED = {
 };
 
 describe("agent editor TTS round-trip", () => {
-  // Issue #802: "Instance default" is stored as null, so saving the tab never pins the agent to the
-  // mode the instance has today, and a value that is not one of the three reads as the default.
+  // NOTE: "Instance default" is stored as null, so saving the tab never pins the agent to the mode the
+  // instance has today, and a value that is not one of the three reads as the default.
   test("the audio check left on the instance default stays null, and garbage reads as the default", () => {
     expect(readTtsFormState({}).checkMode).toBe("");
     expect(ttsSettingsFrom(readTtsFormState({})).checkMode).toBeNull();
@@ -62,9 +62,9 @@ describe("agent editor TTS round-trip", () => {
     }
   });
 
-  // Issue #856: an agent saved before the limits existed shows the defaults it runs on, a cleared
-  // field is stored as null (off), never dropped (absent would bring the default back), and a typed
-  // value outside the band is stored at its end, as the runtime reads it.
+  // NOTE: an agent saved before the limits existed shows the defaults it runs on, a cleared field is
+  // stored as null (off), never dropped (absent would bring the default back), and a typed value
+  // outside the band is stored at its end, as the runtime reads it.
   test("the text-instead-of-audio limits: defaults shown, cleared means off, out of band clamped", () => {
     const fresh = readTtsFormState({ mode: "mirror" });
     expect(fresh.textInstead).toBe(false);
@@ -93,8 +93,8 @@ describe("agent editor TTS round-trip", () => {
     expect(ttsSettingsFrom(form)).toEqual(SAVED);
   });
 
-  // Issue #859: an agent saved before the two switches existed is saved back with both off and no
-  // text, so opening and saving the tab after an upgrade changes nothing the model reads.
+  // NOTE: an agent saved before the two switches existed is saved back with both off and no text, so
+  // opening and saving the tab after an upgrade changes nothing the model reads.
   test("an agent saved before the spoken-reply switches keeps them off after a save", () => {
     const out = ttsSettingsFrom(readTtsFormState({ mode: "mirror" }));
     expect([
@@ -192,8 +192,8 @@ describe("mode and provider are allowlisted the way the runtime allowlists them"
     );
   });
 
-  // And the reader agrees with the runtime's, field by field, on the same bag: this is the
-  // invariant, the two above are just the cases that broke it.
+  // NOTE: and the reader agrees with the runtime's, field by field, on the same bag: this is the
+  // invariant, and the two above are cases of it.
   test("both fields agree with readTtsConfig on the same bag", () => {
     for (const bag of [
       { mode: "Mirror", provider: "Elevenlabs" },
@@ -424,9 +424,9 @@ describe("does the rewrite need a credential of its own", () => {
   });
 });
 
-// What the model picker authenticates with to list models. It calls the provider, so being handed
-// only the rewrite's own (deliberately empty) fields left it with nothing on the one change this
-// feature exists for, and it answered "select a credential" with an empty list.
+// What the model picker authenticates with to list models. It calls the provider, so handing it only
+// the rewrite's own (deliberately empty) fields would leave it answering "select a credential" with
+// an empty list on the one change this feature exists for.
 describe("what the model picker queries with", () => {
   test("the same provider with no key of its own borrows the agent's", () => {
     expect(

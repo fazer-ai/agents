@@ -7,14 +7,11 @@ import {
   pickVariant,
 } from "@/lib/branding";
 
-// The browser requests the icon declared in `<head>`, and `applyFavicon` cannot swap the links
-// until the deferred module script has mounted. Measured in Chromium: leaving the declared links
-// in place and appending a custom one makes the browser fetch BOTH, so the only shape that keeps
-// the vendor's icon off the wire is removing them before the parser is done (#290).
-//
-// Removing them takes the declared defaults with it, and those are what a cleared favicon has to
-// restore. So the inline script hands them over, and this file exercises both ends of that
-// handover against the bytes the page actually ships.
+// The browser requests the icon declared in `<head>`, and `applyFavicon` cannot swap the links until
+// the deferred module script has mounted. Leaving the declared links and appending a custom one
+// makes Chromium fetch BOTH, so the inline script removes them before the parser is done, and hands
+// the declared defaults over so a cleared favicon can restore them. This file exercises both ends
+// of that handover against the bytes the page ships.
 
 const INDEX_HTML = await Bun.file(
   new URL("../../public/index.html", import.meta.url),

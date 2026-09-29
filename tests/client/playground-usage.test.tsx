@@ -17,10 +17,9 @@ import {
   type PlaygroundUsage,
 } from "@/client/pages/agents/usePlaygroundChat";
 
-// Issues #839 and #858: what a playground turn spent, in the words the operator reads. One figure is
-// always on screen, the input tokens; the rest is in the popover. The rule the detail carries is the
-// one from #706: the cached share is always said, as a PART of the input (never subtracted from it,
-// never left out), and a cache write only when there was one.
+// What a playground turn spent, in the words the operator reads. One figure is always on screen, the
+// input tokens; the rest is in the popover. The cached share is always said, as a PART of the input
+// (never subtracted from it, never left out), and a cache write only when there was one.
 
 afterEach(cleanup);
 
@@ -225,10 +224,10 @@ describe("the turn keeps its usage", () => {
   });
 });
 
-// The hook's own books (issue #839, review rounds 1 to 3). The session total is the LEDGER's, re-read
-// after every turn: a turn can fail after a call it was billed for, and only the ledger has that
-// call. A new session gets its thread before its first call, so such a call lands on the thread the
-// session keeps. The fake server below keeps a ledger per thread, the way the real one does.
+// The hook's own books. The session total is the LEDGER's, re-read after every turn: a turn can fail
+// after a call it was billed for, and only the ledger has that call. A new session gets its thread
+// before its first call, so such a call lands on the thread the session keeps. The fake server below
+// keeps a ledger per thread, the way the real one does.
 describe("usePlaygroundChat keeps the session total and the history honest", () => {
   const realFetch = globalThis.fetch;
   afterEach(() => {

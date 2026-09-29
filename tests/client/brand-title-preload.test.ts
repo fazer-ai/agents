@@ -6,9 +6,8 @@ import {
 } from "@/lib/branding";
 
 // The browser stamps the tab title the moment `<title>` is parsed, and `BrandingProvider` cannot
-// correct it until the deferred module script has been fetched, parsed and mounted. So the only
-// place that can carry the operator's name onto the FIRST paint is an inline <head> script, and
-// the only honest way to test one is to run the bytes the page ships (#277).
+// correct it until the deferred module script has mounted. So only an inline <head> script can put
+// the operator's name on the FIRST paint, and the test runs the bytes the page ships.
 
 const INDEX_HTML = await Bun.file(
   new URL("../../public/index.html", import.meta.url),

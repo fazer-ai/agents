@@ -3,15 +3,11 @@ import en from "@/client/locales/en.json";
 import ptBR from "@/client/locales/pt-BR.json";
 import { createTestI18n } from "@/tests/utils/i18n";
 
-// WHAT THE READER SEES, which is the thing issue #513 was about. The sweep in `locale-plurals`
-// asserts the catalogs HOLD distinct forms; this asserts i18next actually PICKS the singular for a
-// count of one, through the real catalogs and the real plural resolver.
-//
-// The two are not the same assertion, and the gap between them is where this defect lived: a key
-// can carry `_one` and `_other` and still render the plural for every count, if the `count` handed
-// in is not a number. `AgentEditorPage` passes `Number(p.count ?? 0)` for exactly that reason, and a
-// producer that renames the field back to `n` puts a 0 there, which reads as the plural in a
-// sentence about one document.
+// What the reader sees. The sweep in `locale-plurals` asserts the catalogs HOLD distinct forms; this
+// asserts i18next actually PICKS the singular for a count of one, through the real catalogs and the
+// real plural resolver. A key can carry `_one` and `_other` and still render the plural if `count`
+// is not a number: `AgentEditorPage` passes `Number(p.count ?? 0)`, so a producer sending `n`
+// would put a 0 there.
 const KEYS = [
   "editor.importWarning.hoursWindowsDropped",
   "editor.importWarning.hoursExceptionsDropped",
@@ -24,8 +20,8 @@ const RESOURCES = {
   "pt-BR": { translation: ptBR },
 };
 
-// The parenthetical dodge, asserted on the RENDERED sentence rather than on the catalog entry:
-// "1 window(s)" is what all four of these used to read, in both locales.
+// The parenthetical dodge ("1 window(s)"), asserted on the RENDERED sentence rather than on the
+// catalog entry, in both locales.
 const PARENTHETICAL_PLURAL =
   /(?<=\w)(?<!\bhttp)\((s|es|is|as|os|ns|ões|ãos)\)/i;
 

@@ -7,11 +7,9 @@ import { readFollowUpConfig } from "@/modules/followups/settings";
 import { followUpStepFields } from "../utils/followup-step-fields";
 
 // The Behavior save REPLACES the whole `followUp` block with what the form holds, and each step is
-// rebuilt field by field. So a field the form does not carry is not merely un-editable: it is
-// DELETED on the next save by an operator who never opened that switch. That already happened to
-// `tts.baseURL`, which REST and MCP accept and the form did not. A step is the worst shape for it —
-// a bag of optional fields, three of them today — so the guard here is not a hand-written list: it
-// is the field list of `FollowUpStep` itself, read off the source the runtime consumes.
+// rebuilt field by field, so a field the form does not carry is DELETED on the next save. A step is
+// a bag of optional fields, so the guard is not a hand-written list: it is the field list of
+// `FollowUpStep` itself, read off the source the runtime consumes.
 
 // Every interface field, each set to something a default read would NOT produce, so a field the
 // form drops comes back different rather than coincidentally equal.
@@ -25,8 +23,8 @@ const FULL_STEP = {
 };
 
 describe("agent editor follow-up round-trip", () => {
-  // The helper throws on an empty parse, so this is the assertion that the list is the RIGHT one:
-  // it names the field this issue adds, which is what every check below iterates over.
+  // NOTE: the helper throws on an empty parse, so this is the assertion that the list is the RIGHT one:
+  // it names a known field, and every check below iterates over it.
   test("the field list is read off the interface, and it names the new field", () => {
     expect(followUpStepFields()).toContain("ignoreAppointmentPause");
   });
@@ -44,9 +42,9 @@ describe("agent editor follow-up round-trip", () => {
     expect(round.steps[0]).toEqual(FULL_STEP);
   });
 
-  // #103: the switch is HIDDEN while the agent-wide pause is off, because there it decides nothing.
-  // Hidden is not off — an operator who turns the pause off, saves, and turns it back on would
-  // otherwise find every step's exemption silently cleared.
+  // NOTE: the switch is HIDDEN while the agent-wide pause is off, because there it decides nothing. Hidden
+  // is not off: turning the pause off, saving, and turning it back on must not clear every step's
+  // exemption.
   test("an exemption survives a save made while the agent-wide pause is off", () => {
     const stored = {
       followUp: {

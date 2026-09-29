@@ -9,20 +9,13 @@ import {
   waitFor,
 } from "@testing-library/react";
 
-// A HELD REFUSAL BELONGS TO ONE EDITING SESSION.
-//
-// The mark expires by VALUE, which is what keeps it from needing an `onChange` line per input — and
-// it is also why cancelling an editor is not enough to end it. `startEdit` re-seeds the draft from
-// the record, so reopening the same item (or another one whose title matches) puts the previous
-// request's server sentence under a box before anything has been sent. A dialog answers this with
-// `useOnModalOpen`; an inline editor has to answer it where the session starts.
-//
-// The list is gated on the same state for consistency with that — the two boxes are drawn inside
-// `editingId === a.id` — but there is no test here for a save answering after the editor closed,
-// because there is no way to get there: Cancel is `disabled={busyId === a.id}` while the PATCH is
-// out. Leaving the record of it in the source instead of asserting a path the UI blocks.
-//
-// NOTE: assertions reduce to a string or a boolean BEFORE expect: a failing expectation holding a
+// A held refusal belongs to one editing session. The mark expires by VALUE, so cancelling is not
+// enough: `startEdit` re-seeds the draft from the record, and reopening an item would show the last
+// request's server sentence before anything was sent. An inline editor ends it where the session
+// starts (a dialog does it with `useOnModalOpen`).
+// A save answering after the editor closed is not tested: Cancel is disabled while the PATCH is out.
+
+// Assertions reduce to a string or a boolean BEFORE expect: a failing expectation holding a
 // DOM node serializes a cyclic happy-dom tree and stalls.
 
 const { KnowledgeApprovals } = await import(
@@ -71,8 +64,7 @@ function serve() {
 
 // Edits the TITLE and leaves the content as proposed, which is what makes the refusal outlive the
 // session: the server refuses `content`, and `startEdit` re-seeds that same value on the next
-// opening, so the mark — which expires by VALUE — is still about what the box holds. Retyping the
-// refused text would do it too; this is the path that needs no retyping at all.
+// opening, so the mark (which expires by VALUE) is still about what the box holds.
 async function openEditorAndSave(title: string) {
   fireEvent.click(await screen.findByRole("button", { name: /^edit$/i }));
   fireEvent.change(screen.getByRole("textbox", { name: /title/i }), {

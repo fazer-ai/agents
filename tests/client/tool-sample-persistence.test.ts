@@ -25,10 +25,10 @@ import {
 } from "@/client/pages/resources/ToolEditModal";
 import { codeOnly } from "@/tests/utils/source-text";
 
-// THE SAMPLE COMES BACK FROM THIS TAB, AND FROM NOWHERE ELSE (issue #566). What is asserted here is
-// the seam: that the editor opens with what this tab remembers, that the save is what makes it
-// remember, and, the one that matters most, that none of it is written down, in the request or in
-// any store. That is the invariant the whole design exists to hold without qualification.
+// THE SAMPLE COMES BACK FROM THIS TAB, AND FROM NOWHERE ELSE. What is asserted here is the seam: the
+// editor opens with what this tab remembers, the save is what makes it remember, and, the one that
+// matters most, none of it is written down, in the request or in any store. That is the invariant the
+// whole design exists to hold without qualification.
 
 type AnyTool = Parameters<typeof formFromTool>[0];
 
@@ -89,10 +89,9 @@ describe("what the editor opens with", () => {
     expect(form.sampleStatus).toBe(404);
   });
 
-  // ROUND 9: A SAMPLE DESCRIBES ONE VERSION OF A TOOL. Someone else changing the URL or the response
-  // contract, from another tab or over REST or MCP, leaves the id intact and the paths meaningless,
-  // and the id is exactly what an id-keyed cache matches on. So the editor asks about the revision
-  // it just loaded, and a mismatch gets what a tool this tab never opened gets.
+  // NOTE: a sample describes one version of a tool. Someone else changing the URL or the response
+  // contract (another tab, REST, MCP) leaves the id intact and the paths meaningless, so the editor
+  // asks about the revision it just loaded, and a mismatch gets what a never-opened tool gets.
   it("offers nothing when the definition changed since the sample was captured", () => {
     rememberToolSample(
       "42",
@@ -157,11 +156,10 @@ describe("what the editor opens with", () => {
     expect(recallToolSample("1", REV)?.text).toBe(RESPONSE);
   });
 
-  // ROUND 11: pasting a sample is an unsaved change, so Save is how it is kept, and `payloadOf`
-  // sends nothing about it. A PATCH for that would rewrite the whole definition from a form loaded
-  // before someone else's edit, and advance `updatedAt` for a change the row does not contain.
-  // ROUND 12: a sample captured by a test request, then an edit to the URL before the save. Saved,
-  // it would pass the revision check, because this very save is what set that revision.
+  // NOTE: pasting a sample is an unsaved change, so Save is how it is kept, and `payloadOf` sends
+  // nothing about it: a PATCH for it would rewrite the definition from a possibly stale form and
+  // advance `updatedAt` for nothing. A sample captured before an edit to the URL must not pass the
+  // revision check that this very save sets.
   it("tells a definition that changes the response from one that does not", () => {
     const base = payloadOf(formFromTool(toolRow()));
     const same = (over: Record<string, unknown>) =>
@@ -401,11 +399,9 @@ describe("what the tab remembers", () => {
     expect(recallToolSample("7", REV)).toBeNull();
   });
 
-  // ROUND 8: A STATUS WITHOUT A BODY IS THE SAMPLE THAT MATTERS MOST. A test that came back 404
-  // with nothing in it is what makes the runtime bypass the template, and a template reading no
-  // field previews perfectly well over an empty body. Dropped for having no text, the status went
-  // with it, and the reopened tool previewed that same template as APPLIED, under a box that
-  // promises exactly what the agent would receive.
+  // NOTE: a status without a body is the sample that matters most. A 404 with nothing in it makes the
+  // runtime bypass the template, so dropping it for having no text would preview the same template
+  // as APPLIED on reopen.
   it("keeps a status that came back with an empty body", () => {
     rememberToolSample(
       "7",
@@ -492,12 +488,9 @@ describe("what the tab remembers", () => {
     });
   });
 
-  // A SUPER_ADMIN switches tenants without reloading, and the tool ids of two tenants are two
-  // sequences that overlap. Keyed by the id alone, tool 7 of the tenant just left would be offered
-  // as tool 7 of the one just entered.
-  // DEPTH, and it says so: `ToolDefinition.id` is a plain autoincrement on one table, so two tenants
-  // never share a tool id and this is not what stops one tenant's response reaching another. What it
-  // does buy is that a SUPER_ADMIN who switches tenants is not offered entries from the other one.
+  // NOTE: depth, and it says so: `ToolDefinition.id` is a plain autoincrement on one table, so two
+  // tenants never share a tool id and this is not what isolates tenants. What it buys is that a
+  // SUPER_ADMIN who switches tenants is not offered entries from the other one.
   it("keeps a tenant's entries under that tenant", () => {
     localStorage.setItem("@app:active-tenant", "3");
     rememberToolSample(
@@ -516,7 +509,7 @@ describe("what the tab remembers", () => {
     });
   });
 
-  // ROUND 7: the selector is shared across tabs and can move while a request is in flight. The write
+  // NOTE: the selector is shared across tabs and can move while a request is in flight. The write
   // belongs to the tenant the request went out under, not to whatever is selected when it lands.
   it("writes under the tenant the request went out under, not the one selected on return", () => {
     localStorage.setItem("@app:active-tenant", "3");
@@ -627,13 +620,10 @@ describe("what the tab remembers", () => {
   });
 });
 
-// A SAVE IS IN FLIGHT FOR AS LONG AS THE OPERATOR'S API TAKES, and both things that end a sample's
-// life can happen inside that window. The response then arrives and writes it back in, which is a
-// deletion and a logout being undone by a request that was already on the wire.
-// ROUND 13, AND THE THREE FINDINGS WERE ONE SHAPE: the marker that says which definition the sample
-// describes was maintained by hand at four sites, and two of them recorded the wrong thing. So it is
-// one function with one rule, and this is its table — the arrivals a sample can make, and what each
-// one does to the marker.
+// A save is in flight for as long as the operator's API takes, and a deletion or logout inside that
+// window must not be undone when the response lands. Which definition the sample describes is one
+// function with one rule, never maintained by hand at each site; this is its table, the arrivals a
+// sample can make and what each one does to the marker.
 describe("which definition the sample describes", () => {
   const FORM = formFromTool(toolRow());
   const SHAPE = captureShapeOf(payloadOf(FORM));
@@ -656,9 +646,8 @@ describe("which definition the sample describes", () => {
       previous: null,
       shape: SHAPE,
     },
-    // An empty body with a status IS a sample (round 8), so it describes a definition like any
-    // other. Recorded as nothing, a 404 captured against one URL survived an edit to that URL and
-    // came back previewing the template as applied against the new one.
+    // NOTE: an empty body with a status IS a sample, so it describes a definition like any other;
+    // recorded as nothing, a 404 would survive an edit to the URL and preview the template as applied.
     {
       what: "a status with no body, which is still a sample",
       text: "",
@@ -667,9 +656,8 @@ describe("which definition the sample describes", () => {
       previous: null,
       shape: SHAPE,
     },
-    // Format re-indents; it never changes a value. Recomputing here stamped a response captured
-    // against request A with the shape of request B, so pressing a pretty-printer erased the
-    // mismatch the save exists to refuse.
+    // NOTE: format re-indents and never changes a value, so it keeps the marker: recomputing it would
+    // stamp a response captured against request A with the shape of request B.
     {
       what: "the same sample re-indented, which captures nothing",
       text: `${RESPONSE}\n`,
@@ -710,10 +698,9 @@ describe("which definition the sample describes", () => {
       ).toBe(row.shape as string);
     });
 
-  // WHAT AN OPEN RECORDS, which is the finding that mattered most of the three: a sample this tab
-  // kept came back with NO definition recorded, so the refusal round 12 built lasted exactly as long
-  // as the modal stayed open. Reopen the tool, change the URL, save, and the old response was
-  // stamped with the new revision — the original defect, surviving a reopen.
+  // NOTE: what an open records. A sample this tab kept has to come back with the definition it
+  // describes, or the refusal lasts only as long as the modal stays open: reopen, change the URL,
+  // save, and the old response would be stamped with the new revision.
   it("an opening that restored a sample knows which definition it describes", () => {
     rememberToolSample(
       "42",
@@ -726,8 +713,8 @@ describe("which definition the sample describes", () => {
 
     // Saved as it opened, the sample still describes the tool.
     expect(sampleDescribes(shape, payloadOf(opened))).toBe(true);
-    // The URL edited after the reopen, and it does not. This is the assertion the whole round is
-    // about: with the opening recording nothing, it answered `true`.
+    // NOTE: the URL edited after the reopen, and it does not. With the opening recording nothing,
+    // this would answer `true`.
     expect(
       sampleDescribes(
         shape,
@@ -834,8 +821,8 @@ describe("which definition the sample describes", () => {
     ).toBe(captureShapeOf(payloadOf(opened)));
   });
 
-  // And the emptiness rule is the module's, asked rather than spelled again: round 8 was this
-  // judgement written in two places, with the copies disagreeing about a 404 with no body.
+  // NOTE: the emptiness rule is the module's, asked rather than spelled again, so no two copies can
+  // disagree about a 404 with no body.
   it("asks the module what counts as no sample", () => {
     for (const [text, status] of [
       ["", null],
@@ -859,10 +846,9 @@ describe("which definition the sample describes", () => {
 });
 
 // A CREDENTIAL IS A ROW OF ITS OWN, and that is the hole the revision cannot see: the picker inlined
-// in this very modal can edit the selected credential's base URL or its secret, keeping the same
-// name. The tool's `updatedAt` never moves, the payload is identical, and yet a relative
-// `urlTemplate` now resolves against another host and the request carries another authorization
-// (round 13 of review).
+// in this modal can edit the selected credential's base URL or secret under the same name. The tool's
+// `updatedAt` never moves and the payload is identical, yet a relative `urlTemplate` resolves against
+// another host and the request carries another authorization.
 describe("a credential changing under the same name", () => {
   const WITH = {
     revision: REV,
@@ -878,8 +864,8 @@ describe("a credential changing under the same name", () => {
     expect(recallToolSample("42", REV)).toBeNull();
   });
 
-  // NOT A GLOBAL CLEAR, which round 6 already paid for: a tool that carries no credential cannot be
-  // affected by a vault edit, and the operator would see one they never touched come back empty.
+  // NOTE: not a global clear: a tool that carries no credential cannot be affected by a vault edit,
+  // and the operator would see one they never touched come back empty.
   it("keeps the samples that used none", () => {
     rememberToolSample("43", WITHOUT, sampleTicket());
     invalidateVault();
@@ -909,11 +895,9 @@ describe("a credential changing under the same name", () => {
     expect(recallToolSample("46", REV)?.text).toBe(RESPONSE);
   });
 
-  // THE SAMPLE ON SCREEN IS THE COPY THE DROP ABOVE CANNOT REACH. Editing the credential through
-  // the picker inlined in this very modal drops the stored entry, and leaves the response in the
-  // form with the definition it was captured against recorded beside it: the save that follows
-  // takes its ticket AFTER the change, so nothing refuses it and the sample goes straight back in,
-  // describing a request against the host the credential used to name (round 14 of review).
+  // NOTE: the sample on screen is the copy the drop above cannot reach. The save that follows a
+  // credential edit takes its ticket AFTER the change, so nothing else refuses it, and the sample would
+  // go back in describing a request against the host the credential no longer names.
   it("a sample captured before the change stops describing the request", () => {
     const opened = formFromTool(toolRow({ credentialRef: "acme" }));
     const captured = shapeOfArrival({
@@ -942,10 +926,9 @@ describe("a credential changing under the same name", () => {
     expect(sampleDescribes(captured, payloadOf(opened))).toBe(true);
   });
 
-  // TWO SPELLINGS OF "NO CREDENTIAL" REACH THIS MODULE: the form holds an empty string and the
-  // payload holds null. A rule that knew only one of them would read the other as a credential and
-  // drop a sample that no vault edit can touch, which is round 6's global invalidation arriving by
-  // the back door. So the empty string is the null here, on the way in and on the way out.
+  // NOTE: two spellings of "no credential" reach this module: the form holds an empty string and the
+  // payload holds null. Reading one as a credential would drop a sample no vault edit can touch, so
+  // the empty string is the null here, on the way in and on the way out.
   it("reads an empty reference as no credential, whichever way it is spelled", () => {
     rememberToolSample("48", { ...WITH, credentialRef: "" }, sampleTicket());
     expect(recallToolSample("48", REV)?.credentialRef).toBeNull();
@@ -991,9 +974,9 @@ describe("a credential changing under the same name", () => {
     expect(recallToolSample("50", REV)?.text).toBe(RESPONSE);
   });
 
-  // AND A TOOL THAT NAMES NO CREDENTIAL IS NOT AFFECTED BY ANY VAULT EDIT. Prefixing the marker
-  // unconditionally meant a credential saved anywhere in the console refused a sample nothing could
-  // have invalidated: the save reports success and closes, and the response is silently not kept.
+  // NOTE: and a tool that names no credential is not affected by any vault edit. Prefixing the marker
+  // unconditionally would refuse such a sample after any credential save anywhere, with the save
+  // reporting success and the response silently not kept.
   it("keeps a sample of a tool that names no credential", () => {
     const opened = formFromTool(toolRow());
     const captured = shapeOfArrival({
@@ -1042,8 +1025,8 @@ describe("a save that lands after the sample's life ended", () => {
     expect(recallToolSample("7", REV)).toBeNull();
   });
 
-  // ROUND 6: a global invalidation over-rejects. Deleting tool B while tool A's save is out would
-  // drop A's too, and the operator sees a tool they never touched come back with an older response.
+  // NOTE: a global invalidation over-rejects: deleting tool B while tool A's save is out must not drop
+  // A's, or the operator sees a tool they never touched come back with an older response.
   it("is not invalidated by the deletion of a DIFFERENT tool", () => {
     const ticket = sampleTicket();
     forgetToolSample("8", sampleTicket());
@@ -1067,9 +1050,9 @@ describe("a save that lands after the sample's life ended", () => {
     expect(recallToolSample("7", REV)).toBeNull();
   });
 
-  // ROUND 12: two openings of the same tool, the slow one answering last. `docs/modals.md` covers
-  // the dialog side of this; the cache has the same problem and the revision cannot see it, because
-  // the second opening loaded exactly the revision the first save committed.
+  // NOTE: two openings of the same tool, the slow one answering last. `docs/modals.md` covers the
+  // dialog side; the revision cannot see it, because the second opening loaded exactly the revision
+  // the first save committed.
   it("does not let an older opening's response land on a newer one's", () => {
     const first = sampleTicket();
     rememberToolSample(
@@ -1132,11 +1115,9 @@ describe("a save that lands after the sample's life ended", () => {
     expect(recallToolSample("10", REV)).toBeNull();
   });
 
-  // TWO SAVES OF ONE TOOL THAT START BEFORE EITHER FINISHES. Dismiss a slow save, reopen the tool
-  // and save again: the tickets used to carry the same number, because the clock only moved when
-  // something LANDED, and equal numbers cannot be ordered. Whichever response arrived first marked
-  // the key and the other was refused as stale, so the save the operator made LAST could lose to
-  // the one they made first. Issuing is what orders them now.
+  // NOTE: two saves of one tool that start before either finishes. Tickets are ordered at ISSUE, not
+  // when something lands: equal numbers cannot be ordered, and the save the operator made LAST could
+  // then lose to the one they made first.
   it("keeps the later save when the earlier one lands first", () => {
     const first = sampleTicket();
     const second = sampleTicket();
@@ -1153,8 +1134,8 @@ describe("a save that lands after the sample's life ended", () => {
     expect(recallToolSample("8", REV)?.text).toBe("segundo");
   });
 
-  // The same pair in the other order, which is round 12's finding and must still hold: the older
-  // opening's answer arriving last does not put its sample back.
+  // NOTE: the same pair in the other order: the older opening's answer arriving last does not put its
+  // sample back.
   it("refuses the earlier save when the later one lands first", () => {
     const first = sampleTicket();
     const second = sampleTicket();
@@ -1197,22 +1178,18 @@ describe("a save that lands after the sample's life ended", () => {
 // TWO SOURCE FENCES, and they say so: what they can answer for is a grammar, not intent.
 describe("the two seams that have to clear it", () => {
   const DELETE_CALL = /\.v1\.tools\(\s*\{[^}]*\}\s*\)\s*\.delete\(/;
-  // THE STATE SETTER, not any particular argument to it. Two review rounds walked past two earlier
-  // spellings of this fence: it asked for the logout REQUEST first (a 401 and the socket's auth-loss
-  // close end a session without one), then for `setUser(null)`, which `setUser(data.user ?? null)`
-  // is not, and that is the branch a `/me` takes when the server has already ended the session. Both
-  // times the fence was measuring a SPELLING and the tree had another one. So it counts calls to the
-  // raw setter and requires exactly one: the chokepoint that owns what a transition costs.
+  // NOTE: the STATE SETTER, not any particular argument to it, and not the logout request: a 401 and
+  // the socket's auth-loss close end a session without one, and `/me` ends it through
+  // `setUser(data.user ?? null)`, not `setUser(null)`. So this counts calls to the raw setter and
+  // requires exactly one: the chokepoint that owns what a transition costs.
   const SETS_USER = /setUser\(/g;
 
-  // `codeOnly` rather than a stripper written here: comments AND string contents out, which is the
-  // spelling this repo's own fence over sweeps requires (`tests/lib/source-text.test.ts`), and it
-  // caught this file for rolling its own. What is being matched is a code SHAPE, so a literal
-  // spelling it is prose by another name.
+  // NOTE: `codeOnly` rather than a stripper written here: comments AND string contents out, as the
+  // repo's fence over sweeps requires (`tests/lib/source-text.test.ts`). What is matched is a code
+  // SHAPE, so a literal spelling it is prose by another name.
   //
-  // The IMPORT goes too, and that is not belt-and-braces: the mutation battery caught this fence
-  // green after the call was deleted, because the file still imported the name. A fence that asks
-  // "is it mentioned?" answers yes for the import that survives the deletion it exists to catch.
+  // The IMPORT goes too: a fence that asks "is it mentioned?" answers yes for the import that
+  // survives the very deletion it exists to catch.
   const strip = (src: string) =>
     codeOnly(src).replace(/^\s*import\s[\s\S]*?from\s+"[^"]*";$/gm, "");
   const CLEARS = /forgetToolSample\s*\(/;
@@ -1239,7 +1216,7 @@ describe("the two seams that have to clear it", () => {
       sites++;
       if (!CLEARS.test(src)) offenders.push(f);
     }
-    // The site this round wired, so a matcher that stopped matching fails here instead of passing.
+    // NOTE: the one delete site, so a matcher that stopped matching fails here instead of passing.
     expect(sites).toBe(1);
     expect(offenders).toEqual([]);
   });
@@ -1259,14 +1236,13 @@ describe("the two seams that have to clear it", () => {
       sites.push(f);
       expect(NOTES.test(src)).toBe(true);
     }
-    // ONE call, and that is the assertion rather than a count that happens to be right: every second
-    // caller of the setter is a transition that has to remember to do this on its own, and both
-    // findings this fence exists for were exactly that.
+    // NOTE: ONE call, and that is the assertion rather than a count that happens to be right: every
+    // second caller of the setter is a transition that has to remember to do this on its own.
     expect(calls).toBe(1);
     expect(sites).toEqual(["src/client/contexts/AuthContext.tsx"]);
   });
 
-  // The positive control for the fence above, in the shape that got past its two earlier spellings.
+  // The positive control for the fence above, over every spelling a setter call takes.
   it("counts a setter call whatever is passed to it", () => {
     const spellings = [
       "setUser(null);",
@@ -1284,10 +1260,9 @@ describe("the two seams that have to clear it", () => {
     ).toBeNull();
   });
 
-  // ONE PLACE DECIDES WHICH DEFINITION THE SAMPLE DESCRIBES. Round 13 found the marker maintained
-  // by hand at four sites with two of them wrong, so every assignment to it goes through the rule
-  // that was extracted for it. A fifth site computing its own is the finding coming back, and the
-  // module cannot see it: this is the only thing here that can.
+  // NOTE: one place decides which definition the sample describes: every assignment to the marker
+  // goes through the rule. A site computing its own is invisible to the module, so this is the only
+  // thing that can catch it.
   it("records the sample's definition only through the rule that decides it", async () => {
     const src = codeOnly(
       await Bun.file("src/client/pages/resources/ToolEditModal.tsx").text(),
@@ -1318,16 +1293,10 @@ describe("the two seams that have to clear it", () => {
     expect(handler).not.toInclude("setSample(");
   });
 
-  // THE TICKET IS ONLY WORTH ANYTHING IF IT IS READ EARLY. Required by the signature, so `tsc`
-  // catches a call that omits it; what `tsc` cannot see is a call that reads it AT THE WRITE, which
-  // type-checks and always compares equal to itself. That is a question about ORDER, so it is asked
-  // of the source, and asked of the SAVE rather than of the file: `.v1.tools` appears in that module
-  // long before `save()` (the load, and the test-request dialog), so a whole-file index compares two
-  // unrelated positions and answers about neither.
-  //
-  // This fence was written once, then deleted by a later edit that replaced the block around it, and
-  // it was the mutation battery that noticed: two mutations of the call site went from dead to alive
-  // between rounds. A missing test looks exactly like a passing one.
+  // NOTE: the ticket is only worth anything if it is read early. `tsc` catches a call that omits it;
+  // it cannot see one that reads it AT THE WRITE, which always compares equal to itself. That is a
+  // question about ORDER, asked of the SAVE rather than of the file: `.v1.tools` appears in that
+  // module long before `save()`, so a whole-file index would compare two unrelated positions.
   it("reads the ticket before the request rather than at the write", async () => {
     const src = codeOnly(
       await Bun.file("src/client/pages/resources/ToolEditModal.tsx").text(),
@@ -1344,11 +1313,9 @@ describe("the two seams that have to clear it", () => {
     expect(request).toBeGreaterThan(-1);
     expect(write).toBeGreaterThan(-1);
     expect(read).toBeLessThan(request);
-    // AND THE FIRST SUSPENSION AFTER THE READ IS THE REQUEST ITSELF, which is what makes the ticket
-    // and the request see the same tenant selector. Measured: Eden evaluates its `headers` callback
-    // INSIDE the call expression, in the same synchronous block, so another tab's `localStorage`
-    // write (visible only at a task boundary) cannot land between the two reads. An `await` added
-    // in between would open exactly that window, and would look like an innocent refactor.
+    // NOTE: and the first suspension after the read is the request itself. Eden evaluates its
+    // `headers` callback INSIDE the call expression, synchronously, so another tab's `localStorage`
+    // write cannot land between the two reads; an `await` in between would open that window.
     const firstAwait = save.indexOf("await", read);
     expect(firstAwait).toBeGreaterThan(-1);
     // The api call has to be INSIDE that await's operand, which is what makes the suspension happen
@@ -1367,12 +1334,10 @@ describe("the two seams that have to clear it", () => {
     );
     expect(call).not.toInclude("sampleTicket");
     expect(call).toInclude("ticket");
-    // AND THE SAMPLE GOES OVER WHOLE. What counts as nothing is the module's rule, and round 8 was
-    // this call site holding a second copy of it that said something else: it dropped a 404 with an
-    // empty body, status and all. A conditional is that copy coming back, and the module cannot see
-    // it. Asked of what the save ASSEMBLES, which is a tested value since round 13
-    // (`sampleToRemember`), so what is left here is the handover: the sample and the status as they
-    // stand, and the payload the request carried.
+    // NOTE: and the sample goes over whole. What counts as nothing is the module's rule, and a
+    // conditional here is a second copy the module cannot see. Asked of what the save ASSEMBLES
+    // (`sampleToRemember`, a tested value): the sample and the status as they stand, and the payload
+    // the request carried.
     expect(call).not.toInclude("?");
     const assembled = save.slice(
       save.indexOf("sampleToRemember({"),
@@ -1386,20 +1351,14 @@ describe("the two seams that have to clear it", () => {
       "payload",
     ])
       expect(assembled).toInclude(name);
-    // What revision gets written is NOT asked here: it is a value now (`revisionForSave`), tested
-    // as one below. Two rounds found this call site holding a judgement the module could not see,
-    // and the second fence over a spelling is what the next refactor walks past.
-    //
-    // What IS asked is that the save consults the shape the sample was captured against at all,
-    // because the decision being a tested value does not stop a caller from handing it a constant
-    // (measured: replacing that argument with `true` survives the battery otherwise). This is still
-    // a grammar, but a stable one: it says the question is asked, not how.
+    // NOTE: what revision gets written is a tested value (`revisionForSave`), not asked here. What IS
+    // asked is that the save consults the captured shape at all, since a tested decision does not stop
+    // a caller from handing it a constant (`true` in place of that argument). A stable grammar: it
+    // says the question is asked, not how.
     expect(save).toInclude("sampleShapeRef");
-    // AND IT IS READ BEFORE THE REQUEST, exactly like the ticket. Everything else the continuation
-    // uses (`sample`, `sampleStatus`, `payload`) is a value this closure captured when Save was
-    // pressed; the marker is a REF, so reading it at the end asks what the form says NOW, and a
-    // dismiss-and-reopen while the save is out puts the next opening's answer there. Fourth round to
-    // find this shape, so it is asked of the source the same way the ticket's order is.
+    // NOTE: and it is read before the request, like the ticket. Everything else the continuation uses
+    // is a value this closure captured when Save was pressed; the marker is a REF, so reading it at the
+    // end would get the next opening's answer after a dismiss-and-reopen.
     const shapeRead = save.indexOf("sampleShapeRef.current");
     expect(shapeRead).toBeGreaterThan(-1);
     expect(shapeRead).toBeLessThan(request);
@@ -1407,9 +1366,8 @@ describe("the two seams that have to clear it", () => {
     expect(save.match(/sampleShapeRef\.current/g)?.length ?? 0).toBe(1);
   });
 
-  // The same question at the OTHER site that mutates the cache after a request. It was written
-  // without one, and round 7 is what found that: a delete whose continuation reads the tenant
-  // selector clears the wrong scope when another tab moved it in the meantime.
+  // NOTE: the same question at the OTHER site that mutates the cache after a request: a delete whose
+  // continuation reads the tenant selector clears the wrong scope when another tab moved it.
   it("reads the ticket before the delete request too", async () => {
     const src = codeOnly(
       await Bun.file("src/client/pages/resources/ToolsPanel.tsx").text(),
@@ -1424,11 +1382,9 @@ describe("the two seams that have to clear it", () => {
     expect(request).toBeGreaterThan(-1);
     expect(write).toBeGreaterThan(-1);
     expect(read).toBeLessThan(request);
-    // AND THE FIRST SUSPENSION AFTER THE READ IS THE REQUEST ITSELF, which is what makes the ticket
-    // and the request see the same tenant selector. Measured: Eden evaluates its `headers` callback
-    // INSIDE the call expression, in the same synchronous block, so another tab's `localStorage`
-    // write (visible only at a task boundary) cannot land between the two reads. An `await` added
-    // in between would open exactly that window, and would look like an innocent refactor.
+    // NOTE: and the first suspension after the read is the request itself. Eden evaluates its
+    // `headers` callback INSIDE the call expression, synchronously, so another tab's `localStorage`
+    // write cannot land between the two reads; an `await` in between would open that window.
     const firstAwait = body.indexOf("await", read);
     expect(firstAwait).toBeGreaterThan(-1);
     // The api call has to be INSIDE that await's operand, which is what makes the suspension happen
@@ -1455,7 +1411,7 @@ describe("the two seams that have to clear it", () => {
     expect(
       CLEARS.test(strip(`${forgets}\n// forgetToolSample(t.id) here`)),
     ).toBe(false);
-    // Neither is the import that survives deleting the call, the case the battery caught.
+    // NOTE: neither is the import that survives deleting the call.
     const importOnly = `import { forgetToolSample } from "@/client/lib/toolSample";\n${forgets}`;
     expect(CLEARS.test(strip(importOnly))).toBe(false);
     // And a real call counts.

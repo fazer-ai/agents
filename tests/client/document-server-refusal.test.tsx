@@ -11,21 +11,11 @@ import {
 import { useEffect, useRef } from "react";
 import { MemoryRouter } from "react-router";
 
-// THE REFUSAL THE OPERATOR CAN ACT ON, AND THE ONE THEY CANNOT.
-//
-// Three write paths on this screen refuse for reasons the operator fixes IN THE FORM they are
-// looking at: a character the document fonts cannot print (named, with the field it is in), a
-// duplicate template name, a logo whose pixel count is over the budget. Each of those is worded on
-// the server and localized there, and each was being replaced by a fixed sentence.
-//
-// The logo is the one that shows why a generic message is worse than no message. Its fixed sentence
-// says "PNG or JPEG under 512 KB", which READS like an answer — so an operator whose 180 KB PNG is
-// refused for being 8000×8000 is told, confidently, to shrink a file that is already small enough.
-// A message that looks like it answers is how a whole family of call sites escapes a sweep.
-//
-// The other half is asserted too, because the rule is "show what the server said", not "show
-// something specific": a transport failure has no server and no message, and the generic sentence is
-// then the honest thing on screen.
+// The refusal the operator can act on, and the one they cannot. Three write paths refuse for
+// reasons fixed IN THE FORM (an unprintable character, a duplicate template name, a logo over the
+// pixel budget), worded and localized by the server; the toast shows that sentence. A fixed
+// "PNG or JPEG under 512 KB" would confidently send an operator to shrink a 180 KB PNG refused for
+// being 8000x8000. A transport failure has no server message, so the generic sentence is correct.
 
 const { CompanyProfileCard } = await import(
   "@/client/pages/resources/documents/CompanyProfileCard"
@@ -110,8 +100,8 @@ test("a refused company field says WHICH character, not 'could not save'", async
 });
 
 test("a company save with no server behind it still says something", async () => {
-  // The other direction. Eden REJECTS on a transport failure rather than answering `{ error }`, so
-  // there is no message to show and the generic sentence is correct — a guard that only ever shows
+  // NOTE: the other direction. Eden REJECTS on a transport failure rather than answering `{ error }`, so
+  // there is no message to show and the generic sentence is correct: a guard that only ever shows
   // the server's words would leave an offline save silent.
   globalThis.fetch = (async () => {
     throw new Error("offline");
@@ -129,8 +119,8 @@ test("a company save with no server behind it still says something", async () =>
 });
 
 test("a logo refused for its pixel count does not blame its size", async () => {
-  // The refusal names the real limit. The generic sentence it was replacing names a DIFFERENT limit
-  // that this file already satisfies, which is worse than saying nothing.
+  // NOTE: the refusal names the real limit. The generic sentence names a DIFFERENT limit that this file
+  // already satisfies, which is worse than saying nothing.
   const reason = "the logo must be at most 4000000 pixels (about 2000×2000)";
   refusing(400, reason, "POST");
   mountCompany();
@@ -196,9 +186,8 @@ function TemplateHarness() {
   );
 }
 
-// The third call site, asserted through the modal rather than by reading the source. The same
-// one-line idiom was applied at all three, and "I applied it everywhere" is exactly the claim that
-// has been wrong before: the fix is per call site, so the proof has to be too.
+// The third call site, asserted through the modal rather than by reading the source: the fix is
+// per call site, so the proof has to be too.
 test("a template refused for a duplicate name says which name", async () => {
   const reason = 'a template named "Orçamento" already exists';
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

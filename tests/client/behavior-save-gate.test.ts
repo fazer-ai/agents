@@ -1,28 +1,16 @@
 import { describe, expect, test } from "bun:test";
 
-// EVERY FIELD CHECK THE BEHAVIOR TAB COMPUTES REACHES ITS SAVE BUTTON.
-//
-// The tab renders a field-level error for a value the runtime will refuse, and it also has to
-// REFUSE THE SAVE — the two are not the same guarantee, and only the second one is load-bearing. A
-// configuration the runtime will not build is worth nothing stored: the operator sees a red field,
-// saves anyway, and the feature they configured is simply never there. For the fallback provider
-// that is the whole feature, since a fallback that cannot be built is indistinguishable from having
-// named none.
-//
-// This is a rule enforced PER CHECK rather than in one place, which is the shape that grows an
-// N+1, and it grew one twice. First `fallbackBaseUrlInvalid`, added rendering its error and not
-// blocking the save; this fence went in for it, reading the ENDPOINT checks by name. Then
-// `fallbackModelMissing`, which is the same rule about a different kind of field and so passed
-// straight through a scan looking for `BaseUrl` — review found that one too. So the scan now reads
-// the shape all ten of this tab's checks actually share (`<feature><What>` ending in Invalid,
-// Unsupported, Missing or Required), which is the rule as its own heading always stated it.
+// Every field check the Behavior tab computes reaches its Save button. Rendering a field error is
+// not enough: only refusing the save is load-bearing, since a configuration the runtime will not
+// build is worth nothing stored (a fallback that cannot be built is the same as none).
+// The rule is per check, so the scan reads the shape all this tab's checks share (`<feature><What>`
+// ending in Invalid, Unsupported, Missing or Required), not only the endpoint checks.
 
 const SOURCE = await Bun.file("src/client/pages/agents/BehaviorTab.tsx").text();
 
-// The checks, by the shape their names share: a feature prefix and a verdict suffix — the endpoint
-// ones (`<feature>BaseUrlInvalid`, `<feature>BaseUrlUnsupported`, `<feature>UrlInvalid`, since
-// contact auth's endpoint is not a base URL) and the field ones (`<feature>ModelMissing`). Read off
-// the DECLARATIONS, so a check that exists is on the list whether or not anyone remembered it.
+// The checks, by the shape their names share: a feature prefix and a verdict suffix (endpoint ones
+// like `<feature>BaseUrlInvalid` or `<feature>UrlInvalid`, field ones like `<feature>ModelMissing`).
+// Read off the DECLARATIONS, so a check that exists is on the list whether or not anyone remembered.
 export function declaredEndpointChecks(source: string): string[] {
   const decl = /\bconst\s+(\w+(?:Invalid|Unsupported|Missing|Required))\s*=/g;
   return [
@@ -56,14 +44,14 @@ describe("the Behavior tab's save gate", () => {
     expect(checksMissingFromGate(SOURCE)).toEqual([]);
   });
 
-  // The scan has to find something, or an empty answer above would be the scan failing rather than
-  // the code passing — the failure mode of every fence that reads source.
+  // NOTE: the scan has to find something, or an empty answer above would be the scan failing rather
+  // than the code passing.
   test("the scan actually sees the checks", () => {
     const found = declaredEndpointChecks(SOURCE);
     expect(found.length).toBeGreaterThanOrEqual(10);
     expect(found).toContain("fallbackBaseUrlInvalid");
     expect(found).toContain("fallbackBaseUrlUnsupported");
-    // The one the endpoint-only scan could not see, which is why the shape widened.
+    // NOTE: a field check, which an endpoint-only scan would not see.
     expect(found).toContain("fallbackModelMissing");
     expect(saveGateExpression(SOURCE)).toContain("saveDisabled={");
   });
@@ -79,8 +67,7 @@ describe("the Behavior tab's save gate", () => {
     expect(checksMissingFromGate(broken)).toEqual(["newFeatureBaseUrlInvalid"]);
   });
 
-  // The SECOND control, for the widening itself: this fixture is exactly what the endpoint-only
-  // scan answered `[]` to, which is how `fallbackModelMissing` reached review.
+  // NOTE: the second control: a field check an endpoint-only scan would answer `[]` to.
   test("a non-endpoint check off the gate is caught too", () => {
     const broken = `
       const sttBaseUrlInvalid = compute();

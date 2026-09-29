@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { firstJsonProblem, reindentJson } from "@/client/lib/sampleJson";
 
-// WHERE THE SAMPLE BREAKS, AND HOW IT IS TIDIED WITHOUT BEING CHANGED (issue #562).
+// WHERE THE SAMPLE BREAKS, AND HOW IT IS TIDIED WITHOUT BEING CHANGED.
 //
 // Two jobs that look like one. Both are about a pasted API response, and both refuse to go through
 // `JSON.parse`, for two different reasons.
@@ -11,12 +11,9 @@ describe("firstJsonProblem", () => {
     expect(firstJsonProblem('{"a": [1, 2], "b": null}')).toBeNull();
   });
 
-  // THE ENGINE'S MESSAGE IS NOT AN ANSWER, which is why this reads a parse of our own.
-  //
-  // Measured on the shapes below: V8 locates three of the four and gives up on the first, JSC (Bun,
-  // and Safari, which is a browser operators use) locates none of them and answers `Expected '}'`,
-  // and every one of those sentences is the engine's own English with no translation and no shape a
-  // reader can rely on. The syntax tree answers the same question in every engine, in one number.
+  // NOTE: the engine's message is not an answer, which is why this reads a parse of our own. V8
+  // locates only some of the shapes below and JSC (Bun, and Safari, which operators use) locates
+  // none, each in its own untranslated English; the syntax tree answers in every engine, in one number.
   test("locates a break the engine's own message cannot", () => {
     // `JSON.parse` here says only: Unexpected token '}', "…" is not valid JSON.
     expect(firstJsonProblem('{"a": 1, "b": }')).toEqual({
@@ -47,12 +44,9 @@ describe("firstJsonProblem", () => {
     });
   });
 
-  // THE COORDINATES ARE ABOUT THE TEXT ON SCREEN, which is the whole point of reporting them.
-  //
-  // Round 1 of review: the field trimmed before asking, so a paste with blank lines above it was
-  // measured against a string the operator is not looking at and pointed at line 1 for a break on
-  // line 3. Whatever normalizing happens, happens in here, and what comes back is a place in the
-  // document as given.
+  // NOTE: the coordinates are about the text on screen. A paste with blank lines above it must not be
+  // measured against a trimmed copy the operator is not looking at: whatever normalizing happens,
+  // happens in here, and what comes back is a place in the document as given.
   test("counts lines from the document it was given, not from a trimmed copy", () => {
     expect(firstJsonProblem('\n\n  {"a": }')).toEqual({
       offset: 10,
@@ -61,11 +55,9 @@ describe("firstJsonProblem", () => {
     });
   });
 
-  // THE COLUMN IS COUNTED IN CHARACTERS, because a person counts characters (round 2 of review).
-  //
-  // The offset is a UTF-16 index and an emoji is two of those. A response from a customer-facing API
-  // carries emoji routinely — a name, a message, a status — so a sample with one before the break
-  // named a column one past the brace it was pointing at, per astral character.
+  // NOTE: the column is counted in characters, because a person counts characters. The offset is a
+  // UTF-16 index and an emoji is two of those, and API responses carry emoji routinely, so counting
+  // units would name a column one past the break per astral character.
   test("counts a column in characters, not in UTF-16 units", () => {
     // The `}` is the seventh character of the line and the eighth UTF-16 unit.
     expect(firstJsonProblem('{"\u{1F600}": }')).toEqual({
@@ -75,12 +67,9 @@ describe("firstJsonProblem", () => {
     });
   });
 
-  // AND A LINE BREAK IS WHATEVER THE EDITOR DRAWS AS ONE (round 3 of review).
-  //
-  // CodeMirror breaks a document on `\r\n?|\n`, so a bare CR is a line on screen. It cannot arrive
-  // by typing or pasting — the editor normalizes what it is given — but it arrives through the door
-  // this field advertises: "Send a test request" writes the RAW response body here, and an HTTP body
-  // is whatever the server sent.
+  // NOTE: a line break is whatever the editor draws as one. CodeMirror breaks on `\r\n?|\n`, so a bare
+  // CR is a line on screen. Typing and pasting normalize it away, but "Send a test request" writes the
+  // RAW response body here, and an HTTP body is whatever the server sent.
   test("counts a bare carriage return as the line break the editor draws", () => {
     expect(firstJsonProblem("{\r  a}")).toEqual({
       offset: 4,
@@ -97,12 +86,9 @@ describe("firstJsonProblem", () => {
     });
   });
 
-  // AND AN UNFINISHED DOCUMENT ENDS WHERE THE OPERATOR'S CURSOR IS (round 6 of review).
-  //
-  // The normalizing above trims both ends and the translation restored only the front, so a document
-  // that simply stops — the shape of one being typed — was reported at the end of its trimmed body
-  // rather than at the end of the text on screen. Blank lines under an unclosed brace are exactly
-  // where a person is when this message appears.
+  // NOTE: an unfinished document ends where the operator's cursor is: at the end of the text on
+  // screen, not of its trimmed body. Blank lines under an unclosed brace are exactly where a person is
+  // when this message appears.
   test("points at the end of the document as shown when it just stops", () => {
     expect(firstJsonProblem('{"a":1\n\n')).toEqual({
       offset: 8,
@@ -148,14 +134,11 @@ describe("reindentJson", () => {
     );
   });
 
-  // IT REWRITES THE OPERATOR'S OWN PASTE, so what it writes back has to say the same thing.
-  //
-  // `JSON.stringify(JSON.parse(text), null, 2)` is the obvious implementation and it is wrong here,
-  // measured: it turns `12345678901234567890` into `12345678901234567000` (a real id, silently
-  // wrong, and then picked from the offer as the value the API returns), `1.0` into `1`, `1e3` into
-  // `1000`, and it drops the earlier of two duplicate keys. Formatting is not the moment to decide
-  // what a response really meant. So the literals are copied out of the document verbatim and only
-  // the whitespace between them is ours.
+  // NOTE: it rewrites the operator's own paste, so what it writes back has to say the same thing.
+  // `JSON.stringify(JSON.parse(text), null, 2)` is wrong here: it turns `12345678901234567890` into
+  // `12345678901234567000` (an id, silently wrong, then picked from the offer), `1.0` into `1`, `1e3`
+  // into `1000`, and drops the earlier of two duplicate keys. So literals are copied out verbatim and
+  // only the whitespace between them is ours.
   test("does not round-trip literals through a JavaScript number", () => {
     const out = tidy('{"id":12345678901234567890,"price":1.0,"big":1e3}');
     expect(out).toContain("12345678901234567890");
@@ -178,13 +161,9 @@ describe("reindentJson", () => {
     expect(JSON.parse(out)).toEqual(JSON.parse(text));
   });
 
-  // A BOM IS NOT A VALUE, and the field already decided that.
-  //
-  // Round 1 of review: a paste that begins with a byte-order mark parses here (`String.trim` counts
-  // U+FEFF as whitespace, so `JSON.parse` gets a clean document and the pickers fill), and the
-  // formatter refused it — an enabled button that did nothing when clicked, which is the silent
-  // refusal this feature exists to remove. The two now normalize the same way. Nothing of the
-  // operator's is dropped: a BOM is an encoding marker, not something the response says.
+  // NOTE: a BOM is not a value. A paste that opens with one parses in the field (`String.trim` counts
+  // U+FEFF as whitespace), so the formatter normalizes the same way; refusing it would leave an
+  // enabled button that does nothing. Nothing of the operator's is dropped: a BOM is an encoding marker.
   test("formats a document that opens with a byte-order mark", () => {
     expect(tidy('\uFEFF{"a":1}')).toBe(`{
   "a": 1
@@ -223,13 +202,12 @@ describe("reindentJson", () => {
   });
 });
 
-// FORMATTING IS FOR READING, AND IT HAS A CEILING (round 4 of review).
+// FORMATTING IS FOR READING, AND IT HAS A CEILING.
 //
-// Indentation is depth-sized, so a deeply nested document expands by a factor of its depth: measured,
-// 4001 characters of nested arrays produce 8,008,001 — from a document well under the 100,000-char
-// cap the test endpoint puts on a raw response. That output is not something anyone reads, it is
-// re-parsed on the next keystroke, and since #562 it is produced automatically when a test request
-// answers. So the writer carries a budget and gives up rather than building it.
+// Indentation is depth-sized, so a deeply nested document expands by a factor of its depth: 4001
+// characters of nested arrays produce 8,008,001, from a document well under the 100,000-char cap the
+// test endpoint puts on a raw response. That output is re-parsed on the next keystroke and produced
+// automatically when a test request answers, so the writer carries a budget and gives up instead.
 describe("reindentJson under a ceiling", () => {
   function nested(depth: number): string {
     let doc = "1";
@@ -237,8 +215,8 @@ describe("reindentJson under a ceiling", () => {
     return doc;
   }
 
-  // NAMED, not merely refused: the field says which of the two happened, because a disabled button
-  // beside a sentence about something else says nothing (round 6 of review).
+  // NOTE: named, not merely refused: the field says which of the two happened, because a disabled
+  // button beside a sentence about something else says nothing.
   test("refuses a document whose formatted form nobody could read", () => {
     expect(reindentJson(nested(2000))).toEqual({ ok: false, why: "too-large" });
   });

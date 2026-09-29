@@ -1,14 +1,12 @@
 import { describe, expect, test } from "bun:test";
 
-// CERCA, não checklist. Issue #594 acrescentou um desfecho (`busy`) e, com ele, a pergunta que vai
-// se repetir a cada desfecho novo: o operador vai ler alguma coisa sobre isso, e nos dois idiomas?
+// CERCA, não checklist. Todo desfecho novo do re-engage traz a mesma pergunta: o operador vai ler
+// alguma coisa sobre isso, e nos dois idiomas? Quando ninguém lembra, a resposta cai no `else` final
+// ("The AI produced no reply."), que manda o operador esperar por nada, e nenhum teste de
+// comportamento percebe: a chamada devolve o desfecho certo e a tela mostra a frase errada.
 //
-// A resposta cai no `else` final ("The AI produced no reply.") quando ninguém lembra, e esse texto
-// manda o operador esperar por nada. O defeito não aparece em nenhum teste de comportamento: a
-// chamada devolve o desfecho certo e a tela mostra a frase errada.
-//
-// Por isso a varredura é do FONTE. Um desfecho que o módulo declara e a tela não trata reprova aqui,
-// no commit que o declarou, e não meses depois num relato de operador.
+// Por isso a varredura é do FONTE: um desfecho que o módulo declara e a tela não trata reprova aqui,
+// no commit que o declarou.
 
 const REENGAGE = "src/modules/conversations/reengage.ts";
 const CONSOLE = "src/client/pages/ConversationDetailPage.tsx";

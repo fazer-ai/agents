@@ -13,9 +13,8 @@ import {
 // THE COERCION IS ONLY WORTH WHAT THE DIALOG ACTUALLY SENDS.
 //
 // `tool-test-arg-coercion.test.ts` proves the table, against the very schema `buildHttpTool`
-// validates with. It cannot prove that `run()` calls it: the mutation battery for review round 1
-// replaced `args[f.name] = coerced.value` with the raw string and every test still passed. This
-// file is the adoption half — it drives the dialog and reads the body that went on the wire.
+// validates with. It cannot prove that `run()` calls it, so this file is the adoption half: it drives
+// the dialog and reads the body that went on the wire.
 
 const { ToolTestModal } = await import(
   "@/client/pages/resources/ToolTestModal"
@@ -193,24 +192,24 @@ test("a value the declared type cannot take is not sent at all", async () => {
   expect(screen.getByText(/has to be: Integer/)).toBeDefined();
 });
 
-// Round 2 of review. Three ways the dialog could be filled in and still not run, or run and answer
-// for the wrong session.
+// Three ways the dialog could be filled in and still not run, or run and answer for the wrong
+// session.
 
 test("a required field left blank stops the send and says which field", () => {
   const sent: { body?: unknown } = {};
   mount(sent, {
     target: {
       ...TARGET,
-      // An INTEGER, because a required string left blank is the empty string rather than a gap
-      // (round 11); this fence is about the type where blank really is nothing.
+      // NOTE: an INTEGER, because a required string left blank is the empty string rather than a gap;
+      // this fence is about the type where blank really is nothing.
       aiFields: [
         { name: "cnpj", description: "", required: true, type: "integer" },
       ],
     },
   });
-  // Blank required used to be the SILENT one: the box was skipped, `args` went out without it, and
-  // the declared schema refused the call before the request — with the button enabled the whole
-  // time, so the first thing the operator learned was a failed run.
+  // NOTE: a skipped blank required box would send `args` without it, and the declared schema would
+  // refuse the call before the request, with the button enabled: the operator's first news would be
+  // a failed run.
   const button = screen.getByText("Send request").closest("button");
   expect(button?.hasAttribute("disabled")).toBe(true);
   expect(screen.getByText(/"cnpj" is required/)).toBeDefined();
@@ -256,9 +255,8 @@ test("a response from a dismissed session never lands on the next one", async ()
   expect(screen.queryByText(/HTTP 200 in/)).toBeNull();
 });
 
-// Round 3 of review, finding 3. The wire cap on the raw response is 100k characters, and what comes
-// back past it is a PREFIX: not a JSON document, so both path pickers go dark and the sample field
-// says only "not valid JSON" — none of which names the actual reason.
+// The wire cap on the raw response is 100k characters, and what comes back past it is a PREFIX: not
+// a JSON document, so the pickers would go dark with only "not valid JSON" to say why.
 test("a response too large to be a sample is not offered as one", async () => {
   const sent: { body?: unknown } = {};
   const { samples } = mount(sent, { clipped: true });
@@ -279,10 +277,9 @@ test("a usable response is handed over with the status it came back under", asyn
   expect(statuses).toEqual([404]);
 });
 
-// Round 8 of review, finding 1. The session token makes a LATE answer harmless; it does not un-send
-// the request. A test of a POST is a real write on the provider's side, so a dialog that can be
-// dismissed mid-flight and reopened runs the operation twice, with the first result deliberately
-// dropped so nothing on screen says it happened.
+// The session token makes a LATE answer harmless; it does not un-send the request. A test of a POST
+// is a real write on the provider's side, so a dialog dismissed mid-flight and reopened would run the
+// operation twice, with the first result dropped so nothing on screen says it happened.
 test("no way out while a request is in flight, and no second send", async () => {
   const sent: { body?: unknown } = {};
   const hold: { release?: () => void } = {};
@@ -303,8 +300,8 @@ test("no way out while a request is in flight, and no second send", async () => 
   hold.release?.();
 });
 
-// Round 11 of review, the adoption half: the table above proves the rule, and this proves the
-// dialog follows it — the same gap round 1 found in the coercion.
+// The adoption half of the empty-string rule: the table above proves the rule, and this proves the
+// dialog follows it.
 test("an empty string reaches the wire when the field takes one", async () => {
   const sent: { body?: unknown } = {};
   mount(sent, {
@@ -346,10 +343,8 @@ test("and an optional field says so explicitly, because a blank box cannot", asy
       ],
     },
   });
-  // The control is a switch with a FIXED label. It used to be a text link whose whole sentence
-  // rewrote itself on click, so it had no identity to scan a form for and had to be read twice to
-  // be used once. The STATE moved to where the operator is already looking: the placeholder of the
-  // blank box the toggle is about.
+  // NOTE: the control is a switch with a FIXED label, so it has an identity to scan a form for; the
+  // STATE is shown where the operator is already looking, the placeholder of the blank box.
   expect(
     screen.getByPlaceholderText("not included in the request"),
   ).toBeInTheDocument();
@@ -366,12 +361,11 @@ test("and an optional field says so explicitly, because a blank box cannot", asy
   expect((sent.body as { args: unknown }).args).toEqual({ tag: "" });
 });
 
-// Round 16 of review, finding 2. A tool may declare an input field named after a conversation
-// placeholder, and the runtime has an explicit precedence for that name: AI input, then a fixed
-// value, then context (`valueLookup` in graph/tools/http.ts). So the case worth testing is the
-// second one — the model omits the optional argument and context supplies the fallback — and the
-// dialog could not express it: both rows were keyed and indexed by the bare name, so one box fed
-// both halves and the same string went out in `args` AND in `context`.
+// A tool may declare an input field named after a conversation placeholder, and the runtime's
+// precedence for that name is AI input, then a fixed value, then context (`valueLookup` in
+// src/graph/tools/http.ts). So the case worth testing is the model omitting the optional argument and
+// context supplying the fallback, which needs two boxes, keyed apart, so one string does not go out
+// in both `args` and `context`.
 test("an AI field and a context variable of the same name are two boxes", async () => {
   const sent: { body?: unknown } = {};
   mount(sent, {

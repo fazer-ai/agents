@@ -135,8 +135,8 @@ describe("parseToolPreconditionRows", () => {
   });
 });
 
-// Round 1 of PR #378: the editor used to COERCE what it could not render, and the next save turned
-// an entry the runtime ignores into a live rule.
+// The editor renders a stored entry exactly, or not at all: coercing what it cannot render would let
+// the next save turn an entry the runtime ignores into a live rule.
 describe("round 1: the editor renders exactly, or not at all", () => {
   test.each([
     ["an unknown scope", { kind: "attribute", scope: "moon", key: "k" }],
@@ -185,13 +185,10 @@ describe("round 1: the editor renders exactly, or not at all", () => {
   });
 });
 
-// Round 2 of PR #378. Three of the seven findings were the same question asked of a different value,
-// and round 1 had already asked it once: what does a save do to a stored entry the operator did not
-// touch? A patch per value class was the wrong answer. This is the property, asserted per class.
-//
-// SAVING WITHOUT CHANGING A ROW MUST NOT CHANGE WHAT THE RUNTIME ACCEPTS. Both directions:
-// an entry the runtime refuses must stay refused (a save must not promote it into a live rule), and
-// an entry it accepts must survive byte-identical (a save must not drop or rewrite it).
+// SAVING WITHOUT CHANGING A ROW MUST NOT CHANGE WHAT THE RUNTIME ACCEPTS, asserted per class of
+// stored value rather than patched per class. Both directions: an entry the runtime refuses stays
+// refused (a save must not promote it into a live rule), and an entry it accepts survives
+// byte-identical (a save must not drop or rewrite it).
 describe("round 2: parse → serialize is a fixed point for the runtime", () => {
   const RUNTIME_ACCEPTS = [
     [
@@ -305,15 +302,12 @@ describe("round 2: parse → serialize is a fixed point for the runtime", () => 
   });
 });
 
-// Round 2, the P1: the Tools save wrote `toolPreconditions` to the server and did NOT put it back
-// into the shared settings bag, so the next Behavior save spread the pre-save map over the rules that
-// had just been stored — with this tab still showing them as saved.
+// The Tools save must put every key it PATCHes back into the shared settings bag, or the next Behavior
+// save spreads the pre-save map over the rules just stored, with this tab still showing them saved.
 //
-// Read from the source, like the other AgentEditorPage guards in this suite: rendering the editor
-// pulls auth, theme, toast and a live catalog, and what is being asserted is which keys the handler
-// names. Written as a FENCE rather than as a check for this one key, because the defect is
-// structural: every key the save PATCHes has to come back into the shared state, and the next block
-// added to this tab inherits the same hole otherwise.
+// Read from the source because rendering the editor pulls auth, theme, toast and a live catalog. A
+// FENCE over every sent key rather than a check for one, so the next block added to this tab is held
+// to it too.
 describe("round 2: the Tools save puts back everything it wrote", () => {
   const SRC = readFileSync(
     "src/client/pages/agents/AgentEditorPage.tsx",
@@ -354,11 +348,10 @@ describe("round 2: the Tools save puts back everything it wrote", () => {
   });
 });
 
-// Round 5 of PR #378 closed the write boundary to non-native tool names. That created a THIRD party
-// to keep in agreement — the console, the runtime reader, and now the API — and two of the three
-// disagreeing is invisible from inside any one of them: a console offering a name the API refuses
-// makes the save fail on a row the operator just filled in, and a console hiding a name the API
-// accepts invites them to delete a guard they cannot see.
+// The console, the runtime reader and the API's write boundary have to agree on tool names, and a
+// disagreement is invisible from inside any one of them: a console offering a name the API refuses
+// fails the save on a row the operator just filled in, and one hiding a name the API accepts invites
+// them to delete a guard they cannot see.
 describe("the console offers exactly what the API accepts", () => {
   test("every native name round-trips through the editor and the write boundary", () => {
     const rows = NATIVE_TOOL_NAMES.map((tool) => ({

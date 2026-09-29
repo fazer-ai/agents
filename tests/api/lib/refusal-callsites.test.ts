@@ -6,19 +6,11 @@ import { describe, expect, test } from "bun:test";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 import { codeOnly as sourceCodeOnly } from "@/tests/utils/source-text";
 
-// THE GUARD AGAINST THE NEXT REFUSAL THAT KNOWS A FIELD AND DOES NOT SAY SO.
-//
-// The defect #231 fixed was never that the server did not know which value it refused: it knew, as a
-// typed argument, and then spent that argument on prose. `SettingsTextTooLongError` took `(field,
-// length, max)` and interpolated the field into a sentence; `bigOrThrow` wrote `${field} is
-// required`. Both are the same shape, and the shape is the thing that comes back: a refusal is
-// written next to the code that raises it, and the wire format is somewhere else entirely.
-//
-// So the rule is checked where it can fail: a refusal whose message or interpolation params mention
-// a `field` in scope must also hand that field to the wire. What this catches is the sentence that
-// spells out a name the body does not carry. What it CANNOT catch is a refusal that never names the
-// field in either place (`updateCompanySettings` builds its prose in a helper), so the sweep is a
-// floor, not a proof.
+// THE GUARD AGAINST A REFUSAL THAT KNOWS A FIELD AND DOES NOT SAY SO. A refusal is written next to
+// the code that raises it, far from the wire format, so a field it holds as a typed argument is easily
+// spent on prose alone (`${field} is required`). A refusal whose message or params mention a `field`
+// in scope must also hand that field to the wire. It CANNOT catch a refusal that never names the
+// field in either place (`updateCompanySettings` builds its prose in a helper): a floor, not a proof.
 
 const REFUSAL_ROOT = "AppError";
 
@@ -147,10 +139,9 @@ export function codeOnly(text: string): string {
   return out;
 }
 
-// The identifiers this codebase reaches for when the thing being interpolated is a value's NAME.
-// Measured across src/: `field`, `key`, `label` and `name` are the whole set. Keying on `field`
-// alone was a naming coincidence rather than the rule, and it missed `value.${key} must be a
-// non-empty string` in the vault, which is the same defect under another variable name.
+// The identifiers src/ uses when the thing being interpolated is a value's NAME: `field`, `key`,
+// `label` and `name`. Keying on `field` alone would miss the vault's `value.${key} must be a
+// non-empty string`, the same defect under another variable name.
 const INPUT_NAME_IDENTIFIERS = ["field", "key", "label", "name"];
 const NAMES_A_FIELD = new RegExp(
   `(?<![.\\w])(${INPUT_NAME_IDENTIFIERS.join("|")})(?![\\w:])`,
@@ -195,7 +186,7 @@ async function sources(): Promise<Map<string, string>> {
   const { Glob } = await import("bun");
   const files = new Map<string, string>();
   for await (const file of new Glob("src/**/*.{ts,tsx}").scan(".")) {
-    // Through the shared scan, so prose naming a refusal is not swept as one (#424). The local
+    // NOTE: through the shared scan, so prose naming a refusal is not swept as one. The local
     // `codeOnly` below is a DIFFERENT thing that happens to share the word: it extracts the code of
     // one ARGUMENT, keeping `${…}` holes that live inside a string. This is the file read.
     files.set(file, sourceCodeOnly(await Bun.file(file).text()));
@@ -276,8 +267,8 @@ describe("a refusal that knows a field says so on the wire", () => {
   });
 
   // The sweep skips any file named in the ledger, and the stale-entry rule only removes one that
-  // stopped matching, so a second file joins by being appended. Pinned at the one it was argued
-  // into. tests/utils/ledger.ts carries the measurement (issue #293).
+  // stopped matching, so a second file would join by being appended. Pinned at its current size
+  // (tests/utils/ledger.ts).
   test("the not-about-an-input ledger may only shrink", () => {
     expectWaiverLedger("NOT_ABOUT_AN_INPUT", NOT_ABOUT_AN_INPUT, 1);
   });

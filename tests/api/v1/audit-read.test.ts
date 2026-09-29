@@ -7,12 +7,10 @@ import { runScopedOn, type TenantContext } from "@/lib/tenancy";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 import { syntheticAction } from "../../utils/audit-action";
 
-// THE READ ENDPOINT (issue #401), driven through real requests.
-//
-// `tests/modules/audit-read.test.ts` proves the service pages and filters. This one proves the door
-// the console page will actually knock on: that every filter the caller types reaches the service,
-// that the page shape (`entries` + `nextCursor` + `latestAt`) is on the wire rather than an array,
-// and that the endpoint still refuses a caller who is not a TENANT_ADMIN.
+// THE READ ENDPOINT, driven through real requests (tests/modules/audit-read.test.ts proves the
+// service): every filter the caller types reaches the service, the page shape (`entries` +
+// `nextCursor` + `latestAt`) is on the wire rather than an array, and a caller who is not a
+// TENANT_ADMIN is refused.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
@@ -178,10 +176,8 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as Page;
     expect(body.entries.map((e) => e.action)).toEqual(["three.c", "two.b"]);
-    // Without this the caller has no way to reach row three, and no way to tell a full page from
-    // the end of the trail.
-    // The cursor names the row the page stopped on, in BOTH columns the walk is ordered by (#530).
-    // Opaque by contract, so this reads it apart rather than rebuilding it.
+    // NOTE: without the cursor the caller cannot reach row three or tell a full page from the end.
+    // It names the row the page stopped on, in BOTH columns the walk is ordered by.
     expect(body.nextCursor).toBe(
       `${body.entries[1]?.createdAt}|${body.entries[1]?.id}`,
     );
@@ -243,7 +239,7 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
     }
   });
 
-  // WHICH TRAIL THE DOOR OPENS ON (#520). The rows keyed to no tenant are unreachable from the
+  // WHICH TRAIL THE DOOR OPENS ON. The rows keyed to no tenant are unreachable from the
   // tenant read -- the policy compares `tenant_id` to the GUC and NULL satisfies no comparison -- so
   // asking for them is a scope, and the scope is SUPER_ADMIN's.
   describe("the fleet scopes", () => {
@@ -251,8 +247,8 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
       role = "TENANT_ADMIN";
     });
 
-    // REFUSED, NOT NARROWED. A scope that answered with the caller's own rows would report a fleet
-    // trail that is empty, which is the misreading this issue exists to end.
+    // NOTE: REFUSED, NOT NARROWED: answering with the caller's own rows would report a fleet trail
+    // that looks empty.
     for (const scope of ["fleet", "all"]) {
       test(`a tenant admin asking for ${scope} gets 403`, async () => {
         role = "TENANT_ADMIN";
@@ -261,14 +257,9 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
       });
     }
 
-    // A CURSOR FROM BEFORE #530 IS A BARE ID, AND IT IS A 400 AGAIN (#544). It was accepted for one
-    // release after the format changed, read as that release's own `id <` bound, because deploys
-    // are rolling and refusing would have been a 400 in the middle of an operator's walk. #530
-    // shipped in v1.15.0 and this is the release after it, so nothing is handing one out any more.
-    //
-    // The 400 is also the only honest answer left: neither reading the number as the new key nor
-    // translating it into that row's instant resumes from where the old walk stopped, so accepting
-    // it would page a different trail under a pager still saying "Page 2" (`AuditCursor.at`).
+    // NOTE: a bare-id cursor is a 400: neither reading the number as the key nor translating it
+    // into that row's instant resumes where that walk stopped, so accepting it would page a
+    // different trail under a pager still saying "Page 2" (`AuditCursor.at`).
     test("a cursor from before the keyset change is refused", async () => {
       role = "TENANT_ADMIN";
       const first = await get("?limit=1", await sign("TENANT_ADMIN"));
@@ -281,8 +272,8 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
         await sign("TENANT_ADMIN"),
       );
       expect(viaOld.status).toBe(400);
-      // ...while the shape this release emits is still accepted, so the 400 is about the FORM and
-      // not about cursors having stopped working.
+      // NOTE: while the shape the endpoint emits is accepted, so the 400 is about the FORM and not
+      // about cursors having stopped working.
       const viaNew = await get(
         `?limit=1&cursor=${encodeURIComponent(page.nextCursor)}`,
         await sign("TENANT_ADMIN"),
@@ -299,8 +290,7 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
         // Bounded like every other id: past 2^63-1 Postgres refuses it at bind time, so parsing it
         // here would answer a plainly malformed value with a 500.
         "9".repeat(40),
-        // The three-part form #530 emitted while it still carried the pre-#530 bound. It came out
-        // with the bound in #544, and a cursor held across that upgrade lands here.
+        // NOTE: a three-part cursor, a form the endpoint does not emit.
         "2026-01-01T00:00:00.000Z|7|99",
       ]) {
         const res = await get(
@@ -352,9 +342,8 @@ describe.skipIf(!dbUp)("the trail has a door the console can use", () => {
       expect(body.entries.length).toBeGreaterThan(0);
     });
   });
-  // THE DOOR THE EXPORT BUTTON USES (#521). The console cannot serialize this itself -- the Logs
-  // page's own button downloads through its REST endpoint and turns the body into a Blob -- so the
-  // route is not an extra surface, it is the button's transport.
+  // THE DOOR THE EXPORT BUTTON USES. The console downloads through this REST endpoint and turns the
+  // body into a Blob, as the Logs page's button does, so the route is the button's transport.
   describe("the export door", () => {
     interface Dump {
       filename: string;

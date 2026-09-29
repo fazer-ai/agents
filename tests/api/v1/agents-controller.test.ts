@@ -32,9 +32,8 @@ describe("parseExpectedUpdatedAt (optimistic-concurrency precondition boundary)"
 
 describe("splitAgentUpdateBody (PATCH body → patch + precondition)", () => {
   test("strips expectedUpdatedAt so the strict update schema never sees it (regression)", () => {
-    // The bug: the raw body (with expectedUpdatedAt) was forwarded to updateAgent, whose strict zod
-    // schema rejected the extra key with `unrecognized_keys`. The split must hand the service a clean
-    // patch + the precondition as a separate Date.
+    // NOTE: updateAgent's strict zod schema refuses an extra key (`unrecognized_keys`), so the split
+    // hands the service a clean patch plus the precondition as a separate Date.
     const { patch, expectedUpdatedAt } = splitAgentUpdateBody({
       systemPrompt: "x",
       enabled: false,
@@ -43,7 +42,7 @@ describe("splitAgentUpdateBody (PATCH body → patch + precondition)", () => {
     expect(patch).toEqual({ systemPrompt: "x", enabled: false });
     expect("expectedUpdatedAt" in patch).toBe(false);
     expect(expectedUpdatedAt).toBeInstanceOf(Date);
-    // The cleaned patch is exactly what the strict schema accepts — the regression would re-fail here.
+    // NOTE: the cleaned patch is exactly what the strict schema accepts.
     expect(() => agentUpdateSchema.parse(patch)).not.toThrow();
   });
 
@@ -55,9 +54,8 @@ describe("splitAgentUpdateBody (PATCH body → patch + precondition)", () => {
     expect(expectedUpdatedAt).toBeUndefined();
   });
 
-  // #614: the opt-in that says "this bag is complete, drop what it omits" travels in the body and is
-  // NOT part of the agent, so it has to come off the patch for the same reason expectedUpdatedAt
-  // does: the strict schema refuses an unrecognized key.
+  // The opt-in that says "this bag is complete, drop what it omits" travels in the body and is NOT
+  // part of the agent, so it comes off the patch like expectedUpdatedAt: the strict schema refuses it.
   test("strips settingsMode and hands it back as the write's mode", () => {
     const { patch, settingsMode } = splitAgentUpdateBody({
       settings: { split: { enabled: false } },

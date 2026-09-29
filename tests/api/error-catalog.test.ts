@@ -8,24 +8,11 @@ import clientEn from "@/client/locales/en.json";
 import clientPt from "@/client/locales/pt-BR.json";
 import { expectWaiverLedger } from "@/tests/utils/ledger";
 
-// The guard for what `ErrorTranslationKey` (src/lib/errors.ts) cannot see.
-//
-// That type closes the common case completely: a key passed to `AppError`, to a subclass, or to
-// `translate`/`translateWithLocale` is checked against the catalog at compile time. It has exactly
-// three blind spots, and every one of them was a live defect in this repo when issue #256 was
-// written:
-//
-//   1. an `as ErrorTranslationKey` cast, which is by definition the type being told to stop looking;
-//   2. a key used as a COMPARISON token rather than an argument (`if (row.error === "errors.x")`),
-//      which never passes through a typed parameter at all. This is how the console matched
-//      `errors.embeddingNotConfigured` for four releases while the server wrote
-//      `errors.embedding.embedding_not_configured`: two spellings, no call site in common, and
-//      nothing that could have compared them;
-//   3. a catalog that HAS the key but answers it in the wrong language, which type-checks perfectly.
-//
-// Source-text sweeps match SPELLING, not intent, so each rule below states its negative case: what
-// it deliberately does not flag is the design decision, and the escape hatch is a named entry here
-// rather than a silent pass.
+// The guard for the three blind spots of `ErrorTranslationKey` (src/lib/errors.ts): an
+// `as ErrorTranslationKey` cast; a key used as a COMPARISON token (`row.error === "errors.x"`),
+// which never passes through a typed parameter; and a catalog that has the key but answers it in
+// the wrong language. Source-text sweeps match SPELLING, not intent, so each rule below states its
+// negative case, and the escape hatch is a named entry here rather than a silent pass.
 
 async function sourceFiles(dir: string): Promise<string[]> {
   const out: string[] = [];
@@ -49,14 +36,9 @@ function flattenValues(obj: unknown, prefix = ""): Map<string, string> {
 }
 
 // EVERY key whose two languages are the same string, minus an enumerated list. No word threshold:
-// an earlier version of this rule required three-plus prose words, on the argument that a shorter
-// exception list was a ledger nobody would maintain. The four defects that shipped past it settle
-// that argument — `knowledge.tabTexto` answered an English-speaking operator "Texto", and
-// `knowledge.docStatus.READY` answered "12 trechos", both one word long. A threshold is a rule that
-// declines to look at exactly the entries most likely to be a copy-paste of the other language.
-//
-// As a function rather than inline in the test, so it can be pointed at a catalog that DOES offend:
-// live data has zero offenders, and a predicate matching nothing would pass over live data unchanged.
+// a one-word entry ("Texto", "12 trechos") is exactly the kind most likely to be a copy of the
+// other language. A function so it can be pointed at a catalog that DOES offend: live data has
+// zero offenders, and a predicate matching nothing would pass over it unchanged.
 function identicalInBoth(
   en: Map<string, string>,
   pt: Map<string, string>,
@@ -104,7 +86,7 @@ const ALLOWED_UNTRANSLATED: string[] = [];
 
 // Every client entry whose two languages are the same STRING, with the reason it is allowed to be.
 // The list is long because the rule above has no threshold, and that is the trade being made: a
-// hundred lines of data anyone can check, against four user-visible defects that a threshold hid.
+// hundred lines of data anyone can check, against the one-word defects a threshold would hide.
 // An entry arriving here is a decision someone wrote down; an entry MISSING is a red test.
 const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   // Brand and product names. A proper noun is not translated in any language.
@@ -228,18 +210,10 @@ const CLIENT_IDENTICAL_BY_DESIGN: readonly string[] = [
   "webhooks.title",
 ];
 
-// A KEY THAT CANNOT SAY WHAT ITS CALL SITE SAYS.
-//
-// Found by review, on a key this PR itself registered. `refusalBody` prefers the catalog sentence
-// over `AppError.message`, so registering a key REPLACES the message — and where the message was
-// the more informative of the two, registering it made the answer worse, in English as well as in
-// pt-BR. Measured: the Drive 403 said which OAuth scope to reconnect with, and `errors.upstream`
-// answered "The integration provider refused or failed the request."
-//
-// Two shapes, one rule. A key whose catalog entry has no `{{placeholder}}` cannot carry:
-//   1. a value the message interpolates (`\${status}`) — the value is dropped;
-//   2. a second, DIFFERENT literal message — the two facts collapse into one sentence.
-// A key with a placeholder is exempt: that is how a sentence carries what varies.
+// A KEY THAT CANNOT SAY WHAT ITS CALL SITE SAYS. `refusalBody` prefers the catalog sentence over
+// `AppError.message`, so registering a key REPLACES the message, in both languages. An entry with
+// no `{{placeholder}}` cannot carry a value the message interpolates (`\${status}`), nor a second,
+// DIFFERENT literal message (two facts collapse into one sentence). A placeholder key is exempt.
 function keysThatSayLess(
   bySite: Map<string, Set<string>>,
   catalog: Record<string, string>,
@@ -256,61 +230,11 @@ function keysThatSayLess(
     .sort();
 }
 
-// Every refusal in `src` that pairs a LITERAL message with a catalog key, as key -> the set of
-// messages thrown with it. Literal messages only: a message built from a variable cannot be compared
-// to a catalog entry, and the rule is about what the two SAY.
-//
-// FIVE SPELLINGS, because a refusal is written five ways here and the rule is about the refusal,
-// not about the syntax. The class alternation is DERIVED from src/lib/errors.ts rather than spelled
-// out. A hard-coded list goes stale the day someone adds a subclass, and it did: `ConflictError`
-// was missing, so every refusal thrown through it (`chatwootDifferentDeployment` among them) was
-// invisible. Every spelling since was found the same way, one blind spot at a time, and each was
-// MEASURED before being added, because a widened reader is only worth what it newly sees:
-//
-//   1. `new AppError("…", 400, "errors.x")`, the direct throw;
-//   2. `super("…", 400, "errors.x")`, a subclass that hard-codes its own refusal. Sees three keys
-//      the direct form does not (`tenantNotFound`, `promptTooLong`, `settingsTextTooLong`), and
-//      names no new offender: measured, and the reason it costs nothing to keep looking;
-//   3. `{ message: "…", key: "errors.x", params: {…} }`, a refusal BUILT and thrown elsewhere, the
-//      shape `src/modules/documents/templates.ts` uses so a dry run and an apply can reach the same
-//      answer. This one was hiding a live offender: `invalidDocumentSlug` interpolates the rule the
-//      identifier broke (`slug: ${problem}.`) into a catalog entry that says only "This identifier
-//      is not valid", and issue #291 was written from a list that could not see it;
-//   4. `translate("errors.x", "…")` and 5. `translateWithLocale(locale, "errors.x", "…")`, which are
-//      not throws at all: the auth, admin and origin surfaces answer `set.status` plus a body, and
-//      the schema boundary renders its own. Twenty-one keys, and the whole of `features/auth` and
-//      `features/admin`, had never been read by this rule (issue #299).
-//
-// THE KEY COMES FIRST in 4 and 5 and second in 1 to 3, which is why the groups are NAMED. Written
-// positionally, the two orders are one transposition apart, and the transposed version still runs:
-// it reads a message as a key and reports offenders that do not exist.
-//
-// The `translate(` forms are anchored to the CALL and not to adjacency, and that is the whole
-// difference between this reader and a wrong one. Measured while writing it: a bare
-// `"errors.x"\s*,\s*"…"` also matches a key sitting next to its neighbour in an ARRAY of keys
-// (`src/graph/tools/documents.ts` holds one), and it reported `documentNotStored` and
-// `documentRevoked` as offenders whose "message" was the next key in the list.
-// The pieces every producer spelling is built from, at module scope so the two readers below cannot
-// drift apart on what a key, a status or a literal looks like. MESSAGE is the literal one: a plain
-// string or a template, which is what the say-less rule can compare to a catalog entry.
-// THE STATUS ARGUMENT IS AN EXPRESSION, not always a literal. This read `\d+` until issue #292,
-// and the two OAuth token helpers answer `json.error === "invalid_grant" ? 400 : 502` — so the
-// reader walked past both of them and counted their key as having one producer fewer than it has.
-// Splitting those keys without seeing it would have left the third producer behind, answering the
-// sentence written for another fact.
-//
-// MEASURED IN BOTH DIRECTIONS, which is the half that is easy to skip: a widened reader is judged
-// by what it newly sees, and a matcher that runs too far does not merely see more — it pairs a
-// message with somebody else's key and DROPS the right pairing, which shows up as a loss, not as a
-// gain. Against this tree: 233 pairs before, 235 after, zero lost, and the two gained are exactly
-// the two helpers above.
-//
-// BOUNDED TO ONE ARGUMENT, and not merely to the next comma. A status is a single expression on a
-// single line inside one call, so the run may cross neither a parenthesis, a newline nor a
-// semicolon. The looser `[^,]*` measures identically on this tree and is a weaker guarantee: after
-// a call that passes NO status, it could swallow the key, the `)` and whatever follows, and pair
-// that message with a LATER key. Nothing is written that way here today, which is exactly why the
-// bound belongs in the expression instead of in a habit (found by review, issue #292).
+// The pieces every producer spelling is built from, shared so the two readers cannot drift apart.
+// MESSAGE is a literal (plain string or template), the only thing the say-less rule can compare.
+// STATUS is an EXPRESSION, not always a literal (`cond ? 400 : 502` in the OAuth token helpers),
+// bounded to ONE argument: it crosses no parenthesis, newline or semicolon. A looser `[^,]*` could,
+// after a call with no status, swallow the key and pair the message with a LATER key.
 const STATUS = "(?:[^,()\\n;]*,\\s*)?";
 const KEY = '"errors\\.(?<key>[A-Za-z0-9_]+)"';
 const MESSAGE = '(?<msg>`[^`]*`|"(?:[^"\\\\]|\\\\.)*")';
@@ -324,6 +248,13 @@ async function errorClasses(): Promise<string[]> {
   return classes;
 }
 
+// Every refusal in `src` that pairs a LITERAL message with a key, in five spellings: `new <Class>(`,
+// `super(`, `{ message, key }` built and thrown elsewhere, `translate(key, msg)` and
+// `translateWithLocale(locale, key, msg)`. The class alternation is DERIVED from src/lib/errors.ts,
+// since a hard-coded list goes stale with the next subclass. The key comes FIRST in the translate
+// forms, so the groups are NAMED (a transposed positional reader still runs, reading a message as a
+// key), and those forms are anchored to the CALL: by adjacency they would also pair neighbouring
+// keys in an ARRAY of keys (src/graph/tools/documents.ts holds one).
 async function throwSiteRes(): Promise<RegExp[]> {
   const classes = await errorClasses();
   return [
@@ -342,18 +273,10 @@ async function throwSiteRes(): Promise<RegExp[]> {
 }
 
 // THE SIXTH PRODUCER, and the only one that cannot be a regex over the tree: a subclass that
-// hard-codes BOTH its sentence and its key, so neither is written at any call site.
-// `throw new ProEditionError()` names nothing for a sweep to find.
-//
-// The pair is split across two lines of the class — a `message = "…"` default in the constructor
-// signature, the key in the `super(...)` call — so the file is read class by class rather than by
-// one expression, which is also what keeps a default from pairing with the NEXT class's key. That
-// happened while writing this: a single greedy regex reported `ForbiddenError`'s "Forbidden" as the
-// sentence of `errors.proEdition`.
-//
-// Found by review on #304, and by the right question: the `tenantTargetRequired` fix in this same PR
-// moved two refusals ONTO one of these classes, which silenced the rule instead of satisfying it.
-// A producer the reader cannot see is not a producer that agrees.
+// hard-codes BOTH its sentence and its key, so `throw new ProEditionError()` names nothing for a
+// sweep to find. The pair is split between the constructor's `message = "…"` default and the
+// `super(...)` call, so the file is read class by class: a single greedy regex pairs a default with
+// the NEXT class's key. A producer the reader cannot see is not a producer that agrees.
 async function subclassDefaults(into: Map<string, Set<string>>): Promise<void> {
   const src = await readFile("src/lib/errors.ts", "utf8");
   const bodies = src.split(/\nexport class /).slice(1);
@@ -372,9 +295,8 @@ async function subclassDefaults(into: Map<string, Set<string>>): Promise<void> {
   }
 }
 
-// Every producer in the tree, in one place: the three tests below asked the same question with the
-// same loop, and a spelling added to one of them and not the others is the shape of blind spot this
-// whole file exists to close.
+// Every producer in the tree, in one place: the tests below ask the same question, and a spelling
+// added to one of them and not the others is the blind spot this file exists to close.
 async function allSites(): Promise<Map<string, Set<string>>> {
   const res = await throwSiteRes();
   const sites = new Map<string, Set<string>>();
@@ -402,35 +324,17 @@ function throwSites(
   }
 }
 
-// A MESSAGE THAT VARIES, IN AN ENTRY THAT CANNOT CARRY ANYTHING THAT VARIES.
-//
-// The reader above takes literals only, and the reason it gives is sound: a message built from a
-// variable cannot be compared to a catalog entry, and the say-less rule is about what the two SAY.
-// The conclusion drawn from it was not. A computed message is, by construction, a sentence that
-// VARIES, and an entry with no `{{placeholder}}` is a sentence that cannot carry anything that
-// varies — a question that needs no comparison, and so needs no literal, to answer.
-//
-// Measured on main for issue #302: eight keys are thrown with a computed message and four of them
-// into a placeholder-less entry. One does not merely drop the reason, it answers with a DIFFERENT
-// one: a five-character template name holding a control character was refused with "The document
-// template name must be between 1 and 120 characters", so the operator counts characters and finds
-// nothing wrong.
-//
-// The `super(` spelling is deliberately absent. It occurs only in src/lib/errors.ts, where the
-// expression in the message position is the constructor's own parameter, and the sentence it
-// defaults to is read by `subclassDefaults` — reading the forwarding as a computed message would
-// report the three subclasses that hard-code a key as offenders against their own defaults.
-//
-// What this reader still cannot see is a caller that passes a computed message INTO one of those
-// classes, because that call site names no key. Measured: one call site passes an argument to one
-// of them, and it is a tenant id rather than a message (`new ActiveTenantNotFoundError(tenantId)`).
+// A MESSAGE THAT VARIES, IN AN ENTRY THAT CANNOT CARRY ANYTHING THAT VARIES: a computed message
+// needs no literal to be judged, since a placeholder-less entry cannot hold what varies (it drops
+// the reason, or answers a different one). `super(` is deliberately absent: in src/lib/errors.ts the
+// message position is the constructor's own parameter, read by `subclassDefaults`, and reading it
+// here would flag the key-hard-coding subclasses against their own defaults. Still unseen: a caller
+// passing a computed message INTO such a class, since that call site names no key.
 async function computedSiteRes(): Promise<RegExp[]> {
   const classes = await errorClasses();
-  // Anything in the message position that is not a literal: an identifier, a member chain, a call.
-  // It may not start with a quote or a backtick — that is the other reader's subject — and `[^;]`
-  // bounds it to the statement it was found in, so a call with no key cannot reach the next one's.
-  // On a nested call the lazy match can stop at an inner comma, which shortens the expression this
-  // records; the rule reads the KEY, and the expression only ever goes into the report.
+  // NOTE: anything in the message position that is not a literal (identifier, member chain, call),
+  // not starting with a quote or backtick (the other reader's subject); `[^;]` bounds it to its own
+  // statement. On a nested call the lazy match may stop early, which only shortens the report.
   const COMPUTED = '(?<msg>[^\\s;"`][^;]*?)';
   return [
     new RegExp(
@@ -455,10 +359,8 @@ async function computedSites(): Promise<Map<string, Set<string>>> {
   return sites;
 }
 
-// The rule itself, and it is one line: a key thrown with a message that varies has to have somewhere
-// to put it. No grandfathered list, because there is nothing to grandfather — the four this found
-// are fixed in the same change, and a fifth would be a refusal answering the wrong reason from the
-// day it was written.
+// A key thrown with a message that varies has to have somewhere to put it. No grandfathered list:
+// an offender is a refusal answering the wrong reason from the day it is written.
 function keysThatCannotCarryTheirReason(
   computed: Map<string, Set<string>>,
   catalog: Record<string, string>,
@@ -471,19 +373,13 @@ function keysThatCannotCarryTheirReason(
     .sort();
 }
 
-// EMPTY, and pinned there. It was fifteen keys drawn as a line under what predated the rule, each
-// one a catalog sentence that could not say what its call sites said; issue #292 worked them down to
-// nothing, key by key, by asking of every pair of messages whether they are two FACTS (split the
-// key), one fact with a value that varies (give the entry a placeholder), or one fact written twice
-// (make the two call sites say the one sentence). An append here is now a defect being waived rather
-// than a line being held, which is what the pin below says out loud.
+// EMPTY, and pinned there. An offender is fixed, not waived: two FACTS split the key, one fact with
+// a value that varies gets a placeholder, one fact written twice gets one sentence at both sites.
 const SAY_LESS_GRANDFATHERED: readonly string[] = [];
 
 describe("the error catalog cannot be bypassed", () => {
-  // A sweep whose subject does not exist yet asserts nothing, and reads exactly like one that
-  // works: `src` holds no cast today, so a detector that matched NOTHING would pass this suite
-  // unchanged. The predicate is therefore proven against a body that does contain one, before it is
-  // pointed at the tree.
+  // NOTE: `src` holds no cast, so a detector matching NOTHING would pass unchanged: the predicate is
+  // proven against a body that contains one before it is pointed at the tree.
   const castsIn = (body: string): boolean =>
     body.includes("as ErrorTranslationKey");
 
@@ -502,25 +398,19 @@ describe("the error catalog cannot be bypassed", () => {
     expect(offenders).toEqual([]);
   });
 
-  // The spelling rule. A literal that LOOKS like a key and resolves to nothing is either a typo or
-  // a token one side invented, and both read identically at the call site.
-  // HISTORY, not keys. `KnowledgeDocument.error` is a stored column, so rows written before issue
-  // #256 still carry the spelling the producer used then; the console maps them onto today's tokens
-  // (src/client/lib/knowledgeDocs.ts). They are `errors.*` literals that must NOT be catalog entries
-  // — registering them would put a second dot in the API catalog, which the next test forbids for
-  // exactly the reason these exist.
-  //
-  // Frozen at three. The producer emits only camel-case now, so this list describes a closed past;
-  // a fourth arriving here means someone added a NEW dotted token, which is the shape being retired.
+  // NOTE: the spelling rule. A literal that LOOKS like a key and resolves to nothing is a typo or a
+  // token one side invented. These three are stored values, not keys: `KnowledgeDocument.error` rows
+  // may still carry the old dotted spelling, which the console maps onto today's tokens
+  // (src/client/lib/knowledgeDocs.ts). Registering them would put a second dot in the API catalog.
+  // Frozen at three: the producer emits only camel-case, so a fourth is a NEW dotted token.
   const STORED_LEGACY_TOKENS: readonly string[] = [
     "errors.embedding.embedding_not_configured",
     "errors.embedding.credential_pending",
     "errors.embedding.credential_empty",
   ];
 
-  // As a function, with the control below: `src` holds no unregistered literal once this lands, so a
-  // sweep that skipped every key would pass over the tree unchanged — measured, when a mutation
-  // replaced the waiver check with a bare `continue`.
+  // NOTE: a function with the control below: `src` holds no unregistered literal, so a sweep that
+  // skipped every key would pass over the tree unchanged.
   const unregisteredLiterals = (
     body: string,
     catalog: Set<string>,
@@ -597,10 +487,9 @@ describe("the error catalog cannot be bypassed", () => {
     expect(dotted).toEqual([]);
   });
 
-  // The other direction of every waiver rule in this file, and the one none of them had: a ledger is
-  // subtracted from a set DERIVED from the tree, so appending to it both silences a new offender and
-  // satisfies the stale-waiver test. The size is the only fact the tree cannot supply.
-  // tests/utils/ledger.ts carries the measurement (issue #293).
+  // NOTE: a ledger is subtracted from a set DERIVED from the tree, so appending to it both silences
+  // a new offender and satisfies the stale-waiver test. The size is the only fact the tree cannot
+  // supply (tests/utils/ledger.ts).
   test("the cast and legacy-token ledgers may only shrink", () => {
     expectWaiverLedger("ALLOWED_CASTS", ALLOWED_CASTS, 0);
     expectWaiverLedger("STORED_LEGACY_TOKENS", STORED_LEGACY_TOKENS, 3);
@@ -663,16 +552,8 @@ describe("both languages answer, and answer differently", () => {
     expect(pluralOnlyExtras(CLIENT, flatten(clientPt))).toEqual([]);
   });
 
-  // The client catalog cannot take the API's rule as-is. Twenty-seven of its entries are legitimately
-  // identical in both languages (`Base URL`, `Google Drive`, `HMAC SHA-256`, `Client secret`), so a
-  // blanket comparison would need an allowlist longer than the defect it guards. What it CAN hold is
-  // prose: three real words reading identically in both languages is a sentence nobody translated,
-  // or one written in the wrong language to begin with.
-  //
-  // Four client entries were the second kind when this was written, all on the knowledge screen,
-  // with the English catalog holding the Portuguese. Two of the four are two-word labels, so this
-  // rule would NOT have caught them. That is the limit, stated rather than papered over with a lower
-  // threshold: at two words the exception list is twenty-seven entries, a ledger nobody maintains.
+  // NOTE: the client rule has no word threshold (see `identicalInBoth`), and entries legitimately
+  // identical in both languages are waived by name in CLIENT_IDENTICAL_BY_DESIGN.
   test("the rule flags what was never translated, at every length", () => {
     const en = new Map([
       ["a.sentence", "Drag and drop files here, or click to choose"],
@@ -680,8 +561,8 @@ describe("both languages answer, and answer differently", () => {
       ["a.withPlaceholder", "{{n}} trechos"],
       ["a.waived", "PDF, DOCX, TXT"],
     ]);
-    // The one-word and placeholder entries are the two shapes the old threshold let through, so
-    // they are named here rather than left to the sweep over live data to maybe cover.
+    // NOTE: the one-word and placeholder entries are the shapes a word threshold would let through,
+    // so they are named here rather than left to the sweep over live data.
     expect(identicalInBoth(en, new Map(en), ["a.waived"])).toEqual([
       "a.sentence",
       "a.oneWord",
@@ -769,9 +650,8 @@ describe("both languages answer, and answer differently", () => {
         'throw new NotFoundError("no status arg", "errors.c");',
         'throw new AppError("second message", 400, "errors.a");',
         'throw new AppError(someVariable, 400, "errors.d");',
-        // The spellings the reader was blind to, each of which cost a release. All POSITIVE
-        // controls: a reader that stopped matching one would go green here and quietly stop
-        // covering a whole family, which is what it did to `invalidDocumentSlug` for four releases.
+        // NOTE: POSITIVE controls: a reader that stopped matching one of these would stop covering
+        // a whole family of refusals and still go green over the tree.
         'super("from a subclass", 400, "errors.e");',
         // The status as an EXPRESSION. Both OAuth token helpers spell it this way, and a reader
         // pinned to `\\d+` reports their key with one producer fewer than it has.
@@ -781,9 +661,8 @@ describe("both languages answer, and answer differently", () => {
         // body instead of throwing, and the schema boundary renders its own.
         'return { error: translate("errors.g", "answered, not thrown") };',
         'error: translateWithLocale(locale, "errors.h", "rendered at the boundary"),',
-        // NEGATIVE, and it is the false positive this reader was measured against: a key sitting
-        // beside its neighbour in an ARRAY of keys is not a key beside its message. Read by
-        // adjacency instead of by call, this line reports `i` as a refusal whose sentence is `j`.
+        // NOTE: NEGATIVE: a key beside its neighbour in an ARRAY of keys is not a key beside its
+        // message. Read by adjacency instead of by call, `i` would get `j` as its sentence.
         'const DOCUMENT_KEYS = ["errors.i", "errors.j"];',
         // NEGATIVE, and the reason the status matcher is bounded to one argument. A call that
         // passes no status is one comma away from the next key on the line: a matcher that only
@@ -804,12 +683,8 @@ describe("both languages answer, and answer differently", () => {
       "k",
       "l",
     ]);
-    // The captured MESSAGE, not just the key: what feeds the rule above is whether the message
-    // interpolates, so a reader that stripped the `${…}` on the way out would silence it.
-    //
-    // Asserted as a CHARACTER CODE (36 is `$`) rather than against a string built from `dollar`:
-    // an expectation assembled from the same variable as the fixture moves with it, and blanking
-    // `dollar` left both sides agreeing on `{x}` while nothing interpolated any more.
+    // NOTE: the captured MESSAGE must keep its `${…}`, or the say-less rule goes silent. Asserted as
+    // a CHARACTER CODE (36 is `$`): an expectation built from `dollar` would move with the fixture.
     const captured = [...(into.get("b") ?? [])][0] ?? "";
     expect(captured.charCodeAt(captured.indexOf("{") - 1)).toBe(36);
     expect(into.get("a")?.size).toBe(2);
@@ -838,8 +713,7 @@ describe("both languages answer, and answer differently", () => {
     expect(into.has("tenantNotFound")).toBe(false);
   });
 
-  // The regression this derivation exists for: a subclass the alternation forgot is a whole family of
-  // refusals the rule cannot see. `ConflictError` was that subclass.
+  // A subclass the alternation forgot is a whole family of refusals the rule cannot see.
   test("the reader covers every error class the module exports", async () => {
     const src = await readFile("src/lib/errors.ts", "utf8");
     const classes = [...src.matchAll(/export class (\w+)/g)].map(
@@ -914,33 +788,22 @@ describe("both languages answer, and answer differently", () => {
         apiEn.errors as Record<string, string>,
       ),
     ).toEqual([]);
-    // A reader that stopped matching reports the same empty list as a tree that stopped offending.
-    // Deliberately far below the eight measured: this is a liveness check, not a size pin, and a
-    // number calibrated on THIS tree is a red build in the smaller one the public CI runs.
+    // NOTE: a liveness check, not a size pin: a reader that stopped matching reports the same empty
+    // list as a clean tree, and a number calibrated on THIS tree is red in the smaller Free tree.
     expect(computed.size).toBeGreaterThan(3);
   });
 
-  // WHAT THE READER STILL CANNOT SEE, and why each one is allowed to stay invisible.
-  //
-  // A rule that never RUNS on a key is worse than one that runs and waives it: the waiver is a
-  // decision someone wrote down, and the blind spot is a number nobody knows. Issue #291 was drafted
-  // from a list this reader produced while blind to one of its own spellings, so the list was short
-  // by a key and wrong about another. This is the ledger that makes the blind spot a decision.
-  //
-  // NOT subtracted from the sweep, COMPARED to it, which is the difference that keeps it honest and
-  // is why it needs no size pin (issue #293): appending a key that the reader CAN see fails this
-  // test just as loudly as forgetting one it cannot. There is no direction to cheat in.
+  // NOTE: WHAT THE READER CANNOT SEE, and why each may stay invisible. A blind spot is a number
+  // nobody knows; this ledger makes it a decision. It is COMPARED to the sweep, not subtracted, so
+  // it needs no size pin: appending a key the reader CAN see fails as loudly as forgetting one.
   const UNSEEN_BY_THE_READER: readonly string[] = [
     // NO MESSAGE AT ALL. A map from a reason enum to a key (src/lib/embedding-block.ts). The
     // sentence is chosen by whoever renders it, so there is nothing here for any reader to compare.
     "embeddingEmpty",
     "embeddingNotConfigured",
     "embeddingPending",
-    // A MESSAGE BUILT FROM A VARIABLE. Still invisible to the reader above, which compares
-    // SENTENCES and so needs a literal, and no longer unexamined: the computed-message rule asks
-    // these eight the one question a varying message can be asked, and every one of them now has a
-    // placeholder to put it in (issue #302 — four of them did not, and one answered a control
-    // character in a five-character name with "must be between 1 and 120 characters").
+    // NOTE: A MESSAGE BUILT FROM A VARIABLE: invisible to the say-less reader, which needs a
+    // literal, and covered instead by the computed-message rule, which requires a placeholder.
     "invalidCompanyField",
     "invalidDocumentNumberPrefix",
     "invalidDocumentTemplateDescription",
@@ -955,10 +818,6 @@ describe("both languages answer, and answer differently", () => {
     // with one. Its entry interpolates already, so the rule above would have nothing to say about
     // it; what is unread is the say-less comparison, and this line is what says so.
     "invalidBusinessHoursDate",
-    // A third group stood here until review asked the obvious question: a subclass that hard-codes
-    // its own refusal names nothing at the call site, and `errors.proEdition` was waived for it.
-    // "Nothing to read at the call site" is not "nothing to read": the sentence is in the class, and
-    // `subclassDefaults` now reads it there. The group is empty, so it is gone.
   ];
 
   test("every key the reader cannot see is named, with the reason it may stay invisible", async () => {
@@ -978,16 +837,9 @@ describe("both languages answer, and answer differently", () => {
     // key -> messages, and the blinded control below is an empty Set.
     const unseenGiven = (visible: { has: (k: string) => boolean }): string[] =>
       [...named].filter((k) => !visible.has(k)).sort();
-    // NO FLOOR ON EITHER COUNT, and that is the whole lesson of this assertion. The first version
-    // pinned both above 150, which is true on THIS tree and false on the one the public CI runs:
-    // both totals shrink with the edition (166 named / 153 seen here, 161 / 148 in the Free
-    // projection, measured), while the ledger below is the same thirteen in every tree. A sentinel
-    // calibrated against a tree that the derivation reshapes is a red build in the derived repo and
-    // a green one here, which is the shape this file has been bitten by before.
-    //
-    // The comparison guards itself, so it needs no sentinel: a blinded reader reports every named
-    // key as unseen, and that is not this ledger. Proven rather than claimed, because "it would have
-    // failed" is exactly the kind of statement that turns out to be false.
+    // NOTE: no floor on either count: both totals shrink with the edition while the ledger does not,
+    // so a floor calibrated here is red in the derived tree. The comparison guards itself, since a
+    // blinded reader reports every named key as unseen, and the first assertion proves it.
     expect(unseenGiven(new Set())).not.toEqual(
       [...UNSEEN_BY_THE_READER].sort(),
     );
@@ -1006,17 +858,9 @@ describe("both languages answer, and answer differently", () => {
     );
   });
 
-  // A SUBCLASS IS A THROW SITE WITH NO ARGUMENTS.
-  //
-  // The sweeps above read call sites, and a class that hard-codes its own message and status is
-  // invisible to every one of them: `throw new UnauthorizedError()` names no key, so there is nothing
-  // for a source sweep to find and nothing for the type to check. Measured live, against a running
-  // server: the public inbound receptor answered `{"error":"Unauthorized"}` to
-  // `accept-language: pt-BR` while `errors.unauthorized` sat in both catalogs, translated. Twenty-
-  // eight call sites across two classes were in that state.
-  //
-  // The waived one is waived by an argument written at the class: a 503 whose body the client never
-  // shows, because it retries.
+  // NOTE: A SUBCLASS IS A THROW SITE WITH NO ARGUMENTS. `throw new UnauthorizedError()` names no
+  // key, so a keyless class answers in English whatever the caller's language, invisibly to every
+  // call-site sweep. The waived one is argued at the class: a 503 the client retries, never shows.
   const KEYLESS_BY_DESIGN: readonly string[] = ["ServiceUnavailableError"];
 
   const keylessSubclasses = (source: string): string[] =>
@@ -1047,13 +891,9 @@ describe("both languages answer, and answer differently", () => {
     expect(keylessSubclasses(source)).toEqual([...KEYLESS_BY_DESIGN]);
   });
 
-  // TWO ENTRIES PINNED BY WORDING, because review found the same defect at each of them twice.
-  //
-  // `refusalBody` prefers the catalog over `AppError.message`, so an entry that is merely a shorter
-  // paraphrase of the message SILENTLY drops what the message carried. The rule above catches that
-  // mechanically only when a value is interpolated or two facts share a key; where the message is
-  // simply the more specific prose, nothing but a reader can tell. These two were caught by one, so
-  // the thing that made them wrong is written down here rather than left to be re-found.
+  // NOTE: ENTRIES PINNED BY WORDING. `refusalBody` prefers the catalog over `AppError.message`, so a
+  // shorter paraphrase SILENTLY drops what the message carried. The say-less rule catches that only
+  // for an interpolated value or two facts on one key; plain more specific prose needs a reader.
   test("an entry keeps the instruction the message it replaced was carrying", () => {
     const en = apiEn.errors as Record<string, string>;
     const pt = apiPt.errors as Record<string, string>;
@@ -1081,49 +921,26 @@ describe("both languages answer, and answer differently", () => {
   test("the untranslated, keyless and say-less ledgers may only shrink", () => {
     expectWaiverLedger("ALLOWED_UNTRANSLATED", ALLOWED_UNTRANSLATED, 0);
     expectWaiverLedger("KEYLESS_BY_DESIGN", KEYLESS_BY_DESIGN, 1);
-    // NOTE: PER EDITION, and the question is asked of the CATALOG. Both ledgers hold entries
-    // inside `@full-only` blocks, waiving keys the Free extractor prunes, so waiver and key leave
-    // that tree together: two entries from one ledger, one from the other.
-    //
-    // Three cheaper signals were written first and every one of them is wrong somewhere, measured:
-    // `IS_FREE` reads "full" in a derived Free tree, because the env var that flips
-    // `config.edition` is set by the Dockerfile and not by the test runner; reading this file's own
-    // `@full-only` markers reads nothing in PRO, because the derivation strips the marker lines from
-    // both derived trees while keeping the Pro content; and a hand-kept list of the excluded names is
-    // a second waiver ledger, where appending to it and to the ledger balances the count in every
-    // tree. The catalog is not another proxy: these ledgers differ BECAUSE those keys do.
-    //
-    // The key it reads is one of the waived ones on purpose. Renamed or dropped, this reads "free"
-    // in the full tree and the pin goes red there, where someone can see it.
+    // NOTE: PER EDITION, asked of the CATALOG: the waived Pro-only keys leave the Free tree with
+    // their waivers. Not `IS_FREE` (reads "full" in a derived Free tree, the Dockerfile sets it),
+    // not this file's `@full-only` markers (stripped in Pro too), not a hand-kept list (a second
+    // ledger). The key read is a waived one, so renaming it turns the pin red in the full tree.
     const hasProOnlyKeys =
       "faviconTitle" in (clientEn.branding as Record<string, unknown>);
     expectWaiverLedger(
       "CLIENT_IDENTICAL_BY_DESIGN",
       CLIENT_IDENTICAL_BY_DESIGN,
-      // 102 -> 103, and the entry that bought it is `tools.outputTemplateListLength_one`: pluralizing
-      // that counter (issue #509) created a SINGULAR form whose two languages coincide, because
-      // "item" is the same word in both. Its plural does not coincide, which is why the waiver names
-      // the form rather than the key.
-      // 103 -> 105: the RESEND integration ships two proper-noun keys
-      // (`integrations.catalog.RESEND.label`, `vault.secretType.resend`) — the brand is not
-      // translated in any language, same standing as the Asaas and Google entries above.
       hasProOnlyKeys ? 105 : 103,
     );
-    // NOT per edition any more, and that is the point: the list is empty in every tree, so the two
-    // editions can no longer differ on it. The one entry that used to make them differ was waived
-    // because the Pro-only branding writer was its second producer; it now passes the same values
-    // the other producer does, so the key stops offending in the full tree too (issue #292).
+    // NOTE: the same in every edition, since the list is empty in every tree.
     expectWaiverLedger("SAY_LESS_GRANDFATHERED", SAY_LESS_GRANDFATHERED, 0);
   });
 });
 
 // A key can be registered and still answer with nothing useful. i18next leaves a placeholder it was
 // given no value for exactly as written, so `Unknown timezone: {{timezone}}.` reaches the caller
-// without throwing and without logging — the same invisibility as a missing key, one layer in.
-//
-// Three keys shipped that way in the round that registered them, and the reviewer caught all three.
-// What follows is the class rather than those three lines: the rendering is fail-safe, and the two
-// catalogs must agree on what each sentence interpolates.
+// without throwing and without logging, the same invisibility as a missing key, one layer in. So
+// the rendering is fail-safe, and the two catalogs must agree on what each sentence interpolates.
 describe("a registered key still has to say something", () => {
   const placeholders = (v: string): Set<string> =>
     new Set([...v.matchAll(/\{\{(\w+)\}\}/g)].map((m) => m[1] as string));
@@ -1149,9 +966,8 @@ describe("a registered key still has to say something", () => {
     expect(odd.map(([k]) => k)).toEqual([]);
   });
 
-  // Over the whole catalog rather than the three keys the review named: the three throw sites are
-  // fixed, but "someone registers a placeholder and forgets the param" is a mistake with no signal,
-  // so the property that has to hold is that NO key can put braces on a caller's screen.
+  // NOTE: over the whole catalog: a placeholder registered without its param gives no signal, so
+  // the property that has to hold is that NO key can put braces on a caller's screen.
   test("no placeholder key can render braces to a caller", () => {
     const en = apiEn.errors as Record<string, string>;
     const withParams = Object.keys(en).filter(
@@ -1170,10 +986,9 @@ describe("a registered key still has to say something", () => {
     }
   });
 
-  // The negative case, and it is a regression this guard caused before it was written this way: the
-  // check reads the catalog TEMPLATE, not the rendered output, because an interpolated VALUE can
-  // hold braces of its own. A document-template refusal quotes the token it rejected, so reading the
-  // output called a correct pt-BR sentence broken and answered in English instead.
+  // NOTE: the check reads the catalog TEMPLATE, not the rendered output, because an interpolated
+  // VALUE can hold braces of its own (a document-template refusal quotes the token it rejected), and
+  // reading the output would call a correct pt-BR sentence broken and answer in English instead.
   test("a value containing braces does not cancel the translation", () => {
     const out = translateWithLocale(
       "pt-BR",
@@ -1207,29 +1022,15 @@ describe("a registered key still has to say something", () => {
   });
 });
 
-// The fail-safe above keeps braces off the screen, and that is exactly why this rule is separate:
-// with it in place, forgetting a param no longer breaks anything visible. It downgrades a pt-BR
-// caller to a correct ENGLISH sentence, silently. Removing `{ timezone: tz }` from its throw site
-// fails no assertion anywhere else in this suite — measured.
-//
-// So the language is asserted structurally, at the CALL SITE and not from a table of expected
-// params: a table proves what the table says, and the question here is whether the code hands the
-// value over.
-//
-// READ BY POSITION, WHICH IS THE HALF THE FIRST VERSION GUESSED AT. It asked whether the line after
-// the key closes the call, plus a hand-written list of classes that carry no params. Both are
-// approximations of "what is in the params slot", and issue #291 measured the gap: of the fourteen
-// sites it had to fix, that shape saw seven. It missed a single-line throw (nothing follows the key
-// on its own line), a site passing `undefined` there to reach the `field` argument behind it, and a
-// bag that is present and EMPTY (`params: {}`), which is the shape that would have let this very
-// change go green with the catalogs edited and no call site touched.
+// With the fail-safe above, a forgotten param breaks nothing visible: it silently downgrades a
+// pt-BR caller to a correct ENGLISH sentence, and no other assertion notices. So the rule is read at
+// the CALL SITE (a table of expected params proves only the table), by what sits in the params
+// POSITION: a single-line throw, `undefined` passed to reach a later argument, and an EMPTY bag
+// (`params: {}`) all hand nothing over.
 describe("a key that interpolates is thrown with the values", () => {
-  // The names an object literal binds, in BOTH spellings. `{ field: bad.what }` and `{ field }` are
-  // the same fact written two ways, and a sweep that knew only the first is how a guard passes over
-  // half its subject: measured on this repo in #245, on a bag written exactly like these.
-  //
-  // A spread is answered with `null`: unknown, not fine. Nothing spreads into a refusal today, and
-  // a sweep that quietly approved the first one to do so would be worth less than no sweep.
+  // NOTE: the names an object literal binds, in BOTH spellings: `{ field: bad.what }` and
+  // `{ field }` are the same fact, and a sweep knowing only one passes over half its subject. A
+  // spread answers `null`: unknown, not fine, so a refusal spreading into its bag is not approved.
   function bagNames(inner: string): Set<string> | null {
     const names = new Set<string>();
     let depth = 0;
@@ -1279,9 +1080,9 @@ describe("a key that interpolates is thrown with the values", () => {
     return null;
   }
 
-  // Every place the key is WRITTEN, not every place it is thrown: a key used as a comparison token
-  // carries no bag either, and that is the shape issue #256 was about. The ledger comments spell the
-  // key in single quotes, so they are not sites and need no exception.
+  // NOTE: every place the key is WRITTEN, not every place it is thrown: a key used as a comparison
+  // token carries no bag either. The ledger comments spell the key in single quotes, so they are
+  // not sites and need no exception.
   function keySites(body: string, key: string): (Set<string> | null)[] {
     const needle = `"errors.${key}"`;
     const out: (Set<string> | null)[] = [];
@@ -1315,7 +1116,7 @@ describe("a key that interpolates is thrown with the values", () => {
     expect(
       bagAfterKey(', "The value sent in {{field}} is not valid.", { field })'),
     ).toEqual(new Set(["field"]));
-    // The four ways a site hands nothing over, three of which the previous shape read as fine.
+    // NOTE: the four ways a site hands nothing over.
     expect(bagAfterKey(");")).toBeNull();
     expect(bagAfterKey(", undefined, field)")).toBeNull();
     expect(bagAfterKey(', "slug")')).toBeNull();

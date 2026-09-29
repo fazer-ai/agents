@@ -22,24 +22,16 @@ import {
 
 setupPrismaMock();
 
-// `mock.module` is process-global and PERMANENT: it rewrites the module for every file that runs
-// after this one, not just for this file's tests, and nothing in the runner puts it back. So this
-// stub answers every JWT verification in the process from here on, including session cookies in
-// files this one knows nothing about.
-//
-// What follows is load-bearing: `jwtVerify` DELEGATES to the real implementation unless a test
-// overrides it for its own call, which is why `beforeEach` below clears rather than resets. Only
-// the exports NAMED here are replaced — measured, `SignJWT` and the rest survive on their own — so
-// delegation is the whole of what keeps the leak harmless. A bare `mockReset()` leaves this
-// function returning `undefined`, and
-// `undefined` is not a failed verification — it is a TypeError one `.payload` later, which each
-// caller's catch reports as an ordinary invalid token. Measured on 2026-08-27 (issue #420): it
-// turned every session cookie into a 401 for the files that ran after this one, and the failure
-// named the cookie rather than the mock.
-// A PLAIN SNAPSHOT, taken before the mock is installed. `await import()` hands back the LIVE
-// namespace, which Bun rewrites in place when `mock.module` runs — so a namespace captured here and
-// handed back in `afterAll` would re-register the stub rather than undo it, and the spread below
-// would copy the stub instead of the real exports.
+// `mock.module` is process-global and PERMANENT: this stub answers every JWT verification in every
+// file that runs after this one, session cookies included. Only the exports NAMED here are replaced
+// (`SignJWT` and the rest survive), and `jwtVerify` DELEGATES to the real implementation unless a
+// test overrides it, which is why `beforeEach` clears rather than resets. A bare `mockReset()` makes
+// it return `undefined`, a TypeError one `.payload` later that every caller reports as an invalid
+// token: every later session cookie becomes a 401 that names the cookie, not the mock.
+
+// A PLAIN SNAPSHOT, taken before the mock is installed. `await import()` returns the LIVE namespace,
+// which Bun rewrites in place when `mock.module` runs, so handing it back in `afterAll` would
+// re-register the stub rather than undo it, and the spread would copy the stub.
 const realJose = { ...(await import("jose")) };
 
 const mockJwtVerify = mock(
@@ -73,11 +65,9 @@ const { completeSetup, initSetupState } = await import(
 
 const originalSignupEnabled = config.signupEnabled;
 
-// The snapshot is what `afterAll` hands back, so it has to still hold the REAL exports after the
-// mock is installed. A live namespace does not: Bun rewrites it in place, and restoring it would
-// re-register the stub while reading as a teardown. Asserted rather than commented, because the two
-// spellings differ by three characters and behave identically until the day someone imports `jose`
-// after this file has run.
+// The snapshot `afterAll` hands back must still hold the REAL exports after the mock is installed.
+// Asserted because a live namespace differs from the spread by three characters and behaves the same
+// until some file imports `jose` after this one has run.
 describe("the jose snapshot survives its own mock", () => {
   test("the snapshot's jwtVerify is not the stub", () => {
     expect(realJose.jwtVerify).not.toBe(
@@ -93,8 +83,8 @@ describe("the jose snapshot survives its own mock", () => {
 describe("google.service", () => {
   beforeEach(() => {
     resetPrismaMocks();
-    // `mockReset` would strip the delegation above and leave this returning `undefined` for the
-    // rest of the process. Clear the call log, keep the real implementation.
+    // NOTE: `mockReset` would strip the delegation above and leave this returning `undefined` for
+    // the rest of the process. Clear the call log, keep the real implementation.
     mockJwtVerify.mockClear();
     // NOTE: Default to "setup done, signup open" so the existing creation tests
     // pass the registration gate; specific tests override these.
@@ -102,13 +92,9 @@ describe("google.service", () => {
     config.signupEnabled = true;
   });
 
-  // The property the leak violates, asserted from inside this file because that is the only place
-  // it can be reached before the damage lands somewhere else. `mock.module` is permanent, so from
-  // here on THIS function answers every JWT verification in the process — including session cookies
-  // in files that stub nothing. It must therefore still verify a real token after `beforeEach` has
-  // run, which is exactly what a `mockReset()` or a non-delegating stub would take away.
-  //
-  // Without it the failure surfaces hundreds of files later, as a 401 that names the cookie.
+  // Asserted here because this is the only place the leak can be caught before it lands elsewhere:
+  // THIS function answers every JWT verification in the process from now on, so it must still verify
+  // a real token after `beforeEach`, which a `mockReset()` or a non-delegating stub would take away.
   test("a caller that is not this file still gets a working jwtVerify", async () => {
     const { SignJWT, jwtVerify } = await import("jose");
     const key = new TextEncoder().encode("a-throwaway-key-32-chars-long!!!");
@@ -191,7 +177,7 @@ describe("google.service", () => {
 
       const result = await upsertGoogleUser(baseProfile);
 
-      // The session user: the person, running under their membership (issue #756).
+      // NOTE: the session user: the person, running under their membership.
       expect(result).toEqual({
         ...existing,
         memberships: asPersonRow(existing).memberships,
@@ -332,7 +318,7 @@ describe("google.service", () => {
             email: "user@example.com",
             googleId: "google-sub-123",
             name: "Jane Doe",
-            // The person and their first membership, in one statement (issue #756).
+            // NOTE: the person and their first membership, in one statement.
             memberships: { create: { tenantId: BigInt(1), role: "AGENT" } },
           },
         }),

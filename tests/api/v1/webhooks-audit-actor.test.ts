@@ -8,17 +8,13 @@ import { outboundUrl } from "@/tests/utils/outbound";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // The webhook and alert-channel trail, driven through real requests to the console's own doors.
+// tests/modules/audit-webhook-family.test.ts proves the SERVICES record; this file proves the REST
+// routes reach them with a principal at all, since a row can only name who wrote it if the
+// transport hands the context down.
 //
-// `tests/modules/audit-webhook-family.test.ts` proves the SERVICES record. It cannot see the half
-// issue #397 is actually about: whether the REST routes reach those services with a principal at
-// all. `webhooks.controller.ts` and `alert-channels.controller.ts` never mentioned `audit`, and a
-// row can only name who wrote it if the transport hands the context down.
-//
-// The services are WRAPPED and the wrappers call through, for the reason `mock.module` always
-// demands here: it is global to the process and outlives this file for every other one in the same
-// worker, so a stub that swallowed the real behaviour would turn somebody else's file green for the
-// wrong reason. All a wrapper does is record the context it was handed and give the write the test
-// database, which the controller has no way to inject.
+// The services are WRAPPED and call through: `mock.module` is global to the process and outlives
+// this file, so a stub that swallowed the real behaviour would turn other files green for the wrong
+// reason. A wrapper only records the context it got and gives the write the test database.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
@@ -118,10 +114,9 @@ mock.module("@/modules/flowlog/channels", () => ({
 
 const server = (await import("@/app")).default;
 
-// TOP-LEVEL, outside the describe below, and measured rather than assumed: an `afterAll` inside a
-// `describe.skipIf(...)` that skips does NOT run, while this one does. `mock.module` already
-// installed the wrappers globally for the whole worker by the time `dbUp` was decided, so leaving
-// the restore inside would leak them into every later file in the same process.
+// TOP-LEVEL, outside the describe below: an `afterAll` inside a `describe.skipIf(...)` that skips
+// does NOT run, and `mock.module` installed the wrappers for the whole worker before `dbUp` was
+// decided, so a restore left inside would leak them into every later file in the process.
 afterAll(() => {
   mock.module("@/modules/webhooks/outbound/subscriptions", () => realSubs);
   mock.module("@/modules/webhooks/outbound/deliveries", () => realDeliveries);
@@ -354,9 +349,9 @@ describe.skipIf(!dbUp)("the webhook transports name who wrote", () => {
     );
     expect(text).not.toContain("RESTTOKEN");
 
-    // Issue #843: the PATCH body declares `excludeAgentIds`, so the list reaches the service instead
-    // of being refused or dropped by the route. An id naming no agent here is the service's own
-    // answer, which only a field that got through can produce.
+    // NOTE: The PATCH body declares `excludeAgentIds`, so the list reaches the service instead of
+    // being refused or dropped by the route. An id naming no agent here is the service's own answer,
+    // which only a field that got through can produce.
     const kept = await server.handle(
       req("/alert-channels", {
         method: "POST",

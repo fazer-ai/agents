@@ -10,12 +10,11 @@ import {
 } from "@/modules/chatwoot/client";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
-// The channel family's trail, driven through the Channels page's own doors (issue #395).
+// The channel family's trail, driven through the Channels page's own doors.
 //
-// `tests/modules/audit-channel-family.test.ts` proves the SERVICES record. This file answers the half
-// it cannot see: whether the eleven mutating routes of `chatwoot-admin.controller.ts` reach those
-// services with a principal at all. None of them contained the string `audit`, and three of them have
-// no MCP twin, so before this the console was the ONLY door those three had and it recorded nothing.
+// `tests/modules/audit-channel-family.test.ts` proves the SERVICES record. This file proves the half
+// it cannot see: that the eleven mutating routes of `chatwoot-admin.controller.ts` reach those
+// services with a principal, including the three with no MCP twin, whose only door is the console.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;

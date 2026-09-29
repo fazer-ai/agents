@@ -8,24 +8,16 @@ import {
   setupPrismaMock,
 } from "@/tests/utils/prisma-mock";
 
-// The branding trail, driven through a real request all the way to the row.
-//
-// The row is the service's to write now, and it can only name who wrote it if the transport passes a
-// principal. `tests/modules/audit-tenant-family.test.ts` proves the services record; this proves the
-// door reaches them with an actor, which no service test can see.
-//
-// Two things are asserted together on purpose. The actor's `tenantId` is NULL even though this admin
-// has a tenant selected, because branding is the whole deployment's identity. And a write with no
+// The branding trail, through a real request to the row: the service writes it and can only name the
+// writer if the transport passes a principal (`tests/modules/audit-tenant-family.test.ts` proves the
+// services record; this proves the door reaches them with an actor). The actor's `tenantId` is NULL
+// even with a tenant selected, because branding is the whole deployment's identity. A write with no
 // session never reaches the service: the actor is resolved per WRITE HANDLER rather than by mounting
-// the tenancy plugin, precisely so the identity config the login page loads, and the favicon, keep
-// costing nothing.
-//
-// The service is wrapped rather than replaced, and the wrapper CALLS THROUGH. `mock.module` is global
-// to the process and outlives this file for every other one in the same worker: a stub that swallowed
-// the real behavior turns `branding.test.ts` green for the wrong reason, since that file asserts this
-// same function's validation throws. Measured, not guessed: replacing it made two of its tests end
-// with zero assertions. All the wrapper does is record the context and hand the write the test
-// database, which the controller has no way to inject.
+// the tenancy plugin, so the identity config the login page loads, and the favicon, cost nothing.
+
+// The wrapper CALLS THROUGH: `mock.module` outlives this file, and a stub that swallowed the real
+// behavior would leave `branding.test.ts` (which asserts this function's validation throws) with
+// zero assertions. It only records the context and hands the write the test database.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
@@ -56,8 +48,7 @@ setupPrismaMock();
 const admin = await import("@/api/features/branding/branding.admin.service");
 // A COPY, taken before the mock is installed. Bun updates the imported namespace in place, so
 // `admin.updateBrandingColors` read after `mock.module` is the wrapper itself, and a wrapper that
-// calls through by that name calls ITSELF: the pass-through below came back as a RangeError from a
-// blown stack, not as the AppError the real validation raises.
+// calls through by that name calls ITSELF (a RangeError from a blown stack, not the AppError).
 const real = { ...admin };
 const seen: TenantContext[] = [];
 mock.module("@/api/features/branding/branding.admin.service", () => ({

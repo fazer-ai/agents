@@ -34,18 +34,11 @@ describe("isFrameworkRefusal", () => {
     ).toBe(true);
   });
 
-  // NOTE: these two complete Elysia's set of refusal types, and NEITHER is reachable from a route
-  // in this app today — nothing configures `cookie: { secrets }` (without a secret Elysia never
-  // verifies a signature, so it never raises the first) and no `t.File` constrains `type` (the one
-  // place that cared says so in a comment, because the check sniffs magic bytes). They are asserted
-  // here rather than over the wire for exactly that reason: the wire cannot produce them yet.
-  //
-  // Kept in the predicate anyway, and the reason is this PR's whole lesson. What kept leaking was a
-  // list of thrown things that was short by construction; a list trimmed to "the refusals this app
-  // happens to trigger today" is the same mistake pointed the other way, and it goes stale the day
-  // someone signs a cookie. Elysia's exported refusal types are a fixed, enumerable API, so the
-  // predicate enumerates all of them. Dropping either fails CLOSED (a legitimate 401 or 422 would
-  // become a generic 500), so this is about answering correctly, not about a leak.
+  // NOTE: these two complete Elysia's refusal types and no route reaches either (nothing configures
+  // `cookie: { secrets }`, no `t.File` constrains `type`), so they are asserted here, not over the
+  // wire. The predicate still enumerates Elysia's whole fixed set: a list trimmed to what the app
+  // triggers today goes stale the day someone signs a cookie. Dropping either fails CLOSED (a
+  // legitimate 401 or 422 becomes a generic 500).
   test("an invalid cookie signature keeps its own answer", () => {
     expect(isFrameworkRefusal(new InvalidCookieSignature("session"))).toBe(
       true,
@@ -63,9 +56,9 @@ describe("isFrameworkRefusal", () => {
     expect(isFrameworkRefusal(new Error("boom"))).toBe(false);
   });
 
-  // The whole point of keying on identity. Every one of these carries a `code` that a rule written
-  // over `code` read as something it is not — the string half (Prisma, Node) and the numeric half
-  // (DOMException, and anything that assigns a number).
+  // Why the predicate keys on identity: every one of these carries a `code` that a rule keyed on
+  // `code` would misread, the string half (Prisma, Node) and the numeric half (DOMException, and
+  // anything that assigns a number).
   test.each([
     [
       "a Prisma-style code",
@@ -107,8 +100,8 @@ describe("errorDetail", () => {
     expect(errorDetail(e)).toBe("boom");
   });
 
-  // The regression: `throw "boom"` reaches the handler as the string, and reading .stack ?? .message
-  // off it made the development response the literal "undefined".
+  // `throw "boom"` reaches the handler as the string, and reading .stack ?? .message off it would
+  // make the development response the literal "undefined".
   test.each([
     ["boom", "boom"],
     [42, "42"],

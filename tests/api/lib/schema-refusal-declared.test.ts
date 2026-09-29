@@ -1,26 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
-// Issue #314. The schema boundary (#255, src/api/lib/schema-refusal.ts) answers a TypeBox refusal
-// with 422, a localized sentence and the `field` the value failed on. It runs BEFORE the role guard,
-// so the status is reachable on any route with a request schema, authenticated or not — and one
-// route of the whole API declared it. `openapi.json` is a committed artifact and the Eden types the
-// console is built against come from the same `response:` maps, so a status a route returns was a
-// status no generated client knew how to handle.
-//
-// This fence MEASURES rather than infers, which is the lesson #297 paid for: "declares a body
-// schema" is a candidate list, not a result. A path parameter is always a string and always present,
-// so a bare `t.String()` param refuses nothing a caller can send; declaring 422 there would publish
-// a status the route never returns, which is the same wrong contract in the other direction.
-//
-// Measured on `main` before the change, over real HTTP against the built app, unauthenticated:
-//
-//   routes declaring a request schema  177
-//   answered 422                       104   (1 declared it)
-//   answered something else             73   (0 declared it)
-//
-// No probe reaches a handler: every one lands on the boundary (422) or on the role guard (401), so
-// nothing here touches the database or any external system.
+// The schema boundary (src/api/lib/schema-refusal.ts) answers a TypeBox refusal with 422 BEFORE the
+// role guard, so a route that can be violated must declare 422: `openapi.json` and the console's Eden
+// types come from the same `response:` maps, and an undeclared status is one no client handles. The
+// fence PROBES rather than infers from "declares a body schema": a bare `t.String()` path param
+// refuses nothing a caller can send, and declaring 422 there publishes a status never returned.
+// No probe reaches a handler (each lands on the boundary, 422, or the role guard, 401), so nothing
+// here touches the database or any external system.
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
 
@@ -82,8 +69,8 @@ export function validFor(s: Schema): unknown {
 //
 // `inPath` is what separates a path parameter from a body value, and it is not a detail: a path
 // segment always exists (the route would not match otherwise) and is always a string, so `required`
-// and `minLength: 1` are satisfied by the routing itself. Measured — `/mcp/oauth/consent/` answers
-// 404 (no route), `/mcp/oauth/consent/%20` answers 401 (past the boundary), and neither is a 422.
+// and `minLength: 1` are satisfied by the routing itself: `/mcp/oauth/consent/` answers 404 (no
+// route), `/mcp/oauth/consent/%20` answers 401 (past the boundary), and neither is a 422.
 export function violation(
   s: Schema,
   path: string[] = [],
@@ -150,11 +137,9 @@ export function bodyViolation(s: Schema): { path: string[]; bad: unknown } {
     const type = sub?.type;
     if (type === "string") return { path: [key], bad: 42 };
     if (type !== undefined) return { path: [key], bad: "zzz" };
-    // NOTE: a UNION is permissive for the junk `violation` looks for, which is a STRING outside the
-    // members, and still refuses a type no member declares. `POST /v1/vault/:id/test` is the case
-    // that pays for this line: its only body property is `string | null`, so it takes any string and
-    // answers 422 for a number. That 422 was measurable before only through the route's PATH
-    // pattern, and went dark when the pattern moved into the handler (issue #371).
+    // NOTE: a UNION is permissive for the junk `violation` looks for (a STRING outside the members)
+    // and still refuses a type no member declares: `POST /v1/vault/:id/test` takes `string | null`
+    // as its only body property, so it takes any string and answers 422 for a number.
     const members = (sub?.anyOf ?? []) as Schema[];
     const takesANumber = members.some(
       (m) =>
@@ -325,18 +310,11 @@ const spec = (await Bun.file("openapi.json").json()) as {
   >;
 };
 
-// The app is a singleton, and so is the 600/min bucket its global rate limiter keys on. With
-// `trustProxy` off (the shipped default the suite runs under) the key is the SOCKET PEER, and
-// `app.handle(request)` has no server, so every request in the worker resolves to the same
-// `"unknown"` client: this file's ~180 probes would share one budget with every other file's
-// requests. A 429 answers BEFORE the schema boundary, so a rate-limited probe measures nothing and
-// is not evidence that a route cannot refuse. Measured inside the full suite, without this: 71
-// probes came back 429 and the sweep called those routes silent.
-//
-// So the probes bring their own peer. The limiter's generator reads `server.requestIP(request)`,
-// which is null under `handle`; a stand-in that answers a distinct address per probe puts each one
-// in its own bucket, which is what a real deployment would do anyway with 180 different clients.
-// It is installed for the sweep and taken back off, because the singleton outlives this file.
+// The global rate limiter's 600/min bucket is a singleton keyed on the SOCKET PEER (`trustProxy` off),
+// and `app.handle(request)` has no server, so every request in the worker is the same `"unknown"`
+// client. A 429 answers BEFORE the schema boundary, so a rate-limited probe would read as a route
+// that cannot refuse. The probes bring their own peer: a `server.requestIP` stand-in answering a
+// distinct address per probe, installed for the sweep and taken back off (the app outlives this file).
 type ServerStandIn = { requestIP: (request: Request) => { address: string } };
 const withServer = app as unknown as { server: ServerStandIn | null };
 const realServer = withServer.server;
@@ -418,9 +396,9 @@ describe("a route that can answer 422 declares it", () => {
   });
 
   test("the shape predicate agrees with what the routes answered", () => {
-    // A route whose declared schemas refuse nothing a caller can send must not answer 422, and one
-    // that can be violated must. Divergence either way means the generator stopped finding a
-    // violation it used to find, which is how a sweep goes quietly blind.
+    // NOTE: a route whose declared schemas refuse nothing a caller can send must not answer 422, and one
+    // that can be violated must. Divergence either way means the generator misses a violation,
+    // which is how a sweep goes quietly blind.
     const shapeSaysYes = measured.filter((r) => r.refusableByShape);
     const silent = shapeSaysYes.filter((r) => !r.answers422).map((r) => r.id);
     const surprising = measured
@@ -432,8 +410,8 @@ describe("a route that can answer 422 declares it", () => {
 
   // The rule the agreement above rests on, named at the two routes that pay for it: a `minLength: 1`
   // on a PATH parameter is the one constraint the shape reads as a refusal and the router never
-  // lets happen. Only an empty segment breaks it, and an empty segment is a different URL —
-  // measured, `/api/v1/mcp/oauth/consent/` answers 404 (no route at all) while
+  // lets happen. Only an empty segment breaks it, and an empty segment is a different URL:
+  // `/api/v1/mcp/oauth/consent/` answers 404 (no route at all) while
   // `/api/v1/mcp/oauth/consent/%20` answers 401, past the boundary. Asserted as ROUTES rather than
   // only as a predicate case so that renaming or dropping one of them shows up here.
   test("a minLength on a path segment is not a refusal the caller can trigger", () => {

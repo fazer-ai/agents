@@ -3,10 +3,9 @@ import { Elysia } from "elysia";
 import { writeBody } from "@/api/v1/tools.controller";
 import { toolDefinitionCreateSchema } from "@/modules/tool-definitions/service";
 
-// Regression guard: Elysia's `normalize` strips any request-body field NOT declared in the route's
-// body schema. So every field the service's zod schema accepts MUST also appear in the controller's
-// `writeBody`, or it is silently dropped before the service ever sees it. This is exactly how `label`
-// once got stripped — the saved label stayed stuck at the backfilled identifier.
+// Elysia's `normalize` strips any request-body field NOT declared in the route's body schema, so
+// every field the service's zod schema accepts MUST also appear in the controller's `writeBody`, or
+// it is silently dropped before the service sees it.
 describe("tools controller writeBody vs service schema (drift guard)", () => {
   test("every service create field is exposed in the Elysia body schema", () => {
     const bodyKeys = new Set(Object.keys(writeBody.properties));
@@ -20,10 +19,9 @@ describe("tools controller writeBody vs service schema (drift guard)", () => {
   });
 });
 
-// The same `normalize` behavior is what made dropping `riskTier` (issue #137) a plain removal
-// instead of a staged deprecation: a client still sending the retired field must keep working.
+// The same `normalize` behavior lets a client still sending the retired `riskTier` keep working.
 // Driven through a real request against the route's OWN body schema, because the service's create
-// schema is `.strict()` — if the field ever reached it, the write would fail with unrecognized_keys.
+// schema is `.strict()`: if the field ever reached it, the write would fail with unrecognized_keys.
 describe("a retired field still sent by an old client", () => {
   const app = new Elysia().post("/tools", ({ body }) => ({ body }), {
     body: writeBody,
@@ -50,15 +48,11 @@ describe("a retired field still sent by an old client", () => {
   });
 });
 
-// Issue #150. The REST schema described `body` as a "request body template" whose placeholders are
-// interpolated, which is what invited a plain JSON object — the one shape `parseBody` does not
-// execute. The contract now lives in the description, and the refusal lives in the service.
-//
-// It is NOT declared structurally, and this is what stops that from being tried again. Elysia's
-// `normalize` strips what a schema does not declare (the riskTier case above depends on it), so a
-// union of the three modes answered a plain-object body with 200 and `body: {}` — measured, not
-// assumed. The operator's payload emptied in silence is issue #150 itself, moved one layer earlier.
-// Passing it through intact is what lets the service refuse it with a message worth reading.
+// `body` is NOT declared structurally in the REST schema: Elysia's `normalize` strips what a schema
+// does not declare, so a union of the three modes would answer a plain-object body with 200 and
+// `body: {}`, emptying the operator's payload in silence. Passed through intact, a plain JSON object
+// (the one shape `parseBody` does not execute) reaches the service, which refuses it with a message
+// worth reading. The contract lives in the description.
 describe("a request body in a shape the runtime does not execute", () => {
   const app = new Elysia().post("/tools", ({ body }) => ({ body }), {
     body: writeBody,

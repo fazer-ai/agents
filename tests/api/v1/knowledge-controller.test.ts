@@ -6,7 +6,7 @@ import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 setupPrismaMock();
 const { readerSafeBlock } = await import("@/api/v1/knowledge.controller");
 
-// Boundary projection for issue #80. The documents list is `requireAuth` (any role, AGENT included);
+// Boundary projection. The documents list is `requireAuth` (any role, AGENT included);
 // the reindex endpoint that legitimately returns the credential ref for a fill deeplink is
 // TENANT_ADMIN. The block object is the same on both, so the difference has to be enforced where it
 // crosses.

@@ -8,19 +8,14 @@ import {
   setupPrismaMock,
 } from "@/tests/utils/prisma-mock";
 
-// The half of issue #301 that a global "a ZodError means the caller sent something wrong" branch got
-// backwards, found by review on PR #309.
+// A ZodError is not always the caller's fault. `discoverMcpTools` calls
+// `MultiServerMCPClient.getTools()`, and the MCP SDK validates the REMOTE server's JSON-RPC results
+// with the same deduped zod (shared/protocol.js rejects with the `safeParse` error), so that error
+// IS `instanceof ZodError` here. Answering it 422 with `field` would name a value the caller never
+// sent and log a server fault as a warning.
 //
-// `discoverMcpTools` calls `MultiServerMCPClient.getTools()`, and the MCP SDK validates the REMOTE
-// server's JSON-RPC results with the same zod package this repo depends on
-// (@modelcontextprotocol/sdk, shared/protocol.js: `safeParse(resultSchema, response.result)` then
-// `reject(parseResult.error)`; zod 4.4.3 is deduped, so that error IS `instanceof ZodError` here).
-// A malformed answer from someone else's server is not the operator's input being wrong, and
-// answering it 422 with `field` would name a value the caller never sent, while logging a server
-// fault as a warning.
-//
-// So the refusal is raised where the input is KNOWN to be the caller's — `parseInput` — and a bare
-// ZodError keeps the 500 it deserves. That is what this file pins.
+// So the refusal is raised where the input is KNOWN to be the caller's (`parseInput`), not by a
+// global "a ZodError is bad input" branch, and a bare ZodError keeps its 500.
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
 

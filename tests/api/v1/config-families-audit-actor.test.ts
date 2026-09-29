@@ -8,18 +8,13 @@ import { outboundUrl } from "@/tests/utils/outbound";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
 // The five configuration families' trail, driven through real requests to the console's own doors.
+// `tests/modules/audit-config-families.test.ts` proves the SERVICES record; this file proves the REST
+// routes hand those services a principal, so it asserts `actorId` and `actorType` over requests
+// carrying a real session cookie.
 //
-// `tests/modules/audit-config-families.test.ts` proves the SERVICES record. It cannot see the half
-// issue #399 is about: whether the REST routes reach those services with a principal at all. None
-// of the five controllers contains the string `audit`, and a row can only name who wrote it if the
-// transport hands the context down — so the assertion here is on `actorId` and `actorType`, over
-// requests carrying a real session cookie.
-//
-// The services are WRAPPED and the wrappers call through, for the reason `mock.module` always
-// demands here: it is global to the process and outlives this file for every other one in the same
-// worker, so a stub that swallowed the real behaviour would turn somebody else's file green for the
-// wrong reason. All a wrapper does is give the write the test database, which the controller has no
-// way to inject.
+// The services are WRAPPED and call through: `mock.module` is global to the worker, so a stub that
+// swallowed the real behaviour would turn other files green for the wrong reason. A wrapper only
+// hands the write the test database, which the controller cannot inject.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
@@ -398,7 +393,7 @@ describe.skipIf(!dbUp)("the console's own doors name who wrote", () => {
         `${f.entity}.update`,
         `${f.entity}.delete`,
       ]);
-      // The door is a browser session, so every row is attributed to one — and to the operator
+      // NOTE: the door is a browser session, so every row is attributed to one, and to the operator
       // behind it, which is the half no transport-written row could ever have covered for REST.
       expect(r.every((x) => x.actorType === "user")).toBe(true);
       expect(r.every((x) => x.actorId === ADMIN_ID)).toBe(true);

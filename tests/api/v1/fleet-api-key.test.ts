@@ -7,23 +7,14 @@ import type { TenantContext } from "@/lib/tenancy";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 import { countInSrc } from "@/tests/utils/source-text";
 
-// A fleet-scoped API key, driven through the console's own door (issue #308).
-//
-// `tests/modules/api-keys.test.ts` proves the service mints, lists and revokes one. It cannot see
-// the half the issue is about: whether a Bearer that carries no tenant is admitted at the request
-// boundary as the fleet principal a SUPER_ADMIN session is — the whole roster on `/v1/tenants`, a
-// tenant chosen per request by `X-Tenant-Id`, the SUPER_ADMIN-only routes open — and whether the
-// password step-up a session has to answer is answered by the key itself.
-//
-// Edition-neutral routes only, on purpose: `POST/DELETE /v1/tenants` are stripped from the Free
-// tree, and this file is published with it. The step-up rule is proved on `DELETE /v1/agents/:id`,
-// which asks the same question of the same helper; the tenant delete is exercised live and recorded
-// in the PR body.
-//
-// Every service the routes reach is WRAPPED and calls through, for the reason `mock.module` demands
-// here: it is global to the worker and outlives this file, so a stub that swallowed the behaviour
-// would turn another file green for the wrong reason. The wrapper only hands the write the test
-// database, which the controller has no way to inject.
+// A fleet-scoped API key, driven through the console's own door.
+// `tests/modules/api-keys.test.ts` proves the service. This file proves the request boundary admits
+// a tenantless Bearer as the fleet principal a SUPER_ADMIN session is (the roster on `/v1/tenants`, a
+// tenant per request by `X-Tenant-Id`, SUPER_ADMIN-only routes open), and that the key answers the
+// password step-up itself. Edition-neutral routes only, since `POST/DELETE /v1/tenants` are stripped
+// from the published Free tree: step-up is proved on `DELETE /v1/agents/:id`, which asks the same
+// helper. Services are WRAPPED and call through: `mock.module` is worker-global, so a stub that
+// swallowed the behaviour would turn another file green.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
@@ -104,7 +95,7 @@ afterAll(() => {
   mock.module("@/modules/agents/service", () => realAgents);
 });
 
-// Review round 4: `requireSession` answers 403, and the `response:` map is the contract the spec
+// `requireSession` answers 403, and the `response:` map is the contract the spec
 // and the Eden client are generated from (`openapi:check` holds the committed spec to it). A status
 // a route returns and does not declare is a refusal no generated client knows how to handle. The
 // list is held to the source: a sixth `requireSession(` site has to be named here.
@@ -220,8 +211,8 @@ describe.skipIf(!dbUp)("a fleet-scoped API key at the request boundary", () => {
         app,
       )
     ).id;
-    // A key that predates the password rule, written the way every row was before `step_up_at`
-    // existed: no step-up on record. Its creator is the session's user, whose password is below.
+    // NOTE: a legacy key row, with no `step_up_at` on record. Its creator is the session's user,
+    // whose password is below.
     legacyToken = `fazerai_${"L".repeat(43)}${process.pid}`;
     await su.apiKey.create({
       data: {
@@ -291,7 +282,7 @@ describe.skipIf(!dbUp)("a fleet-scoped API key at the request boundary", () => {
     await app?.$disconnect();
   });
 
-  // The control: what every key could do before, and the ceiling the issue reports.
+  // NOTE: the control: a tenant key's reach, which a fleet key exceeds.
   test("a tenant key sees one tenant on /v1/tenants", async () => {
     const res = await send("GET", "/api/v1/tenants", bearer(tenantToken));
     expect(res.status).toBe(200);
@@ -385,9 +376,9 @@ describe.skipIf(!dbUp)("a fleet-scoped API key at the request boundary", () => {
     expect(await realVerify.verifyApiKey(token, app)).toBeNull();
   });
 
-  // Rounds 1 and 2 of the review. A key answers every later step-up by itself, so a stolen session
-  // must not be able to mint one without the password — or the key would carry the session past
-  // the rule. And a key never mints a credential at all: a tenant key minted by a fleet key under
+  // NOTE: a key answers every later step-up by itself, so a stolen session must not be able to mint
+  // one without the password, or the key would carry the session past the rule. And a key never
+  // mints a credential at all: a tenant key minted by a fleet key under
   // X-Tenant-Id, or by another tenant key, would keep working after the minter is revoked.
   test("a tenant key is minted by a session under step-up, and by no key", async () => {
     const sessionHeaders = { cookie, "x-tenant-id": tenantA.toString() };
@@ -437,9 +428,9 @@ describe.skipIf(!dbUp)("a fleet-scoped API key at the request boundary", () => {
     ).toBe(1);
   });
 
-  // The other credential a key could mint: an MCP grant. `/authorize` treats any authenticated
+  // NOTE: the other credential a key could mint: an MCP grant. `/authorize` treats any authenticated
   // principal as the app session, and a first-party client skips consent, so a Bearer would get a
-  // code — and a grant that outlives the key. The refusal sits before the client lookup, so no
+  // code, and a grant that outlives the key. The refusal sits before the client lookup, so no
   // client has to exist for the probe to reach it, and a key cannot probe client ids either.
   test("a key cannot drive the OAuth authorize or consent routes", async () => {
     const authorize = await send(
@@ -514,8 +505,7 @@ describe.skipIf(!dbUp)("a fleet-scoped API key at the request boundary", () => {
     ).toBe(0);
   });
 
-  // Review round 3: a key minted before the rule was minted with no password anywhere, so it has no
-  // step-up to carry, and it answers the way every key did before this change: with its creator's
+  // NOTE: a legacy key (no `step_up_at`) has no step-up to carry, so it answers with its creator's
   // password. The rule widens nothing for a key that already exists.
   test("a key minted before the rule still answers with its creator's password", async () => {
     const name = `by-legacy-${process.pid}`;

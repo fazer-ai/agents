@@ -168,9 +168,8 @@ describe("authController", () => {
         "error",
         "Email already in use",
       );
-      // And the input it is about. The signup form has two boxes and only one of them can be fixed,
-      // so a sentence with no name sends the operator to guess (#320). Built by hand in the
-      // controller rather than raised as an AppError, which is why `refusalBody` never sees it.
+      // NOTE: the refusal names the input: the signup form has two boxes and only one can be fixed.
+      // Built by hand in the controller rather than raised as an AppError, so `refusalBody` never sees it.
       expect(response.error?.value).toHaveProperty("field", "email");
     });
 
@@ -323,8 +322,8 @@ describe("authController", () => {
       });
     });
 
-    // Issue #802: the editor needs to know whether the per-agent audio check can do anything, and
-    // what "the instance default" means. The address and the token never leave the server.
+    // The editor needs to know whether the per-agent audio check can do anything, and what "the
+    // instance default" means. The address and the token never leave the server.
     test("says whether the audio detector runs, and its default mode, and nothing else about it", async () => {
       const original = { ...config.ttsCheck };
       try {

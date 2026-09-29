@@ -40,9 +40,8 @@ if (appUrl && suUrl) {
 const appDb = app as PrismaClient;
 const suDb = su as PrismaClient;
 
-// The inviter, as the principal the invite now records itself under (#400). `invitedById` used to be
-// an argument and comes off this instead, so a caller can no longer attribute an invitation to
-// somebody who never issued it.
+// The inviter, as the principal the invite records itself under. `invitedById` comes off it rather
+// than from an argument, so a caller cannot attribute an invitation to somebody who never issued it.
 const inviter = (tenantId: bigint): TenantContext => ({
   tenantId,
   userId: 9400n,

@@ -2,18 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { TEMPLATE_MESSAGE_MAX } from "@/modules/agents/text-caps";
 import { setupPrismaMock } from "@/tests/utils/prisma-mock";
 
-// WHAT THE ROUTE ACCEPTS AND WHAT THE SERVICE REFUSES HAVE TO BE THE SAME NUMBER.
+// What the route accepts and what the service refuses have to be the same number: the Zod schema in
+// `updateSpendCeiling` caps the customer sentence at TEMPLATE_MESSAGE_MAX, and a longer message the
+// route's body schema let through would throw a raw ZodError in the service and reach the global
+// `onError` (src/app.ts) as a 500, on an endpoint that documents 422.
 //
-// `updateSpendCeiling` validates the merged block with a Zod schema that caps the customer sentence
-// at TEMPLATE_MESSAGE_MAX. The route's own body schema did not, so a longer message passed the
-// boundary, threw a raw ZodError inside the service, and reached the global `onError` in src/app.ts
-// as an unhandled failure: 500 "Something went wrong" for a value the operator typed into a text
-// box, on an endpoint that documents 422.
-//
-// Driven through the REAL app because the branch under test is that boundary, not the schema object:
-// a unit asserting the TypeBox type would pass on a route that never used it. Unauthenticated on
-// purpose — schema validation runs BEFORE the role guard, which is exactly what makes the pair of
-// answers below the whole assertion.
+// Driven through the REAL app, since a unit asserting the TypeBox type would pass on a route that
+// never used it. Unauthenticated on purpose: schema validation runs BEFORE the role guard, which is
+// what makes the pair of answers below the whole assertion.
 
 setupPrismaMock();
 const app = (await import("@/app")).default;

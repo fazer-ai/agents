@@ -7,15 +7,11 @@ import config from "@/config";
 import type { TenantContext } from "@/lib/tenancy";
 import { mockFindUnique, setupPrismaMock } from "@/tests/utils/prisma-mock";
 
-// The configuration warnings, over the console's own door. `tests/modules/config-health-read.test.ts`
-// proves the module computes them; it cannot see the half this issue is about — whether a caller who
-// is not the editor page can ASK. The route is the second of the two non-browser surfaces (the MCP
-// tool is the first), and it is also the only one that answers in the operator's own language, so
-// the Accept-Language case below is the only place `currentLocale` is exercised end to end.
-//
-// The service is WRAPPED rather than stubbed, for the reason `mock.module` always demands here: it is
-// global to the worker and outlives this file. All the wrapper does is record the context the route
-// handed down and give the read the test database, which the controller has no way to inject.
+// The configuration warnings over the console's door: whether a caller other than the editor page
+// can ASK (tests/modules/config-health-read.test.ts proves the computation). The route is the only
+// surface that answers in the operator's language, so the Accept-Language case is the one end-to-end
+// exercise of `currentLocale`. The service is WRAPPED, not stubbed, because `mock.module` is global
+// to the worker; the wrapper records the context and hands the read the test database.
 
 const BunRequest = (globalThis as unknown as { BunRequest: typeof Request })
   .BunRequest;
@@ -122,7 +118,7 @@ describe.skipIf(!dbUp)("GET /v1/agents/:id/config-health", () => {
           model: "gpt-4o-mini",
           credentialRef: `vault:${key.id}`,
         },
-        // The issue's own example: the switch reads "on" and nothing screens anything.
+        // NOTE: the switch reads "on" and nothing screens anything.
         settings: { guardrails: { enabled: true }, stt: { enabled: false } },
       },
       select: { id: true },
@@ -178,15 +174,9 @@ describe.skipIf(!dbUp)("GET /v1/agents/:id/config-health", () => {
     expect(body.counts.blocking).toBeGreaterThanOrEqual(1);
   });
 
-  // The same class the MCP tool's own fence covers, on the other surface: the OpenAPI text is what a
-  // REST client reads, and nothing else checks it against the body. Round 3 caught it naming
-  // `unavailable` after the field had been renamed to `unchecked`.
-  //
-  // A SET COMPARISON, not a presence check, and the difference is the whole fence. Written first as
-  // "is every field of the body mentioned somewhere in the text", it passed with the defect put
-  // back: the paragraph names the fields twice, so one occurrence can go wrong while the other keeps
-  // the word present. What a reader acts on is the shape line, so that is what is compared — and it
-  // catches both directions, a field the body grew and a name the text got wrong.
+  // The OpenAPI text is what a REST client reads, and nothing else checks it against the body. A SET
+  // COMPARISON on the shape line, not a presence check: the paragraph names each field twice, so one
+  // occurrence can go stale while the other keeps the word present. It catches both directions.
   test("the route's documented shape is the shape it returns", async () => {
     const source = await Bun.file(
       new URL("../../../src/api/v1/agents.controller.ts", import.meta.url),

@@ -8,7 +8,7 @@ import type { DocumentTemplateInput } from "@/modules/documents/templates";
 
 // Elysia's `normalize` STRIPS any request-body key the route schema does not declare, silently and
 // with a 200. So every field the service accepts MUST appear in the controller's `writeBody`, or the
-// operator's write arrives half empty — which is how `label` once got dropped on the tools route.
+// operator's write arrives half empty.
 //
 // Here the stakes are higher than one field: `blocks` is the whole document. A schema that declared
 // the block union property by property would drop every property it did not name, and a template
@@ -138,15 +138,10 @@ describe("a block reaches the handler intact", () => {
 
 // THE STATUS A ROUTE CAN ANSWER IS THE STATUS IT PUBLISHES.
 //
-// The preview route's own comment already states this rule, about 404: "Leaving it out publishes a
-// union the endpoint does not honour, and an Eden caller narrowing on the declared statuses is
-// handed a status its types say cannot happen." It was stated for one status and missed for the
-// next.
-//
 // All three routes below reach `patchedContent`, which answers 409 for a template whose stored
-// content a newer version wrote — the downgrade case docs/documents.md preserves on purpose. Two of
-// them declared it. Nothing at runtime notices: measured, Elysia returns the 409 either way, so the
-// only casualty is the generated client, which is exactly the kind of defect no request can reveal.
+// content a newer version wrote (the downgrade case docs/documents.md preserves on purpose). Elysia
+// returns the 409 whether or not it is declared, so an undeclared one only breaks the generated
+// client, which no request can reveal: an Eden caller is handed a status its types say cannot happen.
 describe("declared response unions vs the statuses the handlers answer", () => {
   const routes = (
     documentTemplatesController as unknown as {

@@ -6,10 +6,9 @@ import {
   playgroundTurnBodySchema,
 } from "@/api/v1/agents.controller";
 
-// The guardrail toggle is a boolean the handler reads off the body, and Elysia strips any field the
-// schema does not declare — silently, before the handler runs. So a turn sent with screening off
-// would screen anyway, and every service-level test would still pass, because they all call the
-// service directly (issue #170's shape).
+// The guardrail toggle is a body field, and Elysia silently strips any field the schema does not
+// declare before the handler runs: a turn sent with screening off would screen anyway, while every
+// service-level test (they call the service directly) still passes.
 //
 // The REAL schemas are imported, never copied: a mirrored schema validates its own fields and can
 // never see one missing from the endpoint's.

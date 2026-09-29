@@ -4,7 +4,7 @@ import { AppError } from "@/lib/errors";
 import { parseMcpId } from "@/modules/mcp/write";
 
 // `BigInt` is arbitrary precision and a database id is not. A value past 2^63-1 passes a digits-only
-// check, converts happily, and is then refused by POSTGRES when the query binds it — so a plainly
+// check, converts happily, and is then refused by POSTGRES when the query binds it, so a plainly
 // malformed field answers 500 on a path whose whole job was to say 400 or 404.
 //
 // A SWEEP rather than one example per route, because the defect is in the spelling people reach for
@@ -49,23 +49,16 @@ describe("parseMcpId", () => {
   });
 });
 
-// Every caller-supplied id in the document surfaces goes through the bounded parse. Written as a
-// read of the source because that is where the mistake is visible: a `BigInt(...)` wrapped around a
-// request field is the defect, whatever the route around it does.
-// The per-file sweep that used to sit here is gone, subsumed rather than dropped:
-// tests/lib/caller-id-spelling.test.ts runs the same check over ALL of `src` with a superset of the
-// prefixes this one hunted, plus the bare-local shape it could not see. Its own comment said the
-// list was the guard, and a list that has to be appended to per feature is the shape that was
-// missing the next entry every time (issue #407).
+// Every caller-supplied id in the document surfaces goes through the bounded parse. That source
+// sweep is tests/lib/caller-id-spelling.test.ts, over ALL of `src`: a list of files appended to per
+// feature is a guard that misses the next entry.
 
-// The other half of the same defect, and it took a review round to see: a route can use the bounded
-// parse and still LIE about it. `requireDbId` answers 400, and a `response` declaration that omits
-// 400 leaves the generated OpenAPI contract advertising a set of statuses the route does not keep —
-// so a generated client meets an unhandled one on a plainly malformed id.
+// The other half of the same defect: a route can use the bounded parse and still LIE about it.
+// `requireDbId` answers 400, and a `response` declaration that omits 400 publishes an OpenAPI
+// contract the route does not keep, so a generated client meets an unhandled status.
 //
-// Swept across both controllers rather than fixed on the route that was found, because the omission
-// is invisible at the call site: the parse is in the handler and the declaration is in the options
-// object below it, and nothing ties them together.
+// Swept across both controllers because the omission is invisible at the call site: the parse is in
+// the handler, the declaration in the options object below it, and nothing ties them together.
 describe("a route that can answer 400 says so in its contract", () => {
   const ROUTE = /\n {2}\.(get|post|patch|put|delete)\(/g;
 
@@ -103,7 +96,7 @@ describe("a route that can answer 400 says so in its contract", () => {
   });
 });
 
-// The parse the routes now share is the one the rest of the repo already had.
+// The routes share the repo's one bounded parse, not a copy of it.
 test("requireDbId and parseDbId answer the same question", () => {
   expect(parseDbId("17")).toBe(17n);
   expect(requireDbId("17")).toBe(17n);

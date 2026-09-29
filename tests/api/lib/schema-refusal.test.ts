@@ -3,7 +3,6 @@ import { t, ValidationError } from "elysia";
 import { fieldFromPointer, schemaRefusal } from "@/api/lib/schema-refusal";
 
 // The decision table for a schema refusal: what the client is told, and what the server records.
-// Issue #255.
 //
 // The errors are built the way Elysia builds them, from a schema and a value, so a row states the
 // shape a route declares and the body that breaks it rather than a hand-assembled error object.

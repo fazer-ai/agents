@@ -8,15 +8,10 @@ import {
   setupPrismaMock,
 } from "@/tests/utils/prisma-mock";
 
-// ── ISSUE #372: A FILTER THE CALLER TYPED IS EITHER USED OR REFUSED ──
-//
-// Driven through the REAL app rather than against the parsers alone, because what the issue is
-// about is the ANSWER the caller gets. Measured against a running instance before this branch, on
-// a tenant holding five log rows across two agents:
-//
-//   agentId=101   -> 200, 3 items          agentId=abc  -> 200, 5 items (the whole tenant)
-//   cursor=360141 -> 200, next=360139      cursor=abc   -> 200, next=360141 (the same page, forever)
-//   limit=abc     -> 500                   page=-5      -> 500 (a negative skip reaches Prisma)
+// A filter the caller typed is either used or refused. Driven through the REAL app, not the parsers
+// alone, because what matters is the ANSWER: an unusable filter that is dropped widens the result
+// (`agentId=abc` answers the whole tenant, `cursor=abc` the same page forever), and one that reaches
+// Prisma unparsed is a 500 (`limit=abc`, `page=-5`).
 //
 // The services are stubbed so the assertion is about the boundary, not the query: a request that
 // reaches the stub was ACCEPTED, and what it carries is the filter the handler built.
@@ -36,16 +31,9 @@ const record =
     });
   };
 
-// SPIES ON THE MODULE OBJECTS, NOT REGISTRY REWRITES. Four rewrites used to sit here, each undone
-// in `afterAll` by handing the module back the namespace `await import()` returned, which is the
-// LIVE object the rewrite had already changed in place, so the teardown re-registered the stub
-// while reading as a cleanup. tests/lib/module-mock-package.test.ts states exactly this; these
-// lines predate it.
-//
-// Measured on the four shards: `listExecutionLogs` went on answering `{ items: [] }` for every file
-// downstream, so tests/modules/flowlog.test.ts read nothing back and reported a tenant unable to
-// see its OWN rows, as an RLS failure, in a file that stubs nothing. `listAudit` did the same to
-// tests/modules/tier3.test.ts. Three failures in shard 4/4, none naming this file.
+// Spies on the module objects, not registry rewrites: undoing a rewrite with the namespace
+// `await import()` returned hands back the LIVE object the rewrite already changed, so the stub
+// leaks into every later file in the shard (tests/lib/module-mock-package.test.ts).
 const flowlogRead = await import("@/modules/flowlog/read");
 // `record` answers an empty page for all three readers, so it cannot carry one derived return type.
 // The cast NAMES the function it is standing in for rather than erasing to `never`, so a signature
@@ -133,9 +121,8 @@ const REFUSED: Array<[path: string, param: string]> = [
   ["/v1/logs/export?source=all&since=yesterday", "since"],
   ["/v1/logs/export?source=all&maxRows=abc", "maxRows"],
   ["/v1/audit?limit=abc", "limit"],
-  // #401 widened this endpoint from `limit`+`action` to a keyset cursor, a date range and the
-  // actor. Every new leg is the same question, and an actorType silently dropped is the worst of
-  // them: the answer would be the whole trail, which on that page reads as "nothing else happened".
+  // The audit cursor, date range and actor are the same question, and a silently dropped actorType
+  // is the worst: it answers the whole trail, which on that page reads as "nothing else happened".
   ["/v1/audit?cursor=abc", "cursor"],
   ["/v1/audit?cursor=9223372036854775808", "cursor"],
   ["/v1/audit?actorId=abc", "actorId"],
@@ -149,30 +136,27 @@ const REFUSED: Array<[path: string, param: string]> = [
   ["/v1/knowledge/bases/1/documents?cursor=abc", "cursor"],
   ["/v1/conversations?agentId=abc", "agentId"],
   ["/v1/conversations/1/messages?before=abc", "before"],
-  // `page=-5` is a well-formed integer, so it is refused one layer down by the service that owns
-  // the range (see query-param.test.ts) — and `getUsers` is stubbed here, which would make an
-  // assertion about it vacuous. The live A/B in the PR body drives that one end to end.
+  // `page=-5` is a well-formed integer, refused one layer down by the service that owns the range
+  // (tests/lib/query-param.test.ts); `getUsers` is stubbed here, so asserting it would be vacuous.
   ["/admin/users?page=abc", "page"],
   ["/admin/users?page=2.5", "page"],
   ["/v1/metrics?since=garbage", "since"],
   ["/v1/metrics/kpis?since=2026-02-30T00:00:00Z", "since"],
   ["/v1/metrics/timeseries?since=08/26/2026 10:00", "since"],
   ["/v1/metrics/costs?since=2026-01-01", "since"],
-  // Round 1 of review found these four: the same question in four places the first sweep missed.
-  // A cursor that restarts the page and a status that widens to every status are the two failures
-  // this endpoint's siblings already refuse; `tenantId=` empty is the fleet-wide listing answering
-  // a request narrowed to one tenant.
+  // A cursor that restarts the page and a status that widens to every status are failures this
+  // endpoint's siblings already refuse; an empty `tenantId=` would be the fleet-wide listing
+  // answering a request narrowed to one tenant.
   ["/v1/conversations?cursor=abc", "cursor"],
   ["/v1/conversations?cursor=", "cursor"],
   ["/v1/conversations?cursor=9223372036854775808", "cursor"],
-  // `status` and `maxRows=0` are refused one layer down, by the services that own the vocabulary
-  // and the range — and those services are stubbed here, so asserting them over HTTP would be
-  // vacuous. service-count-range.test.ts drives both.
+  // `status` and `maxRows=0` are refused one layer down, by the services that own the vocabulary and
+  // the range, which are stubbed here; tests/modules/service-count-range.test.ts drives both.
   ["/v1/logs/export?source=all&maxRows=abc", "maxRows"],
   ["/v1/metrics/timeseries?tz=Not/AZone", "tz"],
   ["/v1/metrics/timeseries?tz=", "tz"],
-  // Round 2: `Number` reads spellings a count does not have, and two of them as a DIFFERENT
-  // number. All of these passed `Number.isInteger` before the decimal regex.
+  // `Number` reads spellings a count does not have, two of them as a DIFFERENT number, and all pass
+  // `Number.isInteger`: only the decimal regex refuses them.
   ["/v1/logs?source=all&limit=1e3", "limit"],
   ["/v1/logs?source=all&limit=0x10", "limit"],
   ["/v1/logs?source=all&limit=0b11", "limit"],
@@ -183,9 +167,9 @@ const REFUSED: Array<[path: string, param: string]> = [
   // `9007199254740993` comes back from `Number` as `...992`: a count the caller never named.
   ["/v1/logs?source=all&limit=9007199254740993", "limit"],
   ["/v1/conversations/1/messages?before=9007199254740993", "before"],
-  // Round 3: the EMPTY value in the text and vocabulary filters. An unknown `level` reaches the
-  // query and answers zero rows, which is correct; `level=` is dropped by `buildLogWhere`'s
-  // truthiness and answers the tenant's whole table, which is the widening this branch is about.
+  // The EMPTY value in the text and vocabulary filters: `level=` is dropped by `buildLogWhere`'s
+  // truthiness and would answer the tenant's whole table, while an unknown `level` reaches the query
+  // and correctly answers zero rows.
   ["/v1/logs?source=all&level=", "level"],
   ["/v1/logs?source=all&stage=", "stage"],
   ["/v1/logs?source=all&turnId=", "turnId"],
@@ -211,10 +195,9 @@ describe("a query filter the server cannot use is a 400 that names it", () => {
 });
 
 describe("an unknown value is not an unusable one", () => {
-  // The line this branch draws: `level=bogus` reaches the query and answers zero rows, which is a
-  // correct answer to a filter nothing matches and is distinguishable by the client from a widened
-  // one. Refusing it would mean the server owning a vocabulary it does not own (`stage`/`level` are
-  // validated Strings on purpose, so a new stage does not need a deploy to be queryable).
+  // NOTE: `level=bogus` reaches the query and answers zero rows, a correct answer the client can
+  // tell apart from a widened one. Refusing it would make the server own a vocabulary it does not
+  // (`stage`/`level` are validated Strings on purpose, so a new stage needs no deploy to be queried).
   for (const q of [
     "level=bogus",
     "stage=nosuchstage",
@@ -260,9 +243,7 @@ describe("the admin tenant filter, which only a SUPER_ADMIN can send", () => {
     }
   }
 
-  // Every route that reads the shared `resolveScope`, not just the one the issue named: round 2 of
-  // review found /admin/stats and /v1/mcp/admin/tokens publishing only 401/403 while their handlers
-  // could now answer 400, and sweeping the callers turned up /admin/invitations as a third.
+  // NOTE: Every caller of the shared `resolveScope`, since each one can answer this 400.
   const SUPER_ADMIN_ROUTES = [
     "/admin/users",
     "/admin/stats",

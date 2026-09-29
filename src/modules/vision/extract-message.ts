@@ -220,6 +220,7 @@ export async function extractMessageVisuals(params: {
   // assinatura depois de oito fotos não é arquivo a pedir de novo.
   // Em lotes do tamanho do teto, porque cada download fica inteiro em memória.
   while (!parou && corpo.length > 0 && orcamento > 0) {
+    if (params.signal?.aborted) break;
     const alemDoTeto = await Promise.all(
       tirar(VISION_MAX_ATTACHMENTS).map((visual) =>
         classifyBodyImage({
@@ -269,7 +270,12 @@ export async function extractMessageVisuals(params: {
   // só a que terminou por último; e no Chatwoot upstream, onde a rota de write-back da meta não
   // existe, essa loja é o ÚNICO leitor do flush do debounce.
   const leuCorpo = todos.some((v) => v.id === null);
-  if (descricao || documento || naoLidos > 0 || leuCorpo)
+  // NOTE: Nada é stashado depois do prazo do chamador: um arquivo que o prazo cortou não foi TENTADO,
+  // e a contagem de não lidos é a marca que faz o flush seguinte pular a mensagem.
+  if (
+    !params.signal?.aborted &&
+    (descricao || documento || naoLidos > 0 || leuCorpo)
+  )
     stashMediaAnnotation(
       { tenantId, instanceId, messageId },
       {

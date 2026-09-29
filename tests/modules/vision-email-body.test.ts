@@ -863,6 +863,42 @@ describe.skipIf(!dbUp)("a picture in an email body reaches vision", () => {
     expect(downloads.length).toBe(8);
   });
 
+  test("a passed deadline also stops the downloads that only sort out ornaments", async () => {
+    await setVision(true);
+    const fotos = Array.from({ length: 40 }, (_, i) =>
+      blob(610 + i, `f${i}.png`),
+    );
+    const downloads: string[] = [];
+    const deadline = new AbortController();
+    deadline.abort();
+    await extractMessageVisuals({
+      tenantId,
+      instanceId,
+      conversationId: 1050,
+      messageId: 1,
+      visuals: fotos.map((dataUrl, i) => ({
+        id: null,
+        dataUrl,
+        name: `f${i}.png`,
+        imageDescription: null,
+        extractedText: null,
+      })),
+      cfg: {
+        enabled: true,
+        provider: "openai",
+        credentialRef: `vault:${visionKeyId}`,
+      } as never,
+      base: appDb,
+      deps: {
+        makeClient: stub({ page: [], sizes: {}, downloads, metaWrites: [] }),
+        fetchImpl: visionFetch(["não deveria ler"]),
+      },
+      signal: deadline.signal,
+    });
+    // The first batch was already under way; nothing past the cap is downloaded to classify it.
+    expect(downloads.length).toBe(8);
+  });
+
   test("a passed deadline starts no provider call for an attachment", async () => {
     await setVision(true);
     const url = blob(600, "foto.png");

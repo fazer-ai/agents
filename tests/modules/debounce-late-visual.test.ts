@@ -13,6 +13,7 @@ import { PrismaClient } from "@/../generated/prisma/client";
 import { encryptJson } from "@/api/lib/crypto";
 import {
   clearMediaAnnotations,
+  mediaAnnotationFor,
   stashMediaAnnotation,
 } from "@/modules/chatwoot/annotations";
 import type { ChatwootClient } from "@/modules/chatwoot/client";
@@ -378,6 +379,8 @@ describe.skipIf(!dbUp)(
 
         expect(deadline.signal.aborted).toBe(true);
         expect(providerCalls).toBe(0);
+        // Not marked as tried: the job's retry must still read the file.
+        expect(mediaAnnotationFor(tenantId, instanceId, 1)).toBeNull();
       } finally {
         await suDb.agent.update({
           where: { id: agentId },

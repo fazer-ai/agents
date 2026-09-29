@@ -1168,7 +1168,7 @@ export const agentsController = new Elysia({
     "/:id/playground/media/:mediaId",
     async ({ tenantContext, params, set }) => {
       const ctx = ctxOrThrow(tenantContext);
-      // NOTE: refused (400), not answered 404: a media id that is not an id is a malformed request,
+      // Refused (400), not answered 404: a media id that is not an id is a malformed request,
       // and a 404 would tell the caller their id was fine and the row was gone.
       const blob = await getPlaygroundMedia(
         ctx,

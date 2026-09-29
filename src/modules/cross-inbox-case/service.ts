@@ -36,6 +36,7 @@ export type CaseClient = Pick<
   | "findContactIdByEmail"
   | "mergeContacts"
   | "listContactConversations"
+  | "listUnresolvedContactConversations"
   | "createConversation"
   | "sendMessageAsAdmin"
   | "sendPrivateNote"
@@ -552,6 +553,7 @@ async function run(
       // the create made is numbered above every one that existed, and one at or below the newest the
       // contact already had is one it handed back.
       step = "list_case_conversations";
+      let lookupFailed = false;
       const listed = await client.listContactConversations(caseContactId);
       const before = new Set(
         listed.filter((c) => c.inboxId === target).map((c) => c.id),
@@ -560,17 +562,34 @@ async function run(
       // A case this contact already has open in the destination, opened by this tool from another
       // conversation (the channel opens a new one when the customer writes after the origin was
       // resolved). The addition goes to that case rather than to a second one.
-      const openCase = listed
-        .filter(
-          (c) =>
-            c.inboxId === target &&
-            c.status !== "resolved" &&
-            c.customAttributes?.[CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE] != null,
-        )
-        .reduce<(typeof listed)[number] | null>(
-          (best, c) => (best === null || c.id > best.id ? c : best),
-          null,
-        );
+      const caseAmong = (rows: typeof listed) =>
+        rows
+          .filter(
+            (c) =>
+              c.inboxId === target &&
+              c.status !== "resolved" &&
+              c.customAttributes?.[CROSS_INBOX_CASE_ORIGIN_ATTRIBUTE] != null,
+          )
+          .reduce<(typeof listed)[number] | null>(
+            (best, c) => (best === null || c.id > best.id ? c : best),
+            null,
+          );
+      let openCase = caseAmong(listed);
+      // NOTE: a full listing can hide an older case, so the filter, which has no such cap, is asked. A
+      // failed lookup falls back to opening a case, which is what the tool does without one.
+      if (openCase === null && listed.length >= CONTACT_CONVERSATIONS_PAGE) {
+        step = "find_open_case";
+        try {
+          openCase = caseAmong(
+            await client.listUnresolvedContactConversations(
+              caseContactId,
+              target,
+            ),
+          );
+        } catch {
+          lookupFailed = true;
+        }
+      }
       // ASKED AGAIN, after the last wait and right before the write nothing undoes: the ask above sat
       // before the screening and this read, and a `/reset` or a withdrawal inside either of them must
       // not still open a case and send its opening.
@@ -593,7 +612,8 @@ async function run(
         }));
       const caseId = created.id;
       const appended = openCase !== null;
-      // The case found in the listing is in `before`, so an addition reads as continued too.
+      // An addition reads as continued too: a listed case is in `before`, and one only the filter finds
+      // is older than every listed conversation, so its number is below `newestBefore`.
       const continued = before.has(caseId) || caseId <= newestBefore;
       const caseUrl = client.conversationUrl(caseId);
       const originUrl = client.conversationUrl(origin);
@@ -606,7 +626,7 @@ async function run(
       // stops what is left, and the attribute writer asks again inside its own queue, after its read,
       // so a reset that cleared the origin's attributes is not undone by this one. The case stays
       // open, since no write here can take it back.
-      const partial: string[] = [];
+      const partial: string[] = lookupFailed ? ["open_case_lookup"] : [];
       let calledOff = false;
       const withdrawn = async (): Promise<boolean> => {
         if (calledOff) return true;

@@ -2170,6 +2170,14 @@ function getCurrentTimeTool(ctx: ToolCtx) {
   );
 }
 
+// An addition whose note did not reach the case: withdrawn before it, or the write failed.
+function additionLost(r: OpenCaseResult): boolean {
+  return (
+    (r.kind === "appended" || r.kind === "already_open") &&
+    (r.partial.includes("destination_note") || r.partial.includes("called_off"))
+  );
+}
+
 // What the model reads after `open_case_in_inbox`, one sentence per outcome. The ones that ask for
 // something are instructions the model acts on in its reply; none of them tells it to stay silent,
 // because the customer still has to hear, on the channel they are on, where their case went.
@@ -2201,8 +2209,13 @@ function openCaseOutcomeText(
       return `${how}${partial}${blocked} Tell the customer, in your reply here, that their case was opened and the team will contact them there.${close}`;
     }
     case "already_open":
-      return `This conversation already opened a case that is still open: conversation #${r.caseId}. Nothing new was opened; what you passed in \`reason\` was added to that case as an internal note. Tell the customer their case is already with the team.${close}`;
+      return additionLost(r)
+        ? `This conversation already opened a case that is still open: conversation #${r.caseId}. Nothing new was opened, and what you passed in \`reason\` could NOT be added to that case, so the team does not have it. Do not tell the customer it reached the team; hand off to a human with handoff_to_human so a person sees it.${close}`
+        : `This conversation already opened a case that is still open: conversation #${r.caseId}. Nothing new was opened; what you passed in \`reason\` was added to that case as an internal note. Tell the customer their case is already with the team.${close}`;
     case "appended": {
+      if (additionLost(r)) {
+        return `The customer already has an open case with the team, opened from another conversation: conversation #${r.caseId}. Nothing new was opened, but what you passed in \`reason\` could NOT be added to that case, so the team does not have it. Do not tell the customer it reached the team; hand off to a human with handoff_to_human so a person sees it.${close}`;
+      }
       const partial = r.partial.length
         ? ` Some writes did not land (${r.partial.join(", ")}).`
         : "";
@@ -2349,7 +2362,9 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         // first. Only with a turn to defer to; a proactive turn has none, and closing immediately
         // there would take the conversation away before anything was said in it.
         let closing: "scheduled" | "not_here" | null = null;
-        if (caseOpen) {
+        // NOTE: an addition the case did not get keeps this conversation open: closing it would take the
+        // customer's words off the only place they are.
+        if (caseOpen && !additionLost(result)) {
           if (
             cic.config.resolveOrigin &&
             ctx.turnState &&
@@ -2361,6 +2376,8 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           } else {
             closing = "not_here";
           }
+        } else if (caseOpen) {
+          closing = "not_here";
         }
         return openCaseOutcomeText(result, closing);
       }

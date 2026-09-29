@@ -68,6 +68,8 @@ function fakeChatwoot(
     listDelayMs?: number;
     // The account's label catalog (`GET /labels`); "fail" answers it with a 500.
     catalog?: string[] | "fail";
+    // The conversation filter (`POST /conversations/filter`) answers with a 500.
+    filterFails?: boolean;
     // The destination inbox's agent bot, which Chatwoot assigns to a conversation it creates there
     // (the fork assigns it without the type).
     inboxBot?: number;
@@ -195,6 +197,27 @@ function fakeChatwoot(
         await new Promise((res) => setTimeout(res, opts.listDelayMs));
       }
       return listed;
+    },
+    listUnresolvedContactConversations: async (
+      contactId: number,
+      inboxId: number,
+    ) => {
+      record("listUnresolvedContactConversations", [contactId, inboxId]);
+      if (opts.filterFails) throw new ChatwootApiError(500, "filter");
+      return convs
+        .filter(
+          (c) =>
+            c.contactId === contactId &&
+            c.inboxId === inboxId &&
+            c.status !== "resolved",
+        )
+        .map((c) => ({
+          id: c.id,
+          inboxId: c.inboxId,
+          status: c.status,
+          canReply: null,
+          customAttributes: { ...c.attrs },
+        }));
     },
     createConversation: async (p) => {
       record("createConversation", [p]);
@@ -1055,6 +1078,7 @@ describe("openCaseInInbox", () => {
     // conversation 8, which knows nothing about case 60.
     const withCase = (status: string, over: Partial<Conv> = {}) =>
       fakeChatwoot({
+        listNewest: 25,
         convs: [
           {
             id: 7,
@@ -1181,6 +1205,72 @@ describe("openCaseInInbox", () => {
         input({ originConversationId: 8 }),
       );
       expect(r).toMatchObject({ kind: "appended", caseId: 61 });
+    });
+
+    test("a case older than the listing reaches is found through the filter", async () => {
+      const f = withCase("open");
+      // Thirty newer conversations push the case out of the contact's newest page.
+      for (let i = 0; i < 30; i++) {
+        f.convs.push({
+          id: 200 + i,
+          inboxId: 10,
+          contactId: 5,
+          status: "resolved",
+          attrs: {},
+          labels: [],
+        });
+      }
+      const r = await openCaseInInbox(
+        f.client,
+        input({ originConversationId: 8 }),
+      );
+      expect(r).toMatchObject({ kind: "appended", caseId: 60, partial: [] });
+      expect(f.calls.some((c) => c.fn === "createConversation")).toBe(false);
+    });
+
+    test("the filter is asked only when the listing is full", async () => {
+      const f = withCase("resolved");
+      const r = await openCaseInInbox(
+        f.client,
+        input({ originConversationId: 8 }),
+      );
+      expect(r.kind).toBe("opened");
+      expect(
+        f.calls.some((c) => c.fn === "listUnresolvedContactConversations"),
+      ).toBe(false);
+    });
+
+    test("a filter that fails opens a case, as the tool does without one, and says so", async () => {
+      const f = fakeChatwoot({
+        filterFails: true,
+        listNewest: 25,
+        convs: [
+          {
+            id: 8,
+            inboxId: 10,
+            contactId: 5,
+            status: "pending",
+            attrs: {},
+            labels: [],
+          },
+          ...Array.from({ length: 30 }, (_, i) => ({
+            id: 20 + i,
+            inboxId: 10,
+            contactId: 5,
+            status: "resolved",
+            attrs: {},
+            labels: [],
+          })),
+        ],
+      });
+      const r = await openCaseInInbox(
+        f.client,
+        input({ originConversationId: 8 }),
+      );
+      expect(r.kind).toBe("opened");
+      expect((r as { partial: string[] }).partial).toContain(
+        "open_case_lookup",
+      );
     });
 
     test("withdrawn before the addition is written: nothing is", async () => {
@@ -2229,6 +2319,34 @@ describe("the tool", () => {
     );
   });
 
+  test("already open: an addition that did not land is not told as delivered", async () => {
+    const f = fakeChatwoot({
+      failOn: new Set(["sendMessageAsAdmin"]),
+      convs: [
+        {
+          id: 7,
+          inboxId: 10,
+          contactId: 5,
+          status: "pending",
+          attrs: { case_conversation_id: 55 },
+          labels: [],
+        },
+        {
+          id: 55,
+          inboxId: 40,
+          contactId: 5,
+          status: "open",
+          attrs: {},
+          labels: [],
+        },
+      ],
+    });
+    const { t } = toolFor(f);
+    const out = String(await t.invoke({ reason: "x" }));
+    expect(out).toContain("could NOT be added to that case");
+    expect(out).not.toContain("was added to that case");
+  });
+
   test("appended: a note that did not land reaches the flow log", async () => {
     const f = fakeChatwoot({
       failOn: new Set(["sendMessageAsAdmin"]),
@@ -2258,7 +2376,9 @@ describe("the tool", () => {
       },
     });
     const out = String(await t.invoke({ reason: "x" }));
-    expect(out).toContain("Some writes did not land (destination_note)");
+    // The addition did not reach the case, so the model is not told it did.
+    expect(out).toContain("could NOT be added to that case");
+    expect(out).not.toContain("reached the team handling their case");
     expect(seen).toContainEqual({
       phase: "follow_up_writes",
       detail: { caseId: 60, failed: ["destination_note"] },
@@ -2351,6 +2471,35 @@ describe("the tool", () => {
       const out = String(await t.invoke({ reason: "x" }));
       expect(turnState.resolveRequested).toBe(true);
       expect(out).toContain("marked resolved after your reply");
+    });
+
+    test("on, and the addition did not reach the case: nothing is scheduled", async () => {
+      const f = fakeChatwoot({
+        failOn: new Set(["sendMessageAsAdmin"]),
+        convs: [
+          {
+            id: 7,
+            inboxId: 10,
+            contactId: 5,
+            status: "pending",
+            attrs: {},
+            labels: [],
+          },
+          {
+            id: 60,
+            inboxId: 40,
+            contactId: 5,
+            status: "open",
+            attrs: { origin_conversation_id: 3 },
+            labels: [],
+          },
+        ],
+      });
+      const turnState = turn();
+      const t = withClose(f, true, { turnState });
+      const out = String(await t.invoke({ reason: "x" }));
+      expect(turnState.resolveRequested).toBe(false);
+      expect(out).toContain("NOT closed");
     });
 
     test("on, and the case was already open: the close is still scheduled", async () => {

@@ -1468,6 +1468,47 @@ export class ChatwootClient {
     });
   }
 
+  // The contact's conversations in one inbox that are not resolved, through the conversation filter,
+  // which is not capped at the newest 25 the contact listing answers. First page only (25, newest
+  // activity first): a contact with more unresolved conversations than that in one inbox is not a case.
+  async listUnresolvedContactConversations(
+    contactId: number,
+    inboxId: number,
+  ): Promise<ChatwootConversationRef[]> {
+    const res = (await this.request(
+      this.config.adminToken,
+      "POST",
+      "/conversations/filter",
+      {
+        payload: [
+          {
+            attribute_key: "contact_id",
+            filter_operator: "equal_to",
+            values: [contactId],
+            query_operator: "and",
+          },
+          {
+            attribute_key: "inbox_id",
+            filter_operator: "equal_to",
+            values: [inboxId],
+            query_operator: "and",
+          },
+          {
+            attribute_key: "status",
+            filter_operator: "not_equal_to",
+            values: ["resolved"],
+            query_operator: null,
+          },
+        ],
+      },
+    )) as { payload?: unknown } | null;
+    const rows = Array.isArray(res?.payload) ? res.payload : [];
+    return rows.flatMap((row) => {
+      const ref = parseConversationRef(row);
+      return ref ? [ref] : [];
+    });
+  }
+
   // Opens (or, when the inbox is set to continue the contact's open case, continues) a conversation
   // for the contact in the inbox. No message rides along: on a continued case the fork would post it
   // into the existing thread, and the caller decides whether an opening message is owed.

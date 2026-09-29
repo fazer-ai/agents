@@ -214,14 +214,14 @@ export interface AgentConfig {
   // The DB Inbox.id this conversation belongs to (null in the playground / no mirror row). Feeds
   // the per-inbox usage attribution on LlmUsage.
   inboxDbId: bigint | null;
-  // NOTE: the inbox's Chatwoot channel class ("Channel::Api", "Channel::Instagram", …; null when unknown
-  // or in the playground). Decides the TTS reply container (pickTtsFormat) — Meta's Instagram
+  // The inbox's Chatwoot channel class ("Channel::Api", "Channel::Instagram", …; null when unknown
+  // or in the playground). Decides the TTS reply container (pickTtsFormat): Meta's Instagram
   // messaging refuses WhatsApp's Ogg/Opus.
   channelType: string | null;
-  // NOTE: the inbox's WhatsApp provider (baileys | zapi | whatsapp_cloud | …; null off WhatsApp or on
-  // an inbox that has not synced). It is what says whether an attendant's reply typed on the paired
-  // phone can be told apart from an unmatched echo of our own — see `providerReservesEchoIds` and
-  // `foreignReplyBoundary`. Selected from the row this query already reads (PR #701, review round 8).
+  // The inbox's WhatsApp provider (baileys | zapi | whatsapp_cloud | …; null off WhatsApp or on an
+  // inbox that has not synced). It says whether an attendant's reply typed on the paired phone can be
+  // told apart from an unmatched echo of our own: see `providerReservesEchoIds` and
+  // `foreignReplyBoundary`. Selected from the inbox row the conversation query already reads.
   whatsappProvider: string | null;
   contactDbId: bigint | null;
   // The native Chatwoot ContactInbox id (one contact on one channel) for this conversation. Keys the
@@ -246,7 +246,7 @@ export interface AgentConfig {
   transferWithSummary: boolean;
   nativeToolsAllow?: string[];
   httpToolDefs: LoadedHttpToolDef[];
-  // Operator-authored code tools granted to this agent (issue #363).
+  // Operator-authored code tools granted to this agent.
   codeToolDefs: LoadedCodeToolDef[];
   mcpSelections: McpSelection[];
   integrationSelections: IntegrationSelection[];
@@ -265,8 +265,9 @@ export interface AgentConfig {
   //
   // Its shape is the two siblings' and its DEFAULT is the opposite: everything absent means no
   // fallback at all, never "the agent's own model" (see graph/fallback-settings). An unresolvable
-  // ref leaves the key empty, and `buildModelAndGraph` then builds NO fallback — the turn fails the
-  // way it does today rather than sending the agent's key to a vendor that never issued it.
+  // ref leaves the key empty, and `buildModelAndGraph` then builds NO fallback: the turn fails as it
+  // would with no fallback configured, rather than sending the agent's key to a vendor that never
+  // issued it.
   modelFallback: FallbackConfig;
   modelFallbackApiKey: string;
   modelFallbackCredentialBaseUrl: string | null;
@@ -275,24 +276,20 @@ export interface AgentConfig {
   splitConfig: SplitConfig;
   signatureConfig: SignatureConfig;
   // The same placeholder values the system prompt was rendered with, carried so the OPERATOR's own
-  // texts can use them too (issue #599: the signature). Built once per turn and reused rather than
-  // rebuilt, so `{{nome_agente}}` in a signature and in the prompt can never disagree.
+  // texts (the signature) can use them too. Built once per turn and reused rather than rebuilt, so
+  // `{{nome_agente}}` in a signature and in the prompt can never disagree.
   promptVars: Record<string, string>;
-  // The options those vars were rendered WITH, carried beside them because a variable is only half
-  // the answer: `{{horario_atendimento}}` and every time variable need the schedule and the instant
-  // to resolve, and a caller handed only the map renders them literally. The signature is the second
-  // consumer of this pair (issue #599); the system prompt is the first, and it reads them from the
-  // same place, so the two cannot disagree about what a placeholder means.
-  // `now` is REQUIRED here while the render option is optional: every caller that produces an
-  // AgentConfig pins one instant for both renderings, and the re-render below needs the same one.
+  // The options those vars were rendered WITH: `{{horario_atendimento}}` and every time variable need
+  // the schedule and the instant to resolve, and a caller handed only the map renders them literally.
+  // The system prompt and the signature both read them from here, so they cannot disagree about what
+  // a placeholder means. `now` is REQUIRED here while the render option is optional: every caller
+  // that produces an AgentConfig pins one instant for both renderings, and the re-render needs it.
   promptOpts: PromptRenderOpts & { now: Date };
-  // THE INPUTS THE PROMPT WAS RENDERED FROM, carried so a caller that learns the age of the message
-  // only AFTER the config is loaded can re-render it in ONE pass instead of interpolating over the
-  // finished string (issue #749). The debounce flush and the manual re-engage are both in that
-  // position: they load the config and only then fetch the burst from Chatwoot. A second pass over
-  // the rendered prompt would also resolve placeholders that came from DATA — a mirrored attribute
-  // value spelling `{{nome_contato}}` — which is exactly what appending the sections to the FINISHED
-  // prompt exists to prevent. Re-rendering from the template cannot do that.
+  // THE INPUTS THE PROMPT WAS RENDERED FROM, so a caller that learns the message's age only AFTER
+  // loading the config (the debounce flush, the manual re-engage) re-renders in ONE pass. A second
+  // pass over the finished prompt would also resolve placeholders that came from DATA (a mirrored
+  // attribute spelling `{{nome_contato}}`), which appending the sections to the FINISHED prompt
+  // exists to prevent. See docs/graph.md, System prompt composition.
   promptTemplate: string;
   promptSections: string[];
   auditedSections: AuditedSection[];
@@ -314,20 +311,20 @@ export interface AgentConfig {
   // Operator-authored guidance for tools whose only config is the note (set_custom_attribute,
   // set_labels, …), keyed by native tool name; merged into the tool descriptions at buildToolset.
   toolGuidance: Partial<Record<NativeToolName, string>>;
-  // Labels set_labels may neither add nor remove (issue #568 review; #695 dropped "and never
-  // sees" — a protected label is shown and refused by name). See readProtectedLabels for why an
-  // operator control label is not the classifier's to touch.
+  // Labels set_labels may neither add nor remove; the model still sees them, and a call naming one
+  // is refused by name. See readProtectedLabels for why an operator control label is not the
+  // classifier's to touch.
   protectedLabels: string[];
   // The labels resolve_conversation writes before it closes. See readResolveLabels.
   resolveLabels: string[];
   // Where a contact waiting on a case holds those labels off, read before any path narrows the
   // case tool's config. See graph/resolve-labels.ts resolveCaseHoldFor.
   resolveCaseHold: ResolveCaseHold | null;
-  // The labels set_labels may ADD and what a title outside them meets (issue #638). Empty ⇒ any
-  // title, the behaviour before the list existed. See readAllowedLabels.
+  // The labels set_labels may ADD and what a title outside them meets. Empty ⇒ any title. See
+  // readAllowedLabels.
   allowedLabels: string[];
   outsideAllowedLabels: "refuse" | "accept";
-  // Operator-declared preconditions, keyed by TOOL NAME (issue #101). Native or custom: the seam
+  // Operator-declared preconditions, keyed by TOOL NAME. Native or custom: the seam
   // that applies them is the one place every source's tools meet, so one map covers all six.
   toolPreconditions: Record<string, ToolPrecondition>;
   // Conversation/contact context exposed to custom HTTP tools as {{placeholders}} (contact_name,
@@ -343,14 +340,14 @@ export interface AgentConfig {
   // Ceiling on the history tokens sent to the model (agent.settings.limits.maxHistoryTokens).
   // null = no ceiling, send the whole thread.
   maxHistoryTokens: number | null;
-  // Retry an unexplained silence once (agent.settings.limits.retrySilence, issue #885).
+  // Retry an unexplained silence once (agent.settings.limits.retrySilence).
   retrySilence: boolean;
   // Whether a closed attendance gets folded into the contact's memory instead of staying raw on
   // the thread (agent.settings.memory.compaction). Read here so the turn that CROSSES an
   // attendance boundary can arm the compaction job without a second query.
   memoryCompaction: boolean;
   // Whether each person's message reaches the model behind the date it was sent
-  // (agent.settings.memory.historyDates, issue #755). Rendered in `timezone` above.
+  // (agent.settings.memory.historyDates). Rendered in `timezone` above.
   historyDates: boolean;
   // The summariser's own model, as an override of the agent's, plus the credential it names. Same
   // three-field shape as the speech rewrite above; resolved through graph/model-override.ts.
@@ -374,7 +371,7 @@ export interface LoadAgentArgs {
   conversationId: number;
   agentId: bigint;
   threadId: string;
-  // WHEN THE CUSTOMER'S MESSAGE ARRIVED (issue #749), from the instant the caller already holds: the
+  // WHEN THE CUSTOMER'S MESSAGE ARRIVED, from the instant the caller already holds: the
   // webhook payload's own timestamp, the newest message of a debounced burst, or the row the
   // re-engage read back from Chatwoot. Absent on the paths with no triggering message (memory
   // compaction, the observer, the playground), and the age variables then render empty.
@@ -462,11 +459,11 @@ export async function loadAgentConfig(
     },
   });
   if (!agent) return null;
-  // The `enabled` toggle gates production auto-replies; the playground tests config regardless.
+  // NOTE: The `enabled` toggle gates production auto-replies; the playground tests config regardless.
   if (!agent.enabled && !opts.ignoreDisabled) return null;
-  // A monitoring agent never answers, and this is the seam that guarantees it (issue #209): every
-  // caller that posts to the customer — the reactive turn, the guardrail's replacement, the nudges,
-  // the slow-tool ack — loads its config here first, so refusing here is refusing them all. The
+  // NOTE: A monitoring agent never answers, and this is the seam that guarantees it: every caller
+  // that posts to the customer (the reactive turn, the guardrail's replacement, the nudges, the
+  // slow-tool ack) loads its config here first, so refusing here is refusing them all. The
   // playground still loads it (`ignoreDisabled`, an operator talking to the agent in a fenced
   // thread), and so does a caller that says it never speaks (`ignoreMode`).
   if (isMonitoring(agent.mode) && !opts.ignoreDisabled && !opts.ignoreMode) {
@@ -484,7 +481,7 @@ export async function loadAgentConfig(
   if (mc.credentialRef) {
     const entry = await tryResolveApiKeyEntry(db, mc.credentialRef);
     if (entry.state !== "ok") {
-      // A credentialRef that no longer resolves (deleted / still-pending / a NAME passed where a
+      // NOTE: A credentialRef that no longer resolves (deleted / still-pending / a NAME passed where a
       // vault:<id> ref is required) otherwise makes the agent go silent with no trace — the turn just
       // returns null. Log it so the silent no-reply is diagnosable.
       //
@@ -602,17 +599,11 @@ export async function loadAgentConfig(
     }
   }
   const attributeContext = readAttributeContextConfig(effSettings);
-  // One read for both observability knobs, and one instant for the debug mode's expiry: reading it
-  // twice would let the window close between the two answers.
-  // From the SAVED bag, not the draft, and it is the one block here that is read that way.
-  //
-  // The overrides exist so the playground can run an unsaved agent, and every other block in them
-  // changes how the agent BEHAVES — the prompt, the model, the tools, the guardrails. This one does
-  // not: it changes what the platform STORES about the run. A draft that widened it would record
-  // the customer's tool values, or full-size rows, from a switch the operator has not committed and
-  // could close the tab on, while the console's own warning says "Save to apply" and the agent's
-  // stored settings say the mode is off. Recording policy follows the saved settings, so the two
-  // can never disagree (#58).
+  // One read for both observability knobs, and one instant for the debug mode's expiry (two
+  // reads would let the window close between the answers). Read from the SAVED bag, the only block
+  // here that ignores the draft: every other override changes how the agent BEHAVES, this one what
+  // the platform STORES about the run. A draft that widened it would record tool values or full-size
+  // rows from a switch the operator has not saved, while the console says "Save to apply".
   const obs = readObservabilityConfig(agent.settings);
   const wantsAttributeContext = !isAttributeContextEmpty(attributeContext);
   const conv = await db.conversation.findUnique({
@@ -665,11 +656,11 @@ export async function loadAgentConfig(
     },
     select: { chatwootAgentBotId: true, accessToken: true },
   });
-  // The agent's Availability, in one scoped read when configured. It feeds the clock (get_current_time
-  // tool + {{hora_atual}} var) through its timezone, and the schedule variables ({{esta_aberto}},
-  // {{proximo_atendimento}}, {{horario_atendimento}}) through the grid and its exceptions. Until this
-  // read carried more than the timezone, the agent described its own hours from the operator's prose
-  // and drifted from the gate the moment either changed. `null` = no Availability = always on.
+  // The agent's Availability, in one scoped read when configured. It feeds the clock
+  // (get_current_time tool + {{hora_atual}} var) through its timezone, and the schedule variables
+  // ({{esta_aberto}}, {{proximo_atendimento}}, {{horario_atendimento}}) through the grid and its
+  // exceptions, so the hours the agent describes are the ones the gate enforces, not the operator's
+  // prose. `null` = no Availability = always on.
   let timezone = DEFAULT_TIMEZONE;
   let schedule: Schedule | null = null;
   // A draft id is console input, so it goes through parseDbId (digits AND range: a value past 2^63-1
@@ -694,7 +685,7 @@ export async function loadAgentConfig(
   }
   // Company name for the {{nome_empresa}} prompt variable (the tenant's own row under RLS).
   const tenant = await db.tenant.findFirst({ select: { name: true } });
-  // NOTE: A subject template only fits an email destination, and one left over from an earlier
+  // A subject template only fits an email destination, and one left over from an earlier
   // destination would still offer the model a summary. The mirror knows the channel; an inbox it does
   // not know keeps the template, and the service writes the subject on an email destination only.
   const crossInboxCaseConfig = readCrossInboxCaseConfig(effSettings);
@@ -705,7 +696,7 @@ export async function loadAgentConfig(
     const destination = await db.inbox.findFirst({
       where: {
         chatwootInboxId: crossInboxCaseConfig.targetInboxId,
-        // The tool is built only where the destination's instance is this conversation's.
+        // NOTE: The tool is built only where the destination's instance is this conversation's.
         chatwootInstanceId: args.instanceId,
       },
       select: { channelType: true },
@@ -775,7 +766,7 @@ export async function loadAgentConfig(
   });
   // Playground time simulation: a valid wall-clock override replaces the real now for every time
   // variable, interpreted in the agent's timezone; anything malformed falls back to the real now.
-  // NOTE: one instant for BOTH renderings, and never `undefined`. `interpolatePromptVars` falls
+  // One instant for BOTH renderings, and never `undefined`. `interpolatePromptVars` falls
   // back to its own `new Date()` per call, and the audited prompt is built further down, after the
   // appointment read: an exact-time variable would otherwise cross a minute (or a date) boundary
   // and the logged prompt would report an hour the model never saw.
@@ -784,14 +775,14 @@ export async function loadAgentConfig(
     new Date();
   const promptOpts = {
     timezone,
-    // The instant the age is measured FROM (issue #749). `"now"` is the caller saying the message is
+    // NOTE: The instant the age is measured FROM. `"now"` is the caller saying the message is
     // the one being written at this instant — the playground — and it resolves to the SAME instant
     // every other time variable uses, simulation included. Handing `new Date()` instead would read
     // "há 5 horas" for a message the operator just typed, the moment they simulate an earlier hour.
     messageAt:
       args.lastIncomingAt === "now" ? promptNow : (args.lastIncomingAt ?? null),
     now: promptNow,
-    // Passed on every real path, so a schedule variable is answered rather than left literal. The
+    // NOTE: Passed on every real path, so a schedule variable is answered rather than left literal. The
     // playground's time simulation reaches it through `now` above: an operator testing "what does
     // it say at 22:00" sees the agent report itself closed, exactly as the gate would.
     availability: { schedule },
@@ -801,7 +792,7 @@ export async function loadAgentConfig(
     promptVars,
     promptOpts,
   );
-  // NOTE: The current values of the attribute keys the operator selected, rendered as an XML block
+  // The current values of the attribute keys the operator selected, rendered as an XML block
   // APPENDED to the FINISHED prompt — never interpolated, so a stored value containing
   // `{{nome_contato}}` stays literal. Values come from the mirror (webhook-fed), so this costs one
   // already-loaded row and no Chatwoot call. Absent selection / no conversation ⇒ no block.
@@ -819,7 +810,7 @@ export async function loadAgentConfig(
             sel.nativeToolsAllow.includes("set_custom_attribute"),
         )
       : null;
-  // NOTE: The LIVE appointments booked in THIS conversation, re-read from the reminder scheduler
+  // The LIVE appointments booked in THIS conversation, re-read from the reminder scheduler
   // rows on EVERY turn — including after the last reminder fired (job DONE, start still ahead), the
   // exact turn where the customer replies to it. loadAgentConfig is shared by the reactive turn, the
   // nudge and the debounce flush, so the identity reaches all of them. Playground passes
@@ -845,9 +836,9 @@ export async function loadAgentConfig(
           chatwootThreadId(args.tenantId, args.instanceId, args.conversationId),
         ),
         canOperate,
-        // The SAME instant and zone the prompt variables render, for the reason promptOpts states
-        // above: two renderings of one turn's clock that disagree is the defect, not the cure. The
-        // playground's time simulation therefore reaches this block too (issue #685).
+        // NOTE: The SAME instant and zone the prompt variables render, for the reason promptOpts
+        // states above: two renderings of one turn's clock must not disagree. The playground's time
+        // simulation therefore reaches this block too.
         promptOpts.now,
         timezone,
       );
@@ -976,14 +967,11 @@ export async function loadAgentConfig(
   };
 }
 
-// A IDADE DA MENSAGEM, quando ela só é conhecida DEPOIS do load (issue #749). O fluxo do debounce e o
-// religamento manual carregam a config e só então buscam a rajada no Chatwoot, então o instante que a
-// cerca precisa não existe ainda na hora de compor. Isto recompõe o prompt a partir das MESMAS
-// entradas, com uma a mais: uma passada só, sobre o template do operador, nunca sobre o texto já
-// renderizado — é o que preserva a garantia de que um valor vindo de dado não forja placeholder.
-//
-// Sem instante, ou com um que não muda nada, devolve a config intocada: quem não sabe a idade não
-// paga nem uma interpolação, e nada no objeto muda de identidade à toa.
+// A IDADE DA MENSAGEM, quando ela só é conhecida DEPOIS do load: o fluxo do debounce e o religamento
+// manual carregam a config e só então buscam a rajada no Chatwoot. Recompõe o prompt a partir das
+// MESMAS entradas numa passada só, sobre o template do operador e nunca sobre o texto já renderizado,
+// o que preserva a garantia de que um valor vindo de dado não forja placeholder. Sem instante, ou com
+// um que não muda nada, devolve a config intocada, sem interpolar e sem trocar a identidade do objeto.
 export function withMessageAge(
   cfg: AgentConfig,
   at: Date | null | undefined,
@@ -1022,14 +1010,13 @@ export interface ToolsetCtx {
   // The turn's OUTPUT guardrail, for customer-facing text a tool sends itself. Absent ⇒ nothing
   // screens it on this path. See ToolCtx.screenCustomerText.
   screenCustomerText?: (text: string) => Promise<CustomerTextVerdict>;
-  // The caller's send fence, for the one customer-facing write a tool makes on its own: the
-  // slow-tool ack, whose send is a wait the graph's own ask at the tool boundary sits before
-  // (issue #209 review, round 10). Asked after that send, before the typing indicator and before
-  // the tool runs; absent, both proceed.
   // The caller's whole-turn deadline, when it has one (the observer's tick). Reaches the Chatwoot
   // client as `expiresOn` and the HTTP tools as the same signal, so a handler that outlives the
   // budget cannot still write. Absent on a reactive turn, which has no deadline.
   expiresOn?: AbortSignal;
+  // The caller's send fence, for the one customer-facing write a tool makes on its own: the
+  // slow-tool ack, whose send is a wait after the graph's own ask at the tool boundary. Asked after
+  // that send, before the typing indicator and before the tool runs; absent, both proceed.
   stillWanted?: () => Promise<boolean>;
   // Called by a handler that refused WITHOUT writing, with that tool's own name (effect-free.ts).
   // Threaded to every source that has such an exit, so the caller counting committed effects hears
@@ -1042,13 +1029,10 @@ export interface ToolsetCtx {
   // IMMEDIATE resolve_conversation path (nudge turns, which carry no turnState): a close that had
   // already happened when the turn started is not the agent's. See record-resolution.ts rule 2.
   observed?: ObservedConversation;
-  // THE CONVERSATION'S LABELS, WHEN THE CALLER ALREADY READ THEM. `set_labels` diffs the model's
-  // list against what the model was SHOWN, so the set in the prompt and the set the tool compares
-  // against have to be one value: two reads a few hundred milliseconds apart let a label the prompt
-  // advertised be absent from the baseline, and the model repeating it to keep it then reads as an
-  // ADDITION, putting back exactly what somebody just removed. The observer builds its own prompt
-  // block and so has read them already; handing them over is what keeps the two from drifting
-  // (review r8). Absent ⇒ this module reads them itself, which is what the reactive turn does.
+  // THE CONVERSATION'S LABELS, WHEN THE CALLER ALREADY READ THEM. The observer builds its own prompt
+  // block from them, and handing them over keeps the labels in that block and the `shownLabels` the
+  // tool grounds on one value rather than two reads apart. Absent ⇒ this module reads them itself,
+  // which is what the reactive turn does.
   conversationLabels?: string[];
   // Chatwoot id of the message that triggered this turn, exposed to HTTP tools as {{message_id}}.
   // Direct path: the incoming message's id. Debounce flush: the burst's last incoming message id
@@ -1058,16 +1042,16 @@ export interface ToolsetCtx {
   // can be exercised without the network; production leaves it absent and every builder falls back
   // to the global fetch. Named apart from `imageDeps.fetchImpl`, which is the inbound image fetch.
   outboundFetch?: typeof fetch;
-  // Mutable per-turn state shared between runLoadedTurn and the native tools (deferred resolve).
-  // Only runLoadedTurn passes it; nudge/playground omit it on purpose (structural mirror of
-  // TurnState in tools/native.ts — this module deliberately does not import that file).
   // Injectable for tests: the download + SSRF assertion send_image performs before queueing
-  // (defaults are the real ones). The assertion resolves DNS, so a hermetic test has to stub it —
+  // (defaults are the real ones). The assertion resolves DNS, so a hermetic test has to stub it,
   // same convention as ToolpackCtx.assertSafe.
   imageDeps?: ImageFetchDeps;
   // Injectable for tests: where a document tool writes and reads its rendered PDF (default: the
   // configured documents directory).
   documentsStorageDir?: string;
+  // Mutable per-turn state shared between runLoadedTurn and the native tools (deferred resolve).
+  // Only runLoadedTurn passes it; nudge/playground omit it on purpose (structural mirror of
+  // TurnState in tools/native.ts, since this module deliberately does not import that file).
   turnState?: {
     resolveRequested: boolean;
     // Mirror of TurnState.pendingAttachments: send_image and the document tools queue here and the
@@ -1091,12 +1075,12 @@ export interface ToolsetCtx {
   // Structural mirror of HandoffTurnState in tools/native.ts, for the same reason as turnState.
   // Two fields, not one: the line the model wants delivered, and whether the transfer completed.
   handoffState?: { customerMessage: string | null; completed: boolean };
-  // Where `reply_as_text` records the model's choice (issue #859), passed by the callers that deliver
+  // Where `reply_as_text` records the model's choice, passed by the callers that deliver
   // a reply that can be spoken: the reactive turn and the playground. Absent, the tool is not built,
   // which is every path that never synthesizes (nudge, observation).
   replyChoice?: ReplyChoice;
   // What the reply of THIS turn would be once the customer's stored preference is `voiceReply`, for
-  // `set_voice_preference` to tell the model how the reply it is writing will go out (issue #859).
+  // `set_voice_preference` to tell the model how the reply it is writing will go out.
   replyIsAudioWith?: (voiceReply: boolean | null) => boolean;
 }
 
@@ -1194,7 +1178,7 @@ export async function buildToolset(
   const resolveBusinessHours = (id: string): Promise<Schedule | null> =>
     readSchedule(sysCtx(ctx.tenantId), id, ctx.base);
   const flow = deps.flow;
-  // NOTE: A side effect that fails INSIDE a tool that still returns success is invisible in the
+  // A side effect that fails INSIDE a tool that still returns success is invisible in the
   // tool's own flowlog line (the tool legitimately succeeded for the model). This binding lets toolpacks and
   // native tools surface those failures as their OWN `tool`-stage warn line (same shape as the MCP
   // onDiscoverError below): visible in the Logs page, and inbox traffic pages minLevel:warn alert
@@ -1216,8 +1200,8 @@ export async function buildToolset(
           errorMessage: e.err instanceof Error ? e.err.message : String(e.err),
         })
     : undefined;
-  // The two closures a tool calls to say a booking now stands, or no longer does — the Calendar
-  // toolpack and any HTTP tool whose definition declares an appointment (issue #352). The POLICY
+  // The two closures a tool calls to say a booking now stands, or no longer does: the Calendar
+  // toolpack and any HTTP tool whose definition declares an appointment. The POLICY
   // (offsets/confirmation, or none at all) comes from the caller; this only binds the MECHANISM to
   // the tenant and THIS conversation's thread. Wired on any real conversation, regardless of the
   // per-integration reminder toggle: the RECORD is not about sending a reminder.
@@ -1231,18 +1215,16 @@ export async function buildToolset(
         threadId: apptThreadId,
         base: ctx.base,
         report: onSideEffectError,
-        // A MUTED CLIENT DOES NOT REACH A JOB THAT RUNS LATER. The transport can refuse what this
-        // turn sends; a reminder is armed now and delivered on its own tick, resolving the inbox's
-        // RESPONDER and building a client of its own — so an observation could put a message in
-        // front of the customer through a door the mute never sees (round 16). The booking itself
-        // is still recorded: the record is not the reminder, and an observer that books has as much
-        // right to be remembered as one that labels.
+        // NOTE: A MUTED CLIENT DOES NOT REACH A JOB THAT RUNS LATER. A reminder is armed now and
+        // delivered on its own tick through the inbox's RESPONDER and a client of its own, so an
+        // observation could reach the customer through a door the mute never sees. The booking
+        // itself is still recorded: the record is not the reminder.
         armReminders: !ctx.client.muted,
       })
     : undefined;
   const appointmentBookedFn = apptSideEffects?.booked;
   const cancelAppointmentFn = apptSideEffects?.cancel;
-  // `{{conversation_ref}}` (issue #818): the handle an HTTP tool gives the operator's own system so
+  // `{{conversation_ref}}`: the handle an HTTP tool gives the operator's own system so
   // it can send an event back to THIS conversation later. Bound to the same thread key the
   // appointment closures use. NOT on a muted turn, for the reason the reminders above give: the
   // event is delivered later, through the inbox's responder and a client of its own, so handing the
@@ -1257,20 +1239,13 @@ export async function buildToolset(
             base: ctx.base,
           })
       : undefined;
-  // Slow-tool ack emitter: posts the per-tool "I'll look into that…" message (with a typing
-  // indicator) before the tool runs. Wired ONLY on a real conversation (conversationId > 0) — the
-  // playground builds its toolset with conversationId 0 and a dummy client, so acks never fire
-  // there. Best-effort: any failure is swallowed so it can never block the actual tool call.
-  //
-  // Answers whether the tool may still RUN. The ack's send is a wait of its own, after the graph's
-  // ask at the tool boundary, and a run called off inside it — the operator's flip to monitoring
-  // (issue #209 review, round 10) — must show no typing indicator and make no request after it.
-  // Only an explicit `false` stops the tool; a fence that could not answer is not a withdrawal.
-  //
-  // NOT WIRED ON A MUTED TURN: the ack is a message in front of the customer, which the muted
-  // transport refuses by design — an observation would log a failed ack before every slow tool and
-  // tell the operator an integration is broken. Same field the toolset reads to hide the tools a
-  // muted turn cannot complete.
+  // Slow-tool ack: posts the per-tool "I'll look into that…" message (with a typing indicator)
+  // before the tool runs; a failure is swallowed so it never blocks the tool. Only on a real
+  // conversation (the playground uses conversationId 0 and a dummy client), and not on a muted turn,
+  // whose transport refuses it: an observation would log a failed ack before every slow tool. It
+  // answers whether the tool may still RUN: the send is a wait after the graph's ask at the tool
+  // boundary, so a run called off inside it (the operator's flip to monitoring) shows no typing and
+  // makes no request after it. Only an explicit `false` stops the tool; an unanswered fence does not.
   const emitAck =
     ctx.conversationId > 0 && !ctx.client.muted
       ? async (message: string): Promise<boolean> => {
@@ -1278,7 +1253,7 @@ export async function buildToolset(
             await ctx.client.sendMessage(ctx.conversationId, message);
             // NOTE: recorded the instant it lands, and before the withdrawal check below: the
             // message is on the customer's phone either way, and the operator's timeline must not
-            // call that turn silent (issue #726).
+            // call that turn silent.
             if (ctx.turnState) ctx.turnState.spokeOutsideTheReply = true;
             if (ctx.stillWanted && !(await ctx.stillWanted())) {
               logger.info(
@@ -1299,11 +1274,11 @@ export async function buildToolset(
         }
       : undefined;
   const mcpTools = await loadMcpToolsForAgent(ctx.tenantId, cfg.mcpSelections, {
-    // Default google_oauth refresh (overridable by tests via deps.mcp). Resolves the entry id from
+    // NOTE: Default google_oauth refresh (overridable by tests via deps.mcp). Resolves the entry id from
     // the `vault:<id>` ref and returns a fresh access token, refreshing via Google when stale.
     refreshCredential: (tenantId, ref) =>
       resolveInjectableCredential(ctx.base, tenantId, ref),
-    // A connection that fails discovery degrades the toolset silently (fail-open). When a flow ctx is
+    // NOTE: A connection that fails discovery degrades the toolset silently (fail-open). When a flow ctx is
     // present, also surface it as a flowlog `tool` warn → visible in the Logs page and (inbox traffic
     // only) paged to alert channels. Best-effort: the emit is fire-and-forget and never throws.
     onDiscoverError: flow
@@ -1325,18 +1300,18 @@ export async function buildToolset(
   const toolpackTools = buildToolpackTools(cfg.integrationSelections, {
     tenantId: ctx.tenantId,
     expiresOn: ctx.expiresOn,
-    // Wrapped onto the pack's fetch at the build seam, next to the deadline and for the same reason:
+    // NOTE: Wrapped onto the pack's fetch at the build seam, next to the deadline and for the same reason:
     // four packs with four request helpers is four places to forget.
     stillWanted: ctx.stillWanted,
     onNoEffect: ctx.onNoEffect,
     ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
     base: ctx.base,
     threadId: ctx.threadId,
-    // The current customer, so a toolpack can isolate per-contact data (e.g. Calendar appointments).
+    // NOTE: The current customer, so a toolpack can isolate per-contact data (e.g. Calendar appointments).
     // null on the playground (no mirrored contact) → such tools fail closed.
     contactDbId: cfg.contactDbId,
     resolveCredential,
-    // Read at call time, like every other resolver here: a turn that sends no email pays no query.
+    // NOTE: Read at call time, like every other resolver here: a turn that sends no email pays no query.
     resolveContactEmail: async () => {
       const id = cfg.contactDbId;
       if (id == null) return null;
@@ -1350,7 +1325,7 @@ export async function buildToolset(
     appointmentBooked: appointmentBookedFn,
     cancelAppointment: cancelAppointmentFn,
     onSideEffectError,
-    // Only a real conversation gets the live handle (mirrors the emitAck gate); the playground
+    // NOTE: Only a real conversation gets the live handle (mirrors the emitAck gate); the playground
     // builds with conversationId 0 + a stub client, so customer-delivery tools degrade.
     ...(ctx.conversationId > 0
       ? {
@@ -1434,24 +1409,13 @@ export async function buildToolset(
       );
     }
   }
-  // WHAT THE LABELS ARE RIGHT NOW, read fresh, and since #695 this is GROUNDING rather than
-  // authority: the tool names a delta, so a removal comes from the model naming the label in
-  // `remove` and not from it being missing here. What this read buys is that the model knows which
-  // values exist on the scope, so it asks for the canonical one instead of inventing a synonym.
-  // Read HERE, once, and handed to the tool as `shownLabels`, so the block in the description and
-  // the argument's own sentence are the same value and cannot describe different turns.
-  //
-  // A scope that fails to read is simply ABSENT, never `[]`: an empty list says "this conversation
-  // has no labels", which under the old contract a model would honour by removing everything, and
-  // which even now invites a redundant `add`, while absent says "we do not
-  // know" and makes the call additive. This is best-effort like the vocab above, and the failure
-  // mode of getting it wrong is deleting a customer's classification, so it fails to the safe side.
-  //
-  // The conversation's set is one GET, spent only when the tool is granted and only on a real
-  // conversation. The card's comes free with the kanban snapshot. The CONTACT's is deliberately not
-  // read: it would be a scoped DB lookup plus a second GET on every turn, for a scope whose labels
-  // are durable traits (`vip`, `inadimplente`) that a turn rarely needs to retract — so contact
-  // scope stays additive, by the same "absent means we do not know" rule, and the description says so.
+  // THE LABELS RIGHT NOW, read once and handed to the tool as `shownLabels`: GROUNDING, not
+  // authority. The tool names a delta, so a removal comes from `remove`, never from a label missing
+  // here; the read lets the model ask for the canonical value instead of inventing a synonym. A
+  // scope that fails to read is ABSENT, never `[]`, which would say "no labels" and invite a
+  // redundant `add`. The conversation's set is one GET, only when the tool is granted on a real
+  // conversation; the card's comes with the kanban snapshot. The CONTACT's is not read (a DB lookup
+  // plus a GET every turn, for durable traits a turn rarely retracts), so that scope stays additive.
   const grantsLabels =
     !cfg.nativeToolsAllow || cfg.nativeToolsAllow.includes("set_labels");
   const shownLabels: {
@@ -1459,16 +1423,9 @@ export async function buildToolset(
     contact?: string[];
     task?: string[];
   } = {};
-  // A GUARDED LABEL IS NOT SHOWN, which is the whole of its protection on this side: the diff at
-  // write time refuses the same set, so what the model sees and what the tool accepts are stated
-  // once each and no longer have to agree by subtraction. Applied at the SEAM rather than at each
-  // reader, so every scope answers the question with the same function.
-  //
-  // THE GUARD IS NO LONGER SUBTRACTED HERE (issue #695). Under the replace contract a guarded label
-  // had to be hidden, because a label the model was shown and left out was deleted; under the delta
-  // contract nothing is removed unless named, so a guarded label can be shown and still refused.
-  // Showing it is the point: hiding it is what made a fenced agent invent a name for the canonical
-  // value it was not allowed to see.
+  // A guarded label is SHOWN and refused at write time: nothing is removed unless named, and
+  // hiding it would make a fenced agent invent a name for the canonical value. Applied at the SEAM,
+  // so every scope answers with the same function (graph/tools/label-view.ts).
   const shownProjection = (labels: string[]): string[] =>
     modelVisibleLabels(labels);
   if (grantsLabels && ctx.conversationId > 0) {
@@ -1491,7 +1448,7 @@ export async function buildToolset(
   const toolInstructions: Partial<Record<NativeToolName, string>> = {
     ...cfg.toolGuidance,
   };
-  // handoff/kanban guidance lives in their own grouped config; let it win over the flat map for those
+  // NOTE: handoff/kanban guidance lives in their own grouped config; let it win over the flat map for those
   // two tools (the editor writes them there, not into settings.toolGuidance).
   if (cfg.handoffConfig.instructions) {
     toolInstructions.handoff_to_human = cfg.handoffConfig.instructions;
@@ -1529,14 +1486,14 @@ export async function buildToolset(
       ),
       allowedLabels: cfg.allowedLabels,
       outsideAllowedLabels: cfg.outsideAllowedLabels,
-      // The same fence the ack above asks, handed on to set_labels: its write waits for a queue
+      // NOTE: The same fence the ack above asks, handed on to set_labels: its write waits for a queue
       // that `/reset` also uses, and that wait is after the graph's ask at the tool boundary.
       stillWanted: ctx.stillWanted,
       onNoEffect: ctx.onNoEffect,
-      // A caller with its own record of the turn (the observation tick) keeps it. Every other turn
-      // gets the write as its own `tool` line, so `outsideAllowed` under `accept` is counted on a
-      // responder and a follow-up turn too, as the setting promises (review round 2 of #638). Counts
-      // and operator titles only: see graph/tools/label-writes.ts.
+      // NOTE: A caller with its own record of the turn (the observation tick) keeps it. Every other
+      // turn gets the write as its own `tool` line, so `outsideAllowed` under `accept` is counted on
+      // a responder and a follow-up turn too, as the setting promises. Counts and operator titles
+      // only: see graph/tools/label-writes.ts.
       onLabelsWritten:
         ctx.onLabelsWritten ??
         (flow
@@ -1550,7 +1507,7 @@ export async function buildToolset(
           : undefined),
       kanban,
       sendImage: cfg.sendImageConfig,
-      // The inbox id is account-scoped: on a conversation of another account it names a different
+      // NOTE: The inbox id is account-scoped: on a conversation of another account it names a different
       // inbox or none, so the tool is not built there (same drift the pinned handoff covers above).
       // The playground (conversationId 0, instance 0) belongs to no account and only simulates the
       // tool, so it keeps it: an operator testing the escalation is what the playground is for.
@@ -1568,14 +1525,14 @@ export async function buildToolset(
                   (t) =>
                     interpolatePromptVars(t, cfg.promptVars, cfg.promptOpts),
                 ),
-              // The operator's opening and note templates take the same context variables, fenced
+              // NOTE: The operator's opening and note templates take the same context variables, fenced
               // as values: a contact's name is theirs, not the operator's, and must not run as Liquid.
               interpolate: (t: string) =>
                 interpolatePromptVars(t, cfg.promptVars, {
                   ...cfg.promptOpts,
                   wrap: markValue,
                 }),
-              // The opening reaches the customer, so it carries the agent's signature like every reply
+              // NOTE: The opening reaches the customer, so it carries the agent's signature like every reply
               // (docs/signature.md); one message, one chunk. The model's text is escaped for Chatwoot's
               // Liquid and the signature is not.
               sign: (text: string) => {
@@ -1619,7 +1576,7 @@ export async function buildToolset(
       : {}),
     ...cfg.httpToolContext,
   };
-  // `reply_as_text` (issue #859), on every turn of an agent that turned it on, text and audio alike.
+  // `reply_as_text`, on every turn of an agent that turned it on, text and audio alike.
   // Only a caller that delivers a reply which can be spoken hands over the holder (the reactive turn
   // and the playground), so the observer and the nudge, which never synthesize, are not offered it.
   // Placed with the natives so a tenant tool that happens to share the name is the one dropped: the
@@ -1638,16 +1595,16 @@ export async function buildToolset(
     [
       ...nativeTools,
       ...replyAsText,
-      // A DOCUMENT IS AN ATTACHMENT TO THE CUSTOMER, so a muted turn is not offered one: without a
-      // turnState to queue into it refuses every call anyway, and with one it would deliver through
-      // the very send this client exists to refuse. Same reading `buildNativeTools` and the
-      // toolpacks make (issue #568, review round 23).
+      // NOTE: A DOCUMENT IS AN ATTACHMENT TO THE CUSTOMER, so a muted turn is not offered one:
+      // without a turnState to queue into it refuses every call anyway, and with one it would
+      // deliver through the very send this client exists to refuse. Same reading
+      // `buildNativeTools` and the toolpacks make.
       ...(ctx.client.muted
         ? []
         : buildDocumentTools(cfg.documentSelections, {
             tenantId: ctx.tenantId,
             turnState: ctx.turnState,
-            // The document is bound to the conversation by its THREAD key, never by the conversation id
+            // NOTE: The document is bound to the conversation by its THREAD key, never by the conversation id
             // alone: that id only identifies a conversation within one Chatwoot account, and a tenant can
             // have several. Absent off a real conversation, and the document is then issued unbound.
             threadId: apptThreadId ?? undefined,
@@ -1655,7 +1612,7 @@ export async function buildToolset(
             conversationDbId: cfg.conversationDbId,
             base: ctx.base,
             storageDir: ctx.documentsStorageDir,
-            // The same zone the agent tells the time in, so a document's date and a message saying "hoje"
+            // NOTE: The same zone the agent tells the time in, so a document's date and a message saying "hoje"
             // cannot disagree by a day.
             timezone: cfg.timezone,
             simulate: deps.simulateDocuments,
@@ -1664,22 +1621,22 @@ export async function buildToolset(
         resolveCredential,
         emitAck,
         expiresOn: ctx.expiresOn,
-        // The same fence the native tools and the precondition wrapper ask, at the same point: past
+        // NOTE: The same fence the native tools and the precondition wrapper ask, at the same point: past
         // every wait, immediately before the request leaves for somebody else's system.
         stillWanted: ctx.stillWanted,
         onNoEffect: ctx.onNoEffect,
         ...(ctx.outboundFetch ? { fetchImpl: ctx.outboundFetch } : {}),
-        // HTTP tools are https-only unless allowHttp. In dev (where SSRF_ALLOW_PRIVATE_TARGETS is on by
+        // NOTE: HTTP tools are https-only unless allowHttp. In dev (where SSRF_ALLOW_PRIVATE_TARGETS is on by
         // default) operators legitimately point tools at local http services (see .env.example); prod
         // keeps the flag false → https-only. Ties the two so a local HTTP tool works without extra config.
         allowHttp: config.ssrf.allowPrivateTargets,
         context: turnContext,
-        // The zone an offset-less start from a declared response is read in. Same value the documents
+        // NOTE: The zone an offset-less start from a declared response is read in. Same value the documents
         // tool gets, and for the same reason: two readers of the operator's own wall clock must not
         // disagree by three hours.
         timezone: cfg.timezone,
-        // The same two closures the toolpacks get, for a tool whose DEFINITION declares that its
-        // response describes an appointment (issue #352). Wired identically: undefined on the
+        // NOTE: The same two closures the toolpacks get, for a tool whose DEFINITION declares that
+        // its response describes an appointment. Wired identically: undefined on the
         // playground, where nothing is recorded, and the declaration then simply does nothing.
         appointmentBooked: appointmentBookedFn,
         cancelAppointment: cancelAppointmentFn,
@@ -1689,7 +1646,7 @@ export async function buildToolset(
       ...buildCodeTools(cfg.codeToolDefs, {
         timezone: cfg.timezone,
         context: turnContext,
-        // The two attribute bags, read when the tool is CALLED, through the same loader a
+        // NOTE: The two attribute bags, read when the tool is CALLED, through the same loader a
         // precondition uses (tool-preconditions.ts is the one vocabulary for both). Off a real
         // conversation the ids are null and the bags come back empty.
         loadState: preconditionStateLoader({
@@ -1715,7 +1672,7 @@ export async function buildToolset(
     ],
     NATIVE_TOOL_NAMES.filter((n) => !builtNativeNames.has(n)),
   );
-  // NOTE: The precondition seam, and the reason the whole feature is six lines: every source's tools have
+  // The precondition seam, and the reason the whole feature is six lines: every source's tools have
   // already been merged into ONE name-unique list above, so a map keyed by name reaches native,
   // document, HTTP, MCP, toolpack and RAG at once. An agent with no preconditions gets the same
   // array back, untouched.
@@ -1732,7 +1689,7 @@ export async function buildToolset(
       ? (info) => emitFlowEvent(flow, preconditionFlowEvent(info))
       : undefined,
     (unmatched) => {
-      // A rule that matches no assembled tool guards nothing and reads on screen exactly like one
+      // NOTE: A rule that matches no assembled tool guards nothing and reads on screen exactly like one
       // that does. Reported at assembly because this is the first and only point where the whole
       // toolset is known.
       if (flow) emitFlowEvent(flow, unmatchedPreconditionEvent(unmatched));
@@ -1742,23 +1699,21 @@ export async function buildToolset(
         unmatched.join(", "),
       );
     },
-    // The same fence every handler that waits before writing asks: this wrapper puts a state read
-    // between the graph's ask and the call, so a tool whose first act is a write would otherwise
-    // lose the cover that ask gives it (issue #568, review round 24).
+    // NOTE: The same fence every handler that waits before writing asks: this wrapper puts a state
+    // read between the graph's ask and the call, so a tool whose first act is a write would
+    // otherwise lose the cover that ask gives it.
     ctx.stillWanted,
     ctx.onNoEffect,
   );
   if (dropped.length > 0) {
-    // The operator is the only one who can fix this, and the symptom they would otherwise see is a
-    // tool that quietly does nothing — or, on a provider that rejects a duplicated function name,
-    // an agent that stops replying at all. So it goes where they look at the turn (#389), not only
-    // to the process log, which on a managed deploy they may have no way to read at all.
+    // NOTE: The operator is the only one who can fix this, and the symptom they would otherwise see
+    // is a tool that quietly does nothing (or, on a provider that rejects a duplicated function
+    // name, an agent that stops replying). So it goes where they look at the turn, not only to the
+    // process log, which on a managed deploy they may have no way to read at all.
     if (flow) emitFlowEvent(flow, droppedToolNamesEvent(dropped));
-    // NOTE: what to rename is NOT said here any more. It was "rename the later one", which is an
-    // action that exists for an MCP connection (the slug comes from its display name) and does not
-    // exist for the commonest case: two instances of one toolpack expose identical names, because
-    // the names come from the pack. Naming the tool that lost is the part that is true for every
-    // source.
+    // NOTE: the line names the tool that lost and not what to rename: renaming exists for an MCP
+    // connection (the slug comes from its display name) but not for the commonest case, two
+    // instances of one toolpack exposing identical names that come from the pack.
     logger.warn(
       "agent %s: %d tool(s) dropped for a duplicate name (%s)",
       String(cfg.agentId),
@@ -1766,11 +1721,10 @@ export async function buildToolset(
       [...new Set(dropped)].join(", "),
     );
   }
-  // LAST, so it is the outermost wrapper: the schema parse that refuses a call happens in the
+  // NOTE: LAST, so it is the outermost wrapper: the schema parse that refuses a call happens in the
   // innermost tool, and this has to be the frame the exception passes through on its way out. One
-  // wrap here covers every caller of this builder (turn, nudge, observation, playground), which is
-  // the point: the four of them instantiate their own ToolFlowLogger, and that logger cannot see a
-  // refusal from any of them (issue #667).
+  // wrap here covers every caller of this builder (turn, nudge, observation, playground), whose own
+  // ToolFlowLogger cannot see such a refusal.
   return logSchemaRefusals(guarded, flow, cfg.logToolValues);
 }
 
@@ -1783,7 +1737,7 @@ export interface CallbacksArgs {
   // The model to LABEL the usage row with. Defaults to the agent's own model, which is right for the
   // turn itself; a secondary call on a separately-configured model (the speech normalizer) must pass
   // the model it actually billed, or the row attributes that spend to the wrong model. The provider
-  // travels with it, because the price of a model is its provider's (issue #863).
+  // travels with it, because the price of a model is its provider's.
   billedModel?: { provider: string; model: string };
   // The conversation to ATTRIBUTE the usage row and the trace to. Defaults to the one the config was
   // loaded for, which is right for a turn; memory compaction is the exception, because a claimed job
@@ -1802,11 +1756,10 @@ export interface CallbacksArgs {
   tools?: StructuredToolInterface[];
 }
 
-// `??` was wrong here, and the case it got wrong is the one the override exists for: compaction
-// passes an explicit null when the segment it summarized belongs to a conversation whose mirrored row
-// is gone (an owed backlog, a conversation deleted since). Coalescing that back to the config's own
-// conversation charges the generation to an unrelated attendance — louder than the bug the override
-// was added to fix. Omitted and explicitly-null are different answers, so they are read differently.
+// Omitted and explicitly-null are different answers, so this does not use `??`: compaction passes an
+// explicit null when the segment it summarized belongs to a conversation whose mirrored row is gone
+// (an owed backlog, a conversation deleted since), and coalescing that back to the config's own
+// conversation would charge the generation to an unrelated attendance.
 function resolveUsageConversation(
   cfg: AgentConfig,
   args: CallbacksArgs,
@@ -1897,12 +1850,12 @@ export function buildSpeechNormalizer(
     }
     return undefined;
   };
-  // Every configuration the resolver refuses: an unsupported provider name, a switched provider with
+  // NOTE: Every configuration the resolver refuses: an unsupported provider name, a switched provider with
   // no key of its own (running it on the AGENT's key would transmit one vendor's secret to another),
   // and an openai-compatible endpoint that is missing. REST and MCP write the settings bag directly,
   // so the editor's warning is not the guard here.
   if (!resolved.runnable) return skip(resolved.reason ?? "not_runnable");
-  // Its own credential was configured and did not resolve. Falling back to the AGENT's key would be a
+  // NOTE: Its own credential was configured and did not resolve. Falling back to the AGENT's key would be a
   // silent substitution on a provider that may not even accept it.
   if (own && !cfg.ttsNormalizeApiKey) return skip("credential_not_found");
   const makeModel = args.makeModel ?? createChatModel;
@@ -1914,7 +1867,7 @@ export function buildSpeechNormalizer(
   const mc: ResolvedModelConfig = {
     provider: resolved.provider as ModelConfig["provider"],
     model: resolved.model,
-    // WHOSE key travels, decided by the resolver rather than here: the agent's is reachable only
+    // NOTE: WHOSE key travels, decided by the resolver rather than here: the agent's is reachable only
     // while the provider is unchanged, and `none` is an openai-compatible endpoint that authenticates
     // by its URL, where sending the agent's key would be the leak this whole rule exists to prevent.
     apiKey:
@@ -1924,7 +1877,7 @@ export function buildSpeechNormalizer(
           ? cfg.apiKey
           : "",
     baseURL: resolved.baseURL ?? undefined,
-    // Pinned, and the agent's reasoningEffort deliberately NOT carried: this pass rewrites an answer
+    // NOTE: Pinned, and the agent's reasoningEffort deliberately NOT carried: this pass rewrites an answer
     // that already exists, and the effort the operator chose is about how the agent THINKS.
     // Reasoning here would only add latency to an audio reply the customer is waiting on.
     temperature: 0,
@@ -1947,7 +1900,7 @@ export function buildSpeechNormalizer(
         ...args.callbacks,
         node: "tts_normalize",
         billedModel: mc,
-        // The turn's trace already exists under this turnId; this call is a generation INSIDE it.
+        // NOTE: The turn's trace already exists under this turnId; this call is a generation INSIDE it.
         updateRoot: false,
       })
     : undefined;
@@ -1965,7 +1918,7 @@ export function buildSpeechNormalizer(
           outChars: out.length,
           rewritten: out !== text,
         }),
-        // Best-effort: synthesizeReply catches and synthesizes the raw text, so this is an advisory.
+        // NOTE: Best-effort: synthesizeReply catches and synthesizes the raw text, so this is an advisory.
         errorLevel: "warn",
       },
       () => llmNormalizeForSpeech(model, text, callbacks),
@@ -1978,9 +1931,9 @@ export interface GraphBuildDeps {
   // Fired when the hard tool-call limit forces a no-tools answer (runtime emits a flow warn).
   onToolLimit?: (info: { maxToolCalls: number; toolCalls: number }) => void;
   onModelRetry?: (info: ModelRetryInfo) => void;
-  // A model call that waited past the capacity threshold for a permit (issue #812).
+  // A model call that waited past the capacity threshold for a permit.
   onModelPermitWait?: (info: PermitWaitInfo) => void;
-  // The scheduler job's signal (issue #811); see BuildAgentGraphParams.signal.
+  // The scheduler job's signal; see BuildAgentGraphParams.signal.
   signal?: AbortSignal;
   // Fired when the configured second provider took the turn, so the runtime can put it on the trail.
   // A fallback that answers is a SUCCESSFUL turn, so nothing else on the turn would say it happened
@@ -1990,10 +1943,6 @@ export interface GraphBuildDeps {
     model: string;
     reason: string;
   }) => void;
-  // Fired when a fallback was configured and could not be built, which is the state that looks
-  // exactly like having none. Separate from `onModelFallback` on purpose: one says the safety net
-  // caught the turn, the other says there is no net, and folding them would let the second read as
-  // the first.
   // Fired when the fallback ALSO failed, which is the turn's real ending. Its own line, because the
   // `generate` stage is labelled with the primary by construction.
   onModelFallbackFailed?: (info: {
@@ -2002,17 +1951,14 @@ export interface GraphBuildDeps {
     reason: string;
   }) => void;
   // The caller's own "is this run still wanted", carried down to the graph's TOOL BOUNDARY, which is
-  // the one seam inside the invoke (issue #449). The reactive turn and the nudge both pass one; the
-  // playground passes none and the tool node is then exactly what it was. No `strict`: the graph
-  // states why.
+  // the one seam inside the invoke. The reactive turn and the nudge both pass one; the playground
+  // passes none and the tool node then runs unfenced. No `strict`: the graph states why.
   stillWanted?: () => Promise<boolean>;
-  // WHICH FALLBACK could not be built, carried and NOT optional, for the reason the other three
-  // fallback events carry it: the line is written by handlers whose only other labels are the
-  // PRIMARY's, so a `reason` on its own gets published under the name of the model that is working.
-  // Measured on all three consumers before this: the webhook and the nudge stamped the primary's
-  // provider and model onto a warning about the fallback, and the playground stamped neither, so a
-  // filter by model showed it under the wrong one or not at all. Only reached after
-  // `hasModelFallback` said yes, so the configured labels always exist.
+  // Fired when a fallback was configured and could not be built, the state that looks exactly like
+  // having none; separate from `onModelFallback`, which says the net caught the turn. WHICH fallback
+  // is carried and NOT optional: the line is written by handlers whose only other labels are the
+  // PRIMARY's, so a bare `reason` would be published under the model that is working. Only reached
+  // after `hasModelFallback` said yes, so the configured labels always exist.
   onModelFallbackUnavailable?: (info: ModelLabels & { reason: string }) => void;
   // Fired when a turn dropped history to fit maxHistoryTokens (runtime records it in the trail).
   onHistoryTrim?: (info: {
@@ -2021,27 +1967,23 @@ export interface GraphBuildDeps {
     tokens: number;
   }) => void;
   // Forwarded to the graph: this caller's turn has no reply channel, so the tool budget's wrap-up
-  // must not tell the model to answer a customer (issue #629). The observation tick passes it.
+  // must not tell the model to answer a customer. The observation tick passes it.
   noReplyChannel?: boolean;
-  // The spoken-reply notice, asked every round (issue #859). See BuildAgentGraphParams.spokenNotice.
+  // The spoken-reply notice, asked every round. See BuildAgentGraphParams.spokenNotice.
   spokenNotice?: () => string | null;
-  // The retry of an unexplained silence (issue #885). See BuildAgentGraphParams.retrySilence. Only
+  // The retry of an unexplained silence. See BuildAgentGraphParams.retrySilence. Only
   // the reactive turn passes it; the agent's own switch is read by the caller, which also knows what
   // the turn already delivered.
   retrySilence?: () => boolean;
   onSilenceRetry?: (info: SilenceRetryInfo) => void;
 }
 
-// The second provider, built or deliberately absent. Every way this returns undefined is a way an
-// install behaves exactly as it does today, which is the property that makes the whole feature safe
-// to ship on: the fallback can only ever ADD an attempt that would not have happened.
-//
-// The three refusals are the three ways a configuration can be wrong, and none of them is silent:
-//   * nothing named        — the ordinary state, and the only one with no line (there is nothing to
-//                            report about a feature the operator did not ask for);
-//   * named but unrunnable — `resolveModelOverride` refused the destination (unknown provider, a key
-//                            that belongs to another vendor, an endpoint that would be dropped);
-//   * named with a credential that did not resolve — the ref is stale or was deleted.
+// The second provider, built or deliberately absent. Every undefined leaves the install behaving as
+// one with no fallback configured, so the fallback can only ever ADD an attempt. The three cases:
+//   * nothing named: the ordinary state, and the only one with no line (the operator did not ask);
+//   * named but unrunnable: `resolveModelOverride` refused the destination (unknown provider, a key
+//     that belongs to another vendor, an endpoint that would be dropped);
+//   * named with a credential that did not resolve: the ref is stale or was deleted.
 export function buildFallbackModel(
   cfg: AgentConfig,
   makeModel: (mc: ResolvedModelConfig) => BaseChatModel,
@@ -2088,7 +2030,7 @@ export function buildFallbackModel(
           ? cfg.apiKey
           : "",
     baseURL: resolved.baseURL ?? undefined,
-    // The agent's temperature and reasoningEffort DO carry, unlike the two sibling overrides: those
+    // NOTE: The agent's temperature and reasoningEffort DO carry, unlike the two sibling overrides: those
     // rewrite or summarise something that already exists, while this answers the customer in the
     // agent's place. A fallback that answers in a different register than the primary is a worse
     // fallback, and the operator tuned those values for the answer, not for the vendor.
@@ -2099,7 +2041,7 @@ export function buildFallbackModel(
     maxRetries: PRIMARY_MAX_RETRIES,
     timeoutMs: PRIMARY_TIMEOUT_MS,
   };
-  // `createChatModel` REFUSES some configurations synchronously (openai-compatible with no effective
+  // NOTE: `createChatModel` REFUSES some configurations synchronously (openai-compatible with no effective
   // base URL throws a 400). Uncaught here that would cost the turn the fallback exists to save, and
   // it would cost it on EVERY turn, not just the ones the primary failed.
   try {
@@ -2131,11 +2073,11 @@ export async function buildModelAndGraph(
   const makeModel = deps.makeModel ?? createChatModel;
   const effectiveBaseUrl = cfg.credentialBaseUrl ?? cfg.mc.baseURL;
   const fallback = buildFallbackModel(cfg, makeModel, deps);
-  // Two bounds, and exactly one of them applies. With a fallback behind it, the primary gets one
-  // attempt with the SDK's 45 s ceiling (see ./model-fallback). With none, it keeps LangChain's six
-  // retries, and the whole call, retries included, runs under `config.agent.modelCallTimeoutMs`
-  // instead (issue #809): a per-attempt ceiling alone does not bound it, because the SDK retries a
-  // timeout (measured, 2s per attempt and still waiting at 90s), and the Google adapter drops it.
+  // Two bounds, and exactly one of them applies. With a fallback behind it, the primary gets
+  // one attempt with the SDK's 45 s ceiling (see ./model-fallback). With none, it keeps LangChain's
+  // six retries, and the whole call, retries included, runs under `config.agent.modelCallTimeoutMs`:
+  // a per-attempt ceiling alone does not bound it, because the SDK retries a timeout and the Google
+  // adapter drops it.
   const model = makeModel({
     ...cfg.mc,
     apiKey: cfg.apiKey,

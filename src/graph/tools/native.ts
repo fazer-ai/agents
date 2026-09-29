@@ -164,12 +164,12 @@ export interface HandoffTurnState {
   // The closing line the model wants the customer to read before the transfer. RECORDED here, never
   // sent from the tool: the runtime is the single writer of customer-facing text, so this line goes
   // out through the same output guardrail, the same modality choice and the same pacing as any other
-  // reply (issue #160). Null when the model supplied none.
+  // reply. Null when the model supplied none.
   customerMessage: string | null;
   // The conversation left `pending`, so the human queue owns it and the bot is done talking.
   completed: boolean;
-  // The model was OFFERED the argument and passed it EMPTY, which since issue #662 is how it says
-  // "this case receives no reply at all". Distinct from `customerMessage === null`, which is also
+  // The model was OFFERED the argument and passed it EMPTY, which is how it says "this case
+  // receives no reply at all". Distinct from `customerMessage === null`, which is also
   // what a muted turn and a transfer that threw leave behind: this one is a decision, and the
   // runtime honours it by sending nothing rather than falling back to the model's own next text.
   // Optional because the turn-state shape is spelled out by hand at five call sites that build the
@@ -185,7 +185,7 @@ export interface HandoffTurnState {
   // can read the mirror the status webhook already moved while the transfer's own call has not
   // returned; and a later call that throws must not erase a change that already landed. The tool
   // boundary's ownership question reads both (`ownerChangedByTurn`): a status the turn wrote is not a
-  // person taking over (issue #717, review rounds 1 to 3).
+  // person taking over.
   ownerChanged?: boolean;
   ownerChangesInFlight?: number;
 }
@@ -194,12 +194,10 @@ export function ownerChangedByTurn(state: HandoffTurnState): boolean {
   return state.ownerChanged === true || (state.ownerChangesInFlight ?? 0) > 0;
 }
 
-// The status change a tool of this turn makes on purpose, marked from before the call so the tool
-// boundary's ownership question does not read it as somebody else's.
-// The same bookkeeping for a transfer made by a caller OUTSIDE this file (the output check's `handoff`
-// verdict on text a tool sends, issue #700), whose result says whether the owner actually changed.
-// Counted in flight while it runs, so a sibling call's fence does not read the transfer's own status
-// webhook as a person taking over and skip the pinned assignment.
+// A transfer made by a caller OUTSIDE this file (the output check's `handoff` verdict on text a tool
+// sends), marked like a tool's own status change. Counted in flight while it runs, so a sibling
+// call's fence does not read the transfer's own status webhook as a person taking over and skip the
+// pinned assignment; `changed` says from its result whether the owner actually changed.
 export async function ownTransfer<T>(
   state: HandoffTurnState | undefined,
   transfer: () => Promise<T>,
@@ -216,6 +214,8 @@ export async function ownTransfer<T>(
   }
 }
 
+// The status change a tool of this turn makes on purpose, marked from before the call so the tool
+// boundary's ownership question does not read it as somebody else's.
 async function ownStatusChange(
   ctx: { handoffState?: HandoffTurnState },
   write: () => Promise<unknown>,
@@ -231,51 +231,33 @@ async function ownStatusChange(
   }
 }
 
-// Whether the handoff supplies this turn's customer-facing text, which is the ONE question both
-// runtimes ask. Two conditions and not one, because a transfer that THREW leaves the model's own
-// final text as the only thing the customer would get, and that text is still theirs. A transfer
-// that SUCCEEDED with nothing to say is a different case since issue #662, and it has its own
-// predicate below: the model declared the silence, so there is no fallback to fall back to.
-//
-// A transfer that threw halfway answers false, and has to. sendPrivateNote and toggleStatus are not
-// best-effort, so either can throw AFTER the model composed a line promising a human; the
-// conversation then stays `pending`, i.e. still the bot's and queued to nobody, and the model gets
-// the tool error plus one more step. That recovery reply is what the customer reads instead, and
-// the undelivered promise is discarded with the turn that failed to keep it.
-// A TYPE guard and not a boolean, so the line it proves is there is typed as being there. Both
-// callers read `customerMessage` immediately after asking, and both used to cast it to `string` on
-// their own word: a cast is what a compiler accepts INSTEAD of a proof, so the guard could have been
-// deleted at either call site and nothing would have complained until a turn with no transfer
-// handed a null to the guardrail.
+// Whether the handoff supplies this turn's customer-facing text, the ONE question both runtimes
+// ask. A transfer that THREW halfway answers false: sendPrivateNote and toggleStatus can throw after
+// the model composed a line promising a human, the conversation stays `pending` (still the bot's,
+// queued to nobody), and the model's recovery reply after the tool error is what the customer reads.
+// A transfer that completed with nothing to say is `handoffDeclaredSilence` below. A TYPE guard, so
+// both callers read `customerMessage` as a string with no cast that would outlive deleting the check.
 export function handoffAnsweredTheTurn(
   state: HandoffTurnState | undefined,
 ): state is HandoffTurnState & { customerMessage: string } {
   return !!state && !!state.customerMessage && state.completed;
 }
 
-// The other half of the same question, and the reason it is a separate one: a transfer that left
-// nothing to say used to mean "the model said nothing", and the runtime answered that by letting the
-// model's own final text through (the fallback `handoffAnsweredTheTurn` is written around). Since
-// issue #662 the model cannot reach that state by forgetting, so reaching it means it CHOSE
-// silence, and the tool now tells it so, in as many words. Delivering its next line anyway would
-// make that
-// sentence false, which is the defect #662 was: measured once in 18 live turns of declared silence,
-// on a credit-bureau notice, as `Encaminhado para a equipe responsável.` sent to the customer.
+// The other half: a transfer that completed with the argument passed EMPTY. The model cannot reach
+// that state by forgetting, so reaching it means it CHOSE silence, and the tool tells it so.
+// Delivering its next line anyway (a "Encaminhado para a equipe responsável.") would make that
+// sentence false, so there is no fallback to the model's own final text here.
 export function handoffDeclaredSilence(
   state: HandoffTurnState | undefined,
 ): boolean {
   return !!state && state.completed && !!state.declinedToSpeak;
 }
 
-// WHAT ACTUALLY REACHED THE CUSTOMER, asked when the turn is over — the other half of the pair, and
-// a different question from the one below.
-//
-// Below is what the turn had COMMITTED to at some instant mid-turn, which is all a live indicator
-// can ever have. This one is asked after the sends: the closing line and the queue have either gone
-// out or been dropped, and nothing is left to walk back. THREE sources and not one, because the
-// three ways a turn reaches a customer are counted in three different units: text in balloons, files
-// in the attachment loop, and the slow-tool acknowledgement in neither, since it goes straight out
-// through the Chatwoot client (issue #726, review round 3).
+// WHAT ACTUALLY REACHED THE CUSTOMER, asked after the sends; `turnDeliveredToCustomer` below is what
+// the turn had COMMITTED to mid-turn, all a live indicator can have. THREE sources, because the three
+// ways a turn reaches a customer are counted in three units: text in balloons, files in the
+// attachment loop, and the slow-tool acknowledgement in neither, since it goes straight out through
+// the Chatwoot client. See docs/logs.md on `turnDelivered`.
 export function turnReachedTheCustomer(sent: {
   balloons: number | null;
   attachment: boolean;
@@ -288,37 +270,26 @@ export function turnReachedTheCustomer(sent: {
   );
 }
 
-// WHETHER THIS TURN PUT SOMETHING IN FRONT OF THE CUSTOMER, asked of the turn's own state rather
-// than of what ran. The question exists for one reader — the marker `skip_reply` leaves behind,
-// which asserts a silence — and the surface it answers for is the operator's timeline (issue #726).
-//
-// It is not "which tools were called", and that distinction is the whole of it. `handoff_to_human`
-// is the reported case and it answers BOTH ways: with a `customerMessage` the customer reads a line,
-// and with the empty one (#662) nobody is spoken to, which is the turn where the silence sentence is
-// the only true thing on the screen. Reading the name would pass the first and invert the second.
-//
-// Neither half has been SENT when this is asked, and both are still the right answer. The runtime is
-// the single writer of customer-facing text, so a handoff's line goes out after the graph returns,
-// and `send_image` queues bytes the delivery loop posts later. What the turn has done is commit to
-// putting something there, and by the time the operator reads the marker it is on the screen.
-//
-// `imagesInFlight`/`documentsInFlight` are counted alongside the queue for the reason they exist:
-// the reservation is taken before the download, so a batch that has not finished downloading yet has
-// already decided to send. Reading only the queue would answer "nothing" for the window in between.
+// WHETHER THIS TURN PUT SOMETHING IN FRONT OF THE CUSTOMER, asked of the turn's own state rather than
+// of which tools ran, for the marker `skip_reply` leaves on the operator's timeline. The tool's name
+// cannot answer it: `handoff_to_human` with a `customerMessage` speaks, and with an empty one nobody
+// is spoken to. Neither has been SENT when this is asked (the runtime posts the handoff line and the
+// queued files after the graph returns), but the turn has committed to them. `imagesInFlight` and
+// `documentsInFlight` count too: the reservation precedes the download, so a batch still downloading
+// has already decided to send. See docs/logs.md on `turnDelivered`.
 export function turnDeliveredToCustomer(
   turnState: TurnState | undefined,
   handoffState: HandoffTurnState | undefined,
 ): boolean {
-  // ASKED FIRST, and the order here is the order of irreversibility. Everything below is a
+  // NOTE: ASKED FIRST, and the order here is the order of irreversibility. Everything below is a
   // commitment the turn can still walk back — the closing line and the queue have not left when this
   // is asked — and a slow-tool acknowledgement is already on the customer's phone. So it outranks
   // the declared silence, which drops what has NOT gone out and cannot un-send what has.
   if (turnState?.spokeOutsideTheReply) return true;
-  // The declared silence answers for everything BELOW it, and it is not only "the closing line is
-  // empty": the runtime drops the attachment queue with it, because "this case receives no reply at
-  // all" cannot mean "no text, plus the document you queued two hops ago". So a turn that queued a
-  // picture AND declared the silence delivers nothing, and asking the queue alone would answer that
-  // it did (review round 1).
+  // NOTE: The declared silence answers for everything BELOW it: the runtime drops the attachment
+  // queue with it, because "this case receives no reply at all" cannot mean "no text, plus the
+  // document you queued two hops ago". So a turn that queued a picture AND declared the silence
+  // delivers nothing, and asking the queue alone would answer that it did.
   if (handoffDeclaredSilence(handoffState)) return false;
   if (handoffAnsweredTheTurn(handoffState)) return true;
   if (!turnState) return false;
@@ -361,8 +332,8 @@ export interface PendingAttachment {
 export interface ToolCtx {
   client: ChatwootClient;
   conversationId: number;
-  // Absent (nudge turns, playground, hand-built ctx) ⇒ resolve_conversation keeps the legacy
-  // immediate toggle. Only runLoadedTurn passes it.
+  // Absent (nudge turns, playground, hand-built ctx) ⇒ resolve_conversation toggles immediately.
+  // Only runLoadedTurn passes it.
   turnState?: TurnState;
   // Present on every real customer-messaging path. A successful handoff customerMessage is terminal:
   // the caller must not also post the model's final assistant text.
@@ -381,7 +352,7 @@ export interface ToolCtx {
   tenantId?: bigint;
   base?: PrismaClient;
   contactDbId?: bigint | null;
-  // NOTE: Our Conversation row id, for the write-through that keeps the mirrored attribute bags in
+  // Our Conversation row id, for the write-through that keeps the mirrored attribute bags in
   // step right after set_custom_attribute writes to Chatwoot (see mirrorAttributeWrite). Absent ⇒
   // the write-through is skipped and the mirror catches up on the next webhook event.
   conversationDbId?: bigint | null;
@@ -394,8 +365,8 @@ export interface ToolCtx {
   // set_voice_preference description so the model knows the existing value before changing it.
   // true = audio, false = text, null/undefined = not set yet.
   contactVoiceReply?: boolean | null;
-  // Whether THIS turn's reply goes as a voice note once the stored preference is the given value
-  // (issue #859). Present on the turns that deliver a reply that can be spoken; set_voice_preference
+  // Whether THIS turn's reply goes as a voice note once the stored preference is the given value.
+  // Present on the turns that deliver a reply that can be spoken; set_voice_preference
   // then tells the model how the reply it is writing will go out, because the preference it just
   // saved applies to this very reply and a model told "voice note" at the start would otherwise
   // write for the ear a reply that is sent as text, or the reverse.
@@ -407,24 +378,21 @@ export interface ToolCtx {
   // set_labels / set_custom_attribute enumerate KNOWN values in their descriptions instead of
   // letting the model guess. Absent ⇒ the tools fall back to generic descriptions.
   vocab?: ChatwootVocab;
-  // WHAT THE MODEL WAS SHOWN, per scope. Under the replace contract (issue #568) this was the only
-  // thing that gave `set_labels` the right to REMOVE, because removal happened by omission and
-  // "left out" is only meaningful against a list the model actually saw. Since #695 a removal comes
-  // from the model naming the label in `remove`, so this is GROUNDING and no longer authority: what
-  // it buys is that the model asks for the canonical value instead of inventing a synonym for one
-  // it cannot see, and a scope missing here costs a redundant `add` rather than a deletion.
-  // Read at turn prep alongside the vocab; the card's set comes free with the kanban snapshot, and
-  // the `task` scope re-reads the card at write time (holdout s6).
+  // WHAT THE MODEL WAS SHOWN, per scope: GROUNDING, not authority. A removal comes from the model
+  // naming the label in `remove`; this lets it ask for the canonical value instead of inventing a
+  // synonym, and a scope missing here costs a redundant `add` rather than a deletion. Read at turn
+  // prep alongside the vocab; the card's set comes with the kanban snapshot, and the `task` scope
+  // re-reads the card at write time.
   shownLabels?: {
     conversation?: string[];
     contact?: string[];
     task?: string[];
   };
-  // LABELS `set_labels` MAY NEITHER ADD NOR REMOVE (issue #568 review). Operator control labels
-  // live on the same conversation as the classifier's, and this list is what keeps the agent from
-  // moving one on purpose — not what keeps it alive, which is now the delta's job. It stopped
-  // meaning "and never sees" in #695: see applyLabelDelta for why the refusal is reported by name.
-  // Comes from `settings.setLabels.protected`; empty or absent ⇒ the tool reaches everything.
+  // LABELS `set_labels` MAY NEITHER ADD NOR REMOVE. Operator control labels live on the same
+  // conversation as the classifier's, and this list keeps the agent from moving one on purpose (the
+  // delta already keeps an unnamed label standing). The model still sees them: see applyLabelDelta
+  // for why the refusal is reported by name. Comes from `settings.setLabels.protected`; empty or
+  // absent ⇒ the tool reaches everything.
   protectedLabels?: string[];
   // THE LABELS resolve_conversation WRITES ITSELF before it closes, from
   // `settings.resolveConversation.assignLabels`; empty or absent ⇒ the close writes none.
@@ -432,7 +400,7 @@ export interface ToolCtx {
   // Where a contact waiting on a case holds those labels off, on this conversation's account (see
   // graph/resolve-labels.ts). Absent or null ⇒ nothing is checked.
   resolveCaseHold?: CaseInbox | null;
-  // THE LABELS `set_labels` MAY ADD (issue #638), from `settings.setLabels.allowed`; empty or absent
+  // THE LABELS `set_labels` MAY ADD, from `settings.setLabels.allowed`; empty or absent
   // ⇒ any title, and one Chatwoot does not have is created there. `outsideAllowedLabels` says what a
   // title outside the list meets: `refuse` (default) or `accept`. See applyLabelDelta.
   allowedLabels?: string[];
@@ -456,7 +424,7 @@ export interface ToolCtx {
   // convention as ToolpackCtx: the SSRF assertion resolves DNS, so a hermetic test has to stub it.
   fetchImpl?: typeof fetch;
   assertSafe?: ImageFetchDeps["assertSafe"];
-  // `open_case_in_inbox` (issue #700): the agent's destination config and the origin conversation's
+  // `open_case_in_inbox`: the agent's destination config and the origin conversation's
   // contact, as Chatwoot knows it. Absent, or with no destination inbox, the tool is not built.
   crossInboxCase?: {
     config: CrossInboxCaseConfig;
@@ -478,23 +446,18 @@ export interface ToolCtx {
   // model-facing description so transfer/funnel logic lives WITH the tool instead of buried in the
   // prompt. Populated at turn prep from agent.settings (handoff.instructions / kanban.instructions).
   toolInstructions?: Partial<Record<NativeToolName, string>>;
-  // NOTE: Reports a side effect that failed INSIDE a tool that still returns success to the model
+  // Reports a side effect that failed INSIDE a tool that still returns success to the model
   // (e.g. the handoff happened but the assignment failed). prepare.ts binds this to a flowlog
   // `tool`-stage warn so the failure reaches the Logs page and alert channels; absent
   // (playground/tests) ⇒ the failure stays log-only. NEVER changes the tool's return value.
   onSideEffectError?: SideEffectErrorReporter;
-  // CALLED BY A HANDLER THAT REFUSED WITHOUT WRITING (review round 36). Every effect-bearing handler
-  // asks the caller's fence again inside itself — after its own read, before its own write — and the
-  // exits below return a sentence saying the run was called off. Nothing left the process on those,
-  // so a counter outside has to be told, or it reads them as writes that happened. NOT called where
+  // CALLED BY A HANDLER THAT RETURNED WITHOUT WRITING, so a counter outside does not read the exit
+  // as a write that happened. Two kinds of exit: the caller's fence, asked again inside the handler
+  // (after its own read, before its own write), said the run was called off; or there was nothing to
+  // write (a scope the conversation does not have, a funnel step that does not exist, a card already
+  // in the step asked for, an update with no fields). Reading those as writes costs the retry the
+  // observer's tick needs, for an `on_resolve` watcher the only pass it gets. NOT called where
   // something already went out: `handoff_to_human` after its note was filed is not one of these.
-  //
-  // ...AND BY EVERY OTHER EXIT THAT RETURNS BEFORE THE WRITE (review round 39), which is the same
-  // fact arriving through a different door: a scope the conversation does not have (no kanban card,
-  // no contact mirrored into Chatwoot), a funnel step that does not exist, a card already in the
-  // step asked for, an update with no fields. The counter cannot tell those from a write by reading
-  // the returned sentence, and reading them as writes costs the retry that the observer's tick
-  // needs — for an `on_resolve` watcher, the only pass it will ever get.
   onNoEffect?: NoEffectReporter;
   // Called by `set_labels` after a write that MOVED something, with what moved (label-writes.ts).
   // Threaded beside `onNoEffect` because it is the same kind of fact arriving from the same place:
@@ -563,15 +526,11 @@ function handoffTool(ctx: ToolCtx) {
       ? "Escalate the conversation to a human agent. Set `assignTo` to one of the agents/teams listed in `<handoff_targets>` below to route there; omit it to fall back to default routing. Optionally include a short summary (posted as a private note)."
       : "Escalate the conversation to a human agent. Optionally include a short summary (posted as a private note) and `assignTo` — the name of the agent or team to route to (use one of the names from your instructions); omit it to fall back to default routing."
     : "Escalate the conversation to a human agent. Optionally include a short summary that is posted as a private note before the handoff. Use when the customer needs human help or asks for it.";
-  // Always nudge a customer-facing reply before the handoff so the persona does not go silent on them.
-  //
-  // ...EXCEPT ON A MUTED TURN, where the promise would be false (review round 35). The line is
-  // RECORDED on `handoffState` for the caller to deliver, and an observation has no caller that
-  // delivers: it throws its final output away. So the transfer happens, the customer hears nothing,
-  // and the model was told they were answered. A watcher escalating to a human is legitimate;
-  // telling it to write a message that goes nowhere is not, and the argument goes with the sentence.
-  // (The observation DOES carry a `handoffState` since issue #671, so `resolve_conversation` can see
-  // the transfer; what it does not carry is anything that reads the line back out.)
+  // Always ask for a customer-facing reply before the handoff so the persona does not go
+  // silent, EXCEPT on a muted turn: the line is RECORDED on `handoffState` for the caller to deliver,
+  // and an observation throws its final output away, so the model would be told the customer was
+  // answered. The observation still carries a `handoffState` (so `resolve_conversation` sees the
+  // transfer), but nothing reads the line back out; the argument goes with the sentence.
   const speaks = !ctx.client?.muted;
   const baseDescription = speaks
     ? `${coreDescription} \`customerMessage\` is REQUIRED: write the reply the customer will read (e.g. that a human will continue). Pass an EMPTY STRING only when this case must receive no reply at all — a formal or legal notice, an automated platform notification, or a customer already being handled by a human elsewhere.`
@@ -580,13 +539,11 @@ function handoffTool(ctx: ToolCtx) {
     .string()
     .optional()
     .describe("Short private-note summary for the human taking over.");
-  // REQUIRED, and that is the fix for issue #662: an omitted argument and a deliberate silence were
-  // the same call, so the customer could be left with nothing by a model that simply forgot, and no
-  // record could tell the two apart. Declared empty, the silence is a decision the model made,
-  // visible in the tool's own log line (`describeShape` reports `string(0)`, while an omitted
-  // argument does not appear at all). Measured: a call without it is refused by the schema with a
-  // text that NAMES the argument ("at customerMessage") and instructs no silence, so the model's
-  // next attempt has both options in front of it.
+  // REQUIRED, so a model that forgot and a deliberate silence are different calls. Declared
+  // empty, the silence is a decision visible in the tool's own log line (`describeShape` reports
+  // `string(0)`; an omitted argument does not appear). A call without it is refused by the schema
+  // with a text that NAMES the argument ("at customerMessage") and instructs no silence, so the
+  // model's next attempt has both options in front of it.
   const customerMessageField = speaks
     ? {
         customerMessage: z
@@ -608,45 +565,36 @@ function handoffTool(ctx: ToolCtx) {
       // means the muted branch and never a model that forgot (see the schema below).
       customerMessage?: string;
     }) => {
-      // Transfer-with-summary: a private note for the human BEFORE handing off, gated by the
+      // NOTE: Transfer-with-summary: a private note for the human BEFORE handing off, gated by the
       // per-agent toggle (default on).
       if (reason && ctx.transferWithSummary !== false) {
-        // The model's words, escaped for Chatwoot's Liquid.
+        // NOTE: The model's words, escaped for Chatwoot's Liquid.
         await ctx.client.sendPrivateNote(
           ctx.conversationId,
           literalForChatwoot(reason),
         );
-        // ASKED AGAIN, between the note and the status change, and only when the note was actually
-        // sent — the third handler in this file that WAITS before writing, and the rule is the same
-        // one `set_labels` applies inside its queue and `resolve_conversation` after its read: the
-        // graph's ask at the tool boundary happened before this wait, and an observation holds no
-        // thread claim to keep a `/reset` or a detach out of it. The note is already filed and stays
-        // filed; what this stops is the pair below, which takes the conversation out of `pending`
-        // and assigns it — a routing change on an episode the operator was just told was cleared
-        // (round 18).
+        // NOTE: ASKED AGAIN between the note and the status change, only when the note was sent: the
+        // graph's ask at the tool boundary came before this wait, and an observation holds no thread
+        // claim to keep a `/reset` or a detach out of it. The note stays filed; this stops the pair
+        // below (out of `pending`, then assigned), a routing change on an episode the operator was
+        // just told was cleared. Same rule `set_labels` applies in its queue and
+        // `resolve_conversation` after its read.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
           return "Did not hand off (the run was called off while the note was in flight); the note was already filed.";
         }
       }
-      // Set status `open` → the conversation leaves `pending`, so the attribution gate stops the
+      // NOTE: Set status `open` → the conversation leaves `pending`, so the attribution gate stops the
       // bot and the human queue picks it up.
       await ownStatusChange(ctx, () =>
         ctx.client.toggleStatus(ctx.conversationId, "open"),
       );
-      // Only here: everything above can throw, and a handoff that did not reach this line has not
-      // happened. The optional assignment below is best-effort by design — the conversation is
-      // already out of `pending`, so a routing miss does not put it back.
-      //
-      // The closing line is recorded HERE, from THIS invocation's argument, and never above: the
-      // caller delivers it, and it must belong to the transfer that actually happened. A model whose
-      // first attempt threw is handed the error and calls the tool again, and a second attempt that
-      // succeeds with no line of its own would otherwise deliver the first one's promise and
-      // suppress the recovery text the model wrote instead.
-      //
-      // Recorded rather than sent from here: sending it from inside the tool is what put the most
-      // rule-bound message of the turn outside the output guardrail, outside TTS and outside the
-      // pacing every other reply gets (#160). The cost is ordering — the customer reads it just
-      // after the transfer instead of just before, which Chatwoot never shows them.
+      // NOTE: Only here: everything above can throw, and a handoff that did not reach this line has
+      // not happened; the assignment below is best-effort, as the conversation is already out of
+      // `pending`. The closing line comes from THIS invocation's argument: a model whose first
+      // attempt threw calls again, and a successful retry with no line must not deliver the first
+      // one's promise. Recorded rather than sent from the tool, so it passes the output guardrail,
+      // TTS and the pacing every reply gets; the cost is that the customer reads it just after the
+      // transfer instead of just before, which Chatwoot does not show them.
       if (ctx.handoffState) {
         // BOTH fields come from THIS invocation, so a second successful call cannot leave the first
         // one's promise standing next to its own silence: the turn would then be holding a line to
@@ -691,7 +639,7 @@ function handoffTool(ctx: ToolCtx) {
             await ctx.client.assignTeam(ctx.conversationId, target.id);
             assigned = ` Assigned to team ${target.name}.`;
           } else {
-            // No match: surface it instead of failing silently — a private note tells the human the
+            // NOTE: No match: surface it instead of failing silently — a private note tells the human the
             // intended target, and the conversation falls back to default routing.
             await ctx.client.sendPrivateNote(
               ctx.conversationId,
@@ -713,18 +661,11 @@ function handoffTool(ctx: ToolCtx) {
           err: e,
         });
       }
-      // WHAT THE MODEL READS AFTER TRANSFERRING, and it used to read the same sentence in all three
-      // cases: "The bot will stay silent now." On the branch where the model had supplied no line
-      // that sentence was an INSTRUCTION, and the model obeyed it: the runtime's fallback for a
-      // transfer with nothing to say existed precisely so the model's next hop could speak, and the
-      // tool was telling it not to. Measured on an email inbox: 2 of 130 turns ended transferred,
-      // with a private note filed, and nothing at all for the customer (issue #662). It protected
-      // nothing on the other branch either: when a line IS supplied, `runtime.ts` blanks the model's
-      // own text, which is the duplicate-reply guard from issue #158, and never depended on this
-      // sentence.
-      //
-      // Each of the three sentences below is a promise the product keeps: the declared silence is
-      // enforced by `handoffDeclaredSilence` above, so "no message will be sent" is not advice.
+      // WHAT THE MODEL READS AFTER TRANSFERRING, one sentence per case, each a promise the
+      // product keeps: the declared silence is enforced by `handoffDeclaredSilence` above, so "no
+      // message will be sent" is not advice. None of them tells the model to stay silent: a model
+      // obeys that as an instruction. When a line IS supplied, `runtime.ts` blanks the model's own
+      // text (the duplicate-reply guard), which does not depend on this sentence.
       const silenceNote = !speaks
         ? " This turn does not answer the customer, so nothing is sent to them."
         : customerMessage?.trim()
@@ -733,7 +674,7 @@ function handoffTool(ctx: ToolCtx) {
       return `${HANDOFF_DONE_PREFIX} (status set to open).${assigned}${silenceNote}`;
     },
     {
-      // From the catalog, because the hand-back decision matches results by this exact name
+      // NOTE: From the catalog, because the hand-back decision matches results by this exact name
       // (../handback.ts). Spelled here as a literal, a rename would leave that match silently false.
       name: HANDOFF_TOOL_NAME,
       description: withOperatorNote(
@@ -742,9 +683,9 @@ function handoffTool(ctx: ToolCtx) {
         "handoff_to_human",
         targetsXml,
       ),
-      // The two shapes differ ONLY by `assignTo`, and the shared fields are defined once above:
-      // written twice, a mutation that restored `.optional()` on the `agent_choice` copy survived
-      // the whole suite, because the test exercises the other shape (issue #662).
+      // NOTE: The two shapes differ ONLY by `assignTo`, and the shared fields are defined once above:
+      // written twice, the `agent_choice` copy could regain `.optional()` with no test noticing,
+      // because the test exercises the other shape.
       schema: agentChoice
         ? z.object({
             reason: reasonField,
@@ -814,17 +755,13 @@ function knownAttributesXml(
   return `<known_attributes>\n${blocks.join("\n")}\n</known_attributes>`;
 }
 
-// NOTE: Write-through of a just-written attribute into OUR mirrored bag, so the attribute-context
-// block (built from the mirror at turn prep) reflects it immediately. Chatwoot is still the source
-// of truth: the next webhook event overwrites the bag wholesale. This only closes the window where a
-// proactive nudge — which is not preceded by an inbound event — would otherwise read a stale value,
-// and it matters most for the contact scope (Chatwoot does not deliver contact_updated to bots).
-//
-// The merge is a single `jsonb || jsonb` UPDATE rather than a read-modify-write: a turn can emit
-// several set_custom_attribute calls and the tool node runs them CONCURRENTLY, so a read-then-write
-// would let two calls on the same scope clobber each other's key. Postgres takes the row lock for
-// the duration of the statement, so the distinct keys both survive.
-// Best-effort: any failure is logged and swallowed, never surfaced to the model.
+// Write-through of a just-written attribute into OUR mirrored bag, so the attribute-context block
+// reflects it immediately. Chatwoot stays the source of truth (the next webhook event overwrites the
+// bag); this closes the window where a proactive nudge, with no inbound event before it, reads a
+// stale value, above all on the contact scope (Chatwoot does not deliver contact_updated to bots).
+// One `jsonb || jsonb` UPDATE, not a read-modify-write: the tool node runs a turn's
+// set_custom_attribute calls CONCURRENTLY, and the statement's row lock keeps two keys on one scope
+// from clobbering each other. Best-effort: a failure is logged, never surfaced to the model.
 async function mirrorAttributeWrite(
   ctx: ToolCtx,
   scope: "conversation" | "contact" | "task",
@@ -839,18 +776,13 @@ async function mirrorAttributeWrite(
     await runScopedOn(base, sysCtx(tenantId), async (db) => {
       if (scope === "contact") {
         if (ctx.contactDbId == null) return;
-        // NOTE: The write-through also ADVANCES the contact's source watermark. Chatwoot accepted
-        // this key a moment ago, so every event generated before now carries a pre-write snapshot —
-        // and one of those, delivered late but still stamped after the last mirrored event, would
-        // otherwise pass upsertContact's compare-and-set and replace the whole bag, erasing the key
-        // we just wrote. It matters here and not on the conversation scopes because agent bots
-        // never get contact_updated, so nothing would put the key back. GREATEST (which ignores
-        // NULL) keeps it from moving backwards if Chatwoot's clock runs ahead of ours.
-        //
-        // `AT TIME ZONE 'UTC'` is load-bearing: the column is TIMESTAMP (no zone) holding UTC, and
-        // bare NOW() is timestamptz. Mixing them makes GREATEST resolve through the SESSION
-        // TimeZone, which nothing here pins — under a non-UTC session the stored value reads as
-        // offset-hours in the future and wins, so the barrier silently never advances.
+        // NOTE: The write-through also ADVANCES the contact's source watermark: an event generated
+        // before now carries a pre-write snapshot, and one delivered late but stamped after the last
+        // mirrored event would pass upsertContact's compare-and-set and erase this key, which nothing
+        // puts back (bots never get contact_updated). GREATEST (NULL-ignoring) never moves it back.
+        // `AT TIME ZONE 'UTC'` is load-bearing: the column is TIMESTAMP holding UTC and bare NOW() is
+        // timestamptz, so GREATEST would resolve through the unpinned SESSION TimeZone, and under a
+        // non-UTC session the stored value reads as hours ahead and the barrier never advances.
         await db.$executeRaw`
           UPDATE contacts
           SET custom_attributes = custom_attributes || ${patch}::jsonb,
@@ -892,15 +824,15 @@ async function mirrorAttributeWrite(
   }
 }
 
-// Set a custom attribute on the conversation OR the contact. The valid keys (and list values) of
-// each scope are enumerated in the description from the account's definitions (ctx.vocab), so the
-// model writes a KNOWN key instead of inventing one. Contact scope resolves the Chatwoot contact id
-// from our mirror and merges (the client read-merge-writes so other contact attributes are kept).
 // What the model is told when the client refused a queued write because the run was called off. A
 // sentence, not a tool failure: nothing is broken, the world moved.
 const CALLED_OFF_ATTRIBUTE =
   "Could not set the attribute (the run was called off while this write waited its turn).";
 
+// Set a custom attribute on the conversation OR the contact. The valid keys (and list values) of
+// each scope are enumerated in the description from the account's definitions (ctx.vocab), so the
+// model writes a KNOWN key instead of inventing one. Contact scope resolves the Chatwoot contact id
+// from our mirror and merges (the client read-merge-writes so other contact attributes are kept).
 function setCustomAttributeTool(ctx: ToolCtx) {
   const convDefs = attributesForModel(ctx.vocab, "conversation_attribute");
   const contactDefs = attributesForModel(ctx.vocab, "contact_attribute");
@@ -954,10 +886,10 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           ctx.onNoEffect?.("set_custom_attribute");
           return "Could not set the contact attribute (contact not linked to Chatwoot).";
         }
-        // ASKED AGAIN, after the lookup and before the write. See the fence rule at the top of this
-        // file: the graph's ask happens at DISPATCH, and this handler waits on a database read after
-        // it. A contact attribute outlives the conversation it was written from, so a value written
-        // after a `/reset` — or after the agent was switched off — is one nothing later corrects.
+        // NOTE: ASKED AGAIN, after the lookup and before the write: the graph's ask happens at
+        // DISPATCH, and this handler waits on a database read after it. A contact attribute outlives
+        // the conversation it was written from, so a value written after a `/reset` (or after the
+        // agent was switched off) is one nothing later corrects.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
           ctx.onNoEffect?.("set_custom_attribute");
           return "Could not set the contact attribute (the run was called off while this write waited).";
@@ -966,9 +898,9 @@ function setCustomAttributeTool(ctx: ToolCtx) {
           await ctx.client.setContactCustomAttributes(
             contact.chatwootContactId,
             { [key]: value },
-            // ASKED ONCE MORE, from inside the client's queue this time. The ask above happens
+            // NOTE: ASKED ONCE MORE, from inside the client's queue this time. The ask above happens
             // before the call; the write itself waits for a keyed queue and re-reads the bag, and
-            // that wait is as much a wait as this handler's own (round 25).
+            // that wait is as much a wait as this handler's own.
             { stillWanted: ctx.stillWanted },
           );
         } catch (e) {
@@ -985,7 +917,7 @@ function setCustomAttributeTool(ctx: ToolCtx) {
         await ctx.client.setConversationCustomAttributes(
           ctx.conversationId,
           { [key]: value },
-          // The conversation branch has no wait of its own before the call, so this is the ONLY
+          // NOTE: The conversation branch has no wait of its own before the call, so this is the ONLY
           // fence it gets — and it needs one, because `/reset` clears a conversation's attributes
           // inside exactly the window the queue and the re-read open.
           { stillWanted: ctx.stillWanted },
@@ -1033,52 +965,12 @@ function existingLabelsXml(labels: string[]): string {
   return `<existing_labels>\n${els.join("\n")}\n</existing_labels>`;
 }
 
-// Sets the labels (tags) on the conversation, the contact, or this conversation's kanban card
-// (scope, default 'conversation'). Every backing endpoint REPLACES the whole set, and this tool
-// used to expose that shape instead of hiding it — the model passed the complete list the scope
-// should have. Issue #695 turned that around: the model names `add` and `remove`, and the complete
-// list is computed HERE, from a read taken at write time. Adding, removing and swapping are still
-// one gesture with one write, so a swap never leaves the scope holding both values or neither; what
-// changed is that a label the model did not name is no longer at the mercy of it remembering to
-// repeat the label back.
-//
-// The replacement the endpoint wants is built by applyLabelDelta below.
-//
-// Shapes confirmed against the chatwoot-pro fork: conversation + contact labels GET → { payload: [] },
-// POST /{conversations|contacts}/{id}/labels { labels } replaces (LabelConcern); task labels via PATCH
-// /kanban/tasks/{id} { task: { labels } } (update_labels), with the current set read from the card
-// snapshot. NOTE: the enumerated labels are the account's Label titles; task tags may use a separate
-// taggable namespace on the fork — confirm live before relying on the suggestion for task scope.
-
-// THE MODEL NAMES THE DELTA, so the tool never has to infer one. This replaced a diff against
-// what the model was SHOWN (`applyLabelIntent`, issue #695): under a replace contract the complete
-// list was the only thing the model could send, removal happened by OMISSION, and the whole defence
-// against a concurrent writer was to compare that list with a per-turn snapshot of what the model
-// had seen. Naming the delta makes that defence a property instead of a mechanism:
-//
-//   not named          -> not touched, whoever put it there and whenever;
-//   named in `remove`  -> removed, even if the model was never shown it;
-//   named in `add`     -> added, even if it is already there (no-op, not an error).
-//
-// The second line is the one the old contract could not express, and the first is the one it could
-// only approximate. A label an operator, an automation, the observer or n8n added between the turn's
-// read and this call is now safe for free, and so is one past the 40-label ceiling.
-//
-// THE GUARD SUBTRACTS FROM BOTH DIRECTIONS and is REPORTED. `settings.setLabels.protected` keeps
-// meaning "this tool may neither add nor remove it" — both halves, because a tenant relies on the
-// add half to keep one agent's taxonomy out of another agent's reach. What it stops meaning is
-// "never sees": under a delta, being shown a label no longer puts it at risk, so protecting and
-// hiding come apart. That is the whole point of the change, and hiding is what made a fenced agent
-// invent a label it could not see on 2026-09-11.
-//
-// THE OPERATOR'S LIST, when there is one (issue #638), fences ADDITIONS only. Under `refuse` a title
-// outside it is not written and is named back (`refusedOutside`), and it holds the call's removals
-// exactly as a guarded addition does, for the same reason: a swap whose new value cannot land must
-// not leave the scope without the old one. Under `accept` it is written as before, and
-// `acceptedOutside` names what went in outside the list so the trail can COUNT it (never title it:
-// those are the model's strings). Removal is not limited: taking off a label the taxonomy never had
-// is exactly what an operator cleaning up after the model wants. Both keys are present only when a
-// list is, so a caller without one reads the same object it always did.
+// THE MODEL NAMES THE DELTA: not named, not touched; named in `remove`, removed even if never shown;
+// named in `add`, added (a no-op when already there). `guarded` (settings.setLabels.protected) is
+// refused in both directions and reported; `allowed` fences additions only, `refuse` naming back
+// `refusedOutside` and `accept` reporting `acceptedOutside` (both keys only when a list exists). A
+// refused addition of a label not already standing holds the call's removals (`heldRemove`). The
+// rules and why each holds: docs/graph.md, "`set_labels`: the model names the delta".
 export function applyLabelDelta(
   add: readonly string[],
   remove: readonly string[],
@@ -1103,32 +995,11 @@ export function applyLabelDelta(
   const wantRemove = clean(remove);
   const refusedAdd = wantAdd.filter((l) => guard.has(l));
   const refusedRemove = wantRemove.filter((l) => guard.has(l));
-  // A REMOVAL IS NOT APPLIED WHEN THE GUARD REFUSED ANY ADDITION OF THE SAME CALL (issue #712).
-  // The two halves used to be weighed one by one, so a swap the guard caught on one side landed
-  // the other side, and a mutually exclusive taxonomy ended the turn with NO category — the more
-  // expensive of the two half-written states, because it destroys a classification instead of
-  // adding a second one. The removal was asked for to make room for an addition; when that
-  // addition cannot happen, applying the removal alone delivers a state nobody requested.
-  //
-  // OVER WHAT THE GUARD REFUSED, never over what the write ended up doing. `add: ["a"]` where `a`
-  // already stands moves nothing and is still a legitimate request (#695 s14); conditioning on
-  // "nothing was added" would let a redundant addition block every removal beside it.
-  //
-  // REMOVALS ONLY, never additions, and that asymmetry is imposed from outside rather than
-  // chosen: #695 sealed s8 (`add: ["cancelamento", "reembolso"]` with `cancelamento` guarded must
-  // still write `reembolso`) and s9 (a guarded REMOVE must still let its addition through, so a
-  // conversation CAN still end with both categories). Holding the whole call would reverse both.
-  // The "both categories" direction is therefore still reachable, on purpose, and #712 says so.
-  //
-  // A REFUSED ADDITION OF A LABEL ALREADY STANDING DOES NOT HOLD ANYTHING. It asked for nothing:
-  // under the delta, naming a present label is a no-op, so there was no exchange for the removal
-  // to be in service of. Without this, a model that reaffirms a guarded label it can now SEE —
-  // `add: [nova-categoria, agente-off]`, `remove: [categoria-antiga]`, with `agente-off` guarded
-  // and on the conversation, which is the real observer's configuration — would hold a swap that
-  // completes perfectly well and leave BOTH categories standing, where the same call landed the
-  // single correct one before this rule existed. Still conditioned on the guard's REFUSAL and not
-  // on the write's outcome: an agent with no guard refuses nothing and holds nothing, whatever its
-  // additions end up moving.
+  // A REMOVAL IS HELD when the guard or the list refused an addition of the same call that is
+  // not already standing: the removal made room for it, and applied alone it leaves a mutually
+  // exclusive taxonomy with NO category. Conditioned on the REFUSAL, never on what the write moved,
+  // and it holds removals only, never additions. See docs/graph.md, "`set_labels`: the model names
+  // the delta".
   const allowedSet =
     allowed && allowed.labels.length > 0
       ? new Set(clean(allowed.labels))
@@ -1171,25 +1042,12 @@ export function applyLabelDelta(
   };
 }
 
-// What a write DID, in the model's own terms, and what the scope holds AFTERWARDS. Reports against
-// what was standing rather than against what the model asked for: "already as requested" is the
-// answer a second identical call has to get, or a model reading its own transcript concludes the
-// write did not land and tries again.
-//
-// THE RESULTING SET IS STATED because this line is the model's only way to learn it. The
-// `<current_labels>` block in the description is built once, at turn prep, so from the second call
-// onward it describes the past, including the model's own first write.
-//
-// A REFUSAL IS NAMED, and this is new with the delta contract. While a guarded label was hidden,
-// the model could not ask for it, so subtracting it silently had nothing to report to. Now it sees
-// the label, will therefore ask, and answering "already as requested" would be a false statement it
-// reads back out of its own transcript one call later (issue #695).
-//
-// A HELD REMOVAL IS NAMED TOO, and separately from a refusal (issue #712). The model wrote that
-// label and has no way to guess where it ended up; a report that simply omitted it would read as
-// a removal that happened, and the model records this string and decides its next turn from it.
-// The sentence states the RULE rather than a remedy on purpose: telling it to "ask again without
-// the addition" would hand it the recipe for the very state the hold exists to prevent.
+// What a write DID, in the model's own terms, and what the scope holds AFTERWARDS. Reported against
+// what was standing, so a second identical call reads "already as requested" rather than a failure
+// to retry. The resulting set is stated because `<current_labels>` is built at turn prep and is
+// stale from the second call on. A refusal and a held removal are each named: omitted, they read as
+// writes that happened. The held sentence states the RULE, not a remedy that would recreate the
+// state the hold prevents. See docs/graph.md, "`set_labels`: the model names the delta".
 function labelWriteReport(
   where: string,
   added: string[],
@@ -1233,37 +1091,25 @@ function labelWriteReport(
   return `Labels on the ${where}: ${parts.join("; ")}.${tail}${outside}${held} Now set: ${now}.`;
 }
 
-// THE MODEL-VISIBLE SET, kept current for the rest of the turn. A turn has as many label writes as
-// the model has tool calls, and a `<current_labels>` block frozen at the turn-prep snapshot answers
-// the second call as if the first had not happened.
-//
-// INFORMATIONAL, NOT LOAD-BEARING, which is what changed with the delta contract (issue #695).
-// While removal happened by omission, this list WAS the reference every removal was computed
-// against, and getting it wrong erased data; now it only tells the model what is there, and a stale
-// entry costs a redundant `add` rather than a deletion. The guard is no longer subtracted here
-// either: a protected label is shown precisely so the model stops inventing a name for a value it
-// could not see.
+// THE MODEL-VISIBLE SET, kept current for the rest of the turn: a `<current_labels>` block frozen at
+// turn prep would answer the second call as if the first had not happened. INFORMATIONAL: no write
+// is computed from it, so a stale entry costs a redundant `add` rather than a deletion, and a
+// protected label stays in it so the model does not invent a name for a value it cannot see.
 function recordShown(
   ctx: ToolCtx,
   scope: "conversation" | "contact" | "task",
   next: string[],
 ): void {
   if (!ctx.shownLabels) ctx.shownLabels = {};
-  // Through the same projection the description renders, ceiling included.
+  // NOTE: Through the same projection the description renders, ceiling included.
   ctx.shownLabels[scope] = modelVisibleLabels(next);
 }
 
 // WHAT IS ON THE CONVERSATION RIGHT NOW, per scope, as the model sees it. This block and the `add`
-// argument's own sentence read the SAME `ctx.shownLabels`, on purpose: two statements about one
-// scope in one turn have to be one value. Rendered in the tool description rather than in the
-// system prompt for that reason — one value, one place, no way for the two to describe different
-// turns. Since #695 no WRITE is computed from it (the model names the delta), so a stale entry
-// costs a redundant `add` rather than a deletion; what it still decides is whether the model asks
-// for the canonical value or invents a synonym for one it cannot see.
-//
-// A scope absent here is a scope whose read failed or was never made, and it renders no element at
-// all rather than an empty one: `<conversation/>` would tell the model the conversation has no
-// labels, which is a different claim from "we could not find out".
+// argument's sentence read the SAME `ctx.shownLabels`, and it lives in the tool description rather
+// than the system prompt so the two are one value in one place. No write is computed from it; it
+// decides whether the model asks for the canonical value or invents a synonym. A scope absent here
+// (read failed or never made) renders no element, since an empty one would claim there are none.
 function currentLabelsXml(shown: ToolCtx["shownLabels"]): string {
   if (!shown) return "";
   const els: string[] = [];
@@ -1280,14 +1126,10 @@ function currentLabelsXml(shown: ToolCtx["shownLabels"]): string {
   return `<current_labels>\n${els.join("\n")}\n</current_labels>`;
 }
 
-// The same reading `currentLabelsXml` renders, as one sentence for the ARGUMENT's own description.
-// One function for both, because they are two model-facing statements about one fact and a second
-// reader written by hand is how they end up describing different turns (review round 35): the
-// argument used to name the CONVERSATION's labels whatever scope the call chose, so a `contact` call
-// was shown the wrong list — an invitation to copy conversation labels onto a contact.
-//
-// A scope that is absent is left OUT rather than reported empty, exactly as the block does: "there
-// are none" and "we did not read it" are different claims, and only the first belongs to a list.
+// The same reading `currentLabelsXml` renders, as one sentence for the ARGUMENT's own description,
+// per scope: a second reader written by hand drifts, and a `contact` call shown the conversation's
+// labels is an invitation to copy them onto the contact. An absent scope is left OUT rather than
+// reported empty, as in the block: "there are none" and "we did not read it" are different claims.
 function shownLabelsSentence(shown: ToolCtx["shownLabels"]): string {
   if (!shown) return "";
   const parts: string[] = [];
@@ -1299,13 +1141,16 @@ function shownLabelsSentence(shown: ToolCtx["shownLabels"]): string {
   return parts.length ? ` Currently set — ${parts.join("; ")}.` : "";
 }
 
+// Sets the labels (tags) on the conversation, the contact, or this conversation's kanban card (scope,
+// default 'conversation'). Endpoints, per the chatwoot-pro fork: conversation and contact labels GET
+// → { payload: [] }, POST /{conversations|contacts}/{id}/labels { labels } replaces; task labels via
+// PATCH /kanban/tasks/{id} { task: { labels } }. The enumerated labels are the account's Label
+// titles; task tags may use a separate taggable namespace on the fork, so confirm live before relying
+// on the suggestion for task scope. The delta: docs/graph.md, "`set_labels`: the model names the delta".
 function setLabelsTool(ctx: ToolCtx) {
-  // THE ACCOUNT'S VOCABULARY IS NO LONGER FILTERED HERE. It used to be, because `<existing_labels>`
-  // advertises every label the account has as a value the model may pick, and under the replace
-  // contract being offered one was the first half of being able to delete it by omission. Under the
-  // delta contract the guard is enforced on the way in, so the suggestion list can be whole — and a
+  // The account's vocabulary is offered whole: the guard is enforced on the way in, and a
   // whole list is what stops an agent inventing `duvidas-evento` because the canonical value was
-  // fenced out of its sight (measured 2026-09-11, issue #695).
+  // out of its sight.
   const labelsXml = existingLabelsXml(ctx.vocab?.labels ?? []);
   // 'task' scope is only offered when this conversation actually has a linked card (ctx.kanban).
   const taskScope = !!ctx.kanban;
@@ -1313,8 +1158,8 @@ function setLabelsTool(ctx: ToolCtx) {
     ? z.enum(["conversation", "contact", "task"])
     : z.enum(["conversation", "contact"]);
   const currentXml = currentLabelsXml(ctx.shownLabels);
-  // NAMED UP FRONT, so a refusal is not the model's way of discovering the fence. Now that these
-  // are visible, a model that reads one off `<current_labels>` and decides it belongs elsewhere
+  // NAMED UP FRONT, so a refusal is not the model's way of discovering the fence: these are
+  // visible, and a model that reads one off `<current_labels>` and decides it belongs elsewhere
   // would otherwise spend a call to be told no. Capped like every other model-facing list.
   const guarded = [...new Set(ctx.protectedLabels ?? [])].filter(Boolean);
   const guardedShown = guarded.slice(0, SHOWN_LABELS_MAX);
@@ -1325,7 +1170,7 @@ function setLabelsTool(ctx: ToolCtx) {
           ", ",
         )}${guarded.length > guardedShown.length ? `, +${guarded.length - guardedShown.length} more` : ""}. Naming one of them in \`add\` when it is not already there also holds the call's \`remove\`, so a swap you cannot complete does not leave the scope empty.`
     : "";
-  // THE OPERATOR'S LIST (issue #638), named up front for the same reason the guard is: a refusal
+  // THE OPERATOR'S LIST, named up front for the same reason the guard is: a refusal
   // should not be how the model learns the taxonomy. Under `refuse` it REPLACES the "a label that
   // is not listed is created" sentence below, which would otherwise contradict it.
   const allowedList = [...new Set(ctx.allowedLabels ?? [])].filter(Boolean);
@@ -1333,9 +1178,9 @@ function setLabelsTool(ctx: ToolCtx) {
   const allowed = allowedList.length
     ? { labels: allowedList, mode: allowedMode }
     : undefined;
-  // WHOLE, not cut at SHOWN_LABELS_MAX like the other lists: a title the model is never shown is
-  // one it cannot pick, and the list is already bounded where it is stored (at most
-  // ALLOWED_LABELS_MAX, review round 1 of #638).
+  // WHOLE, not cut at SHOWN_LABELS_MAX like the other lists: a title the model is never shown
+  // is one it cannot pick, and the list is already bounded where it is stored (at most
+  // ALLOWED_LABELS_MAX).
   const allowedNamed = allowedList.map((l) => `'${l}'`).join(", ");
   const allowedSentence = !allowed
     ? ""
@@ -1364,12 +1209,10 @@ function setLabelsTool(ctx: ToolCtx) {
       _config?: ToolRunnableConfig,
     ) => {
       const { add = [], remove = [], scope } = args;
-      // THE OLD SHAPE IS REFUSED BY NAME, and this is not defensive programming. Operator prose in
-      // five free-text fields still describes the replace contract on every tenant that has not
-      // rewritten it, and a model following that prose sends `{labels: [...]}`. A strict schema
-      // would strip the key and leave an empty delta, so the call would answer "already as
-      // requested" and the model would record a classification that was never written — the most
-      // expensive failure this tool can produce (issue #695 holdout s3).
+      // THE RETIRED SHAPE IS REFUSED BY NAME: operator prose written for a complete-list
+      // contract makes a model send `{labels: [...]}`, and a strict schema would strip the key and
+      // leave an empty delta, so the call would answer "already as requested" for a classification
+      // that was never written.
       const legacy = (args as { labels?: unknown }).labels;
       if (Array.isArray(legacy)) {
         ctx.onNoEffect?.("set_labels");
@@ -1384,17 +1227,11 @@ function setLabelsTool(ctx: ToolCtx) {
           ctx.onNoEffect?.("set_labels");
           return "Could not set the labels (this conversation has no linked card).";
         }
-        // THE CARD IS READ FRESH, like the other two scopes. It used to be the turn-prep snapshot,
-        // on the grounds that resolving the card again costs the two or three calls
-        // `loadKanbanContext` makes — but that is the cost of resolving the card from the
-        // CONVERSATION, and the id is already in hand here, so one GET by id answers it. Under the
-        // replace contract the staleness was invisible (the model's list was the write either way);
-        // under the delta it would make "not named, not touched" false in exactly one scope, which
-        // is the promise the whole change is built on (issue #695 holdout s6).
-        //
-        // A read that fails REFUSES the write rather than falling back to the snapshot. Falling
-        // back would reintroduce the erasure silently, on the one path where nobody is looking,
-        // and the conversation scope already answers an unreadable state the same way.
+        // THE CARD IS READ FRESH, like the other two scopes: one GET by id, since the id is in
+        // hand. The turn-prep snapshot would make "not named, not touched" false on this scope. A
+        // read that fails REFUSES the write rather than falling back to the snapshot, which would
+        // reintroduce the erasure silently; the conversation scope answers an unreadable state the
+        // same way.
         let cardLabels: string[];
         try {
           const fresh = (await ctx.client.getKanbanTask(ctx.kanban.taskId)) as {
@@ -1418,7 +1255,7 @@ function setLabelsTool(ctx: ToolCtx) {
           acceptedOutside,
         } = applyLabelDelta(add, remove, cardLabels, guarded, allowed);
         if (added.length === 0 && removed.length === 0) {
-          // NOTHING MOVED, so nothing was written: the POST is skipped entirely (review round 37).
+          // NOTE: NOTHING MOVED, so nothing is written: the POST is skipped entirely.
           // The dispatch was counted as an effect on the way in, and a call that changed no label
           // is a call the tick may safely run again.
           ctx.onNoEffect?.("set_labels");
@@ -1434,10 +1271,8 @@ function setLabelsTool(ctx: ToolCtx) {
             refusedOutside,
           );
         }
-        // ASKED AGAIN, after the GET and before the write, for the reason the two sibling scopes
-        // state above: the read is a WAIT, and `/reset` can retire the run while it is in flight.
-        // This scope had no read between the graph's dispatch check and its write until the fresh
-        // card read was added here, so the recheck arrives with it.
+        // NOTE: ASKED AGAIN, after the GET and before the write, for the reason the two sibling
+        // scopes state: the read is a WAIT, and `/reset` can retire the run while it is in flight.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
           ctx.onNoEffect?.("set_labels");
           return "Could not set the card labels (the run was called off while this write waited).";
@@ -1449,7 +1284,7 @@ function setLabelsTool(ctx: ToolCtx) {
             acceptedOutside,
           }),
         );
-        // Kept in step anyway: the snapshot still feeds the description block and anything else in
+        // NOTE: Kept in step anyway: the snapshot still feeds the description block and anything else in
         // the turn that reads the card, and leaving it behind the write would show the model a set
         // its own call has already moved.
         ctx.kanban.card.labels = [...next];
@@ -1509,9 +1344,9 @@ function setLabelsTool(ctx: ToolCtx) {
             refusedOutside,
           );
         }
-        // ASKED AGAIN, after the GET and before the write — the fourth handler in this file that
-        // waits before writing, and the same rule as the other three. The conversation scope asks
-        // inside its queue; this scope has no queue, and the read above is just as much a wait.
+        // NOTE: ASKED AGAIN, after the GET and before the write, the same rule as every handler
+        // here that waits before writing. The conversation scope asks inside its queue; this scope
+        // has no queue, and the read above is just as much a wait.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
           ctx.onNoEffect?.("set_labels");
           return "Could not set the contact labels (the run was called off while this write waited).";
@@ -1535,11 +1370,10 @@ function setLabelsTool(ctx: ToolCtx) {
           refusedOutside,
         );
       }
-      // Inside the conversation's label queue, with the observer's verdict and the nudge's own
-      // merge: the endpoint replaces the whole set, so an unqueued read-then-POST here erases what
-      // another writer added between the two (issue #477 review, round 3). The queue serialises OUR
-      // writers; the delta is what survives the ones it does not reach — and unlike the diff it
-      // replaced, it survives them without needing to know what the model was shown.
+      // NOTE: Inside the conversation's label queue, shared with the observer's verdict and the
+      // nudge's own merge: the endpoint replaces the whole set, so an unqueued read-then-POST here
+      // erases what another writer added between the two. The queue serialises OUR writers; the
+      // delta is what survives the ones it does not reach.
       return withConversationLabels(
         ctx.tenantId,
         ctx.conversationId,
@@ -1558,7 +1392,7 @@ function setLabelsTool(ctx: ToolCtx) {
             acceptedOutside,
           } = applyLabelDelta(add, remove, current, guarded, allowed);
           if (added.length === 0 && removed.length === 0) {
-            // Nothing moved: see the sibling scopes above.
+            // NOTE: Nothing moved: see the sibling scopes above.
             ctx.onNoEffect?.("set_labels");
             recordShown(ctx, "conversation", next);
             return labelWriteReport(
@@ -1572,7 +1406,7 @@ function setLabelsTool(ctx: ToolCtx) {
               refusedOutside,
             );
           }
-          // ASKED AGAIN HERE, inside the queue and after the GET, and not only at the tool boundary
+          // NOTE: ASKED AGAIN HERE, inside the queue and after the GET, and not only at the tool boundary
           // the graph already fences. Waiting for the queue is a wait like any other: `/reset`
           // peels the episode's labels off in this very queue (webhook.ts), so a call that was
           // wanted when it entered can land on a conversation the operator has just been told was
@@ -1611,7 +1445,7 @@ function setLabelsTool(ctx: ToolCtx) {
         "set_labels",
         [currentXml, labelsXml].filter(Boolean).join("\n"),
       ),
-      // LOOSE ON PURPOSE: a call carrying the retired `labels` key has to REACH the handler so it
+      // NOTE: LOOSE ON PURPOSE: a call carrying the retired `labels` key has to REACH the handler so it
       // can be refused by name. A strict object strips the key, and the refusal would arrive as
       // "nothing changed" — see the handler.
       schema: z.looseObject({
@@ -1665,22 +1499,18 @@ function resolveConversationTool(ctx: ToolCtx) {
   const deferred = ctx.turnState !== undefined;
   return tool(
     async () => {
-      // THE TRANSFER OF THIS TURN ALREADY HAPPENED, so the conversation belongs to the human queue
-      // and closing it is not ours to do. The reactive runtime has said this since issue #159, but
-      // it says it about the DEFERRED intent (`if (handoffState.completed) resolveRequested = false`)
-      // and this tool closes IMMEDIATELY whenever no `turnState` was handed down, which is every
-      // proactive turn and every observation. Measured on a nudge (issue #671): a transfer declaring
-      // silence followed by this tool left `toggleStatus open` then `toggleStatus resolved`, so the
-      // customer got nothing by the model's own declaration AND the conversation left the queue the
-      // transfer had just put it in. Asked before both branches because the answer is the same in
-      // both, and because the model should read what happened rather than a schedule that gets
-      // cancelled out of sight.
+      // NOTE: THE TRANSFER OF THIS TURN ALREADY HAPPENED, so the conversation belongs to the human
+      // queue and closing it is not ours to do. The reactive runtime drops a DEFERRED intent after a
+      // transfer, but this tool closes IMMEDIATELY whenever no `turnState` was handed down (every
+      // proactive turn and every observation), and that close would take the conversation out of
+      // the queue the transfer just put it in. Asked before both branches, so the model reads what
+      // happened rather than a schedule cancelled out of sight.
       if (ctx.handoffState?.completed) {
         return "Did not resolve: this turn transferred the conversation to a human, so it is theirs to close, not yours.";
       }
       const ts = ctx.turnState;
       if (ts) {
-        // Deferred: the runtime toggles the status after the final reply is delivered. The
+        // NOTE: Deferred: the runtime toggles the status after the final reply is delivered. The
         // wording stays conditional on purpose — the intent is discarded on takeover/supersede,
         // and a flat "resolved" would be a false claim in the checkpointed thread history.
         ts.resolveRequested = true;
@@ -1703,13 +1533,12 @@ function resolveConversationTool(ctx: ToolCtx) {
             ctx.observed ?? { status: "resolved", statusAt: null },
           )
         : { status: "resolved", statusAt: null };
-      // ASKED AGAIN HERE, after that read and before the toggle, for the same reason `set_labels`
-      // asks again inside its queue: the read above is a WAIT, and the graph's ask at the tool
-      // boundary happened before it. A `/reset` peels the episode off in that window, and an
+      // NOTE: ASKED AGAIN HERE, after that read and before the toggle, for the same reason
+      // `set_labels` asks again inside its queue: the read above is a WAIT, and the graph's ask at
+      // the tool boundary happened before it. A `/reset` peels the episode off in that window, and an
       // observation holds no thread claim to stop one (`runObserve` takes none), so without this the
-      // close lands on a conversation the operator has just been told was cleared — and it is a
-      // close, which nothing later undoes. Only an explicit `false` stops it: a fence that could not
-      // answer is not a withdrawal (round 17).
+      // close, which nothing later undoes, lands on a conversation the operator was told was
+      // cleared. Only an explicit `false` stops it: a fence that could not answer is not a withdrawal.
       if (ctx.stillWanted && !(await ctx.stillWanted())) {
         ctx.onNoEffect?.("resolve_conversation");
         return "Did not resolve the conversation (the run was called off while this read was in flight).";
@@ -1720,7 +1549,7 @@ function resolveConversationTool(ctx: ToolCtx) {
         client: ctx.client,
         tenantId: ctx.tenantId,
         conversationId: ctx.conversationId,
-        // Already closed by somebody else (read live above): theirs, not the agent's, so no label.
+        // NOTE: Already closed by somebody else (read live above): theirs, not the agent's, so no label.
         labels:
           recordable && observed.status === "resolved"
             ? []
@@ -1729,7 +1558,7 @@ function resolveConversationTool(ctx: ToolCtx) {
         caseHold: ctx.resolveCaseHold ?? null,
       });
       reportResolveLabels(ctx, labelled);
-      // Asked again whatever the labels came to: a held label, an unknown one and the POST are waits
+      // NOTE: Asked again whatever the labels came to: a held label, an unknown one and the POST are waits
       // too. A label POST that went out may have landed, so only a close that sent none reports no
       // effect.
       if (
@@ -1849,7 +1678,7 @@ function kanbanMoveTool(ctx: ToolCtx) {
       }
       const taskId = ctx.kanban.taskId;
       await ctx.client.moveKanbanTask(taskId, step.id);
-      // Best-effort fleet event (ids only — no PII).
+      // NOTE: Best-effort fleet event (ids only, no PII).
       if (ctx.base && ctx.tenantId != null) {
         const tenantId = ctx.tenantId;
         try {
@@ -2037,12 +1866,12 @@ function reactToMessageTool(ctx: ToolCtx) {
         if (latest == null) {
           return "No customer message found to react to.";
         }
-        // The customer's last message is itself a reaction → WhatsApp can't react to a reaction, and
+        // NOTE: The customer's last message is itself a reaction → WhatsApp can't react to a reaction, and
         // reacting would target the wrong (penultimate) message. Refuse without calling the API.
         if (latest.isReaction) {
           return "The customer's last message is a reaction (emoji), and you can't react to a reaction. Do not react now.";
         }
-        // ASKED AGAIN, after the lookup that found the message to react to. A reaction is on the
+        // NOTE: ASKED AGAIN, after the lookup that found the message to react to. A reaction is on the
         // customer's phone, so this is the same question every customer-facing send asks before it
         // goes out — and the lookup above is a wait after the graph's ask at dispatch.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
@@ -2075,7 +1904,7 @@ const SKIP_REPLY_DESCRIPTION =
 // Deliberately produce NO reply this turn. The agent calls this, then ends without any customer-facing
 // text, so the runtime posts nothing (it already skips an empty reply). The call is recorded in the
 // conversation timeline (via the tool flow log) as a "decided not to respond" marker, and its REASON
-// decides whether the conversation stays with the bot or goes to a person (issue #659, ../silence.ts).
+// decides whether the conversation stays with the bot or goes to a person (../silence.ts).
 function skipReplyTool(ctx: ToolCtx) {
   // A MUTED turn (an observer) runs no hand-over after it: nothing reads the reason back out of an
   // observation, which throws its final output away. So the promise is not made there, and the way
@@ -2088,11 +1917,11 @@ function skipReplyTool(ctx: ToolCtx) {
       config: ToolRunnableConfig,
     ) => {
       const note = detail?.trim() ? `${reason}: ${detail.trim()}` : reason;
-      // The ack is what the MODEL reads — LangGraph calls it again after a tool result, and this
+      // The ack is what the MODEL reads: LangGraph calls it again after a tool result, and this
       // sentence is the instruction that makes the turn end quiet.
       const ack = `${SKIP_REPLY_ACK} (${note}). Produce no message now.`;
-      // ...and the MARK is what identifies the tool, in `additional_kwargs`, out of reach of any
-      // response body (round 24). Returned as a whole `ToolMessage` for that, the same
+      // ...and the MARK is what identifies the tool, in `additional_kwargs`, out of reach of
+      // any response body. Returned as a whole `ToolMessage` for that, the same
       // direct-tool-output passthrough `failableTool` uses; without a tool_call in scope (a direct
       // invocation with plain args) it degrades to the plain string, as that one does.
       const id = config?.toolCall?.id;
@@ -2135,13 +1964,6 @@ function skipReplyTool(ctx: ToolCtx) {
   );
 }
 
-// Sends an image the agent already has a URL for (a product photo from an HTTP tool, an MCP tool or
-// a catalog integration) as a real attachment, instead of pasting a link the customer has to open.
-//
-// The URL is MODEL-supplied, so the hosts it may be fetched from are an operator decision that lives
-// in the agent's config, never in a tool argument: a prompt injection can write any URL it likes and
-// still not reach a host the operator did not list. See modules/images/fetch for the rest of the
-// fence (SSRF assertion, no redirects, byte cap on the body, type read from the file's signature).
 // The image half of the shared attachment queue, which is what both send_image ceilings are about.
 export function queuedImages(turnState: TurnState): PendingAttachment[] {
   return turnState.pendingAttachments.filter((a) => a.kind === "image");
@@ -2153,6 +1975,12 @@ function limitReached(): string {
   return `Limite de imagens deste turno atingido (${SEND_IMAGE_MAX_PER_TURN}). Envie as demais em outra mensagem ou responda com o link em texto.`;
 }
 
+// Sends an image the agent already has a URL for (a product photo from an HTTP tool, an MCP tool or
+// a catalog integration) as a real attachment, instead of pasting a link the customer has to open.
+// The URL is MODEL-supplied, so the hosts it may be fetched from are an operator decision that lives
+// in the agent's config, never in a tool argument: a prompt injection can write any URL it likes and
+// still not reach a host the operator did not list. See modules/images/fetch for the rest of the
+// fence (SSRF assertion, no redirects, byte cap on the body, type read from the file's signature).
 function sendImageTool(ctx: ToolCtx) {
   const cfg = ctx.sendImage ?? SEND_IMAGE_DEFAULTS;
   const hosts = cfg.allowedHosts;
@@ -2167,7 +1995,7 @@ function sendImageTool(ctx: ToolCtx) {
     }\n</imagens-permitidas>`;
   return failableTool(
     async ({ url, caption }: { url: string; caption?: string }) => {
-      // NOTE: Both refusals below are decided BEFORE the fetch. Downloading megabytes over ten
+      // Both refusals below are decided BEFORE the fetch. Downloading megabytes over ten
       // seconds only to throw the result away is work a model can ask for repeatedly, and the DNS
       // lookup alone is a signal leaving the box for a call whose answer is already "no".
       //
@@ -2179,16 +2007,13 @@ function sendImageTool(ctx: ToolCtx) {
       if (!turnState) {
         return "Não é possível enviar imagem neste momento (mensagem proativa). Responda com o link em texto.";
       }
-      // One model response can carry a whole batch of tool calls, and the graph's tool-call limit is
-      // only re-checked between responses, so the queue needs its own ceiling: every accepted image
-      // is held in memory until the turn ends and then uploaded one by one. The slot is taken here,
-      // BEFORE the await, because the batch runs concurrently — a check that spans the download
-      // would be read by every call while the queue is still empty. Bytes are enforced at the other
-      // end, where the real size is known; the count keeps the in-flight total bounded meanwhile.
-      // NOTE: counts IMAGES, not the queue. The queue also carries documents, which are our own
-      // rendered files bounded by their own rule — one per turn. Letting one eat an image slot would
-      // make a ceiling the operator reads as "images per message" mean something else depending on
-      // whether a document went out with them.
+      // One model response can carry a batch of tool calls, and the graph's tool-call limit is
+      // only re-checked between responses, so the queue needs its own ceiling (every accepted image
+      // is held in memory until the turn ends). The slot is taken BEFORE the await: the batch runs
+      // concurrently, and a check spanning the download would be read by every call while the queue
+      // is still empty. Bytes are enforced after the download, where the size is known. It counts
+      // IMAGES, not the queue: a document (one per turn) eating an image slot would change what the
+      // operator reads as "images per message".
       const tooManyQueued =
         queuedImages(turnState).length + turnState.imagesInFlight >=
         SEND_IMAGE_MAX_PER_TURN;
@@ -2203,7 +2028,7 @@ function sendImageTool(ctx: ToolCtx) {
           assertSafe: ctx.assertSafe,
         });
         if (!res.ok) {
-          // NOTE: A refusal the OPERATOR has to fix (no hosts configured, host not listed) is normal
+          // A refusal the OPERATOR has to fix (no hosts configured, host not listed) is normal
           // operation for the model — it should answer with a link instead — but it is not normal
           // for the operator, so only the transport failures are marked as integration failures.
           const message = sendImageRefusal(res.reason, res.detail);
@@ -2211,7 +2036,7 @@ function sendImageTool(ctx: ToolCtx) {
             ? toolFailure(message)
             : message;
         }
-        // NOTE: Re-read the queue and count THIS image in: the batch's other calls may have queued
+        // Re-read the queue and count THIS image in: the batch's other calls may have queued
         // while this one downloaded, and a budget that excludes the candidate lets the last accepted
         // image carry the total past the ceiling. No await between the read and the push, so the
         // pair is atomic.
@@ -2345,16 +2170,6 @@ function getCurrentTimeTool(ctx: ToolCtx) {
   );
 }
 
-// THE TOOLS A MUTED TURN CANNOT COMPLETE, hidden from it. An observer now runs the ordinary toolset
-// (issue #568), and two of those tools are customer-facing in their entirety: a reaction lands on the
-// customer's phone — the muted transport refuses that POST, and reaching that refusal is a defect by
-// construction — and an image is delivered by the turn's own gates, which an observation does not
-// have, so it refuses every call. Offered anyway they cost a model round each and answer with a
-// failure an operator reads as a broken integration. Read off the client's own `muted`, the same
-// field `armReminders` asks, so the two cannot disagree about what this turn may do.
-//
-// A private note is NOT here, and that is the same isention the mute itself makes: it is the one
-// thing an observer legitimately writes where a person will read it.
 // What the model reads after `open_case_in_inbox`, one sentence per outcome. The ones that ask for
 // something are instructions the model acts on in its reply; none of them tells it to stay silent,
 // because the customer still has to hear, on the channel they are on, where their case went.
@@ -2458,7 +2273,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         screenCustomerMessage: ctx.screenCustomerText,
         signCustomerMessage: cic.sign,
         interpolate: cic.interpolate,
-        // The team this agent hands conversations to, when the operator pinned one: the case goes to
+        // NOTE: The team this agent hands conversations to, when the operator pinned one: the case goes to
         // the same people. `ctx.handoff` is already the effective config, so a pin picked in another
         // account arrives here as `agent_choice` and no team is written. A pinned PERSON is not
         // assigned to the case: whose case it is inside the team stays the team's call.
@@ -2469,7 +2284,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
       });
       if (result.kind === "called_off") ctx.onNoEffect?.(OPEN_CASE_TOOL_NAME);
       if (result.kind !== "failed") {
-        // A configured case label the account does not have: the operator's to fix, so it goes to
+        // NOTE: A configured case label the account does not have: the operator's to fix, so it goes to
         // the flow log and the alert, and not to the model, which can do nothing about it.
         if (
           (result.kind === "opened" || result.kind === "continued") &&
@@ -2538,7 +2353,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         }
         return openCaseOutcomeText(result, closing);
       }
-      // THE FAILURE BRANCH IS A REQUIREMENT, NOT A DETAIL: the customer asked for help, and a case
+      // NOTE: THE FAILURE BRANCH IS A REQUIREMENT, NOT A DETAIL: the customer asked for help, and a case
       // that did not open must not leave them talking to a bot that cannot deliver it. The
       // conversation goes to the human queue (`open`, which also stops the bot here) with a note
       // saying why, and the tool result is marked as a failure so the flow log carries it.
@@ -2552,7 +2367,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
       );
       let fallback = "";
       try {
-        // FENCED LIKE handoff_to_human: before the note, and again between the note and the status
+        // NOTE: FENCED LIKE handoff_to_human: before the note, and again between the note and the status
         // change, which cannot be undone. A request that failed because the turn was reset or
         // withdrawn must not transfer the conversation the operator just cleared.
         if (ctx.stillWanted && !(await ctx.stillWanted())) {
@@ -2569,7 +2384,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
         await ownStatusChange(ctx, () =>
           ctx.client.toggleStatus(ctx.conversationId, "open"),
         );
-        // The customer's line goes through the handoff's own delivery: after the transfer, screened
+        // NOTE: The customer's line goes through the handoff's own delivery: after the transfer, screened
         // by the output check, and not dropped by the ownership recheck the transfer just tripped,
         // which is what happens to the model's next reply here. Without a line a person still sees
         // the conversation; the customer just reads nothing.
@@ -2577,7 +2392,7 @@ function openCaseInInboxTool(ctx: ToolCtx) {
           const line = handoff_message?.trim() ?? "";
           ctx.handoffState.customerMessage = line || null;
           ctx.handoffState.lineByOperator = false;
-          // No line is a SILENT transfer, said so as `handoff_to_human` says it: otherwise the model's
+          // NOTE: No line is a SILENT transfer, said so as `handoff_to_human` says it: otherwise the model's
           // next reply could still go out before the status webhook reaches the mirror.
           ctx.handoffState.declinedToSpeak = !line;
           ctx.handoffState.completed = true;
@@ -2654,6 +2469,12 @@ function openCaseInInboxTool(ctx: ToolCtx) {
   );
 }
 
+// THE TOOLS A MUTED TURN CANNOT COMPLETE, hidden from it: an observer runs the ordinary toolset, and
+// these are customer-facing in their entirety (a reaction the muted transport refuses, an image or a
+// case opening that needs delivery gates an observation does not have). Offered anyway they cost a
+// model round each and answer with a failure an operator reads as a broken integration. Read off the
+// client's own `muted`, the same field `armReminders` asks. A private note is NOT here: it is the one
+// thing an observer legitimately writes where a person will read it.
 const MUTED_CANNOT_COMPLETE = new Set<string>(
   CUSTOMER_DELIVERY_NATIVE_TOOL_NAMES,
 );
@@ -2684,10 +2505,10 @@ export function buildNativeTools(
     calculatorTool(ctx),
     getCurrentTimeTool(ctx),
   ];
-  // MATERIALIZED ONCE, before the filter runs. `allowed` is an `Iterable<string>`, and a one-shot
-  // one (a generator, a `Set.values()`) is CONSUMED by the first candidate — every tool after it
-  // would then be tested against an empty set and the agent would come up with no tools at all
-  // (review round 30). Cheaper too: one Set instead of one per candidate.
+  // MATERIALIZED ONCE, before the filter runs. `allowed` is an `Iterable<string>`, and a
+  // one-shot one (a generator, a `Set.values()`) is CONSUMED by the first candidate: every tool
+  // after it would then be tested against an empty set and the agent would come up with no tools.
+  // Cheaper too: one Set instead of one per candidate.
   const allowSet = allowed ? new Set(allowed) : null;
   const granted = allowSet ? all.filter((t) => allowSet.has(t.name)) : all;
   if (!ctx.client?.muted) return granted;
@@ -2717,7 +2538,7 @@ export function buildSimulatedNativeTools(
     // "Produce no message now" is an instruction the model reads and acts on, since LangGraph calls
     // the model again after a tool result. Replacing it with the generic `[simulated]` line makes
     // the playground write a follow-up that production stays silent on, which is the simulation
-    // lying about the one decision it exists to show (issue #454, review round 3).
+    // lying about the one decision it exists to show.
     NATIVE_TOOL_CATEGORY[tl.name as NativeToolName] === "utility" ||
     tl.name === SKIP_REPLY_TOOL
       ? tl

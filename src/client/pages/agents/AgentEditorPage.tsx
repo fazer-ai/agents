@@ -1945,10 +1945,8 @@ function AgentEditor() {
     };
   }, [id, serverSyncTick]);
 
-  // NOTE: Live config-health: features turned on but missing the credential they need to run, OR
-  // referencing a credential whose secret is not filled in yet (pending). The import that strips
-  // secrets is the common trigger; each issue deep-links to its tab + section, or to the vault fill
-  // modal when pending. Per-issue messages (dynamic key by issue.key) registered for extraction:
+  // NOTE: Live config-health: a feature on without its credential, or naming one whose secret is not
+  // filled in (pending); each issue deep-links to its tab or the vault fill modal. Messages by issue.key:
   // t('editor.configIssue.model', 'The model has no API key set, so the agent cannot reply.')
   // t('editor.configIssue.modelNotRunnable', 'This model configuration cannot be built, so the agent cannot reply. Check the provider and the model.')
   // t('editor.configIssue.modelNoEndpoint', 'This model needs a base URL and has none, so it cannot be reached and the agent cannot reply.')
@@ -1987,10 +1985,8 @@ function AgentEditor() {
   // t('editor.configIssueUnresolved.modelFallback', 'The fallback-provider credential no longer exists, so the fallback cannot take a turn.')
   // t('editor.configIssueUnresolved.vision', 'The image-reading credential no longer exists, so images and documents are not read.')
   // t('editor.configIssueUnresolved.embedding', 'A knowledge base needs indexing, but the embedding credential no longer exists.')
-  // The fourth verdict: the entry is there and filled, and its TYPE cannot serve the field.
-  // Each sentence names the consequence its feature already owns, like the three families above, and
-  // ends in the one move that fixes it: neither "fill it in" nor "pick a new one because it is
-  // gone", but "this key belongs somewhere else".
+  // NOTE: The fourth verdict: the entry is filled but its TYPE cannot serve the field. Each sentence names
+  // its feature's consequence and ends in the fix, "this key belongs somewhere else".
   // t('editor.configIssueWrongKind.model', 'The model credential is a type that cannot be used as an API key, so the agent cannot reply. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.stt', 'The transcription credential is a type that cannot be used as an API key, so voice messages are not transcribed. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.tts', 'The audio-reply credential is a type that cannot be used as an API key, so replies are sent as text. Pick a credential that holds a single key.')
@@ -2000,9 +1996,8 @@ function AgentEditor() {
   // t('editor.configIssueWrongKind.vision', 'The image-reading credential is a type that cannot be used as an API key, so images and documents are not read. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.guardrails', 'The guardrails credential is a type that cannot be used as an API key, so messages go out unscreened. Pick a credential that holds a single key.')
   // t('editor.configIssueWrongKind.embedding', 'A knowledge base needs indexing, but the embedding credential is a type that cannot be used as an API key. Pick a credential that holds a single key.')
-  // The contact-authorization gate is the one field here that accepts a connected account, so its
-  // sentence cannot say "a single key": what it refuses is the opposite case, a credential this
-  // product only ever reads internally and never sends to another service.
+  // The contact-authorization gate also accepts a connected account, so its sentence refuses the
+  // opposite case: a credential this product only reads internally and never sends out.
   // t('editor.configIssueWrongKind.contactAuth', 'The contact-authorization credential is a type this product never sends to another service, so the check fails and the agent stays silent. Pick a credential that can authenticate a request.')
   // Knowledge bases this agent uses (its RAG grant) that still have documents awaiting indexing —
   // surfaced as a config warning so a freshly-imported agent flags "index me" right in the editor.
@@ -3048,7 +3043,7 @@ function AgentEditor() {
         protectedLabelsError(protectedList, storedSettings) ??
         allowedLabelsError(allowedList, storedSettings) ??
         resolveLabelsClashError(protectedResolveLabels(toolsSettings)) ??
-        // NOTE: Refused by the PATCH, which goes out after the grants PUT: checked here so a bad key
+        // Refused by the PATCH, which goes out after the grants PUT: checked here so a bad key
         // does not leave new grants written beside the old settings.
         (invalidCaseAttributeKey(crossInboxCase)
           ? t(

@@ -11,7 +11,7 @@ import {
 import { BEHAVIOR_PATCH_SHAPE } from "@/modules/agents/settings-schema";
 import { readCrossInboxCaseConfig } from "@/modules/cross-inbox-case/settings";
 
-// Issue #700: `crossInboxCase` is config OF the open_case_in_inbox tool, so it is edited on the
+// `crossInboxCase` is config OF the open_case_in_inbox tool, so it is edited on the
 // tool's card and written by the Tools tab's save, the way `handoff` is. Two saves write the same
 // settings column, and each one resends the whole bag, so the ownership has to be exact on both
 // sides: the Tools save writes the block and keeps the shared bag in step, and the Behavior save
@@ -132,7 +132,7 @@ describe("which save owns the block (source)", () => {
   });
 });
 
-// Review round 7 of #881: the reader replaces a key outside lowercase snake_case with the default, so
+// The reader replaces a key outside lowercase snake_case with the default, so
 // a key like that is refused where it is written instead of saved and silently ignored.
 describe("the attribute key is checked where it is written", () => {
   const patch = z.object(BEHAVIOR_PATCH_SHAPE);
@@ -165,15 +165,15 @@ describe("the attribute key is checked where it is written", () => {
     expect(src).toContain("invalidCaseAttributeKey(value)");
   });
   test("the Tools save refuses a bad key before the grants PUT", () => {
-    // Review round 10: the PUT went out, then the PATCH refused the key, leaving new grants beside
-    // the old settings.
+    // NOTE: the check runs before the grants PUT, since a PATCH that refuses the key after it would
+    // leave new grants beside the old settings.
     const src = readFileSync(
       "src/client/pages/agents/AgentEditorPage.tsx",
       "utf8",
     );
     const start = src.indexOf("async function saveTools(");
     const body = src.slice(start, src.indexOf("\n  }\n", start));
-    // The call itself is the condition of the refusal, chained after the other preflight errors.
+    // NOTE: the call itself is the condition of the refusal, chained after the other preflight errors.
     const check = body.indexOf("// Refused by the PATCH");
     expect(body).toContain(
       "(invalidCaseAttributeKey(crossInboxCase)\n          ? t(",

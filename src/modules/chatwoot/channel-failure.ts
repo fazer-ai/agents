@@ -26,28 +26,13 @@ import { parseLiveConversation, shouldBotHandle } from "./normalize";
 import { reconcileMirrorFromLive } from "./reconcile";
 import type { NormalizedChatwootEvent } from "./types";
 
-// A REPLY THE CHANNEL REFUSED AFTER CHATWOOT ACCEPTED IT (issue #587).
-//
-// The channel takes the send and returns an id; the failure arrives minutes later, through the
-// channel's own status webhook, and Chatwoot records it as `external_error` on the message and
-// re-dispatches `message_updated` to the Agent Bot. Until this module nothing read it: the turn had
-// closed, the customer's side had nothing, and the flow log said the reply went out.
-//
-// What can be done depends on WHICH failure it is, and that is the whole design:
-//
-//   media      the channel could not obtain or accept the attachment. The same reply as TEXT gets
-//              through, so it is sent, once. The text is the reply the audio was rendered from,
-//              which the voice note carries as `transcribed_text` on its attachment, or whole in its
-//              `content_attributes` when the speech left a URL or an address out (issue #792):
-//              nothing is regenerated, and no model runs.
-//   delivery   the message could not reach the recipient at all (outside the service window,
-//              undeliverable). A text send hits the same wall and leaves a second failed bubble, so
-//              nothing is sent.
-//   unknown    a code not in the table, or no code at all. Treated as not answerable and LOGGED with
-//              the code, so the table grows from evidence rather than from a guess.
-//
-// Only the route's OWN bot's messages are acted on: a human agent's attachment that failed is the
-// human's to resend, and another bot's is that bot's.
+// A reply the channel refused after Chatwoot accepted it: the failure arrives minutes later as a
+// `message_updated` carrying `external_error`, and what is done depends on the code's class. `media`
+// resends the same reply as text, once (the voice note carries its words, so no model runs);
+// `delivery` (the recipient cannot be reached) and `unknown` send nothing, because a text hits the
+// same wall, and log the code so the table grows from evidence rather than from a guess. Only the
+// route's own bot's messages are acted on: a human's or another bot's failure is theirs to resend.
+// docs/tts.md, "When the channel refuses the voice note after Chatwoot accepted it".
 
 const MEDIA_ERROR_CODES = new Set(["131052", "131053"]);
 
@@ -92,10 +77,9 @@ export function channelFailureOf(
     return null;
   if (m.id === null || n.conversationId === null) return null;
   const code = m.externalError.match(/^\s*(\d+)\b/)?.[1] ?? null;
-  // The whole reply when the voice note carries it, which is when its speech had a URL or an address
-  // taken out (issue #792): the transcription is then the sentence with holes in it, and the text
-  // replacing the audio would read broken. The items go again, after the balloon that already
-  // carried them: a repeated link costs less than a sentence that stops mid-way.
+  // NOTE: the whole reply when the voice note carries it, which is when its speech had a URL or an
+  // address taken out and the transcription reads with holes. The items then reach the customer
+  // twice, which costs less than a sentence that stops mid-way.
   const text =
     m.replyText?.trim() ||
     (m.attachments
@@ -137,13 +121,13 @@ async function agentBehindBot(
 // conversation that moved on by about a hundred messages since the voice note failed.
 const FALLBACK_READBACK_MAX_PAGES = 5;
 
+// WhatsApp's own ceiling on a text message. A reply longer than this is refused by the channel AFTER
+// Chatwoot accepted the post, the same late failure this module handles, so it is not sent at all.
+const CHANNEL_TEXT_MAX = 4_096;
+
 // Per Chatwoot INSTANCE as well as per message: message ids are the server's own, and a tenant that
 // replaces its Chatwoot deployment keeps its scheduler rows, so a new server reusing an old id would
 // land on the old row and `once` would keep it.
-// WhatsApp's own ceiling on a text message. A reply longer than this is refused by the channel AFTER
-// Chatwoot accepted the post, which is this issue's own failure again, so it is not sent at all.
-const CHANNEL_TEXT_MAX = 4_096;
-
 export function mediaFallbackDedupeKey(
   instanceId: bigint,
   messageId: number,
@@ -162,7 +146,7 @@ export async function handleChannelFailure(params: {
   flow: FlowContext;
   base?: PrismaClient;
 }): Promise<void> {
-  // The reply the voice note was rendered from. The fork keeps it on the attachment; an upstream
+  // NOTE: the reply the voice note was rendered from. The fork keeps it on the attachment; an upstream
   // Chatwoot drops that metadata, and then the text this process stashed when it sent the audio is
   // the one place it still is.
   const f: ChannelFailure =
@@ -177,7 +161,7 @@ export async function handleChannelFailure(params: {
             )?.transcribedText?.trim() || null,
         }
       : params.failure;
-  // The line belongs to the AGENT behind the bot that sent the message, so the Logs page filtered by
+  // NOTE: the line belongs to the AGENT behind the bot that sent the message, so the Logs page filtered by
   // agent shows it: the flow log stores the agent it is handed and infers nothing.
   const flow: FlowContext =
     params.flow.agentId != null
@@ -200,13 +184,13 @@ export async function handleChannelFailure(params: {
       await enqueueJob({
         tenantId: params.tenantId,
         kind: "MEDIA_TEXT_FALLBACK",
-        // The key names the FAILED MESSAGE, and the arm is `once`: a redelivered webhook, a second
+        // NOTE: the key names the FAILED MESSAGE, and the arm is `once`: a redelivered webhook, a second
         // bot route and a failure reported twice all land on this row and leave it as it is, so the
         // text goes out one time whatever the channel repeats.
         dedupeKey: mediaFallbackDedupeKey(params.instanceId, f.messageId),
         rearm: "once",
         runAt: new Date(),
-        // The reply in its own column, never in the Json payload: it is text the customer will read,
+        // NOTE: the reply in its own column, never in the Json payload: it is text the customer will read,
         // and it can carry their data.
         payloadSecret: encryptJson(f.text),
         payload: {
@@ -254,9 +238,9 @@ export async function mediaFallbackHandler(
     messageId === null
   )
     return { outcome: "done" };
-  // An UNREADABLE body throws (decrypt below), like the ingestion job: a real failure retries and
-  // then dead-letters visibly. No body is a `/reset` having forgotten it (a DONE row is never claimed again), so there is
-  // nothing to send and nothing to retry.
+  // NOTE: an UNREADABLE body throws (decrypt below), like the ingestion job: a real failure retries
+  // and then dead-letters visibly. No body is a `/reset` having forgotten it (a DONE row is never
+  // claimed again), so there is nothing to send and nothing to retry.
   if (job.payloadSecret == null) {
     logger.info(
       "media fallback: job %s carries no text (forgotten by a reset), nothing is sent",
@@ -266,7 +250,7 @@ export async function mediaFallbackHandler(
   }
   const text = decryptJson<string>(job.payloadSecret);
   const literal = p.byOperator === true ? (t: string) => t : literalForChatwoot;
-  // STILL ALLOWED TO SPEAK HERE, asked again at send time: the job can sit queued while the operator
+  // NOTE: STILL ALLOWED TO SPEAK HERE, asked again at send time: the job can sit queued while the operator
   // switches the agent off, flips it to monitoring, disconnects the account or `/reset`s the
   // conversation, and the bot's stored token outlives all four. The bot is found by the id the
   // conversation knows it by, so the text goes out under the same identity the audio did.
@@ -299,16 +283,12 @@ export async function mediaFallbackHandler(
     botToken: decryptJson<string>(bot.accessToken),
     ...(makeClient ? { makeClient } : {}),
   });
-  // FIRST, because it is the slow part: every gate below is asked AFTER these reads, so a person
-  // taking the conversation or a `/reset` landing while they run still stops the send.
-  //
-  // THE SEND CARRIES A NAME, and a retry looks for it before sending again. The row is armed once,
-  // but the HANDLER can run twice: a POST that landed and whose response was lost, or a crash between
-  // the send and `completeJob`, both come back here, and the second one only after the stale-claim
-  // interval, when newer messages may have pushed the first send off the latest page. So the read
-  // pages back to the FAILED message, which the text can only have followed. A read that fails
-  // THROWS, for the same reason as above; a conversation too busy to reach that boundary within the
-  // page ceiling sends nothing, because a text that late is worth less than a duplicate costs.
+  // NOTE: FIRST, because it is the slow part: every gate below runs AFTER these reads, so a takeover
+  // or a `/reset` landing meanwhile still stops the send. The send carries a name a rerun looks for:
+  // a POST whose response was lost, or a crash before `completeJob`, runs the handler again after the
+  // stale-claim interval, so the read pages back to the FAILED message. A failed read THROWS; a
+  // conversation too busy to reach that boundary within the page ceiling sends nothing, because a
+  // text that late is worth less than a duplicate costs.
   const sendId = `media-fallback:${messageId}`;
   let before: number | undefined;
   for (let page = 0; ; page++) {
@@ -325,13 +305,13 @@ export async function mediaFallbackHandler(
       before === undefined ? undefined : { before },
     );
     const rows = parseChatwootMessages(raw);
-    // A page read INCOMPLETELY (not a list, or rows that did not parse) cannot say the send is not
+    // NOTE: A page read INCOMPLETELY (not a list, or rows that did not parse) cannot say the send is not
     // there, only that it could not tell: THROW and retry, never resend on it.
     if (chatwootMessageListLength(raw) !== rows.length)
       throw new Error(
         "media fallback: a page of the conversation did not read",
       );
-    // The conversation holds at least the failed voice note, so a FIRST page with nothing on it is
+    // NOTE: The conversation holds at least the failed voice note, so a FIRST page with nothing on it is
     // a read that did not see the conversation, not an empty one.
     if (page === 0 && rows.length === 0)
       throw new Error("media fallback: the conversation read back empty");
@@ -340,7 +320,7 @@ export async function mediaFallbackHandler(
     if (oldest === undefined || oldest <= messageId) break;
     before = oldest;
   }
-  // WHO OWNS IT NOW, read live. The audio went out under the bot, but minutes can pass between that
+  // NOTE: WHO OWNS IT NOW, read live. The audio went out under the bot, but minutes can pass between that
   // send and this one, and a person may have taken the conversation in between: posting as the bot
   // over them is the one thing no send path here does. An unreadable conversation THROWS, so the job
   // retries instead of guessing either way.
@@ -349,7 +329,7 @@ export async function mediaFallbackHandler(
   );
   if (!live)
     throw new Error("media fallback: the conversation could not be read");
-  // AND THE MIRROR, read through the reconcile: a local status claim (a colleague's reply claimed
+  // NOTE: AND THE MIRROR, read through the reconcile: a local status claim (a colleague's reply claimed
   // `open` before Chatwoot's toggle landed) and a takeover webhook committed after this snapshot are
   // both newer than the live read, and the reconcile returns the row as its own ordering left it. A
   // text that nobody is waiting on costs less than one over a person, so BOTH readings have to say
@@ -366,7 +346,7 @@ export async function mediaFallbackHandler(
     assigneeType: string | null;
     assigneeId: number | null;
   }) => shouldBotHandle(c, { ourAgentBotId: agentBotId });
-  // With THIS bot's id: a conversation handed to another bot is not ours either.
+  // NOTE: With THIS bot's id: a conversation handed to another bot is not ours either.
   if (!ours(live) || (reconciled.state !== null && !ours(reconciled.state))) {
     logger.info(
       "media fallback: conversation %s is no longer the bot's, the text is not sent",
@@ -374,7 +354,7 @@ export async function mediaFallbackHandler(
     );
     return { outcome: "done" };
   }
-  // LAST, and after every network read: the database answers for a `/reset` or a rebinding that
+  // NOTE: LAST, and after every network read: the database answers for a `/reset` or a rebinding that
   // landed while Chatwoot was being asked, and nothing but the send follows it.
   //
   // The same reads a follow-up makes before it speaks (../../graph/nudge.ts), in the same order: the
@@ -398,7 +378,7 @@ export async function mediaFallbackHandler(
       },
     });
     if (!conv?.inboxId) return "the conversation is not mirrored here";
-    // The reply belongs to the episode a `/reset` closed.
+    // NOTE: The reply belongs to the episode a `/reset` closed.
     if (resetLandedAfter(messageId, conv.resetAtMessageId))
       return "the conversation was reset after the failed reply";
     const inbox = await db.inbox.findUnique({
@@ -410,7 +390,7 @@ export async function mediaFallbackHandler(
         provider: true,
       },
     });
-    // The inbox may have been unbound or handed to another agent while the job waited: the persona
+    // NOTE: The inbox may have been unbound or handed to another agent while the job waited: the persona
     // that sent the audio no longer answers here.
     if (inbox?.agentId !== bot.agentId)
       return "the inbox is no longer bound to this agent";
@@ -438,7 +418,7 @@ export async function mediaFallbackHandler(
       )
     )
       return "the agent is in test mode and this conversation was not activated";
-    // The seam every sender loads first: it refuses a switched-off agent and a monitoring one, and
+    // NOTE: The seam every sender loads first: it refuses a switched-off agent and a monitoring one, and
     // it carries the signature, which the voice note's transcription never has.
     const cfg = await loadAgentConfig(
       db,
@@ -453,7 +433,7 @@ export async function mediaFallbackHandler(
       { skipExperiment: true },
     );
     if (!cfg) return "the agent is off, monitoring or unloadable";
-    // THE 24H WINDOW, the proactive paths' rule: a job that waited out an outage past it would post
+    // NOTE: THE 24H WINDOW, the proactive paths' rule: a job that waited out an outage past it would post
     // a free-form message the channel rejects, and finish DONE with nothing delivered. A template is
     // not the reply either, so outside the window the text simply does not go.
     if (
@@ -472,26 +452,26 @@ export async function mediaFallbackHandler(
   });
   if (typeof gate === "string") return stop(gate);
   const { cfg } = gate;
-  // The inbox the binding above was read for is the MIRROR's, and a transfer to another inbox can
+  // NOTE: The inbox the binding above was read for is the MIRROR's, and a transfer to another inbox can
   // reach Chatwoot before its webhook reaches the mirror. The live read is the newer word: an inbox
   // that differs is a binding nobody here has read, so nothing goes out under the old persona.
   if (live.inboxId !== null && live.inboxId !== gate.chatwootInboxId)
     return stop("the conversation moved to another inbox");
 
-  // SIGNED, as the text path signs a reply: the audio is exempt from the signature, its text
+  // NOTE: SIGNED, as the text path signs a reply: the audio is exempt from the signature, its text
   // replacement is not (docs/signature.md).
   const sig = signatureFor(cfg.signatureConfig, cfg.promptVars, cfg.promptOpts);
   const [signed = text] = sig
     ? attachSignature([text], sig, cfg.signatureConfig)
     : [text];
-  // ONE message, like every single-message send here (the follow-up, the handoff's farewell): the
+  // NOTE: ONE message, like every single-message send here (the follow-up, the handoff's farewell): the
   // signature rule is applied to it as to any of those. A reply over the channel's ceiling is not
   // sent: the channel would refuse it after Chatwoot took it, and a voice note that long (minutes of
   // audio) is not a shape this path is for. Counted on what the channel receives, before the escape
   // below, which Chatwoot renders away.
   if (Array.from(signed).length > CHANNEL_TEXT_MAX)
     return stop("the reply is longer than the channel takes in one message");
-  // The model's text is escaped for Chatwoot's Liquid and the signature is not.
+  // NOTE: The model's text is escaped for Chatwoot's Liquid and the signature is not.
   const [wire = literal(text)] = sig
     ? attachSignature([text], sig, cfg.signatureConfig, undefined, literal)
     : [literal(text)];

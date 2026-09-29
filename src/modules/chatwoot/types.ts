@@ -1,14 +1,9 @@
 // Chatwoot Agent Bot webhook payload shapes (the subset we consume) and our normalized event.
-//
-// Payload shape confirmed against the chatwoot-pro fork (EventDataPresenter#webhook_data,
-// Message#webhook_data, AgentBotListener):
-//   * conversation_* events: conversation fields are at the TOP level (conversation.webhook_data
-//     merged with { event, changed_attributes }).
-//   * message_created / message_updated: message fields at top level, the conversation NESTED
-//     under `.conversation`.
-// The conversation carries `id` (display_id — the per-account id used by the bot-token API),
-// `status` (open|pending|resolved|snoozed), `inbox_id`, and `meta.{assignee, assignee_type}`
-// where assignee_type is "User" for a human and "AgentBot" (or null) otherwise.
+// Per the fork's EventDataPresenter#webhook_data and Message#webhook_data: conversation_* events
+// carry the conversation fields at the TOP level; message_created/message_updated carry the message
+// at top level with the conversation NESTED under `.conversation`. The conversation carries `id`
+// (display_id, the per-account id the bot-token API uses), `status`, `inbox_id`, and
+// `meta.{assignee, assignee_type}` ("User" for a human, "AgentBot" or null otherwise).
 
 import type { UnreadFile } from "@/modules/vision/unread";
 
@@ -44,13 +39,12 @@ export interface NormalizedChatwootAttachment {
   // message_created; populated once our STT write-back lands (which the fork re-dispatches as a
   // message_updated). Read to make eager STT idempotent and to render the transcription in the UI.
   transcribedText?: string | null;
-  // What a PREVIOUS vision pass persisted on this attachment's meta (`image_description` /
-  // `extracted_text`, fork write-back). Read to make the eager vision pass idempotent PER
-  // ATTACHMENT: a delivery recovery re-runs it, and reusing what is already there is both cheaper
-  // and what makes the aggregate it publishes complete (PR #692 review, round 4).
+  // What a previous vision pass persisted on this attachment's meta (`image_description` /
+  // `extracted_text`, fork write-back). Makes the eager vision pass idempotent per attachment: a
+  // delivery recovery re-runs it, and reusing what is there is cheaper and keeps its aggregate complete.
   imageDescription?: string | null;
   extractedText?: string | null;
-  // NOTE: Location attachments (a WhatsApp pin) also ship their coordinates + human-readable place
+  // Location attachments (a WhatsApp pin) also ship their coordinates + human-readable place
   // name in the payload (Attachment#push_event_data → location_metadata: coordinates_lat /
   // coordinates_long / fallback_title). The columns default to 0.0, so an exact (0,0) means "the
   // provider sent no coordinates", not a real pin (see firstLocationAttachment). Absent on every
@@ -65,11 +59,10 @@ export interface NormalizedChatwootMessage {
   content: string | null;
   messageType: string | null;
   private: boolean;
-  // WHEN CHATWOOT RECORDED THIS MESSAGE (issue #749). The only instant on the whole payload that
-  // answers "when did the customer write", which is what the age variables in the prompt need: the
-  // conversation's own `created_at` answers when the conversation opened, and the mirror column
-  // `last_inbound_at` is null on a conversation the mirror created from a non-message event.
-  // `null` ⇒ the payload did not carry a readable one, and the age then renders empty.
+  // When Chatwoot recorded this message: the only instant on the payload that answers "when did the
+  // customer write" for the prompt's age variables (the conversation's `created_at` is when it opened,
+  // and `last_inbound_at` is null on a conversation mirrored from a non-message event). `null` ⇒ the
+  // payload carried no readable one, and the age renders empty.
   createdAt?: Date | null;
   attachments?: NormalizedChatwootAttachment[];
   // The id of the message this one quotes/replies-to (content_attributes.in_reply_to), so the agent
@@ -84,21 +77,21 @@ export interface NormalizedChatwootMessage {
   // in the payload that separates an attendant replying on the paired phone from the other three
   // shapes of sender-less outgoing message Chatwoot itself produces (see isDeviceAttendantMessage).
   externalSenderName?: string | null;
-  // NOTE: The email's Subject header (issue #598), from `content_attributes.email.subject`. Only a
-  // mailbox writes that bag, so its presence is the channel gate. Null on every other channel.
+  // The email's Subject header, from `content_attributes.email.subject`. Only a mailbox writes that
+  // bag, so its presence is the channel gate. Null on every other channel.
   emailSubject?: string | null;
-  // Chatwoot blob URLs of the images a mailbox kept inside the email body instead of attaching them
-  // (issue #864). Empty on every other channel.
+  // Chatwoot blob URLs of the images a mailbox kept inside the email body instead of attaching them.
+  // Empty on every other channel.
   emailBodyImages?: string[];
   // content_attributes.imported. Set by the history importer on a backfilled row.
   imported?: boolean;
   // content_attributes.external_error: what the CHANNEL said when it failed to deliver this message,
-  // e.g. `"131053: Media upload error"` on WhatsApp Cloud (issue #587). Chatwoot writes it only when
+  // e.g. `"131053: Media upload error"` on WhatsApp Cloud. Chatwoot writes it only when
   // the status becomes `failed` and clears it on every other transition, so its presence IS the
   // failure signal (`status` itself is not in the webhook payload). Null when absent or empty.
   externalError?: string | null;
   // content_attributes.fazer_ai_reply_text: the whole reply an audio reply of ours was cut from, when
-  // the speech left something out (issue #792). Null everywhere else.
+  // the speech left something out. Null everywhere else.
   replyText?: string | null;
   // content_attributes.fazer_ai_reply_by_operator: that voice note's words are the operator's.
   replyByOperator?: boolean;
@@ -115,8 +108,8 @@ export interface NormalizedChatwootMessage {
   attachmentsUnread?: number | null;
   // Which of those files the pass tried, with the name and why each was not read.
   unreadFiles?: UnreadFile[] | null;
-  // Filled by the eager vision pass: it went through the email body's images (issue #864), so the
-  // second call site of this delivery does not download them again.
+  // Filled by the eager vision pass: it went through the email body's images, so the second call
+  // site of this delivery does not download them again.
   bodyRead?: boolean;
   // The message author (message events only), from the payload `sender.webhook_data`. `type` is
   // "user" (a HUMAN agent), "agent_bot" (a bot — ours or another), or null/absent (the customer, on
@@ -135,7 +128,7 @@ export interface NormalizedChatwootMessage {
 // payload speaks about the field at all. `undefined` = it did not ⇒ keep what is stored, because a
 // degraded payload must not wipe identity; `null` = Chatwoot CLEARED it ⇒ clear ours, because the
 // authorization gate asks the endpoint about whoever these values name, and a phone kept after it
-// was removed asks about the person who used to have it.
+// was removed asks about its previous holder.
 export interface NormalizedChatwootContact {
   id: number | null;
   name?: string | null;
@@ -143,8 +136,8 @@ export interface NormalizedChatwootContact {
   phone?: string | null;
   // The operator's own customer id, stamped on the Chatwoot contact.
   identifier?: string | null;
-  // NOTE: meta.sender.custom_attributes — Contact#push_event_data ships the whole jsonb on every
-  // event, which is what lets the agent READ it with no extra API call. `undefined` = the payload
+  // meta.sender.custom_attributes: Contact#push_event_data ships the whole jsonb on every event, so
+  // the agent reads it with no extra API call. `undefined` = the payload
   // did not carry it ⇒ the mirror keeps whatever it had (never wiped by a degraded payload).
   customAttributes?: Record<string, unknown>;
 }
@@ -153,7 +146,7 @@ export interface NormalizedChatwootEvent {
   event: string;
   // conversation display_id (per-account) — the id the bot-token API uses, NOT the global PK.
   // null whenever the event's body is not a conversation and embeds none: the two allowlists in
-  // normalize.ts are where that promise is kept, and issue #257 is what happens without them.
+  // normalize.ts keep that promise.
   conversationId: number | null;
   // The native Chatwoot ContactInbox id (conversation.contact_inbox.id). Present on every event the
   // fork emits (EventDataPresenter#push_data embeds the raw contact_inbox association). Keys the
@@ -161,13 +154,13 @@ export interface NormalizedChatwootEvent {
   contactInboxId: number | null;
   inboxId: number | null;
   status: string | null;
-  // NOTE: The assignee trio uses `undefined` as "this payload said nothing" (no `meta`), so the
+  // The assignee trio uses `undefined` as "this payload said nothing" (no `meta`), so the
   // mirror keeps the stored values instead of wiping them — same convention as the attribute bags.
   // An explicit `null` means meta WAS present with no assignee: a real unassign, and it clears.
   assigneeType?: string | null;
   assigneeId?: number | null;
-  // NOTE: Display name of the assignee (meta.assignee.name) — the human's name for a User
-  // assignee, the bot's name for an AgentBot one.
+  // Display name of the assignee (meta.assignee.name): the human's name for a User assignee, the
+  // bot's name for an AgentBot one.
   assigneeName?: string | null;
   message?: NormalizedChatwootMessage;
   changedAttributes?: unknown;
@@ -178,33 +171,19 @@ export interface NormalizedChatwootEvent {
   // last_activity_at as unix SECONDS (EventDataPresenter push_timestamps); drives the
   // monotonic lastEventAt guard so out-of-order deliveries cannot regress mirror state.
   lastActivityAt?: number | null;
-  // NOTE: The CONVERSATION row's `updated_at` as unix seconds WITH FRACTION (push_timestamps sends
+  // The CONVERSATION row's `updated_at` as unix seconds with fraction (push_timestamps sends
   // `updated_at.to_f`, upstream since Chatwoot 4.0.2). It is the version stamp of the state this
-  // payload describes — unlike last_activity_at it advances on a status or assignee change, and it
-  // has sub-second resolution — so it, not last_activity_at, orders conversation-level state.
+  // payload describes: unlike last_activity_at it advances on a status or assignee change and has
+  // sub-second resolution, so it, not last_activity_at, orders conversation-level state.
   // `null` on a Chatwoot too old to send it.
   conversationUpdatedAt?: number | null;
-  // ── the human half of an attendance, as CHATWOOT already measured it ──
-  //
-  // Chatwoot keeps a first-response SLA of its own and ships it on every conversation payload
-  // (`Conversations::EventDataPresenter`): `created_at`, and `first_reply_created_at` — the moment
-  // of the first message satisfying `Message#valid_first_reply?` (outgoing, not private, not a
-  // reaction, sender outside `['AgentBot', 'Captain::Assistant']`, which is the same predicate this
-  // codebase spells `isNewHumanAgentMessage`).
-  //
-  // Both are computed by Chatwoot FROM THE MESSAGES TABLE, which is what makes them worth mirroring
-  // rather than deriving here: they do not depend on the order its webhooks reach us, they are
-  // already correct for a conversation that predates our mirror, and neither is revised once set.
-  // A retry that arrives late carries the same two values as the delivery it duplicates.
-  //
-  // NOTE on semantics: `first_reply_created_at` is Chatwoot's SLA field, so on a conversation the
-  // BUSINESS opened it marks that opening message — the KPI built on it reports the operator's own
-  // dashboard number, including that bias. Timing the customer's wait instead would mean anchoring
-  // on `waiting_since`, which Chatwoot clears when the reply goes out; that is a different metric,
-  // and a product decision rather than a translation.
-  //
-  // `undefined`/`null` ⇒ the payload did not carry it (a message event whose `conversation` is
-  // absent, or a conversation with no qualifying reply yet) ⇒ the mirror keeps what it stored.
+  // Chatwoot's own first-response SLA (`Conversations::EventDataPresenter`): `created_at`, and
+  // `first_reply_created_at`, the first message passing `Message#valid_first_reply?` (the predicate
+  // this codebase spells `isNewHumanAgentMessage`). Mirrored rather than derived here because
+  // Chatwoot computes both from its messages table: independent of webhook order, correct for
+  // conversations older than the mirror, never revised once set. On a business-opened conversation
+  // it marks that opening message; timing the customer's wait would need `waiting_since`, a different
+  // metric. `undefined`/`null` ⇒ the payload did not carry it ⇒ the mirror keeps what it stored.
   conversationCreatedAt?: Date | null;
   firstReplyCreatedAt?: Date | null;
   // The CONVERSATION's custom attributes (conversation.custom_attributes on EventDataPresenter
@@ -216,16 +195,10 @@ export interface NormalizedChatwootEvent {
   // Chatwoot, or a conversation with no card).
   kanbanAttributes?: Record<string, unknown>;
   // The WhatsApp entry conversation this widget thread was redirected FROM, as its display_id
-  // (conversation.redirect_origin_display_id, which the fork's token resolve writes at the one moment
-  // the pairing is a fact).
-  //
-  // THREE states, and the difference between the last two is load-bearing:
-  //   number    — this is the pairing.
-  //   null      — the payload STATES there is none. The fork clears the pairing when a re-entry's
-  //               token names no origin, and that clear has to reach the row: the consumer holding
-  //               the previous pairing is the one that must stop acting on it.
-  //   undefined — the payload said nothing, which is every event from a Chatwoot without
-  //               fazer-ai/chatwoot#418. Reading it as a clear would wipe every episode's pairing on
-  //               the first ordinary message (issue #222).
+  // (conversation.redirect_origin_display_id, written by the fork's token resolve). A number is the
+  // pairing. `null` states there is none (the fork clears it when a re-entry's token names no origin),
+  // and must reach the row so the consumer stops acting on the old pairing. `undefined` means the
+  // payload said nothing (a Chatwoot whose fork does not send the field), and reading it as a clear
+  // would wipe every episode's pairing on the first ordinary message.
   redirectOriginDisplayId?: number | null;
 }

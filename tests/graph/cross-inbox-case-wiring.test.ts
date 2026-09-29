@@ -20,7 +20,7 @@ import { SEND_IMAGE_DEFAULTS } from "@/modules/images/settings";
 import { KANBAN_DEFAULTS } from "@/modules/kanban/settings";
 import { SIGNATURE_DEFAULTS } from "@/modules/signature/service";
 
-// Issue #700: the destination config and the origin contact reach `open_case_in_inbox` through the
+// The destination config and the origin contact reach `open_case_in_inbox` through the
 // toolset the runtime builds, and an inbox picked in one Chatwoot account never reaches a
 // conversation of another, where its id names a different inbox or none.
 
@@ -183,7 +183,7 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
   });
 
   test("the playground, which belongs to no account, keeps the tool to simulate it", async () => {
-    // Review round 4: the playground builds with instance 0, which matched no picked account.
+    // NOTE: the playground builds with instance 0, which matches no picked account.
     expect(await seenFor(picked, 0n, 0)).toMatchObject({
       config: picked,
       contactId: 55,
@@ -191,7 +191,7 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
   });
 
   test("the opening is signed with the agent's signature, and left alone without one", async () => {
-    // Review round 5: the opening reaches the customer, and Chatwoot does not sign API sends.
+    // NOTE: the opening reaches the customer, and Chatwoot does not sign API sends.
     const on = (await seenFor(picked, 3n, 77, {
       ...SIGNATURE_DEFAULTS,
       enabled: true,
@@ -266,7 +266,7 @@ describe.skipIf(!dbUp)("open_case_in_inbox wiring", () => {
   });
 });
 
-// Review rounds 1 and 2: the opening message reaches the customer from inside the tool, so the
+// The opening message reaches the customer from inside the tool, so the
 // screening every reply passes has to be handed to it by the two runtimes that own the gate, and a
 // `handoff` verdict has to take the transfer those runtimes take for their own trips. Read off the
 // source because the binding is a closure over a gate built later in the same function.
@@ -282,7 +282,7 @@ describe("both runtimes bind the output gate for it", () => {
     expect(b).toContain('if (!guardrailTripped(d)) return "send";');
     expect(b).toContain('() => handOverForGuardrail("output")');
     expect(b).toContain("handoffState.customerMessage = d.reply;");
-    // Review round 5: a transfer that did not land stops the opening instead of reading as a drop.
+    // NOTE: a transfer that did not land stops the opening instead of reading as a drop.
     expect(b).toContain('if (handed === "failed") return "failed";');
   });
   test("the proactive turn screens with its gate and transfers through the guardrail hand-off", async () => {
@@ -291,10 +291,10 @@ describe("both runtimes bind the output gate for it", () => {
     expect(b).toContain('if (!guardrailTripped(d)) return "send";');
     expect(b).toContain("applyGuardrailHandoff({");
     expect(b).toContain('return handed ? "handed" : "failed";');
-    // Review round 7: a policy with no line is a silent transfer here too.
+    // NOTE: a policy with no line is a silent transfer here too.
     expect(b).toContain("handoffState.declinedToSpeak = d.reply === null;");
     expect(b).toContain("handoffState.completed = handed;");
-    // Review round 4: asked after the screening and before the transfer, since inside `ownTransfer`
+    // NOTE: asked after the screening and before the transfer, since inside `ownTransfer`
     // the in-flight mark hides the turn's own change from the ownership reads.
     const fence = b.indexOf('if (!(await toolFence())) return "drop";');
     expect(fence).toBeGreaterThan(b.indexOf("await screenOutput(text)"));
@@ -302,7 +302,7 @@ describe("both runtimes bind the output gate for it", () => {
   });
 });
 
-// Review round 3: a transfer the output check asks for, made from inside a tool call, has to wear the
+// A transfer the output check asks for, made from inside a tool call, has to wear the
 // turn's own ownership marks, or a sibling call's fence reads its status webhook as a takeover.
 describe("ownTransfer", () => {
   test("in flight while it runs, and marked changed only when it changed", async () => {
@@ -341,7 +341,7 @@ describe("ownTransfer", () => {
   });
 });
 
-// Review round 8: a nudge that may only write notes (a person owns the conversation) must not get a
+// A nudge that may only write notes (a person owns the conversation) must not get a
 // tool that sends to the customer from inside the call. Read off the source, since the toolset is
 // built from a config the nudge derives in the middle of a long function.
 describe("a note-only nudge does not get the tool", () => {

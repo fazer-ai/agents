@@ -47,11 +47,11 @@ describe("ChatwootClient", () => {
         ...baseConfig,
         baseUrl: "https://169.254.169.254",
       }),
-      // real SSRF guard (no assertSafe override)
+      // NOTE: real SSRF guard (no assertSafe override)
     ).rejects.toThrow();
   });
 
-  // Issue #746: `after` is the fork's catch-up read, which lists by id with no reaction window, and
+  // `after` is the fork's catch-up read, which lists by id with no reaction window, and
   // `before` the page walk. Each is its own query string, and neither is the default page.
   test("getMessages spells the default page, before and after", async () => {
     const { fetchImpl, calls } = stub(200, { payload: [] });
@@ -91,10 +91,9 @@ describe("ChatwootClient", () => {
     });
   });
 
-  // THE NAME TRAVELS OUT WITH THE REQUEST (issue #499), because the send that fails never returns
-  // anything: an id assigned by the response cannot help the attempt that timed out. Verified
-  // against the fork that `content_attributes` handed to the create is persisted verbatim and comes
-  // back on the read.
+  // THE NAME TRAVELS OUT WITH THE REQUEST, because the send that fails never returns anything: an
+  // id assigned by the response cannot help the attempt that timed out. The fork persists the
+  // `content_attributes` handed to the create verbatim and returns them on the read.
   test("sendMessage carries the send id in content_attributes when asked", async () => {
     const { fetchImpl, calls } = stub(200, { id: 1 });
     const client = await createChatwootClient(baseConfig, {
@@ -108,9 +107,8 @@ describe("ChatwootClient", () => {
     });
   });
 
-  // And OMITTED otherwise, rather than sent empty: the fork stores the bag verbatim, so a key
-  // written on every message whether or not anything will read it is exactly the hypothesis-shaped
-  // debt this repo asks callers not to leave behind.
+  // And OMITTED otherwise, rather than sent empty: the fork stores the bag verbatim, so an
+  // always-present key would be written on every message whether or not anything reads it.
   test("sendMessage sends no content_attributes when no id was asked for", async () => {
     const { fetchImpl, calls } = stub(200, { id: 1 });
     const client = await createChatwootClient(baseConfig, {
@@ -151,7 +149,7 @@ describe("ChatwootClient", () => {
       fetchImpl,
       assertSafe: passthroughSafe,
     });
-    // Operator-initiated actions must be attributed to the instance admin, not the persona bot.
+    // NOTE: operator-initiated actions must be attributed to the instance admin, not the persona bot.
     await client.assignToAgent(42, 99, { asAdmin: true });
     await client.unassignConversation(42, { asAdmin: true });
     await client.toggleStatus(42, "pending", { asAdmin: true });
@@ -388,8 +386,8 @@ describe("ChatwootClient", () => {
   // written the file, so the eager STT/vision download races it and gets a 404 on a fresh voice note.
   // The retry is opt-in: the interactive media proxy must still fail fast on a genuinely missing file.
   describe("downloadAttachment write race", () => {
-    // A public documentation IP (RFC 5737) keeps the real anti-SSRF guard happy without a DNS lookup —
-    // downloadAttachment always uses the real guard, never deps.assertSafe.
+    // NOTE: a public documentation IP (RFC 5737) passes the real anti-SSRF guard without a DNS
+    // lookup: downloadAttachment always uses the real guard, never deps.assertSafe.
     const HOST = "https://203.0.113.10";
     const URL_ = `${HOST}/rails/active_storage/blobs/redirect/abc/audio.ogg`;
 
@@ -516,7 +514,7 @@ describe("ChatwootClient", () => {
     });
 
     test("a body that is not JSON at all never reaches the message", async () => {
-      // A proxy in front of Chatwoot can answer anything; whatever it is, it did not come from
+      // NOTE: a proxy in front of Chatwoot can answer anything; whatever it is, it did not come from
       // Chatwoot's renderer, so nothing is known about what is inside it.
       const raw = "<html>token 4b3a9f customer Maria</html>";
       const client = await createChatwootClient(baseConfig, {
@@ -548,8 +546,8 @@ describe("ChatwootClient", () => {
     });
   });
 
-  // A client built without the token a call needs used to send the empty string and read Chatwoot's
-  // 401 back, which reported a local wiring mistake as a remote rejection (issue #79).
+  // A client built without the token a call needs refuses locally: sending the empty string would
+  // read Chatwoot's 401 back and report a local wiring mistake as a remote rejection.
   test("refuses to call with an empty token instead of sending it", async () => {
     const { fetchImpl, calls } = stub(200, {});
     const client = await createChatwootClient(
@@ -562,7 +560,7 @@ describe("ChatwootClient", () => {
   });
 
   // The multipart senders build their own fetch instead of going through request(), so the guard has
-  // to be on both of them too — otherwise the empty token still goes out on the wire.
+  // to be on both of them too, otherwise the empty token still goes out on the wire.
   test("the multipart senders refuse an empty token as well", async () => {
     const { fetchImpl, calls } = stub(200, {});
     const client = await createChatwootClient(
@@ -580,16 +578,12 @@ describe("ChatwootClient", () => {
     expect(calls).toHaveLength(0);
   });
 
-  // O NOME DO ARQUIVO TEM QUE SOBREVIVER À SERIALIZAÇÃO, e não só existir no objeto (issue #763). O
-  // fork casa o metadado do anexo POR NOME — `uploaded_filename(attachment)` no `message_builder` —,
-  // então uma parte que chega chamada `blob` perde as DUAS coisas que este envio carrega: o
-  // `transcribed_text`, que é o texto falado desta issue, e o `is_recorded_audio`, que é o que faz o
-  // WhatsApp tocar o áudio como gravação em vez de pendurar um arquivo. Medido nas duas pontas: com
-  // `new Blob(...)` mais o terceiro argumento do `append`, sob o preload deste repo (o
-  // `tests/dom-setup.ts` instala os globais do happy-dom, cujo FormData não é o nativo), o corpo sai
-  // `filename="blob"` e o Chatwoot grava `{}` no meta; com um `File` de verdade o nome viaja nos
-  // dois ambientes. E a asserção é sobre o corpo SERIALIZADO porque o objeto FormData mente: o
-  // `form.get()` devolve um File com o nome certo mesmo no caso que se perde no fio.
+  // O NOME DO ARQUIVO TEM QUE SOBREVIVER À SERIALIZAÇÃO: o fork casa o metadado do anexo POR NOME
+  // (`uploaded_filename(attachment)` no `message_builder`), e uma parte chamada `blob` perde o
+  // `transcribed_text` e o `is_recorded_audio`. Sob o preload deste repo (`tests/dom-setup.ts`, com
+  // o FormData do happy-dom), um `Blob` com o nome no terceiro argumento do `append` sai
+  // `filename="blob"`; um `File` leva o nome nos dois ambientes. A asserção é sobre o corpo
+  // SERIALIZADO porque `form.get()` devolve um File com o nome certo mesmo quando o fio o perde.
   test("o nome do arquivo viaja no corpo serializado, no áudio e no anexo comum", async () => {
     const bodies: BodyInit[] = [];
     const fetchImpl = (async (_u: string, init?: RequestInit) => {
@@ -630,7 +624,7 @@ describe("ChatwootClient", () => {
     expect(wire).toHaveLength(2);
     expect(wire[0]).toContain('filename="reply.ogg"');
     expect(wire[0]).not.toContain('filename="blob"');
-    // E a chave do metadado casa o nome que viajou, que é a outra metade do acordo com o fork.
+    // NOTE: e a chave do metadado casa o nome que viajou, que é a outra metade do acordo com o fork.
     expect(wire[0]).toContain(
       "attachments_metadata[reply.ogg][transcribed_text]",
     );
@@ -638,7 +632,7 @@ describe("ChatwootClient", () => {
     expect(wire[1]).not.toContain('filename="blob"');
   });
 
-  // #792: a voice note whose speech left a URL out carries the whole reply in its bag, as the JSON
+  // A voice note whose speech left a URL out carries the whole reply in its bag, as the JSON
   // string the builder parses on a multipart create; one with nothing left out carries no bag.
   test("the whole reply rides content_attributes only when the speech is not it", async () => {
     const bodies: BodyInit[] = [];
@@ -722,11 +716,10 @@ describe("ChatwootClient", () => {
     expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
   });
 
-  // THE SHAPE THIS ENDPOINT ACTUALLY ANSWERS (issue #495 review, round 3). The fork's view is
-  // `json.agent_bot do ... if @agent_bot.present?`, so the key is always there and its EMPTINESS is
-  // the answer. The first version of this parser read `res.id` and would have reported "no bot" for
-  // every attached bot there is — a stub handing back a bare number could never have caught it,
-  // which is why the three shapes are driven through the real client here.
+  // THE SHAPE THIS ENDPOINT ACTUALLY ANSWERS. The fork's view is `json.agent_bot do ... if
+  // @agent_bot.present?`, so the key is always there and its EMPTINESS is the answer. A parser that
+  // read `res.id` would report "no bot" for every attached bot, and a stub handing back a bare number
+  // cannot catch that, so the three shapes are driven through the real client here.
   describe("the inbox's attached agent bot", () => {
     const read = async (payload: unknown) => {
       const { fetchImpl, calls } = stub(200, payload);
@@ -759,7 +752,7 @@ describe("ChatwootClient", () => {
   });
 
   test("updateContact can clear an identifier with null", async () => {
-    // The unique index is `(identifier, account_id)` with no partial predicate, so an empty string is
+    // NOTE: the unique index is `(identifier, account_id)` with no partial predicate, so an empty string is
     // a value like any other and a second contact cleared that way would collide with the first.
     const { fetchImpl, calls } = stub(200, {});
     const client = await createChatwootClient(baseConfig, {
@@ -773,7 +766,7 @@ describe("ChatwootClient", () => {
 
   // Chatwoot names whoever made the request on the activity line it writes, so the token this write
   // carries decides whether the timeline reads "Observadora added cancelamento" or the name of the
-  // person whose token provisioned the instance (issue #493).
+  // person whose token provisioned the instance.
   describe("conversation labels are written by the persona", () => {
     test("the write carries the bot token and the read stays on the admin one", async () => {
       const { fetchImpl, calls } = stub(200, { payload: ["cancelamento"] });
@@ -808,12 +801,10 @@ describe("ChatwootClient", () => {
       expect(calls[0]?.headers[CHATWOOT_AUTH_HEADER]).toBe("ADMIN_TOK");
     });
 
-    // `conversations/labels` entered BOT_ACCESSIBLE_ENDPOINTS only on 2026-06-05 (upstream #14655),
-    // and self-hosted versions are not ours to pick: an older instance answers 401. The label is the
-    // observer's whole product, so it is written anyway, by the admin, and the attribution is what is
-    // lost — never the label.
-    // A 401 whose reason is the bot token being refused ON THIS ENDPOINT, which is what a server
-    // older than 2026-06-05 answers.
+    // A 401 whose reason is the bot token being refused ON THIS ENDPOINT, which is what a Chatwoot
+    // without `conversations/labels` in BOT_ACCESSIBLE_ENDPOINTS (before 2026-06-05) answers. The
+    // label is the observer's whole product, so it is written anyway, by the admin: the attribution
+    // is what is lost, never the label.
     function refusingBot(reason: string) {
       const calls: Captured[] = [];
       const fetchImpl = (async (url: string, init?: RequestInit) => {
@@ -852,9 +843,9 @@ describe("ChatwootClient", () => {
       expect(calls[1]?.body).toEqual({ labels: ["cancelamento"] });
     });
 
-    // A BROKEN CREDENTIAL IS ALSO 401 (issue #493 review, round 1), and falling back on it would
-    // hide it behind a write that succeeds under a person's name — this bug, restored, with nothing
-    // left to notice it. Both of Chatwoot's credential refusals are raised instead.
+    // A BROKEN CREDENTIAL IS ALSO 401, and falling back on it would hide it behind a write that
+    // succeeds under a person's name, with nothing left to notice it. Both of Chatwoot's credential
+    // refusals are raised instead.
     test.each([
       ["Invalid Access Token"],
       ["Bot is not authorized to access this account"],
@@ -876,7 +867,7 @@ describe("ChatwootClient", () => {
     );
 
     // The warning names the instance, and the instance is the operator's configured base URL: a URL
-    // carrying userinfo would keep it all the way into the log line (issue #493 review, round 2).
+    // carrying userinfo would keep it all the way into the log line.
     test("the fallback warning carries no credential from the base URL", async () => {
       const { fetchImpl } = refusingBot(
         "Access to this endpoint is not authorized for bots",
@@ -894,7 +885,7 @@ describe("ChatwootClient", () => {
         const logged = JSON.stringify(warn.mock.calls);
         expect(logged).not.toContain("s3cr3t");
         expect(logged).not.toContain("user:");
-        // Still says WHICH instance, which is what the field is for.
+        // NOTE: still says WHICH instance, which is what the field is for.
         expect(logged).toContain("chat.example.com");
       } finally {
         warn.mockRestore();

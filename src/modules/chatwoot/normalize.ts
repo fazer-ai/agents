@@ -11,7 +11,7 @@ import type {
 } from "./types";
 
 // Pure normalization of an (untrusted) Chatwoot Agent Bot webhook payload into the fields we
-// act on, tolerant of the two payload shapes. No DB, no network — the receiver verifies HMAC,
+// act on, tolerant of the two payload shapes. No DB, no network: the receiver verifies HMAC,
 // resolves the tenant, and applies idempotency around this.
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -24,31 +24,18 @@ function num(v: unknown): number | null {
   return null;
 }
 
-// What kind of message this is, in the ONE vocabulary the rest of the code compares against.
-//
-// It takes both spellings because Chatwoot has two serializers and they disagree. MEASURED on the
-// fork, one message, both of them: `Message#webhook_data[:message_type]` is the string `"incoming"`
-// and `Message#push_event_data[:message_type]` is the integer `0`. The webhook carries the first and
-// every REST read carries the second, so a body's provenance decides its spelling.
-//
-// This used to be `str()` here and a private copy in ./messages.ts, which is the shape of defect
-// that keeps costing this repo: one question, two places, two tolerances. The copy in messages.ts
-// took both and this one took only the string, so an event rebuilt from a REST read normalized to
-// `messageType: null` and `isNewIncomingMessage` answered false — a customer's message classified as
-// not-incoming, with no throw and no line. Nothing rebuilt events from REST until issue #295, which
-// is why the divergence had never fired.
-//
-// Unknown input collapses to "other" rather than passing through, and that is not a widening: the
-// only two readers of this field ask `=== "incoming"` and `=== "outgoing"`, so a value neither of
-// them matches already meant "neither".
+// What kind of message this is, in the ONE vocabulary the rest of the code compares against. It
+// takes both spellings because Chatwoot's two serializers disagree: `Message#webhook_data` renders
+// `message_type` as the string `"incoming"` (the webhook) and `Message#push_event_data` as the
+// integer `0` (every REST read), and ./messages.ts reads REST bodies through this same function.
+// Unknown input collapses to "other": the only readers ask `=== "incoming"` and `=== "outgoing"`,
+// so a value neither matches already meant "neither".
 export function messageTypeOf(
   v: unknown,
 ): "incoming" | "outgoing" | "activity" | "template" | "other" {
-  // A string is coerced only when it IS the integer spelling, digits and nothing else. `Number("")`
-  // and `Number("  ")` are both 0, so a bare coercion classifies an empty or blank `message_type` as
-  // `incoming` — and an incoming message is the one class that drives an agent turn. The old
-  // string-only reader rejected those by not matching "incoming"; widening the domain is what would
-  // have woken that branch (a defect this repo has paid for before), so the widening is closed here.
+  // NOTE: a string is coerced only when it IS the integer spelling. `Number("")` and `Number("  ")`
+  // are both 0, so a bare coercion would classify a blank `message_type` as `incoming`, the one
+  // class that drives an agent turn.
   const n =
     typeof v === "number"
       ? v
@@ -70,31 +57,22 @@ function str(v: unknown): string | null {
   return typeof v === "string" ? v : null;
 }
 
-// NOTE: Coordinates arrive as JSON floats (possibly negative) — num() deliberately rejects those
-// (it parses ids). Numbers only: the fork's serializer never sends coordinates as strings.
+// Coordinates arrive as JSON floats (possibly negative), which num() deliberately rejects (it
+// parses ids). Numbers only: the fork's serializer never sends coordinates as strings.
 function float(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
-// A Chatwoot timestamp field that is NOT one of the push_timestamps trio, read off the conversation
-// payload. Two spellings reach us for the same column and both are Chatwoot's own: the jbuilder
-// partials render `created_at` as epoch seconds (`.to_i`), while `first_reply_created_at` is a
-// plain ActiveRecord attribute and serializes as an ISO-8601 string. Accept either, reject anything
-// that does not parse — a field we cannot read must read as absent, never as the epoch.
-// Chatwoot's own timestamp spellings, and it reads BOTH because the same field is spelled two ways
-// by the same producer. Checked against the fork's source rather than inferred: a message's
-// `created_at` is a `Time` on the wire (`Message#webhook_data`), so it arrives as ISO 8601, and an
-// integer over REST (`app/views/api/v1/models/_message.json.jbuilder` renders `created_at.to_i`),
-// so it arrives as epoch SECONDS. A conversation's `last_activity_at` is epoch seconds on both.
-// Reading seconds as milliseconds would date every message in 1970 — an age of fifty-odd years on a
-// message that is minutes old, which is worse than answering nothing.
-//
-// Exported because the message parser reads the same field off the same producer, and a second copy
-// of this would be a second set of edge cases to keep in step.
+// A Chatwoot timestamp, read in both spellings the same producer uses for one field: a message's
+// `created_at` is ISO 8601 on the wire (`Message#webhook_data`) and epoch SECONDS over REST
+// (`_message.json.jbuilder` renders `.to_i`); a conversation's `created_at` is seconds and its
+// `first_reply_created_at` an ISO string. Anything that does not parse reads as absent, never as the
+// epoch: seconds read as milliseconds would date every message in 1970. Exported because the
+// message parser reads the same fields, and a second copy would be a second set of edge cases.
 export function chatwootTimestamp(v: unknown): Date | null {
   // NOTE: every branch exits through here. `Number.isFinite` and `> 0` both pass for an epoch far
   // outside the range a Date can hold (1e20, or a digit string of the same size), and what comes
-  // back is an Invalid Date, which Prisma refuses — failing the WHOLE delivery over an optional
+  // back is an Invalid Date, which Prisma refuses, failing the WHOLE delivery over an optional
   // field, and failing it again on every retry because the payload never changes. A reading this
   // cannot use has to read as absent, on the same terms as a field the payload never carried.
   const held = (d: Date): Date | null => (Number.isNaN(d.getTime()) ? null : d);
@@ -110,24 +88,17 @@ export function chatwootTimestamp(v: unknown): Date | null {
   return null;
 }
 
-// NOTE: undefined means "this payload said nothing", so the mirror keeps the stored bag instead of
+// undefined means "this payload said nothing", so the mirror keeps the stored bag instead of
 // wiping it; `{}` is a real "no attributes" and DOES clear it.
 function attrs(v: unknown): Record<string, unknown> | undefined {
   return isRecord(v) ? v : undefined;
 }
 
-// Chatwoot serializes each event's own SUBJECT, and every subject renders its own table id under the
-// same `id` key: `Conversations::EventDataPresenter#push_data` puts the conversation's DISPLAY id
-// there, while `Message`, `Contact`, `ContactInbox`, `Inbox` and the Kanban card all put a primary
-// key. So the body only says which id it holds if you already know which object it is, and the event
-// name is the only thing that says so.
-//
-// Treating "not a message event" as "the body IS the conversation" put a foreign row id on
-// `conversationId`, and the mirror keys `chatwoot_conversation_id` off exactly that — which opened a
-// SECOND row for a conversation that already had one (issue #257; measured against the fork, 7 of 19
-// event shapes). Hence two allowlists and no fallback: an unknown event identifies no conversation,
-// the mirror writes nothing for it, and the next real event refreshes the row. Failing the other way
-// is what creates the duplicate, and a duplicate does not heal.
+// Each event's body is its own SUBJECT, and every subject renders its table id under `id`:
+// `Conversations::EventDataPresenter#push_data` puts the conversation's DISPLAY id there, while
+// `Message`, `Contact`, `ContactInbox`, `Inbox` and the Kanban card put a primary key. Only the event
+// name says which, hence two allowlists and no fallback: an unknown event identifies no conversation,
+// because a foreign id on `conversationId` opens a SECOND mirror row, and a duplicate does not heal.
 
 // Bodies that ARE a conversation (`conversation.webhook_data`). conversation_created reaches only an
 // account webhook, never an agent bot, but its body is the same one and it costs nothing to name.
@@ -152,17 +123,12 @@ const MESSAGE_BODY_EVENTS = new Set(["message_created", "message_updated"]);
 // which is why the two questions have one answer.
 export const TURN_BEARING_EVENT = "message_created";
 
-// THE OTHER EVENT THAT CAN OWE ONE, and only in one shape (issue #478). Our own STT write-back
-// PATCHes the attachment and the fork re-dispatches the message as `message_updated`, so the vast
-// majority of these owe nothing — which is the sentence above, and it stays true. What changed is
-// that on a route where nothing ran the turn at creation (the audio was not audible yet, an observer
-// with no responder beside it), the transcription arriving on the UPDATE is the only readable form
-// the customer's message ever takes: there is no later `message_created` to carry it.
-//
-// Named rather than inlined because a ledger row cannot re-derive it: the payload is not stored
-// (issue #228), so `message_updated` alone cannot say which of the two stories a row is. The
-// receiver states it by writing `inboundMessageId`, which no build has ever written for this event
-// otherwise — that pair is the discriminator, and ./stranded-delivery.ts reads it as one.
+// THE OTHER EVENT THAT CAN OWE ONE, in one shape only. Our own STT write-back makes the fork
+// re-dispatch the message as `message_updated`, which mostly owes nothing; but on a route where
+// nothing ran the turn at creation (audio not audible yet, an observer with no responder), the
+// transcription on the UPDATE is the only readable form the message takes. A ledger row keeps no
+// payload, so the receiver marks this case by writing `inboundMessageId`, which no build writes for
+// any other `message_updated`, and ./stranded-delivery.ts reads that pair as the discriminator.
 export const LATE_TRANSCRIPTION_EVENT = "message_updated";
 
 export function normalizeChatwootEvent(
@@ -173,7 +139,7 @@ export function normalizeChatwootEvent(
   if (!event) return null;
 
   const isMessage = MESSAGE_BODY_EVENTS.has(event);
-  // WHICH OBJECT the body is, decided by the event name and never by looking at the body. See
+  // NOTE: WHICH OBJECT the body is, decided by the event name and never by looking at the body. See
   // CONVERSATION_BODY_EVENTS: an event we do not know is an event whose `id` we cannot name.
   const conv = isMessage
     ? isRecord(payload.conversation)
@@ -185,7 +151,7 @@ export function normalizeChatwootEvent(
   const meta = conv && isRecord(conv.meta) ? conv.meta : null;
   const assignee = meta && isRecord(meta.assignee) ? meta.assignee : null;
   const sender = meta && isRecord(meta.sender) ? meta.sender : null;
-  // contact_inbox ships as the full association object (EventDataPresenter#push_data → contact_inbox);
+  // NOTE: contact_inbox ships as the full association object (EventDataPresenter#push_data → contact_inbox);
   // tolerate a flat contact_inbox_id scalar too. Same on both shapes (conv = payload | payload.conversation).
   const contactInbox =
     conv && isRecord(conv.contact_inbox) ? conv.contact_inbox : null;
@@ -202,10 +168,10 @@ export function normalizeChatwootEvent(
       : conv
         ? num(conv.contact_inbox_id)
         : null,
-    // NOTE: `conversation.inbox_id` first, then the message's own top-level `inbox` object. They name the
-    // same inbox and the fork sends both, but only the second survives a payload that carries the
-    // message without the conversation's scalar — and an inbox the payload named at either spot is
-    // an answer, so nothing downstream should go looking for an older one (issue #270).
+    // NOTE: `conversation.inbox_id` first, then the message's own `inbox` object. The fork sends
+    // both, but only the second survives a payload that carries the message without the
+    // conversation's scalar, and an inbox named at either spot is an answer, so nothing downstream
+    // goes looking for an older one.
     inboxId:
       (conv ? num(conv.inbox_id) : null) ??
       (inboxObj ? num(inboxObj.id) : null),
@@ -221,17 +187,15 @@ export function normalizeChatwootEvent(
     const ca = isRecord(payload.content_attributes)
       ? payload.content_attributes
       : null;
-    // The MESSAGE's own author (payload.sender), distinct from the conversation contact (meta.sender).
+    // NOTE: the MESSAGE's own author (payload.sender), distinct from the conversation contact (meta.sender).
     const msgSender = isRecord(payload.sender) ? payload.sender : null;
     normalized.message = {
       id: num(payload.id),
       content: str(payload.content),
       messageType: messageTypeOf(payload.message_type),
       private: payload.private === true,
-      // WHEN the customer wrote (issue #749), through the same reader the conversation timestamps
-      // use: the two spellings Chatwoot ships (epoch seconds from the jbuilder partials, ISO from a
-      // plain attribute) both parse, and anything that does not read as absent rather than as the
-      // epoch — a 1970 age would be a lie with more digits than a missing one.
+      // NOTE: WHEN the customer wrote, through the same reader the conversation timestamps use:
+      // both Chatwoot spellings parse, and anything else reads as absent rather than as the epoch.
       createdAt: chatwootTimestamp(payload.created_at),
       sender: msgSender
         ? {
@@ -245,14 +209,13 @@ export function normalizeChatwootEvent(
             id: num(a.id),
             fileType: str(a.file_type),
             dataUrl: str(a.data_url),
-            // Audio attachments ship `transcribed_text` (empty until our write-back lands); empty
+            // NOTE: audio attachments ship `transcribed_text` (empty until our write-back lands); empty
             // string normalizes to null so callers can treat "no transcription" uniformly.
             transcribedText: str(a.transcribed_text) || null,
-            // What a PREVIOUS vision pass already persisted on this attachment (fork write-back).
-            // Carried so the eager pass can reuse it instead of paying the provider again, which is
-            // also what makes the aggregate it builds COMPLETE: a delivery recovery re-runs the
-            // pass from scratch, and a partial re-run used to publish an aggregate poorer than the
-            // metadata it then overrode (PR #692 review, round 4).
+            // NOTE: what a PREVIOUS vision pass persisted on this attachment (fork write-back), so
+            // the eager pass reuses it instead of paying the provider again. A delivery recovery
+            // re-runs the pass from scratch, and without this a partial re-run would publish an
+            // aggregate poorer than the metadata it overrides.
             imageDescription: metaString(a.meta, "image_description"),
             extractedText: metaString(a.meta, "extracted_text"),
             // NOTE: Location attachments ship coordinates + place name (location_metadata);
@@ -263,11 +226,11 @@ export function normalizeChatwootEvent(
           }))
         : undefined,
       inReplyTo: ca ? num(ca.in_reply_to) : null,
-      // A reaction (WhatsApp emoji react) arrives as a message with content_attributes.is_reaction.
+      // NOTE: a reaction (WhatsApp emoji react) arrives as a message with content_attributes.is_reaction.
       // The content is the emoji; in_reply_to points at the message it reacts to.
       isReaction: ca?.is_reaction === true,
       externalSenderName: ca ? str(ca.external_sender_name) : null,
-      // NOTE: The Subject header of an inbound email (issue #598). Read through the shared reader so
+      // NOTE: The Subject header of an inbound email. Read through the shared reader so
       // the delivered event and the REST page cannot disagree about what the subject is.
       emailSubject: emailSubjectFrom(ca),
       emailBodyImages: emailBodyImageUrlsFrom(ca),
@@ -281,13 +244,13 @@ export function normalizeChatwootEvent(
     normalized.changedAttributes = payload.changed_attributes;
   }
 
-  // ── mirror metadata (best-effort) ──
-  // Contact: conversation events carry it at meta.sender (EventDataPresenter push_meta).
+  // NOTE: mirror metadata, best-effort. Conversation events carry the contact at meta.sender
+  // (EventDataPresenter push_meta).
   if (sender) {
     const contactAttrs = attrs(sender.custom_attributes);
-    // Presence of the KEY is the signal, for every identity field: absent leaves the stored value
-    // alone, present-and-empty clears it. `str()` alone turned both into null and the clear was
-    // lost, so a removed phone or e-mail went on being the identity the gate asks about.
+    // NOTE: presence of the KEY is the signal, for every identity field: absent leaves the stored
+    // value alone, present-and-empty clears it. `str()` alone would turn both into null and lose the
+    // clear, so a removed phone or e-mail would stay the identity the gate asks about.
     const stated = (key: string, raw: unknown) =>
       key in sender ? { [key]: str(raw) || null } : {};
     normalized.contact = {
@@ -301,7 +264,7 @@ export function normalizeChatwootEvent(
       ...(contactAttrs ? { customAttributes: contactAttrs } : {}),
     };
   }
-  // Conversation + kanban-card custom attributes ride along on every event (push_data.custom_attributes
+  // NOTE: conversation + kanban-card custom attributes ride along on every event (push_data.custom_attributes
   // and the fork's push_data.kanban_task), so the agent's attribute context needs NO extra API call.
   const convAttrs = conv ? attrs(conv.custom_attributes) : undefined;
   if (convAttrs) normalized.customAttributes = convAttrs;
@@ -311,27 +274,24 @@ export function normalizeChatwootEvent(
     ? attrs(kanbanTask.custom_attributes)
     : undefined;
   if (taskAttrs) normalized.kanbanAttributes = taskAttrs;
-  // The redirect episode's other half, when the fork wrote one. Absent rather than null on everything
-  // that is not the widget side of an episode, so a payload that says nothing never clears a pairing
-  // an earlier one established (issue #222).
-  // PRESENCE of the key is the statement, not the value: the fork always ships it (nil included) and
-  // a Chatwoot without it never does, so `in` is what separates "there is no pairing" from "this
-  // instance does not speak about pairings". A present-but-unusable value (0, a string, a negative)
-  // reads as none rather than as silence — the sender did speak, it just said nothing usable.
+  // NOTE: the redirect episode's other half, when the fork wrote one. PRESENCE of the key is the
+  // statement: the fork always ships it (nil included) and a Chatwoot without it never does, so a
+  // payload that says nothing never clears an established pairing. A present-but-unusable value (0,
+  // a string, a negative) reads as none: the sender did speak, it just said nothing usable.
   if (conv && "redirect_origin_display_id" in conv) {
     const redirectOrigin = num(conv.redirect_origin_display_id);
     normalized.redirectOriginDisplayId =
       redirectOrigin !== null && redirectOrigin > 0 ? redirectOrigin : null;
   }
   normalized.inboxName = inboxObj ? str(inboxObj.name) : null;
-  // `channel` (channel_type) is exposed by EventDataPresenter on conversation events.
+  // NOTE: `channel` (channel_type) is exposed by EventDataPresenter on conversation events.
   normalized.channel = conv ? str(conv.channel) : null;
   normalized.lastActivityAt = conv ? num(conv.last_activity_at) : null;
-  // NOTE: float() and not num() — `updated_at` ships as `to_f`, so it carries a fraction, and num()
+  // NOTE: float() and not num(): `updated_at` ships as `to_f`, so it carries a fraction, and num()
   // parses ids (its string branch is integers only).
   normalized.conversationUpdatedAt = conv ? float(conv.updated_at) : null;
-  // The service level of the human half of an attendance, as CHATWOOT computes it — see the field
-  // notes in types.ts for why these two are read instead of derived from the events we receive.
+  // NOTE: the service level of the human half of an attendance, as CHATWOOT computes it; see the
+  // field notes in types.ts for why these two are read instead of derived from the events we receive.
   normalized.conversationCreatedAt = conv
     ? chatwootTimestamp(conv.created_at)
     : null;
@@ -341,40 +301,38 @@ export function normalizeChatwootEvent(
   return normalized;
 }
 
-// NOTE: Minimal parse of a LIVE conversation payload (GET /conversations/:id — the REST show shape;
-// same field positions as the conversation-event payloads: `status` at the top, `meta.assignee_type`,
+// Minimal parse of a LIVE conversation payload (GET /conversations/:id, the REST show shape; same
+// field positions as the conversation-event payloads: `status` at the top, `meta.assignee_type`,
 // `meta.assignee.{id,name}`, `id` = display_id). Null when the payload does not look like a
-// conversation — a missing `status` is treated as unparseable (the caller must fail closed and retry,
-// never conclude "not bot-owned" from a degraded payload). Feeds the proactive-send live gate: the
-// mirror can be stale forever (a lost resolve webhook has no reconciliation), so anything about to
-// message a customer proactively re-checks this.
+// conversation: a missing `status` is unparseable (the caller must fail closed and retry, never
+// conclude "not bot-owned" from a degraded payload). Feeds the proactive-send live gate: the mirror
+// can be stale forever (a lost resolve webhook has no reconciliation), so anything about to message
+// a customer proactively re-checks this.
 export interface LiveConversationState {
   status: string;
   assigneeType: string | null;
   assigneeId: number | null;
   assigneeName: string | null;
-  // NOTE: The conversation's last_activity_at (REST show renders it both as `last_activity_at` and
+  // The conversation's last_activity_at (REST show renders it both as `last_activity_at` and
   // `timestamp`, epoch seconds). Lets the live-probe reconcile compare freshness against the
   // mirror's monotonic lastEventAt. null when the payload omits both.
   lastActivityAt: Date | null;
-  // NOTE: The conversation's own version, the same `updated_at.to_f` the webhook carries — the REST
-  // show renders it too (`api/v1/conversations/partials/_conversation.json.jbuilder`). A reconcile
+  // The conversation's own version, the same `updated_at.to_f` the webhook carries; the REST show
+  // renders it too (`api/v1/conversations/partials/_conversation.json.jbuilder`). A reconcile
   // that wrote newer state without it would leave the row ahead of its own marks, and the next
   // delayed conversation event would look newer than them. null on a Chatwoot too old to send it.
   updatedAt: number | null;
-  // NOTE: WHICH INBOX THE SOURCE SAYS THIS CONVERSATION IS ON (issue #495 review, round 6). A
-  // transfer in Chatwoot reaches the mirror by webhook, so between the move and that delivery the
-  // local row still names the inbox the conversation LEFT — and a rule read off the old inbox's
-  // responder authorises a hand-back into an inbox that may have none. The REST show and every
-  // conversation webhook render `inbox_id` at the top level. null when the payload omits it, which
-  // is the only shape a reader may fall back to the mirror on.
+  // WHICH INBOX THE SOURCE SAYS THIS CONVERSATION IS ON. A transfer reaches the mirror by webhook,
+  // so until then the local row names the inbox the conversation LEFT, and a rule read off that
+  // inbox's responder would authorise a hand-back into an inbox that may have none. The REST show and
+  // every conversation webhook render `inbox_id` at the top level. null when the payload omits it,
+  // the only shape on which a reader may fall back to the mirror.
   inboxId: number | null;
-  // NOTE: The newest message id this payload names — the axis a console write that cannot be
-  // versioned is ordered by (issue #469, ./console-write-order.ts). The REST show renders
-  // `messages` (the `dashboard_seed_message`: the newest renderable message, seeded as the
-  // dashboard's pagination cursor) and `last_non_activity_message`; the highest id across both is
-  // taken, because each is a message that DEMONSTRABLY exists and this mark may only ever be too
-  // low. null when the payload names none.
+  // The newest message id this payload names, the axis a console write that cannot be versioned is
+  // ordered by (./console-write-order.ts). The REST show renders `messages` (the
+  // `dashboard_seed_message`) and `last_non_activity_message`; the highest id across both is taken,
+  // because each is a message that DEMONSTRABLY exists and this mark may only ever be too low. null
+  // when the payload names none.
   latestMessageId: number | null;
 }
 
@@ -389,7 +347,7 @@ export function parseLiveConversation(
   const assignee = meta && isRecord(meta.assignee) ? meta.assignee : null;
   const assigneeType = meta ? str(meta.assignee_type) : null;
   const assigneeId = assignee ? num(assignee.id) : null;
-  // NOTE: An "AgentBot" claim without a readable numeric id is unverifiable ownership — with a null
+  // NOTE: An "AgentBot" claim without a readable numeric id is unverifiable ownership: with a null
   // assigneeId, shouldBotHandle would treat a conversation owned by ANOTHER bot as ours. The fork's
   // jbuilder always renders meta.assignee (agent_bot_slim, with id) alongside assignee_type
   // "AgentBot", so this only rejects genuinely malformed payloads. Fail closed: the live gate turns
@@ -408,19 +366,12 @@ export function parseLiveConversation(
   };
 }
 
-// The highest message id a conversation payload names, across the two lists the REST show renders.
-//
-// MEASURED against the fork (4.17.0) on the show endpoint: `messages` comes back as a ONE-element
-// array holding `dashboard_seed_message` — the newest renderable message, which doubles as the
-// dashboard's `before` cursor — and `last_non_activity_message` is an object holding the newest
-// message that is not an activity line. The two differ exactly when the newest message IS an
-// activity line, so reading both and taking the maximum keeps the answer at the newest message the
-// source actually has.
-//
-// Read defensively rather than by shape: this parses a payload from a deployment whose version is
-// not ours to choose, and a list that is absent, empty, or holds something other than a record
-// simply names no message. Too low is the safe direction for every caller
-// (./console-write-order.ts); a number invented from a malformed payload is not.
+// The highest message id a conversation payload names. The REST show renders `messages` as a
+// one-element array holding `dashboard_seed_message` (the newest renderable message) and
+// `last_non_activity_message`; they differ when the newest message is an activity line, so the
+// maximum is the newest message the source has. Read defensively: an absent, empty or malformed list
+// names no message, because too low is the safe direction for every caller
+// (./console-write-order.ts) and a number invented from a malformed payload is not.
 function latestMessageId(raw: Record<string, unknown>): number | null {
   let best: number | null = null;
   const consider = (v: unknown): void => {
@@ -433,25 +384,12 @@ function latestMessageId(raw: Record<string, unknown>): number | null {
   return best;
 }
 
-// Attribution = source of truth. The bot owns a conversation only while NO human is assigned
-// (assignee_type !== "User") and it is still pending. A human assignee (handoff) or a
-// resolved/snoozed/open status means fazer.ai agents stays silent. The gate is OUR responsibility:
-// Chatwoot delivers the event to the bot even when a human is assigned.
-//
-// One Agent Bot can front many inboxes, and Chatwoot also delivers an event to a conversation's
-// `assignee_agent_bot` (agent_bot_listener.rb) — so with multiple bots our endpoint may receive
-// events for a conversation OWNED by a DIFFERENT bot. When `ourAgentBotId` is provided we act
-// only if the conversation is unassigned (assignee_type null) or assigned to OUR bot, never to
-// another AgentBot. Omitting the option preserves the loose attribution-only gate.
-// The ASSIGNEE half of the question below, on its own because two different questions are built from
-// it and only one of them is about status. "Somebody else is holding this" is a human, or a bot that
-// is not ours — Chatwoot keeps User and AgentBot in separate id namespaces, so the comparison is the
-// whole identity and never the number alone.
-//
-// Split out rather than restated: the console asks it to decide which ownership action to offer, and
-// a conversation held by ANOTHER persona's bot is the case a "is the assignee a User?" test reads
-// backwards — the inbox's own agent cannot answer there either, so it needs the same hand-back the
-// human case needs. A second copy is how that case came to be missing in the first place.
+// The ASSIGNEE half of the ownership gate: somebody else holds the conversation when it is a human,
+// or a bot that is not ours (Chatwoot keeps User and AgentBot ids in separate namespaces, so the
+// type is part of the identity). Chatwoot also delivers to a conversation's `assignee_agent_bot`, so
+// one endpoint can receive events for a conversation ANOTHER bot owns; without `ourAgentBotId` only a
+// human counts. Shared with the console, where a conversation held by another persona's bot needs
+// the same hand-back a human-held one does.
 export function heldByAnotherParty(
   e: { assigneeType: string | null; assigneeId?: number | null },
   opts: { ourAgentBotId?: number | null } = {},
@@ -465,34 +403,13 @@ export function heldByAnotherParty(
   );
 }
 
-// WHICH OF TWO ASSIGNEE READINGS THE GATE MUST BELIEVE, when a delivery arrives holding both.
-//
-// A delivery gates on a PAYLOAD, and every payload is a snapshot of an earlier instant: Chatwoot
-// serializes the conversation when the message fires and only then enqueues (state-order.ts, point
-// 1), and a delivery recovery rebuilds one from reads it made a moment before (#295). Beside it
-// sits the MIRROR row as it stands after this event was written — a different instant again.
-//
-// Neither reading is uniformly the newer one, so this does not pick by recency. It picks by which
-// way a wrong answer fails. A reading that says SOMEBODY ELSE HOLDS IT can only cost silence: the
-// event that releases the conversation is a conversation-level one, it applies when it lands, and
-// the next delivery passes. A reading that says NOBODY DOES costs an answer posted over a human who
-// had just taken over — and posted is the smaller half of it, because the runtime's ownership
-// re-check runs after the model call (../../graph/runtime.ts), so the turn has already run every
-// tool it chose by the time anything withholds the text.
-//
-// So: whichever witness says the conversation is held is the one believed, and the payload's
-// statement is preferred over the mirror only where neither says so.
-//
-// The asymmetry is not this function's invention — it is the mirror's rule read from the gate's
-// side. A message snapshot may never write the assignee at all (state-order.ts: `assigneeOrdered`
-// requires `fromConversationEvent`), so a mirror that reads human-owned under a payload that reads
-// bot-owned is the mirror doing its job, not lagging. MEASURED on the recovery, where the window is
-// widest: a human taking the conversation between the last mirror read and the gate got a full turn
-// run against them, tools included.
-//
-// `stated` is the degraded-payload question of issue #27 and stays separate from `assigneeType`:
-// a payload that said NOTHING is not a payload that said "unassigned", and `null` cannot tell the
-// two apart.
+// WHICH OF TWO ASSIGNEE READINGS THE GATE BELIEVES: the payload's snapshot (./state-order.ts,
+// point 1) or the mirror row after this event. Neither is uniformly newer, so the one that says the
+// conversation is HELD wins: a wrong "held" costs silence, a wrong "free" costs a turn run over a
+// human, tools included.
+// `stated` stays separate from `assigneeType` because a payload that said NOTHING is not one that
+// said "unassigned". docs/chatwoot.md, "Mirror sync" (the gate believes whichever witness says the
+// conversation is HELD).
 export function effectiveAssignee(
   payload: {
     stated: boolean;
@@ -512,16 +429,12 @@ export function effectiveAssignee(
     : held;
 }
 
-// `alsoResolved` is the one caller that may speak into a conversation the bot itself closed: an
-// event the operator's own system sends back for a job the customer asked for (issue #818). The
-// agent resolving the conversation after scheduling the job is the ordinary flow there, and reading
-// `resolved` as "not ours" would turn every later event into a private note. It is still refused
-// while anybody else holds the conversation, and `open` (handed to humans) stays closed.
-//
-// WHO closed it is read from the recorded origin, never from the assignee: an operator resolving in
-// Chatwoot does not assign themself, so the conversation comes back `resolved` with the AgentBot
-// still as assignee (docs/chatwoot.md, "Resolution origin"), and the assignee alone would let an
-// event message a customer a person just closed. A caller that has no stamp to pass gets the note.
+// The bot owns a conversation only while it is `pending` and nobody else holds it. The gate is ours:
+// Chatwoot delivers to the bot even when a human is assigned. `alsoResolved` lets one caller speak
+// into a conversation the agent side itself closed (an event the operator's system sends back for a
+// job the customer asked for); `open` and a conversation anybody else holds stay refused. WHO closed
+// it is the recorded origin, never the assignee: an operator resolving in Chatwoot does not assign
+// themself (docs/chatwoot.md, "Resolution origin"), so a caller with no stamp to pass is refused.
 export function shouldBotHandle(
   e: {
     assigneeType: string | null;
@@ -555,15 +468,11 @@ export function isNewIncomingMessage(e: NormalizedChatwootEvent): boolean {
   return e.event === TURN_BEARING_EVENT && isIncomingMessage(e);
 }
 
-// THE WRITE-BACK UPDATE, and what it is worth. When our transcription lands on the attachment the
-// fork re-fires `message_updated`, and ../chatwoot/webhook.ts's `hasPendingInboundMediaUpdate` calls
-// that a no-op — correctly, because there is nothing left to ANALYSE. It is not a no-op for MEMORY: it is the one event that carries
-// the words for a message no turn is going to answer, and reading them costs nothing, since somebody
-// already paid the provider for them (issue #478).
-//
-// Both places the words can be: on the message, where the eager pass stashes them within the
-// delivery that transcribed, and on the attachment, where the fork serializes them on every later
-// delivery of that message. Either one is the whole transcription.
+// THE WRITE-BACK UPDATE, and what it is worth. When our transcription lands, the fork re-fires
+// `message_updated`, which `hasPendingInboundMediaUpdate` (./webhook.ts) rightly treats as nothing
+// left to ANALYSE. For MEMORY it is the one event carrying the words of a message no turn will
+// answer, already paid for. The words are on the message (the eager pass stashes them within the
+// transcribing delivery) or on the attachment (every later delivery); either is the whole text.
 export function inboundTranscriptionOnUpdate(
   n: NormalizedChatwootEvent,
 ): string | null {
@@ -576,23 +485,12 @@ export function inboundTranscriptionOnUpdate(
   );
 }
 
-// A message the BUSINESS sent to the customer, typed by a HUMAN agent rather than produced by a bot.
-// `sender.type` is the fork's own discriminator and was read from its source: User#webhook_data emits
-// "user", AgentBot#webhook_data emits "agent_bot", and Contact#webhook_data carries no `type` key at
-// all, so an incoming message normalizes to null there.
-//
-// Our own bot's outgoing is excluded because the turn that produced it already wrote it to the memory
-// thread — ingesting it again would duplicate every answer the agent ever gave. Another account bot's
-// outgoing is excluded by the same clause, and deliberately: whatever it is doing is not this agent's
-// dialogue with the contact. Private notes are the operator talking to their own team, not to the
-// customer, so they never enter the contact's memory. Templates and activities are not `outgoing` and
-// never reach here.
-//
-// A REACTION is the one exclusion that is not obvious from the shape. The fork stores an emoji react
-// as a real message — `MessageBuilder` with `message_type: "outgoing"`, `content` = the emoji,
-// `content_attributes.is_reaction`, sender `Current.user` — so an operator reacting 👍 matches every
-// other clause here (confirmed on live rows). Ingested, the permanent memory of that attendance would
-// carry a line reading `atendente: 👍`. It is an acknowledgement, not something the team said.
+// A message the BUSINESS sent, typed by a HUMAN agent: the fork's `sender.type` is "user" for
+// User#webhook_data, "agent_bot" for AgentBot#webhook_data and absent for a contact. Bot outgoing is
+// excluded (our own is already in the memory thread; another bot's is not this agent's dialogue), and
+// so are private notes (the team talking to itself). A REACTION is excluded too: the fork stores an
+// emoji react as a real outgoing message from `Current.user`, and ingesting it would put
+// `atendente: 👍` in the attendance's memory.
 export function isHumanAgentMessage(e: NormalizedChatwootEvent): boolean {
   return (
     e.message?.messageType === "outgoing" &&
@@ -603,8 +501,8 @@ export function isHumanAgentMessage(e: NormalizedChatwootEvent): boolean {
 }
 
 // message_created only, for the same reason isNewIncomingMessage is: our own attachment write-backs
-// make the fork re-dispatch a message_updated for a message already handled, and acting on those is
-// how the voice-note loop happened. An edit to an agent's reply is not a new thing said.
+// make the fork re-dispatch a message_updated for a message already handled, and acting on those
+// would loop. An edit to an agent's reply is not a new thing said.
 export function isNewHumanAgentMessage(e: NormalizedChatwootEvent): boolean {
   return e.event === "message_created" && isHumanAgentMessage(e);
 }
@@ -614,25 +512,11 @@ export function isNewHumanAgentMessage(e: NormalizedChatwootEvent): boolean {
 // magic string is how a comparison goes quietly false.
 export const SESSION_SENDER_NAME = "WhatsApp";
 
-// THE PROVIDERS WHOSE SEND PATH RESERVES ITS WhatsApp ID BEFORE THE REQUEST, and the only ones on
-// which the marker above can be trusted to mean "a person, not us".
-//
-// WhatsApp echoes back every message the session sends, our own replies included. Those echoes are
-// matched to the row that produced them by `source_id`, which is written from the send RESPONSE — so
-// when that response is lost and the job retries, the echo carries an id Chatwoot never saw and is
-// stored as a NEW sender-less outgoing message, marked exactly like a reply typed on the phone. The
-// fork's own comment names that shape: "rendered as if an agent had replied from the phone".
-//
-// `baileys` closes it with `reserve_source_id` before the request, and the session providers with
-// `Outbound::SourceIdReservation` + `Inbound::EchoMatcher`, so on those three an unmatched echo of
-// our own reply cannot exist. `zapi` writes the same marker and matches on `source_id` alone, with
-// no reservation — so there the agent's own answer can come back wearing this shape, and acting on
-// it would have the agent take the conversation away from itself and file its own reply in the
-// contact's memory as the attendant's.
-//
-// Refused rather than guessed at: correlating an echo with a message we sent means comparing content
-// inside a time window, which fails in both directions (an attendant who repeats what the bot said
-// reads as the bot). The composer route is unaffected on every provider — it is sender-typed.
+// THE PROVIDERS WHOSE SEND PATH RESERVES ITS WhatsApp ID BEFORE THE REQUEST, the only ones on which
+// the marker above means "a person, not us": elsewhere (`zapi`) a lost send response turns the echo
+// of our own reply into a new sender-less message wearing the marker. Refused rather than guessed:
+// matching an echo by content inside a time window fails both ways. docs/chatwoot.md, "A person
+// answering the customer ends the attendance".
 export const ECHO_RESERVING_WHATSAPP_PROVIDERS = new Set([
   "baileys",
   "native",
@@ -643,45 +527,13 @@ export function providerReservesEchoIds(provider: string | null): boolean {
   return provider !== null && ECHO_RESERVING_WHATSAPP_PROVIDERS.has(provider);
 }
 
-// The SAME thing isHumanAgentMessage describes — a person, not this agent, answering the customer in
-// this conversation — reached by the other route: typed on the phone paired to the number the inbox
-// is connected to, without the CRM ever being opened.
-//
-// The fork stores that echo sender-less (`sender: incoming? ? sender : nil`, outgoing), so
-// `sender.type === "user"` cannot see it. What CAN is `content_attributes.external_sender_name`, and
-// the reason it has to be this rather than "outgoing with no sender" is MEASURED, on a live fork,
-// against the shapes Chatwoot itself produces:
-//
-//   origin                                type      sender  private  content_attributes
-//   an automation rule's send_message     outgoing  null    false    {automation_rule_id: 7}
-//   a scheduled message, author not User  outgoing  null    false    {}
-//   a CSAT survey                         outgoing  null    false    {}          (content_type input_csat)
-//   AN ATTENDANT ON THE PAIRED PHONE      outgoing  null    false    {external_created_at, external_sender_name: "WhatsApp"}
-//
-// All four reach the bot as `message_created` on a `pending`, bot-owned conversation — captured off
-// the wire, not inferred. Under a bare "outgoing and sender-less" test, an operator's automation
-// rule would read as a person taking the conversation over, and the switch below would silence the
-// agent on it permanently. Only the last row carries the marker, and every WhatsApp session path in
-// the fork writes it (baileys, zapi, the session inbound writer, the reaction store), so this reads
-// the provider the operator actually runs rather than the one the issue was reported on.
-//
-// `sender == null` stays as a second clause rather than being dropped for the marker alone: the two
-// are independent statements about the row (nobody in Chatwoot wrote it / it arrived from the
-// session), and requiring both is what keeps a future fork that stamps the marker on a
-// Chatwoot-originated row from reaching this.
-//
-// `imported` is UNREACHABLE through this event today and is kept anyway. Whatsapp::Session::SilentWrite
-// wraps the whole import run and its SyncDispatcher guard calls ActionCableListener and nothing else,
-// so AgentBotListener never fires for a backfilled row at either level of the flag — probed on the
-// fork, not assumed. It stays because the two repositories ship on different clocks and the failure
-// it fences is not proportional to its cost: one boolean read against an import quietly opening and
-// silencing an operator's entire backlog, hundreds of conversations at once, on the day they pair a
-// phone.
-// THE PAYLOAD HALF, on its own, because the two halves are answered at different moments. The
-// provider comes from the mirrored inbox row, and resolving that row is itself gated on "could this
-// event be a human reply at all" — so this superset decides whether to pay for the lookup, and
-// `isDeviceAttendantMessage` decides whether to act. Split rather than inlined twice: a second
-// spelling of these five clauses is how one of them comes to be missing from one of the two.
+// The person-answering shape by the other route: typed on the phone paired to the inbox's number.
+// The fork stores that echo sender-less, so only `external_sender_name` sees it; a bare "outgoing
+// with no sender" also matches an automation rule, a scheduled message and a CSAT survey.
+// `sender == null` stays too, so a fork that stamps the marker on a Chatwoot row cannot reach this,
+// and `imported` is fenced though unreachable through this event today (a cross-repo fence). This is
+// the PAYLOAD half: the provider half needs the inbox row, read only when this superset passes.
+// docs/chatwoot.md, "A person answering the customer ends the attendance".
 export function hasDeviceAttendantShape(e: NormalizedChatwootEvent): boolean {
   return (
     e.message?.messageType === "outgoing" &&
@@ -701,9 +553,8 @@ export function isDeviceAttendantMessage(
   // unsafe. `null` (unknown, or not a WhatsApp inbox) refuses.
   opts: { whatsappProvider: string | null },
 ): boolean {
-  // Through `resolveHumanReplyRoute`, so the provider rule has ONE spelling: this predicate and the
-  // recovery that asks it of a stored shape (issue #439) must not be able to disagree about which
-  // providers the marker can be trusted on.
+  // NOTE: through `resolveHumanReplyRoute`, so this predicate and the recovery that asks it of a
+  // stored shape cannot disagree about which providers the marker is trusted on.
   return (
     resolveHumanReplyRoute(
       hasDeviceAttendantShape(e) ? "device" : null,
@@ -712,36 +563,24 @@ export function isDeviceAttendantMessage(
   );
 }
 
-// COULD this event be a person answering the customer, before the inbox row has been read? The
-// shape below, which is the same question without the provider. Used to decide whether resolving the
-// inbox's agent is worth a query, and — since issue #439 — to decide whether the ledger row records
-// a takeover as owed.
+// COULD this event be a person answering the customer, before the inbox row has been read? Decides
+// whether resolving the inbox's agent is worth a query, and whether the ledger row records a
+// takeover as owed.
 export function mayBeNewHumanReply(e: NormalizedChatwootEvent): boolean {
   return newHumanReplyShape(e) !== null;
 }
 
-// A PERSON answered the customer here, by either route, and WHICH route it was. The two halves are
-// the same event to every consumer downstream — the conversation is no longer the agent's to speak
-// in, and what was said is the business half of the attendance — so they are joined once, here,
-// instead of at each of the places that ask.
-//
-// The route rather than a boolean, so the caller that acts and the line that reports why cannot
-// disagree about which one it was. The two predicates are DISJOINT by construction (one requires a
-// sender typed `user`, the other requires no sender at all), so the order they are asked in decides
-// nothing — which is why no test pins it. The flow log needs it (the operator reading "the agent stopped
-// answering here" has to know whether to look in the CRM or at somebody's phone), and it is derived
-// from the same two predicates rather than re-tested, so it cannot disagree with the gate that acted.
+// A PERSON answered the customer here, and by WHICH route. Downstream both routes are the same event
+// (the conversation is no longer the agent's, and what was said is the business half), so they are
+// joined once here. The route rather than a boolean, so the caller that acts and the flow-log line
+// that says why (the CRM or somebody's phone) cannot disagree. The two predicates are DISJOINT (a
+// `user` sender vs no sender), so the order they are asked in decides nothing.
 export type HumanReplyRoute = "composer" | "device";
 
-// THE HALF THE PAYLOAD ANSWERS, split out because the two halves are answered at different MOMENTS
-// and, since issue #439, in different processes. `device` here is a shape and not yet a verdict: the
-// echo an unreserved provider produces wears exactly this shape, and only the inbox row can tell the
-// two apart (see providerReservesEchoIds).
-//
-// Split rather than inlined a second time. The ledger records this shape at INSERT — before anything
-// has read the inbox — so a delivery a process death strands still says what it was about, and the
-// recovery asks the second half against the inbox row as it stands then. Two spellings of these
-// clauses is how one of them comes to be missing from one of the two.
+// THE HALF THE PAYLOAD ANSWERS. `device` here is a shape, not yet a verdict: an unreserved
+// provider's echo wears it too, and only the inbox row tells them apart (providerReservesEchoIds).
+// The ledger records this shape at INSERT, before the inbox is read, so a delivery stranded by a
+// process death still says what it was about, and the recovery asks the second half later.
 export function humanReplyShape(
   e: NormalizedChatwootEvent,
 ): HumanReplyRoute | null {
@@ -759,7 +598,7 @@ export function newHumanReplyShape(
 
 // THE HALF THE INBOX ANSWERS. `composer` is sender-typed and stands on the payload alone; `device`
 // is only a person on a provider whose send path reserves its ids, so an unknown or unreserved
-// provider refuses it — the same refusal `isDeviceAttendantMessage` makes, asked of the shape
+// provider refuses it, the same refusal `isDeviceAttendantMessage` makes, asked of the shape
 // instead of the event, so a caller that no longer HAS the event can still ask it.
 export function resolveHumanReplyRoute(
   shape: HumanReplyRoute | null,
@@ -798,7 +637,7 @@ export function isNewHumanReplyToCustomer(
 }
 
 // The control commands an operator types into the conversation to drive the agent (matched on the
-// trimmed, case-insensitive text content — text-only by design). `/teste` activates a test agent for
+// trimmed, case-insensitive text content; text-only by design). `/teste` activates a test agent for
 // THIS conversation; `/reset` clears its memory/state. Both are handled by the webhook gate.
 export type ControlCommand = "teste" | "reset";
 
@@ -812,7 +651,7 @@ export function controlCommand(
 }
 
 // True when the message is a control command. Such a message is NOT genuine customer engagement, so
-// it must not advance the follow-up / 24h-window inbound watermark (`lastInboundAt`) — otherwise a
+// it must not advance the follow-up / 24h-window inbound watermark (`lastInboundAt`), otherwise a
 // bare `/teste` or `/reset` would look like a fresh customer reply and arm a proactive follow-up.
 export function isCommandMessage(e: NormalizedChatwootEvent): boolean {
   return controlCommand(e) !== null;
@@ -839,47 +678,18 @@ export function firstAudioAttachment(e: NormalizedChatwootEvent): {
   return null;
 }
 
-// NOTE: The first USABLE location attachment (a WhatsApp pin): real coordinates and/or a human
-// title, or null. Chatwoot's coordinate columns default to 0.0, so an exact (0,0) — the null
-// island — means the provider sent no coordinates, not a pin in the Gulf of Guinea; such a pin can
-// still carry a usable fallback_title (place name + address). Neither ⇒ null, and the render falls
-// back to the generic attachment marker. Shared by the direct webhook path and the debounce
-// re-fetch (issue #45).
-// THE ONE MAPPING FROM A NORMALIZED EVENT TO WHAT THE AGENT WOULD READ. Three callers ask it and two
-// of them are not running a turn. The spend-ceiling gate has to know whether the message it is about
-// to refuse would have reached a model at all, and `runAgentTurn` answers `skipped` — before any
-// billed call — for a message that renders to nothing (blank content, an attachment type we do not
-// recognise, a reaction). `ingestUnhandledMessage` has to know what to fold into memory for the
-// message no turn will ever cover: the one that arrived outside business hours, and the one a
-// colleague had already taken. Asking either of those with a second copy of this shape would be a
-// second answer to one question, and the two would drift the first time a marker or a field is
-// added — which is exactly what happened to the email subject (issue #598), read by the renderer,
-// the burst and the gate while the memory fold went on dropping the message whole.
-// UMA MENSAGEM QUE AINDA VAI RECEBER MAIS CONTEÚDO (issue #688). O áudio sem transcrição é o único
-// caso hoje: as palavras dele chegam depois, num `message_updated` que o STT dispara, e sobre o
-// MESMO id de mensagem.
-//
-// Quem faz a pergunta é o portão de posse do caminho direto: parar o turno manda a mensagem para a
-// ingestão contínua, a ingestão grava o id no dedup do thread, e a transcrição que vem depois é
-// descartada como duplicata. A pergunta NÃO é se a mensagem já tem palavras — uma legenda, ou o
-// assunto de um e-mail, são palavras e ainda assim a transcrição vem —, é se ainda vem mais.
-//
-// PELO TIPO DO ARQUIVO, e não por `firstAudioAttachment`, que é a mesma armadilha que
-// `turnHadTheWords` documenta do lado dele: aquele exige um id e um `data_url` utilizáveis, ou seja,
-// responde se o STT PODE RODAR. Um anexo cujo url ainda não chegou reprova esse teste e mesmo assim
-// alcança o grafo como placeholder — lido assim, a mensagem passaria por "sem áudio nenhum", o
-// portão atuaria, e a transcrição seria perdida exatamente pela porta que esta exceção fecha. Custou
-// uma rodada de review lá (#576) e outra aqui.
-//
-// `hasPendingInboundMediaUpdate` (../chatwoot/webhook.ts) continua com a pergunta DELE, que é outra e
-// mais estreita: ali o que se decide é armar a ingestão sobre um evento de atualização, e alargá-la é
-// outra decisão, com testes próprios.
+// UMA MENSAGEM QUE AINDA VAI RECEBER MAIS CONTEÚDO: hoje só o áudio sem transcrição, cujas palavras
+// chegam depois num `message_updated` sobre o MESMO id. Quem pergunta é o portão de posse do caminho
+// direto: parar o turno manda a mensagem para a ingestão, que grava o id no dedup do thread, e a
+// transcrição posterior seria descartada como duplicata. A pergunta é se ainda vem mais, não se já há
+// palavras (uma legenda ou um assunto também são). Pelo TIPO DO ARQUIVO, e não por
+// `firstAudioAttachment`, que exige id e `data_url` utilizáveis: um anexo sem url ainda chega ao
+// grafo como placeholder. `hasPendingInboundMediaUpdate` (./webhook.ts) faz outra pergunta.
 export function awaitsTranscription(n: NormalizedChatwootEvent): boolean {
   if (!isIncomingMessage(n)) return false;
-  // O PRIMEIRO áudio, que é o que a transcrição cobre: `firstAudioAttachment` e `runEagerMedia`
-  // selecionam esse mesmo, e uma transcrição pendurada em OUTRO anexo não diz nada sobre ele. Com
-  // dois áudios, o segundo transcrito e o primeiro não, ler "algum está transcrito" como cobertura
-  // deixaria o portão atuar sobre a mensagem cuja transcrição ainda vem (review r10).
+  // NOTE: o PRIMEIRO áudio, que é o que a transcrição cobre (`firstAudioAttachment` e
+  // `runEagerMedia` selecionam esse): com o segundo transcrito e o primeiro não, "algum está
+  // transcrito" deixaria o portão atuar sobre a mensagem cuja transcrição ainda vem.
   const audios = (n.message?.attachments ?? []).filter(
     (a) => a.fileType === "audio",
   );
@@ -887,6 +697,10 @@ export function awaitsTranscription(n: NormalizedChatwootEvent): boolean {
   return !(audios[0]?.transcribedText || n.message?.transcribedText);
 }
 
+// THE ONE MAPPING FROM A NORMALIZED EVENT TO WHAT THE AGENT WOULD READ, asked by the turn, by the
+// spend-ceiling gate (would this message reach a model at all? `runAgentTurn` skips one that renders
+// to nothing before any billed call) and by `ingestUnhandledMessage` (what to fold into memory for a
+// message no turn covers). One mapping, so a marker or field added later reaches all three.
 export function incomingRenderable(
   n: NormalizedChatwootEvent,
 ): RenderableMessage {
@@ -928,9 +742,9 @@ export function emailSubjectFrom(
 // (Chatwoot's `status_change_activity` writes `conversation_status_changed`, and Linear's service
 // writes its own). It is the only structural thing an activity row carries: the label, assignee,
 // team, priority and SLA handlers all pass `activity_message_params(content)` with no bag at all.
-// So a row that declares a type is narration about something ELSE, which is what the observer's
-// label history needs to rule out (issue #642, review round 2) — read as a string and nothing else,
-// like every other key in a bag shared with whatever an operator's automation writes there.
+// So a row that declares a type is narration about something ELSE, which the observer's label
+// history needs to rule out. Read as a string and nothing else, like every other key in a bag shared
+// with whatever an operator's automation writes there.
 export function activityTypeFrom(
   contentAttributes: Record<string, unknown> | null | undefined,
 ): string | null {
@@ -943,7 +757,7 @@ export function activityTypeFrom(
 }
 
 // THE STATUS A STATUS-CHANGE ACTIVITY NARRATES, from `content_attributes.activity.status`, which
-// Chatwoot's `status_change_activity` writes beside the type (issue #897). Read as a string and
+// Chatwoot's `status_change_activity` writes beside the type. Read as a string and
 // nothing else, like the type above.
 export function activityStatusFrom(
   contentAttributes: Record<string, unknown> | null | undefined,
@@ -956,6 +770,10 @@ export function activityStatusFrom(
   return status.trim() ? status : null;
 }
 
+// The first USABLE location attachment (a WhatsApp pin): real coordinates and/or a title, or null.
+// Chatwoot's coordinate columns default to 0.0, so an exact (0,0) means no coordinates were sent;
+// such a pin can still carry a usable fallback_title. Neither means null, and the render falls back
+// to the generic attachment marker. Shared by the direct webhook path and the debounce re-fetch.
 export function firstLocationAttachment(
   attachments:
     | Array<
@@ -970,7 +788,7 @@ export function firstLocationAttachment(
     if (a.fileType !== "location") continue;
     const lat = a.latitude ?? null;
     const long = a.longitude ?? null;
-    // NOTE: Out-of-range values (|lat| > 90, |long| > 180) are provider garbage, not coordinates —
+    // NOTE: Out-of-range values (|lat| > 90, |long| > 180) are provider garbage, not coordinates:
     // they would flow into tool args. Same fail-safe as (0,0): drop the coords, keep the title.
     const hasCoords =
       lat !== null &&
@@ -992,15 +810,6 @@ export function firstLocationAttachment(
   return null;
 }
 
-// EVERY image/file attachment (with a usable id + url). Drives the eager vision pass: the
-// downloaded mime decides image vs document vs unsupported (audio/video are handled elsewhere /
-// skipped). file_type "image" and "file" cover photos and documents (e.g. PDFs).
-//
-// This used to be `firstVisualAttachment`, and the name was the bug (issue #691): a customer who
-// attaches the receipt, the ID and a screenshot in one message had one of the three analyzed, and
-// the reply asked for what was in the other two. On one production mailbox 50.6% of the
-// conversations that arrive with an attachment carry more than one, so it was half the traffic.
-// The caller decides how many of these it can afford; the list is what it has to decide from.
 // A string value on an attachment's `meta` bag, or null. The bag is shared with Chatwoot's own
 // keys and with whatever an operator's automation writes there, so a value of another shape is
 // somebody else's key that happens to collide, not ours.
@@ -1015,11 +824,15 @@ export function metaString(meta: unknown, key: string): string | null {
 // PDF, por exemplo); áudio e vídeo têm caminhos próprios. Exportada porque o outro leitor dos
 // anexos, o parser da lista REST (./messages.ts), precisa da MESMA resposta: dois predicados
 // divergiriam na primeira vez que um tipo novo entrasse, e o sintoma seria um anexo lido por um
-// caminho e ignorado pelo outro (issue #757).
+// caminho e ignorado pelo outro.
 export function isVisualFileType(fileType: string | null): boolean {
   return fileType === "image" || fileType === "file";
 }
 
+// EVERY image/file attachment with a usable id + url, then the email body's images. Drives the eager
+// vision pass, where the downloaded mime decides image vs document vs unsupported. A message often
+// carries several attachments, and analysing only one leaves the reply asking for the others; the
+// caller decides how many it can afford, and the list is what it decides from.
 export function visualAttachments(e: NormalizedChatwootEvent): {
   id: number | null;
   dataUrl: string;
@@ -1051,7 +864,7 @@ export function visualAttachments(e: NormalizedChatwootEvent): {
   ];
 }
 
-// The images a mailbox kept in the email body (issue #864), after the real attachments so they
+// The images a mailbox kept in the email body, after the real attachments so they
 // never take a slot of the per-message cap from one. Shared with the REST reader (./messages.ts).
 export function bodyImageVisuals(urls: string[] | undefined): {
   id: null;
@@ -1069,15 +882,11 @@ export function bodyImageVisuals(urls: string[] | undefined): {
   }));
 }
 
-// The basename of the data url, query stripped. It labels each extraction so the model can tell
-// which datum came from which file: two receipts in one message are two different orders, and a
-// blob with no boundary reads as one document that contradicts itself.
-//
-// BEST-EFFORT BY CONSTRUCTION, because the label is a nicety and the delivery is not.
-// `decodeURIComponent` THROWS on an invalid escape (`.../100%.png` is a real file name), and this
-// runs outside `runEagerMedia`'s recovery block and before vision is even known to be on — so an
-// ornament could abort the whole message. The undecoded basename is a worse label, never a worse
-// outcome (PR #692 review, round 1).
+// The basename of the data url, query stripped, labelling each extraction so the model can tell
+// which datum came from which file. BEST-EFFORT: `decodeURIComponent` THROWS on an invalid escape
+// (`100%.png` is a real file name), and this runs outside `runEagerMedia`'s recovery block, so a
+// throw would abort the whole message; the undecoded basename is a worse label, never a worse
+// outcome.
 function fileNameOf(dataUrl: string): string | null {
   const path = dataUrl.split("?")[0] ?? dataUrl;
   const base = path.slice(path.lastIndexOf("/") + 1);

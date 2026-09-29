@@ -66,9 +66,10 @@ export type TakeoverRecoveryOutcome =
   // The mirror does not know this conversation yet, which is NOT a verdict: a delivery that died
   // before the mirror write leaves no row, and the very next event on that conversation creates one.
   // Everything this needs (the inbox, the agent, the row the claim is a CAS on) hangs off it, and
-  // the payload that would let this path build one is the one thing the ledger cannot rebuild for an
-  // outgoing message. So it is retried on the scheduler's own ladder and announced if it runs out,
-  // rather than discarded as an answer.
+  // this path does not create one: the body can be read back by `humanReplyMessageId`, but what
+  // writes the mirror from a body is the delivery path, which this recovery does not re-run
+  // (docs/chatwoot.md, "Takeover recovery"). So it is retried on the scheduler's own ladder and
+  // announced if it runs out, rather than discarded as an answer.
   | "unresolved"
   // The takeover ran and did not land. Already reported by the unit that tried, at the level it
   // decided; this is the caller's word for it.

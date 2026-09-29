@@ -18,7 +18,10 @@ import {
 import {
   CROSS_INBOX_CASE_DEFAULTS,
   CROSS_INBOX_CASE_SUBJECT_MAX,
+  openingAsksMessage,
   readCrossInboxCaseConfig,
+  renderCaseNote,
+  renderCaseOpening,
   renderCaseSubject,
   subjectAsksSummary,
 } from "@/modules/cross-inbox-case/settings";
@@ -370,6 +373,8 @@ describe("settings", () => {
       resolveOrigin: false,
       caseLabels: [],
       subjectTemplate: null,
+      openingTemplate: null,
+      noteTemplate: null,
     });
     const bad = readCrossInboxCaseConfig({
       crossInboxCase: { targetInboxId: 0, caseAttributeKey: "Protocolo X" },
@@ -470,7 +475,7 @@ describe("openCaseInInbox", () => {
     expect(writesOf(f.calls)).toEqual([]);
   });
 
-  test("the whole case: open conversation, number back on the origin, opening message, two-sided links, labels", async () => {
+  test("the whole case: open conversation, number back on the origin, opening message, one note each side, labels", async () => {
     const f = fakeChatwoot();
     const r = await openCaseInInbox(
       f.client,
@@ -506,10 +511,9 @@ describe("openCaseInInbox", () => {
     const sends = f.calls.filter((c) => c.fn === "sendMessageAsAdmin");
     expect(sends.map((c) => c.args)).toEqual([
       [100, "Olá! Abrimos seu atendimento por aqui.", { private: false }],
-      [100, "Motivo: cliente pediu atendente humano", { private: true }],
       [
         100,
-        "⬅️ Caso aberto a partir da conversa: https://cw.example/app/accounts/1/conversations/7",
+        "**Caso aberto a partir de outra conversa:** [ver conversa de origem](https://cw.example/app/accounts/1/conversations/7)\n\n**Motivo:**\ncliente pediu atendente humano",
         { private: true },
       ],
     ]);
@@ -567,7 +571,7 @@ describe("openCaseInInbox", () => {
       f.calls
         .filter((c) => c.fn === "sendMessageAsAdmin")
         .map((c) => (c.args[2] as { private: boolean }).private),
-    ).toEqual([true, true]);
+    ).toEqual([true]);
   });
 
   test("an open case this conversation already opened is the answer, not a second one", async () => {
@@ -892,10 +896,12 @@ describe("openCaseInInbox", () => {
     const sends = f.calls
       .filter((c) => c.fn === "sendMessageAsAdmin")
       .map((c) => c.args[1]);
-    expect(sends.slice(0, 2)).toEqual([
+    expect(sends[0]).toBe(
       "Abrimos seu caso {{ '{{' }}contact.email}} ref {{ '{{' }}foo}}",
-      "Motivo: cliente pediu {{ '{{' }}contact.phone_number}}",
-    ]);
+    );
+    expect(sends[1]).toContain(
+      "**Motivo:**\ncliente pediu {{ '{{' }}contact.phone_number}}",
+    );
     const closed = fakeChatwoot({ canReply: false });
     await openCaseInInbox(
       closed.client,
@@ -1292,9 +1298,9 @@ describe("openCaseInInbox", () => {
           (c.args[2] as { private: boolean }).private === false,
       ),
     ).toEqual([]);
-    // The case still opens, with its notes: the team still owes the customer.
+    // The case still opens, with its note: the team still owes the customer.
     expect(f.calls.filter((c) => c.fn === "sendMessageAsAdmin")).toHaveLength(
-      2,
+      1,
     );
   });
 
@@ -2791,6 +2797,400 @@ describe("who holds the case (issue #908)", () => {
       expect(messages[0]).toContain("could not be read");
       expect(messages[0]).toContain("nothing was written");
       expect(writesOf(f.calls)).toEqual([]);
+    });
+  });
+});
+
+// The operator's opening email and the single note on the case: the model writes only its part, the
+// operator writes the rest, and the team reads the case from one note.
+describe("the operator's opening and the case note (issue #923)", () => {
+  const vars = {
+    nome_contato: "Ana Souza",
+    contact_name: "Ana Souza",
+    primeiro_nome: "Ana",
+    contact_first_name: "Ana",
+  };
+  const interpolate = (t: string) => interpolatePromptVars(t, vars);
+  const ORIGIN = "https://cw.example/app/accounts/1/conversations/7";
+  const TEMPLATE =
+    "Olá, {{primeiro_nome}}!\n\nSua solicitação nº {{numero_caso}} foi recebida.\n\n{{mensagem}}\n\nAtenciosamente,\nEquipe";
+  const withTemplates = (
+    opening: string | null,
+    note: string | null = null,
+    over: Partial<OpenCaseInput> = {},
+  ) =>
+    input({
+      config: {
+        ...CROSS_INBOX_CASE_DEFAULTS,
+        targetInboxId: 40,
+        openingTemplate: opening,
+        noteTemplate: note,
+      },
+      interpolate,
+      ...over,
+    });
+  const sends = (f: ReturnType<typeof fakeChatwoot>, priv: boolean) =>
+    f.calls
+      .filter(
+        (c) =>
+          c.fn === "sendMessageAsAdmin" &&
+          (c.args[2] as { private: boolean }).private === priv,
+      )
+      .map((c) => String(c.args[1]));
+
+  describe("settings", () => {
+    test("both templates default to none, and are read trimmed", () => {
+      expect(CROSS_INBOX_CASE_DEFAULTS.openingTemplate).toBeNull();
+      expect(CROSS_INBOX_CASE_DEFAULTS.noteTemplate).toBeNull();
+      const c = readCrossInboxCaseConfig({
+        crossInboxCase: {
+          targetInboxId: 40,
+          openingTemplate: "  Olá {{mensagem}} ",
+          noteTemplate: " {{motivo}}\n",
+        },
+      });
+      expect(c.openingTemplate).toBe("Olá {{mensagem}}");
+      expect(c.noteTemplate).toBe("{{motivo}}");
+      const empty = readCrossInboxCaseConfig({
+        crossInboxCase: {
+          targetInboxId: 40,
+          openingTemplate: " ",
+          noteTemplate: "",
+        },
+      });
+      expect(empty.openingTemplate).toBeNull();
+      expect(empty.noteTemplate).toBeNull();
+    });
+
+    test("the message is asked for without a template, and by a template that has the placeholder", () => {
+      expect(openingAsksMessage(null)).toBe(true);
+      expect(openingAsksMessage("Olá {{mensagem}}")).toBe(true);
+      expect(openingAsksMessage("Olá {{ message }}")).toBe(true);
+      expect(openingAsksMessage("Olá, caso {{numero_caso}}")).toBe(false);
+    });
+
+    test("the opening: context variables, the case number, and the model's text kept literal", () => {
+      expect(
+        renderCaseOpening(TEMPLATE, "Vamos verificar.", 123, interpolate),
+      ).toBe(
+        "Olá, Ana!\n\nSua solicitação nº 123 foi recebida.\n\nVamos verificar.\n\nAtenciosamente,\nEquipe",
+      );
+      expect(
+        renderCaseOpening(
+          "{{case_number}}: {{message}}",
+          "Confira {{numero_caso}} e {{primeiro_nome}}",
+          9,
+          interpolate,
+        ),
+      ).toBe("9: Confira {{ '{{' }}numero_caso}} e {{ '{{' }}primeiro_nome}}");
+    });
+
+    test("the default note: the subject as the title, a link to the origin, the reason", () => {
+      const note = renderCaseNote(
+        null,
+        {
+          subject: "Pedido de Ana: troca",
+          reason: "Linha um\nLinha dois",
+          originUrl: ORIGIN,
+        },
+        interpolate,
+      );
+      const lines = note.split("\n").filter((l) => l.trim() !== "");
+      expect(lines[0]).toBe("### Pedido de Ana: troca");
+      expect(note).toContain(`](${ORIGIN})`);
+      expect(note).toContain("Linha um\nLinha dois");
+      const bare = renderCaseNote(
+        null,
+        { subject: null, reason: "x", originUrl: ORIGIN },
+        interpolate,
+      );
+      expect(bare).not.toContain("###");
+      expect(bare).toContain(`](${ORIGIN})`);
+    });
+
+    test("the note template takes its variables in both languages, and the model's text stays literal", () => {
+      expect(
+        renderCaseNote(
+          "{{assunto}}|{{subject}}|{{motivo}}|{{reason}}|{{link_origem}}|{{origin_url}}|{{primeiro_nome}}",
+          { subject: "S", reason: "R {{assunto}}", originUrl: ORIGIN },
+          interpolate,
+        ),
+      ).toBe(
+        `S|S|R {{ '{{' }}assunto}}|R {{ '{{' }}assunto}}|${ORIGIN}|${ORIGIN}|Ana`,
+      );
+      expect(
+        renderCaseNote(
+          null,
+          { subject: "Troca {{x}}", reason: "R", originUrl: ORIGIN },
+          interpolate,
+        ),
+      ).toStartWith("### Troca {{ '{{' }}x}}\n");
+    });
+  });
+
+  describe("the service", () => {
+    test("a template with the message: one opening, rendered around the model's part, with the case number and no signature", async () => {
+      const f = fakeChatwoot();
+      await openCaseInInbox(
+        f.client,
+        withTemplates(TEMPLATE, null, {
+          customerMessage: "Vamos verificar seu pedido.",
+          signCustomerMessage: (t) => `${t}\n-- Assinatura`,
+        }),
+      );
+      expect(sends(f, false)).toEqual([
+        "Olá, Ana!\n\nSua solicitação nº 100 foi recebida.\n\nVamos verificar seu pedido.\n\nAtenciosamente,\nEquipe",
+      ]);
+    });
+
+    // The model's part goes in escaped once, whether the opening is sent or kept as a note; the
+    // operator's text around it keeps its Liquid for Chatwoot to render.
+    test("a template's model part is escaped once, sent or kept as a note, and the operator's Liquid stays", async () => {
+      const tpl = "{{contact.name}}, caso {{numero_caso}}: {{mensagem}}";
+      const f = fakeChatwoot();
+      await openCaseInInbox(
+        f.client,
+        withTemplates(tpl, null, { customerMessage: "veja {{contact.email}}" }),
+      );
+      expect(sends(f, false)).toEqual([
+        "{{contact.name}}, caso 100: veja {{ '{{' }}contact.email}}",
+      ]);
+      const closed = fakeChatwoot({ canReply: false });
+      await openCaseInInbox(
+        closed.client,
+        withTemplates(tpl, null, { customerMessage: "veja {{contact.email}}" }),
+      );
+      expect(
+        sends(closed, true).some((n) =>
+          n.endsWith(
+            "{{contact.name}}, caso 100: veja {{ '{{' }}contact.email}}",
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    test("without a template the opening is the model's text, signed, as before", async () => {
+      const f = fakeChatwoot();
+      await openCaseInInbox(
+        f.client,
+        withTemplates(null, null, {
+          signCustomerMessage: (t) => `${t} -- Ana`,
+        }),
+      );
+      expect(sends(f, false)).toEqual([
+        "Olá! Abrimos seu atendimento por aqui. -- Ana",
+      ]);
+    });
+
+    test("a fixed template goes out even when the model wrote nothing", async () => {
+      const f = fakeChatwoot();
+      await openCaseInInbox(
+        f.client,
+        withTemplates(
+          "Olá, {{primeiro_nome}}! Caso nº {{numero_caso}}.",
+          null,
+          {
+            customerMessage: null,
+          },
+        ),
+      );
+      expect(sends(f, false)).toEqual(["Olá, Ana! Caso nº 100."]);
+    });
+
+    test("a template that needs the model's part sends nothing without it", async () => {
+      const f = fakeChatwoot();
+      await openCaseInInbox(
+        f.client,
+        withTemplates(TEMPLATE, null, { customerMessage: null }),
+      );
+      expect(sends(f, false)).toEqual([]);
+    });
+
+    test("a model part the output check refuses discards the whole opening; the case and its note still land", async () => {
+      const f = fakeChatwoot();
+      const r = await openCaseInInbox(
+        f.client,
+        withTemplates(TEMPLATE, null, {
+          customerMessage: "PROIBIDO",
+          screenCustomerMessage: async (t) =>
+            t.includes("PROIBIDO") ? "drop" : "send",
+        }),
+      );
+      expect(r).toMatchObject({ kind: "opened", openingBlocked: true });
+      expect(sends(f, false)).toEqual([]);
+      expect(sends(f, true)).toHaveLength(1);
+    });
+
+    test("a refused part discards a fixed opening too, when a caller passed one", async () => {
+      const f = fakeChatwoot();
+      await openCaseInInbox(
+        f.client,
+        withTemplates("Caso nº {{numero_caso}}.", null, {
+          customerMessage: "PROIBIDO",
+          screenCustomerMessage: async (t) =>
+            t.includes("PROIBIDO") ? "drop" : "send",
+        }),
+      );
+      expect(sends(f, false)).toEqual([]);
+    });
+
+    test("a continued case gets no opening, template or not", async () => {
+      const f = fakeChatwoot({
+        continueOpen: true,
+        convs: [
+          {
+            id: 7,
+            inboxId: 10,
+            contactId: 5,
+            status: "pending",
+            attrs: {},
+            labels: [],
+          },
+          {
+            id: 60,
+            inboxId: 40,
+            contactId: 5,
+            status: "open",
+            attrs: {},
+            labels: [],
+          },
+        ],
+      });
+      const r = await openCaseInInbox(
+        f.client,
+        withTemplates("Caso nº {{numero_caso}}.", null),
+      );
+      expect(r.kind).toBe("continued");
+      expect(sends(f, false)).toEqual([]);
+    });
+
+    test("a closed reply window leaves the rendered opening to the team", async () => {
+      const f = fakeChatwoot({
+        canReply: false,
+        inboxes: {
+          40: { name: "WhatsApp oficial", channel_type: "Channel::Whatsapp" },
+        },
+      });
+      await openCaseInInbox(
+        f.client,
+        withTemplates("Caso nº {{numero_caso}}."),
+      );
+      expect(sends(f, false)).toEqual([]);
+      expect(sends(f, true)[0]).toBe(
+        `${OPENING_OUTSIDE_WINDOW_PREFIX}Caso nº 100.`,
+      );
+    });
+
+    test("the case gets ONE note, headed by the subject, with the origin link and the reason", async () => {
+      const f = fakeChatwoot();
+      await openCaseInInbox(
+        f.client,
+        withTemplates(null, null, {
+          subject: "Pedido de Ana: troca",
+          reason: "Linha um\nLinha dois",
+        }),
+      );
+      const notes = sends(f, true);
+      expect(notes).toHaveLength(1);
+      expect(notes[0]).toStartWith("### Pedido de Ana: troca\n");
+      expect(notes[0]).toContain(`](${ORIGIN})`);
+      expect(notes[0]).toContain("Linha um\nLinha dois");
+    });
+
+    test("the operator's note template replaces the layout", async () => {
+      const f = fakeChatwoot();
+      await openCaseInInbox(
+        f.client,
+        withTemplates(null, "{{motivo}} em {{link_origem}}", {
+          reason: "troca",
+        }),
+      );
+      expect(sends(f, true)).toEqual([`troca em ${ORIGIN}`]);
+    });
+
+    test("a refused subject is not the note's title either", async () => {
+      const f = fakeChatwoot();
+      await openCaseInInbox(
+        f.client,
+        withTemplates(null, null, {
+          subject: "Assunto proibido",
+          screenCustomerMessage: async (t) =>
+            t === "Assunto proibido" ? "drop" : "send",
+        }),
+      );
+      expect(sends(f, true)[0]).not.toContain("Assunto proibido");
+    });
+
+    test("a note that does not land is one partial step", async () => {
+      const f = fakeChatwoot({ failOn: new Set(["sendMessageAsAdmin"]) });
+      const r = await openCaseInInbox(
+        f.client,
+        withTemplates(null, null, { customerMessage: null }),
+      );
+      expect((r as { partial: string[] }).partial).toEqual([
+        "destination_note",
+      ]);
+    });
+  });
+
+  describe("the tool", () => {
+    function openingTool(
+      f: ReturnType<typeof fakeChatwoot>,
+      template: string | null,
+      sign?: (t: string) => string,
+    ) {
+      const client = { ...f.client, muted: false } as unknown as ChatwootClient;
+      const [t] = buildNativeTools(
+        {
+          client,
+          conversationId: 7,
+          crossInboxCase: {
+            config: {
+              ...CROSS_INBOX_CASE_DEFAULTS,
+              targetInboxId: 40,
+              openingTemplate: template,
+            },
+            contactId: 5,
+            interpolate,
+            sign,
+          },
+        },
+        ["open_case_in_inbox"],
+      );
+      if (!t) throw new Error("tool not built");
+      return t;
+    }
+    const keys = (template: string | null) =>
+      Object.keys(
+        (
+          openingTool(fakeChatwoot(), template).schema as {
+            shape: Record<string, unknown>;
+          }
+        ).shape,
+      );
+
+    test("a fixed opening takes the message argument out of the schema", () => {
+      expect(keys("Olá, caso {{numero_caso}}")).not.toContain(
+        "customer_message",
+      );
+      expect(keys(TEMPLATE)).toContain("customer_message");
+      expect(keys(null)).toContain("customer_message");
+    });
+
+    test("the description says the opening is fixed when it is", () => {
+      const d = (t: string | null) =>
+        openingTool(fakeChatwoot(), t).description;
+      expect(d("Olá, caso {{numero_caso}}")).not.toContain("customer_message");
+      expect(d(TEMPLATE)).toContain("customer_message");
+    });
+
+    test("the tool renders the operator's opening, unsigned", async () => {
+      const f = fakeChatwoot();
+      const t = openingTool(f, TEMPLATE, (x) => `${x} -- Ana`);
+      await t.invoke({ reason: "x", customer_message: "Parte do modelo." });
+      expect(sends(f, false)).toEqual([
+        "Olá, Ana!\n\nSua solicitação nº 100 foi recebida.\n\nParte do modelo.\n\nAtenciosamente,\nEquipe",
+      ]);
     });
   });
 });

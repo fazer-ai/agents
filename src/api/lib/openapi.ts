@@ -1,14 +1,11 @@
 import { type DocumentDecoration, type TSchema, t } from "elysia";
 
-// Shared OpenAPI documentation helpers (DEV-only docs at /api/docs). They keep per-route annotations
-// DRY and consistent across controllers: a standard error-response schema, an `errors(...)` builder
-// for the `response` status map, and a `doc(...)` builder for `detail` (summary + description).
+// Shared OpenAPI documentation helpers (DEV-only docs at /api/docs): a standard error-response
+// schema, an `errors(...)` builder for the `response` status map, and a `doc(...)` builder for `detail`.
 //
-// SAFETY: declaring only ERROR statuses in `response` does NOT validate the 2xx success path (Elysia
-// validates per declared status; an undeclared 200 passes through and is inferred for the spec). The
-// app's error handler returns a raw `Response.json({ error })` (see src/app.ts onError), which Elysia
-// does not run through response validation either — so these annotations are documentation-only and
-// carry no runtime-validation risk.
+// SAFETY: declaring only ERROR statuses in `response` does NOT validate the 2xx path (Elysia validates
+// per declared status), and onError's raw `Response.json({ error })` (src/app.ts) skips response
+// validation too, so these annotations are documentation-only and carry no runtime-validation risk.
 
 // The canonical error body every endpoint returns on failure: `{ error: "<message>" }`, plus the
 // name of the value the refusal is about when it is about one (see src/api/lib/refusal.ts).
@@ -50,7 +47,7 @@ const STATUS_DESCRIPTION: Record<number, string> = {
   // only the limiter would be false about every route that lists this status.
   429: "Too many requests — rate limited, or a spend ceiling has been reached.",
   // Declared only where the body says more than the bare 500 every route can answer: the playground's
-  // turn entry points, whose failure names the turn it ended (issue #841).
+  // turn entry points, whose failure names the turn it ended.
   500: "Internal error — the request failed on the server.",
   502: "Bad gateway — an upstream dependency failed.",
 };

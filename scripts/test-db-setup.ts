@@ -56,9 +56,9 @@ async function main() {
     );
   }
 
-  // The `.env` name is the base; the target is per checkout, by the same derivation tests/setup.ts
+  // NOTE: The `.env` name is the base; the target is per checkout, by the same derivation tests/setup.ts
   // applies at preload. Deriving it in both places rather than asking each checkout to edit its
-  // `.env` is what makes the isolation impossible to forget — see tests/db-name.ts (issue #417).
+  // `.env` is what makes the isolation impossible to forget; see tests/db-name.ts.
   const dbName = testDbNameFor(declared, ROOT);
   if (dbName !== declared) {
     console.log(
@@ -76,21 +76,12 @@ async function main() {
       "SELECT 1 FROM pg_database WHERE datname = $1",
       [dbName],
     );
-    // A database in one of the states `reprovisionReasons` names cannot be REPAIRED by deploying,
-    // so it is dropped and rebuilt, which costs nothing because it holds test fixtures and nothing
-    // else.
-    //
-    // The connections are closed first, and that reverses a decision made earlier in this change on
-    // the reasoning that Postgres refusing is safer than killing a suite mid-run. What refuted it
-    // was measuring the refusal: `database "…" is being accessed by other users`, exit 1, with the
-    // holder being ONE backend in `state=idle` whose last statement was `ROLLBACK` — a pool
-    // connection leaked by a test process that had already exited. That is the ordinary case, not
-    // the concurrent-run case, so the refusal fires where there is nothing to protect and hands the
-    // reader a Postgres error naming no way out.
-    //
-    // What makes closing them defensible is the OTHER half of this change: the database is derived
-    // per checkout, so the only thing that can be connected is this checkout's own work, and the
-    // person typing this command owns it. `datname` fences the termination to this database alone.
+    // NOTE: a database in one of the states `reprovisionReasons` names cannot be REPAIRED by
+    // deploying, so it is dropped and rebuilt (it holds only test fixtures). Its connections are
+    // terminated first rather than letting Postgres refuse: the ordinary holder is an idle pool
+    // connection leaked by a test process that already exited, where a refusal protects nothing and
+    // names no way out. The database is derived per checkout, so whatever is connected is this
+    // checkout's own work; `datname` fences the termination to this database alone.
     if (rowCount !== 0) {
       const reasons = await reprovisionOf(targetSuUrl);
       if (reasons.length > 0) {

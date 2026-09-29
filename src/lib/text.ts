@@ -1,12 +1,8 @@
-// The two halves of one problem: a JS string is a sequence of UTF-16 code UNITS, not of characters.
-// An astral character (an emoji, a letter outside the BMP, a CJK extension ideograph) is stored as a
-// SURROGATE PAIR, and either half alone is not a character at all.
-//
-// Postgres says so out loud: a `jsonb` write carrying an unpaired surrogate is refused outright
-// (`22P02`, "Unicode low surrogate must follow a high surrogate"). `execution_logs.detail` is such a
-// column and `emitFlowEvent` is fire-and-forget with a catch, so the refusal never reaches the turn —
-// the stage line the operator later goes looking for simply is not there. Where one does survive a
-// write it renders as a replacement character in the middle of somebody's name or address.
+// A JS string is a sequence of UTF-16 code UNITS, not characters: an astral character (an emoji, a
+// letter outside the BMP) is a SURROGATE PAIR, and either half alone is not a character. Postgres
+// refuses a `jsonb` write carrying an unpaired surrogate (`22P02`), and since `emitFlowEvent` is
+// fire-and-forget the stage line the operator looks for is simply missing; where one survives a write
+// it renders as a replacement character in somebody's name.
 
 // Cut to `max` UTF-16 units without ever ending on half of a character. Dropping the orphan half
 // costs one character off a value that was too long anyway.
@@ -59,21 +55,11 @@ export function replaceLoneSurrogates(value: string): string {
     : value;
 }
 
-// The REPAIR half of the rule `unstorableProblem` REPORTS: same two characters, opposite policy.
-// Refusing is right where the author reads the refusal and can go fix the value (an operator's
-// form). Repairing is right where the writer is a third party's webhook, which never reads a
-// refusal and whose only recourse is to retry the identical bytes until its budget runs out. There
-// a refusal costs the event, and the repair keeps it.
-//
-// The two are not repaired the same way, because they do not mean the same thing. An unpaired
-// surrogate WAS half of a real character, so U+FFFD stands where that character was. A NUL never
-// stood for anything a reader would see, and is simply dropped.
-//
-// The ORDER carries a rule of its own: surrogates are repaired while the NULs are still in place.
-// Dropping the NUL out of `\ud800 \udc00` first would leave the two orphan halves adjacent, and
-// they would then read as the well-formed pair U+10000 and survive untouched, inventing a character
-// nobody wrote out of three defects. Repairing first keeps each defect represented by its own
-// U+FFFD.
+// The REPAIR half of the rule `unstorableProblem` REPORTS. Refusing is right where the author can fix
+// the value (an operator's form); repairing is right for a third party's webhook, which only retries
+// the same bytes. An unpaired surrogate WAS half a character, so U+FFFD takes its place; a NUL stood
+// for nothing and is dropped. Surrogates are repaired while the NULs are still in place: dropping
+// the NUL out of `\ud800 \udc00` first would join the two orphans into a pair U+10000 nobody wrote.
 export function makeStorable(value: string): string {
   const repaired = replaceLoneSurrogates(value);
   return repaired.includes(NUL) ? repaired.replaceAll(NUL, "") : repaired;
@@ -82,16 +68,11 @@ export function makeStorable(value: string): string {
 // A deeper document than any allowlisted projection has, which is the only shape this is called on.
 const MAX_STORABLE_DEPTH = 8;
 
-// `makeStorable` over a whole JSON document, KEYS included: one orphan half anywhere in it is enough
-// for Postgres to refuse the entire `jsonb` write, so the unit that has to come back storable is the
-// document, not the field. Reaching every string structurally is also what keeps a field added to
-// the shape later from arriving unrepaired.
-//
-// Values that are not part of a JSON document (a `Date`, a class instance) are returned as they are:
-// they carry no string for the write to choke on, and rebuilding them from their entries would
-// destroy them. Below the depth cap the branch is DROPPED rather than passed through: something
-// nested that deep is not the bounded projection this is for, and losing one branch of it beats
-// losing the whole event to a refused INSERT.
+// `makeStorable` over a whole JSON document, KEYS included: one orphan half anywhere makes Postgres
+// refuse the entire `jsonb` write, so the document is the unit, reached structurally so a field added
+// later is repaired too. Non-JSON values (a `Date`, a class instance) are returned as they are, since
+// rebuilding them would destroy them. Past the depth cap the branch is DROPPED: losing one branch
+// beats losing the whole event to a refused INSERT.
 export function makeStorableDeep<T>(value: T, depth = 0): T {
   if (typeof value === "string") return makeStorable(value) as T;
   if (value === null || typeof value !== "object") return value;
@@ -117,26 +98,16 @@ export function makeStorableDeep<T>(value: T, depth = 0): T {
   return out as T;
 }
 
-// What PostgreSQL refuses to STORE, which is a different question from what anything can draw.
-//
-// Two characters, one reason each. A NUL is not representable in `text` or in `jsonb`. An unpaired
-// surrogate is refused by a `jsonb` write outright (`22P02`, the same refusal `clipText` exists to
-// avoid producing). Neither needs truncation to arrive: any JSON body that spells one out
-// (`"\u0000"`, `"\ud800"`) hands `JSON.parse` the character directly, which an HTTP or MCP client can
-// send at any time.
-//
-// The consequence is what makes this worth a check rather than a catch: the value passes every
-// bound the API advertises and then fails at the INSERT — a 500 for a REST caller, or, inside a
-// transaction wrapping several writes, the loss of all of them. A refusal names what to change.
-//
-// SEPARATE from the documents module's `unprintableProblem`, and deliberately narrower: a string can
-// be perfectly storable and impossible to print (an emoji in a tool description a model reads and
-// nobody draws). A caller that only needs the value to survive its column asks this one.
+// What PostgreSQL refuses to STORE: a NUL (not representable in `text` or `jsonb`) and an unpaired
+// surrogate (refused by `jsonb`, `22P02`). Any JSON body can spell either (`"\u0000"`, `"\ud800"`),
+// and the value then passes every advertised bound and fails at the INSERT: a 500, or inside a
+// multi-write transaction the loss of all of them. Narrower than the documents module's
+// `unprintableProblem`: a string can be storable and still unprintable.
+
 // The offenders themselves, named by code point, or null when the value is storable. Separate from
-// the message because a REFUSAL that crosses a localized boundary needs the values, not a sentence:
-// interpolating an English sentence into a translated template answers a pt-BR caller in two
-// languages at once. The field name stays English on purpose, in both forms: it names the request
-// field the caller has to change, the way a schema path does.
+// the message because a REFUSAL that crosses a localized boundary needs the values, not an English
+// sentence interpolated into a translated template. The field name stays English on purpose: it
+// names the request field the caller has to change, the way a schema path does.
 export function unstorableCodePoints(value: string): string[] | null {
   // A Set, not a scan of a growing array: the distinct offenders number 2049 (a NUL and every
   // surrogate code unit), so `includes` on the accumulator turns a long malformed value into

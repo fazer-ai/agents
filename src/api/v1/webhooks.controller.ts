@@ -28,14 +28,9 @@ import {
 } from "@/modules/webhooks/outbound/subscriptions";
 import { sendWebhookTest } from "@/modules/webhooks/outbound/test";
 
-// Outbound webhook subscriptions (the fleet/integration fan-out targets). TENANT_ADMIN. The
-// secret VALUE never crosses this surface — `secretRef` is a NAME into the tenant vault. `events`
-// is validated against the closed OUTBOUND_EVENTS set (unknown → 400). GET /events lists the set
-// so the UI can render a multiselect without hardcoding it.
-//
-// NOTE: the subscription service (src/modules/...) throws these AppError translationKeys; they are
-// localized centrally in `onError`. Declared here (under src/api/**) so the API i18n extractor keeps
-// them — its input glob does not reach src/modules.
+// Outbound webhook subscriptions (fan-out targets). TENANT_ADMIN. The secret VALUE never crosses this
+// surface: `secretRef` is a NAME into the tenant vault. The service's translationKeys are declared
+// here because the API i18n extractor's glob does not reach src/modules.
 // translate('errors.unknownWebhookEvent', 'Unknown webhook event: {{event}}')
 // translate('errors.webhookSubscriptionNotFound', 'Webhook subscription not found')
 // translate('errors.webhookDeliveryNotFound', 'Webhook delivery not found')
@@ -229,7 +224,7 @@ export const webhooksController = new Elysia({
     },
   )
   // Synchronously POSTs a sample `webhook.test` payload to the subscription's URL (signed if it has a
-  // secretRef) and returns the delivery outcome — a reachability probe, not a queued event.
+  // secretRef) and returns the delivery outcome: a reachability probe, not a queued event.
   .post(
     "/subscriptions/:id/test",
     async ({ tenantContext, params }) => ({
@@ -255,10 +250,8 @@ export const webhooksController = new Elysia({
     },
   )
   // ── deliveries ──
-  // The delivery ledger, read-only plus one requeue. Before issue #305 there was no delivery-facing
-  // route at all, so an integrator watching for events that never arrived had to read
-  // `outbound_webhook_deliveries` in Postgres — a table whose columns the worker owns and changes.
-  // Keyset pagination by id desc, same shape as /v1/logs. The payload is never returned.
+  // The delivery ledger, read-only plus one requeue, so an integrator never reads
+  // `outbound_webhook_deliveries` (whose columns the worker owns) directly. Keyset pagination by id desc, same shape as /v1/logs. The payload is never returned.
   .get(
     "/deliveries",
     async ({ tenantContext, query }) => ({
@@ -341,7 +334,7 @@ export const webhooksController = new Elysia({
     },
   )
   // Puts a DEAD delivery back in the worker's queue: status PENDING, `attempts` reset to 0 so the
-  // retry ladder starts over, next attempt due immediately. Only DEAD can be requeued — a delivery
+  // retry ladder starts over, next attempt due immediately. Only DEAD can be requeued: a delivery
   // the worker is currently posting (SENDING) would be at risk of a double delivery, and anything
   // else is either already queued or already delivered. The refusal names the current status (409).
   .post(

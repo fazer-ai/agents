@@ -26,7 +26,7 @@ import {
 // translate('errors.codeToolNameTaken', 'That tool name is already in use by another tool.')
 
 // Operator-authored code tools (per-tenant): a JavaScript function body the agent calls with typed
-// arguments, run in the sandbox (issue #363). TENANT_ADMIN; the scoped service is the hard
+// arguments, run in the sandbox. TENANT_ADMIN; the scoped service is the hard
 // boundary. A body that does not parse is SAVED and answered with `warnings`; it fails at call
 // time as the operator's failure.
 
@@ -57,12 +57,10 @@ export const writeBody = t.Object({
         "What the tool answers and when to call it, read by the agent to decide. Required on create.",
     }),
   ),
-  // `t.Unknown`, not `t.Record`: the record schema REBUILDS the map, and a field named `__proto__`
-  // becomes the object's prototype on the way in — the service's refusal (code-tools/service.ts)
-  // would then judge a schema the caller never sent, and the tool would save with the declared
-  // argument missing. Measured: `t.Record` answers own keys `["cpf"]` for a body that also sent
-  // `__proto__`; `t.Unknown` keeps both. The shape is still described here and validated by the
-  // service's own zod.
+  // `t.Unknown`, not `t.Record`: the record schema REBUILDS the map, so a field named `__proto__`
+  // becomes the prototype and leaves the own keys. The service's refusal (code-tools/service.ts)
+  // would then judge a schema the caller never sent, and the tool would save with that argument
+  // missing. The service's own zod validates the shape.
   inputSchema: t.Optional(
     t.Unknown({
       description:
@@ -167,7 +165,7 @@ export const codeToolsController = new Elysia({
       body: createBody,
     },
   )
-  // Run the body on screen, unsaved, with typed arguments — the operator's "test step" — through
+  // Run the body on screen, unsaved, with typed arguments (the operator's "test step") through
   // the same code path a turn uses (modules/code-tools/test-run.ts).
   .post(
     "/test",

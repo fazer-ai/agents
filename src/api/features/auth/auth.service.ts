@@ -39,7 +39,7 @@ export function getSignupRoleForEmail(
     : "AGENT";
 }
 
-// A person and the tenants they belong to (issue #756): one user per email, a membership per tenant.
+// A person and the tenants they belong to: one user per email, a membership per tenant.
 const AUTH_USER_SELECT = {
   id: true,
   email: true,
@@ -103,9 +103,7 @@ export function isAdminAnywhere(row: {
 
 export async function getUserByEmail(email: string) {
   // NOTE: `findFirst` over a case-insensitive match is still exact: the email is unique across the
-  // install, case folded (`users_email_key` on lower(email), issue #756), and `emailEquals` keeps
-  // `_`/`%` literal. Before, it was unique per tenant and this read picked one of a person's rows with
-  // no order at all.
+  // install, case folded (`users_email_key` on lower(email)), and `emailEquals` keeps `_`/`%` literal.
   return prisma.user.findFirst({
     where: { email: emailEquals(email) },
     select: {
@@ -180,11 +178,10 @@ export function slugifyCompany(name: string): string {
   return slug || "default";
 }
 
-// NOTE: First-run bootstrap. Creates the SUPER_ADMIN (no membership — fleet-level) and the initial
-// Tenant (named after the operator's company, Chatwoot-style onboarding — no more hardcoded
-// "Default"), inside one transaction under asSuperAdmin (the Tenant INSERT needs the fleet role so
-// RLS WITH CHECK passes). The advisory lock + count re-check make it idempotent across replicas.
-// Returns the SUPER_ADMIN user AND the new tenant id (so the client can auto-select it). Throws
+// First-run bootstrap: the SUPER_ADMIN (fleet-level, no membership) and the initial tenant, named
+// after the operator's company, in one transaction under asSuperAdmin (the tenant INSERT needs the
+// fleet role to pass RLS WITH CHECK). The advisory lock plus count re-check make it idempotent across
+// replicas. Returns the user and the new tenant id so the client can auto-select it; throws
 // SetupAlreadyCompleteError if a user exists.
 export async function createInitialAdmin(params: {
   email: string;

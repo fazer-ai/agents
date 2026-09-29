@@ -40,13 +40,11 @@ function acceptUrl(token: string): string {
 }
 
 // The principal these writes act as, built from the SESSION and never from the tenancy plugin.
-//
-// `tenantId` is the tenant the caller's session runs under — their selected membership, resolved
-// against what they belong to in `getAuthUser` (issue #756) — and null for a SUPER_ADMIN (fleet-wide
-// reach), the same scope `resolveScope(user, undefined)` already resolves for the reads. Mounting `tenancyPlugin`
-// here would hand these routes the `X-Tenant-Id` SELECTOR instead, and a fleet admin with a tenant
-// open in one tab would silently lose the ability to re-role anyone outside it. `actorType` is what
-// that plugin does supply elsewhere, so it is supplied here: without it a Bearer API key's writes
+// `tenantId` is the tenant the caller's session runs under (their selected membership, resolved in
+// `getAuthUser`), null for a SUPER_ADMIN, the same scope `resolveScope(user, undefined)` gives the
+// reads. Mounting `tenancyPlugin` would hand these routes the `X-Tenant-Id` SELECTOR instead, and a
+// fleet admin with a tenant open in one tab would silently lose the ability to re-role anyone outside
+// it. `actorType` is supplied as that plugin does elsewhere: without it a Bearer API key's writes
 // would all record as a cookie session.
 function actorOf(user: AuthUser): TenantContext {
   return {
@@ -183,12 +181,11 @@ export const adminController = new Elysia({
       }
       // NOTE: the PARSED id, not the path segment. `parseDbId` accepts leading zeros, so `007`
       // addresses row 7 while failing string equality against `"7"`, and comparing the raw segment
-      // let a caller past the guard that exists to stop them locking themselves out. Issue #371.
+      // would let a caller past the guard that stops them locking themselves out.
       const targetId = requireDbId(params.id);
-      // ANY self role change, not just the demote to AGENT. The narrower guard was only ever complete
-      // because the other transitions could not be stored: a fleet administrator naming a tenant can
-      // now make themselves that tenant's admin, and the next authentication lookup takes their fleet
-      // access away for good (#534). Nobody re-roles themselves here.
+      // NOTE: ANY self role change, not just the demote to AGENT: a fleet administrator naming a
+      // tenant can make themselves that tenant's admin, and the next authentication lookup takes their
+      // fleet access away for good. Nobody re-roles themselves here.
       if (user.id === targetId) {
         set.status = 403;
         return {
@@ -211,10 +208,9 @@ export const adminController = new Elysia({
           },
         };
       } catch (error) {
-        // The transition a fleet administrator's demotion describes is only storable with a tenant
-        // named, so an unnamed one is the request being wrong (422) and never the server failing
-        // (#534). The three below are the same idea: the row the write would produce cannot exist,
-        // and each says which half of it is the problem.
+        // NOTE: a fleet administrator's demotion is only storable with a tenant named, so an unnamed
+        // one is the request being wrong (422), never the server failing. The three below are the
+        // same idea: the row the write would produce cannot exist, and each says which half is wrong.
         if (error instanceof ConcurrentMoveError) {
           set.status = 409;
           return {
@@ -248,8 +244,8 @@ export const adminController = new Elysia({
             error: translate("errors.tenantNotFound", "Tenant not found"),
           };
         }
-        // The same invariant the delete answers with a 409, on the write that reduces the scope's
-        // administrator count without removing anybody (#496).
+        // NOTE: the same invariant the delete answers with a 409, on the write that reduces the
+        // scope's administrator count without removing anybody.
         if (error instanceof LastAdminError) {
           set.status = 409;
           return {

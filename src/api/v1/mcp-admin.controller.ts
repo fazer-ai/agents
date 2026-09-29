@@ -30,13 +30,11 @@ function principalOrThrow(ctx: TenantContext | null): TenantContext {
   return ctx;
 }
 
-// Admin surface for OUR MCP server (third transport): manage OAuth clients, see and
-// revoke active tokens, and read the connection info. SUPER_ADMIN-only (the mcp_oauth_* tables are
-// global, no RLS — the gate is the only fence). The client_secret hash and the JWTs themselves never
-// cross this surface. NOT for connecting external MCPs as tools (that is Resources → MCP servers).
-//
-// NOTE: the service throws these AppError translationKeys; declared here (under src/api/**) so the API
-// i18n extractor keeps them — its input glob does not reach src/modules.
+// Admin surface for OUR MCP server: OAuth clients, active tokens, connection info. SUPER_ADMIN-only
+// (the mcp_oauth_* tables are global, no RLS: the gate is the only fence). The client_secret hash
+// and the JWTs never cross this surface. External MCPs used as tools live elsewhere (Resources >
+// MCP servers). The service's translationKeys are declared here because the API i18n extractor's
+// glob does not reach src/modules.
 // translate('errors.mcpClientNotFound', 'MCP client not found')
 // translate('errors.mcpTokenNotFound', 'MCP token not found')
 // translate('errors.mcpApprovalNotFound', 'MCP approval not found')

@@ -51,9 +51,8 @@ export function deepSanitizeObject(
   return output;
 }
 
-// A config field is masked in the boot log by its NAME, not by joining a list: the list missed
-// `ttsCheck.token` the release it was added (issue #799), and the log printed 50 of its characters.
-// Only strings are masked, so a flag like `setupTokenRequired` stays readable.
+// A config field is masked in the boot log by its NAME, not by joining a list: a list misses the
+// next secret field someone adds, and the log prints it. Only strings are masked, so a flag like `setupTokenRequired` stays readable.
 const SECRET_CONFIG_KEY = /secret|token|password|key|databaseurl/i;
 
 export function configForBootLog(cfg: Record<string, unknown>) {
@@ -63,27 +62,10 @@ export function configForBootLog(cfg: Record<string, unknown>) {
   });
 }
 
-// A PINO TRANSPORT IS FOR A HUMAN WATCHING A TERMINAL, AND ONLY DEVELOPMENT HAS ONE.
-//
-// The condition is on `development` rather than on `not production`, and that is the whole of what
-// this note is about. A transport runs in a thread-stream WORKER THREAD, and the two contexts that
-// are not development each break on that worker for their own reason:
-//
-//   - production: the compiled binary's virtual FS cannot resolve packages like real-require, which is
-//     why this branch existed already. Docker/Coolify capture stdout natively, so plain JSON is
-//     what a deployment wants anyway.
-//   - test: `bun test` sets NODE_ENV=test (it overrides `.env`; see the note on `config.env`), so
-//     `!== "production"` used to be TRUE here and every test process built the worker. Serially that
-//     only costs a `logs/log` nobody reads. Under `bun test --parallel` it is fatal: measured on this
-//     suite at 18 workers, 229 × `error: the worker thread exited` and 225 failures, with 3207 tests
-//     never reaching a runner. Giving each process its OWN roll file changes nothing (measured: still
-//     229), so it is the worker, not the file. With this branch taken: 8192 pass, and the run drops
-//     from 193.6s to 50.8s at `--parallel=12`.
-//
-// The same worker has taken this suite down once before by another path: on Bun 1.4.0 `new Worker()`
-// read `MessagePort` off the mutable global, which happy-dom replaces, and the suite fell from 4133
-// passing to 2096 (oven-sh/bun#40268, fixed in 1.4.1; the preload carried a restore until then).
-// Nothing else in this codebase constructs a Worker; pino's transport was always the only one.
+// A pino transport (a thread-stream WORKER THREAD, the only Worker in this codebase) runs only in
+// `development`, not in "not production": a compiled binary's virtual FS cannot resolve packages like
+// real-require (and Docker/Coolify capture stdout as JSON anyway), and `bun test` sets NODE_ENV=test,
+// where the worker makes `bun test --parallel` processes die with `the worker thread exited`.
 let logger = pino(
   config.env !== "development"
     ? {

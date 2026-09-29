@@ -190,24 +190,22 @@ if (config.schedulerWorker.enabled) {
   void ensureAllTenantSweeps().catch((error) =>
     logger.warn({ error }, "Failed to arm follow-up sweeps"),
   );
-  // Arm the per-tenant recovery sweep for Chatwoot deliveries stranded on PROCESSING (issue #228).
-  // A deploy is both the thing that strands them and the thing that runs this, so the boot arm is
-  // what makes the recovery reach the rows the restart itself created.
+  // NOTE: Arm the per-tenant recovery sweep for Chatwoot deliveries stranded on PROCESSING. A deploy
+  // both strands them and runs this, so the boot arm is what reaches the rows the restart created.
   void ensureAllDeliverySweeps().catch((error) =>
     logger.warn({ error }, "Failed to arm Chatwoot delivery sweeps"),
   );
-  // Arm the per-tenant sweep for inbound deliveries stranded between the ack and the dispatch (issue
-  // #817), for every tenant with an inbound surface. Same reason as the Chatwoot sweep above: a
-  // deploy is what strands them.
+  // NOTE: Arm the per-tenant sweep for inbound deliveries stranded between the ack and the dispatch,
+  // for every tenant with an inbound surface: a deploy strands them too.
   void ensureAllInboundSweeps().catch((error) =>
     logger.warn({ error }, "Failed to arm inbound delivery sweeps"),
   );
-  // Arm the per-tenant spend ceiling poll for every tenant whose ceiling is on (issue #426), so a
-  // row lost to a reset is not a ceiling deciding on a figure frozen at its last poll.
-  // Knowledge sources (issue #794): each gets its perpetual sync row back, due one interval out.
+  // NOTE: Each knowledge source gets its perpetual sync row back, due one interval out.
   void ensureAllKnowledgeSourceSyncs().catch((error) =>
     logger.warn({ error }, "Failed to arm knowledge source syncs"),
   );
+  // NOTE: Arm the spend ceiling poll for every tenant whose ceiling is on, so a row lost to a reset
+  // is not a ceiling deciding on a figure frozen at its last poll.
   void ensureAllSpendPolls().catch((error) =>
     logger.warn({ error }, "Failed to arm spend ceiling polls"),
   );
@@ -238,12 +236,12 @@ if (config.compactionWorker.enabled) {
   startCompactionWorker();
 }
 
-// NOTE: reached through the EventEmitter surface because `process.on("SIGTERM", …)` no longer
-// type-checks. @types/node 25 declares `Process extends InternalEventEmitter<ProcessEventMap>`, so
+// Reached through the EventEmitter surface because `process.on("SIGTERM", …)` does not
+// type-check. @types/node 25 declares `Process extends InternalEventEmitter<ProcessEventMap>`, so
 // the signal handlers are INHERITED from an event map rather than declared as overloads, and
 // bun-types 1.4.0 augments `NodeJS.Process` with an explicit `on(event: "memoryPressure", …)`. A
 // member declared on the interface shadows the inherited one, so `on` narrows to "memoryPressure"
-// alone. Measured against this tsconfig: the literal call, `node:process`, a `NodeJS.Signals` cast,
+// alone. Under this tsconfig the literal call, `node:process`, a `NodeJS.Signals` cast,
 // `addListener` and `once` all fail; only the EventEmitter surface compiles. Upstream bug in
 // bun-types, not in this code — drop the cast once it declares these as overloads.
 const processEvents = process as NodeJS.EventEmitter;

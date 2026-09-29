@@ -1,17 +1,13 @@
 #!/usr/bin/env bun
 
 // Re-prices ledger rows (`llm_usage.cost_usd`) with the price table in the tree now, for when the
-// table that priced them was wrong (issue #867). Dry run unless `--apply`.
+// table that priced them was wrong. Dry run unless `--apply`.
 //
 //   bun scripts/reprice-usage.ts --tenant <id|all> --provider <provider> --model <model>
 //     [--from <ISO date>] [--to <ISO date>] [--price-table <litellm@…|none>] [--apply]
 //
-// `--provider` is required because the ledger does not record it and the table cannot infer it
-// (see src/modules/pricing/reprice.ts). `--from` is inclusive and `--to` exclusive. Without
-// `--price-table` the run covers every row something priced; `none` covers the rows written before
-// the column, which no table priced. Each row is priced as the capture would price it now: the
-// tenant's own price first, then what OpenRouter reported (never replaced by the table), then the
-// table.
+// `--provider` is required because the ledger does not record it. `--from` is inclusive, `--to`
+// exclusive; `--price-table none` selects rows no table priced. Pricing order: pricing/reprice.ts.
 
 import { parseArgs } from "node:util";
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -39,9 +35,9 @@ export function parseRepriceArgs(argv: string[]): RepriceOptions {
   });
   if (!values.tenant) throw new UsageError("--tenant <id|all> is required");
   if (!values.provider) throw new UsageError("--provider is required");
-  // An `openai-compatible` server that serves one model under no name writes `model: ""`, and a
-  // tenant's own price can name that empty model (issue #865), so an explicit empty value is a real
-  // target there; everywhere else it is a typo.
+  // NOTE: an `openai-compatible` server that serves one model under no name writes `model: ""`, and
+  // a tenant's own price can name that empty model, so an explicit empty value is a real target
+  // there; everywhere else it is a typo.
   if (values.model === undefined) throw new UsageError("--model is required");
   if (values.model === "" && values.provider !== "openai-compatible")
     throw new UsageError(

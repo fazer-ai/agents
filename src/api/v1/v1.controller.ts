@@ -326,7 +326,7 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     },
   )
   // Same gate as the list above, on purpose: whoever can read the conversations can see what the
-  // agent filter offers (issue #607), without the admin-only agent configuration.
+  // agent filter offers, without the admin-only agent configuration.
   .get(
     "/conversations/agents",
     async ({ tenantContext }) => ({
@@ -536,18 +536,12 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
       return { instance: instanceIdentity, outcome };
     },
     {
-      // RANK, NOT JUST A SESSION (issue #753), and é a única das quatro rotas de conversa que pede
-      // isso. As outras três — `/handoff`, `/return` e `/status` — são as ops que o `docs/ui.md`
-      // descreve como a tela do atendente, e `/conversations` é a única rota do console que de
-      // propósito não é admin-gated. Esta fala com o CLIENTE: ela dispara um turno proativo, no
-      // orçamento de modelo do tenant, e isso não é operar uma conversa.
-      //
-      // `requireRole` e não uma comparação com `!== "AGENT"`: ele é hierárquico (`roleAtLeast`),
-      // então o SUPER_ADMIN e a chave de frota continuam entrando — é o que o `docs/tenancy.md`
-      // manda ("Gate by rank, never by `!== \"AGENT\"`"). E ele roda no `beforeHandle`, antes de o
-      // handler resolver o id, o que é a metade que não aparece no código: checada depois, a recusa
-      // distinguiria "existe" de "não existe" e viraria um oráculo de enumeração para quem não pode
-      // agir.
+      // RANK, not just a session, unlike `/handoff`, `/return` and `/status` (the attendant's
+      // screen in docs/ui.md): this route speaks to the CUSTOMER, firing a proactive turn on the
+      // tenant's model budget. `requireRole`, never `!== "AGENT"`: it is hierarchical, so SUPER_ADMIN
+      // and the fleet key still pass (docs/tenancy.md). It runs in `beforeHandle`, before the handler
+      // resolves the id: checked later, the refusal would tell "exists" from "does not" and become an
+      // enumeration oracle for whoever cannot act.
       requireRole: "TENANT_ADMIN",
       params: t.Object({
         id: t.String({
@@ -723,8 +717,8 @@ export const v1Controller = new Elysia({ prefix: "/v1" })
     },
     {
       query: t.Object({
-        // Usage segment: "inbox" (real) | "playground". Omitted → both of our environments, and
-        // never the project's other traffic (issue #427).
+        // Usage segment: "inbox" (real) | "playground". Omitted: both of our environments, and
+        // never the project's other traffic.
         source: t.Optional(
           t.Union([t.Literal("inbox"), t.Literal("playground")], {
             description:

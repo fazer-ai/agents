@@ -1,10 +1,8 @@
-// The console's `normalizeToolName` NFD-and-strip-\p{Diacritic} step as a `translate()` table for
-// SQL, generated from THIS runtime's Unicode over every code point: each one whose NFD, minus the
-// diacritics, is a single ASCII letter maps to that letter lowercased; each \p{Diacritic} that is
-// not a letter or a digit is deleted (listed past the end of the destination string, which is how
-// `translate` deletes). Written for prisma/migrations/20260903120000_rename_http_tools_named_after_natives,
-// whose test asks the SQL and the console the same answer on every code point of the first two
-// planes, so a table this script would generate differently is a red test, not a silent drift.
+// The console's `normalizeToolName` NFD-and-strip-\p{Diacritic} step as a SQL `translate()` table,
+// generated from THIS runtime's Unicode: a code point whose NFD minus diacritics is one ASCII letter
+// maps to that letter lowercased; a non-alphanumeric \p{Diacritic} is deleted (listed past the end
+// of the destination string). The migration 20260903120000_rename_http_tools_named_after_natives
+// embeds it, and its test compares SQL and console on the first two planes.
 //
 //   bun scripts/tool-name-translate-table.ts > /tmp/translate.json
 import { normalizeToolName } from "@/graph/tools/toolName";

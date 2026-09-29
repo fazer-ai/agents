@@ -18,12 +18,10 @@ import {
 // tenant-scoped — the scoped read is the boundary, because the filesystem has no RLS. Served under
 // /api, never staticPlugin.
 
-// NOTE: these AppError translationKeys are localized centrally in `onError`, not through a literal
-// translate() call, so they are declared here for the i18n extractor (keepRemoved: false). They
-// belong to the documents MODULE, and they are declared in this controller because the api extractor
-// only scans `src/api/**` — a declaration next to the throw site would be invisible to it, and the
-// customer-facing effect of a missing key is silent: `onError` falls back to the English message.
-// t/translate magic comments — keep defaults in sync with src/api/locales/*.json:
+// NOTE: these AppError translationKeys are localized centrally in `onError`, so they are declared
+// here for the i18n extractor (keepRemoved: false). They belong to the documents module, but the api
+// extractor only scans `src/api/**`, and a missing key silently falls back to English. Keep the
+// defaults in sync with src/api/locales/*.json.
 // translate('errors.documentTemplateNotFound', 'Document template not found')
 // translate('errors.documentNotFound', 'Document not found')
 // translate('errors.documentTemplateDisabled', 'This document template is disabled')
@@ -59,18 +57,11 @@ function ctxOrThrow(ctx: TenantContext | null): TenantContext {
   return ctx;
 }
 
-// Ids are constrained HERE, at the transport, rather than left to the global handler that turns a
-// BigInt parse error into a 400 by matching the word "BigInt" in an engine's message. That mapping
-// was measured and it does work today — but it is a coupling to wording nobody here controls, and a
-// malformed id is a validation failure the route can name on its own.
-// The conversation key an issued document is bound to, constrained to the SHAPE the runtime writes
-// and bounded.
-//
-// `issued_documents.thread_id` is indexed (tenantId, threadId), so a long enough value is refused by
-// POSTGRES with an index-row-size error — a 500 for a field a caller typed, on a route that
-// advertises validation. Three numeric ids is what the key IS (tenantId:instanceId:conversationId),
-// so anything else was never going to match a conversation anyway, and the length follows from the
-// shape rather than being a second guess at it.
+// The conversation key an issued document is bound to, constrained at the transport to the shape the
+// runtime writes (tenantId:instanceId:conversationId) and bounded by it. `issued_documents.thread_id`
+// is indexed, so an unbounded value is refused by Postgres with an index-row-size error, a 500 for a
+// field a caller typed. Ids are constrained here rather than left to the global handler that maps a
+// BigInt parse error to 400 by matching wording in an engine's message.
 export const threadIdSchema = t.String({
   pattern: "^[0-9]{1,20}:[0-9]{1,20}:[0-9]{1,20}$",
   maxLength: 64,

@@ -15,15 +15,14 @@ export const tenancyPlugin = new Elysia({ name: "tenancy" })
       user,
       headers["x-tenant-id"],
     );
-    // NOTE: refused here, not folded into "no target". This is the same refusal a path id gets, in
-    // the same vocabulary, for the same reason: the value names a row and does not spell one. The
-    // three routes measured in lib/tenancy.ts answered a mistyped selector three different ways,
-    // one of them a 200. Issue #371.
+    // NOTE: refused here, not folded into "no target": it is the same refusal a malformed path id
+    // gets, since the value names a row and does not spell one. Folding it in lets a mistyped
+    // selector answer 200 on some routes.
     if (malformedSelector !== undefined) {
       requireDbId(malformedSelector, "X-Tenant-Id");
     }
-    // Tag audit attribution when the principal came from a Bearer API key (vs the cookie session),
-    // and carry the step-up the key was, or was not, minted under, for `confirmStepUp`.
+    // NOTE: tag audit attribution when the principal came from a Bearer API key (vs the cookie
+    // session), and carry the step-up the key was, or was not, minted under, for `confirmStepUp`.
     if (context && user?.isApiKey) {
       context.actorType = "api_key";
       context.stepUpAt = user.stepUpAt ?? null;

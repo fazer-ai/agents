@@ -1,19 +1,11 @@
 // One outbound call, bounded in TIME and in MEMORY, for every place that fetches a third party and
-// then reads what came back.
+// then reads what came back. A timer cleared in the fetch's own `finally` bounds only the response
+// HEADERS: the body read after it has no end (a stalled provider holds a tool call forever), and
+// `.text()` has no size bound either. So the fetch and the body read share one `try` and one timer,
+// the read keeps only a prefix, and callers get the text, never the unread `Response`.
 //
-// Both bounds exist because of the same slip, measured in issue #464: an `AbortController` armed
-// for the fetch and cleared in the `finally` of that fetch is a bound on the RESPONSE HEADERS. The
-// body is read afterwards, outside it, with nothing left to end it — under a 300ms bound a
-// provider that answered at once and then stalled was still pending at 3,002ms, and mid-turn that
-// is a tool call that never returns. `.text()` has no size bound either: the same probe took
-// 1,438 MiB of resident memory from a single call, three seconds in and still climbing.
-//
-// So the fetch and the body read live inside one `try`, under one timer, and the read keeps only a
-// prefix. Callers get the text, never the unread `Response`, which is what makes the bound
-// impossible to step outside of by accident: there is no second read to forget to cover.
-//
-// `src/modules/chatwoot/client.ts` reaches the time half a different way — `AbortSignal.timeout()`
-// stays armed through the body read, with no timer to clear — and needs nothing from here.
+// `src/modules/chatwoot/client.ts` bounds time differently (`AbortSignal.timeout()` stays armed
+// through the body read) and needs nothing from here.
 
 import { clipText } from "@/lib/text";
 
@@ -102,9 +94,8 @@ export interface BoundedResponse {
   body: OutboundBody;
 }
 
-// The fetch and the read under ONE timer. Everything that makes the bound real lives here rather
-// than at the call sites, which is the point: the shape it replaces was correct in five files and
-// wrong in three, and nothing about reading any of them told the two apart.
+// The fetch and the read under ONE timer, here rather than at each call site so no caller can
+// bound the headers and forget the body.
 async function bounded<T>(
   url: string,
   init: RequestInit,
@@ -139,15 +130,11 @@ async function bounded<T>(
   }
 }
 
-// A REQUEST'S OWN SIGNAL AND THE TURN'S DEADLINE, COMBINED — never one chosen over the other.
-//
-// Both callers of this reach a wrapper that sits UNDER a layer which has already put its own
-// controller in `init.signal`: the Chatwoot client arms `AbortSignal.timeout` per request, and
-// `bounded` below replaces the signal with the controller whose timer also cuts the body read.
-// Preferring the caller's therefore drops the deadline on every real call, and preferring the
-// deadline disarms the timeout that keeps a stalled provider from holding the turn. Lives here, in
-// one place, because the two wrappers that need it are in different modules and a rule stated twice
-// is a rule that drifts (issue #568, review rounds 14 and 15 — the same defect found twice).
+// A request's own signal and the turn's deadline, COMBINED, never one chosen over the other. Both
+// callers sit under a layer that already put its own controller in `init.signal` (the Chatwoot
+// client's `AbortSignal.timeout`, or `bounded`'s body-read timer): preferring the caller's drops the
+// deadline, and preferring the deadline disarms the timeout that stops a stalled provider. One
+// helper because the two wrappers live in different modules.
 export function withDeadline(
   own: AbortSignal | null | undefined,
   expiresOn: AbortSignal,

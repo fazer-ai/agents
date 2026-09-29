@@ -61,28 +61,21 @@ export function translateWithLocale(
   defaultValue?: string,
   params?: Record<string, string | number>,
 ): string {
-  // A placeholder the caller never supplied survives i18next untouched, so the reader would get
-  // `Unknown timezone: {{timezone}}.` — worse than the English it replaced, because the untranslated
-  // fallback was already interpolated by the throw site. Three keys shipped in that state in the
-  // round that registered them (issue #256 review), which is the same invisibility the whole catalog
-  // guard exists for: nothing throws, nothing logs.
-  //
-  // Asked of the TEMPLATE, never of the rendered string. The rendered string carries interpolated
-  // VALUES, and a value can legitimately hold braces: a document-template refusal quotes the token
-  // it rejected (`token "{{cliente}}" names no field...`), so reading the output would call a
-  // correct translation broken and drop it back to English. That regression is why this reads the
-  // catalog instead.
+  // NOTE: a placeholder the caller never supplied survives i18next untouched (`Unknown timezone:
+  // {{timezone}}.`), worse than the English fallback the throw site already interpolated, and
+  // nothing throws or logs. Asked of the TEMPLATE, never of the rendered string: an interpolated
+  // value can legitimately hold braces (a document-template refusal quotes `{{cliente}}`).
   const template = CATALOG[locale].errors[key.slice("errors.".length)];
   const unfilled =
     template !== undefined &&
     [...template.matchAll(/\{\{(\w+)\}\}/g)].some(
       (m) => params?.[m[1] as string] === undefined,
     );
-  // Information beats language: a pt-BR caller reading an English sentence that names the value can
+  // NOTE: information beats language: a pt-BR caller reading an English sentence that names the value can
   // act on it, and one reading `{{timezone}}` cannot.
   if (unfilled && defaultValue !== undefined) return defaultValue;
 
-  // NOTE: params spread into the options bag — i18next resolves {{placeholders}} from it.
+  // NOTE: params spread into the options bag: i18next resolves {{placeholders}} from it.
   return i18n.t(key, {
     lng: locale,
     defaultValue: defaultValue ?? key,

@@ -7,16 +7,12 @@ import { AppError } from "@/lib/errors";
 // connections, integration callbacks). Blocks private / loopback / link-local / CGNAT /
 // metadata ranges (IPv4, IPv6, and IPv4-mapped IPv6), enforces https, and resolves
 // hostnames to check the actual target. See docs/api-and-fleet.md.
-//
-// NOTE: this resolves-and-checks immediately before use, which closes most of the gap but
-// not a determined DNS-rebinding TOCTOU (a hostname's record can flip to a private/metadata
-// IP between this lookup and the socket connect, since fetch re-resolves independently —
-// Bun fetch exposes no per-request DNS/connect hook to pin the validated IP). Full mitigation
-// pins the connection to the resolved IP via a custom dispatcher; TRACKED for the fetch
-// wrapper (known HIGH limitation, surfaced by the review). Until then, callers should
-// lock origins to an allowlist where the set of legitimate hosts is known. The outbound
-// webhook URL is set by a TENANT_ADMIN, so the residual threat is a privileged operator, not
-// an anonymous attacker.
+
+// Known limitation: this resolves-and-checks right before use, but fetch re-resolves on its own, so
+// a DNS-rebinding TOCTOU can still flip the record to a private IP before connect (Bun fetch has no
+// hook to pin the validated IP; full mitigation needs a custom dispatcher). Lock origins to an
+// allowlist where the legitimate hosts are known. The outbound webhook URL is set by a TENANT_ADMIN,
+// so the residual threat is a privileged operator, not an anonymous attacker.
 
 export class SsrfError extends AppError {
   constructor(message: string) {
@@ -70,7 +66,7 @@ export function isBlockedIpv4(ip: string): boolean {
 // embedded dotted-decimal IPv4 tail. Returns null on anything malformed (caller fails closed).
 // We parse to groups ourselves because `new URL()` rewrites embedded IPv4 into HEX hextets
 // (https://[::ffff:169.254.169.254] → [::ffff:a9fe:a9fe]); a text regex over the original
-// string misses that form and was a real SSRF bypass to metadata/loopback/RFC1918.
+// string misses that form, which would let a request through to metadata/loopback/RFC1918.
 function ipv6Groups(ip: string): number[] | null {
   let s = ip.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
   const zone = s.indexOf("%");
@@ -162,28 +158,12 @@ export function isBlockedIp(ip: string): boolean {
   return true; // not an IP literal → fail-closed
 }
 
-// The resolver codes that mean "this name does not exist", as opposed to "ask again later".
-//
-// Under the runtime this app actually runs on, the answer is: there is no such distinction to make.
-// Measured under Bun — a nonexistent name, a name with no A record, and a 300-character label all
-// arrive as `code: "ENOTFOUND", errno: 4`, and `errno` is that constant for every one of them. So
-// the error carries nothing to classify on, and this predicate is always true there.
-//
-// Node collapses less: reading its `DNSException`, exactly two libuv errnos are renamed
-// (`if (code === UV_EAI_NODATA || code === UV_EAI_NONAME) code = 'ENOTFOUND'`), everything else
-// keeps its own name, and `EAI_SYSTEM` becomes the underlying errno — descriptor exhaustion is
-// `EMFILE`. But the app does not run on Node, so that is a property of the fallback, not of
-// production.
-//
-// The predicate stays a GATE rather than being collapsed into "any failure refuses", and it is not
-// dead code: the resolver is injectable, and a runtime that does distinguish gets round 2's
-// behaviour immediately — a transient failure propagating instead of telling the caller its URL is
-// wrong. On Bun it is simply always true, and the refusal below is what a fail-closed SSRF guard
-// owes anyway: a lookup we could not complete is a destination we could not verify.
-//
-// A 400 rather than a 500 for that, deliberately, and it is the coherence argument this whole PR is
-// about: the empty-result branch two lines down already answers 400 for the same fact. Answering it
-// 400 through one branch and 500 through the other, for the same URL, is the split being closed.
+// The resolver codes that mean "this name does not exist", as opposed to "ask again later". Under
+// Bun every lookup failure arrives as `ENOTFOUND`, so this is always true in production; Node keeps
+// other failures distinct (`EAI_AGAIN`, `EMFILE`). It stays a GATE rather than "any failure refuses"
+// because the resolver is injectable and a runtime that distinguishes should propagate a transient
+// failure. Refusing on Bun is what a fail-closed guard owes anyway, and it is a 400 to match the
+// empty-result branch below, which answers the same fact.
 const PERMANENT_DNS_FAILURES = new Set(["ENOTFOUND"]);
 
 export function isNameNotFound(e: unknown): boolean {
@@ -200,7 +180,7 @@ export interface SafeUrlOptions {
   // SSRF_ALLOW_PRIVATE_TARGETS=true is set explicitly). Protocol and URL-parseability checks
   // always run regardless — file:, ftp:, etc. are never allowed.
   allowPrivate?: boolean;
-  // NOTE: the internal targets THIS call may reach with the guard on (issue #615), normally
+  // The internal targets THIS call may reach with the guard on, normally
   // `config.ssrf.internalTargets`. Absent everywhere except the HTTP tool, and there only for a tool
   // whose own allowedHosts names the host: a call site that does not pass it keeps the full guard,
   // which is the property the instance-wide flag lacks. See `matchInternalTarget`.
@@ -285,14 +265,9 @@ export async function assertSafeOutboundUrl(
     return url;
   }
 
-  // NOTE: a lookup that comes back with a PERMANENT not-found is the same answer as an empty
-  // result — the host does not exist — and has to leave here as the same 400, or the caller gets a
-  // 500 for a URL the operator simply typed wrong. Surfaced when the MCP previews started asking
-  // this ahead of the write (#490); the apply had the hole already, it was just harder to reach.
-  //
-  // Everything else propagates untouched, and the difference is not cosmetic: `EAI_AGAIN` and a
-  // timeout mean the RESOLVER failed, not that the name is bad, and answering 400 there tells the
-  // caller its input is wrong and not to retry — for a hostname that may be perfectly valid.
+  // NOTE: a PERMANENT not-found is the same answer as an empty result (the host does not exist) and
+  // leaves as the same 400, not a 500 for a mistyped URL. Everything else propagates: `EAI_AGAIN` or
+  // a timeout means the RESOLVER failed, and a 400 would tell the caller not to retry a valid name.
   let addresses: { address: string }[];
   try {
     addresses = await (opts.lookup ?? lookup)(host, { all: true });

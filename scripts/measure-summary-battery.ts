@@ -1,23 +1,11 @@
-// A/B battery for the attendance summariser (modules/memory/summarize.ts).
-//
-// It exists because the summary this call writes is not a reply that is read once: it becomes the
-// memory head, position 0 of every future turn for that contact, written once and never rewritten.
-// So "does a cheaper model do here" is a question that has to be MEASURED, and the number has to be
-// re-derivable by whoever reads it later — the previous battery's harness was never committed and
-// its figures had to be reconstructed by hand.
-//
-// It drives the production function with a real model rather than re-implementing the prompt, so it
-// cannot drift from what ships. Every axis is deterministic (no judge model), which is what makes a
-// published figure reproducible.
+// A/B battery for the attendance summariser (modules/memory/summarize.ts). Its summary becomes the
+// memory head (position 0 of every later turn for that contact, never rewritten), so whether a
+// cheaper model does here is MEASURED, reproducibly: it drives the production function with a real
+// model, and every axis is deterministic (no judge model). The axes are the prompt comment's own:
+// complete facts, the customer's name, invention, leaked writing (non-Latin script in a pt-BR
+// summary) and median length (text without facts is context paid for on every later turn).
 //
 //   OPENAI_API_KEY=... bun scripts/measure-summary-battery.ts --models gpt-5.4-mini,gpt-5.4-nano --n 32
-//
-// Axes, the same ones the prompt's own comment publishes:
-//   complete facts   every fact the next attendance would need is present
-//   name             the customer's name survived (the axis that rejected variant C)
-//   invention        something asserted that the transcript does not contain
-//   leaked writing   a run of non-Latin script inside a pt-BR summary (a model artifact)
-//   median length    characters — text without facts is context paid for on every later turn
 
 import {
   AIMessage,

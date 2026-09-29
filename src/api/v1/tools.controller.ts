@@ -46,8 +46,7 @@ function ctxOrThrow(ctx: TenantContext | null): TenantContext {
 }
 
 // Exported for the schema-drift guard in tests: every field the service create/update schema accepts
-// must appear here, or Elysia's normalize silently strips it from the request body (this is exactly
-// how `label` once got dropped, leaving the saved label stuck at the backfilled identifier).
+// must appear here, or Elysia's normalize silently strips it from the request body.
 export const writeBody = t.Object({
   name: t.Optional(
     t.String({ description: "Tool name the agent sees when selecting tools." }),
@@ -92,12 +91,10 @@ export const writeBody = t.Object({
         "Static request headers; values may contain {{secret}} placeholders.",
     }),
   ),
-  // `t.Unknown`, not `t.Record`: the record schema REBUILDS the map, and a field named `__proto__`
-  // becomes the object's prototype on the way in — the service's refusal (code-tools/service.ts)
-  // would then judge a schema the caller never sent, and the tool would save with the declared
-  // argument missing. Measured: `t.Record` answers own keys `["cpf"]` for a body that also sent
-  // `__proto__`; `t.Unknown` keeps both. The shape is still described here and validated by the
-  // service's own zod.
+  // `t.Unknown`, not `t.Record`: the record schema REBUILDS the map, so a field named
+  // `__proto__` becomes the object's prototype on the way in, the service's refusal
+  // (code-tools/service.ts) judges a schema the caller never sent, and the tool saves with the
+  // declared argument missing. The shape is still described here and validated by the service's zod.
   inputSchema: t.Optional(
     t.Unknown({
       description:
@@ -116,12 +113,10 @@ export const writeBody = t.Object({
         "Query-string params (any method); values may contain {{param}}/{{context}}/{{secret}} placeholders.",
     }),
   ),
-  // NOTE: deliberately a permissive Record, not a union of the three body modes. Declaring the modes
-  // structurally is the better contract on paper and is worse here: Elysia's `normalize` STRIPS what
-  // a schema does not declare (see the riskTier case in tools-controller.test.ts), so a body in an
-  // unsupported shape came back 200 with `body: {}` — the operator's payload silently emptied, which
-  // is issue #150 itself moved one layer earlier. Passing it through intact is what lets the service
-  // refuse it with a message that says what to write instead.
+  // Deliberately a permissive Record, not a union of the three body modes: Elysia's `normalize`
+  // STRIPS what a schema does not declare (see the riskTier case in tools-controller.test.ts), so a
+  // body in an unsupported shape would come back 200 with `body: {}`, silently emptied. Passing it
+  // through intact lets the service refuse it with a message that says what to write instead.
   body: t.Optional(
     t.Record(t.String(), t.Unknown(), {
       description:
@@ -169,16 +164,12 @@ export const writeBody = t.Object({
   ),
 });
 
-// The CREATE route's own body. `writeBody` above describes what a PATCH accepts, where every field
-// being optional is correct, and a POST that borrows it lets a request missing a required field
-// through the transport: the refusal then comes from the service's zod schema, whose `ZodError`
-// src/app.ts has no branch for, so the caller is told the server broke about a field they own
-// (issue #301, measured: `POST` with `{}` answered 500 `Something went wrong`).
-//
-// Composed rather than written out, so the descriptions and the field list stay in one place and a
-// field added to `writeBody` cannot be missing here. WHICH fields are required is not written twice
-// either: tests/api/v1/write-body-required.test.ts derives that set from the service's create schema
-// and fails if the two drift.
+// The CREATE route's own body. `writeBody` describes a PATCH, where every field is optional; a POST
+// borrowing it lets a request missing a required field through the transport, and the service's
+// `ZodError` (src/app.ts has no branch for it) answers 500 about a field the caller owns. Composed
+// from `writeBody`, so the descriptions and the field list stay in one place. WHICH fields are
+// required is not written twice: tests/api/v1/write-body-required.test.ts derives that set from the
+// service's create schema and fails if the two drift.
 const CREATE_REQUIRED = [
   "name",
   "label",
@@ -275,8 +266,8 @@ export const toolsController = new Elysia({
       body: createBody,
     },
   )
-  // Run the definition on screen, unsaved, against the real API — the loop that makes a response
-  // template writable (issue #456). It goes out through the same `buildHttpTool` a turn uses, so
+  // Run the definition on screen, unsaved, against the real API: the loop that makes a response
+  // template writable. It goes out through the same `buildHttpTool` a turn uses, so
   // every guard is the same code; see `modules/tool-definitions/test-run.ts` for why that matters
   // and for what is deliberately NOT wired (no appointment registration, no customer ack).
   .post(

@@ -40,8 +40,8 @@ import { replaceVaultSecret, vaultRefWhere } from "@/modules/vault/service";
 //     (Google's redirect carries no X-Tenant-Id), cookie-auth only. Always returns HTML so the popup
 //     can postMessage the result to its opener and self-close.
 
-// NOTE: these AppError translationKeys are localized centrally in `onError`; declared here for the
-// i18n extractor (keepRemoved: false). Keep in sync with src/api/locales/*.json.
+// These translationKeys are localized centrally in `onError`; declared here for the i18n extractor
+// (keepRemoved: false). Keep in sync with src/api/locales/*.json.
 // translate('errors.googleOAuthInvalidScope', 'Invalid Google OAuth scope: {{scope}}')
 // translate('errors.googleOAuthTooManyScopes', 'Too many Google OAuth scopes (at most {{max}})')
 // translate('errors.googleOAuthTokenExchangeFailed', 'Failed to exchange the Google authorization code')
@@ -245,10 +245,9 @@ export const oauthGoogleCallbackController = new Elysia({
         if (state.userId !== String(user.id)) {
           return htmlError(401, "state_user_mismatch", origin);
         }
-        // The user must be TENANT_ADMIN of the state's tenant (or SUPER_ADMIN).
-        // The role held in the STATE's tenant, not the callback request's: this navigation carries no
-        // tenant selector, so the session runs under the person's default membership, which need not
-        // be the tenant the flow was started from (issue #756).
+        // NOTE: the user must be TENANT_ADMIN (or SUPER_ADMIN) in the STATE's tenant, not the
+        // callback request's: this navigation carries no tenant selector, so the session runs under
+        // the person's default membership, which need not be the tenant the flow started from.
         const stateTenantId = parseDbId(state.tenantId);
         const roleThere =
           stateTenantId === null ? null : roleInTenant(user, stateTenantId);

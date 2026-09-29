@@ -43,9 +43,8 @@ import {
 // throw site rather than an English sentence on a pt-BR caller's screen.
 // translate('errors.chatwootAccountDisconnected', 'This account is disconnected. Reconnect it before assigning an agent.')
 // translate('errors.chatwootAccountTaken', 'This Chatwoot account is already connected to another tenant; one account belongs to a single tenant.')
-// NOTE: the bind and the REbind refuse differently, and so do the two confirmations. One key per
-// pair would answer "the confirmation does not match" to someone who typed the domain, with no
-// way to tell which of the two fields they got wrong.
+// NOTE: the bind and the rebind refuse differently, and so do the two confirmations: one key per
+// pair would not tell the operator which of the two fields they got wrong.
 // translate('errors.chatwootBindFailed', 'The bot could not be synced with Chatwoot.')
 // translate('errors.inboxGoneRemote', 'This inbox no longer exists in Chatwoot. Remove its mirror.')
 // translate('errors.agentAlreadyObserves', 'This agent already observes this inbox. Remove it as an observer before making it the answering agent.')
@@ -61,9 +60,8 @@ import {
 // translate('errors.chatwootDeploymentNotFound', 'No Chatwoot deployment is connected.')
 // translate('errors.chatwootDifferentDeployment', 'This tenant is already connected to a different Chatwoot deployment. Disconnect it first to switch servers.')
 // translate('errors.chatwootInstanceNotFound', 'Chatwoot instance not found.')
-// NOTE: the account bound and the cap are two answers to one question -- which accounts this
-// deployment can be asked for -- and they are separate keys because they send the operator to
-// different places: one to the account list, the other to a retry once Chatwoot answers again.
+// NOTE: the account bound and the cap are separate keys because they send the operator to
+// different places: one to the account list, the other to a smaller request.
 // translate('errors.chatwootAccountNotOnDeployment', 'This Chatwoot deployment does not report account(s) {{accounts}}. Pick from the accounts its token can reach.')
 // translate('errors.chatwootTooManyAccounts', 'Too many accounts in one request ({{count}}); at most {{max}} accounts can be set at once.')
 // translate('errors.chatwootProfileFailed', 'Chatwoot could not be reached with the URL and token provided.')
@@ -391,7 +389,7 @@ export const chatwootAdminController = new Elysia({
       return {
         instance: instanceIdentity,
         statuses: reconciled.inboxes,
-        // Keyed `${inboxId}:${agentId}`, one entry per observer binding.
+        // NOTE: keyed `${inboxId}:${agentId}`, one entry per observer binding.
         observerStatuses: reconciled.observers,
       };
     },
@@ -554,7 +552,7 @@ export const chatwootAdminController = new Elysia({
       response: errors(400, 401, 403, 404, 422, 502),
     },
   )
-  // The OBSERVER binding (issue #476): a monitoring agent attached to the inbox on the fork as an
+  // The OBSERVER binding: a monitoring agent attached to the inbox on the fork as an
   // observer, receiving every event on its own route and answering nothing. Independent of the
   // responder above; an inbox can carry several observers.
   .post(

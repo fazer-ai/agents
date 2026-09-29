@@ -6,37 +6,22 @@ import { FLEET_ROLE_FN } from "@/lib/tenancy/fleet-role";
 import { privilegedReachSql } from "@/lib/tenancy/privileged-reach";
 
 // Boot-time fail-fast: the RUNTIME database connection must NOT be a superuser or a BYPASSRLS
-// role, directly OR via role membership. Our whole tenant-isolation model rests on RLS, and RLS
-// is silently a NO-OP for superuser/bypassrls roles — so a misconfigured runtime URL (e.g. the
-// `postgres` superuser, or DATABASE_URL pointed at the migration role) would turn isolation off
-// without any error. We refuse to serve in that case.
-//
-// FORCE ROW LEVEL SECURITY is set on every tenant table, so the table OWNER is also subject to
-// policies — only superuser and bypassrls bypass.
-//
-// The audited cross-tenant path is a ROLE this same non-superuser role SETs into for the length of
-// one transaction (`@/lib/tenancy/fleet-role`), never a bypassrls account — so the check above still
-// covers the runtime. What it does NOT cover is the membership that makes SET ROLE possible: held
-// with INHERIT, it applies the `fleet_super_admin` policy to the runtime role PASSIVELY, and every
-// ordinary scoped request reads every tenant's rows. No error, no plan difference, nothing in a log.
-// `scripts/db-bootstrap` provisions the grant with INHERIT FALSE and refuses otherwise; this is the
-// same question asked at boot, of the connection actually being served, because a grant made by hand
-// afterwards is invisible to provisioning.
+// role, directly OR via role membership, because RLS (FORCEd on every tenant table, so the owner is
+// bound too) is silently a NO-OP for those roles. It also refuses a runtime role that INHERITS the
+// fleet role, which applies `fleet_super_admin` passively to every scoped request. `db-bootstrap`
+// provisions the grant INHERIT FALSE, but a grant made by hand afterwards is invisible to it, so the
+// served connection is checked here too (docs/tenancy.md, the fleet role bullets).
 
 // Every refusal this guard can make shares a base, and `src/index.ts` rethrows on the BASE rather
-// than on each class. That is not tidiness: `FleetPolicyMismatchError` was added here and the boot
-// path went on catching only `SuperuserRuntimeError`, so the process logged "DB unavailable?" and
-// kept serving with every cross-tenant read answering zero rows. With the base, a refusal added
-// later is fatal by construction instead of by someone remembering the call site.
+// than on each class, so a refusal added later is fatal by construction instead of being logged as
+// "DB unavailable?" while the process keeps serving.
 export abstract class RuntimeIsolationError extends Error {}
 
 export const FLEET_INHERITED_REASON = "inherits the fleet role";
-// Not a "reason" on the privileged-role list, and the difference is what ALLOW_SUPERUSER_RUNTIME
-// means. That flag says "I accept that RLS may be a no-op on this connection" — a local-dev
-// statement about ISOLATION. Being unable to enter the fleet role is not that: `asSuperAdminOn` is
-// how an API key is verified (the tenant is unknown until the key row is read), how a Chatwoot route
-// is resolved, how the scheduler claims work and how the first admin is created, so the process
-// would start and fail every authenticated request. No flag should wave that through.
+// Not a "reason" on the privileged-role list, so ALLOW_SUPERUSER_RUNTIME does not wave it through:
+// that flag accepts an RLS no-op in local dev, while an unreachable fleet role fails every
+// authenticated request (`asSuperAdminOn` verifies API keys, resolves Chatwoot routes, claims
+// scheduler work and creates the first admin).
 export class FleetRoleUnreachableError extends RuntimeIsolationError {
   constructor(role: string, fleetRole: string, repair: string) {
     super(
@@ -49,19 +34,10 @@ export class FleetRoleUnreachableError extends RuntimeIsolationError {
   }
 }
 
-// The fleet role's name carries the database it belongs to, so a database RESTORED under a new name
-// resolves a name its own dumped policies do not mention. Nothing errors: `SET ROLE` succeeds (the
-// role exists and is granted), and every fleet read then matches no policy and returns ZERO ROWS.
-// That is the silent shape, so it refuses rather than warns.
-//
-// The repair rewrites the POLICIES, not the role, and the obvious alternative is why. Renaming the
-// role the policies name would work only if this database were the only one using it — roles are
-// cluster-wide, so on a server that also runs the database the dump came from, that rename breaks
-// the live one. And it cannot even be attempted in the order this fires: the documented boot order
-// is bootstrap → migrate → serve, so by the time this runs, bootstrap has ALREADY created the
-// resolved role and `ALTER ROLE … RENAME TO` fails on the name it would take. Rewriting the policies
-// touches nothing outside this database, is idempotent, and is the same statement the split
-// migration runs.
+// A database RESTORED under a new name resolves a fleet role its own dumped policies do not name:
+// `SET ROLE` succeeds and every fleet read returns ZERO ROWS, so this refuses rather than warns. The
+// repair rewrites the POLICIES, not the role, because a role rename would break a live database on
+// the same cluster and fails anyway once bootstrap has created the resolved role (docs/tenancy.md).
 export class FleetPolicyMismatchError extends RuntimeIsolationError {
   constructor(resolved: string, offenders: string) {
     super(
@@ -127,9 +103,9 @@ interface FleetRow {
 // itself — which is the whole point: naming it in the same statement is what fails to parse.
 //
 // And EXECUTE, asked of the catalog rather than by calling it. Functions carry EXECUTE for PUBLIC by
-// default, but an installation that revoked that leaves the runtime role unable to call this one:
-// measured, `asSuperAdmin` then dies with `permission denied for function fazerai_fleet_role` and
-// this guard threw a raw driver error that the boot path read as an outage and warned past.
+// default, but an installation that revoked that leaves `asSuperAdmin` failing with `permission
+// denied for function fazerai_fleet_role`; asking the catalog lets this refuse by name instead of
+// throwing a raw driver error the boot path would read as an outage and warn past.
 async function fleetFunctionAccess(
   db: PrismaClient,
 ): Promise<{ present: boolean; executable: boolean }> {
@@ -174,9 +150,9 @@ export async function assertRuntimeRoleIsNotSuperuser(
   const row = rows[0];
   if (!row) throw new Error("could not resolve the current DB role");
 
-  // TWO queries, because a CASE cannot protect a function call: PostgreSQL resolves the reference
+  // NOTE: TWO queries, because a CASE cannot protect a function call: PostgreSQL resolves the reference
   // while PARSING, so `CASE WHEN to_regprocedure(…) IS NULL THEN NULL ELSE public.fazerai_fleet_role()
-  // END` raises `function … does not exist` on a database whose migrations have not run — measured.
+  // END` raises `function … does not exist` on a database whose migrations have not run.
   // The first query only asks whether it is there; the second is sent only if it is.
   //
   // `to_regrole` guards the name for the same shape of reason: a `::regrole` cast RAISES on a name

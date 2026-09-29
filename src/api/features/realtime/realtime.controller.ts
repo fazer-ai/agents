@@ -18,10 +18,8 @@ import { originPlugin } from "@/api/lib/origin";
 import { realtimeConfig, WS_CLOSE } from "@/api/lib/realtime";
 import { roleAtLeast } from "@/lib/tenancy";
 
-// NOTE: Set of `ws.id` strings (NOT `ws` wrappers) that successfully
-// reserved a slot via `tryAttachUser`. See `realtime.service.ts` for why
-// the wrapper itself cannot be used as a key (Elysia 1.4.x rewraps `ws`
-// per lifecycle hook — upstream issue elysiajs/elysia#1716).
+// `ws.id` strings (not `ws` wrappers) that reserved a slot via `tryAttachUser`: Elysia 1.4.x rewraps
+// `ws` per lifecycle hook, so the wrapper is not a stable key (see `realtime.service.ts`).
 const attached = new Set<string>();
 
 // NOTE: `ws.id` strings that reserved a slot on the /events channel (its own
@@ -40,17 +38,10 @@ const ClientMessage = t.Object({
   payload: t.Optional(t.String({ maxLength: 1024 })),
 });
 
-// NOTE: We deliberately do NOT pass a `response` schema. Elysia 1.4.x
-// rejects every return value from `.ws()`'s `message` handler when a
-// `response` schema is set, regardless of the schema's shape (verified
-// with literal-only, union-of-literal, union-of-object, optional and
-// required forms — all fail with `errors: []` and `expected` showing
-// only the discriminator). Body validation works correctly, so we keep
-// that for input safety and surface clear errors on malformed messages.
-// Client-side type safety for incoming server messages comes from the
-// `useWebSocket<TIn, TOut>` generics. If upstream fixes response
-// validation, the schema can be reintroduced; smoke-test end-to-end
-// before trusting it (`bun run dev` + manual round-trip).
+// No `response` schema on purpose: with one set, Elysia 1.4.x rejects every return value of
+// `.ws()`'s `message` handler, whatever the schema's shape. Body validation works and stays; client
+// typing of server messages comes from the `useWebSocket<TIn, TOut>` generics. Smoke-test a manual
+// round trip before reintroducing a response schema.
 
 // NOTE: WS upgrades are double-gated for CSRF: the auth cookie is
 // `SameSite=Lax` (browser-enforced), and the upgrade itself is also
@@ -65,16 +56,9 @@ export const realtimeController = new Elysia({
   .use(authPlugin)
   .use(originPlugin)
   .resolve(async ({ getAuthUser }) => ({ user: await getAuthUser() }))
-  // NOTE: HTTP → WS bridge demo. Calling `sendToUser` from outside a WS
-  // handler is the same code path as calling it from one: the publisher
-  // hits `server.publish(topic, data)` either way. This is the pattern
-  // for background jobs ("your export finished"), webhooks ("Stripe
-  // payment landed"), cron tasks ("daily digest is ready"), or admin
-  // moderation actions ("your post was removed"): the trigger has no WS
-  // connection of its own, it just calls the service helper and the
-  // user's open tabs receive the event. The endpoint here pings the
-  // caller; real apps would target arbitrary users by id (and would
-  // gate WHO can target WHOM at the route level).
+  // HTTP to WS bridge: `sendToUser` from outside a WS handler takes the same `server.publish`
+  // path, which is how a background job or webhook reaches a user's open tabs. This one pings the
+  // caller; a route that targets other users must gate who can target whom.
   .post(
     "/notify-me",
     ({ user }) => {
@@ -137,20 +121,14 @@ export const realtimeController = new Elysia({
       const { user } = ws.data;
       if (!user) return;
       if (msg.type === "ping-self") {
-        // Demo of targeted push: deliver to every open connection of
-        // THIS user (other tabs/devices), not to peers. The publish
-        // path is the same as any cross-cutting server-pushed event
-        // (notifications, balance updates, "your job is done", etc).
+        // NOTE: targeted push to every open connection of this user (other tabs and devices), not
+        // to peers.
         sendToUser(user.id, { type: "private-ping", at: Date.now() });
         return;
       }
       if (msg.type === "join-admin") {
-        // Demo of auth-gated subscribe: the client asks to subscribe;
-        // the server is the only authority that decides. For role-gated
-        // topics check the role; for membership-gated topics (rooms,
-        // doc:<id>, org:<id>) query the relation. The reply is a
-        // per-socket ws.send (NOT a topic publish): only the asking
-        // client cares about the ack.
+        // NOTE: the server alone decides a subscription. The reply is a per-socket ws.send, not a
+        // topic publish, because only the asking client cares about the ack.
         if (!roleAtLeast(user.role, "TENANT_ADMIN")) {
           ws.send({
             type: "join-denied" as const,
@@ -167,13 +145,8 @@ export const realtimeController = new Elysia({
         return;
       }
       if (msg.type === "admin-broadcast") {
-        // Recheck role on every publish: "the user joined once" is not
-        // the same as "the user has permission right now". A real app
-        // with auth-token refresh or mid-session role changes would
-        // diverge between subscribe time and publish time. For the
-        // template the role is captured at upgrade and never updates,
-        // so the recheck is effectively a no-op, but the pattern is
-        // the load-bearing teaching, not the runtime cost.
+        // NOTE: recheck the role on every publish, since having joined is not permission now. The
+        // role is captured at upgrade, so this only bites once roles can change mid-session.
         if (!roleAtLeast(user.role, "TENANT_ADMIN")) {
           ws.send({
             type: "publish-denied" as const,
@@ -198,10 +171,8 @@ export const realtimeController = new Elysia({
       if (msg.type === "message") {
         const payload = (msg.payload ?? "").trim();
         if (!payload) return;
-        // Broadcast to every subscriber of CHAT_GLOBAL (including the
-        // sender) so the sender sees their own message land in the same
-        // timeline as the peers'. Using server.publish (vs ws.publish)
-        // is what includes the sender; ws.publish would exclude them.
+        // NOTE: server.publish, not ws.publish (which excludes the sender), so the sender sees
+        // their own message in the same timeline as the peers.
         broadcastChatMessage({
           type: "message",
           at: Date.now(),
@@ -277,9 +248,8 @@ export const realtimeController = new Elysia({
         return;
       }
       if (resolution.status === "no-tenant") {
-        // SUPER_ADMIN with no active tenant selected yet: stay connected but
-        // subscribe to nothing. The client resubscribes (full reload) once a
-        // tenant is picked in the header switcher.
+        // NOTE: SUPER_ADMIN with no active tenant selected yet: stay connected but subscribe to
+        // nothing. Picking a tenant in the header reloads the page, which reconnects.
         ws.send({ type: "no-tenant" as const });
         return;
       }

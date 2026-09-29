@@ -38,19 +38,14 @@ export function authorize(
   }
 }
 
-// NOTE: pure request-context resolution (unit-tested without Elysia). X-Tenant-Id is a
-// control-plane header: a SUPER_ADMIN (who has no home tenant) selects any target with it here; a
-// person with memberships selects among them one step earlier, in `getAuthUser`, which refuses a
-// tenant they do not belong to. For a principal bound to one tenant (an API key) it is forgeable
-// and ignored — a mismatching value is flagged as an anomaly to log, never silently accepted.
+// Pure request-context resolution (unit-tested without Elysia). X-Tenant-Id is a control-plane
+// header: a SUPER_ADMIN (who has no home tenant) selects any target with it here; a person with
+// memberships selects among them one step earlier, in `getAuthUser`, which refuses a tenant they do
+// not belong to. For a principal bound to one tenant (an API key) it is forgeable and ignored: a
+// mismatching value is flagged as an anomaly to log, never silently accepted.
 //
-// A malformed selector is REPORTED rather than folded into "no target", and the boundary refuses it
-// (api/middlewares/tenancy.ts). Folding was this function's old behaviour and the reason to change
-// it is that "absent" and "malformed" do not mean the same thing to the routes downstream: measured
-// with `X-Tenant-Id: abc`, `GET /v1/agents` answered 400, `GET /v1/vault/:id/oauth/google/status`
-// answered 403, and `GET /v1/metrics/costs` answered 200 with `{ status: "disabled" }`. A caller who
-// mistyped a selector got three different answers and, on the last one, a successful-looking body
-// for a request that named no tenant at all. Issue #371.
+// A malformed selector is REPORTED, and the boundary refuses it (api/middlewares/tenancy.ts):
+// folded into "no target", each route would answer it its own way, some with a 200.
 export function resolveRequestTenantContext(
   user: { id: bigint; tenantId: bigint | null; role: UserRole } | null,
   headerTenantId: string | undefined,
@@ -62,10 +57,8 @@ export function resolveRequestTenantContext(
   if (!user) return { context: null, anomaly: false };
 
   if (user.role === "SUPER_ADMIN") {
-    // NOTE: `parseDbId`, not `BigInt` in a try. The catch only saw the spellings BigInt THROWS on,
-    // so `0x7`, `+7` and ` 7 ` all selected tenant 7 under a spelling no column has, and a selector
-    // past 2^63-1 parsed here and was refused by Postgres when the lookup bound it. Same rule as the
-    // route ids in src/api, one surface further out.
+    // NOTE: `parseDbId`, not `BigInt` in a try: BigInt accepts `0x7`, `+7` and ` 7 ` as tenant 7
+    // and ids past 2^63-1 that Postgres then refuses. Same rule as the route ids in src/api.
     //
     // Truthiness, not `!== undefined`: the console OMITS the header when nothing is selected
     // (src/client/lib/api.ts), so an empty value never reaches here from it, and an empty string is
@@ -85,7 +78,7 @@ export function resolveRequestTenantContext(
   }
 
   // NOTE: for a PERSON the selector was already resolved against their memberships before this point
-  // (src/api/lib/auth.ts, issue #756), so `user.tenantId` is the tenant it chose and a mismatch here
+  // (src/api/lib/auth.ts), so `user.tenantId` is the tenant it chose and a mismatch here
   // can only come from a principal bound to one tenant: an API key. For that one the header is not
   // honored at all, so its SHAPE decides nothing, and refusing on it would turn a forgeable value
   // nobody reads into a way to fail another principal's request.

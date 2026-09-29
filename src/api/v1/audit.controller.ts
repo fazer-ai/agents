@@ -18,17 +18,15 @@ import { exportAudit } from "@/modules/audit/export";
 import { listAudit } from "@/modules/audit/service";
 
 // Audit log read surface. TENANT_ADMIN for a tenant's own trail; `scope=fleet|all` reaches the rows
-// keyed to no tenant and is SUPER_ADMIN's alone (#520). before/after were allowlist-sanitized at
+// keyed to no tenant and is SUPER_ADMIN's alone. before/after were allowlist-sanitized at
 // write. Keyset paginated by id desc (pass `cursor` back for the next page), and `latestAt` reports
 // the newest row of whichever trail the scope named, past any filter.
 
 // A TENANT TARGET IS REQUIRED BY THE SCOPE, not by the endpoint. `scope=tenant` reads one tenant's
 // trail and cannot say which without one; `fleet` and `all` name their own trail, and a SUPER_ADMIN
-// operating fleet-wide has no tenant selected — which is exactly the shape a fleet-scoped API key
-// gives. Demanding a target there would refuse the caller the scope exists for.
-// Declared where `i18next-parser` reads it: the key is thrown from `modules/audit/service.ts`, which
-// is outside the `src/api/**` the API extractor globs, so without this line the catalog entry is
-// pruned on the next extract and the 403 answers with a key nothing translates.
+// operating fleet-wide (a fleet-scoped API key, say) has no tenant selected. Demanding a target there
+// would refuse the caller the scope exists for. The key below is thrown from modules/audit, outside
+// the API extractor's glob, so without this line the extract prunes it and the 403 goes untranslated.
 // translate('errors.auditScopeForbidden', 'Reading the fleet trail requires SUPER_ADMIN')
 
 function ctxOrThrow(
@@ -115,8 +113,8 @@ export const auditController = new Elysia({
       response: errors(400, 401, 403, 404),
     },
   )
-  // Bulk export of the trail the operator is looking at (#521). SAME filter surface as the list, minus
-  // pagination -- the two share `buildAuditWhere`, so an export cannot answer a different question
+  // Bulk export of the trail the operator is looking at. SAME filter surface as the list, minus
+  // pagination: the two share `buildAuditWhere`, so an export cannot answer a different question
   // than the screen it was taken from. The scope travels with it and is refused, never narrowed, by
   // the same gate. The serialized file rides back in `content` (the client turns it into a Blob)
   // alongside `filename` / `contentType`, plus `truncated` and `truncatedBy` when a ceiling cut it.

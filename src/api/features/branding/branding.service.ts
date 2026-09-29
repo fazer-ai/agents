@@ -14,8 +14,9 @@ import { clipText } from "@/lib/text";
 // content-type.
 
 // NOTE: these AppError translationKeys (thrown by branding.admin.service's write path) are localized
-// centrally in `onError` (not via a literal translate() call), so they are declared here — in the
-// shared module present in every edition — for the i18n extractor (keepRemoved: false).
+// centrally in `onError` (not via a literal translate() call), so they are declared here, in the
+// shared module present in every edition, for the i18n extractor (keepRemoved: false).
+
 // translate('errors.invalidColorMode', 'Invalid color mode')
 // translate('errors.invalidColorToken', 'Invalid color value')
 // translate('errors.unsupportedImageType', 'Unsupported image type. Allowed: {{allowed}}')
@@ -186,7 +187,7 @@ export async function getGlobalBranding(
 // two token maps, the footer links, and "did you name anything at all" — before any database is
 // involved. It lives HERE rather than beside the mutation because the Free derivation swaps
 // branding.admin.service for a stub, and the MCP preview has to ask the same question the apply
-// asks in both editions (#490). Returns the sanitized columns the caller goes on to write.
+// asks in both editions. Returns the sanitized columns the caller goes on to write.
 export function assertBrandingColorsUpdatable(
   input: ColorUpdate,
 ): Record<string, unknown> {

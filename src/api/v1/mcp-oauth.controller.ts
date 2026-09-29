@@ -185,15 +185,11 @@ export const mcpOAuthController = new Elysia({
     "/authorize",
     async ({ tenantContext, query, set, request }) => {
       const ctx: TenantContext | null = tenantContext;
-      // NOTE: this endpoint is reached by a BROWSER NAVIGATION (the MCP client opens it), so an
-      // anonymous visitor must get the login screen, not the API's 401/403 JSON — which is what the
-      // user would otherwise stare at while the MCP client waits forever for a callback. `redirect`
-      // is our own path, and LoginPage only honors single-leading-slash local paths.
-      // The client/redirect_uri checks stay BELOW this gate on purpose: validating first would let an
-      // anonymous caller probe which client_ids and redirect URIs are registered. The cost is that a
-      // bogus client_id reaches the login screen before its 400, and the open-redirect guarantee is
-      // untouched — the only redirect an anonymous request can get is this local /login one, never
-      // the supplied redirect_uri.
+      // NOTE: reached by a browser navigation, so an anonymous visitor gets the login screen rather
+      // than 401/403 JSON while the MCP client waits for a callback (`redirect` is our own path, and
+      // LoginPage honors only single-leading-slash local paths). The client and redirect_uri checks
+      // stay below this gate so an anonymous caller cannot probe what is registered; the only
+      // redirect it can get is this local /login one.
       if (!ctx?.userId) {
         const here = new URL(request.url);
         return new Response(null, {
@@ -203,8 +199,8 @@ export const mcpOAuthController = new Elysia({
           },
         });
       }
-      // A Bearer API key is an authenticated principal here too, and would mint a code (a first-party
-      // client skips consent) whose grant outlives the key. Review round 2 on #308.
+      // NOTE: a Bearer API key is an authenticated principal here too, and would mint a code (a
+      // first-party client skips consent) whose grant outlives the key.
       requireSession(ctx);
 
       const client = await basePrisma.mcpOAuthClient.findUnique({
@@ -420,10 +416,9 @@ export const mcpOAuthController = new Elysia({
       if (!sessionCtx?.userId) throw new UnauthorizedError();
       requireSession(sessionCtx);
       const userId = sessionCtx.userId;
-      // The decision acts in the tenant the request was PARKED for, not the one the console tab
-      // happens to have selected: a person with several memberships (issue #756) parked it under
-      // their default at /authorize, which carries no selector, and may be looking at another tenant
-      // now. They still have to belong there, with the role read now.
+      // NOTE: the decision acts in the tenant the request was PARKED for, not the one the console
+      // tab has selected: /authorize carries no selector, so it parked under the person's default
+      // membership. They still have to belong there, with the role read now.
       let ctx = sessionCtx;
       if (sessionCtx.role !== "SUPER_ADMIN") {
         const parked = await getPendingAuthorization(params.req, userId);
@@ -441,11 +436,8 @@ export const mcpOAuthController = new Elysia({
       // console's `X-Tenant-Id` SELECTOR must not decide which trail a decision joins.
       const scopeTenantId = ctx.role === "SUPER_ADMIN" ? null : ctx.tenantId;
 
-      // ONE TRANSACTION FOR THE DECISION AND ITS ROW. Consuming the pending, minting the code and
-      // remembering the approval used to commit first, and the row was appended afterwards through
-      // a `try/catch` that logged at warn — so a granted consent could leave nothing behind, and a
-      // reader cannot tell that from a consent that never happened. A DENIAL is a mutation too: the
-      // consumption is the write, and the row belongs to it.
+      // NOTE: one transaction for the decision and its audit row, so a granted consent cannot leave
+      // no trace. A denial is a mutation too: the consumption is the write, and the row belongs to it.
       const decided = await asPrincipalOn(basePrisma, ctx, async (db) => {
         const pending = await consumePendingAuthorization(
           params.req,
@@ -454,13 +446,9 @@ export const mcpOAuthController = new Elysia({
           db,
         );
         if (!pending) throw new NotFoundError();
-        // THE PRINCIPAL CHANGED UNDER THE REQUEST, and this used to be a fourth branch that wrote
-        // nothing and did not even warn. The pending's tenant is written from the role held at
-        // /authorize; if the role held now would file the row somewhere else, the decision cannot be
-        // attributed, and consenting on an unreadable trail is worse than refusing. Reachable since
-        // #756 by a person who LEFT the parked tenant between /authorize and this decision (the
-        // rescoping above only follows a membership that still exists), and by a fleet
-        // administrator demoted in between.
+        // NOTE: the principal changed under the request (the person left the parked tenant, or a
+        // fleet administrator was demoted, since /authorize). The row would be filed elsewhere, and
+        // consenting on an unattributable trail is worse than refusing.
         if (pending.tenantId !== scopeTenantId) {
           throw new ConflictError(
             "the signed-in principal no longer matches this authorization request",

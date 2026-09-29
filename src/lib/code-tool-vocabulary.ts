@@ -1,12 +1,7 @@
 import { CONTEXT_VAR_NAMES } from "@/modules/tool-definitions/normalize";
 
-// What a code tool's body can reach, as DATA rather than as prose in three places.
-//
-// The same vocabulary was written out three times before this module existed: the help popover in
-// the console, the description of `code_tool_create`, and `docs/graph.md`. Three copies of a list
-// that the runtime builds in one place is three chances to drift, and the drift is silent because
-// nothing reads prose. Now the console's completion offers these names, the MCP `code_tool_schema`
-// tool serves them, and the popover renders them, so the three surfaces cannot disagree.
+// What a code tool's body can reach, as DATA rather than prose, so the console's completion, the MCP
+// `code_tool_schema` tool and the help popover all read one list and cannot drift apart.
 //
 // IMPORT-FREE except for `normalize`, which is itself import-free: this reaches the browser bundle
 // (tests/client/bundle-boundary.test.ts), so anything it pulls in reaches it too.
@@ -109,8 +104,8 @@ export const CODE_TOOL_CONTEXT_VARS: readonly CodeToolContextVar[] = [
   },
 ];
 
-// What the SANDBOX puts in scope, beyond the two parameters. Measured against the worker rather
-// than assumed: `tests/graph/code-sandbox.test.ts` runs `Object.getOwnPropertyNames(globalThis)`
+// What the SANDBOX puts in scope, beyond the two parameters, checked against the worker:
+// `tests/graph/code-sandbox.test.ts` runs `Object.getOwnPropertyNames(globalThis)`
 // inside it and asserts every name here is really there, so an advertised global that the sandbox
 // stops installing fails instead of completing to a ReferenceError at call time.
 //

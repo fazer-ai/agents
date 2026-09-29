@@ -4,14 +4,13 @@ import { type AuditCursor, parseAuditCursor } from "@/modules/audit/service";
 import { parseIsoInstant } from "@/modules/flowlog/settings";
 
 // NOTE: the refusal is raised from `src/lib/query-param.ts`, which the API extractor's input glob
-// (`src/api/**/*.ts`) does not reach, so the key is declared HERE — beside the parsers that are the
-// reason it exists, rather than in whichever controller happened to introduce it first. A key the
+// (`src/api/**/*.ts`) does not reach, so the key is declared HERE, beside the parsers that are the
+// reason it exists, rather than in one of the controllers that use them. A key the
 // extractor cannot see is pruned from the catalogue and then missing at runtime, silently.
 // translate('errors.invalidQueryParam', 'Invalid value for {{param}}')
 export { badQueryParam };
 
-// Query-string filters, parsed the way the delivery ledger settled it in issue #305 / #361 and now
-// shared by every read surface (issue #372).
+// Query-string filters, shared by every read surface.
 //
 // A filter is something the CALLER TYPED, and the three ways a lenient parse can answer are all
 // wrong answers to it: dropping it widens the result to everything the tenant has, normalising it
@@ -59,15 +58,10 @@ export function parseQueryId(
 
 // Syntax only; the RANGE belongs to whichever service owns the parameter, so a caller that never
 // sees a query string (MCP, the console's own service calls) is held to the same bound.
-//
-// DIGITS, not `Number`, for the same reason `parseDbId` uses a regex: `Number` reads spellings a
-// count parameter does not have, and reads two of them as a DIFFERENT NUMBER. Measured on Bun
-// 1.4.0 — `1e3` → 1000, `0x10` → 16, `0b11` → 3, `0o17` → 15, `+7` → 7, ` 12 ` → 12, `12.0` → 12,
-// and every one of those passes `Number.isInteger`. The one that bites hardest is precision:
-// `9007199254740993` comes back as `...992`, so `?before=9007199254740993` would page from a
-// message the caller never named. `Number.isSafeInteger` closes that, and the regex closes the
-// rest — a sign included, because a count has none and the refusal names the same parameter either
-// way.
+// DIGITS, not `Number`: `Number` reads spellings a count does not have (`1e3`, `0x10`, `+7`, ` 12 `,
+// `12.0`, all passing `Number.isInteger`) and loses precision past 2^53 (`9007199254740993` reads as
+// `...992`, paging from a message the caller never named). `Number.isSafeInteger` closes the
+// precision gap and the regex the rest, a sign included, since a count has none.
 const DECIMAL = /^\d+$/;
 
 // A free-text or closed-vocabulary filter, where the only unusable spelling is the EMPTY one.
@@ -97,10 +91,8 @@ export function parseQueryCount(
   return n;
 }
 
-// TWO COLUMNS SINCE #530, so not `parseQueryId`: a cursor is `<ISO instant>|<id>`, opaque by
-// contract, and the parse belongs to the codec that emits it. A bare id was the cursor before #530
-// and was accepted for one release after it, for a walk spanning a rolling deploy; since #544 it is
-// the same 400 every other malformed parameter gets.
+// Not `parseQueryId`: a cursor is `<ISO instant>|<id>` (two columns), opaque by contract, and the
+// parse belongs to the codec that emits it. A bare id gets the same 400 as any malformed parameter.
 export function parseQueryAuditCursor(
   s: string | undefined,
   param: string,

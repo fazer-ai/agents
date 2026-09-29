@@ -5163,13 +5163,9 @@ describe.skipIf(!dbUp)("debounce", () => {
   });
 
   // ── A balloon that fails mid-reply ────────────────────────────────────────────
-  //
-  // The flush is where the split's duplication is reachable. Chatwoot does not re-send a webhook
-  // (the receiver acks <5s and processes detached), but the WORKER retries: a throw out of
-  // `flushDebounceJob` leaves the watermark unadvanced, so the next attempt answers the same burst
-  // again, putting the first balloon in the conversation twice and re-running every side-effecting
-  // tool. So what already landed decides: the turn reports, the watermark moves, and no retry is
-  // armed. Tested at the flush because the unit cannot see the watermark.
+  // A throw out of `flushDebounceJob` leaves the watermark unadvanced and the WORKER retries (Chatwoot
+  // does not re-send), answering the burst again: the first balloon twice, every side-effecting tool
+  // re-run. So what already landed decides: the turn reports, the watermark moves, no retry is armed.
 
   // Personifies the fork on the three properties the reconciliation depends on: it ASSIGNS an id to
   // what it accepts, it STORES the `content_attributes` the create carried, and it honours `before`

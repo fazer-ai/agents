@@ -3,14 +3,11 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { codeOnly, withoutComments } from "../utils/source-text";
 
-// A `ClaimedJob` built by hand is a FIXTURE: `jobRetired` (src/modules/scheduler/service.ts) looks its
-// id up for the tombstone a `/reset` or a supersede leaves, and an id nobody holds answers "not
-// retired", the branch every fixture is written for. An id `scheduler_jobs_id_seq` can hand out (1,
-// 2, 9) may name a real row: the file's own insert takes it when first in the database, a retire
-// plants a tombstone under the fixture, and the handler stands down without posting (`Expected: 1,
-// Received: 0`). A warm dev sequence never shows it; CI does, under `RESTART IDENTITY`, when the
-// shard order puts the victim first. So a fixture must be INCAPABLE of naming a row: an id burned
-// from the sequence (`burnSchedulerJobId`, tests/utils/scheduler.ts) or one it cannot reach.
+// A `ClaimedJob` built by hand is a FIXTURE, and its id must be INCAPABLE of naming a row: `jobRetired`
+// (src/modules/scheduler/service.ts) looks the id up for a tombstone, and an id the sequence can hand
+// out (1, 2, 9) may name a real row, so a retire plants a tombstone under the fixture and the handler
+// stands down without posting. Only CI's `RESTART IDENTITY` shows it. Use an id burned from the
+// sequence (`burnSchedulerJobId`, tests/utils/scheduler.ts) or one it cannot reach.
 
 // Not in tests/tooling/: that directory is dropped from both derived repos
 // (tooling/derivation/manifest.ts) while these fixtures ship to all three, and a master-only sweep

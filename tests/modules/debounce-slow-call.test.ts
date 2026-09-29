@@ -12,10 +12,10 @@ import type { ClaimedJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { burnSchedulerJobId } from "../utils/scheduler";
 
-// Issue #807, at the effect the customer feels: conversation A's model call does not return, and
-// conversation B, which comes due after it, still gets its reply. Drives real flushes through the
-// actual tick (runDebounceTick → flushDebounceJob → graph → runModelCall) with a stub Chatwoot client
-// and a fake model that hangs on A's turn. The harness is debounce-parallelism.test.ts's.
+// At the effect the customer feels: conversation A's model call does not return, and conversation
+// B, which comes due after it, still gets its reply. Drives real flushes through the actual tick
+// (runDebounceTick → flushDebounceJob → graph → runModelCall) with a stub Chatwoot client and a
+// fake model that hangs on A's turn. The harness is debounce-parallelism.test.ts's.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -56,7 +56,7 @@ function threadOf(convId: number) {
   return `${tenantId}:${instanceId}:${convId}`;
 }
 
-// One new incoming message per conversation; sendMessage records the post. Shared across turns —
+// One new incoming message per conversation; sendMessage records the post. Shared across turns:
 // getMessages keys off conversationId, so each turn sees its own message.
 function parallelStub(sent: Array<[number, string]>) {
   const client = {

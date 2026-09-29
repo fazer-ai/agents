@@ -190,8 +190,8 @@ describe("normalizeChatwootEvent", () => {
     expect(normalizeChatwootEvent({ foo: 1 })).toBeNull();
   });
 
-  // NOTE: Issue #45 — the fork ships coordinates_lat/coordinates_long/fallback_title on location
-  // attachments (Attachment#location_metadata); the mapper used to drop all three.
+  // NOTE: The fork ships coordinates_lat/coordinates_long/fallback_title on location attachments
+  // (Attachment#location_metadata), and the mapper keeps all three.
   test("location attachment: coordinates + fallback title survive normalization", () => {
     const e = normalizeChatwootEvent({
       event: "message_created",
@@ -491,10 +491,10 @@ describe("isNewHumanAgentMessage (issue #187)", () => {
     }
   });
 
-  // Round-1 review finding (P2), confirmed on live rows. The fork stores an emoji react as a real
-  // message: MessageBuilder with message_type "outgoing", content = the emoji, sender Current.user,
-  // and content_attributes.is_reaction. Every other clause here matches it, so without this the
-  // permanent memory of the attendance would carry a line reading `atendente: 👍`.
+  // NOTE: The fork stores an emoji react as a real message: MessageBuilder with message_type
+  // "outgoing", content = the emoji, sender Current.user, and content_attributes.is_reaction. Every
+  // other clause here matches it, so without this the attendance's permanent memory would carry a line
+  // reading `atendente: 👍`.
   test("false for a reaction, which is an outgoing message from a real user", () => {
     const n = message({
       content: "👍",
@@ -512,10 +512,9 @@ describe("isNewHumanAgentMessage (issue #187)", () => {
   });
 });
 
-// The OTHER route a person answers by (issue #430): typed on the phone paired to the number the
-// inbox is connected to. The fork stores that echo sender-less, so the predicate above cannot see
-// it, and the three shapes Chatwoot itself produces are sender-less too — the whole content of this
-// block is telling them apart.
+// The OTHER route a person answers by: typed on the phone paired to the inbox's number. The fork
+// stores that echo sender-less, so the predicate above cannot see it, and the shapes Chatwoot itself
+// produces are sender-less too; this block tells them apart.
 describe("isDeviceAttendantMessage (issue #430)", () => {
   // The provider whose send path reserves its WhatsApp id before the request, which is what makes an
   // unmatched echo of our own reply impossible. The refusal on every other provider has its own case
@@ -539,7 +538,7 @@ describe("isDeviceAttendantMessage (issue #430)", () => {
       ...over,
     });
 
-  // The shape captured off the wire on a live fork: outgoing, sender-less, and marked.
+  // NOTE: The shape a live fork delivers: outgoing, sender-less, and marked.
   const device = (over: Record<string, unknown> = {}) =>
     outgoing({
       content_attributes: {
@@ -556,9 +555,9 @@ describe("isDeviceAttendantMessage (issue #430)", () => {
     expect(n && humanReplyRoute(n, BAILEYS)).toBe("device");
   });
 
-  // MEASURED on a live fork, all three delivered to the bot on a pending, bot-owned conversation and
-  // indistinguishable from the row above except for the marker. Without it, an operator's automation
-  // rule reads as a person taking the conversation over.
+  // NOTE: On a live fork these reach the bot on a pending, bot-owned conversation, indistinguishable
+  // from the row above except for the marker. Without it, an operator's automation rule reads as a
+  // person taking the conversation over.
   test("false for the three sender-less shapes Chatwoot itself produces", () => {
     for (const content_attributes of [
       { automation_rule_id: 7 }, // an automation rule's send_message
@@ -612,9 +611,9 @@ describe("isDeviceAttendantMessage (issue #430)", () => {
     expect(n && isDeviceAttendantMessage(n, BAILEYS)).toBe(false);
   });
 
-  // A first pairing replays a year of history through the same writers. The fork never delivers one
-  // to a bot (SilentWrite suppresses AgentBotListener for the whole run, probed), so this clause is
-  // a cross-repo fence: the two ship on different clocks, and a batch that DID arrive would open and
+  // NOTE: A first pairing replays a year of history through the same writers. The fork never delivers
+  // one to a bot (SilentWrite suppresses AgentBotListener for the whole run), so this clause is a
+  // cross-repo fence: the two ship on different clocks, and a batch that DID arrive would open and
   // silence every conversation in it at once.
   test("false for an imported message", () => {
     const n = device({
@@ -664,8 +663,8 @@ describe("isDeviceAttendantMessage (issue #430)", () => {
     }
   });
 
-  // Same rule as every other new-message predicate here: an update is our own write-back coming back
-  // around, and acting on one is how the voice-note loop happened.
+  // NOTE: Same rule as every other new-message predicate here: an update is our own write-back coming
+  // back around, and acting on one re-triggers the agent on its own output, in a loop.
   test("message_updated is not a new reply", () => {
     const n = device({ event: "message_updated" });
     expect(n && isDeviceAttendantMessage(n, BAILEYS)).toBe(true);
@@ -815,7 +814,7 @@ describe("shouldBotHandle (attribution = source of truth)", () => {
 
 describe("parseInboxList", () => {
   test("parses the live chatwoot-pro shape ({ payload: [...] })", () => {
-    // Field names confirmed live against the chatwoot-pro fork.
+    // NOTE: Field names as the chatwoot-pro fork serializes them.
     const raw = {
       payload: [
         // Official WhatsApp carries a `provider` (drives the 24h service-window gate).

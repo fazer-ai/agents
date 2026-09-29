@@ -15,10 +15,9 @@ import {
 } from "@/modules/chatwoot/management";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// #327: an inbox deleted in Chatwoot WHILE an agent was bound could never be unbound. The unbind
-// calls set_agent_bot on an inbox that is gone, the call 404s, and the local write is fenced behind
-// it — so `Inbox.agentId` keeps naming a persona for an inbox that no longer exists, with no way to
-// correct it through the API. Retrying does not help: the failure is deterministic.
+// An inbox deleted in Chatwoot WHILE an agent is bound: the unbind's set_agent_bot call 404s, and
+// the local write must not stay fenced behind it, or `Inbox.agentId` keeps naming a persona for an
+// inbox that no longer exists. Retrying does not help: the failure is deterministic.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -47,10 +46,9 @@ function ctx(t: bigint): TenantContext {
   return { tenantId: t, userId: null, role: "TENANT_ADMIN" };
 }
 
-// Personifies the fork's Api::V1::Accounts::InboxesController (4.16.0). `set_agent_bot` is reached
-// through a before_action that does `Current.account.inboxes.find(params[:id])`, so an inbox that is
-// gone answers 404 with Rails' own body BEFORE any bot logic runs, and a live one answers `head :ok`
-// (200, empty body). Both were measured against the local fork; see the PR body for the transcript.
+// Personifies the fork's Api::V1::Accounts::InboxesController (4.16.0). `set_agent_bot` runs behind a
+// before_action doing `Current.account.inboxes.find(params[:id])`, so a gone inbox answers 404 with
+// Rails' own body BEFORE any bot logic, and a live one answers `head :ok` (200, empty body).
 function fakeChatwoot(live: number[]) {
   const calls: Array<{ path: string; body: unknown }> = [];
   const fetchImpl = (async (url: string, init?: RequestInit) => {

@@ -242,14 +242,10 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
     expect(s.notes).toEqual([]);
   });
 
-  // The ALLOWED path, and the window this gate opened for every run that passes it. The
-  // authorization request is a round-trip to somebody else's endpoint with a ten-second ceiling, and
-  // it sits between the run's entry check and the moment the thread is claimed — so a /reset landing
-  // inside it used to be followed by this run writing the attendance marker, the divider and the
-  // turn itself back onto a thread the command had just cleared. Nothing reaches the customer (the
-  // post-generation check stops that), which is exactly what made it invisible: the operator is told
-  // the conversation was cleared and the agent goes on answering from the memory it recreated.
-  //
+  // The ALLOWED path, and the window this gate opens for every run that passes it: the
+  // authorization round-trip (up to ten seconds) sits between the run's entry check and the thread
+  // claim, so a /reset inside it could see the run write the attendance marker, the divider and the
+  // turn back onto the cleared thread, unseen because the post-generation check stops the send.
   // The ask that stops it is inside the `ingest:` lock, the one position where the answer cannot
   // decay before the write, because the command's own clear needs the same lock.
   test("a /reset during the authorization call leaves the thread untouched", async () => {
@@ -262,15 +258,11 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
       wanted = false;
       return new Response('{"authorized":true}', { status: 200 });
     });
-    // Recorded per ask, and what is recorded is whether the ASK ITSELF is inside a Prisma
-    // transaction — not how many exist, which counts `emitFlowEvent`'s fire-and-forget write on the
-    // same client and fails whenever that INSERT is still in flight (`tests/utils/counting-base.ts`).
-    // The ask made inside the thread claim used to have to arrive WITH a connection, because the
-    // claim was one long advisory-lock transaction and a provider opening its own there asked a
-    // pinned pool for a second one, which fails under `DB_POOL_MAX=1` — and jobRetired swallows a
-    // failed read as "not retired", so the fence went quiet exactly where it mattered. The claim
-    // holds no transaction any more (issue #225), so the invariant that replaces it is the stronger
-    // one: the ask is free to open its own scope precisely because nothing is pinned.
+    // NOTE: recorded per ask is whether the ASK ITSELF is inside a Prisma transaction, not how many
+    // exist, which counts `emitFlowEvent`'s fire-and-forget write on the same client and fails
+    // whenever that INSERT is in flight (`tests/utils/counting-base.ts`). The thread claim holds no
+    // transaction, so the ask is free to open its own scope: an ask inside a pinned one would fail
+    // under `DB_POOL_MAX=1`, and jobRetired reads a failed read as "not retired".
     const heldAtAsk: boolean[] = [];
     const strictness: boolean[] = [];
     const counted = countingBase(appDb);
@@ -475,9 +467,9 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
     expect(s.messages).toEqual([]);
   });
 
-  // The ownership probe runs before the authorization round-trip, which has a ten-second ceiling. A
-  // human arriving inside it used to have the follow-up's tools run on their conversation: the
-  // post-model re-probe only decides whether the TEXT goes out.
+  // The ownership probe runs before the authorization round-trip (up to ten seconds). A human
+  // arriving inside it must stop the follow-up's tools too: the post-model re-probe only decides
+  // whether the TEXT goes out.
   test("a human taking over during the authorization call stops the follow-up", async () => {
     await seedConv(9404);
     const s = stub();
@@ -514,8 +506,8 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
     expect(s.messages).toEqual([]);
   });
 
-  // Issue #818, review round 2: the same takeover under an OPERATOR'S event leaves the report with
-  // the person, as it came, instead of ending silent with the report gone.
+  // The same takeover under an OPERATOR'S event leaves the report with the person, as it came,
+  // instead of ending silent with the report gone.
   test("a human taking over during the authorization call gets an operator event as a note", async () => {
     await seedConv(9431);
     const s = stub();
@@ -557,9 +549,9 @@ describe.skipIf(!dbUp)("contact authorization on the proactive nudge", () => {
     ]);
   });
 
-  // Review round 5: the endpoint REFUSES the contact while the person takes over. The refusal is
-  // about approaching the customer; the note is for the person, and would have been written had they
-  // held the conversation before the call.
+  // The endpoint REFUSES the contact while the person takes over. The refusal is about approaching
+  // the customer; the note is for the person, and would have been written had they held the
+  // conversation before the call.
   test("a takeover during an authorization call that refuses still leaves the operator event as a note", async () => {
     await seedConv(9447);
     const s = stub();

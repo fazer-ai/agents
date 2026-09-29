@@ -12,12 +12,12 @@ import { flushDebounceJob } from "@/modules/debounce/handler";
 import { claimDueDebounceJobs, enqueueJob } from "@/modules/scheduler/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #809, at the effect the customer feels: with no fallback configured, a primary model call
-// that never returns used to hold the flush for as long as the provider liked. Now the turn fails at
-// the deadline and leaves through the failed-turn path the platform already has: the error on the
+// At the effect the customer feels: with no fallback configured, a primary model call that never
+// returns fails the turn at the deadline instead of holding the flush for as long as the provider
+// likes, and the turn leaves through the platform's failed-turn path: the error on the
 // conversation, the job failed for a retry, and nothing sent to the contact. Real flush
-// (flushDebounceJob → graph → runModelCall) on a real DEBOUNCE row, a stub Chatwoot client and a model
-// that ignores the abort signal, which is the adapter shape the deadline has to hold against.
+// (flushDebounceJob → graph → runModelCall) on a real DEBOUNCE row, a stub Chatwoot client and a
+// model that ignores the abort signal, which is the adapter shape the deadline has to hold against.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -53,7 +53,7 @@ function threadOf(convId: number) {
   return `${tenantId}:${instanceId}:${convId}`;
 }
 
-// One new incoming message per conversation; sendMessage records the post. Shared across turns —
+// One new incoming message per conversation; sendMessage records the post. Shared across turns:
 // getMessages keys off conversationId, so each turn sees its own message.
 function parallelStub(sent: Array<[number, string]>) {
   const client = {
@@ -94,7 +94,7 @@ async function seedConversation(convId: number) {
 const CONV = 3001;
 const DEADLINE_MS = 1_500;
 
-// Never answers and never looks at the abort signal, like the Google adapter (measured).
+// Never answers and never looks at the abort signal, like the Google adapter.
 class DeafModel extends BaseChatModel {
   constructor() {
     super({});

@@ -7,11 +7,10 @@ import { CONVERSATION_USAGE_TURN_CAP } from "@/modules/conversations/usage";
 import { PRICE_TABLE_VERSION } from "@/modules/pricing/version";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #853: the conversation screen shows what the conversation has spent (header) and what each
-// agent turn spent (timeline), from the usage ledger. The total is every row billed to the
-// conversation whatever its node; a turn is the rows sharing a `turnId`; a row no turn owns counts in
-// the total and in no turn; and nothing from the playground, another conversation or another tenant
-// gets in.
+// The conversation screen shows what the conversation has spent (header) and what each agent turn
+// spent (timeline), from the usage ledger. The total is every row billed to the conversation
+// whatever its node; a turn is the rows sharing a `turnId`; a row no turn owns counts in the total
+// and in no turn; and nothing from the playground, another conversation or another tenant gets in.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -76,7 +75,7 @@ interface Row {
   output: number;
   at: string;
   tenant?: bigint;
-  // The price the capture wrote (issue #863); absent is a row it could not price.
+  // The price the capture wrote; absent is a row it could not price.
   cost?: string;
   // The table that priced it; absent is the one in the tree now when a cost is given.
   priceTable?: string;
@@ -315,8 +314,8 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
     expect(usage.turns).toEqual([]);
   });
 
-  // Issue #858: a turn is hung on the messages its closing line names (#855), and the line gives
-  // its wall time; a line that is not a closing one (no turnMs) names nothing.
+  // A turn is hung on the messages its closing line names, and the line gives its wall time; a
+  // line that is not a closing one (no turnMs) names nothing.
   test("a turn carries the message ids and the time its closing line recorded", async () => {
     const conv = await newConversation();
     await bill({
@@ -356,8 +355,8 @@ describe.skipIf(!dbUp)("what a conversation spent (issue #853)", () => {
     expect(byTurn.tOpen?.turnMs).toBeNull();
   });
 
-  // Issue #863: the cost is summed from the column, the calls it could not price are counted beside
-  // it, and the Decimal sum comes back exact to the cent's ten-thousandth and past it.
+  // The cost is summed from the column, the calls it could not price are counted beside it, and
+  // the Decimal sum comes back exact to the cent's ten-thousandth and past it.
   test("a total and a turn carry the priced calls' cost and count the unpriced ones", async () => {
     const conv = await newConversation();
     const base = { conversationId: conv.id, input: 100, output: 10 };

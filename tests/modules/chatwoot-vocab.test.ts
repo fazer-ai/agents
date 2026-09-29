@@ -80,9 +80,9 @@ describe("loadChatwootVocab", () => {
   });
 });
 
-// ISSUE #642, ROUND 9. The combined read is two requests under one `Promise.all`, so an attribute
-// endpoint that stays down means the caller that needs ONLY the labels re-asks forever: a failed
-// combined read caches nothing.
+// The combined read is two requests under one `Promise.all`, so while the attribute endpoint stays
+// down a failed combined read caches nothing, and a caller that needs ONLY the labels must not re-ask
+// forever.
 describe("the labels on their own", () => {
   test("a failing attribute endpoint costs one label read, not one per call", async () => {
     const counter = { labels: 0, defs: 0 };
@@ -100,14 +100,14 @@ describe("the labels on their own", () => {
       await loadChatwootVocab(client, "t:i").catch(() => null);
       expect(await loadChatwootLabels(client, "t:i")).toEqual(["lead", "vip"]);
     }
-    // Two: the combined read's own first attempt, and the labels-only read that cached. From then
-    // on both answer from that entry, including the combined one (round 12).
+    // NOTE: Two: the combined read's own first attempt, and the labels-only read that cached. From then
+    // on both answer from that entry, including the combined one.
     expect(counter.labels).toBe(2);
   });
 
-  // ROUND 12: the sharing goes both ways. The tick reads the labels alone and `buildToolset` asks
-  // for the pair moments later, so without this the same catalog is fetched twice per TTL,
-  // sequentially, inside one observation deadline.
+  // NOTE: The sharing goes both ways. The tick reads the labels alone and `buildToolset` asks for the
+  // pair moments later, so without this the same catalog is fetched twice per TTL, sequentially, inside
+  // one observation deadline.
   test("a warm labels-only entry answers the combined read's labels half", async () => {
     const counter = { labels: 0, defs: 0 };
     const client = fakeClient(counter);
@@ -117,8 +117,8 @@ describe("the labels on their own", () => {
     expect(counter.defs).toBe(1);
   });
 
-  // ROUND 13: a catalog read most of a window ago does not become fresh by being copied into
-  // another entry. Stamping a new TTL on it hides a label created in between for nearly two windows.
+  // NOTE: A catalog read most of a window ago does not become fresh by being copied into another
+  // entry. Stamping a new TTL on it hides a label created in between for nearly two windows.
   test("borrowed labels keep the expiry they came with", async () => {
     const counter = { labels: 0, defs: 0 };
     const client = fakeClient(counter);

@@ -3,93 +3,40 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { codeOnly, withoutComments } from "../utils/source-text";
 
-// A `ClaimedJob` built by hand in a test is a FIXTURE, not a row: the handler only ever reads it
-// back. `jobRetired` (modules/scheduler/service.ts) looks the id up to find the tombstone a `/reset`
-// or a supersede leaves behind, and an id nobody holds answers "not retired", which is the benign
-// branch every one of these fixtures is written for.
-//
-// It stops being benign the moment the id names a row, because `scheduler_jobs_id_seq` hands out
-// exactly the numbers these fixtures spell: 1, 2, 9. The file's own `schedulerJob.create` takes id 1
-// whenever it is the first in the DATABASE to insert one, and a file that then retires that row (a
-// `retireJobsByDedupeKey` bumps `claim_seq`) has planted a tombstone under its own fixture. From
-// there the handler stands down without posting and every assertion about what should have been sent
-// fails with `Expected: 1, Received: 0`.
-//
-// Measured on this branch, in the real path: a cold sequence handed id 1 to an insert, a fixture
-// spelling `id: 1n` answered `jobRetired` false, `retireJobsByDedupeKey` retired that row, and the
-// same fixture then answered true. A fixture holding a burned id answered false on both sides.
-// Measured earlier, by #498, as five failures in `followup-resolved-guardrails.test.ts` under
-// `TRUNCATE scheduler_jobs RESTART IDENTITY`. No local run reproduced those, because a development
-// database has a warm sequence, and CI only showed them once two new files in #400 reshuffled the
-// shards and put the victim first.
-//
-// So the rule is not "these files are broken" (most are not, today). It is that a fixture must be
-// INCAPABLE of naming a row, in any order, on any shard, and the only ways to be sure are an id
-// burned from the sequence (`burnSchedulerJobId`, tests/utils/scheduler.ts) or a number the sequence
-// cannot reach.
-//
-// It sits here rather than beside the other static sweeps in tests/tooling/ because that directory
-// is dropped from BOTH derived repos (tooling/derivation/manifest.ts) while the fixtures it reads
-// ship to all three. A sweep that only runs in the master cannot fail the public repo's CI, which
-// is where a contributor's fixture arrives.
+// A `ClaimedJob` built by hand is a FIXTURE: `jobRetired` (src/modules/scheduler/service.ts) looks its
+// id up for the tombstone a `/reset` or a supersede leaves, and an id nobody holds answers "not
+// retired", the branch every fixture is written for. An id `scheduler_jobs_id_seq` can hand out (1,
+// 2, 9) may name a real row: the file's own insert takes it when first in the database, a retire
+// plants a tombstone under the fixture, and the handler stands down without posting (`Expected: 1,
+// Received: 0`). A warm dev sequence never shows it; CI does, under `RESTART IDENTITY`, when the
+// shard order puts the victim first. So a fixture must be INCAPABLE of naming a row: an id burned
+// from the sequence (`burnSchedulerJobId`, tests/utils/scheduler.ts) or one it cannot reach.
+
+// Not in tests/tooling/: that directory is dropped from both derived repos
+// (tooling/derivation/manifest.ts) while these fixtures ship to all three, and a master-only sweep
+// cannot fail the public repo's CI, where a contributor's fixture arrives.
 const ROOT = join(import.meta.dir, "..");
 
-// `id` GIVEN a number, in every spelling that reaches the same value, because the sweep is only as
-// good as the grammar it admits and a fixture is written by whoever writes it next:
-//
-//   - both operators that hand a fixture its id: a property (`id: 1n`) and a default parameter
-//     (`function jobFor(p, id = 1n)`), which is how chatwoot-recover-delivery.test.ts spelled it and
-//     how a property-only sweep missed that file for a whole round;
-//   - a quoted key (`"id": 1n`), which a JSON-shaped literal carries;
-//   - a TYPED default parameter (`function job(id: bigint = 1n)`), where the annotation sits between
-//     the name and the operator, and a parenthesised value (`id: (1n)`). The annotation is skipped as
-//     "whatever is not the operator", up to one line, so `ClaimedJob["id"]` and `bigint | undefined`
-//     pass with the bare `bigint`; a plain `id: 1n` still matches, because the engine backtracks out
-//     of an annotation that would leave no operator behind it;
-//   - every numeric base plus separators (`0x1n`, `0o7n`, `0b11n`, `1_000n`), all of which a
-//     decimal-only pattern reads as absent;
-//   - every argument `BigInt` itself accepts and turns into a reachable id: `BigInt(1)`,
-//     `BigInt("1")`, `` BigInt(`1`) ``, `BigInt(1e3)`, `BigInt(1.0)`. The fraction and the exponent
-//     are not valid in a bigint LITERAL, so they only ever appear here, and admitting them costs
-//     nothing: an `id: 1.5n` that matched would be a syntax error long before this sweep read it;
-//   - either sign, since `BigInt(+1)` is 1n and a pattern that reads only the minus calls it absent.
-//
-// The bound, stated rather than discovered next round: this reads LITERALS. An id computed at run
-// time (`BigInt(someVar)`, `ids[0]`, a call) is out of reach of any text sweep, and is exactly the
-// shape `burnSchedulerJobId` produces, so the sweep's blind spot and the fix's output are the same
-// thing. What it has to see is the spelling somebody types by hand, in any base, sign or quote.
-//
-// `reachableBySequence` normalises what is captured, so the grammar lives here and the arithmetic
-// lives there.
-// Every base a bigint literal takes, plus the separator, normalised by `reachableBySequence` below.
+// `id` GIVEN a number, in every spelling that reaches the same value: a property (`id: 1n`), a
+// default parameter (`id = 1n`), a quoted key, a typed default (`id: bigint = 1n`, the annotation
+// read as "whatever is not the operator", up to one line), a parenthesised value, every numeric base
+// and separator, either sign, and every argument `BigInt` accepts (`BigInt("1")`, `BigInt(1e3)`).
+// The bound: this reads LITERALS. An id computed at run time is out of reach of any text sweep, and
+// is exactly what `burnSchedulerJobId` produces, so the blind spot and the fix are the same thing.
 const NUMBER = String.raw`[+-]?\d[\d_]*(?:\.[\d_]*)?(?:[eE][+-]?[\d_]+)?|[+-]?0[xX][\dA-Fa-f_]+|[+-]?0[oO][0-7_]+|[+-]?0[bB][01_]+`;
 const LITERAL_ID = new RegExp(
   String.raw`(?:\bid|["']id["'])(?:\s*:\s*[^=;,)\n]{1,80})?\s*[:=]\s*\(?\s*(?:(${NUMBER})n|BigInt\(\s*["'\`]?\s*(${NUMBER})n?\s*["'\`]?\s*\))`,
   "g",
 );
 
-// What tells a `ClaimedJob` literal from every other object with an `id`: `claimSeq`, a required
-// field of the type that nothing else in the tree carries. Deliberately NOT `kind`, and not a
-// "does this file import ClaimedJob" gate:
-//
-//   - `kind` is somebody else's field name too. Measured: `resolveByModelName` answers
-//     `{ kind: "one", id }`, so namespace-resolve.test.ts's seven `{ id: 1n, name }` rows come back
-//     as job fixtures under a `kind` marker, and a sweep with seven false alarms is one that gets
-//     an exclusion list and then gets ignored.
-//   - the file's import is not the fixture. terminal-failure-announces.test.ts hands the RAG_INGEST
-//     handler a job-shaped literal without ever naming the type, and a gate on the name reads that
-//     file as having no fixtures at all. It is safe today only because its id is `0n`.
-//
-// The ANNOTATION OF A VALUE, though, is a marker of its own (`: ClaimedJob =`, `satisfies
-// ClaimedJob`, `as ClaimedJob`), because a fixture can take its claim token from a spread whose
-// source is imported, and then nothing near the id spells `claimSeq` at all. Not the bare word and
-// not every annotation: `import type { ClaimedJob }` sits at the top of every file that has one, and
-// `function run(job: ClaimedJob)` names a job the function is HANDED, so counting either would make
-// a marker out of whatever happens to sit in the fourteen lines below. The initializer is what
-// separates a job written here from a job mentioned here. Measured: it flags nothing new in the tree.
-//
-// A window rather than a parser, and its reach is pinned from both sides below, because a window
-// nobody measures is one that quietly grows to "the whole file" or shrinks to "the same line".
+// What tells a `ClaimedJob` literal from any object with an `id`: `claimSeq`, a required field
+// nothing else carries. Not `kind` (`resolveByModelName` answers `{ kind: "one", id }`, seven false
+// alarms in namespace-resolve.test.ts), and not the file's import (terminal-failure-announces.test.ts
+// hands a handler a job literal without naming the type). An annotation OF A VALUE (`: ClaimedJob =`,
+// `satisfies`, `as`) also marks one, since `claimSeq` can arrive by an imported spread; the import
+// and a parameter's annotation do not, as they name a job the code is handed, not one written here.
+// A window rather than a parser, pinned from both sides below, because an unmeasured window quietly
+// grows to "the whole file" or shrinks to "the same line".
 const NEARBY = 14;
 // The FIELD NAME, not one punctuation of it: `claimSeq: 0`, the shorthand `claimSeq,` a local
 // variable produces, `"claimSeq": 0` in a JSON-shaped literal and `row.claimSeq` in the line
@@ -102,27 +49,13 @@ const MARKERS = /\bclaimSeq\b/g;
 // JSON inside a string (`const raw = '{"claimSeq":0}'`) would answer for a fixture that is not
 // there.
 const QUOTED_MARKER = /["']claimSeq["']\s*:/g;
-// An annotation over a literal WRITTEN AT THAT POINT, and the literal is the load-bearing half:
-// `= {`, `= [`, `=> ({`, `<ClaimedJob>{`, or a `satisfies`/`as` that follows a literal's own
-// closing bracket. The TYPE side of that is read the way the id's own annotation is, as whatever is
-// not the operator: `ClaimedJob`, `ClaimedJob[]`, `Array<ClaimedJob>`, `ClaimedJob | undefined` and
-// whatever else a type expression can be are one rule rather than the list they were becoming. The
-// LITERAL side stays strict, and that asymmetry is the whole design: a type expression is a language
-// and a literal is a brace, so the growth belongs on the side that can absorb it. Which
-// is what tells `({…}) as unknown as ClaimedJob` (spend-ceiling-poll.test.ts, a fixture) from
-// `claimed.find(…) as ClaimedJob` (scheduler-claim-token.test.ts, a row that was found). Whatever
-// type-level words sit in between are a repeat of one pair, `as unknown as` and `as const satisfies`
-// alike, written as a repetition rather than as the list those two would start. Four rounds
-// of review were spent on the annotations that name a job WITHOUT one, and each answer bought the
-// next question, because they are all the same shape: `job: ClaimedJob` on a parameter, defaulted or
-// not, `function jobFor(): ClaimedJob {`, `Promise<ClaimedJob>` on an async factory. None of them
-// says where the literal is, so counting them is line proximity again, one indirection down, and
-// what it produces is the `{ id: 7n }` of some other object in the same fourteen lines.
-//
-// So a job produced by a function whose RETURN type is the only mention is out of the sweep's reach,
-// written down here and asserted below rather than left to be discovered. It is the narrow corner of
-// a case that is already narrow: a fixture is only invisible to `claimSeq` when the field arrives by
-// spread from another module, and then also has to spell a reachable id.
+// An annotation over a literal WRITTEN AT THAT POINT: `= {`, `= [`, `=> ({`, `<ClaimedJob>{`, or a
+// `satisfies`/`as` after a literal's closing bracket. The TYPE side is read as whatever is not the
+// operator, a rule rather than a list, because a type expression is a language and a literal is a
+// brace; the LITERAL side stays strict. That tells `({…}) as unknown as ClaimedJob` (a fixture) from
+// `claimed.find(…) as ClaimedJob` (a found row). An annotation with no literal (`job: ClaimedJob`, a
+// return type, `Promise<ClaimedJob>`) says nothing about where the literal is, so a job whose only
+// mention is its factory's return type is out of reach: a blind corner, asserted below.
 const TYPE_MARKER =
   /(?::\s*[^=;{}\n]*\bClaimedJob\b[^=;{}\n]*=\s*\(?\s*|:\s*ClaimedJob(?:\[\])?\s*=>\s*\(\s*|(?<![\w$])<\s*ClaimedJob\s*>\s*)[[{]|[}\]]\s*\)?\s*(?:(?:as|satisfies)\s+(?:unknown|const|readonly)\s+)*(?:as|satisfies)\s+ClaimedJob\b/g;
 
@@ -203,8 +136,8 @@ export function offendingFixtures(): string[] {
   return hits.sort();
 }
 
-// Untyped on purpose: the annotation is a marker of its own now, so a sample carrying it would be
-// marked no matter what the `claimSeq` rows below are trying to measure.
+// Untyped on purpose: the annotation is a marker of its own, so a sample carrying it would be marked
+// no matter what the `claimSeq` rows below are trying to measure.
 const fixture = (id: string, gap = 1) =>
   [
     "  const job = {",
@@ -259,7 +192,7 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
     // `Number("+0x1")` is NaN while `BigInt(+0x1)` is `1n`, so the sign has to come off before the
     // arithmetic or a reachable id reads as unreadable, and unreadable reads as safe.
     ["a BigInt() call over a signed hex", fixture("BigInt(+0x7)"), true],
-    // BigInt over a bigint is the identity, and the `n` used to end the match before the `)`.
+    // NOTE: BigInt over a bigint is the identity, and the `n` must not end the match before the `)`.
     ["a BigInt() call over a bigint", fixture("BigInt(7n)"), true],
     // Neither is a bigint literal, and both are what BigInt turns into one.
     ["a BigInt() call over an exponent", fixture("BigInt(1e3)"), true],
@@ -318,8 +251,8 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
       "  const job = { id: 1n, ...b } as const satisfies ClaimedJob;",
       true,
     ],
-    // Written as a repetition rather than as the list those two would start, so a third bridge is
-    // not a fourteenth round.
+    // NOTE: Written as a repetition rather than as the list those two would start, so a third bridge
+    // needs no new alternative.
     [
       "a literal behind two bridges",
       "  const job = { id: 1n, ...b } as const as unknown as ClaimedJob;",
@@ -443,9 +376,9 @@ describe("a scheduler fixture may not name a row the sequence can hand out", () 
     expect(fixtureIdHits(src)).toEqual([]);
   });
 
-  // The marker's own spellings. A fixture whose `claimSeq` comes from a local variable is written as
-  // shorthand, and a JSON-shaped one quotes its keys: both are the same field, and a marker that
-  // demanded a colon read them as no job at all.
+  // NOTE: The marker's own spellings. A fixture whose `claimSeq` comes from a local variable is written
+  // as shorthand, and a JSON-shaped one quotes its keys: both are the same field, and a marker that
+  // demanded a colon would read them as no job at all.
   test.each([
     ["a property", "    claimSeq: 0,"],
     ["shorthand", "    claimSeq,"],

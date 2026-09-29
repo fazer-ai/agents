@@ -62,7 +62,7 @@ const INBOX_FULL = 771; // deny message + handoff to team 77
 const INBOX_NO_COPY = 772; // denyMessage null, handoff on
 const INBOX_UNLOCK = 773; // POST + includeMessageText, handoff off (the unlock flow)
 const INBOX_FOREIGN_TEAM = 774; // handoff to a team pinned in ANOTHER Chatwoot account
-const INBOX_ONCE = 775; // mode "once": the positive verdict is stored and reused (#189)
+const INBOX_ONCE = 775; // mode "once": the positive verdict is stored and reused
 const TEAM_ID = 77;
 const UNLOCK_COPY = "Envie seu código de acesso para ser atendido.";
 
@@ -217,11 +217,9 @@ async function deliverCustomerMessage(params: {
   makeClient: (cfg: { botToken: string }) => Promise<ChatwootClient>;
   makeModel?: () => BaseChatModel;
   base?: PrismaClient;
-  // Só quem pede é que recebe o lançamento do receptor como VALOR. Todo o resto continua sendo
-  // derrubado por ele, que é o que cada chamador daqui já tinha de graça quando este helper apenas
-  // dava `await`: converter toda rejeição em `erro` tiraria de quinze testes a checagem de falha que
-  // eles nunca escreveram porque não precisavam — o autorizado, por exemplo, passaria igual se o
-  // processamento lançasse depois de mandar a resposta e antes de liquidar a entrega (review r2).
+  // Hands a rejection from processing back as `erro` instead of throwing. Opt-in, because
+  // converting every rejection would remove the failure check the other tests get from the throw
+  // (an authorized turn that threw after replying and before settling the delivery would pass).
   expectFailure?: boolean;
 }): Promise<{ erro: string | null; status: string; deliveryRowId: bigint }> {
   seq += 1;
@@ -455,8 +453,8 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       select: { id: true },
     });
     foreignTeamAgentId = foreignTeam.id;
-    // The reuse mode (issue #189): a positive verdict is stored per contact and reused until it
-    // expires, so a burst of messages costs the operator's endpoint one lookup instead of five.
+    // NOTE: the reuse mode: a positive verdict is stored per contact and reused until it expires,
+    // so a burst of messages costs the operator's endpoint one lookup instead of five.
     const once = await suDb.agent.create({
       data: {
         ...baseAgent,
@@ -617,10 +615,9 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(notes[0]?.content).toContain("não autorizado");
     expect(notes[0]?.content).toContain("not_customer");
     expect(notes[0]?.content).not.toContain(PHONE);
-    // The copy went out in this very conversation, one line above. The note used to claim "o agente
-    // não respondeu automaticamente" here, contradicting the screen; announcing that the contact WAS
-    // warned would be just as useless, because the operator can see the message. So the note carries
-    // only what is not on screen — the reason code above — and says nothing about the copy.
+    // NOTE: the copy is on screen one line above, so the note carries only what is not on screen
+    // (the reason code) and says nothing about the copy: denying it contradicts the screen, and
+    // announcing it adds nothing.
     expect(notes[0]?.content).not.toContain("não respondeu automaticamente");
     expect(notes[0]?.content).not.toContain("aviso");
     // The message is consumed: the watermark advanced so no later flush re-answers it.
@@ -646,21 +643,10 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     );
   });
 
-  // A LACUNA QUE A #719 MEDIU E NÃO FECHOU, FECHADA NA #725 — e este teste é o mesmo cenário com a
-  // asserção virada.
-  //
-  // A recusa também é uma mensagem de cliente que turno nenhum responde e que só a ingestão contínua
-  // guarda. O portão consome a entrega, e ATÉ AQUI a marca avançava e a linha era liquidada antes de
-  // a ingestão rodar — então com o enfileiramento falhando a mensagem que o cliente mandou enquanto
-  // estava bloqueado não ficava em lugar nenhum. O que impedia a saída da #719 (deixar a linha em
-  // `PROCESSING` para a varredura) era o replay: a varredura REPLICA A ENTREGA PELOS PORTÕES, e nada
-  // na linha dizia "um portão já consumiu esta mensagem", então quando o portão abrisse o replay
-  // responderia uma mensagem que o operador silenciou de propósito.
-  //
-  // A #725 gravou essa intenção na linha (`owes_memory_only`) e a fez ser honrada pelo replay, o que
-  // liberou a saída para esta metade também. O que este teste mede agora é o contrário do que ele
-  // media: a linha NÃO é terminal, a marca NÃO passou por cima da mensagem, e a entrega continua
-  // devendo o append que a varredura vai cobrar.
+  // A refusal is also a customer message no turn answers, kept only by continuous ingestion. When
+  // its ingestion enqueue fails, the row stays non-terminal for the sweep and the watermark does not
+  // pass the message. The row records `owes_memory_only`, so the sweep's replay (which runs the
+  // delivery through the gates again) only appends, and never answers a message the gate silenced.
   test("a refused customer's message is left for the sweep when its ingestion enqueue fails", async () => {
     const convId = 9399;
     await seedConversation(convId, inboxFullDbId);
@@ -689,8 +675,8 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
       fetchImpl: auth.fetchImpl,
       makeClient: cw.makeClient,
       base: semFila,
-      // A passada passa a LANÇAR, que é o que deixa a linha em `PROCESSING`; o helper só devolve o
-      // erro em vez de propagá-lo quando a chamadora diz que a falha é o esperado.
+      // NOTE: the pass throws, which leaves the row in `PROCESSING`; the helper hands the error back
+      // instead of propagating it only because this caller expects the failure.
       expectFailure: true,
     });
 
@@ -698,10 +684,9 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     // a varredura a encontra.
     expect(erro).not.toBe(null);
     expect(status).toBe("PROCESSING");
-    // E A MARCA NÃO PASSOU POR CIMA DELA. Marca acima de uma mensagem que memória nenhuma tem é a
-    // perda ficando invisível, que era o terceiro dos três fatos que este teste travava. A recusa de
-    // RESPOSTA é escrita à parte, no instante do portão (uma dispensa por id), e é ela que impede o
-    // flush do expediente de responder a mensagem calada — as duas perguntas são separadas.
+    // NOTE: the watermark did not pass it either: a watermark above a message no memory holds hides
+    // the loss. The refusal to REPLY is written apart, at the gate (a dispensation per id), and that
+    // is what keeps the business-hours flush from answering the silenced message.
     const conv = await suDb.conversation.findFirstOrThrow({
       where: { tenantId, chatwootConversationId: convId },
       select: { id: true, lastHandledMessageId: true },
@@ -743,7 +728,7 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(rows[0]?.detail).toMatchObject({ outcome: "allowed" });
   });
 
-  // ── mode "once": the endpoint is asked until it says yes, and not after (issue #189) ──
+  // ── mode "once": the endpoint is asked until it says yes, and not after ──
 
   test("once: the second message is served without asking the endpoint again", async () => {
     const convId = 9320;
@@ -803,11 +788,10 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     ]);
   });
 
-  // The window this gate OPENS. The attribution gate runs before the authorization call, and that
-  // call is a round-trip to somebody else's endpoint with a ten-second ceiling; a human taking the
-  // conversation inside it used to find the agent's turn running on it, because runAgentTurn only
-  // re-checks ownership after the model has answered — which withholds the reply and nothing else,
-  // long after the tools have written their labels, cards and attributes.
+  // The window this gate opens: the attribution gate runs before the authorization call, a
+  // round-trip of up to ten seconds to somebody else's endpoint. A human taking the conversation
+  // inside it must stop the turn before the model: runAgentTurn re-checks ownership only after the
+  // model answers, which withholds the reply but not the labels, cards and attributes already written.
   test("a human taking over during the authorization call stops the turn before the model", async () => {
     const convId = 9313;
     await seedConversation(convId, inboxFullDbId);
@@ -845,8 +829,8 @@ describe.skipIf(!dbUp)("contact authorization gate (webhook e2e)", () => {
     expect(modelBuilds).toBe(0);
     expect(cw.publicOn(convId)).toEqual([]);
     expect(cw.statusToggles).toEqual([]);
-    // And it SAYS so: the fence that stopped the turn leaves the same line every other ownership
-    // gate leaves, so the silence has something behind it in the operator's log (issue #271).
+    // NOTE: the fence that stopped the turn leaves the same line every other ownership gate leaves,
+    // so the silence has something behind it in the operator's log.
     expect(await handoffDetail(convId)).toEqual({ outcome: "taken_over" });
   });
 

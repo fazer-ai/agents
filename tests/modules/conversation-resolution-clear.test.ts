@@ -185,11 +185,10 @@ describe.skipIf(!dbUp)(
       expect(await originOf(38)).toBeNull();
     });
 
-    // A delayed close from an EARLIER episode, which loses the ordering in exactly the shape of our
-    // own close failing to land. Clearing on it wiped the stamp of a close that was still on its
-    // way, and that close's own event found nothing to restore — so a real agent resolution was
-    // reported as somebody else's, for good. The version floor recorded with the stamp is what
-    // tells the two apart.
+    // A delayed close from an EARLIER episode loses the ordering in exactly the shape of our own
+    // close failing to land. Clearing on it would wipe the stamp of a close still on its way, whose
+    // own event then finds nothing to restore, so a real agent resolution reads as somebody else's
+    // for good. The version floor recorded with the stamp is what tells the two apart.
     test("a delayed close from an earlier episode leaves a newer stamp alone", async () => {
       const at = 1_700_050_000;
       await mirror(convEvent(50, "conversation_created", "open", at));
@@ -226,11 +225,11 @@ describe.skipIf(!dbUp)(
       expect(await originOf(50)).toBe("agent");
     });
 
-    // Review round 10. A newer inbound reopens the conversation and is mirrored between our toggle
-    // returning and the stamp landing, so by write time the row's own status version describes THAT
-    // reopen. Copying it as the floor would date the stamp to the wrong episode: our own delayed
-    // resolve event would then be judged to predate the stamp and could never clear it, and the
-    // next close by anyone else would read as the agent's. The floor is the caller's observation.
+    // A newer inbound reopens the conversation and is mirrored between our toggle returning and the
+    // stamp landing, so by write time the row's own status version describes THAT reopen. Copying it
+    // as the floor would date the stamp to the wrong episode: our own delayed resolve event would
+    // then be judged to predate the stamp and could never clear it, and the next close by anyone
+    // else would read as the agent's. The floor is the caller's observation.
     test("a reopen mirrored before the stamp does not become its floor", async () => {
       const at = 1_700_060_000;
       await mirror(convEvent(61, "conversation_created", "open", at));
@@ -259,11 +258,10 @@ describe.skipIf(!dbUp)(
       expect(await originOf(61)).toBeNull();
     });
 
-    // Review round 11, and the only path that does not go through our own view of "resolved".
-    // Chatwoot retries a webhook three times and then gives up, so our close CAN be lost for good:
-    // the row never records the resolved state, and there is no later resolved claim to lose the
-    // ordering either. Without rule 3 the stamp rides into the customer's next episode and hands
-    // the agent whatever closes that one.
+    // The only path that does not go through our own view of "resolved". Chatwoot retries a webhook
+    // three times and then gives up, so our close CAN be lost for good: the row never records the
+    // resolved state, and there is no later resolved claim to lose the ordering either. Without
+    // rule 3 the stamp rides into the customer's next episode and hands the agent whatever closes it.
     test("a customer coming back clears a stamp whose close we never saw land", async () => {
       const at = 1_700_070_000;
       await mirror(convEvent(62, "conversation_created", "open", at));
@@ -343,11 +341,10 @@ describe.skipIf(!dbUp)(
       expect(await originOf(34)).toBe("agent");
     });
 
-    // Review round 4 on #199. An operator in the Chatwoot UI, an automation rule, or
-    // `auto_resolve_after` closes the conversation and deliberately leaves the origin NULL — none of
-    // them reach our code. Our own toggle then succeeds as a no-op, and stamping on the back of it
-    // would credit the agent with somebody else's close, in the Resolution KPI, in the direction
-    // this whole change exists to stop.
+    // An operator in the Chatwoot UI, an automation rule, or `auto_resolve_after` closes the
+    // conversation and deliberately leaves the origin NULL: none of them reach our code. Our own
+    // toggle then succeeds as a no-op, and stamping on the back of it would credit the agent with
+    // somebody else's close in the Resolution KPI, the misattribution the stamp exists to prevent.
     test("a close that already happened outside our code is not claimed", async () => {
       const V0 = 1_700_011_000;
       await mirror(convEvent(42, "conversation_created", "open", V0));
@@ -379,11 +376,11 @@ describe.skipIf(!dbUp)(
       expect(await originOf(42)).toBeNull();
     });
 
-    // Review round 5 on #199. The stamp is written while our mirror still says open. A customer
-    // reply reopens the conversation, that newer event is delivered FIRST, and our own resolve then
-    // loses the version comparison and is never applied. The row stays open carrying a stamp about a
-    // close that no longer exists, and the next close — an operator's, a timer's — would be read as
-    // the agent's. The rejection is the signal: a payload saying "resolved" that the mirror refused.
+    // The stamp is written while our mirror still says open. A customer reply reopens the
+    // conversation, that newer event is delivered FIRST, and our own resolve then loses the version
+    // comparison and is never applied. The row stays open carrying a stamp about a close that no
+    // longer exists, and the next close (an operator's, a timer's) would be read as the agent's.
+    // The rejection is the signal: a payload saying "resolved" that the mirror refused.
     test("a stamp whose close was outranked does not survive to the next one", async () => {
       const V0 = 1_700_013_000;
       await mirror(convEvent(44, "conversation_created", "open", V0));
@@ -415,10 +412,10 @@ describe.skipIf(!dbUp)(
       expect(row.resolvedBy).toBeNull();
     });
 
-    // Review round 6 on #199, and the axis the round-5 fix got wrong. A brand-new incoming customer
-    // message is the one reopen a message payload carries faithfully, and it advances only the
-    // STATUS mark. Our delayed resolve then loses the status axis while still winning the assignee
-    // one, so the event is NOT whole-event stale and the stale branch never sees it.
+    // Rejection is judged per axis. A brand-new incoming customer message is the one reopen a
+    // message payload carries faithfully, and it advances only the STATUS mark. Our delayed resolve
+    // then loses the status axis while still winning the assignee one, so the event is NOT
+    // whole-event stale and the stale branch never sees it.
     test("a close outranked on the status axis alone is still dropped", async () => {
       const V0 = 1_700_015_000;
       await mirror(convEvent(46, "conversation_created", "open", V0));
@@ -462,10 +459,10 @@ describe.skipIf(!dbUp)(
       expect(await originOf(46)).toBeNull();
     });
 
-    // A frozen MESSAGE snapshot can carry a conversation that reads "resolved" — Chatwoot serializes
-    // the payload at enqueue and a retry re-sends that copy. It claims no version and is meant to
-    // move no state (issue #61), so it is not evidence that any close was rejected. This is the case
-    // that makes `fromConversationEvent` part of the rule rather than decoration.
+    // A frozen MESSAGE snapshot can carry a conversation that reads "resolved" (Chatwoot serializes
+    // the payload at enqueue and a retry re-sends that copy). It claims no version and is meant to
+    // move no state, so it is not evidence that any close was rejected. This is the case that makes
+    // `fromConversationEvent` part of the rule rather than decoration.
     test("a frozen message snapshot claiming resolved does not drop the stamp", async () => {
       const V0 = 1_700_016_000;
       await mirror(convEvent(47, "conversation_created", "open", V0));
@@ -543,10 +540,10 @@ describe.skipIf(!dbUp)(
       expect(await originOf(43)).toBe("agent");
     });
 
-    // Review round 3 on #199. Resolving an already-resolved conversation is a no-op in Chatwoot, so
-    // the cause of the current resolved state does not change because somebody asked a second time.
-    // The console accepts exactly that (REST and MCP both take `resolved` unconditionally), and the
-    // follow-up ladder and the redirect closing can both arrive after the agent already closed.
+    // Resolving an already-resolved conversation is a no-op in Chatwoot, so the cause of the current
+    // resolved state does not change because somebody asked a second time. The console accepts
+    // exactly that (REST and MCP both take `resolved` unconditionally), and the follow-up ladder and
+    // the redirect closing can both arrive after the agent already closed.
     test("a second closing does not overwrite the first one's origin", async () => {
       await closeThenStamp(38, 1_700_009_000);
       await recordResolutionOrigin({
@@ -599,12 +596,12 @@ describe.skipIf(!dbUp)(
       expect(await originOf(36)).toBe("agent");
     });
 
-    // Review round 2 on #199. Between our own toggle and the arrival of ITS event, the mirror still
-    // reads the pre-toggle status. A conversation event serialized BEFORE the toggle (an set_labels
-    // or set_custom_attribute earlier in the same turn) can be delivered after the stamp, still
-    // outrank the stored version, and apply its own non-resolved status over an identical stored one.
-    // That no-op used to erase the stamp, and the resolved event arriving next preserved the NULL:
-    // a real agent resolution, lost for good, on the one closing the funnel counts.
+    // Between our own toggle and the arrival of ITS event, the mirror still reads the pre-toggle
+    // status. A conversation event serialized BEFORE the toggle (a set_labels or
+    // set_custom_attribute earlier in the same turn) can be delivered after the stamp, still outrank
+    // the stored version, and apply its own non-resolved status over an identical stored one.
+    // Erasing the stamp on that no-op loses a real agent resolution for good (the resolved event
+    // arriving next preserves the NULL), on the one closing the funnel counts.
     test("a pre-toggle event delivered after the stamp does not erase it", async () => {
       const V0 = 1_700_007_000;
       await mirror(convEvent(40, "conversation_created", "open", V0));
@@ -683,10 +680,10 @@ describe.skipIf(!dbUp)(
       expect(await originOf(41)).toBe("agent");
     });
 
-    // The round-8 shape through the live probe. A GET that predates the reopen still reports the
-    // FIRST episode's "resolved"; it loses the version comparison, and without the floor that loss
-    // reads as our own close failing to land, so the stamp of the close still in flight is wiped.
-    // The reconcile has to answer this the same way the webhook mirror does.
+    // A delayed earlier close, through the live probe. A GET that predates the reopen still reports
+    // the FIRST episode's "resolved"; it loses the version comparison, and without the floor that
+    // loss reads as our own close failing to land, so the stamp of the close still in flight is
+    // wiped. The reconcile has to answer this the same way the webhook mirror does.
     test("a stale live probe reporting an earlier close leaves a newer stamp alone", async () => {
       const V0 = 1_700_010_000;
       await mirror(convEvent(60, "conversation_created", "open", V0));

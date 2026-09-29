@@ -6,8 +6,8 @@ import {
   SENT_IDS_CAP,
 } from "@/modules/chatwoot/record-sends";
 
-// Issue #855: a turn knows which messages it created, noted where Chatwoot hands their ids back. The
-// rule is on the client, so whoever sends (the reply, a tool, the handoff's closing line) is covered.
+// A turn knows which messages it created, noted where Chatwoot hands their ids back. The rule is on
+// the client, so whoever sends (the reply, a tool, the handoff's closing line) is covered.
 
 class FakeClient {
   next = 100;

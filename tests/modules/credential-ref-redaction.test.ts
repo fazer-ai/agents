@@ -29,21 +29,13 @@ import {
 import { codeOnly } from "@/tests/utils/source-text";
 import { outboundUrl } from "../utils/outbound";
 
-// FOUR REF COLUMNS STILL HAND A READER WHAT THE COLUMN HOLDS (issue #438).
+// FOUR REF COLUMNS HAND A READER ONLY A WELL-FORMED REFERENCE.
 //
-// `requireVaultRef` reached every writer of every ref column in ONE commit, `dc6c467a` (#126,
-// 2026-08-18). Before it the field was `z.string().min(1).max(128)` and the value was stored
-// verbatim, so a row can hold text that names no vault entry — most plausibly a secret VALUE, from
-// an API caller who read the field name as "the secret" rather than "a reference to one". Both
-// modules predate the guard by more than two months.
-//
-// The write was made by whoever held the credential. The READ is not: these DTOs go out over REST
-// and over `mcp:read`, a principal scope deliberately narrower than the console's TENANT_ADMIN, and
-// the MCP tool descriptions promise "No secrets". For a pre-#126 row that promise rests on nobody
-// having typed one into the field.
-//
-// The tests plant such a value with the SUPERUSER client, because the service refuses to write one —
-// which is the point: the rows this is about were written before the service could refuse.
+// A row written before `requireVaultRef` guarded its writer can hold text that names no vault
+// entry, most plausibly a secret VALUE. These DTOs go out over REST and over `mcp:read` (narrower
+// than the console's TENANT_ADMIN), and the MCP tool descriptions promise "No secrets", so each
+// read passes the column through `readableVaultRef`. The tests plant such a value with the
+// SUPERUSER client, because the service refuses to write one.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -78,8 +70,8 @@ const ctx = (): TenantContext => ({
   role: "TENANT_ADMIN",
 });
 
-// The value a pre-#126 caller could have put in the column. It is not a ref, so no resolver ever
-// matched it and the credential never worked — it just sits there, reachable by every reader.
+// A value an unguarded writer could have put in the column. It is not a ref, so no resolver ever
+// matched it and the credential never worked: it just sits there, reachable by every reader.
 const PLANTED = "sk-live-438-not-a-reference";
 
 describe.skipIf(!dbUp)(
@@ -173,10 +165,9 @@ describe.skipIf(!dbUp)(
       });
 
       // WHAT NULL MEANS, and the four MCP descriptions say the same sentence. The guard proves the
-      // value IS a reference, deliberately not that it resolves (#437), so a ref whose entry was
-      // deleted still comes back: the operator sees a credential that is set and broken instead of a
-      // field that reads empty. Pinned because the first spelling of those descriptions said "names
-      // no entry", which is a different and false claim.
+      // value IS a reference, deliberately not that it resolves, so a ref whose entry was deleted
+      // still comes back: the operator sees a credential that is set and broken instead of a field
+      // that reads empty. "Names no entry" would be a different and false claim.
       test("a ref whose entry is gone is still a ref, and is still shown", async () => {
         const made = await create("td-dangling");
         await plant(
@@ -246,7 +237,7 @@ describe.skipIf(!dbUp)(
       });
     });
 
-    // ── integration instances: TWO ref columns, and the issue counted one ──
+    // ── integration instances: TWO ref columns ──
 
     describe("IntegrationInstance credentialRef and inboundSecretRef", () => {
       test("neither column hands out a value that names nothing", async () => {
@@ -284,11 +275,11 @@ describe.skipIf(!dbUp)(
       });
     });
 
-    // ── the surface the issue names: `mcp:read`, narrower than the console's TENANT_ADMIN ──
+    // ── `mcp:read`, narrower than the console's TENANT_ADMIN ──
     //
     // Driven through the MCP reads rather than trusting that they pass the DTO along, because that
-    // is the property under test: these four hand back the SERVICE dto, and their descriptions used
-    // to promise a vault entry NAME, which was true of the settings reads and of nothing here.
+    // is the property under test: these four hand back the SERVICE dto, so their descriptions cannot
+    // promise a vault entry NAME (true of the settings reads only).
 
     test("no mcp:read tool hands a planted value to its client", async () => {
       const principal: VerifiedToken = {
@@ -354,16 +345,13 @@ describe.skipIf(!dbUp)(
       }
     });
 
-    // ── the AUDIT row, which is where a leak would have been permanent ──
+    // ── the AUDIT row, where a leak is permanent ──
     //
-    // `mcpConnectionUpdate` projects its before/after out of the DTO, so the column reached
-    // `recordMcpAudit` and an append-only row. An MCP caller clearing an opaque ref therefore wrote
-    // whatever the column held — plausibly a secret — into storage nothing deletes.
-    //
-    // What is LEFT is a diff that under-reports: the before is now null and the caller sends null, so
-    // the change reads as none while the column does get cleared. That is the residue of removing the
-    // leak, and it under-reports the removal of a value that resolved nowhere. A presence signal on
-    // the DTO would close it, and that is a different mechanism from this one.
+    // `mcpConnectionUpdate` projects its before/after out of the DTO into `recordMcpAudit`'s
+    // append-only row, so an unredacted DTO writes whatever the column held into storage nothing
+    // deletes. The residue is a diff that under-reports: the before is null and the caller sends
+    // null, so clearing a value that resolved nowhere reads as no change. A presence signal on the
+    // DTO would close that, and it is a different mechanism from this one.
 
     test("clearing an opaque ref over MCP leaves no trace of what it held", async () => {
       const principal: VerifiedToken = {
@@ -421,15 +409,11 @@ describe.skipIf(!dbUp)(
 
     // ── what the echo-back does, which is the question the redaction OPENS ──
     //
-    // All three consoles prefill their picker from the DTO and send the field on every save, so a read
-    // that starts returning null turns the next unrelated save into a clear. That is #435's shape, and
-    // the reason it does NOT need #435's fix here is a property of what gets redacted: `readableVaultRef`
-    // hides a value only when it is not a well-formed ref at all, and such a value resolved to nothing
-    // in every resolver, so the credential never worked. Clearing it loses no behaviour, and it takes a
-    // probable secret VALUE out of a column that should never have held one.
-    //
-    // That argument is only worth having if the OTHER two cases survive the same trip. Measured here
-    // rather than reasoned about, because "the form is safe" is exactly the claim a checklist swallows.
+    // All three consoles prefill their picker from the DTO and send the field on every save, so a
+    // null read turns the next unrelated save into a clear. That is safe here: `readableVaultRef`
+    // hides a value only when it is not a well-formed ref at all, which resolved to nothing in every
+    // resolver, so clearing it loses no behaviour and takes a probable secret out of the column. The
+    // OTHER two cases must survive the same trip, which these tests check rather than assume.
 
     describe("the whole-body save a console performs", () => {
       test("a resolvable ref survives being read and echoed back", async () => {

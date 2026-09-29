@@ -10,14 +10,10 @@ import { flowLogRows } from "../utils/flowlog";
 
 // AN INBOX NOBODY BOUND, AND THE MESSAGES IT SWALLOWS.
 //
-// The mirror creates an `Inbox` row for any inbox that sends us traffic, deliberately — mirroring has
-// to work before an operator binds anything. So the row for a channel just connected in Chatwoot
-// exists, has no agent, consumes every delivery and answers nothing. The conversation shows the
-// customer waiting, and until issue #318 the console showed nothing at all: the only trace was one
-// process log line on the server, which is not what an operator reads.
-//
-// The effect asserted here is the row in `execution_logs`, because that is what the Logs page reads —
-// the same choice issue #271 made for the ownership gate.
+// The mirror creates an `Inbox` row for any inbox that sends traffic, deliberately: mirroring has to
+// work before an operator binds anything. That row has no agent, consumes every delivery and answers
+// nothing, so the console must say so. The effect asserted is the row in `execution_logs`, because
+// that is what the Logs page reads (as for the ownership gate).
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -244,11 +240,9 @@ describe.skipIf(!dbUp)("an unbound inbox says so", () => {
     expect(agentDbId).toBeGreaterThan(0n);
   });
 
-  // The state this line must NOT claim, found by review. `runAgentTurn` answers `no-agent` for a
-  // disabled agent too — `loadAgentConfig` returns null on the `enabled` flag, one step past the
-  // binding — so keying on the outcome alone tells an operator who switched their agent off, at
-  // `warn` and through their alert channel, that the inbox has no agent. It has one; they turned it
-  // off, which is a deliberate state and the same exclusion the ownership gate's line makes.
+  // NOTE: `runAgentTurn` answers `no-agent` for a disabled agent too (`loadAgentConfig` returns null on
+  // the `enabled` flag), so keying on the outcome alone would warn an operator who switched their agent
+  // off that the inbox has no agent. The ownership gate's line makes the same exclusion.
   test("a bound agent that is switched off writes no line", async () => {
     await suDb.agent.update({
       where: { id: agentDbId },

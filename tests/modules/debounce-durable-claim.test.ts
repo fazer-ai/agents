@@ -126,9 +126,8 @@ async function holdThread(contactInboxId: number, graphThreadId: string) {
   );
 }
 
-// A claim a process died holding: holders on the row and a lease that lapsed a minute ago. Expiry has
-// always meant "the writer proceeds" here; what this shape exercises is whether the recovery is
-// REPORTED, which is the half issue #593 closes with its last paragraph.
+// A claim a process died holding: holders on the row and a lease that lapsed a minute ago. Expiry
+// means the writer proceeds; what this shape exercises is whether the recovery is REPORTED.
 async function holdThreadStale(contactInboxId: number, graphThreadId: string) {
   await suDb.$executeRawUnsafe(
     `INSERT INTO agent_threads
@@ -288,21 +287,20 @@ describe.skipIf(!dbUp)(
           `DELETE FROM tenants WHERE id = ${tenantId}`,
         );
       }
-      // NOTE: the shard is one process for every file in it, so a pool left open here is still open
-      // 33 files later. Measured on run 35116422422: without these two, `scheduler-lanes` claims
-      // fewer jobs than it asks for and fails on the count, with `Timed out fetching a new
-      // connection from the connection pool` in the same shard's log.
+      // NOTE: the shard is one process for every file in it, so a pool left open here stays open
+      // for the files after it and starves later suites (`scheduler-lanes` among them) of
+      // connections.
       await suDb.$disconnect();
       await appDb.$disconnect();
     });
 
-    // s1: the core of issue #593. Another replica owns the graph thread; this process knows nothing.
+    // NOTE: s1, the core case: another replica owns the graph thread; this process knows nothing.
     test("a thread owned by another process is not invoked, and the burst survives", async () => {
       const graphThreadId = contactInboxThreadId(tenantId, instanceId, CI_HELD);
       await holdThread(CI_HELD, graphThreadId);
-      // THE PRECONDITION FIRST, on the same key the flush computes. Without it a wrong key would make
-      // every assertion below pass for the wrong reason once the fix lands: "nobody owns a thread I am
-      // not asking about" is not the same statement as "the flush honours the owner".
+      // NOTE: THE PRECONDITION FIRST, on the same key the flush computes. Without it a wrong key
+      // would make every assertion below pass for the wrong reason: "nobody owns a thread I am not
+      // asking about" is not the same statement as "the flush honours the owner".
       const rowSaysHeld = await turnOwnsThread(
         {
           tenantId,
@@ -313,8 +311,8 @@ describe.skipIf(!dbUp)(
         appDb,
       );
       const { calls, sent } = await runFlush(CONV_HELD);
-      // And the burst has to still be OWED, which is the third symptom the issue measured: a flush
-      // that answered also advanced the watermark, so the messages are gone AND marked handled.
+      // NOTE: and the burst has to still be OWED: a flush that answered would also advance the
+      // watermark, leaving the messages gone AND marked handled.
       const [conv] = await suDb.$queryRawUnsafe<{ handled: number | null }[]>(
         `SELECT last_handled_message_id AS handled FROM conversations
         WHERE tenant_id = ${tenantId} AND chatwoot_conversation_id = ${CONV_HELD}`,
@@ -343,16 +341,17 @@ describe.skipIf(!dbUp)(
       expect(calls).toBe(1);
     });
 
-    // s8: the conversation-keyed thread has no row to hold, and must keep being served. The Map is
-    // the whole answer there, which is the cost issue #203 measured and accepted.
+    // NOTE: s8: the conversation-keyed thread has no row to hold, and must keep being served. The
+    // Map is the whole answer there, an accepted cost of that keying.
     test("a conversation with no contact inbox is still answered", async () => {
       const { calls } = await runFlush(CONV_NO_CI);
       expect(calls).toBe(1);
     });
 
-    // s3: TWO FLUSHES STARTING TOGETHER, which no read can separate. The claim lands while this
-    // flush is fetching messages — after its own check, before its turn claims the thread — which is
-    // where the other replica's acquisition lands in production. Only the acquiring UPDATE sees it.
+    // NOTE: s3: TWO FLUSHES STARTING TOGETHER, which no read can separate. The claim lands while
+    // this flush is fetching messages (after its own check, before its turn claims the thread),
+    // which is where the other replica's acquisition lands in production. Only the acquiring UPDATE
+    // sees it.
     test("a claim taken after the check and before the turn's own still stands the flush down", async () => {
       const graphThreadId = contactInboxThreadId(tenantId, instanceId, CI_RACE);
       let stop: (() => void) | undefined;
@@ -386,8 +385,8 @@ describe.skipIf(!dbUp)(
       expect(conv?.lastHandledMessageId).toBeNull();
     });
 
-    // s4: a holder that died mid-turn. The customer is answered, as expiry has always meant here,
-    // and the recovery says so instead of being silent.
+    // NOTE: s4: a holder that died mid-turn. The customer is answered, as expiry means, and the
+    // recovery says so instead of being silent.
     test("an expired claim is recovered, and the stale holder is named in the log", async () => {
       const graphThreadId = contactInboxThreadId(
         tenantId,
@@ -412,11 +411,11 @@ describe.skipIf(!dbUp)(
       expect(line.length).toBe(1);
     });
 
-    // THE CEILING BINDS BOTH EXCLUSION PATHS. Round 3 of review found that the deadline was computed
-    // inside the busy-thread branch, which the acquisition race never enters: the thread reads FREE
-    // there. A burst already past its deadline would be stood down again on every race, which is the
-    // starvation the ceiling exists to stop — the customer waiting forever is worse than a duplicated
-    // line in the agent's memory, and that choice is already made for the other path.
+    // NOTE: THE CEILING BINDS BOTH EXCLUSION PATHS. The acquisition race never enters the
+    // busy-thread branch (the thread reads FREE there), so a deadline computed only in that branch
+    // would stand a past-deadline burst down on every race: the starvation the ceiling exists to
+    // stop. The customer waiting forever is worse than a duplicated line in the agent's memory, the
+    // same choice the other path makes.
     test("a burst past the deferral ceiling is answered even when it loses the claim race", async () => {
       const graphThreadId = contactInboxThreadId(
         tenantId,

@@ -238,11 +238,10 @@ describe("parseTemplateContent", () => {
     expect(r.ok).toBe(true);
   });
 
-  // A token the RESOLVER cannot even read as a name. It matches nothing, so the "unknown token"
-  // scan never saw it and authoring succeeded — and then the resolver did not match it either, so
-  // the braces printed verbatim in a document the customer keeps. The invariant is that an
-  // expression which will not resolve is refused when written, and that has to include the ones we
-  // could not parse as a name at all.
+  // A token the RESOLVER cannot even read as a name matches nothing, so an "unknown token" scan
+  // alone never sees it, and the braces print verbatim in a document the customer keeps. An
+  // expression that will not resolve is refused when written, including one we cannot parse as a
+  // name at all.
   test("refuses a token expression the resolver cannot read", () => {
     for (const text of [
       "Olá {{Cliente}}",
@@ -467,12 +466,10 @@ describe("parseDocumentValues", () => {
 
   // WHAT IS VALIDATED AND WHAT IS STORED HAVE TO BE THE SAME STRING.
   //
-  // The printability check runs on a SANITISED copy — deliberately, because that is the form the
-  // renderer receives — and a line item's description is then stored in that form. A scalar was
-  // stored RAW, so the snapshot held a character the check had already normalised away. The snapshot
-  // is a `jsonb` column and an unpaired surrogate is refused there outright (`22P02`), so the
-  // disagreement did not print oddly: it made the whole issuance fail at the INSERT, after the
-  // number was taken.
+  // The printability check runs on a SANITISED copy (the form the renderer receives), so every
+  // value is stored in that form too. A scalar stored RAW keeps a character the check already
+  // normalised away, and the snapshot is a `jsonb` column that refuses an unpaired surrogate
+  // outright (`22P02`): the whole issuance fails at the INSERT, after the number was taken.
   test("stores the sanitised text, not the string it was handed", () => {
     const r = parseDocumentValues(FIELDS as never, {
       cliente: `Ana\ud800\tMaria`,
@@ -655,9 +652,9 @@ describe("parseDocumentValues", () => {
 
   // A description is printed on a PRICED row, so whitespace is the same defect as a blank required
   // field: a numbered financial document with an empty line carrying a price.
-  // Strict, like the tool schema the model sees. Stripped, a caller that put a discount inside a
-  // line item got a 200 and a document without it — and the value stayed in the snapshot, ignored
-  // by the renderer, which is the most confusing version of that outcome.
+  // Strict, like the tool schema the model sees. Stripped, a discount put inside a line item would
+  // get a 200 and a document without it, with the value left in the snapshot and ignored by the
+  // renderer.
   test("refuses an undeclared key inside a line item", () => {
     const r = parseDocumentValues(FIELDS as never, {
       cliente: "Ana",
@@ -709,7 +706,7 @@ describe("parseDocumentValues", () => {
   });
 });
 
-// The currency code is drawn beside every amount, and a length check let two different failures
+// The currency code is drawn beside every amount, and a length check alone lets two failures
 // through: "$$$" makes Intl throw, so the renderer's fallback prints the raw code next to the
 // number, and a code outside Latin-1 is drawn as a different character in every price on the page.
 describe("the currency code is three letters", () => {
@@ -748,9 +745,9 @@ describe("parseDocumentStyle", () => {
   });
 
   // Per KEY, not per object. `.partial().safeParse` fails wholesale, so ONE property this version
-  // cannot read — a font family a newer build wrote — replaced every setting with its default, and
-  // the console then saved those defaults back: a patch of one property resetting the other eight
-  // while reporting success.
+  // cannot read (a font family a newer build wrote) would replace every setting with its default,
+  // and the console would save those defaults back: a patch of one property resetting the other
+  // eight while reporting success.
   test("keeps the settings it understands beside one it does not", () => {
     const parsed = parseDocumentStyle({
       font: "brand-grotesk-2027",
@@ -811,9 +808,9 @@ describe("printed values have to be printable", () => {
 });
 
 // A template that draws NOTHING is not a document, and it is the DEFAULT shape: `blocks` defaults
-// to [] and a template defaults to enabled, so an omitted layout became a granted tool that issued a
-// numbered blank page — a burned number from the sequence and an empty PDF attached to a customer's
-// conversation.
+// to [] and a template defaults to enabled, so an omitted layout would be a granted tool issuing a
+// numbered blank page (a burned number from the sequence and an empty PDF attached to a customer's
+// conversation).
 describe("a layout has to print something", () => {
   const field = { name: "cliente", label: "Cliente", type: "text" };
 
@@ -853,12 +850,10 @@ describe("a layout has to print something", () => {
     ).toBe(false);
   });
 
-  // The second of the two the comment above names, which was named and never asserted — and never
-  // implemented either. A header whose logo and company are BOTH switched off and which carries no
-  // title, subtitle or meta rows has nothing left to draw from, whatever arrives at the turn. It
-  // saved, it could be granted, and then every preview and every issuance failed with
-  // `documentWouldBeBlank`: a tool the agent owns and can never use, refused at the moment of use
-  // rather than at the keyboard.
+  // The second of the two blocks named above. A header whose logo and company are BOTH switched off
+  // and which carries no title, subtitle or meta rows has nothing left to draw from, whatever arrives
+  // at the turn. Accepted, it could be granted and then fail every preview and issuance with
+  // `documentWouldBeBlank`: refused at the moment of use rather than at the keyboard.
   test("refuses a header with every source of content switched off", () => {
     expect(
       parseAuthoredTemplate(
@@ -1001,10 +996,10 @@ describe("authored text has to be printable", () => {
     ).toBe(true);
   });
 
-  // Nested rows are where an operator actually writes labels — "Validade", "Condições" — and they
-  // were the half a key-by-key check missed. The collection walks the block instead of naming its
-  // properties, so a row inside a header and a row inside a fields block are found the same way a
-  // title is, and a block type added later is covered without a line.
+  // Nested rows are where an operator actually writes labels ("Validade", "Condições"), and a
+  // key-by-key check misses them. The collection walks the block instead of naming its properties,
+  // so a row inside a header and a row inside a fields block are found the same way a title is, and
+  // a block type added later is covered without a line.
   test("finds text nested inside a row, not just at the top of a block", () => {
     expect(
       parseAuthoredTemplate(
@@ -1203,10 +1198,9 @@ describe("starters promise only what they require", () => {
   });
 });
 
-// The preview dates the DOCUMENT in a timezone and used to generate its sample dates from the UTC
-// day, so a receipt previewed at 22:00 in São Paulo could say it was issued on the 22nd next to a
-// sample payment date of the 23rd — the same off-by-a-day the issue path was fixed for, on the
-// other side of the same page.
+// The preview dates the DOCUMENT in a timezone, so its sample dates come from that day and not the
+// UTC one: otherwise a receipt previewed at 22:00 in São Paulo says it was issued on the 22nd next
+// to a sample payment date of the 23rd.
 describe("sampleValues", () => {
   test("dates a sample from the day it is given, not from the instant", () => {
     const fields = [
@@ -1223,13 +1217,11 @@ describe("sampleValues", () => {
 
 // A STRUCTURAL KEY IS HELD TO A DIFFERENT RULE, NOT TO NONE.
 //
-// Block ids are excluded from the printable check on purpose: nothing draws them, so an emoji in one
-// is harmless and refusing it would be a wall in front of an ordinary name. Storable is the OTHER
-// question, and it was being asked of nothing here. The blocks land in a `jsonb` column and Postgres
-// refuses a NUL or a lone surrogate there (measured against the dev server: casting a JSON object
-// whose value spells the escape answers `unsupported Unicode escape sequence`). A preview writes
-// nothing, so it rendered happily while create/update failed at the INSERT with a driver error, and
-// an imported bundle took its whole transaction down with it.
+// Block ids are excluded from the printable check on purpose: nothing draws them, so refusing an
+// emoji in one is a wall in front of an ordinary name. Storable is the OTHER question: the blocks
+// land in a `jsonb` column and Postgres refuses a NUL or a lone surrogate there (`unsupported
+// Unicode escape sequence`). A preview writes nothing, so without this it renders happily while
+// create/update fails at the INSERT, and an imported bundle takes its whole transaction down.
 describe("storable structural keys", () => {
   const text = { id: "corpo", type: "text", text: "Ola." };
 

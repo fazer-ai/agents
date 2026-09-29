@@ -9,8 +9,8 @@ import type { VerifiedToken } from "@/modules/mcp/oauth/tokens";
 import { buildMcpServer } from "@/modules/mcp/server";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// Issue #607: the Conversations list narrowed to one agent. "One agent's conversations" means the
-// ones on inboxes BOUND to it; an inbox it only observes is somebody else's conversation to answer.
+// The Conversations list narrowed to one agent. "One agent's conversations" means the ones on
+// inboxes BOUND to it; an inbox it only observes is somebody else's conversation to answer.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -37,8 +37,8 @@ const suDb = su as PrismaClient;
 
 // The MCP tool reads through the app's default client, which in the suite points at no database, so
 // the call over a real MCP client needs it to be this file's. Restored as a fresh literal holding the
-// original, the only form that puts it back (see mcp-oauth-consent-seam.test.ts and the fence in
-// module-mock-undo.test.ts); top-level so a skipped describe cannot leave it installed.
+// original, the only form that puts it back (see tests/api/v1/mcp-oauth-consent-seam.test.ts and the
+// fence in tests/lib/module-mock-undo.test.ts); top-level so a skipped describe cannot leave it installed.
 const originalPrisma = (await import("@/api/lib/prisma")).default;
 mock.module("@/api/lib/prisma", () => ({ default: app }));
 afterAll(() => {

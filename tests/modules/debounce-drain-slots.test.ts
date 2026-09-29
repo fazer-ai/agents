@@ -20,11 +20,11 @@ import {
   reapStaleJobs,
 } from "@/modules/scheduler/service";
 
-// Issue #807, on real rows and through the real interval: a DEBOUNCE job whose run never settles
-// must not stop the lane from claiming the next due job, of another tenant, and the row of the job
-// still in flight must not be run a second time when it becomes claimable again — by a re-arm (a
-// message arriving during the flush upserts the same row back to PENDING) or by the reaper. The
-// run itself is injected; the claim, the rows, the re-arm and the reap are the production ones.
+// A DEBOUNCE job whose run never settles must not stop the lane from claiming the next due job, of
+// another tenant, and the row still in flight must not run a second time when it becomes claimable
+// again: by a re-arm (a message arriving during the flush upserts the same row back to PENDING) or
+// by the reaper. The run itself is injected; the claim, the rows, the re-arm and the reap are the
+// production ones.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

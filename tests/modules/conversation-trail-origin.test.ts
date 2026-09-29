@@ -6,10 +6,9 @@ import { getConversationDetail } from "@/modules/conversations/service";
 import { seedChatwootInstance } from "../utils/chatwoot";
 import { clearFlowLog } from "../utils/flowlog";
 
-// Issue #846: every proactive line that was not an appointment reminder came back as a "followup"
-// marker, so an inbound integration's event and a channel-redirect follow-up were badged "Follow-up"
-// on the conversation. The turn now records where it came from and which message it sent, and the
-// trail hands both to the screen. A line written before that keeps the old inference.
+// A proactive turn records where it came from and which message it sent, and the trail hands both
+// to the screen, so an inbound integration's event or a channel-redirect follow-up is not badged
+// "Follow-up". A line with no recorded origin falls back to inferring the kind from the marker.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;

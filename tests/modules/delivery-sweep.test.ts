@@ -28,23 +28,14 @@ import { POLL_DEADLINE_MS } from "@/tests/utils/poll";
 import { HandoffThenThrowModel } from "@/tests/utils/scripted-models";
 import { seedChatwootInstance } from "../utils/chatwoot";
 
-// A Chatwoot delivery stranded by a process death, and the sweep that says so (issue #228).
-//
-// `processChatwootDelivery` brackets its work between a CAS `PENDING -> PROCESSING` and a final
-// `-> PROCESSED`, with the 200 already out before either. A process that dies anywhere in there
-// leaves a non-terminal row with nothing working it, and no redelivery is coming.
-//
-// The strand is produced here by writing the row in the state a dead process leaves behind, because
-// that is the only way a live process can be in it: if the process survives to the end of the
-// function, the second CAS runs. That the state is REACHABLE was measured separately, by injecting
-// an interruption between the two CAS points on this repo's own code — it leaves
-// `status = PROCESSING, attempts = 0`, exactly the row below.
-//
-// The sweep does not answer the customer ITSELF: it arms a DELIVERY_RECOVERY for each row it
-// declares lost (issue #295, tests/modules/chatwoot-recover-delivery.test.ts). What is asserted here
-// is what the sweep owns — the ledger row terminal on DEAD, an error-level line on the conversation,
-// which is what the Logs page reads and the alert channels dispatch, and the recovery armed for
-// exactly the rows that are recoverable.
+// A Chatwoot delivery stranded by a process death, and the sweep that reports it.
+// `processChatwootDelivery` works between a CAS `PENDING -> PROCESSING` and a final `-> PROCESSED`,
+// with the 200 already sent, so a death in between leaves a row nothing works and no redelivery
+// revisits; the strand is seeded directly in that state (`PROCESSING, attempts = 0`), the only way
+// a live process can hold it. The sweep does not answer the customer: it arms a DELIVERY_RECOVERY
+// per recoverable loss (tests/modules/chatwoot-recover-delivery.test.ts). Asserted here is what it
+// owns: the row DEAD, an error line on the conversation (what the Logs page reads and the alert
+// channels dispatch), and the recovery armed for exactly the recoverable rows.
 
 const appUrl = process.env.TEST_APP_DATABASE_URL;
 const suUrl = process.env.MIGRATION_DATABASE_URL;
@@ -111,13 +102,13 @@ async function seedStrandedDelivery(over: {
   inboundMessageId?: number | null;
   status?: "PENDING" | "PROCESSING" | "DEAD";
   event?: string;
-  // What the delivery owed, when it owed the human-reply takeover (issue #439).
+  // What the delivery owed, when it owed the human-reply takeover.
   humanReplyShape?: string;
-  // Whose route it arrived on (issue #476).
+  // Whose route it arrived on.
   routeObserved?: boolean | null;
-  // Whether that route's claim said it folds into memory what it does not answer (issue #540).
+  // Whether that route's claim said it folds into memory what it does not answer.
   routeRemembers?: boolean | null;
-  // The reply's own id, which is what makes its lost memory append recoverable (issue #728).
+  // The reply's own id, which is what makes its lost memory append recoverable.
   humanReplyMessageId?: number | null;
 }): Promise<bigint> {
   deliverySeq += 1;
@@ -152,14 +143,11 @@ async function statusOf(rowId: bigint) {
   });
 }
 
-// Polled and scoped: emitFlowEvent is fire-and-forget, so an unpolled read races the write it is
-// asserting and an unscoped one answers with a neighbour's row.
-//
-// The conversation is REQUIRED, not optional-with-a-fallback. It used to be nullable, spreading the
-// filter in only when a caller had one, and that shape is a scoped read that quietly becomes a
-// tenant-wide one on the argument — the exact reader tests/modules/flowlog-reader-scope.test.ts
-// exists to catch. The line that names no conversation is a different subject and has its own
-// reader below.
+// Polled and scoped: emitFlowEvent is fire-and-forget, so an unpolled read races the write it
+// asserts and an unscoped one answers with a neighbour's row. The conversation is REQUIRED, not
+// optional with a fallback: that shape is a scoped read that quietly becomes tenant-wide on the
+// argument, the reader tests/modules/flowlog-reader-scope.test.ts exists to catch. The line that
+// names no conversation has its own reader below.
 async function deliveryLines(convDbId: bigint, waitMs = POLL_DEADLINE_MS) {
   const started = Date.now();
   while (true) {
@@ -350,10 +338,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
-  // The door the sweep's verdict leaves, and the one issue #295 opens. `DEAD` is reached by
-  // INFERENCE — nothing has moved this row — and a recovery that actually runs the turn is direct
-  // evidence, which outranks it. The same ordering a turn already uses when it corrects a `DEAD` row
-  // it ran over (retireCoveredDeliveries).
+  // NOTE: The door the sweep's verdict leaves open for recovery. `DEAD` is reached by INFERENCE
+  // (nothing has moved this row), and a recovery that actually runs the turn is direct evidence,
+  // which outranks it: the same ordering a turn uses when it corrects a `DEAD` row it ran over
+  // (retireCoveredDeliveries).
   describe("reclaiming a row the sweep gave up on", () => {
     async function deadRowFor(convId: number, messageId: number) {
       await seedConversation(convId);
@@ -402,8 +390,8 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
         base: appDb,
       });
       expect(outcome).toBe("processed");
-      // `attempts` was carried unused since the ledger existed; this is its first writer, and it is
-      // what bounds the retry ladder a recovery runs on.
+      // NOTE: The recovery claim is what writes `attempts`, and it bounds the retry ladder a
+      // recovery runs on.
       expect((await statusOf(rowId)).attempts).toBe(1);
 
       await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
@@ -530,9 +518,9 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(detail.messageId).toBe(messageId);
     expect(detail.knownToMirror).toBe(true);
 
-    // The other half, and the one the reporting alone never had: a recovery is armed for this exact
-    // row (issue #295). Armed HERE or nowhere — the sweep's query reads PENDING and PROCESSING, so
-    // from this moment on the row is invisible to every later pass.
+    // NOTE: The other half: a recovery is armed for this exact row. Armed HERE or nowhere: the
+    // sweep's query reads PENDING and PROCESSING, so from this moment on the row is invisible to
+    // every later pass.
     const job = await suDb.schedulerJob.findFirst({
       where: {
         tenantId,
@@ -645,9 +633,9 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("records a PENDING strand too, which the CAS never reached", async () => {
-    // The ack is spent before the ledger row is written, so a death between the insert and the CAS
-    // leaves PENDING. #226's answer — a redelivery goes on to the CAS instead of being dropped —
-    // only helps when a redelivery arrives, and Chatwoot holds a 200, so usually none does.
+    // NOTE: The ack is spent before the ledger row is written, so a death between the insert and
+    // the CAS leaves PENDING. Letting a redelivery through to the CAS only helps when one arrives,
+    // and Chatwoot holds a 200, so usually none does.
     const convId = 8803;
     const messageId = 9201;
     const conv = await seedConversation(convId);
@@ -803,13 +791,12 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("closes an event that could never carry a message, ids or no ids", async () => {
-    // MEASURED against the local fork (4.16.0): an Agent Bot receives seven events, and
-    // `webwidget_triggered` is the one whose body is a CONTACT_INBOX — captured with a top-level
-    // `id` of 69, the contact_inbox id, and no `conversation` key at all. `normalize.ts` reads a
-    // conversation id from nothing but the two shapes that ARE a conversation or a message (issue
-    // #257), so it reaches the ledger with both ids null and, if the process dies before the claim,
-    // no claim stamp either — byte for byte the signature the next test reads as "a build whose
-    // columns we cannot trust", on a row where the nulls mean exactly what they say.
+    // NOTE: `webwidget_triggered` is the Agent Bot event whose body is a CONTACT_INBOX: a top-level
+    // `id` (the contact_inbox id) and no `conversation` key. `normalize.ts` reads a conversation id
+    // only from the shapes that ARE a conversation or a message, so it reaches the ledger with both
+    // ids null and, if the process dies before the claim, no claim stamp: byte for byte the
+    // signature the next test reads as "a build whose columns we cannot trust", on a row whose
+    // nulls mean what they say.
     const rowId = await seedStrandedDelivery({
       conversationId: null,
       ageMs: STALE_MS * 2,
@@ -914,13 +901,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("retires the row before writing the line that pages an operator", async () => {
-    // ORDERING, and it is the reverse of what an earlier round of this PR did. `writeFlowEvent`
-    // DISPATCHES the alert as it writes — Discord, a webhook, somebody's phone — and nothing can
-    // retract that. Written before the CAS, the sweep pages an operator that a customer was never
-    // answered every time a redelivery claimed the row in between, which is a designed path here,
-    // not an infrastructure failure. There is no seam that makes the flow write fail against a real
-    // database without faking the client out from under `runScopedOn`, so the order is asserted
-    // where it is written.
+    // NOTE: ORDERING. `writeFlowEvent` DISPATCHES the alert as it writes (Discord, a webhook,
+    // somebody's phone) and nothing can retract that. Written before the CAS, the sweep would page
+    // an operator every time a redelivery claimed the row in between, a designed path here. No seam
+    // makes the flow write fail against a real database without faking the client out from under
+    // `runScopedOn`, so the order is asserted where it is written.
     const src = await Bun.file(
       new URL("../../src/modules/chatwoot/delivery-sweep.ts", import.meta.url),
     ).text();
@@ -1006,14 +991,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("a re-arm revives the row and KEEPS the budget the last pass spent", async () => {
-    // The sweep is one perpetual row per tenant, and a boot or a newly connected account re-arming
-    // it is the SAME unit of work — the answer `enqueueJob` requires and cannot derive (#339). So
-    // the row comes back PENDING and its `attempts` survive: a sweep that keeps failing must not get
-    // five fresh attempts every time somebody connects an account, which is the cap doing nothing.
-    //
-    // What clears the budget is a pass that COMPLETED, on its way out through `rescheduleJob`
-    // (#287/#337), which is the other half of the same rule and the reason this half is safe: a
-    // sweep that works never accumulates, and one that does not keeps its count.
+    // NOTE: The sweep is one perpetual row per tenant, and a boot or a newly connected account
+    // re-arming it is the SAME unit of work, which `enqueueJob` requires and cannot derive. So the
+    // row comes back PENDING with its `attempts` intact: a failing sweep must not get five fresh
+    // attempts each time an account connects. What clears the budget is a COMPLETED pass, through
+    // `rescheduleJob`, which is why this half is safe: a working sweep never accumulates.
     await suDb.$executeRawUnsafe(
       `DELETE FROM scheduler_jobs WHERE tenant_id = ${tenantId} AND kind = 'DELIVERY_SWEEP'`,
     );
@@ -1062,15 +1044,12 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("the DIRECT path retires its own row as soon as the reply is out", async () => {
-    // The window this closes: `runAgentTurn` posts inline and tx2 is several steps later — the
-    // ingestion pass, the compaction arming, the watermark tail — so a process that dies in that
-    // stretch leaves PROCESSING on a message the customer already has an answer to, and the sweep
-    // would report it as a loss and page somebody.
-    //
-    // Observed through a SECOND ledger row for the same message: `retireCoveredDeliveries` is a
-    // blind write by conversation and message id, so it takes both, while tx2 only ever touches its
-    // own row by primary key. A PROCESSED sibling is therefore proof the retirement ran, and not
-    // just proof that tx2 did.
+    // NOTE: A process dying between `runAgentTurn`'s inline post and tx2 (the ingestion pass, the
+    // compaction arming, the watermark tail) leaves PROCESSING on a message the customer already
+    // has an answer to, which the sweep would report as a loss. Observed through a SECOND ledger
+    // row for the same message: `retireCoveredDeliveries` is a blind write by conversation and
+    // message id and takes both, while tx2 touches only its own row by primary key, so a PROCESSED
+    // sibling proves the retirement ran.
     const convId = 8810;
     const messageId = 9721;
     await seedConversation(convId);
@@ -1190,14 +1169,12 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.schedulerJob.deleteMany({ where: { tenantId } });
   });
 
-  // THE SAME QUESTION AT THE DIRECT PATH'S OWN SITE (issue #429). The flush has its own version of
-  // this test; the two settle their rows from separate lines, and the invariant is one — half an
-  // answer IS an answer for the loss list. Reported as merely `consumed`, a customer who HAS the
-  // first balloon reads as a customer nothing ever replied to.
-  //
-  // The other half of the pair is the badge: the direct path clears `lastError` on "posted", so the
-  // partial outcome has to survive all the way out of `runAgentTurn` for the conversation to keep
-  // the only operator-visible sign that the reply came out short.
+  // NOTE: The same question at the direct path's own site. The flush has its own version of this
+  // test; the two settle their rows from separate lines, and the invariant is one: half an answer
+  // IS an answer for the loss list, so a customer who HAS the first balloon must not read as never
+  // replied to. The badge is the other half: the direct path clears `lastError` on "posted", so the
+  // partial outcome has to survive out of `runAgentTurn` to keep the only operator-visible sign
+  // that the reply came out short.
   test("a reply that arrived in half settles as ANSWERED, and leaves a badge", async () => {
     const convId = 8877;
     const messageId = 9722;
@@ -1224,9 +1201,9 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     const sent: Array<[number, string]> = [];
     let sends = 0;
     let nextId = 9000;
-    // Holds what it accepted and answers a read, the way the fork does: the reconciliation after a
-    // failed send asks it whether the balloon landed, and a stub that answers an empty page to that
-    // is a DEGRADED read, not a conversation with nothing in it (issue #499).
+    // NOTE: Holds what it accepted and answers a read, the way the fork does: the reconciliation
+    // after a failed send asks whether the balloon landed, and a stub answering an empty page is a
+    // DEGRADED read, not a conversation with nothing in it.
     const stored: Array<{ id: number; content: string; type: number }> = [
       { id: messageId, content: "oi", type: 0 },
     ];
@@ -1417,15 +1394,13 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("a SUPERSEDED direct turn still settles: the graph ran over the message", async () => {
-    // `superseded` on the DIRECT path is not what it is on the flush, and this is the test that
-    // holds the two apart. On the flush it hands the burst to a re-armed flush that will answer
-    // these same messages, so the rows stay open for that run to retire. Nothing is re-armed here:
-    // the graph already invoked and wrote the thread state, the post gate then found a newer
-    // incoming id and stood down, and it is the NEWER message's own delivery that carries the reply.
-    //
-    // Left open, the row is a customer-loss alert every time the process dies in the tail after a
-    // supersede — the same tail every other outcome on this path is already closed before, which is
-    // why the sibling below (a row nothing will take to PROCESSED) is the probe.
+    // NOTE: `superseded` on the DIRECT path differs from the flush, and this test holds the two
+    // apart. On the flush it hands the burst to a re-armed flush that answers the same messages, so
+    // the rows stay open for that run. Here nothing is re-armed: the graph already wrote the thread
+    // state, the post gate found a newer incoming id and stood down, and the NEWER message's
+    // delivery carries the reply. Left open, the row becomes a loss alert whenever the process dies
+    // in the tail after a supersede, which is why the sibling below (a row nothing takes to
+    // PROCESSED) is the probe.
     const convId = 8825;
     const messageId = 9741;
     await seedConversation(convId);
@@ -1535,14 +1510,12 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("naming no messages at all is not a call anyone can write", () => {
-    // A COMPILE-time guard, held by `bun check` rather than by this run: the two ways to say what a
-    // decision covered are a union, so the third combination — neither the burst nor the range —
-    // does not typecheck. It is the dangerous one. Dropping all three fields once left a filter of
-    // `{ chatwootInstanceId, conversationId }`, which retires every non-terminal row on the
-    // conversation and closes whatever loss was sitting there, and the only thing between that call
-    // and the damage was a `not: null` on a filter whose whole job is to be narrow.
-    //
-    // `@ts-expect-error` is the assertion: it fails the typecheck if the error stops happening.
+    // NOTE: A COMPILE-time guard, held by `bun check` rather than by this run: the two ways to say
+    // what a decision covered are a union, so the third combination (neither the burst nor the
+    // range) does not typecheck. It is the dangerous one: a filter of `{ chatwootInstanceId,
+    // conversationId }` retires every non-terminal row on the conversation and closes whatever loss
+    // sits there. `@ts-expect-error` is the assertion: it fails the typecheck if the error stops
+    // happening.
     // @ts-expect-error — neither shape: no message bound at all, so this does not typecheck.
     const neither: Parameters<typeof retireCoveredDeliveries>[0] = {
       tenantId: 1n,
@@ -1557,12 +1530,12 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("a wide settlement never closes a TRANSCRIPTION's row", async () => {
-    // The observer's rule below, applied to the other row that answers nobody (issue #478 review,
-    // round 4). The transcribed `message_updated` names its message now, so without the event in the
-    // filter it matches the wide scope — and the two are deliveries of the SAME message, racing, so
-    // the creation's own settlement closes the update before its ingestion is armed. An enqueue
-    // failure or a death after that is then invisible to the sweep, which is what the throw at the
-    // tail of the receiver exists to prevent.
+    // NOTE: The observer's rule below, applied to the other row that answers nobody. The
+    // transcribed `message_updated` names its message, so without the event in the filter it
+    // matches the wide scope; the two are deliveries of the SAME message racing, and the creation's
+    // settlement would close the update before its ingestion is armed. An enqueue failure or a
+    // death after that is then invisible to the sweep, which the throw at the receiver's tail
+    // exists to prevent.
     const convId = 8871;
     const messageId = 9782;
     const conv = await seedConversation(convId);
@@ -1675,11 +1648,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("an OBSERVER still settles its OWN row", async () => {
-    // The exclusion belongs to the wide scope alone. A single-row settlement already names the row
-    // it may touch, and the observer's own — the one path that settles after recording
-    // `routeObserved: true` — is exactly that shape: required to say `false` there it matched
-    // nothing, so a process exiting between the ingestion and tx2 left a handled delivery on the
-    // worklist for the sweep to report and replay.
+    // NOTE: The exclusion belongs to the wide scope alone. A single-row settlement already names
+    // the row it may touch, and the observer's own (the one path that settles after recording
+    // `routeObserved: true`) is that shape: requiring `false` there would match nothing, leaving a
+    // handled delivery on the worklist for the sweep to report and replay whenever a process exits
+    // between the ingestion and tx2.
     const convId = 8879;
     const messageId = 9782;
     const conv = await seedConversation(convId);
@@ -1713,23 +1686,14 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("a gate taken because ANOTHER BOT holds it settles only our own row", async () => {
-    // Chatwoot fans one message to up to TWO bot routes — `agent_bots_for` returns the conversation's
-    // assignee bot and the inbox's active bot, each with its own `delivery_id` — so a message can
-    // hold two ledger rows that differ only by which bot received it.
-    //
-    // On the route that loses, the gate closes because ANOTHER PARTY holds the conversation. That is
-    // a statement about US, not about the message: the other party here is a bot whose own delivery
-    // may be running right now. Retiring its row by conversation and message would take a live loss
-    // out of the list, and if that process then died nothing would ever report it — the exact
-    // silence this whole change exists to end.
-    //
-    // A human holding the conversation is the opposite and keeps the wider scope: the test above is
-    // that case, and it is the common one.
-    //
-    // The predicate is `heldByAnotherParty`, not `!act`, and the difference is not cosmetic: `act`
-    // is also false when the status is not `pending`, so reading it here would call OUR OWN bot
-    // another bot on every open or resolved conversation and scope away the sibling settlement on
-    // the most ordinary gate exit there is. The case below is that one.
+    // NOTE: Chatwoot fans one message to up to TWO bot routes (`agent_bots_for` returns the
+    // assignee bot and the inbox's active bot, each with its own `delivery_id`), so a message can
+    // hold two ledger rows. On the losing route the gate closes because ANOTHER PARTY holds the
+    // conversation, which says nothing about the message: that bot's delivery may be running, and
+    // retiring its row would take a live loss out of the list. A human holder keeps the wider scope
+    // (the test above). The predicate is `heldByAnotherParty`, not `!act`: `act` is also false when
+    // the status is not `pending`, so it would call OUR bot another bot on every open or resolved
+    // conversation (the case below).
     const convId = 8827;
     const messageId = 9761;
     const other = await suDb.chatwootWebhookDelivery.create({
@@ -1822,14 +1786,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("a gate advances the watermark before it settles the row", async () => {
-    // The order of two writes that are not a transaction, asserted at the SOURCE because no end
-    // state can show which way round they ran.
-    //
-    // Settle first and a death between them leaves the row terminal while the watermark still sits
-    // below the message: the sweep can no longer see it, and a flush after the conversation comes
-    // back to the bot re-coalesces from that watermark and ANSWERS a message a gate deliberately
-    // suppressed — a reply the product decided not to send, reported by nothing. Watermark first
-    // leaves the row in the worklist for a message something handled, which is a false line the next
+    // NOTE: Two writes that are not a transaction, ordered at the SOURCE because no end state shows
+    // which ran first. Settle first, and a death between them leaves the row terminal with the
+    // watermark still below the message: the sweep no longer sees it, and a later flush
+    // re-coalesces from that watermark and ANSWERS a message a gate deliberately suppressed.
+    // Watermark first leaves the row on the worklist for a handled message, a false line the next
     // turn over that message corrects.
     const src = await Bun.file("src/modules/chatwoot/webhook.ts").text();
     const tail = src.slice(
@@ -1844,17 +1805,12 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("retires the PROCESSING rows before it looks for DEAD ones", async () => {
-    // The order of the two writes, asserted at the SOURCE, because the interleaving it protects
-    // against is a write by another process landing between them and no end state can show which
-    // way round they ran.
-    //
-    // The sweep's own write turns a covered row PROCESSING -> DEAD. DEAD first, and that transition
-    // lands between the two: the DEAD statement finds nothing (the row was still PROCESSING), the
-    // sweep marks it DEAD and dispatches the loss, and the PROCESSING statement finds nothing
-    // either. The row stays DEAD for good, reported as a customer nobody answered, with no owner
-    // left to run tx2 over it. This way round the same interleaving is harmless in both directions:
-    // after, the sweep's terminal CAS is on the status it READ and matches nothing; before, the DEAD
-    // statement catches the row and writes the correction.
+    // NOTE: The order of the two writes, asserted at the SOURCE: the interleaving it guards against
+    // is another process's write landing between them, which no end state shows. With DEAD first,
+    // the sweep's PROCESSING -> DEAD landing between them makes both statements miss, and the row
+    // stays DEAD, reported as unanswered, with no owner left to run tx2. This way round the same
+    // interleaving is harmless: after, the sweep's terminal CAS on the status it READ matches
+    // nothing; before, the DEAD statement catches the row and writes the correction.
     const src = await Bun.file("src/modules/chatwoot/delivery-sweep.ts").text();
     const body = src.slice(
       src.indexOf("export async function retireCoveredDeliveries"),
@@ -1865,11 +1821,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     );
   });
 
-  // WHAT A TURN DID WITH THE MESSAGE, WRITTEN DOWN (issue #576). Every caller of this function
-  // already had to supply the word, and until now it was spent on a log line — so continuous
-  // ingestion, which needs exactly this fact on a `message_updated`, had to infer it from who owns
-  // the conversation at the moment it asks. Both statuses this function moves carry the word, and
-  // they carry the caller's, never a guess.
+  // NOTE: What a turn did with the message, written down. Every caller of this function supplies
+  // the word, and continuous ingestion needs exactly this fact on a `message_updated` instead of
+  // inferring it from who owns the conversation when it asks. Both statuses this function moves
+  // carry the caller's word, never a guess.
   test("records on the row what the turn actually did with the message", async () => {
     const convId = 8931;
     const conv = await seedConversation(convId);
@@ -1910,8 +1865,8 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       instanceId,
       conversationId: convId,
       conversationRowId: conv.id,
-      // A deliberate silence is not an answer, and the column has to say which — reading `false` as
-      // "no record" is what would put the loss half of #576 back.
+      // NOTE: A deliberate silence is not an answer, and the column has to say which: `false` is a
+      // record, not "no record".
       settlement: "consumed",
       covered: false,
       messageIds: [9783],
@@ -1930,11 +1885,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(await read(silenced)).toBe(false);
   });
 
-  // A PENDING ROW TAKES THE COVERAGE AND NOT THE ABSENCE (PR review, round 7). The settlement skips
-  // PENDING because moving that row's STATUS preempts a delivery whose CAS has not run; this write
-  // touches only the column. A flush that re-fetched the thread legitimately covers a message whose
-  // row was inserted and not yet claimed, and nothing later repairs that null — the delivery, when it
-  // runs, only re-arms a flush whose watermark has already moved past it.
+  // NOTE: A PENDING ROW TAKES THE COVERAGE AND NOT THE ABSENCE. The settlement skips PENDING
+  // because moving that row's STATUS preempts a delivery whose CAS has not run; this write touches
+  // only the column. A flush that re-fetched the thread legitimately covers a message whose row was
+  // inserted and not yet claimed, and nothing later repairs that null: the delivery, when it runs,
+  // only re-arms a flush whose watermark already moved past it.
   test("a pending row records a coverage, and never the absence of one", async () => {
     const convId = 8940;
     const conv = await seedConversation(convId);
@@ -2037,12 +1992,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     ).toBe(true);
   });
 
-  // AND THE COMMONEST ROW OF ALL IS ALREADY CLOSED WHEN THE WORD ARRIVES (issue #576, PR review
-  // round 1). With debounce on, the creation delivery arms the flush and returns, and its own tx2
-  // marks it PROCESSED seconds or minutes before the flush runs and calls this. The two
-  // status-moving statements name PROCESSING and DEAD, so that row matched neither and never
-  // recorded anything — leaving the late-transcription gate on the ownership reading in exactly the
-  // deployment this change exists for.
+  // NOTE: AND THE COMMONEST ROW OF ALL IS ALREADY CLOSED WHEN THE WORD ARRIVES. With debounce on,
+  // the creation delivery arms the flush and returns, and its own tx2 marks it PROCESSED before the
+  // flush runs and calls this. A write limited to the two status-moving statements (PROCESSING and
+  // DEAD) records nothing on that row, leaving the late-transcription gate on the ownership reading
+  // in the most common deployment.
   test("records the word on a row that was already processed, without moving it", async () => {
     const convId = 8932;
     const conv = await seedConversation(convId);
@@ -2125,12 +2079,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     return n;
   }
 
-  // ── COVERAGE SURVIVES A TURN THAT FAILS (issue #576, PR review round 5) ──
-  //
-  // The fact is decided at `graph.invoke` and the settlement happens much later, so anything that
-  // throws in between skips the settlement while tx2 closes the row all the same. Recorded only
-  // there, the coverage was lost on rows that really do hold the customer's message, and the late
-  // transcription then read "no row can say" and folded it in again.
+  // NOTE: COVERAGE SURVIVES A TURN THAT FAILS. The fact is decided at `graph.invoke` and the
+  // settlement happens much later, so anything that throws in between skips the settlement while
+  // tx2 closes the row anyway. Recorded only at the settlement, coverage would be lost on rows that
+  // hold the customer's message, and the late transcription would be folded in again.
 
   // A SEND THAT FAILS AFTER THE INVOKE. The turn ran, the message is in the checkpoint, and the
   // reply never left.
@@ -2294,11 +2246,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     ).toBeNull();
   });
 
-  // A ROUTE REPORTING ABOUT ITSELF STATES NOTHING ABOUT THE MESSAGE (PR review, round 4). Chatwoot
-  // fans one message to two bot routes, and the one that does NOT hold the conversation stands down
-  // with a single-row settlement while the owner's row is still being worked. Recorded as a
-  // message-wide `false`, that stand-down was read as evidence — the owner's own row said nothing
-  // yet — and the owner's late transcription was folded in a second time on the strength of it.
+  // NOTE: A ROUTE REPORTING ABOUT ITSELF STATES NOTHING ABOUT THE MESSAGE. Chatwoot fans one
+  // message to two bot routes, and the one that does NOT hold the conversation stands down with a
+  // single-row settlement while the owner's row is still being worked. Recorded as a message-wide
+  // `false`, that stand-down would be read as evidence, and the owner's late transcription folded
+  // in a second time.
   test("a single-row settlement records nothing about the message", async () => {
     const convId = 8935;
     const conv = await seedConversation(convId);
@@ -2337,9 +2289,9 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(after.turnCovered).toBeNull();
   });
 
-  // COVERAGE IS MONOTONIC, and it moves in one direction only (PR review, round 3). A later call
-  // carrying `false` is the burst's own word for the messages its cap dropped, and letting it
-  // overwrite would take back a coverage that really happened.
+  // NOTE: COVERAGE IS MONOTONIC. A later call carrying `false` is the burst's own word for the
+  // messages its cap dropped, and letting it overwrite would take back a coverage that really
+  // happened.
   test("a second settlement does not take back a coverage already on the row", async () => {
     const convId = 8933;
     const conv = await seedConversation(convId);
@@ -2380,16 +2332,12 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("the correction does NOT page, and the reason is written down", async () => {
-    // The gap, pinned so it stays a decision. A channel's `minLevel` defaults to "error": the loss
-    // pages, and the `warn` that closes it reaches the Logs page and nobody else, so an operator who
-    // was paged learns of the answer from the log or from the DEAD worklist.
-    //
-    // Routing it as an "error" was tried and is worse, which is why this asserts the absence rather
-    // than a notification. `dispatchAlertsForEvent` coalesces a pending delivery by (channel, stage,
-    // level), so a correction landing inside the loss alert's window INCREMENTS it instead of
-    // closing it, and the operator gets a bigger loss alert still carrying the original's summary.
-    // The alerting subsystem has no concept of a resolution for any event; half of one here buys a
-    // wrong notification instead of a missing one.
+    // NOTE: The gap, pinned so it stays a decision. A channel's `minLevel` defaults to "error": the
+    // loss pages, and the `warn` that closes it reaches only the Logs page. Routing it as "error"
+    // is worse: `dispatchAlertsForEvent` coalesces a pending delivery by (channel, stage, level),
+    // so a correction inside the loss alert's window INCREMENTS it and the operator gets a bigger
+    // loss alert with the original's summary. Alerting has no concept of a resolution, so this
+    // asserts the absence.
     const convId = 8828;
     const conv = await seedConversation(convId);
     const channel = await suDb.alertChannel.create({
@@ -2446,10 +2394,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
   });
 
   test("a redelivery of a LEGACY row fills in what that row could not record", async () => {
-    // The previous release wrote neither id, and the CAS that follows a redelivery stamps
-    // `claimed_at` on the row it finds — which is exactly the signature the sweep reads as "this
-    // build wrote it, so its nulls mean what they say". Left empty, a redelivery of a legacy row
-    // turns a lost customer message into one the sweep closes as carrying none.
+    // NOTE: A legacy row carries neither id, and the CAS after a redelivery stamps `claimed_at` on
+    // it: exactly the signature the sweep reads as "this build wrote it, so its nulls mean what
+    // they say". Left empty, a redelivery of a legacy row turns a lost customer message into one
+    // the sweep closes as carrying none.
     const convId = 8815;
     const messageId = 9761;
     await seedConversation(convId);
@@ -2479,11 +2427,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     expect(row.conversationId).toBe(convId);
     expect(row.inboundMessageId).toBe(messageId);
 
-    // The shape (issue #439) is filled by the same rule and from the same list, which is why the
-    // list is one list: a column added later must not be the one that gets left out of it. Asserted
-    // on a SECOND legacy row because this one carries a customer message — the shape is read only
-    // where the answer would otherwise be benign, so filling it on a row that owes a turn would be
-    // untestable through the verdict.
+    // NOTE: The shape is filled by the same rule and from the same list, so a column added later
+    // cannot be left out of it. Asserted on a SECOND legacy row because this one carries a customer
+    // message: the shape is read only where the answer would otherwise be benign, so filling it on
+    // a row that owes a turn would be untestable through the verdict.
     const legacyReply = await suDb.chatwootWebhookDelivery.create({
       data: {
         tenantId,
@@ -2547,7 +2494,7 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       },
     });
     expect(filled.humanReplyShape).toBe("composer");
-    // The route the delivery arrived on, which the recovery asks ownership about (round 1, P1).
+    // NOTE: The route the delivery arrived on, which the recovery asks ownership about.
     expect(filled.routeAgentBotId).toBe(AGENT_BOT_ID);
     // And the message the fence orders by, filled by the same pass — a rollout row that gained the
     // shape and not the coordinate would be a row the recovery reads as owed and cannot fence.
@@ -2632,10 +2579,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await clearFlowLog(suDb, { tenantId });
   });
 
-  // ISSUE #476. The same colleague's reply, on an OBSERVER's route. A takeover steps the RESPONDER
-  // off the conversation and an observer was never on it, so the job armed for it would answer
-  // `not-owed` and report nothing at all — which is how the observer's own lost ingestion became
-  // invisible. Terminal like its neighbour, counted apart, and never armed.
+  // NOTE: The same colleague's reply, on an OBSERVER's route. A takeover steps the RESPONDER off
+  // the conversation and an observer was never on it, so a job armed for it would answer `not-owed`
+  // and report nothing, hiding the observer's own lost ingestion. Terminal like its neighbour,
+  // counted apart, and never armed.
   test("a strand on an observer's route owes no takeover and arms none", async () => {
     const convId = 8907;
     await seedConversation(convId);
@@ -2668,11 +2615,10 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
-  // ISSUE #728. THE WORDS ARE A SECOND DEBT, and the row has named them since issue #469. Each of
-  // the three colleague's-reply verdicts can sit on a row that also owed a memory append, so the
-  // recovery of that append is armed alongside whatever the verdict decided about the CONVERSATION —
-  // including on the observer's strand just above, where the tree said out loud that nothing could
-  // replay it.
+  // NOTE: THE WORDS ARE A SECOND DEBT, and the row names them. Each of the three colleague's-reply
+  // verdicts can sit on a row that also owed a memory append, so the recovery of that append is
+  // armed alongside whatever the verdict decided about the CONVERSATION, including on the
+  // observer's strand just above.
   test.each([
     ["owed-takeover", { routeObserved: false }, "owed"],
     ["observer-strand", { routeObserved: true }, "observerStrands"],
@@ -2722,10 +2668,9 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     },
   );
 
-  // E A LINHA QUE NÃO NOMEIA RESPOSTA NENHUMA não ganha job, que é a leitura tentadora deste
-  // conserto: "entrega encalhada de `message_created`, vamos reler a mensagem". `human_reply_message_id`
-  // fica NULO por construção para a saída do nosso próprio bot, para a nota privada e para a reação,
-  // e é ele que as mantém fora.
+  // NOTE: A LINE THAT NAMES NO REPLY gets no job, whatever the tempting reading ("a stranded
+  // `message_created`, re-read the message"). `human_reply_message_id` is NULL by construction for
+  // our own bot's output, a private note and a reaction, and that is what keeps them out.
   test("a strand that names no reply arms no memory recovery", async () => {
     const convId = 8974;
     await seedConversation(convId);
@@ -2748,12 +2693,12 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await clearFlowLog(suDb, { tenantId });
   });
 
-  // ISSUE #620. The same two strands on an observer whose claim recorded that its route remembers
-  // nothing, which is an observer on an inbox with no responder of ours. Neither is closed as benign
-  // on that value (PR review, rounds 2 and 3): a failed arm writes the same `false`, before the row
-  // settles, so a strand cannot tell "owed nothing" from "failed". The reply keeps its verdict and
-  // its line, which now says what the claim recorded instead of asserting a loss; the transcription
-  // is still replayed, and the replay is what settles the harmless kind.
+  // NOTE: The same two strands on an observer whose claim recorded that its route remembers nothing
+  // (an observer on an inbox with no responder of ours). Neither is closed as benign on that value:
+  // a failed arm writes the same `false` before the row settles, so a strand cannot tell "owed
+  // nothing" from "failed". The reply keeps its verdict and its line, which says what the claim
+  // recorded instead of asserting a loss; the transcription is still replayed, and the replay
+  // settles the harmless kind.
   test("an observer's strands on a route that remembers nothing are still reported and replayed, and the reply's line says what the claim recorded", async () => {
     const replyConv = 8910;
     const transcriptionConv = 8911;
@@ -2824,18 +2769,14 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     });
   });
 
-  // ISSUE #478. The `message_updated` that finally carried a voice note's transcription, stranded
-  // between the claim and the arm. It is the only readable form that message ever takes wherever no
-  // turn runs at creation, so the shipped `no-message` loses the whole of what the customer said and
-  // loses it silently — and `lost` is wrong the other way, since the routes this reaches were never
-  // going to reply. The row is DEAD because that is the state the delivery replay claims from, and
-  // it leaves DEAD on the next tick; what must not happen is the loss ALERT, which would page an
-  // operator about a customer nobody is keeping waiting.
-  //
-  // A GENUINE LOSS RIDES ALONG, seeded older so the batch's `received_at` order decides it second:
-  // once its line has landed, a line for the transcription row would have landed too, so reading
-  // one line rather than two is a measurement and not a timeout — the same rider the owed-takeover
-  // case below uses, for the same reason.
+  // NOTE: The `message_updated` that carried a voice note's transcription, stranded between the
+  // claim and the arm. Wherever no turn runs at creation it is the only readable form of that
+  // message, so `no-message` would silently lose what the customer said, and `lost` is wrong the
+  // other way: these routes were never going to reply. The row is DEAD because the delivery replay
+  // claims from DEAD (it leaves on the next tick); what must not happen is the loss ALERT. A
+  // GENUINE LOSS rides along, seeded older so the batch's `received_at` order decides it second:
+  // once its line lands, the transcription row's would have too, so one line is a measurement and
+  // not a timeout.
   test("a stranded transcription is armed for replay without paging anyone", async () => {
     const transcriptionConv = 8908;
     const lossConv = 8909;
@@ -2880,12 +2821,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await clearFlowLog(suDb, { tenantId });
   });
 
-  // ISSUE #540, window 2. The same colleague's reply, on a row the claim never reached: the shape is
-  // there (INSERT wrote it) and the role is not, because the claim is the statement that writes it.
-  // This pass cannot tell a watcher's route from the responder's, and each guess costs something
-  // different — so it does both honest things. The takeover is armed, which `recover-takeover`
-  // answers `not-owed` to where it was not due; and the gap is reported, which is what reading the
-  // row as the responder's silently skipped.
+  // NOTE: The same colleague's reply, on a row the claim never reached: INSERT wrote the shape and
+  // not the role, because the claim is what writes it. This pass cannot tell a watcher's route from
+  // the responder's, and each guess costs something different, so it does both: the takeover is
+  // armed (`recover-takeover` answers `not-owed` where it was not due), and the gap is reported,
+  // which reading the row as the responder's would skip.
   test("a reply stranded before its route was named is armed AND reported", async () => {
     const convId = 8872;
     await seedConversation(convId);
@@ -2921,14 +2861,11 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     await suDb.chatwootWebhookDelivery.delete({ where: { id: rowId } });
   });
 
-  // ...AND THE LINE DOES NOT CLAIM AN ARMING THAT DID NOT HAPPEN (PR review, round 6). The row is
-  // PROCESSED by then and nothing revisits it, so this line is the only record it leaves: stated
-  // unconditionally, it told an operator a takeover was armed on the exact reading where it was not,
-  // which is the one case they would have had to act on themselves.
-  //
-  // A SOURCE FENCE, for the reason the loss-line one above gives: making `enqueueJob` throw against
-  // a real database means faking the client out from under the code under test, which proves nothing
-  // about what ships. What is asserted is the branch.
+  // NOTE: AND THE LINE DOES NOT CLAIM AN ARMING THAT DID NOT HAPPEN. The row is PROCESSED by then
+  // and nothing revisits it, so this line is its only record, and it must not tell an operator a
+  // takeover was armed on the one reading where they have to act themselves. A SOURCE FENCE, for
+  // the reason the loss-line one above gives: making `enqueueJob` throw against a real database
+  // means faking the client out from under the code under test. What is asserted is the branch.
   test("the reply-stranded line says whether the takeover was actually armed", async () => {
     const src = await Bun.file(
       new URL("../../src/modules/chatwoot/delivery-sweep.ts", import.meta.url),
@@ -2943,27 +2880,21 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
     // ...and the line that follows reads it rather than asserting the happy path.
     expect(arm).toContain("armed\n");
     expect(arm).toContain("A takeover COULD NOT BE ARMED");
-    // The unconditional claim is gone: it must not appear outside the ternary's true arm.
+    // NOTE: No unconditional claim of an arming: that sentence belongs only to the ternary's true
+    // arm.
     expect(
       arm.includes("route. A takeover is armed in case it was the responder's"),
     ).toBe(false);
   });
 
   test("a strand that owed a takeover is closed, unreported, and armed for recovery", async () => {
-    // ISSUE #439. The row a process death leaves when the delivery it was working carried a
-    // COLLEAGUE's reply: `message_created`, no inbound message id (nothing a customer sent), and the
-    // shape the payload had. Before this, the classifier read it as the benign `no-message`, the
-    // sweep closed it, and the takeover issue #430 exists to write was simply gone.
-    //
-    // Three assertions, and each one is a different way the two neighbouring verdicts are wrong
-    // here: the row must be PROCESSED and not DEAD (a colleague's reply belongs on no loss
-    // worklist), no line may be written (`writeFlowEvent` DISPATCHES the alert as it writes, so a
-    // line here pages an operator about a message nobody lost), and the recovery must be armed.
-    //
-    // A SECOND ROW RIDES ALONG, and it is what makes "no line" mean anything. An absence proved by
-    // waiting is a deadline that expired, so a genuine LOSS is swept in the same pass, seeded OLDER
-    // so the batch's `received_at` order decides it second: once its line has landed, a line for the
-    // owed row would have landed too, and reading zero is a measurement rather than a timeout.
+    // NOTE: The row a process death leaves when its delivery carried a COLLEAGUE's reply:
+    // `message_created`, no inbound message id, and the payload's shape. Three assertions, each a
+    // way the neighbouring verdicts are wrong here: PROCESSED and not DEAD (a colleague's reply
+    // belongs on no loss worklist), no line (`writeFlowEvent` DISPATCHES as it writes, so a line
+    // would page about a message nobody lost), and the recovery armed. A genuine LOSS rides along,
+    // seeded OLDER so the batch's `received_at` order decides it second: once its line lands, a
+    // line for the owed row would have too, so reading zero is a measurement and not a timeout.
     const owedConv = 8901;
     const lossConv = 8904;
     await seedConversation(owedConv);
@@ -3128,9 +3059,9 @@ describe.skipIf(!dbUp)("a delivery stranded by a process death", () => {
       deliveryId: `owed-composer-${process.pid}`,
     });
     expect(composer.humanReplyShape).toBe("composer");
-    // And WHICH message it was, the coordinate the recovery's fence orders by (issue #469). Written
-    // beside the shape and from the same answer, so a row can never say a takeover was owed while
-    // leaving the fence for it blank.
+    // NOTE: And WHICH message it was, the coordinate the recovery's fence orders by. Written beside
+    // the shape and from the same answer, so a row can never say a takeover was owed while leaving
+    // the fence blank.
     expect(composer.humanReplyMessageId).toBe(9941);
     // A reply typed on the paired phone, which the fork stores sender-less with the session marker.
     // Stored as a SHAPE and not as a verdict: whether it is a person or an echo of our own reply is

@@ -8,9 +8,9 @@ import {
 } from "@/modules/debounce/worker";
 import type { ClaimedJob } from "@/modules/scheduler/service";
 
-// Issue #812: a due flush that waits for a slot because the lane is full is announced ONCE, while it
-// is still waiting, and only when the wait is the lane's doing. The clock, the claim, the query for
-// waiting rows and the announcement are injected, so this runs without a DB; the DB-backed half is
+// A due flush that waits for a slot because the lane is full is announced ONCE, while it is still
+// waiting, and only when the wait is the lane's doing. The clock, the claim, the query for waiting
+// rows and the announcement are injected, so this runs without a DB; the DB-backed half is
 // tests/modules/debounce-lane-wait-db.test.ts.
 
 const base = {} as PrismaClient;

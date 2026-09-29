@@ -262,15 +262,11 @@ describe("setCompanyLogo", () => {
   });
 });
 
-// The invariant the whole upload path now rests on: a replacement is a NEW FILE, never a write over
-// the one the settings currently name.
-//
-// It is what removed the machinery that used to be here — a copy-aside, a rename over the live
-// path, and a rollback deciding between putting the copy back, deleting what it wrote and doing
-// nothing, from outside the lock it published under. Three review rounds went into that decision,
-// and the third found a state it could not answer: two uploads whose row writes both failed, whose
-// compensations ran in the wrong order, left an uncommitted image live while the settings still
-// described the old one. None of it is reachable from a name nobody else can be holding.
+// The invariant the upload path rests on: a replacement is a NEW FILE, never a write over the one
+// the settings currently name. A write in place needs a copy-aside, a rename over the live path and
+// a rollback decided outside the lock it published under, and two uploads whose row writes both
+// fail can then leave an uncommitted image live. None of that is reachable from a name nobody else
+// can be holding.
 describe("logoKeyFor", () => {
   test("never hands out the same name twice", () => {
     const keys = new Set(

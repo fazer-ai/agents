@@ -2,14 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { Glob } from "bun";
 
 // Who is allowed to read a vault secret RAW, and who has to go through a resolver that answers for
-// the pairing. Issue #471.
-//
-// `tryResolveVaultEntry` hands back `secret: unknown` plus the entry's `kind`, and answering "can
-// this serve my field?" from those two is the caller's job. Eight call sites got that wrong the same
-// way (they wrote `<string>` and used it), so the compiler now refuses the assertion — but a caller
-// can still narrow with a bare `typeof x === "string"`, which passes `mcp_env`: a real string the
-// catalog says must never leave this process. That is the hole a type cannot close, and this is the
-// fence over it.
+// the pairing. `tryResolveVaultEntry` hands back `secret: unknown` plus the entry's `kind`, and a
+// caller can still narrow with a bare `typeof x === "string"`, which passes `mcp_env`: a real string
+// the catalog says must never leave this process. A type cannot close that, so this fence does.
 //
 // The rule: a module that sends a secret to somebody else's endpoint resolves it through
 // `tryResolveApiKeyEntry` (a plain key) or `resolveInjectableCredential*` (a key or a refreshed OAuth
@@ -35,9 +30,7 @@ const ALLOWED: Record<string, string> = {
 };
 
 // Comments are not usage, and a fence that counts them lies in the direction that matters: it lets a
-// file stay on the list for a MENTION and then covers a real raw read added there later. Measured on
-// the first version of this file — `tenant-settings/service.ts` was listed and exempted while its
-// only occurrence was a note about which resolver it does not use.
+// file stay on the list for a MENTION and then covers a real raw read added there later.
 //
 // Line and block comments are stripped, string literals are not: a file that names the resolver
 // inside a string is doing something worth listing.
@@ -83,9 +76,8 @@ describe("who may read a vault secret without asking what it is for", () => {
     }
   });
 
-  // The other direction, and the one the first version of this fence got wrong: a file whose only
-  // occurrence is a comment must NOT read as a reader, or an exemption granted for a mention keeps
-  // standing over the real read somebody adds under it later.
+  // The other direction: a file whose only occurrence is a comment must NOT read as a reader, or an
+  // exemption granted for a mention keeps standing over the real read somebody adds under it later.
   test("a file that only mentions the resolver in a comment is not a reader", async () => {
     const path = `src/modules/vault/__fence_mention_${process.pid}.ts`;
     await Bun.write(
